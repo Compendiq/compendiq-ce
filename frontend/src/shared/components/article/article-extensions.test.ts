@@ -4,7 +4,8 @@ import { resolve } from 'path';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Image } from '@tiptap/extension-image';
-import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex } from './article-extensions';
+import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex, ExtendedTable, BlockShortcutsExtension } from './article-extensions';
 
 // Helper to extract parseHTML rules from a TipTap extension config
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -919,3 +920,249 @@ describe('TableIndex node', () => {
     editor.destroy();
   });
 });
+
+describe('BlockShortcutsExtension', () => {
+  it('duplicates the active block via duplicateBlock command', () => {
+    const editor = new Editor({
+      extensions: [StarterKit, BlockShortcutsExtension],
+      content: '<p>First block</p><p>Second block</p>',
+    });
+
+    editor.commands.setTextSelection(3);
+    const result = editor.commands.duplicateBlock();
+    expect(result).toBe(true);
+
+    expect(editor.getHTML()).toBe('<p>First block</p><p>First block</p><p>Second block</p>');
+    editor.destroy();
+  });
+
+  it('duplicates a block inside a confluenceColumn without duplicating the whole section', () => {
+    const editor = new Editor({
+      extensions: [StarterKit, ConfluenceSection, ConfluenceColumn, BlockShortcutsExtension],
+      content: `
+        <div class="confluence-section">
+          <div class="confluence-column">
+            <p>Column 1 Paragraph A</p>
+            <p>Column 1 Paragraph B</p>
+          </div>
+          <div class="confluence-column">
+            <p>Column 2 Paragraph</p>
+          </div>
+        </div>
+      `,
+    });
+
+    // Place selection inside "Column 1 Paragraph A"
+    const doc = editor.state.doc;
+    let targetPos = 0;
+    doc.descendants((node, pos) => {
+      if (node.isText && node.text?.includes('Column 1 Paragraph A')) {
+        targetPos = pos + 2;
+        return false;
+      }
+      return true;
+    });
+
+    editor.commands.setTextSelection(targetPos);
+    const result = editor.commands.duplicateBlock();
+    expect(result).toBe(true);
+
+    // Assert that the paragraph was duplicated inside Column 1, and only 1 confluenceSection exists
+    const html = editor.getHTML();
+    expect(html).toContain('<p>Column 1 Paragraph A</p><p>Column 1 Paragraph A</p><p>Column 1 Paragraph B</p>');
+    const sectionCount = (html.match(/class="confluence-section"/g) || []).length;
+    expect(sectionCount).toBe(1);
+    editor.destroy();
+  });
+
+  it('duplicates a heading inside a confluenceColumn', () => {
+    const editor = new Editor({
+      extensions: [StarterKit, ConfluenceSection, ConfluenceColumn, BlockShortcutsExtension],
+      content: `
+        <div class="confluence-section">
+          <div class="confluence-column">
+            <h2>Column Subheading</h2>
+            <p>Description</p>
+          </div>
+        </div>
+      `,
+    });
+
+    let targetPos = 0;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text?.includes('Column Subheading')) {
+        targetPos = pos + 2;
+        return false;
+      }
+      return true;
+    });
+
+    editor.commands.setTextSelection(targetPos);
+    const result = editor.commands.duplicateBlock();
+    expect(result).toBe(true);
+
+    const html = editor.getHTML();
+    expect(html).toContain('<h2>Column Subheading</h2><h2>Column Subheading</h2><p>Description</p>');
+    editor.destroy();
+  });
+
+  it('duplicates a block inside a panel container', () => {
+    const editor = new Editor({
+      extensions: [StarterKit, Panel, BlockShortcutsExtension],
+      content: `
+        <div class="panel-info">
+          <p>Important info line 1</p>
+        </div>
+      `,
+    });
+
+    let targetPos = 0;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text?.includes('Important info line 1')) {
+        targetPos = pos + 2;
+        return false;
+      }
+      return true;
+    });
+
+    editor.commands.setTextSelection(targetPos);
+    const result = editor.commands.duplicateBlock();
+    expect(result).toBe(true);
+
+    const html = editor.getHTML();
+    expect(html).toContain('<p>Important info line 1</p><p>Important info line 1</p>');
+    const panelCount = (html.match(/class="panel-info"/g) || []).length;
+    expect(panelCount).toBe(1);
+    editor.destroy();
+  });
+
+  it('duplicates a block inside a details (expand) container', () => {
+    const editor = new Editor({
+      extensions: [StarterKit, Details, DetailsSummary, BlockShortcutsExtension],
+      content: `
+        <details>
+          <summary>Overview</summary>
+          <p>Detail item 1</p>
+        </details>
+      `,
+    });
+
+    let targetPos = 0;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text?.includes('Detail item 1')) {
+        targetPos = pos + 2;
+        return false;
+      }
+      return true;
+    });
+
+    editor.commands.setTextSelection(targetPos);
+    const result = editor.commands.duplicateBlock();
+    expect(result).toBe(true);
+
+    const html = editor.getHTML();
+    expect(html).toContain('<p>Detail item 1</p><p>Detail item 1</p>');
+    const detailsCount = (html.match(/<details/g) || []).length;
+    expect(detailsCount).toBe(1);
+    editor.destroy();
+  });
+});
+
+describe('Block in blocks: rich block nesting inside column containers', () => {
+  it('supports diverse blocks (tables, panels, code blocks, quotes, lists, details) inside columns', () => {
+    const html = `
+      <div class="confluence-section">
+        <div class="confluence-column" data-cell-width="50%">
+          <h2>Left Column</h2>
+          <p>Intro paragraph</p>
+          <blockquote><p>A nested quote</p></blockquote>
+          <div class="panel-info"><p>Panel inside column</p></div>
+          <table data-layout="default">
+            <tbody>
+              <tr><th>Header</th></tr>
+              <tr><td>Data</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="confluence-column" data-cell-width="50%">
+          <pre><code>console.log('code in column');</code></pre>
+          <ul>
+            <li><p>List item in column</p></li>
+          </ul>
+          <details>
+            <summary>Expand in column</summary>
+            <p>Hidden body</p>
+          </details>
+        </div>
+      </div>
+    `;
+
+    const editor = new Editor({
+      extensions: [
+        StarterKit,
+        ExtendedTable,
+        TableRow,
+        TableCell,
+        TableHeader,
+        Panel,
+        Details,
+        DetailsSummary,
+        ConfluenceSection,
+        ConfluenceColumn,
+      ],
+      content: html,
+    });
+
+    const doc = editor.getJSON();
+    const section = doc.content?.find((n) => n.type === 'confluenceSection');
+    expect(section).toBeDefined();
+    expect(section?.content?.length).toBe(2);
+
+    const leftCol = section?.content?.[0];
+    const rightCol = section?.content?.[1];
+
+    expect(leftCol?.type).toBe('confluenceColumn');
+    expect(leftCol?.attrs?.cellWidth).toBe('50%');
+    const leftBlockTypes = leftCol?.content?.map((n) => n.type);
+    expect(leftBlockTypes).toEqual(['heading', 'paragraph', 'blockquote', 'panel', 'table']);
+
+    expect(rightCol?.type).toBe('confluenceColumn');
+    const rightBlockTypes = rightCol?.content?.map((n) => n.type);
+    expect(rightBlockTypes).toEqual(['codeBlock', 'bulletList', 'details']);
+
+    editor.destroy();
+  });
+
+  it('supports nested sections inside a column', () => {
+    const html = `
+      <div class="confluence-section">
+        <div class="confluence-column">
+          <p>Outer column top</p>
+          <div class="confluence-section" data-border="true">
+            <div class="confluence-column"><p>Inner Col 1</p></div>
+            <div class="confluence-column"><p>Inner Col 2</p></div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const editor = new Editor({
+      extensions: [StarterKit, ConfluenceSection, ConfluenceColumn],
+      content: html,
+    });
+
+    const doc = editor.getJSON();
+    const outerSection = doc.content?.find((n) => n.type === 'confluenceSection');
+    const outerColumn = outerSection?.content?.[0];
+    expect(outerColumn?.type).toBe('confluenceColumn');
+
+    const innerSection = outerColumn?.content?.find((n) => n.type === 'confluenceSection');
+    expect(innerSection).toBeDefined();
+    expect(innerSection?.attrs?.border).toBe('true');
+    expect(innerSection?.content?.length).toBe(2);
+
+    editor.destroy();
+  });
+});
+
+

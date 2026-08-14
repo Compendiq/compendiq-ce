@@ -126,6 +126,14 @@ export function blockLabel(node: PMNode): string {
     const level = node.attrs.level as number | undefined;
     return level ? `Heading ${level}` : 'Heading';
   }
+  if (name === 'panel') {
+    const type = node.attrs.panelType as string | undefined;
+    if (type) {
+      const capitalized = type.charAt(0).toUpperCase() + type.slice(1);
+      return `${capitalized} panel`;
+    }
+    return 'Panel';
+  }
   if (name === 'details') {
     const macroName = node.attrs.macroName as string | undefined;
     if (macroName === 'ui-expand') return 'UI Expand';
@@ -175,3 +183,35 @@ export function containsLossyMarks(doc: PMNode, from: number, to: number): boole
     return type ? doc.rangeHasMark(from, to, type) : false;
   });
 }
+
+/**
+ * Configuration for nested drag handle behavior.
+ * Enables drag handles on blocks inside columns, layout cells, panels, quotes, and expand sections,
+ * while excluding structural column/cell wrappers from being dragged as loose blocks.
+ */
+export const NESTED_DRAG_OPTIONS = {
+  defaultRules: true,
+  edgeDetection: 'none' as const,
+  rules: [
+    {
+      id: 'excludeLayoutContainers',
+      evaluate: ({ node, parent }: { node: { type: { name: string } }; parent?: { type: { name: string } } | null }) => {
+        const layoutContainers = [
+          'confluenceColumn',
+          'confluenceLayoutCell',
+          'confluenceLayoutSection',
+          'tableRow',
+          'tableCell',
+          'tableHeader',
+        ];
+        if (layoutContainers.includes(node.type.name)) return 1000;
+        // Direct content inside table cells routes drag targeting to the parent table
+        if (parent?.type.name === 'tableCell' || parent?.type.name === 'tableHeader') {
+          return 1000;
+        }
+        return 0;
+      },
+    },
+  ],
+};
+

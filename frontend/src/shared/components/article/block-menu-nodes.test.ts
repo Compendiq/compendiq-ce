@@ -29,6 +29,12 @@ const schema = new Schema({
     bulletList: { group: 'block', content: 'listItem+' },
     drawioDiagram: { group: 'block', atom: true },
     confluenceLayout: { group: 'block', content: 'block+' },
+    confluenceLayoutSection: { group: 'block', content: 'block+' },
+    confluenceLayoutCell: { group: 'block', content: 'block+' },
+    confluenceSection: { group: 'block', content: 'block+' },
+    confluenceColumn: { group: 'block', content: 'block+' },
+    panel: { group: 'block', content: 'block*', attrs: { panelType: { default: 'info' } } },
+    table: { group: 'block', content: 'block+' },
     unknownMacro: { group: 'block', content: 'block*', attrs: { macroName: { default: null } } },
     figure: { group: 'block', content: 'paragraph*' },
     details: { group: 'block', content: 'paragraph*', attrs: { macroName: { default: null } } },
@@ -100,7 +106,19 @@ describe('blockLabel', () => {
   it('names the Confluence and diagram nodes in human words', () => {
     expect(blockLabel(node('drawioDiagram'))).toBe('Draw.io diagram');
     expect(blockLabel(node('confluenceLayout'))).toBe('Layout');
+    expect(blockLabel(node('confluenceLayoutSection'))).toBe('Layout section');
+    expect(blockLabel(node('confluenceLayoutCell'))).toBe('Layout cell');
+    expect(blockLabel(node('confluenceSection'))).toBe('Section');
+    expect(blockLabel(node('confluenceColumn'))).toBe('Column');
+    expect(blockLabel(node('table'))).toBe('Table');
     expect(blockLabel(node('blockquote'))).toBe('Quote');
+  });
+
+  it('names panel nodes formatted with their panelType', () => {
+    expect(blockLabel(node('panel', { panelType: 'info' }))).toBe('Info panel');
+    expect(blockLabel(node('panel', { panelType: 'warning' }))).toBe('Warning panel');
+    expect(blockLabel(node('panel', { panelType: 'note' }))).toBe('Note panel');
+    expect(blockLabel(node('panel', { panelType: 'tip' }))).toBe('Tip panel');
   });
 
   it('names details nodes as Expand or UI Expand based on macroName', () => {

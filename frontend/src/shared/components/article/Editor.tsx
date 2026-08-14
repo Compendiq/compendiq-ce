@@ -49,6 +49,7 @@ import {
   isInConfluenceLayout,
   LAYOUT_PRESETS,
   ExtendedTable,
+  BlockShortcutsExtension,
 } from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
 import { VimExtension, type VimState } from './vim-extension';
@@ -57,7 +58,12 @@ import { EditorBubbleMenu } from './EditorBubbleMenu';
 import { EditorBlockHandle } from './EditorBlockMenu';
 import { TableContextToolbar } from './EditorTableControls';
 export { TableContextToolbar };
-import { handleTableCellTripleClick } from './table-cell-selection';
+import {
+  handleTableCellClick,
+  handleTableCellTripleClick,
+  handleTableDragStart,
+  syncTableLayoutAttributes,
+} from './table-cell-selection';
 import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar-primitives';
 
 /**
@@ -278,10 +284,12 @@ export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
 
   return (
     <div
+      role="toolbar"
+      aria-label="Layout editing controls"
       data-testid="layout-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-action/20 bg-action/5 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-border bg-muted/20 px-2 py-1 text-xs text-card-foreground motion-safe:animate-in motion-safe:fade-in-50"
     >
-      <span className="mr-1 text-xs font-semibold text-action/70 select-none">Layout</span>
+      <span className="mr-1 text-xs font-semibold text-muted-foreground select-none">Layout</span>
 
       <ToolbarSeparator />
 
@@ -320,10 +328,12 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
 
   return (
     <div
+      role="toolbar"
+      aria-label="Column editing controls"
       data-testid="column-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-action/20 bg-action/5 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-border bg-muted/20 px-2 py-1 text-xs text-card-foreground motion-safe:animate-in motion-safe:fade-in-50"
     >
-      <span className="mr-1 text-xs font-semibold text-action/70 select-none">Columns</span>
+      <span className="mr-1 text-xs font-semibold text-muted-foreground select-none">Columns</span>
 
       <ToolbarSeparator />
 
@@ -713,7 +723,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         codeBlock: false,
       }),
       TextAlign.configure({
-        types: ['heading', 'paragraph', 'blockquote'],
+        types: ['heading', 'paragraph', 'blockquote', 'tableCaption'],
         alignments: ['left', 'center', 'right', 'justify'],
       }),
       TextStyle,
@@ -753,6 +763,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       ConfluenceImage.configure({ inline: false }),
       Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),
       SearchAndReplaceExtension,
+      BlockShortcutsExtension,
       ...(vimEnabled ? [VimExtension.configure({
         onStateChange: setVimDisplayState,
         onSave: () => {
@@ -765,6 +776,12 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       })] : []),
     ],
     editorProps: {
+      handleDOMEvents: {
+        // #1135 — Prevent browser HTML5 text drag from killing ProseMirror table cell selection
+        dragstart: handleTableDragStart,
+      },
+      // #1135 — Shift+Click range selection and drag-selection preservation in tables.
+      handleClick: handleTableCellClick,
       // #1135 — triple-click selects the whole cell, not one paragraph.
       handleTripleClick: handleTableCellTripleClick,
       handlePaste(_view, event) {
@@ -849,6 +866,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
 
   // Notify parent when editor instance is ready (triggers re-render via setState)
   useEffect(() => {
+    if (editor && !editor.isDestroyed) {
+      syncTableLayoutAttributes(editor);
+    }
     onEditorReady?.(editor);
     return () => onEditorReady?.(null);
   }, [editor, onEditorReady]);

@@ -1,108 +1,61 @@
-import { useEffect, useRef, useState } from 'react';
-import * as Popover from '@radix-ui/react-popover';
+import { useRef } from 'react';
 import { useEditorState } from '@tiptap/react';
 import type { Editor as EditorType } from '@tiptap/react';
+import { CellSelection, selectedRect } from '@tiptap/pm/tables';
+import { toast } from 'sonner';
 import {
-  BetweenHorizontalEnd,
-  BetweenHorizontalStart,
-  BetweenVerticalEnd,
-  BetweenVerticalStart,
-  Captions,
-  ChevronDown,
-  Columns3,
-  Expand,
-  MoreHorizontal,
-  PanelLeftDashed,
-  PanelTopDashed,
-  Rows3,
-  Shrink,
+  CopyPlus,
+  UnfoldHorizontal,
+  FoldHorizontal,
+  Merge,
   SplitSquareHorizontal,
   Table2,
-  TableProperties,
   Trash2,
-  Merge,
 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { TOOLBAR_ITEM_ATTR, useToolbarRovingFocus } from './use-toolbar-roving-focus';
-
-function syncTableLayoutAttributes(editor: EditorType) {
-  editor.state.doc.descendants((node, pos) => {
-    if (node.type.name !== 'table') return true;
-
-    const dom = editor.view.nodeDOM(pos) as HTMLElement | null;
-    const table = dom?.tagName === 'TABLE' ? dom : dom?.querySelector('table');
-    if (!table) return true;
-    const wrapper = table.closest('.tableWrapper');
-
-    if (node.attrs['data-layout'] === 'full-width') {
-      table.setAttribute('data-layout', 'full-width');
-      wrapper?.setAttribute('data-layout', 'full-width');
-
-      const columns = table.querySelectorAll<HTMLTableColElement>('colgroup > col');
-      if (columns.length > 0) {
-        const columnWidth = `${100 / columns.length}%`;
-        columns.forEach((column) => column.style.setProperty('width', columnWidth, 'important'));
-      }
-    } else {
-      table.removeAttribute('data-layout');
-      wrapper?.removeAttribute('data-layout');
-
-      table.querySelectorAll<HTMLTableColElement>('colgroup > col').forEach((column) => {
-        column.style.removeProperty('width');
-      });
-    }
-
-    return true;
-  });
-}
-
-/** Observe whether the active table is using the full-width layout. */
-function useActiveTableLayout(editor: EditorType | null) {
-  const [isFullWidth, setIsFullWidth] = useState(false);
-
-  useEffect(() => {
-    if (!editor || editor.isDestroyed) return;
-
-    const update = () => {
-      if (!editor.isActive('table')) {
-        setIsFullWidth(false);
-        return;
-      }
-
-      syncTableLayoutAttributes(editor);
-      setIsFullWidth(editor.getAttributes('table')['data-layout'] === 'full-width');
-    };
-
-    update();
-    editor.on('selectionUpdate', update);
-    editor.on('transaction', update);
-    return () => {
-      editor.off('selectionUpdate', update);
-      editor.off('transaction', update);
-    };
-  }, [editor]);
-
-  return isFullWidth;
-}
+import {
+  insertTableCaption,
+  useActiveTableLayout,
+  setTableLayout,
+  getTableNode,
+  checkHasHeaderRow,
+  checkHasHeaderColumn,
+  toggleTableHeaderRowDirect,
+  toggleTableHeaderColumnDirect,
+} from './table-cell-selection';
+import {
+  IconInsertRowAbove,
+  IconInsertRowBelow,
+  IconDeleteRow,
+  IconInsertColumnBefore,
+  IconInsertColumnAfter,
+  IconDeleteColumn,
+  IconHeaderRow,
+  IconHeaderColumn,
+  IconTableCaption,
+} from './table-icons';
 
 function TableActionButton({
   icon: Icon,
-  label,
   title,
+  shortcut,
   onClick,
   disabled,
+  active,
   testId,
   destructive = false,
 }: {
-  icon: LucideIcon;
-  label: string;
+  icon: React.ComponentType<{ size?: number | string; strokeWidth?: number | string; className?: string }>;
   title: string;
+  shortcut?: string;
   onClick: () => void;
   disabled?: boolean;
+  active?: boolean;
   testId?: string;
   destructive?: boolean;
 }) {
+  const fullLabel = shortcut ? `${title} (${shortcut})` : title;
   return (
     <button
       type="button"
@@ -110,107 +63,409 @@ function TableActionButton({
       onMouseDown={(event) => event.preventDefault()}
       onClick={onClick}
       disabled={disabled}
-      title={title}
-      aria-label={title}
+      title={fullLabel}
+      aria-label={fullLabel}
+      aria-pressed={active}
+      data-state={active !== undefined ? (active ? 'checked' : 'unchecked') : undefined}
       data-testid={testId}
       className={cn(
-        'flex h-8 items-center gap-1.5 rounded-md border border-transparent px-2 text-[12px] font-medium whitespace-nowrap transition-colors',
-        'text-muted-foreground hover:bg-accent hover:text-foreground',
-        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
-        'disabled:pointer-events-none disabled:opacity-40',
+        'nm-icon-button',
         destructive && 'nm-action-destructive',
       )}
     >
-      <Icon size={15} strokeWidth={1.9} aria-hidden="true" />
-      <span>{label}</span>
-    </button>
-  );
-}
-
-function TableMenuItem({
-  icon: Icon,
-  label,
-  onClick,
-  destructive = false,
-  testId,
-}: {
-  icon: LucideIcon;
-  label: string;
-  onClick: () => void;
-  destructive?: boolean;
-  testId?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={onClick}
-      data-testid={testId}
-      className={cn(
-        'flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors',
-        'text-foreground hover:bg-accent',
-        destructive && 'nm-action-destructive',
-      )}
-    >
-      <Icon size={15} strokeWidth={1.9} aria-hidden="true" />
-      <span>{label}</span>
+      <Icon size={16} strokeWidth={2} aria-hidden="true" />
     </button>
   );
 }
 
 function TableToolbarDivider() {
-  return <div role="separator" aria-orientation="vertical" className="mx-1 hidden h-5 w-px bg-border sm:block" />;
+  return <div role="separator" aria-orientation="vertical" className="mx-0.5 h-4 w-px bg-border" />;
 }
 
-function setTableLayout(editor: EditorType, nextLayout: 'default' | 'full-width') {
-  const { selection } = editor.state;
-  const $pos = selection.$from;
-  let tablePos: number | null = null;
-  for (let d = $pos.depth; d > 0; d--) {
-    if ($pos.node(d).type.name === 'table') {
-      tablePos = $pos.before(d);
-      break;
+function deleteRowsAction(editor: EditorType, runCmd: (cmd: () => void) => void) {
+  runCmd(() => {
+    const { state } = editor;
+    if (state.selection instanceof CellSelection) {
+      try {
+        const rect = selectedRect(state);
+        const count = rect.bottom - rect.top;
+        if (count > 1) {
+          let chain = editor.chain().focus();
+          for (let r = rect.bottom - 1; r >= rect.top; r--) {
+            const cellOffset = rect.map.map[r * rect.map.width + rect.left];
+            if (cellOffset !== undefined) {
+              const cellPos = rect.tableStart + cellOffset;
+              chain = chain.setTextSelection(cellPos + 1).deleteRow();
+            }
+          }
+          chain.run();
+          toast.success(`${count} rows deleted`, {
+            action: {
+              label: 'Undo',
+              onClick: () => {
+                if (!editor.isDestroyed) editor.commands.undo();
+              },
+            },
+          });
+          return;
+        }
+      } catch {
+        // Fallback
+      }
     }
-  }
 
-  if (tablePos !== null) {
-    editor.view.dispatch(editor.state.tr.setNodeAttribute(tablePos, 'data-layout', nextLayout));
-  } else {
-    editor.chain().focus().updateAttributes('table', { 'data-layout': nextLayout }).run();
-  }
+    editor.chain().deleteRow().run();
+    toast.success('Row deleted', {
+      action: {
+        label: 'Undo',
+        onClick: () => {
+          if (!editor.isDestroyed) editor.commands.undo();
+        },
+      },
+    });
+  });
+}
+
+function deleteColumnsAction(editor: EditorType, runCmd: (cmd: () => void) => void) {
+  runCmd(() => {
+    const { state } = editor;
+    if (state.selection instanceof CellSelection) {
+      try {
+        const rect = selectedRect(state);
+        const count = rect.right - rect.left;
+        if (count > 1) {
+          let chain = editor.chain().focus();
+          for (let c = rect.right - 1; c >= rect.left; c--) {
+            const cellOffset = rect.map.map[rect.top * rect.map.width + c];
+            if (cellOffset !== undefined) {
+              const cellPos = rect.tableStart + cellOffset;
+              chain = chain.setTextSelection(cellPos + 1).deleteColumn();
+            }
+          }
+          chain.run();
+          toast.success(`${count} columns deleted`, {
+            action: {
+              label: 'Undo',
+              onClick: () => {
+                if (!editor.isDestroyed) editor.commands.undo();
+              },
+            },
+          });
+          return;
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    editor.chain().deleteColumn().run();
+    toast.success('Column deleted', {
+      action: {
+        label: 'Undo',
+        onClick: () => {
+          if (!editor.isDestroyed) editor.commands.undo();
+        },
+      },
+    });
+  });
 }
 
 /**
- * Focused table editing toolbar. Common structural actions are labeled and
- * grouped; display and destructive actions live in the More menu so the bar
- * stays easy to scan at desktop and narrow widths.
+ * Focused table editing toolbar. All actions are icon-only with clear,
+ * accessible tooltips, matching the rest of the editor toolbar system.
  */
-export function TableContextToolbar({ editor, embedded = false }: { editor: EditorType; embedded?: boolean }) {
-  const isFullWidth = useActiveTableLayout(editor);
+export function TableContextToolbar({
+  editor,
+  embedded = false,
+  targetPos,
+  onClose,
+  onDelete,
+  onDuplicate,
+}: {
+  editor: EditorType;
+  embedded?: boolean;
+  targetPos?: number;
+  onClose?: () => void;
+  onDelete?: () => void;
+  onDuplicate?: () => void;
+}) {
+  const isFullWidth = useActiveTableLayout(editor, targetPos);
   const rootRef = useRef<HTMLDivElement>(null);
   const roving = useToolbarRovingFocus(rootRef);
-  const [moreOpen, setMoreOpen] = useState(false);
 
   const editorState = useEditorState({
     editor,
-    selector: ({ editor: e }) => ({
-      isInTable: e.isActive('table'),
-      canMergeCells: e.can().mergeCells(),
-      canSplitCell: e.can().splitCell(),
-      canAddRowBefore: e.can().addRowBefore(),
-      canAddRowAfter: e.can().addRowAfter(),
-      canDeleteRow: e.can().deleteRow(),
-      canAddColumnBefore: e.can().addColumnBefore(),
-      canAddColumnAfter: e.can().addColumnAfter(),
-      canDeleteColumn: e.can().deleteColumn(),
-    }),
+    selector: ({ editor: e }) => {
+      const isInTable = e.isActive('table');
+      const tableNode = getTableNode(e, targetPos);
+      const isHeaderRow = checkHasHeaderRow(tableNode);
+      const isHeaderCol = checkHasHeaderColumn(tableNode);
+      if (!isInTable && !embedded) {
+        return {
+          isInTable: false,
+          hasHeaderRow: isHeaderRow,
+          hasHeaderColumn: isHeaderCol,
+          canMergeCells: false,
+          canSplitCell: false,
+          canAddRowBefore: false,
+          canAddRowAfter: false,
+          canDeleteRow: false,
+          canAddColumnBefore: false,
+          canAddColumnAfter: false,
+          canDeleteColumn: false,
+        };
+      }
+      return {
+        isInTable: true,
+        hasHeaderRow: isHeaderRow,
+        hasHeaderColumn: isHeaderCol,
+        canMergeCells: e.can().mergeCells(),
+        canSplitCell: e.can().splitCell(),
+        canAddRowBefore: true,
+        canAddRowAfter: true,
+        canDeleteRow: true,
+        canAddColumnBefore: true,
+        canAddColumnAfter: true,
+        canDeleteColumn: true,
+      };
+    },
   });
 
-  if (!editorState.isInTable) return null;
+  const hasHeaderRow = editorState.hasHeaderRow;
+  const hasHeaderColumn = editorState.hasHeaderColumn;
+
+  if (!embedded && !editorState.isInTable) return null;
 
   const toggleFullWidth = () => {
-    setTableLayout(editor, isFullWidth ? 'default' : 'full-width');
+    setTableLayout(editor, isFullWidth ? 'default' : 'full-width', targetPos);
   };
+
+  const runTableCmd = (cmd: () => void) => {
+    if (targetPos !== undefined && targetPos >= 0 && !editor.isDestroyed) {
+      const { selection } = editor.state;
+      const targetTableNode = editor.state.doc.nodeAt(targetPos);
+      const isAlreadyInTargetTable =
+        targetTableNode &&
+        selection.$from.pos >= targetPos &&
+        selection.$to.pos <= targetPos + targetTableNode.nodeSize;
+
+      if (!isAlreadyInTargetTable) {
+        let firstCellPos = targetPos + 1;
+        if (targetTableNode) {
+          let offset = 0;
+          for (let i = 0; i < targetTableNode.childCount; i++) {
+            const child = targetTableNode.child(i);
+            if (child.type.name === 'tableRow') {
+              firstCellPos = targetPos + 1 + offset + 1;
+              break;
+            }
+            offset += child.nodeSize;
+          }
+        }
+        if (firstCellPos <= editor.state.doc.content.size) {
+          editor.commands.setTextSelection(firstCellPos);
+        }
+      }
+    }
+    cmd();
+  };
+
+  const handleDeleteTable = () => {
+    if (onDelete) {
+      onDelete();
+    } else {
+      runTableCmd(() => {
+        editor.chain().focus().deleteTable().run();
+        toast.success('Table deleted', {
+          action: {
+            label: 'Undo',
+            onClick: () => {
+              if (!editor.isDestroyed) editor.commands.undo();
+            },
+          },
+        });
+      });
+      onClose?.();
+    }
+  };
+
+  if (embedded) {
+    return (
+      <div
+        ref={rootRef}
+        aria-label="Table editing controls"
+        role="toolbar"
+        data-testid="block-table-toolbar"
+        onKeyDown={roving.onKeyDown}
+        onFocus={roving.onFocus}
+        className="flex flex-col gap-1.5 p-1 text-card-foreground"
+      >
+        {/* Table Structure & Layout Header */}
+        <div className="flex items-center justify-between gap-1 px-1">
+          <div className="flex items-center gap-1.5 text-foreground" data-testid="table-toolbar-heading">
+            <Table2 size={16} strokeWidth={1.9} aria-hidden="true" />
+            <span className="text-xs font-semibold">Table</span>
+          </div>
+
+          <div className="flex items-center gap-0.5" role="group" aria-label="Table structure">
+            <TableActionButton
+              icon={isFullWidth ? FoldHorizontal : UnfoldHorizontal}
+              title={isFullWidth ? 'Return table to standard width' : 'Expand table to page width'}
+              onClick={toggleFullWidth}
+              active={isFullWidth}
+              testId="toggle-table-expand"
+            />
+            <TableActionButton
+              icon={IconHeaderRow}
+              title={hasHeaderRow ? 'Header row active (click to remove)' : 'Toggle header row'}
+              onClick={() => toggleTableHeaderRowDirect(editor, targetPos)}
+              active={hasHeaderRow}
+              testId="table-toggle-header-row"
+            />
+            <TableActionButton
+              icon={IconHeaderColumn}
+              title={hasHeaderColumn ? 'Header column active (click to remove)' : 'Toggle header column'}
+              onClick={() => toggleTableHeaderColumnDirect(editor, targetPos)}
+              active={hasHeaderColumn}
+              testId="table-toggle-header-column"
+            />
+            <TableActionButton
+              icon={IconTableCaption}
+              title="Add caption below table"
+              onClick={() => runTableCmd(() => insertTableCaption(editor, targetPos))}
+              testId="table-add-caption"
+            />
+          </div>
+        </div>
+
+        <div role="separator" aria-orientation="horizontal" className="my-0.5 h-px bg-border" />
+
+        {/* Rows Group */}
+        <div role="group" aria-label="Rows" className="flex items-center justify-between gap-2 px-1" data-testid="table-group-rows">
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Rows</span>
+          <div className="flex items-center gap-0.5">
+            <TableActionButton
+              icon={IconInsertRowAbove}
+              title="Add row above"
+              onClick={() => runTableCmd(() => editor.chain().addRowBefore().run())}
+              disabled={editorState.isInTable ? !editorState.canAddRowBefore : false}
+              testId="table-add-row-before"
+            />
+            <TableActionButton
+              icon={IconInsertRowBelow}
+              title="Add row below"
+              onClick={() => runTableCmd(() => editor.chain().addRowAfter().run())}
+              disabled={editorState.isInTable ? !editorState.canAddRowAfter : false}
+              testId="table-add-row-after"
+            />
+            <TableActionButton
+              icon={IconDeleteRow}
+              title="Delete row"
+              onClick={() => deleteRowsAction(editor, runTableCmd)}
+              disabled={editorState.isInTable ? !editorState.canDeleteRow : false}
+              destructive
+              testId="table-delete-row"
+            />
+          </div>
+        </div>
+
+        {/* Columns Group */}
+        <div role="group" aria-label="Columns" className="flex items-center justify-between gap-2 px-1" data-testid="table-group-columns">
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Columns</span>
+          <div className="flex items-center gap-0.5">
+            <TableActionButton
+              icon={IconInsertColumnBefore}
+              title="Add column before"
+              onClick={() => runTableCmd(() => editor.chain().addColumnBefore().run())}
+              disabled={editorState.isInTable ? !editorState.canAddColumnBefore : false}
+              testId="table-add-col-before"
+            />
+            <TableActionButton
+              icon={IconInsertColumnAfter}
+              title="Add column after"
+              onClick={() => runTableCmd(() => editor.chain().addColumnAfter().run())}
+              disabled={editorState.isInTable ? !editorState.canAddColumnAfter : false}
+              testId="table-add-col-after"
+            />
+            <TableActionButton
+              icon={IconDeleteColumn}
+              title="Delete column"
+              onClick={() => deleteColumnsAction(editor, runTableCmd)}
+              disabled={editorState.isInTable ? !editorState.canDeleteColumn : false}
+              destructive
+              testId="table-delete-col"
+            />
+          </div>
+        </div>
+
+        {/* Cells Group */}
+        {(editorState.canMergeCells || editorState.canSplitCell) && (
+          <div role="group" aria-label="Cells" className="flex items-center justify-between gap-2 px-1" data-testid="table-group-cells">
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Cells</span>
+            <div className="flex items-center gap-0.5">
+              <TableActionButton
+                icon={Merge}
+                title="Merge selected cells"
+                onClick={() => runTableCmd(() => editor.chain().mergeCells().run())}
+                disabled={!editorState.canMergeCells}
+                testId="table-merge-cells"
+              />
+              <TableActionButton
+                icon={SplitSquareHorizontal}
+                title="Split cell"
+                onClick={() => runTableCmd(() => editor.chain().splitCell().run())}
+                disabled={!editorState.canSplitCell}
+                testId="table-split-cell"
+              />
+            </div>
+          </div>
+        )}
+
+        <div role="separator" aria-orientation="horizontal" className="my-0.5 h-px bg-border" />
+
+        {/* Block Actions: Duplicate & Delete */}
+        <div className="flex flex-col gap-0.5">
+          {onDuplicate && (
+            <button
+              type="button"
+              {...{ [TOOLBAR_ITEM_ATTR]: '' }}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={onDuplicate}
+              data-testid="block-menu-duplicate"
+              className={cn(
+                'flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs text-foreground transition-colors',
+                'hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+              )}
+            >
+              <div className="flex items-center gap-2.5">
+                <CopyPlus size={14} className="text-muted-foreground" />
+                <span>Duplicate</span>
+              </div>
+              <kbd className="text-[11px] font-mono text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded border border-border">⌘D</kbd>
+            </button>
+          )}
+
+          <button
+            type="button"
+            {...{ [TOOLBAR_ITEM_ATTR]: '' }}
+            onMouseDown={(event) => event.preventDefault()}
+            data-testid="table-delete"
+            onClick={handleDeleteTable}
+            className={cn(
+              'flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors',
+              'nm-action-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-destructive',
+            )}
+          >
+            <div className="flex items-center gap-2.5">
+              <Trash2 size={14} />
+              <span>Delete table</span>
+            </div>
+            <kbd className="text-[11px] font-mono opacity-80 bg-destructive/10 px-1.5 py-0.5 rounded border border-destructive/20">Del</kbd>
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -220,9 +475,9 @@ export function TableContextToolbar({ editor, embedded = false }: { editor: Edit
       data-testid="table-context-toolbar"
       onKeyDown={roving.onKeyDown}
       onFocus={roving.onFocus}
-      className={embedded
-        ? 'flex max-w-full flex-wrap items-center gap-0.5 border-t border-border bg-card px-2 py-1.5 text-card-foreground'
-        : 'flex max-w-full flex-wrap items-center gap-0.5 rounded-lg border border-border bg-card p-1 text-card-foreground nm-card-elevated animate-in fade-in-50'}
+      className={
+        'flex max-w-full flex-wrap items-center gap-0.5 border-t border-border bg-muted/20 px-2 py-1 text-xs text-card-foreground motion-safe:animate-in motion-safe:fade-in-50'
+      }
     >
       <div className="flex h-8 items-center gap-1.5 px-1.5 text-foreground" data-testid="table-toolbar-heading">
         <Table2 size={16} strokeWidth={1.9} aria-hidden="true" />
@@ -231,26 +486,55 @@ export function TableContextToolbar({ editor, embedded = false }: { editor: Edit
 
       <TableToolbarDivider />
 
+      <div role="group" aria-label="Table structure" className="flex items-center gap-0.5">
+        <TableActionButton
+          icon={isFullWidth ? FoldHorizontal : UnfoldHorizontal}
+          title={isFullWidth ? 'Return table to standard width' : 'Expand table to page width'}
+          onClick={toggleFullWidth}
+          active={isFullWidth}
+          testId="toggle-table-expand"
+        />
+        <TableActionButton
+          icon={IconHeaderRow}
+          title={hasHeaderRow ? 'Header row active (click to remove)' : 'Toggle header row'}
+          onClick={() => editor.chain().focus().toggleHeaderRow().run()}
+          active={hasHeaderRow}
+          testId="table-toggle-header-row"
+        />
+        <TableActionButton
+          icon={IconHeaderColumn}
+          title={hasHeaderColumn ? 'Header column active (click to remove)' : 'Toggle header column'}
+          onClick={() => editor.chain().focus().toggleHeaderColumn().run()}
+          active={hasHeaderColumn}
+          testId="table-toggle-header-column"
+        />
+        <TableActionButton
+          icon={IconTableCaption}
+          title="Add caption below table"
+          onClick={() => insertTableCaption(editor)}
+          testId="table-add-caption"
+        />
+      </div>
+
+      <TableToolbarDivider />
+
       <div role="group" aria-label="Rows" className="flex items-center gap-0.5" data-testid="table-group-rows">
         <TableActionButton
-          icon={BetweenHorizontalStart}
-          label="Above"
+          icon={IconInsertRowAbove}
           title="Add row above"
           onClick={() => editor.chain().focus().addRowBefore().run()}
           disabled={!editorState.canAddRowBefore}
         />
         <TableActionButton
-          icon={BetweenHorizontalEnd}
-          label="Below"
+          icon={IconInsertRowBelow}
           title="Add row below"
           onClick={() => editor.chain().focus().addRowAfter().run()}
           disabled={!editorState.canAddRowAfter}
         />
         <TableActionButton
-          icon={Rows3}
-          label="Delete"
+          icon={IconDeleteRow}
           title="Delete row"
-          onClick={() => editor.chain().focus().deleteRow().run()}
+          onClick={() => deleteRowsAction(editor, (cmd) => cmd())}
           disabled={!editorState.canDeleteRow}
           destructive
         />
@@ -260,24 +544,21 @@ export function TableContextToolbar({ editor, embedded = false }: { editor: Edit
 
       <div role="group" aria-label="Columns" className="flex items-center gap-0.5" data-testid="table-group-columns">
         <TableActionButton
-          icon={BetweenVerticalStart}
-          label="Before"
+          icon={IconInsertColumnBefore}
           title="Add column before"
           onClick={() => editor.chain().focus().addColumnBefore().run()}
           disabled={!editorState.canAddColumnBefore}
         />
         <TableActionButton
-          icon={BetweenVerticalEnd}
-          label="After"
+          icon={IconInsertColumnAfter}
           title="Add column after"
           onClick={() => editor.chain().focus().addColumnAfter().run()}
           disabled={!editorState.canAddColumnAfter}
         />
         <TableActionButton
-          icon={Columns3}
-          label="Delete"
+          icon={IconDeleteColumn}
           title="Delete column"
-          onClick={() => editor.chain().focus().deleteColumn().run()}
+          onClick={() => deleteColumnsAction(editor, (cmd) => cmd())}
           disabled={!editorState.canDeleteColumn}
           destructive
         />
@@ -288,14 +569,12 @@ export function TableContextToolbar({ editor, embedded = false }: { editor: Edit
       <div role="group" aria-label="Cells" className="flex items-center gap-0.5" data-testid="table-group-cells">
         <TableActionButton
           icon={Merge}
-          label="Merge"
           title="Merge selected cells"
           onClick={() => editor.chain().focus().mergeCells().run()}
           disabled={!editorState.canMergeCells}
         />
         <TableActionButton
           icon={SplitSquareHorizontal}
-          label="Split"
           title="Split cell"
           onClick={() => editor.chain().focus().splitCell().run()}
           disabled={!editorState.canSplitCell}
@@ -305,89 +584,12 @@ export function TableContextToolbar({ editor, embedded = false }: { editor: Edit
       <TableToolbarDivider />
 
       <TableActionButton
-        icon={isFullWidth ? Shrink : Expand}
-        label={isFullWidth ? 'Page width' : 'Expand'}
-        title={isFullWidth ? 'Return table to standard width' : 'Expand table to page width'}
-        onClick={toggleFullWidth}
-        testId="toggle-table-expand"
+        icon={Trash2}
+        title="Delete table"
+        onClick={handleDeleteTable}
+        destructive
+        testId="table-delete"
       />
-
-      <Popover.Root open={moreOpen} onOpenChange={setMoreOpen}>
-        <Popover.Trigger asChild>
-          <button
-            type="button"
-            {...{ [TOOLBAR_ITEM_ATTR]: '' }}
-            onMouseDown={(event) => event.preventDefault()}
-            data-testid="table-more-trigger"
-            aria-label="More table actions"
-            aria-expanded={moreOpen}
-            className="flex h-8 items-center gap-1 rounded-md border border-transparent px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          >
-            <MoreHorizontal size={15} strokeWidth={1.9} aria-hidden="true" />
-            <span>More</span>
-            <ChevronDown size={13} strokeWidth={1.9} aria-hidden="true" />
-          </button>
-        </Popover.Trigger>
-        <Popover.Portal>
-          <Popover.Content
-            side="bottom"
-            align="end"
-            sideOffset={6}
-            onOpenAutoFocus={(event) => event.preventDefault()}
-            className="z-50 min-w-[220px] rounded-lg border border-border bg-card p-1 text-foreground nm-card-elevated animate-in fade-in-50"
-          >
-            <div className="px-2 py-1.5 text-xs font-semibold">More table actions</div>
-            <div className="my-1 h-px bg-border" />
-            <TableMenuItem
-              icon={PanelTopDashed}
-              label="Toggle header row"
-              testId="table-toggle-header-row"
-              onClick={() => {
-                editor.chain().focus().toggleHeaderRow().run();
-                setMoreOpen(false);
-              }}
-            />
-            <TableMenuItem
-              icon={PanelLeftDashed}
-              label="Toggle header column"
-              testId="table-toggle-header-column"
-              onClick={() => {
-                editor.chain().focus().toggleHeaderColumn().run();
-                setMoreOpen(false);
-              }}
-            />
-            <TableMenuItem
-              icon={Captions}
-              label="Add table caption"
-              testId="table-add-caption"
-              onClick={() => {
-                editor.chain().focus().insertContent({ type: 'tableCaption' }).run();
-                setMoreOpen(false);
-              }}
-            />
-            <TableMenuItem
-              icon={TableProperties}
-              label={isFullWidth ? 'Return to standard width' : 'Expand to page width'}
-              testId="table-more-toggle-width"
-              onClick={() => {
-                toggleFullWidth();
-                setMoreOpen(false);
-              }}
-            />
-            <div className="my-1 h-px bg-border" />
-            <TableMenuItem
-              icon={Trash2}
-              label="Delete table"
-              testId="table-delete"
-              destructive
-              onClick={() => {
-                editor.chain().focus().deleteTable().run();
-                setMoreOpen(false);
-              }}
-            />
-          </Popover.Content>
-        </Popover.Portal>
-      </Popover.Root>
     </div>
   );
 }

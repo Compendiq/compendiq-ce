@@ -884,4 +884,22 @@ describe('ArticleViewer', () => {
       expect(new Set(handlers)).toEqual(new Set([handleTableCellTripleClick]));
     });
   });
+
+  describe('task list items in read mode', () => {
+    it('renders task list items with interactive checkboxes', async () => {
+      const html = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><label><input type="checkbox"><span></span></label><div><p>Read task</p></div></li></ul>';
+      const { container } = render(<ArticleViewer content={html} />);
+
+      await waitFor(() => {
+        expect(container.querySelector('ul[data-type="taskList"]')).toBeTruthy();
+      });
+
+      const checkbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+      expect(checkbox).toBeTruthy();
+      expect(checkbox.checked).toBe(false);
+
+      fireEvent.click(checkbox);
+      expect(checkbox.checked).toBe(true);
+    });
+  });
 });

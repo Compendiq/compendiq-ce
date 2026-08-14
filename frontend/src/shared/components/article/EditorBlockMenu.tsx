@@ -4,56 +4,35 @@ import { useEditorState } from '@tiptap/react';
 import type { Editor as EditorType } from '@tiptap/react';
 import type { Node as PMNode } from '@tiptap/pm/model';
 import DragHandle from '@tiptap/extension-drag-handle-react';
-import { GripVertical, Sparkles, Trash2 } from 'lucide-react';
+import {
+  CopyPlus,
+  GripVertical,
+  Sparkles,
+  Trash2,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { useImproveStream } from './use-improve-stream';
 import { buildImproveHtml } from './improve-markdown';
 import { EditorFormatBar } from './EditorFormatBar';
 import { BlockTypeMenu } from './BlockTypeMenu';
-import { TableContextToolbar } from './EditorTableControls';
 import { ImprovePanel, type ImprovePanelCopy } from './ImprovePanel';
 import { buildInstruction, BLOCK_INSTRUCTION, type QuickAction } from './improve-actions';
 import {
-  blockLabel, containsLossyMarks, containsStructuredInline, supportsTextActions,
+  blockLabel, containsLossyMarks, containsStructuredInline, supportsTextActions, NESTED_DRAG_OPTIONS,
 } from './block-menu-nodes';
 import { blockMenuTargetKey, blockMenuTargetRange } from './block-menu-decoration';
 import { absorbBlockMenuEscape, useBlockMenuTarget } from './use-block-menu-target';
+import { TableContextToolbar } from './EditorTableControls';
 
 /**
- * #1179 — menu on the editor's block drag handle.
+ * #1179 — State-of-the-art Notion-style command surface on the editor's block drag handle.
  *
- * The handle (#49) was drag-only. Left-clicking (on release) it now opens a block-scoped
- * command surface: the bubble menu's inline formatting and its "Improve with
- * AI" section, plus a Delete that removes the whole block — the only way in the
- * editor to delete a macro, diagram or image block without hand-selecting it.
- *
- * Three things make this safe rather than merely possible:
- *
- * - **Text actions are hidden, not disabled, for anything that is not a
- *   paragraph / heading / quote / list item** (`block-menu-nodes.ts`). Improve
- *   ends in an `insertContentAt` of Markdown-derived HTML; over a structured
- *   Confluence node that is silent content loss on the next Save.
- * - **Text actions select the block's *content*** (`pos + 1` … `pos + size - 1`),
- *   never the node — so improving an `h2` cannot flatten it to a paragraph.
- *   `NodeSelection` semantics are reserved for Delete, which works on the node
- *   range directly without ever putting one in the editor state.
- * - **The position is remapped, not remembered.** The drag-handle plugin hands
- *   over a plain `pos` that any edit invalidates, so the menu marks the block
- *   with a decoration (`block-menu-decoration.ts`) and reads the live range
- *   back on every action. That marker is also how `selectionShouldShow` knows
- *   to keep the selection bubble menu out of the way, and how the user sees
- *   which block the menu is about to act on.
- *
- * Mouse-only by design (recorded on the issue): the handle is created
- * imperatively by the drag-handle library and is only ever positioned by
- * `mousemove`, so it cannot be reached by keyboard. Nothing becomes
- * keyboard-inaccessible as a result, but the two halves get there differently.
- * The formatting toggles and Improve are the selection bubble menu's own
- * actions, and that menu is fully keyboard-operable. Delete has no bubble-menu
- * equivalent; its keyboard path is ProseMirror's own — arrow onto a block to
- * make a `NodeSelection`, or Backspace from the start of the block after it.
- * This menu is a faster route to that, not the only one.
+ * Left-clicking the handle opens a focused contextual command surface:
+ * - Table configuration (Fit to width toggle switch, Header row toggle switch, Header column toggle switch)
+ * - Text Block controls (Block type conversion and inline formatting)
+ * - Block lifecycle: Duplicate and Delete (with undo toast)
+ * - AI integration: "Ask AI" inline prompt
  */
 
 const BLOCK_COPY: ImprovePanelCopy = {
@@ -90,20 +69,10 @@ export function EditorBlockMenu({
   const isTable = node.type.name === 'table';
   const textActions = supportsTextActions(node);
 
-  // The block handle does not change the editor selection. Put the selection
-  // inside the targeted table so the shared table toolbar's commands operate
-  // on the table opened from the grab handle, not on the last caret location.
-  useEffect(() => {
-    if (!isTable || editor.isDestroyed) return;
-    editor.chain().focus().setTextSelection(pos + 3).run();
-  }, [editor, isTable, pos]);
-
   /**
    * The target block's live range. The marker plugin remaps it through every
    * transaction, so this stays right while the menu is open, and goes `null`
-   * once the block is gone — which is exactly when every action must refuse
-   * rather than act on whatever slid into the old offsets. The `pos` snapshot
-   * is used only when no marker plugin is registered at all.
+   * once the block is gone.
    */
   const nodeRange = useCallback((): { from: number; to: number } | null => {
     if (editor.isDestroyed) return null;
@@ -121,29 +90,18 @@ export function EditorBlockMenu({
     return { from: range.from + 1, to: range.to - 1 };
   }, [nodeRange]);
 
-  // Subscribe to the document so the menu closes itself if the block is
-  // removed underneath it (undo, a collaborator, the AI dock) and so Improve
-  // disappears from an emptied block rather than opening a panel that has
-  // nothing to send.
+  const targetPos = nodeRange()?.from ?? pos;
+
   const live = useEditorState({
     editor,
     selector: () => {
       const range = contentRange();
       const { doc } = editor.state;
       return {
-        // `DecorationSet.map` drops a node decoration whenever its node is
-        // replaced — measured, including a swap to a different node type of
-        // exactly the same span (`paragraph('xy')` and `blockquote(paragraph())`
-        // are both nodeSize 4). So "the marker is still there" already means
-        // "it is still the block this menu was opened on"; an extra node-type
-        // comparison here would be dead code. The test file pins the outcome.
         present: nodeRange() !== null,
         hasText: range !== null
           && doc.textBetween(range.from, range.to, '\n').trim().length > 0,
-        // Improve rewrites the whole content range from Markdown, which drops
-        // any inline Confluence macro sitting in it. See containsStructuredInline.
         dropsMacros: range !== null && containsStructuredInline(doc, range.from, range.to),
-        // Warned about rather than hidden — see containsLossyMarks.
         dropsLinks: range !== null && containsLossyMarks(doc, range.from, range.to),
       };
     },
@@ -155,10 +113,6 @@ export function EditorBlockMenu({
     if (!live.present) closeRef.current();
   }, [live.present]);
 
-  // The menu is portalled and unmounts the moment the popover closes — Escape,
-  // an outside click, Delete. `useImproveStream` has no unmount abort of its
-  // own, so without this an in-flight Improve would keep streaming into a
-  // component nobody can see. `abort` is a stable `useCallback`.
   const { abort } = stream;
   useEffect(() => () => { abort(); }, [abort]);
 
@@ -167,7 +121,6 @@ export function EditorBlockMenu({
     setAiOpen(true);
   }, [stream]);
 
-  /** Collapse the AI section back to the command list (the Discard button). */
   const closeAi = useCallback(() => {
     stream.abort();
     stream.reset();
@@ -182,28 +135,12 @@ export function EditorBlockMenu({
     void stream.run(text, action.type, buildInstruction(action, freeForm, BLOCK_INSTRUCTION));
   }, [editor, stream, contentRange]);
 
-  /**
-   * Whether the model answered with more than one block. `unwrapSingleParagraph`
-   * only strips a wrapper when the answer is exactly one paragraph; otherwise it
-   * hands back the block-level HTML unchanged, which is precisely the case that
-   * cannot be written into a heading's inline content.
-   */
   const multiBlockAnswer = useCallback((): boolean => {
     if (!stream.output) return false;
     const { inline, html } = buildImproveHtml(stream.output);
     return inline === html.trim();
   }, [stream.output]);
 
-  /**
-   * Replacing a heading's content range with block-level HTML does not fill the
-   * heading — ProseMirror lifts the blocks out and the `h2` is gone (or becomes
-   * an `h1`, or a list). "Make longer" on a heading hits this every time, and a
-   * heading demoted to body text silently breaks the page's TOC and anchors on
-   * the next Save. Other allowed types are safe: `blockquote` and `listItem`
-   * take block content by schema, and a `paragraph` becoming paragraphs is the
-   * point of the action. So this refuses only where it must, and Insert below
-   * stays available, which loses nothing.
-   */
   const replaceWouldDestroyBlock = node.type.name === 'heading' && multiBlockAnswer();
 
   const replaceBlocked = replaceWouldDestroyBlock
@@ -213,17 +150,8 @@ export function EditorBlockMenu({
   const replaceBlockContent = useCallback(() => {
     const range = contentRange();
     if (!range || !stream.output) return;
-    // Backstop for a CROSS-FILE contract, not a stale-render guard: the render
-    // gate derives from React state, so it cannot go stale against this click
-    // the way a document-derived range can. What it defends is `ImprovePanel`
-    // continuing to honour `replaceBlocked` — a shared component this file does
-    // not own. No behavioural test can reach it while the panel disables the
-    // button (adversarial review confirmed the mutant survives), which is the
-    // price of it being a backstop rather than the primary gate.
     if (replaceWouldDestroyBlock) return;
     const { inline } = buildImproveHtml(stream.output);
-    // The range is the block's CONTENT, so a single-paragraph answer replaces
-    // the text and leaves the node alone — an improved `h2` is still an `h2`.
     editor.chain().focus().insertContentAt({ from: range.from, to: range.to }, inline).run();
     onClose();
   }, [editor, stream.output, contentRange, onClose, replaceWouldDestroyBlock]);
@@ -232,8 +160,6 @@ export function EditorBlockMenu({
     const range = nodeRange();
     if (!range || !stream.output) return;
     const { html } = buildImproveHtml(stream.output);
-    // The node's end, not the content's — a block-level insert here lands
-    // after the whole block instead of splitting it in two.
     editor.chain().focus().insertContentAt(range.to, html).run();
     onClose();
   }, [editor, stream.output, nodeRange, onClose]);
@@ -242,34 +168,56 @@ export function EditorBlockMenu({
     const range = nodeRange();
     if (!range) return;
 
-    // `deleteRange`, not `delete`: it widens to a range the schema can actually
-    // lose, so removing a container's last child takes the empty container with
-    // it, and emptying the whole document leaves the bare paragraph that a
-    // `block+` doc requires rather than an invalid empty one.
-    //
-    // An earlier revision special-cased "this is the only block" and swapped in
-    // a fresh paragraph by hand. That branch was removed because it was dead:
-    // measured against `deleteRange` over a sole paragraph, heading, atom,
-    // blockquote, list, table, figure, layout, panel, code block and rule, the
-    // two produce byte-identical documents AND the same selection.
-    // `EditorBlockMenu.test.tsx` pins the invariant itself instead, which is
-    // what actually has to hold if ProseMirror's fitting ever changes.
     try {
-      editor.chain().focus().deleteRange({ from: range.from, to: range.to }).run();
+      const $pos = editor.state.doc.resolve(range.from);
+      const parent = $pos.parent;
+      // If the node is the sole block in a container requiring block+ (e.g. column, cell, panel),
+      // replace with an empty paragraph instead of creating an invalid empty container.
+      const isSoleBlockInContainer =
+        parent &&
+        parent.childCount === 1 &&
+        (parent.type.name === 'confluenceColumn' ||
+          parent.type.name === 'confluenceLayoutCell' ||
+          parent.type.name === 'panel');
 
-      // No confirmation dialog: the block is outlined in the document while the
-      // menu is open, so the user can see what they are removing, and nothing
-      // reaches Confluence until Save. An undo affordance is the proportionate
-      // safety net for a three-step deliberate gesture.
+      const paragraphType = editor.schema.nodes.paragraph;
+      if (isSoleBlockInContainer && paragraphType) {
+        editor
+          .chain()
+          .focus()
+          .command(({ tr }) => {
+            tr.replaceWith(range.from, range.to, paragraphType.create());
+            return true;
+          })
+          .run();
+      } else {
+        editor.chain().focus().deleteRange({ from: range.from, to: range.to }).run();
+      }
       toast.success(`${label} deleted`, {
-        // The toast outlives the menu and can outlive the editor — leaving edit
-        // mode or navigating away destroys it while this is still on screen.
         action: { label: 'Undo', onClick: () => { if (!editor.isDestroyed) editor.commands.undo(); } },
       });
     } finally {
-      // Whatever happened, the menu must close: it owns the target marker and
-      // the drag-handle lock, and leaving either set strands the editor — the
-      // bubble menu suppressed and the handle frozen for the rest of the session.
+      onClose();
+    }
+  }, [editor, nodeRange, label, onClose]);
+
+  const duplicateBlock = useCallback(() => {
+    const range = nodeRange();
+    if (!range) return;
+    const targetNode = editor.state.doc.nodeAt(range.from);
+    if (!targetNode) return;
+
+    try {
+      editor.chain().focus().insertContentAt(range.to, targetNode.toJSON()).run();
+      toast.success(`${label} duplicated`, {
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            if (!editor.isDestroyed) editor.commands.undo();
+          },
+        },
+      });
+    } finally {
       onClose();
     }
   }, [editor, nodeRange, label, onClose]);
@@ -279,81 +227,142 @@ export function EditorBlockMenu({
   return (
     <div
       data-testid="editor-block-menu"
-      className={cn(
-        'flex flex-col py-1.5',
-        isTable ? 'w-[min(100vw-2rem,52rem)]' : 'w-72',
-      )}
+      className="flex w-60 flex-col text-xs select-none p-1"
     >
-      <p
-        className="truncate px-4 pt-1 pb-1.5 font-display text-[0.6875rem] font-medium uppercase tracking-[0.08em] text-muted-foreground"
-        data-testid="block-menu-label"
-      >
-        {label}
-      </p>
+      {/* Main Command Surface */}
+      {!aiOpen ? (
+        <div className="flex flex-col">
+          {/* Table Controls (When Block is Table) */}
+          {isTable && (
+            <TableContextToolbar
+              editor={editor}
+              embedded={true}
+              targetPos={targetPos}
+              onClose={onClose}
+              onDelete={deleteBlock}
+              onDuplicate={duplicateBlock}
+            />
+          )}
 
-      {isTable ? (
-        <div data-testid="block-table-toolbar" className="px-2 pb-1">
-          <TableContextToolbar editor={editor} embedded />
-        </div>
-      ) : textActions ? (
-        <>
-          <div className="px-2 pb-1">
-            <BlockTypeMenu editor={editor} getRange={contentRange} className="w-full" />
-          </div>
-          <EditorFormatBar
-            editor={editor}
-            ariaLabel="Block formatting"
-            getRange={contentRange}
-            // `px-2` puts the toggles' icon column on the same 16px axis as the
-            // Improve and Delete rows below (twMerge drops the base `p-1`'s
-            // horizontal half and keeps its vertical one).
-            className="px-2"
-          />
+          {/* Text Formatting Controls (For Headings, Paragraphs, Quotes, Lists) */}
+          {!isTable && textActions && (
+            <div className="flex flex-col">
+              <div className="flex items-center justify-between px-2.5 pt-1.5 pb-1">
+                <span
+                  className="truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                  data-testid="block-menu-label"
+                >
+                  {label}
+                </span>
+              </div>
+              <div className="px-1 pb-1">
+                <BlockTypeMenu editor={editor} getRange={contentRange} className="w-full" />
+              </div>
+              <EditorFormatBar
+                editor={editor}
+                ariaLabel="Block formatting"
+                getRange={contentRange}
+                className="px-1"
+              />
+            </div>
+          )}
 
+          {!isTable && !textActions && (
+            <div className="flex items-center justify-between px-2.5 pt-1.5 pb-1">
+              <span
+                className="truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                data-testid="block-menu-label"
+              >
+                {label}
+              </span>
+            </div>
+          )}
+
+          {/* General Block Actions: Duplicate, Delete (for non-table blocks) */}
+          {!isTable && (
+            <>
+              <div role="separator" aria-orientation="horizontal" className="my-1 mx-1.5 h-px bg-border" />
+
+              <div className="flex flex-col gap-0.5">
+                <button
+                  type="button"
+                  onClick={duplicateBlock}
+                  data-testid="block-menu-duplicate"
+                  className={cn(
+                    'flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs text-foreground/90 transition-colors',
+                    'hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                  )}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <CopyPlus size={14} className="text-muted-foreground" />
+                    <span>Duplicate</span>
+                  </div>
+                  <kbd className="text-[11px] font-mono text-muted-foreground/60 bg-muted/40 px-1.5 py-0.5 rounded border border-border/40">⌘D</kbd>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={deleteBlock}
+                  data-testid="block-menu-delete"
+                  className={cn(
+                    'flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors',
+                    'nm-action-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-destructive',
+                  )}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Trash2 size={14} />
+                    <span>Delete</span>
+                  </div>
+                  <kbd className="text-[11px] font-mono opacity-70 bg-destructive/10 px-1.5 py-0.5 rounded border border-destructive/20">Del</kbd>
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* AI Section (Ask AI) */}
           {showImprove && (
-            <button
-              type="button"
-              onClick={() => (aiOpen ? closeAi() : openAi())}
-              aria-expanded={aiOpen}
-              aria-controls={aiOpen ? aiPanelId : undefined}
-              data-testid="block-ai-trigger"
-              className={cn(
-                'mx-2 mt-0.5 flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium transition-colors',
-                'text-primary hover:bg-primary/10',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-                aiOpen && 'bg-primary/10',
-              )}
-            >
-              <Sparkles size={15} />
-              <span>Improve with AI</span>
-            </button>
+            <>
+              <div role="separator" className="my-1 mx-1.5 h-px bg-border/40" />
+              <button
+                type="button"
+                onClick={() => (aiOpen ? closeAi() : openAi())}
+                aria-expanded={aiOpen}
+                aria-controls={aiOpen ? aiPanelId : undefined}
+                data-testid="block-ai-trigger"
+                className={cn(
+                  'flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs font-medium transition-colors',
+                  'text-status-ai hover:bg-status-ai/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-status-ai',
+                )}
+              >
+                <div className="flex items-center gap-2.5">
+                  <Sparkles size={14} />
+                  <span>Ask AI</span>
+                </div>
+                <kbd className="text-[11px] font-mono text-status-ai/80 bg-status-ai/10 px-1.5 py-0.5 rounded border border-status-ai/20">⌘J</kbd>
+              </button>
+            </>
           )}
 
           {textActions && live.dropsMacros && (
-            <p className="px-4 pb-1 text-xs text-muted-foreground">
-              Improve is unavailable here: a rewrite would drop this block&rsquo;s
-              inline macros.
+            <p className="px-2.5 py-1 text-[11px] text-muted-foreground">
+              Improve is unavailable here: a rewrite would drop this block&rsquo;s inline macros.
             </p>
           )}
 
           {showImprove && live.dropsLinks && (
-            <p className="px-4 pb-1 text-xs text-warning" data-testid="block-menu-link-warning">
-              Only plain text is sent — links, code spans and highlights in this
-              block will not survive a rewrite.
+            <p className="px-2.5 py-1 text-[11px] text-warning" data-testid="block-menu-link-warning">
+              Only plain text is sent — links, code spans and highlights in this block will not survive a rewrite.
             </p>
           )}
-        </>
-      ) : (
-        <p className="px-4 pb-1 text-xs text-muted-foreground">
-          Formatting and AI editing apply to text blocks only.
-        </p>
-      )}
 
-      {/* Expands the SAME container in place rather than stacking a second
-          floating panel, matching what #782 settled for the bubble menu. Radix
-          re-runs Floating UI when the content resizes, so the popover keeps
-          itself on screen as the panel grows. */}
-      {aiOpen && (
+          {!textActions && !isTable && (
+            <p className="px-2.5 py-1 text-[11px] text-muted-foreground">
+              Formatting and AI editing apply to text blocks only.
+            </p>
+          )}
+        </div>
+      ) : (
+        /* Expands the SAME container in place for the AI panel */
         <ImprovePanel
           id={aiPanelId}
           testIdPrefix="block-ai"
@@ -364,27 +373,16 @@ export function EditorBlockMenu({
           onInsertBelow={insertBelowBlock}
           onClose={closeAi}
           replaceBlocked={replaceBlocked}
-          className="mt-1.5"
+          className="mt-0.5"
         />
       )}
 
+      {/* Clean Footer */}
       {!aiOpen && (
-        <>
-          <div role="separator" className="mx-2 my-1.5 h-px bg-border" />
-          <button
-            type="button"
-            onClick={deleteBlock}
-            data-testid="block-menu-delete"
-            className={cn(
-              'mx-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium',
-              // One shared destructive treatment — see nm-action-destructive.
-              'nm-action-destructive',
-            )}
-          >
-            <Trash2 size={15} />
-            <span>Delete block</span>
-          </button>
-        </>
+        <div className="mt-1 px-2.5 py-1.5 border-t border-border text-[11px] text-muted-foreground flex items-center justify-between rounded-b-md">
+          <span className="truncate">Block: <strong className="font-medium text-foreground">{label}</strong></span>
+          <span className="font-mono opacity-70 shrink-0">Esc</span>
+        </div>
       )}
     </div>
   );
@@ -395,16 +393,9 @@ export function EditorBlockMenu({
  * lock, and the Radix popover; the menu body above owns everything else.
  */
 export function EditorBlockHandle({ editor }: { editor: EditorType }) {
-  // Open/close state plus the two editor-level side effects it owns — marking
-  // the target block and freezing the handle — live in the hook so they can be
-  // tested. This component cannot be: the drag-handle plugin resolves its node
-  // from pointer coordinates, which jsdom never produces.
   const { target, setHovered, open: openTarget, close: closeMenu } = useBlockMenuTarget(editor);
   const open = target !== null;
 
-  // MUST be stable: the drag-handle component lists `onNodeChange` in the
-  // effect deps that register/unregister its ProseMirror plugin, so an inline
-  // arrow would tear the plugin down and rebuild it on every render.
   const handleNodeChange = useCallback(
     ({ node, pos }: { node: PMNode | null; pos: number }) => {
       setHovered(node && pos >= 0 ? { node, pos } : null);
@@ -418,11 +409,16 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
   }, [openTarget]);
 
   return (
-    <DragHandle editor={editor} className="drag-handle" onNodeChange={handleNodeChange}>
+    <DragHandle
+      editor={editor}
+      className="drag-handle"
+      onNodeChange={handleNodeChange}
+      nested={NESTED_DRAG_OPTIONS}
+    >
       <Popover.Root open={open} onOpenChange={(next) => { if (!next) closeMenu(); }}>
         <Popover.Anchor asChild>
           <span
-            className="flex h-full w-full items-center justify-center"
+            className="flex h-full w-full items-center justify-center cursor-pointer relative before:absolute before:-inset-1.5 before:content-['']"
             data-block-menu-open={open ? 'true' : undefined}
             data-testid="drag-handle-trigger"
             title="Drag to move · Click for block actions"
@@ -442,22 +438,10 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
               aria-label={`${blockLabel(target.node)} block actions`}
               data-testid="editor-block-menu-content"
               className={cn(
-                'nm-card-elevated editor-block-menu z-50 overflow-hidden',
+                'nm-card-elevated z-50 overflow-hidden rounded-lg',
                 'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
               )}
-              // Every action chain ends in `editor.chain().focus()`, which moves
-              // focus out of the popover. Radix reads that as an interaction
-              // outside the layer and would dismiss the menu after a single
-              // Bold — so focus leaving is explicitly not a dismissal here.
-              // Escape and an outside pointerdown still close it.
               onFocusOutside={(event) => event.preventDefault()}
-              // Escape must not reach `document` — see absorbBlockMenuEscape.
-              // Not `onKeyDown`: bypassed when Radix unmounts this layer in its
-              // capture pass, and again when the key comes from outside the
-              // layer, so its handler never runs in most of the grid.
-              // `preventDefault` is what the page's shortcut reads since #1206;
-              // `stopPropagation` keeps the key off every other document
-              // listener. Both measured across the full grid.
               onEscapeKeyDown={(event) => absorbBlockMenuEscape(event, closeMenu)}
             >
               <EditorBlockMenu

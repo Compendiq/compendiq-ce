@@ -121,7 +121,7 @@ export function ArticleViewer({
         },
       }),
       TextAlign.configure({
-        types: ['heading', 'paragraph', 'blockquote'],
+        types: ['heading', 'paragraph', 'blockquote', 'tableCaption'],
         alignments: ['left', 'center', 'right', 'justify'],
       }),
       ExtendedTable.configure({ resizable: false }),
@@ -129,7 +129,7 @@ export function ArticleViewer({
       TableCell,
       TableHeader,
       TaskList,
-      TaskItem.configure({ nested: true }),
+      TaskItem.configure({ nested: true, onReadOnlyChecked: () => true }),
       CodeBlockLowlight.extend({
         addAttributes() {
           return {
@@ -220,11 +220,6 @@ export function ArticleViewer({
         if (isFullWidth) {
           table.setAttribute('data-layout', 'full-width');
           wrapper?.setAttribute('data-layout', 'full-width');
-          const columns = table.querySelectorAll<HTMLTableColElement>('colgroup > col');
-          if (columns.length > 0) {
-            const columnWidth = `${100 / columns.length}%`;
-            columns.forEach((column) => column.style.setProperty('width', columnWidth, 'important'));
-          }
         } else {
           table.removeAttribute('data-layout');
           wrapper?.removeAttribute('data-layout');
