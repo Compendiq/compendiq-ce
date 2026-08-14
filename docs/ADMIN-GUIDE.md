@@ -415,6 +415,22 @@ The panel refuses out-of-range values at the input instead of accepting a save
 the reader would silently discard — most importantly `1` for either confidence
 threshold, which the reader rejects outright.
 
+#### Production benchmark
+
+The **Production benchmark** section replays the most recent distinct questions
+from this deployment's search_analytics table against the current pages and
+embeddings. Each question is measured in both ordinary mode and deep-search
+mode, so admins can see latency, empty-result counts, top-result movement,
+result-set overlap and whether expansion actually ran on their own data.
+
+This is an asynchronous, admin-only, read-only retrieval operation. It does
+not seed or change pages, embeddings or retrieval settings, and replayed
+questions are not added to search analytics. Since real questions have no
+ground-truth labels by default, the production report does not claim Recall or
+MRR. An explicitly labelled custom suite can be submitted to
+POST /api/admin/retrieval-benchmark when the team has expected page IDs; only
+those labels produce Recall/MRR.
+
 ### Retrieval fetch width (`rag_fetch_width`)
 
 How many candidate rows each RAG retrieval leg (vector + full-text) pulls

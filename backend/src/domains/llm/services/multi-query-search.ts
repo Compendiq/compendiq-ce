@@ -495,21 +495,27 @@ export async function multiQuerySearch(
     // `hybrid_multi_query` unit — its max_score is a summed multi-leg value
     // and is not comparable with a single-query fusion score.
     const meta = retrieval.meta;
-    trackSearchAnalytics(
-      userId,
-      question,
-      merged.length,
-      merged.length > 0 ? Math.max(...merged.map((r) => r.score)) : null,
-      'hybrid_multi_query',
-      {
-        rerankScore: merged.reduce<number | null>(
-          (max, r) => (r.rerankScore != null && (max === null || r.rerankScore > max) ? r.rerankScore : max),
-          null,
-        ),
-        degradedReason: meta?.degradedReason ?? null,
-        embeddingCoverage: meta?.embeddingCoverage ?? null,
-      },
-    );
+    // Benchmark and other internal callers can deliberately opt out of
+    // analytics. The ordinary chat path keeps the one-gesture/one-row
+    // contract; a benchmark must not make its synthetic replays look like
+    // real user searches or pollute the query distribution it measures.
+    if (opts?.recordAnalytics !== false) {
+      trackSearchAnalytics(
+        userId,
+        question,
+        merged.length,
+        merged.length > 0 ? Math.max(...merged.map((r) => r.score)) : null,
+        'hybrid_multi_query',
+        {
+          rerankScore: merged.reduce<number | null>(
+            (max, r) => (r.rerankScore != null && (max === null || r.rerankScore > max) ? r.rerankScore : max),
+            null,
+          ),
+          degradedReason: meta?.degradedReason ?? null,
+          embeddingCoverage: meta?.embeddingCoverage ?? null,
+        },
+      );
+    }
     return merged;
   }, { 'rag.top_k': topK });
 }

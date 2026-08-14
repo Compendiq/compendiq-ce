@@ -22,6 +22,50 @@ rather than measured.
 - **Does not** claim your knowledge base scores this well. The corpus is
   vendored MIT documentation (Fastify, Vitest, Vite), not your pages.
 
+## Running a comparison on production data
+
+The dev-article fixture must not be used as a production score: its expected
+page labels point at the vendored corpus. For an operational check, use
+**Settings → AI Models → Retrieval → Production benchmark**. The panel takes
+the most recent distinct questions from `search_analytics` and runs each one
+through the current production pages and embeddings twice:
+
+1. ordinary retrieval, matching the chat path;
+2. deep search, with the per-question expansion enabled.
+
+The run is asynchronous and can be polled from the panel. It is read-only
+with respect to knowledge content, embeddings and retrieval settings, and it
+does not write replayed questions back to `search_analytics`. It reports p50
+and p95 latency, empty-result counts, result-set overlap, top-1 movement and
+whether expansion actually ran. Production questions have no ground truth by
+default, so the report intentionally leaves Recall/MRR blank rather than
+inventing labels from the dev fixture.
+
+The same API accepts an explicitly labelled custom suite when a team has
+ground truth for its own pages:
+
+```bash
+curl -X POST https://compendiq.example/api/admin/retrieval-benchmark \
+  -H 'Authorization: Bearer <admin-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "source": "custom",
+    "topK": 5,
+    "queries": [
+      {"id": "retention", "query": "where is retention configured?", "expectedPageIds": [42]}
+    ]
+  }'
+
+curl https://compendiq.example/api/admin/retrieval-benchmark/<run-id> \
+  -H 'Authorization: Bearer <admin-token>'
+```
+
+Custom labels are the only basis for Recall/MRR. The endpoint is admin-only,
+allows one queued/running comparison at a time, and stores the query text plus
+compact page ids/titles and timings—not retrieved chunk text. Runs heartbeat
+while they progress; if a worker disappears, the next start request marks a
+stale run failed so it cannot block future benchmarks.
+
 ## Running it
 
 ```bash

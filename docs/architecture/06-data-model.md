@@ -11,6 +11,7 @@ erDiagram
     users ||--o{ pages : "owns"
     users ||--o{ page_embeddings : "owns"
     users ||--o{ llm_conversations : "owns"
+    users ||--o{ retrieval_benchmark_runs : "requests"
     users ||--o{ notifications : "receives"
     users ||--o{ audit_log : "generates"
     users ||--o{ comments : "authors"
@@ -119,6 +120,20 @@ erDiagram
         jsonb messages
         timestamptz created_at
         timestamptz updated_at
+    }
+
+    retrieval_benchmark_runs {
+        uuid id PK
+        uuid requested_by FK
+        text status "queued | running | completed | failed"
+        jsonb config "query source and limits"
+        int progress_done
+        int progress_total
+        jsonb result "compact ids, titles and timings"
+        text error
+        timestamptz created_at
+        timestamptz started_at
+        timestamptz completed_at
     }
 
     comments {

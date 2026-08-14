@@ -79,6 +79,7 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
       'audit_log',
       'error_log',
       'search_analytics',
+      'retrieval_benchmark_runs',
       'page_versions',
     ];
 
@@ -91,6 +92,16 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
         [tableName],
       );
       expect(result.rows[0].exists).toBe(true);
+    });
+
+    it('should have a heartbeat column for recovering abandoned benchmark runs', async () => {
+      const result = await query<{ column_name: string; is_nullable: string }>(
+        `SELECT column_name, is_nullable
+         FROM information_schema.columns
+         WHERE table_name = 'retrieval_benchmark_runs'
+           AND column_name = 'last_heartbeat_at'`,
+      );
+      expect(result.rows).toEqual([{ column_name: 'last_heartbeat_at', is_nullable: 'NO' }]);
     });
   });
 
