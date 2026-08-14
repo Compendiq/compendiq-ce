@@ -11,6 +11,7 @@ import { useImproveStream } from './use-improve-stream';
 import { buildImproveHtml } from './improve-markdown';
 import { EditorFormatBar } from './EditorFormatBar';
 import { BlockTypeMenu } from './BlockTypeMenu';
+import { TableContextToolbar } from './EditorTableControls';
 import { ImprovePanel, type ImprovePanelCopy } from './ImprovePanel';
 import { buildInstruction, BLOCK_INSTRUCTION, type QuickAction } from './improve-actions';
 import {
@@ -86,7 +87,16 @@ export function EditorBlockMenu({
   const stream = useImproveStream();
   const aiPanelId = useId();
   const label = blockLabel(node);
+  const isTable = node.type.name === 'table';
   const textActions = supportsTextActions(node);
+
+  // The block handle does not change the editor selection. Put the selection
+  // inside the targeted table so the shared table toolbar's commands operate
+  // on the table opened from the grab handle, not on the last caret location.
+  useEffect(() => {
+    if (!isTable || editor.isDestroyed) return;
+    editor.chain().focus().setTextSelection(pos + 3).run();
+  }, [editor, isTable, pos]);
 
   /**
    * The target block's live range. The marker plugin remaps it through every
@@ -267,7 +277,13 @@ export function EditorBlockMenu({
   const showImprove = textActions && live.hasText && !live.dropsMacros;
 
   return (
-    <div data-testid="editor-block-menu" className="flex w-72 flex-col py-1.5">
+    <div
+      data-testid="editor-block-menu"
+      className={cn(
+        'flex flex-col py-1.5',
+        isTable ? 'w-[min(100vw-2rem,52rem)]' : 'w-72',
+      )}
+    >
       <p
         className="truncate px-4 pt-1 pb-1.5 font-display text-[0.6875rem] font-medium uppercase tracking-[0.08em] text-muted-foreground"
         data-testid="block-menu-label"
@@ -275,7 +291,11 @@ export function EditorBlockMenu({
         {label}
       </p>
 
-      {textActions ? (
+      {isTable ? (
+        <div data-testid="block-table-toolbar" className="px-2 pb-1">
+          <TableContextToolbar editor={editor} embedded />
+        </div>
+      ) : textActions ? (
         <>
           <div className="px-2 pb-1">
             <BlockTypeMenu editor={editor} getRange={contentRange} className="w-full" />

@@ -2397,19 +2397,55 @@ pre:focus-within .code-copy-btn,
 /* Notion-style full-width table expansion */
 .tiptap table[data-layout="full-width"],
 .article-viewer .tiptap table[data-layout="full-width"] {
+  display: table !important;
   width: 100% !important;
   max-width: none !important;
   margin-left: 0 !important;
   margin-right: 0 !important;
-  table-layout: auto !important;
+  table-layout: fixed !important;
 }
 
-.tiptap .tableWrapper[data-layout="full-width"],
+/*
+ * The editor's contenteditable has a 2.5rem inline gutter. A table's
+ * `data-layout` attribute lives on the table itself (TipTap's `.tableWrapper`
+ * is only a scrolling shell), so 100% alone still stops at the prose column.
+ * Break the expanded table through both gutters so its cells use the full
+ * article pane; the wrapper keeps narrow screens horizontally scrollable.
+ */
+.tiptap:not([contenteditable="false"]) {
+  --editor-inline-padding: 2.5rem;
+}
+
+.tiptap:not([contenteditable="false"]) table:not([data-layout="full-width"]) {
+  width: auto;
+  max-width: 100%;
+}
+
+.tiptap:not([contenteditable="false"]) table[data-layout="full-width"] {
+  width: 100% !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.tiptap:not([contenteditable="false"]) .tableWrapper[data-layout="full-width"] {
+  width: calc(100% + var(--editor-inline-padding) + var(--editor-inline-padding)) !important;
+  margin-left: calc(0px - var(--editor-inline-padding)) !important;
+  margin-right: calc(0px - var(--editor-inline-padding)) !important;
+}
+
+.tiptap:not([contenteditable="false"]) .tableWrapper[data-layout="full-width"] > table,
 .article-viewer .tiptap .tableWrapper[data-layout="full-width"] {
   width: 100% !important;
   max-width: none !important;
-  margin-left: 0 !important;
-  margin-right: 0 !important;
+}
+
+.tiptap:not([contenteditable="false"]) table[data-layout="full-width"] td,
+.tiptap:not([contenteditable="false"]) table[data-layout="full-width"] th {
+  min-width: 0 !important;
+}
+
+.tiptap:not([contenteditable="false"]) table[data-layout="full-width"] col {
+  min-width: 0 !important;
 }
 
 /* Force column widths to scale fluidly across the full page width when expanded */

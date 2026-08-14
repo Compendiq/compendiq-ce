@@ -55,8 +55,8 @@ import { VimExtension, type VimState } from './vim-extension';
 import { VimModeIndicator } from './VimModeIndicator';
 import { EditorBubbleMenu } from './EditorBubbleMenu';
 import { EditorBlockHandle } from './EditorBlockMenu';
-import { TableContextToolbar, EditorTableOverlay, FloatingTableToolbar } from './EditorTableControls';
-export { TableContextToolbar, EditorTableOverlay, FloatingTableToolbar };
+import { TableContextToolbar } from './EditorTableControls';
+export { TableContextToolbar };
 import { handleTableCellTripleClick } from './table-cell-selection';
 import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar-primitives';
 
@@ -858,6 +858,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       {editable && editor && !hideToolbar && (
         <div className="sticky top-0 z-30 border-b border-border bg-card px-1">
           <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} />
+          <TableContextToolbar editor={editor} />
           <LayoutContextToolbar editor={editor} />
           <ColumnContextToolbar editor={editor} />
         </div>
@@ -868,8 +869,6 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           menu live together in EditorBlockMenu: they share the hovered-node
           tracking, the handle lock and the target marker. */}
       {editable && editor && <EditorBlockHandle editor={editor} />}
-      {editable && editor && <FloatingTableToolbar editor={editor} />}
-      {editable && editor && <EditorTableOverlay editor={editor} />}
       <EditorContent
         editor={editor}
         className={cn(

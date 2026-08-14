@@ -29,6 +29,23 @@ async function renderEditorWithTable() {
   return editor!;
 }
 
+async function renderEditorWithContent(content: string) {
+  let editor: EditorType | null = null;
+  render(
+    <Editor
+      content={content}
+      editable={true}
+      onEditorReady={(e) => {
+        editor = e;
+      }}
+    />,
+  );
+  await waitFor(() => {
+    expect(editor).not.toBeNull();
+  });
+  return editor!;
+}
+
 /** Position cursor inside the first table cell */
 function focusFirstTableCell(editor: EditorType) {
   let cellPos = -1;
@@ -46,7 +63,15 @@ function focusFirstTableCell(editor: EditorType) {
 }
 
 describe('EditorTableControls & Table Expansion', () => {
-  it('renders TableContextToolbar when cursor is inside a table', async () => {
+  it('reads a persisted full-width attribute when loading table HTML', async () => {
+    const editor = await renderEditorWithContent(
+      '<table data-layout="full-width"><tbody><tr><td>Wide</td></tr></tbody></table>',
+    );
+
+    expect(editor.getAttributes('table')['data-layout']).toBe('full-width');
+  });
+
+  it('renders labeled table groups when cursor is inside a table', async () => {
     const editor = await renderEditorWithTable();
     focusFirstTableCell(editor);
 
@@ -54,8 +79,14 @@ describe('EditorTableControls & Table Expansion', () => {
       expect(screen.getByTestId('table-context-toolbar')).toBeInTheDocument();
     });
 
-    expect(screen.getByTitle('Add row before')).toBeInTheDocument();
-    expect(screen.getByTitle('Add row after')).toBeInTheDocument();
+    expect(screen.getByRole('toolbar', { name: 'Table editing controls' })).toBeInTheDocument();
+    expect(screen.getByTestId('table-toolbar-heading')).toHaveTextContent('Table');
+    expect(screen.getByTestId('table-group-rows')).toHaveAccessibleName('Rows');
+    expect(screen.getByTestId('table-group-columns')).toHaveAccessibleName('Columns');
+    expect(screen.getByTestId('table-group-cells')).toHaveAccessibleName('Cells');
+
+    expect(screen.getByTitle('Add row above')).toBeInTheDocument();
+    expect(screen.getByTitle('Add row below')).toBeInTheDocument();
     expect(screen.getByTitle('Delete row')).toBeInTheDocument();
     expect(screen.getByTitle('Add column before')).toBeInTheDocument();
     expect(screen.getByTitle('Add column after')).toBeInTheDocument();
@@ -78,57 +109,71 @@ describe('EditorTableControls & Table Expansion', () => {
     fireEvent.click(toggleBtn);
 
     expect(editor.getAttributes('table')['data-layout']).toBe('full-width');
+    await waitFor(() => {
+      expect(editor.view.dom.querySelector('table')).toHaveAttribute('data-layout', 'full-width');
+      expect(editor.view.dom.querySelector('.tableWrapper')).toHaveAttribute('data-layout', 'full-width');
+    });
+    expect(editor.getHTML()).toContain('data-layout="full-width"');
     expect(toggleBtn).toHaveTextContent('Page width');
 
     // Click again to return to default width
     fireEvent.click(toggleBtn);
     expect(editor.getAttributes('table')['data-layout']).toBe('default');
+    await waitFor(() => {
+      expect(editor.view.dom.querySelector('table')).not.toHaveAttribute('data-layout', 'full-width');
+      expect(editor.view.dom.querySelector('.tableWrapper')).not.toHaveAttribute('data-layout', 'full-width');
+    });
     expect(toggleBtn).toHaveTextContent('Expand');
   });
 
-  it('renders Notion table overlay edge buttons (+ Column and + Row)', async () => {
+  it('keeps secondary table actions behind the labeled More menu', async () => {
     const editor = await renderEditorWithTable();
     focusFirstTableCell(editor);
 
     await waitFor(() => {
-      expect(screen.getByTestId('editor-table-overlay')).toBeInTheDocument();
+      expect(screen.getByTestId('table-more-trigger')).toBeInTheDocument();
     });
 
-    expect(screen.getByTestId('add-column-right-btn')).toBeInTheDocument();
-    expect(screen.getByTestId('add-row-bottom-btn')).toBeInTheDocument();
-    expect(screen.getByTestId('table-corner-menu-trigger')).toBeInTheDocument();
+    expect(screen.queryByTestId('table-toggle-header-row')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('table-more-trigger'));
+
+    expect(screen.getByText('More table actions')).toBeInTheDocument();
+    expect(screen.getByTestId('table-toggle-header-row')).toBeInTheDocument();
+    expect(screen.getByTestId('table-toggle-header-column')).toBeInTheDocument();
+    expect(screen.getByTestId('table-add-caption')).toBeInTheDocument();
+    expect(screen.getByTestId('table-delete')).toBeInTheDocument();
   });
 
-  it('adds a column when clicking the + Column edge button', async () => {
+  it('adds a column when clicking the labeled column action', async () => {
     const editor = await renderEditorWithTable();
     focusFirstTableCell(editor);
 
     await waitFor(() => {
-      expect(screen.getByTestId('add-column-right-btn')).toBeInTheDocument();
+      expect(screen.getByTitle('Add column after')).toBeInTheDocument();
     });
 
     const initialCols = editor.state.doc.firstChild?.firstChild?.childCount;
     expect(initialCols).toBe(2);
 
-    const addColBtn = screen.getByTestId('add-column-right-btn');
+    const addColBtn = screen.getByTitle('Add column after');
     fireEvent.click(addColBtn);
 
     const updatedCols = editor.state.doc.firstChild?.firstChild?.childCount;
     expect(updatedCols).toBe(3);
   });
 
-  it('adds a row when clicking the + Row edge button', async () => {
+  it('adds a row when clicking the labeled row action', async () => {
     const editor = await renderEditorWithTable();
     focusFirstTableCell(editor);
 
     await waitFor(() => {
-      expect(screen.getByTestId('add-row-bottom-btn')).toBeInTheDocument();
+      expect(screen.getByTitle('Add row below')).toBeInTheDocument();
     });
 
     const initialRows = editor.state.doc.firstChild?.childCount;
     expect(initialRows).toBe(2);
 
-    const addRowBtn = screen.getByTestId('add-row-bottom-btn');
+    const addRowBtn = screen.getByTitle('Add row below');
     fireEvent.click(addRowBtn);
 
     const updatedRows = editor.state.doc.firstChild?.childCount;
