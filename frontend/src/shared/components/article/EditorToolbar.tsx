@@ -11,7 +11,7 @@ import {
   Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb,
   Baseline, Highlighter,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
-  Smile,
+  Smile, MoreHorizontal,
 } from 'lucide-react';
 import {
   LAYOUT_PRESETS,
@@ -684,6 +684,229 @@ function AlignMenuDropdown({ editor }: { editor: EditorType }) {
   );
 }
 
+/**
+ * A colour picker rendered as `DropdownMenu.Sub` content, for use INSIDE
+ * `MoreFormattingMenu`. Deliberately not `ColorPickerDropdown` (a separate
+ * `Popover.Root`) nested inside another menu's content: two independent
+ * Radix overlay roots nested that way is the classic trap where the outer
+ * menu's outside-click detection treats the inner Popover's portalled
+ * content as "outside" and closes prematurely. `DropdownMenu.Sub` is the
+ * primitive built for nesting inside one root — the same pattern already
+ * proven here by the Insert menu's Panel and Column-layout submenus.
+ */
+function ColorSwatchSub({
+  icon,
+  label,
+  activeColor,
+  onSelect,
+  onReset,
+  onDone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  activeColor: string | undefined;
+  onSelect: (color: string) => void;
+  onReset: () => void;
+  onDone: () => void;
+}) {
+  return (
+    <DropdownMenu.Sub>
+      <DropdownMenu.SubTrigger className={MENU_ITEM}>
+        {icon}
+        {label}
+        <ChevronDown size={13} className="ml-auto -rotate-90 opacity-60" />
+      </DropdownMenu.SubTrigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.SubContent sideOffset={4} className={cn(MENU_CONTENT, 'w-auto p-2.5')}>
+          <div className="grid grid-cols-4 gap-1.5">
+            {PRESET_COLORS.map((c) => (
+              <button
+                key={c.value}
+                type="button"
+                title={c.label}
+                aria-label={c.label}
+                aria-pressed={activeColor === c.value}
+                onClick={() => { onSelect(c.value); onDone(); }}
+                className={cn(
+                  'h-7 w-7 rounded-md border outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring',
+                  activeColor === c.value ? 'border-foreground' : 'border-border',
+                )}
+                style={{ backgroundColor: c.value }}
+              />
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => { onReset(); onDone(); }}
+            className="mt-2 w-full rounded-md px-2 py-1 text-xs text-muted-foreground outline-2 outline-offset-2 outline-transparent transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-ring"
+          >
+            Reset
+          </button>
+        </DropdownMenu.SubContent>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Sub>
+  );
+}
+
+/**
+ * The overflow home for controls the responsive fold has no other place to
+ * put. Quote/Code block/Divider and Emoji already live in the Insert menu
+ * unconditionally, so hiding their toolbar buttons costs nothing — but
+ * Strikethrough, Inline Code, Task List, Alignment, Text Color and Highlight
+ * had NO other home: at the app's own default 1440px layout (both side
+ * panels open, ~645px of toolbar width) all six vanished with no way to
+ * reach them at all (#P2). This renders nothing when every one of them is
+ * already visible as its own button.
+ */
+function MoreFormattingMenu({
+  editor,
+  activeState,
+  showTaskList,
+  showCode,
+  showStrike,
+  showAlign,
+  showColors,
+}: {
+  editor: EditorType;
+  activeState: {
+    taskList: boolean;
+    code: boolean;
+    strike: boolean;
+    textColor: string | undefined;
+    highlightColor: string | undefined;
+  };
+  showTaskList: boolean;
+  showCode: boolean;
+  showStrike: boolean;
+  showAlign: boolean;
+  showColors: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const close = () => setOpen(false);
+
+  const alignState = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      alignLeft: e.isActive({ textAlign: 'left' }),
+      alignCenter: e.isActive({ textAlign: 'center' }),
+      alignRight: e.isActive({ textAlign: 'right' }),
+      alignJustify: e.isActive({ textAlign: 'justify' }),
+    }),
+  });
+
+  return (
+    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          {...{ [TOOLBAR_ITEM_ATTR]: '' }}
+          data-testid="more-formatting-trigger"
+          title="More formatting"
+          aria-label="More formatting"
+          className={menuTriggerClass(open)}
+        >
+          <MoreHorizontal size={15} className="shrink-0" />
+        </button>
+      </DropdownMenu.Trigger>
+
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content align="start" sideOffset={6} className={MENU_CONTENT}>
+          {!showTaskList && (
+            <DropdownMenu.Item
+              onSelect={() => editor.chain().focus().toggleTaskList().run()}
+              className={cn(MENU_ITEM, activeState.taskList && 'bg-foreground/[0.06] font-medium text-foreground')}
+            >
+              <CheckSquare size={15} className="shrink-0" />
+              Task List
+            </DropdownMenu.Item>
+          )}
+          {!showCode && (
+            <DropdownMenu.Item
+              onSelect={() => editor.chain().focus().toggleCode().run()}
+              className={cn(MENU_ITEM, activeState.code && 'bg-foreground/[0.06] font-medium text-foreground')}
+            >
+              <Code size={15} className="shrink-0" />
+              Inline Code
+            </DropdownMenu.Item>
+          )}
+          {!showStrike && (
+            <DropdownMenu.Item
+              onSelect={() => editor.chain().focus().toggleStrike().run()}
+              className={cn(MENU_ITEM, activeState.strike && 'bg-foreground/[0.06] font-medium text-foreground')}
+            >
+              <Strikethrough size={15} className="shrink-0" />
+              Strikethrough
+            </DropdownMenu.Item>
+          )}
+
+          {!showAlign && (
+            <DropdownMenu.Sub>
+              <DropdownMenu.SubTrigger className={MENU_ITEM}>
+                <AlignLeft size={15} className="shrink-0" />
+                Alignment
+                <ChevronDown size={13} className="ml-auto -rotate-90 opacity-60" />
+              </DropdownMenu.SubTrigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.SubContent sideOffset={4} className={MENU_CONTENT}>
+                  <DropdownMenu.Item
+                    onSelect={() => editor.chain().focus().setTextAlign('left').run()}
+                    className={cn(MENU_ITEM, alignState.alignLeft && 'bg-foreground/[0.06] font-medium text-foreground')}
+                  >
+                    <AlignLeft size={15} className="shrink-0" />
+                    Align Left
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    onSelect={() => editor.chain().focus().setTextAlign('center').run()}
+                    className={cn(MENU_ITEM, alignState.alignCenter && 'bg-foreground/[0.06] font-medium text-foreground')}
+                  >
+                    <AlignCenter size={15} className="shrink-0" />
+                    Align Center
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    onSelect={() => editor.chain().focus().setTextAlign('right').run()}
+                    className={cn(MENU_ITEM, alignState.alignRight && 'bg-foreground/[0.06] font-medium text-foreground')}
+                  >
+                    <AlignRight size={15} className="shrink-0" />
+                    Align Right
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    onSelect={() => editor.chain().focus().setTextAlign('justify').run()}
+                    className={cn(MENU_ITEM, alignState.alignJustify && 'bg-foreground/[0.06] font-medium text-foreground')}
+                  >
+                    <AlignJustify size={15} className="shrink-0" />
+                    Justify
+                  </DropdownMenu.Item>
+                </DropdownMenu.SubContent>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Sub>
+          )}
+
+          {!showColors && (
+            <>
+              <ColorSwatchSub
+                icon={<Baseline size={15} className="shrink-0" />}
+                label="Text Color"
+                activeColor={activeState.textColor}
+                onSelect={(color) => editor.chain().focus().setColor(color).run()}
+                onReset={() => editor.chain().focus().unsetColor().run()}
+                onDone={close}
+              />
+              <ColorSwatchSub
+                icon={<Highlighter size={15} className="shrink-0" />}
+                label="Highlight"
+                activeColor={activeState.highlightColor}
+                onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+                onReset={() => editor.chain().focus().unsetHighlight().run()}
+                onDone={close}
+              />
+            </>
+          )}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
+
 /* --------------------------------------------------------------- toolbar -- */
 
 function useToolbarContainerWidth(ref: React.RefObject<HTMLDivElement | null>) {
@@ -746,6 +969,11 @@ export function EditorToolbar({
   const showOrderedList = containerWidth >= 640;
   const showUnderline = containerWidth >= 640;
 
+  // Strikethrough, Inline Code, Task List, Alignment, Text Color and
+  // Highlight have no other home when the fold hides them — unlike Quote/
+  // Code block/Divider/Emoji, which always live in the Insert menu too.
+  const showMoreFormatting = !(showTaskList && showCode && showStrike && showAlign && showColors);
+
   // Subscribe to editor state so the toggles re-render on selection and
   // formatting changes (#16).
   const activeState = useEditorState({
@@ -779,7 +1007,14 @@ export function EditorToolbar({
         ref={rootRef}
         role="toolbar"
         aria-label="Page editor toolbar"
-        className="flex min-w-0 flex-nowrap items-center gap-x-0.5 sm:gap-x-1"
+        // `min-w-0` lets the flex algorithm shrink this group below its
+        // content's natural width when the row is too narrow for the
+        // actions group beside it; without `overflow-x-auto` that shrunk
+        // box does not clip its own children — the default `overflow:
+        // visible` lets them keep painting at full size past the box's
+        // right edge, landing on top of Save/Cancel/Tags rather than
+        // simply overflowing off-screen (#P0 mobile edit toolbar).
+        className="flex min-w-0 flex-nowrap items-center gap-x-0.5 overflow-x-auto sm:gap-x-1"
         onKeyDown={roving.onKeyDown}
         onFocus={roving.onFocus}
       >
@@ -848,6 +1083,23 @@ export function EditorToolbar({
             <AlignMenuDropdown editor={editor} />
           )}
         </ToolbarGroup>
+
+        {showMoreFormatting && (
+          <>
+            <ToolbarSeparator />
+            <ToolbarGroup name="more-formatting">
+              <MoreFormattingMenu
+                editor={editor}
+                activeState={activeState}
+                showTaskList={showTaskList}
+                showCode={showCode}
+                showStrike={showStrike}
+                showAlign={showAlign}
+                showColors={showColors}
+              />
+            </ToolbarGroup>
+          </>
+        )}
 
         {showBlockActions && (
           <>

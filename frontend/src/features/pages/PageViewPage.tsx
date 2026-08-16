@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, X, Save, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph, MoreHorizontal, Pin, Trash2 } from 'lucide-react';
+import { FileText, X, Save, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, AlertTriangle, RefreshCw, GitGraph, MoreHorizontal, Pin, Trash2 } from 'lucide-react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { toast } from 'sonner';
 import {
@@ -31,7 +31,7 @@ import type { Editor as EditorType } from '@tiptap/core';
 import { drainPendingDrawioDiagrams } from '../../shared/components/article/drawio-save-drain';
 import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
 import { DrawioEditor } from '../../shared/components/diagrams/DrawioEditor';
-import { apiFetch } from '../../shared/lib/api';
+import { apiFetch, ApiError } from '../../shared/lib/api';
 import { ArticleSummary } from '../../shared/components/article/ArticleSummary';
 import { hasSubstantialLede } from '../../shared/lib/article-lede';
 import type { TocHeading } from '../../shared/components/article/TableOfContents';
@@ -129,7 +129,7 @@ export function PageViewPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const { data: page, isLoading } = usePage(id);
+  const { data: page, isLoading, isError, error: pageError, refetch: refetchPage, isFetching: isRefetchingPage } = usePage(id);
   const { data: settings } = useSettings();
   const updateMutation = useUpdatePage();
   const labelsMutation = useUpdatePageLabels();
@@ -640,6 +640,42 @@ export function PageViewPage() {
     );
   }
 
+  // GET /pages/:id deliberately returns a real 404 for BOTH "no such page" and
+  // "you can't access this page's space" (pages-crud.ts) — collapsing them on
+  // purpose so a permission check can't be used to probe which pages exist.
+  // So "Page not found" is only the honest copy for an actual 404; a 500, a
+  // dropped network, or any other failure is a different situation and used
+  // to be misreported as this same screen with no retry (CLAUDE.md already
+  // forbids exactly this pattern for usePageTree — this route never got the
+  // fix). Only a confirmed non-404 failure gets the distinct "couldn't load"
+  // treatment below; a 404, or any other case where the query settled with
+  // no page, keeps the existing not-found copy.
+  const loadFailed = isError && !(pageError instanceof ApiError && pageError.statusCode === 404);
+
+  if (loadFailed) {
+    return (
+      <div className="nm-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center" role="alert" data-testid="page-load-error">
+        <div className="rounded-full bg-muted p-2.5">
+          <AlertTriangle size={20} className="text-destructive" aria-hidden="true" />
+        </div>
+        <h1 className="text-lg font-semibold text-foreground">Couldn&rsquo;t load this page</h1>
+        <p className="max-w-md text-sm text-muted-foreground">
+          {pageError instanceof ApiError
+            ? pageError.message
+            : 'The request did not complete. This page is still there — try again.'}
+        </p>
+        <button
+          onClick={() => refetchPage()}
+          disabled={isRefetchingPage}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
+        >
+          <RefreshCw size={14} className={cn(isRefetchingPage && 'animate-spin')} aria-hidden="true" />
+          {isRefetchingPage ? 'Retrying' : 'Try again'}
+        </button>
+      </div>
+    );
+  }
+
   if (!page) {
     return (
       <div className="nm-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center">
@@ -738,30 +774,33 @@ export function PageViewPage() {
                       suggestions={filterOptions?.labels}
                       isLoading={labelsMutation.isPending}
                     />
+                    {/* Labelled, not icon-only: Save publishes a version visible
+                        to the whole Confluence instance on a synced page, so
+                        it — and its adjacent Cancel — are the app's own
+                        `nm-button-ghost` / `nm-button-primary` pair rather than
+                        a pair of unlabeled 28px glyphs one pixel-cluster apart. */}
                     <button
                       onClick={handleCancelEditing}
                       title="Cancel editing (Esc)"
-                      aria-label="Cancel"
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-75 hover:bg-destructive/10 hover:text-destructive"
+                      className="nm-button-ghost shrink-0"
                       data-testid="cancel-edit-btn"
                     >
-                      <X size={15} />
-                      <span className="sr-only">Cancel</span>
+                      <X size={15} aria-hidden="true" />
+                      Cancel
                     </button>
                     <button
                       onClick={handleSave}
                       disabled={updateMutation.isPending}
                       title="Save changes (Ctrl+S)"
-                      aria-label="Save"
-                      className="nm-button-primary flex h-7 w-7 shrink-0 items-center justify-center rounded-md p-0"
+                      className="nm-button-primary shrink-0"
                       data-testid="save-page-btn"
                     >
                       {updateMutation.isPending ? (
-                        <span className="animate-spin text-xs">…</span>
+                        <span className="animate-spin text-xs" aria-hidden="true">…</span>
                       ) : (
-                        <Save size={15} />
+                        <Save size={15} aria-hidden="true" />
                       )}
-                      <span className="sr-only">Save</span>
+                      {updateMutation.isPending ? 'Saving…' : 'Save'}
                     </button>
                   </>
                 }

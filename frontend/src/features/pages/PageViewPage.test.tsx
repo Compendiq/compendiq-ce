@@ -7,7 +7,7 @@ import { PageViewPage } from './PageViewPage';
 import { useAuthStore } from '../../stores/auth-store';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { useAiDockStore } from '../../stores/ai-dock-store';
-import { apiFetch } from '../../shared/lib/api';
+import { apiFetch, ApiError } from '../../shared/lib/api';
 import { toast } from 'sonner';
 
 vi.mock('sonner', () => ({
@@ -172,6 +172,14 @@ vi.mock('../../shared/components/diagrams/DrawioEditor', () => ({
 
 vi.mock('../../shared/lib/api', () => ({
   apiFetch: vi.fn().mockResolvedValue({}),
+  ApiError: class ApiError extends Error {
+    statusCode: number;
+    constructor(statusCode: number, message: string) {
+      super(message);
+      this.name = 'ApiError';
+      this.statusCode = statusCode;
+    }
+  },
 }));
 
 vi.mock('./use-presence', () => ({
@@ -298,13 +306,23 @@ const mockPage = {
 
 let currentMockPage: typeof mockPage | undefined = mockPage;
 let mockIsLoading = false;
+let mockPageIsError = false;
+let mockPageErrorValue: unknown = null;
 
 const mockPinMutate = vi.fn();
 const mockUnpinMutate = vi.fn();
 const mockDeleteMutateAsync = vi.fn().mockResolvedValue(undefined);
+const mockRefetchPage = vi.fn();
 
 vi.mock('../../shared/hooks/use-pages', () => ({
-  usePage: () => ({ data: mockIsLoading ? undefined : currentMockPage, isLoading: mockIsLoading }),
+  usePage: () => ({
+    data: mockIsLoading ? undefined : currentMockPage,
+    isLoading: mockIsLoading,
+    isError: mockPageIsError,
+    error: mockPageErrorValue,
+    refetch: mockRefetchPage,
+    isFetching: false,
+  }),
   useUpdatePage: () => ({ mutateAsync: mockUpdatePage, isPending: false }),
   useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
   usePageFilterOptions: () => ({ data: { authors: [], labels: [] } }),
@@ -350,6 +368,9 @@ describe('PageViewPage', () => {
   beforeEach(() => {
     currentMockPage = mockPage;
     mockIsLoading = false;
+    mockPageIsError = false;
+    mockPageErrorValue = null;
+    mockRefetchPage.mockReset();
     mockRelocateAllowed = true;
     capturedShortcuts = [];
     mockNavigate.mockReset();
@@ -383,6 +404,48 @@ describe('PageViewPage', () => {
     useArticleViewStore.getState().setHeadings([]);
     useArticleViewStore.getState().setEditing(false);
     document.body.innerHTML = '';
+  });
+
+  // ---------- fetch-failure vs. genuine 404 (P1) ----------
+  // usePage used to be consumed as { data, isLoading } only, so a 500, a
+  // dropped network, and a real 404 all fell into the same "Page not found"
+  // screen with no retry — CLAUDE.md already forbids exactly this pattern
+  // for usePageTree; this route hadn't gotten the fix.
+
+  it('keeps the "Page not found" copy — with no retry control — for a genuine 404', () => {
+    currentMockPage = undefined;
+    mockPageIsError = true;
+    mockPageErrorValue = new ApiError(404, 'Page not found');
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(screen.getByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
+    expect(screen.queryByTestId('page-load-error')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+  });
+
+  it('shows a distinct failed-to-load state with retry for a non-404 failure', () => {
+    currentMockPage = undefined;
+    mockPageIsError = true;
+    mockPageErrorValue = new ApiError(500, 'Internal Server Error (HTTP 500)');
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(screen.getByRole('alert')).toHaveAttribute('data-testid', 'page-load-error');
+    expect(screen.getByRole('heading', { name: /couldn.t load this page/i })).toBeInTheDocument();
+    expect(screen.getByText('Internal Server Error (HTTP 500)')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Page not found' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+    expect(mockRefetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the same failed-to-load state for a non-ApiError (e.g. a network failure)', () => {
+    currentMockPage = undefined;
+    mockPageIsError = true;
+    mockPageErrorValue = new Error('Failed to fetch');
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('page-load-error')).toBeInTheDocument();
+    expect(screen.getByText(/this page is still there/i)).toBeInTheDocument();
   });
 
   it('renders the article title and space key in the breadcrumb', () => {
@@ -562,6 +625,25 @@ describe('PageViewPage', () => {
     await waitFor(() => {
       expect(useArticleViewStore.getState().editing).toBe(true);
     });
+  });
+
+  // ---------- labelled Save/Cancel (P1) ----------
+  // These used to be a pair of unlabeled 28px icon glyphs (h-7 w-7, `sr-only`
+  // text) — undershooting the app's own 32px control rule for the most
+  // consequential control on the surface. They're now the app's canonical
+  // labelled-button pair.
+
+  it('renders Save and Cancel as labelled nm-button controls, not icon-only glyphs', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('Edit'));
+
+    const cancel = screen.getByTestId('cancel-edit-btn');
+    const save = screen.getByTestId('save-page-btn');
+
+    expect(cancel).toHaveAccessibleName('Cancel');
+    expect(cancel.className).toContain('nm-button-ghost');
+    expect(save).toHaveAccessibleName('Save');
+    expect(save.className).toContain('nm-button-primary');
   });
 
   it('shows error toast when draw.io attachment fetch returns non-OK status', async () => {

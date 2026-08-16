@@ -135,68 +135,65 @@ export function SkeletonChatMessage() {
   );
 }
 
-/** Skeleton for page view: toolbar + metadata bar + article content area */
+/**
+ * Mirrors PageViewPage's real column, not the carded three-column layout it
+ * replaced (#P2): a 48px sticky strip (provenance chips left, action buttons
+ * right — no `nm-card`, ADR-010's flat surfaces), then title, tags, the AI
+ * Summary card, and body prose at the article's own measure. There is no
+ * right-hand table-of-contents column here — that content now lives in
+ * `ArticleRightPane`, a separate panel entirely, not part of this route's
+ * own loading state. Every page navigation used to promise this skeleton's
+ * layout and deliver a different one, producing a visible jump on the app's
+ * most frequent transition.
+ */
 export function PageViewSkeleton() {
   return (
-    <div className="space-y-4" data-testid="page-view-skeleton">
-      {/* Toolbar: back button + title + action buttons */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3 min-w-0 flex-1">
-          <div className="skeleton h-8 w-8 rounded" />
-          <div className="skeleton h-6 w-1/3" />
+    <div data-testid="page-view-skeleton">
+      {/* Context strip: provenance chips + action buttons, same 48px bar as
+          PageViewPage's real `min-h-[calc(3rem-1px)]` strip. */}
+      <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1248px] flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-b border-border px-9 py-2 sm:px-16">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <div className="skeleton h-4 w-10 rounded" />
+          <div className="skeleton h-5 w-16 rounded-full" />
+          <div className="skeleton h-5 w-14 rounded-full" />
         </div>
-        <div className="flex shrink-0 gap-2">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="skeleton h-8 w-20 rounded-lg" />
+        <div className="flex shrink-0 items-center gap-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="skeleton h-7 w-20 rounded-md" />
           ))}
         </div>
       </div>
 
-      {/* Metadata bar: space badge + freshness + author + date + version */}
-      <div className="nm-card flex flex-wrap items-center gap-4 px-4 py-3">
-        <div className="skeleton h-5 w-12 rounded" />
-        <div className="skeleton h-5 w-20 rounded-full" />
-        <div className="skeleton h-4 w-24" />
-        <div className="skeleton h-4 w-32" />
-        <div className="skeleton h-4 w-8" />
-      </div>
+      <div className="mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12">
+        {/* Title */}
+        <div className="skeleton mb-4 h-9 w-3/5 rounded sm:h-10" />
 
-      {/* Content area + sidebar */}
-      <div className="flex gap-4">
-        {/* Main content */}
-        <div className="nm-card flex-1 p-6 space-y-4">
-          {/* Heading */}
-          <div className="skeleton h-7 w-2/5 mb-2" />
-          {/* Paragraph lines */}
-          <div className="space-y-2">
-            <div className="skeleton h-4 w-full" />
-            <div className="skeleton h-4 w-[95%]" />
-            <div className="skeleton h-4 w-[88%]" />
-          </div>
-          {/* Subheading */}
-          <div className="skeleton h-5 w-1/4 mt-4" />
-          {/* More paragraph lines */}
-          <div className="space-y-2">
-            <div className="skeleton h-4 w-full" />
-            <div className="skeleton h-4 w-[90%]" />
-            <div className="skeleton h-4 w-[75%]" />
-            <div className="skeleton h-4 w-[60%]" />
-          </div>
-          {/* Another subheading */}
-          <div className="skeleton h-5 w-1/3 mt-4" />
-          {/* Final paragraph */}
-          <div className="space-y-2">
-            <div className="skeleton h-4 w-full" />
-            <div className="skeleton h-4 w-[82%]" />
-          </div>
+        {/* Tags */}
+        <div className="mb-10 flex flex-wrap items-center gap-2">
+          <div className="skeleton h-6 w-16 rounded-full" />
+          <div className="skeleton h-6 w-20 rounded-full" />
         </div>
 
-        {/* Sidebar (table of contents) - hidden on small screens */}
-        <div className="hidden w-64 shrink-0 lg:block space-y-3">
-          <div className="skeleton h-4 w-32 mb-4" />
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="skeleton h-3 ml-0" style={{ width: `${70 + Math.round(Math.sin(i) * 20)}%` }} />
-          ))}
+        {/* AI Summary card */}
+        <div className="mb-6 space-y-2 rounded-lg border border-border p-4">
+          <div className="skeleton h-4 w-24 rounded" />
+          <div className="skeleton h-4 w-full rounded" />
+          <div className="skeleton h-4 w-[92%] rounded" />
+          <div className="skeleton h-4 w-[70%] rounded" />
+        </div>
+
+        {/* Body prose */}
+        <div className="space-y-2">
+          <div className="skeleton h-4 w-full" />
+          <div className="skeleton h-4 w-[95%]" />
+          <div className="skeleton h-4 w-[88%]" />
+        </div>
+        <div className="skeleton mt-6 h-5 w-1/4" />
+        <div className="mt-2 space-y-2">
+          <div className="skeleton h-4 w-full" />
+          <div className="skeleton h-4 w-[90%]" />
+          <div className="skeleton h-4 w-[75%]" />
+          <div className="skeleton h-4 w-[60%]" />
         </div>
       </div>
     </div>
