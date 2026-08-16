@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import {
   ChevronRight,
   ChevronDown,
-  FileText,
   GripVertical,
 } from 'lucide-react';
 import { DragDropProvider, type DragEndEvent } from '@dnd-kit/react';
@@ -95,14 +94,28 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
         aria-expanded={hasChildren ? isExpanded : undefined}
         className={cn(
           // Must stay in step with SidebarTreeView's row: the two trees render
-          // side by side in the same rail, so a height difference reads as a
-          // rendering bug rather than a distinction.
-          'group flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          // in the same rail — the same panel, swapped by space source — so any
+          // difference reads as a rendering bug rather than a distinction.
+          //
+          // It had drifted on the one state that matters most. The active row
+          // here was `nm-pill-active text-action font-medium scale-[1.01]`
+          // against the plain tree's `nav-selection font-medium`: a different
+          // field, teal text where the other has none, and a `scale` — which
+          // ADR-010 retired outright ("no lift, no scale, no glass"; hover and
+          // press are background and border changes). Selecting a page in a
+          // local space nudged the row 1% larger and lit it teal; selecting one
+          // in a Confluence space did neither. Same panel, same gesture.
+          'group relative flex items-center rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'nm-pill-active text-action font-medium scale-[1.01]'
+            ? 'nav-selection font-medium'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
-        style={{ paddingLeft: `${level * 16 + 10}px` }}
+        // See SidebarTreeNode for why the gutter is built this way. This tree
+        // carries one control the other does not — the drag grip — so its
+        // gutter is 44px rather than 28, hosting grip then chevron, and it
+        // still returns ~24px per row against the old layout by dropping the
+        // leaf placeholder and the uniform FileText.
+        style={{ paddingLeft: `${level * 12 + 44}px` }}
         onClick={handleNavigate}
         onFocus={() => onRowFocus(node.page.id)}
         onKeyDown={(e) => {
@@ -117,21 +130,42 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
           onRowKeyDown(e, node.page.id);
         }}
       >
-        <span className="shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing transition-opacity" aria-label="Drag to reorder">
+        {/* Grip and chevron both hang in the indent gutter, out of flow, so the
+            title's width pays for neither. The grip stays hover-revealed but is
+            no longer charged 18px of every row for the privilege — it was
+            `opacity-0` and still occupying layout width on all of them.
+
+            The CHEVRON, not the grip, takes the leftmost slot, matching
+            SidebarTreeNode exactly. Drag handles conventionally sit outermost,
+            but these two trees swap into the same rail when you change space,
+            and the chevron is the control that persists on every row while the
+            grip appears only on hover. Aligning the persistent one means the
+            tree does not shift sideways when the space source changes, and it
+            lets both trees share one indent-guide formula.
+
+            aria-hidden because it is a mouse-drag affordance and nothing else:
+            it is not focusable, and keyboard reorder is still open (see the
+            note on the tree container below). The `aria-label` it used to carry
+            sat on a plain <span> with no role, where assistive tech ignores it. */}
+        <span
+          className="absolute top-[2px] flex h-6 w-[18px] items-center justify-center text-muted-foreground/70 opacity-0 transition-opacity cursor-grab active:cursor-grabbing group-hover:opacity-60"
+          style={{ left: `${level * 12 + 26}px` }}
+          aria-hidden="true"
+        >
           <GripVertical size={12} />
         </span>
-        {hasChildren ? (
+        {hasChildren && (
           <button
             onClick={handleToggle}
-            className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
+            // z-10: see the twin in SidebarTreeNode — the guide's click target
+            // and a child chevron share ~6px of column at a 12px indent.
+            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            style={{ left: `${level * 12 + 2}px` }}
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
           >
             {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </button>
-        ) : (
-          <span className="w-[20px] shrink-0" />
         )}
-        <FileText size={15} className={cn('shrink-0', isActive ? 'text-action/80' : 'text-muted-foreground/70')} />
         {/* #767: pin the weight explicitly (conditional, never both classes)
             so titles can't inherit or synthesize a heavier weight while the
             variable font loads or the row sits on a composited layer. */}
@@ -149,7 +183,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
             type="button"
             onClick={handleToggle}
             className="indent-guide"
-            style={{ left: `${level * 16 + 14}px` }}
+            style={{ left: `${level * 12 + 8}px` }}
             aria-label={`Collapse ${node.page.title}`}
             tabIndex={-1}
           />

@@ -172,12 +172,28 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
           // 28px rows at 13px. The tree is the tallest thing on screen, so its
           // row height sets how much of the corpus is reachable without
           // scrolling — 36px rows cost roughly two pages per viewport.
-          'group flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          //
+          // `relative` is load-bearing, not tidying: the chevron is positioned
+          // against this row (see below), and without it the chevron would
+          // resolve against the scroll container and land at the panel's edge.
+          'group relative flex items-center rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
             ? 'nav-selection font-medium'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
-        style={{ paddingLeft: `${level * 16 + 10}px` }}
+        // The horizontal budget is this panel's scarcest resource, and it used
+        // to be spent three ways that bought nothing. (1) A `w-[20px]`
+        // placeholder held the chevron's column on every LEAF row, so pages
+        // with no children paid for a control they never show; the chevron is
+        // out of flow now, hanging in the indent gutter, which keeps sibling
+        // titles aligned without charging leaves for it. (2) A `FileText` glyph
+        // rendered on 100% of rows — identical on parents and leaves alike, so
+        // it discriminated nothing while costing 21px including its gap. (3)
+        // The indent step was 16px when 12 reads just as clearly at this row
+        // height. Together those return ~35px per level-1 row (158 -> 216 at
+        // the new 280px default), which is the difference between reading a
+        // title and reading its first 26 characters.
+        style={{ paddingLeft: `${level * 12 + 28}px` }}
         onClick={handleNavigate}
         onFocus={() => onRowFocus(node.page.id)}
         onKeyDown={(e) => {
@@ -192,18 +208,29 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
           onRowKeyDown(e, node.page.id);
         }}
       >
-        {hasChildren ? (
+        {hasChildren && (
+          // Absolutely positioned in the indent gutter rather than laid out in
+          // the row. Two things fall out of that. Titles stay aligned across a
+          // sibling group whether or not each page has children — dropping the
+          // placeholder from the flow instead would leave leaves' text 26px to
+          // the left of their siblings', a ragged edge inside every group. And
+          // the hit area is free: 24x24 clears WCAG 2.5.8 (the old 18x18 button
+          // did not) while costing the title nothing, because out-of-flow width
+          // is not width the text competes for.
           <button
             onClick={handleToggle}
-            className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
+            // z-10 beats `.indent-guide`'s z-index: 1. The guide is a 12px-wide
+            // click target and the indent step is 12px, so a parent's guide and
+            // its children's chevrons now share ~6px of column. Without this the
+            // guide would sit on top and clicking a child's left edge would
+            // collapse its parent instead of toggling the child.
+            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            style={{ left: `${level * 12 + 2}px` }}
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
           >
             {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </button>
-        ) : (
-          <span className="w-[20px] shrink-0" />
         )}
-        <FileText size={15} className={cn('shrink-0', isActive ? 'text-primary-ink' : 'text-muted-foreground/70')} />
         {/* #767: pin the weight explicitly (conditional, never both classes)
             so titles can't inherit or synthesize a heavier weight while the
             variable font loads or the row sits on a composited layer. */}
@@ -217,11 +244,15 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         // required-parent (a treeitem must be owned by a tree or group).
         <div className="relative" role="group">
           {/* Indent guide line -- click to collapse parent */}
+          {/* Tracks the parent chevron's centre. The chevron sits at
+              `level*12 + 2` and is 24 wide, so its axis is `level*12 + 14`;
+              `.indent-guide` is a 12px click target with its 1px line centred,
+              so the target's left edge is that axis minus 6. */}
           <button
             type="button"
             onClick={handleToggle}
             className="indent-guide"
-            style={{ left: `${level * 16 + 14}px` }}
+            style={{ left: `${level * 12 + 8}px` }}
             aria-label={`Collapse ${node.page.title}`}
             tabIndex={-1}
           />
@@ -432,7 +463,7 @@ export function SidebarTreeView({
         setTreeSidebarWidth(treeSidebarWidth + 16);
       } else if (e.key === 'Home') {
         e.preventDefault();
-        setTreeSidebarWidth(256);
+        setTreeSidebarWidth(280);
       }
     },
     [treeSidebarWidth, setTreeSidebarWidth],
@@ -621,19 +652,18 @@ export function SidebarTreeView({
           </button>
       </div>
 
-      {/* Workspace context — the selector is the panel's orientation anchor. */}
-      <div className="shrink-0 px-2 pb-2 pt-3">
-        <div className="mb-1.5 flex items-center justify-between px-1">
-          <span className="text-[11px] font-semibold text-muted-foreground">Workspace</span>
-          <button
-            onClick={() => navigate('/spaces/new')}
-            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            aria-label="New Space"
-            title="Create new space"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
+      {/* Workspace context — the selector is the panel's orientation anchor.
+          It used to carry a "Workspace" caption and a `+` above it, together
+          costing 101px of panel height to introduce one control. Both are gone,
+          and neither is a loss. The caption named the section "Workspace" while
+          the control selects a SPACE — the noun the API, the dropdown's own
+          Confluence/Local headers and Confluence itself all use — so it was
+          teaching the wrong word; and the selector states its own scope on two
+          lines ("All Spaces" / "Every connected space"), which is what a
+          caption would have had to say. The `+` was a second entrance to
+          `/spaces/new` that the dropdown already offers by name at its foot,
+          where creating a space belongs: beside the list of the ones you have. */}
+      <div className="shrink-0 px-2 py-2">
         <div ref={spaceDropdownRef} className="relative">
           <button
             onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
@@ -649,9 +679,14 @@ export function SidebarTreeView({
                 {selectedSpaceOption?.name ?? 'All Spaces'}
               </span>
               <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                {/* "Every connected space", not "Browse every connected
+                    workspace": the old string did not fit its own line at any
+                    sidebar width — the panel truncated its own copy — and it
+                    called a space a workspace, which is the mix-up the removed
+                    caption above was teaching. */}
                 {selectedSpaceOption
                   ? `${selectedSpaceOption.source === 'local' ? 'Local' : 'Confluence'} · ${selectedSpaceOption.key}`
-                  : 'Browse every connected workspace'}
+                  : 'Every connected space'}
               </span>
             </span>
             <ChevronsUpDown size={13} className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
@@ -774,7 +809,7 @@ export function SidebarTreeView({
             onClick={() => setPinnedSectionCollapsed((value) => !value)}
             aria-expanded={!pinnedSectionCollapsed}
             aria-controls="sidebar-pinned-list"
-            className="flex h-7 w-full items-center gap-2 rounded-lg px-1.5 text-left text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            className="flex h-7 w-full items-center gap-2 rounded-md px-1.5 text-left text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
           >
             <Pin size={12} className="shrink-0 text-action" aria-hidden="true" />
             <span id="sidebar-pinned-heading" className="flex-1">Pinned</span>
@@ -799,8 +834,14 @@ export function SidebarTreeView({
                     }
                     onNavigate?.();
                   }}
+                  // Same geometry as a tree row (28px / 6px corner / 13px), not
+                  // the 32px / 8px / 12px it used to have. A pinned page and a
+                  // tree page are the same object listed twice in one panel, so
+                  // two row shapes four pixels apart read as a rendering fault
+                  // rather than as a distinction. The Pin glyph is the
+                  // distinction, and it is enough.
                   className={cn(
-                    'group flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    'group flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     activePageId === item.id
                       ? 'nav-selection font-medium'
                       : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
@@ -823,7 +864,7 @@ export function SidebarTreeView({
                     navigate('/');
                     onNavigate?.();
                   }}
-                  className="flex h-7 w-full items-center rounded-lg px-2 text-[11px] font-medium text-action transition-colors hover:bg-[var(--glass-pill-hover)]"
+                  className="flex h-7 w-full items-center rounded-md px-2 text-[11px] font-medium text-action transition-colors hover:bg-[var(--glass-pill-hover)]"
                 >
                   View all {pinnedData.total} pinned pages
                 </button>
@@ -982,7 +1023,7 @@ export function SidebarTreeView({
         aria-valuenow={treeSidebarWidth}
         tabIndex={0}
         onMouseDown={handleResizeStart}
-        onDoubleClick={() => setTreeSidebarWidth(256)}
+        onDoubleClick={() => setTreeSidebarWidth(280)}
         onKeyDown={handleResizeKeyDown}
         className={cn(
           'group absolute bottom-0 right-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-end outline-none',

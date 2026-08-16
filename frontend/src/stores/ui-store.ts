@@ -38,7 +38,13 @@ export const useUiStore = create<UiState>()(
       sidebarCollapsed: false,
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: undefined,
-      treeSidebarWidth: 256,
+      // 280, not 256: at 256 a level-1 leaf gave its title 158px while real
+      // Confluence titles routinely need 250-400px, so 43 of 57 rendered rows
+      // truncated — with no `title`, no hover card and no keyboard path to the
+      // hidden text. The row gutter was rebuilt to reclaim ~35px of that (see
+      // SidebarTreeNode); this carries the remaining 24. Both halves are needed:
+      // widening alone just moves the panel's cost onto the article.
+      treeSidebarWidth: 280,
       articleSidebarCollapsed: false,
       // 360, not 280: at the old default the Assistant tab's prose column
       // measured ~233px after the pane's own chrome — a third of the app's

@@ -289,8 +289,10 @@ describe('SidebarTreeView', () => {
     // so there's exactly one "Expand" chevron at this point.
     fireEvent.click(screen.getByLabelText('Expand'));
     const guide = screen.getByLabelText('Collapse Getting Started');
-    // level=0 => left = 0*16+14 = 14px
-    expect(guide.style.left).toBe('14px');
+    // level=0 => left = 0*12+8 = 8px. `.indent-guide` is a 12px-wide click
+    // target with its visible 1px line centred, so this lands the line on the
+    // parent chevron's axis (0*12+2 + 24/2 = 14).
+    expect(guide.style.left).toBe('8px');
   });
 
   it('navigates to page on click', () => {
@@ -467,7 +469,12 @@ describe('SidebarTreeView', () => {
     expect(useUiStore.getState().treeSidebarWidth).toBe(320);
 
     fireEvent.doubleClick(handle);
-    expect(useUiStore.getState().treeSidebarWidth).toBe(256);
+    // Resets to the default width, which is 280 — see ui-store for why it is
+    // no longer 256. Home does the same thing from the keyboard.
+    expect(useUiStore.getState().treeSidebarWidth).toBe(280);
+
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(useUiStore.getState().treeSidebarWidth).toBe(280);
   });
 
   it('does not render resize handle when collapsed', () => {
@@ -515,16 +522,58 @@ describe('SidebarTreeView', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/pages/pin-1');
   });
 
-  it('uses document icons for all pages, including parents with children (no folder icons)', () => {
+  // A pinned page and a tree page are the same object listed twice in one
+  // panel. They used to be 32px/8px-corner/12px and 28px/6px/13px respectively
+  // — two row shapes four pixels apart, which reads as a rendering fault rather
+  // than a distinction. The Pin glyph is the distinction and it is enough.
+  it('gives pinned shortcuts the same row geometry as tree rows', () => {
+    mockPinnedData = {
+      total: 1,
+      items: [{
+        id: 'pin-1',
+        spaceKey: 'DEV',
+        title: 'Pinned page 1',
+        author: null,
+        lastModifiedAt: null,
+        excerpt: '',
+        pinnedAt: '2026-03-01T00:00:00Z',
+        pinOrder: 1,
+      }],
+    };
+
+    const { container } = render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    const pinnedRow = screen.getByTestId('sidebar-pinned-pin-1');
+    const treeRow = container.querySelector<HTMLElement>('[data-page-id]')!;
+
+    for (const geometry of ['h-7', 'rounded-md', 'text-[13px]']) {
+      expect(pinnedRow.className).toContain(geometry);
+      expect(treeRow.className).toContain(geometry);
+    }
+    // The pair they used to differ by.
+    expect(pinnedRow.className).not.toContain('h-8');
+    expect(pinnedRow.className).not.toContain('rounded-lg');
+  });
+
+  // Was "uses document icons for all pages, including parents with children
+  // (no folder icons)". The intent was that a parent page is still a PAGE in
+  // Compendiq — there is no folder entity — so it must not wear a folder glyph.
+  // That intent now holds more strongly: tree rows carry no page icon at all,
+  // because one identical glyph on 100% of rows discriminated nothing and cost
+  // 21px of the title's width. The folder assertion stays so the weaker version
+  // can't come back by the side door.
+  it('gives tree rows no page icon, and never a folder/document distinction', () => {
     useUiStore.setState({
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: 'DEV',
     });
     const { container } = render(<SidebarTreeView />, { wrapper: createWrapper() });
 
-    const svgs = container.querySelectorAll('svg');
-    const svgClasses = Array.from(svgs).map((svg) => svg.getAttribute('class') ?? '');
+    for (const row of container.querySelectorAll('[data-page-id]')) {
+      expect(row.querySelectorAll('svg')).toHaveLength(row.querySelector('[aria-label="Expand"], [aria-label="Collapse"]') ? 1 : 0);
+    }
 
+    const svgClasses = Array.from(container.querySelectorAll('svg')).map((svg) => svg.getAttribute('class') ?? '');
     const hasFolderIcon = svgClasses.some(
       (c) => c.includes('lucide-folder-open') || (c.includes('lucide-folder') && !c.includes('lucide-folder-plus')),
     );
@@ -566,15 +615,30 @@ describe('SidebarTreeView', () => {
     expect(screen.queryByText('This space has no content.')).not.toBeInTheDocument();
   });
 
-  it('has a New Space button in sidebar header', () => {
+  // The space selector used to sit under a "Workspace" caption with a `+`
+  // beside it — 101px of panel height to introduce one control, on the panel
+  // whose scarcest resource is height. Both are gone. These two tests replace
+  // the pair that pinned the header `+`: creating a space is unchanged as a
+  // capability, it just lives only where it belongs now.
+  it('reaches new-space creation from the selector dropdown, not a header button', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByLabelText('New Space')).toBeInTheDocument();
+    // No second entrance above the selector.
+    expect(screen.queryByLabelText('New Space')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('All Spaces'));
+    fireEvent.click(screen.getByText('New Space'));
+    expect(mockNavigate).toHaveBeenCalledWith('/spaces/new');
   });
 
-  it('navigates to new space page when New Space is clicked in header', () => {
+  // The caption said "Workspace" while the control selects a SPACE — the noun
+  // the API, the dropdown's own Confluence/Local headings and Confluence itself
+  // all use. It should not come back under either name: the selector states its
+  // own scope on two lines, which is all a caption could have said.
+  it('renders no caption above the space selector', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByLabelText('New Space'));
-    expect(mockNavigate).toHaveBeenCalledWith('/spaces/new');
+    expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+    // The selector itself still names the current scope.
+    expect(screen.getByTestId('space-selector-toggle')).toHaveTextContent('All Spaces');
   });
 
   it('shows collapse sidebar button in expanded sidebar header', () => {
@@ -1031,7 +1095,7 @@ describe('SidebarTreeNode memoization', () => {
     const guide = screen.getByLabelText('Collapse Parent');
     expect(guide).toBeInTheDocument();
     expect(guide).toHaveClass('indent-guide');
-    expect(guide.style.left).toBe('14px');
+    expect(guide.style.left).toBe('8px'); // level=0 => 0*12 + 8
   });
 
   it('calls toggleExpand when indent guide is clicked', () => {
@@ -1077,8 +1141,116 @@ describe('SidebarTreeNode memoization', () => {
     );
 
     const guide = screen.getByLabelText('Collapse Deep Parent');
-    // level=3 => left = 3*16+14 = 62px
-    expect(guide.style.left).toBe('62px');
+    // level=3 => left = 3*12+8 = 44px
+    expect(guide.style.left).toBe('44px');
+  });
+
+  // ---------------------------------------------------------------------
+  // Row gutter (see SidebarTreeNode's style comment).
+  //
+  // These pin the reclaimed horizontal budget. The panel's job is choosing a
+  // page, and at the old geometry 43 of 57 rendered rows truncated their title
+  // with no `title` attribute and no hover card — you could not read what you
+  // were choosing between. Every assertion below is a pixel the title got back,
+  // so each one fails loudly if a future change quietly spends it again.
+  // ---------------------------------------------------------------------
+
+  it('hangs the chevron in the indent gutter rather than laying it out in the row', () => {
+    const child = makeNode('child-1', 'Child');
+    const parent = makeNode('parent', 'Parent', [child]);
+
+    render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={parent}
+          level={2}
+          expandedSet={new Set<string>()}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+          isAiRoute={false}
+        />
+      </MemoryRouter>,
+    );
+
+    const chevron = screen.getByLabelText('Expand');
+    // Out of flow, so its width costs the title nothing...
+    expect(chevron.className).toContain('absolute');
+    // ...which is what lets the hit area be 24x24 (WCAG 2.5.8) for free. It was
+    // an 18x18 in-flow button before, failing the minimum AND charging for it.
+    expect(chevron.className).toContain('size-6');
+    // Sits in the gutter at level*12 + 2.
+    expect(chevron.style.left).toBe('26px');
+    // Must outrank .indent-guide (z-index: 1): at a 12px indent a parent's
+    // guide target overlaps its children's chevrons by ~6px, and the chevron
+    // has to win those clicks or it collapses the parent instead.
+    expect(chevron.className).toContain('z-10');
+  });
+
+  it('charges leaf rows nothing for a chevron they never show', () => {
+    const leaf = makeNode('leaf', 'A leaf page');
+
+    const { container } = render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={leaf}
+          level={1}
+          expandedSet={new Set<string>()}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+          isAiRoute={false}
+        />
+      </MemoryRouter>,
+    );
+
+    // No chevron and — the point — no placeholder holding its column either.
+    expect(screen.queryByLabelText('Expand')).not.toBeInTheDocument();
+    expect(container.querySelector('.w-\\[20px\\]')).toBeNull();
+
+    // A leaf's title still starts on the same axis as a sibling parent's,
+    // because the chevron is out of flow rather than simply deleted. Dropping
+    // the placeholder from the FLOW instead would leave a ragged left edge
+    // inside every sibling group.
+    const row = container.querySelector<HTMLElement>('[data-page-id="leaf"]')!;
+    expect(row.style.paddingLeft).toBe('40px'); // 1*12 + 28
+  });
+
+  it('renders no per-row file icon', () => {
+    const { container } = render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={makeNode('leaf', 'A leaf page')}
+          level={0}
+          expandedSet={new Set<string>()}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+          isAiRoute={false}
+        />
+      </MemoryRouter>,
+    );
+
+    // The FileText glyph rendered on 100% of rows — identical on parents and
+    // leaves — so it discriminated nothing while costing 21px of the title's
+    // width including its gap. A leaf row now contains no svg at all.
+    const row = container.querySelector<HTMLElement>('[data-page-id="leaf"]')!;
+    expect(row.querySelectorAll('svg')).toHaveLength(0);
+  });
+
+  it('indents 12px per level, not 16', () => {
+    const { container } = render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={makeNode('deep', 'Deep page')}
+          level={4}
+          expandedSet={new Set<string>()}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+          isAiRoute={false}
+        />
+      </MemoryRouter>,
+    );
+
+    const row = container.querySelector<HTMLElement>('[data-page-id="deep"]')!;
+    expect(row.style.paddingLeft).toBe('76px'); // 4*12 + 28, was 4*16 + 10 = 74
   });
 
   it('does not render indent guide for expanded leaf nodes', () => {

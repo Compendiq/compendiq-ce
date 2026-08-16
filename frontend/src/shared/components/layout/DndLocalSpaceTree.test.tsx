@@ -95,10 +95,16 @@ describe('DndLocalSpaceTree', () => {
     expect(screen.getByText('Child of Two')).toBeInTheDocument();
   });
 
-  it('shows drag handle for each node', () => {
-    renderTree();
-    const handles = screen.getAllByLabelText('Drag to reorder');
-    expect(handles.length).toBeGreaterThanOrEqual(2);
+  // The grip is a mouse-drag affordance and nothing else — not focusable, and
+  // keyboard reorder is still open. It used to be a plain <span> carrying
+  // aria-label="Drag to reorder", which assistive tech ignores on a roleless
+  // span anyway, so the label promised a control screen-reader users could not
+  // reach. It is aria-hidden now, and pinned by its glyph instead.
+  it('shows a drag grip on each node, hidden from assistive tech', () => {
+    const { container } = renderTree();
+    const grips = container.querySelectorAll('span[aria-hidden="true"].cursor-grab');
+    expect(grips.length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByLabelText('Drag to reorder')).not.toBeInTheDocument();
   });
 
   it('navigates to page on click', () => {
@@ -120,6 +126,64 @@ describe('DndLocalSpaceTree', () => {
     const guide = screen.getByLabelText('Collapse Page Two');
     expect(guide).toBeInTheDocument();
     expect(guide).toHaveClass('indent-guide');
+  });
+
+  // ---------------------------------------------------------------------
+  // Parity with SidebarTreeNode.
+  //
+  // These two trees are the SAME panel — the rail swaps one for the other when
+  // you change the selected space's source — so a user switching spaces must
+  // not see the tree change shape. The active row is where they had drifted:
+  // this one was `nm-pill-active text-action font-medium scale-[1.01]` against
+  // the other's `nav-selection font-medium`. Different field, teal text the
+  // other has none of, and a transform ADR-010 retired outright ("no lift, no
+  // scale, no glass"). Selecting a page in a local space nudged the row 1%
+  // larger and lit it teal; selecting one in a Confluence space did neither.
+  // ---------------------------------------------------------------------
+
+  it('gives the active row the same treatment as the plain tree', () => {
+    const { container } = renderTree({ activePageId: 'p1' });
+    const row = container.querySelector<HTMLElement>('[data-page-id="p1"]')!;
+
+    expect(row.className).toContain('nav-selection');
+    expect(row.className).toContain('font-medium');
+    // The three that made it a different control from its twin.
+    expect(row.className).not.toContain('nm-pill-active');
+    expect(row.className).not.toContain('text-action');
+    expect(row.className).not.toMatch(/\bscale-/);
+  });
+
+  it('never applies a transform to a row, active or not', () => {
+    // ADR-010 bans lift and scale outright: hover and press are background and
+    // border changes. A row is the highest-frequency surface in the app, so a
+    // transform here is also the most expensive one to reintroduce.
+    const { container } = renderTree({ activePageId: 'p1' });
+    for (const row of container.querySelectorAll('[data-page-id]')) {
+      expect(row.className).not.toMatch(/\b(scale|translate)-/);
+    }
+  });
+
+  it('shares the plain tree\'s gutter geometry, offset for its own drag grip', () => {
+    const { container } = renderTree({ expandedIds: new Set(['p2']) });
+
+    // The chevron takes the leftmost slot in BOTH trees (level*12 + 2), so the
+    // disclosure control does not move when the space source changes. The grip
+    // sits to its right rather than outermost for exactly that reason.
+    const chevron = screen.getByLabelText('Collapse');
+    expect(chevron.className).toContain('absolute');
+    expect(chevron.className).toContain('size-6');
+    expect(chevron.className).toContain('z-10');
+    expect(chevron.style.left).toBe('2px');
+
+    // Same indent-guide formula as SidebarTreeNode: level*12 + 8.
+    expect(screen.getByLabelText('Collapse Page Two').style.left).toBe('8px');
+
+    // 44px gutter (grip + chevron) vs the plain tree's 28 (chevron only), and
+    // no leaf placeholder or per-row file icon in either.
+    const leaf = container.querySelector<HTMLElement>('[data-page-id="p1"]')!;
+    expect(leaf.style.paddingLeft).toBe('44px');
+    expect(container.querySelector('.w-\\[20px\\]')).toBeNull();
+    expect(leaf.querySelectorAll('svg')).toHaveLength(1); // the grip, nothing else
   });
 
   it('is the default export (compatible with React.lazy)', () => {
