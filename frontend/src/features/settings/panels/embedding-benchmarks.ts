@@ -1,6 +1,6 @@
 /**
- * Measured retrieval quality for embedding models, shown in Settings →
- * Embedding so a model choice is not made blind (#1114).
+ * Measured retrieval quality for embedding models, shown in
+ * Settings → AI Models → Embeddings so a model choice is not made blind (#1114).
  *
  * These are REFERENCE numbers, not a prediction. They were measured on the
  * #1102 eval corpus — vendored open-source documentation — and its German

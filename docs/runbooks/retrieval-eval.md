@@ -190,7 +190,7 @@ different vectors. `all-minilm` returns byte-identical ones.
 
 ## These numbers are also shown to admins (#1114)
 
-Settings → Embedding renders a **Model comparison (reference corpus)** table
+Settings → AI Models → Embeddings renders a **Model comparison (reference corpus)** table
 from `frontend/src/features/settings/panels/embedding-benchmarks.ts`. It is a
 hand-maintained copy of results produced by this script, so **the two can
 drift** — if you re-measure, update that file in the same PR, including its
