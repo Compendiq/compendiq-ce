@@ -20,6 +20,16 @@
  *                      on), timed per call. NEVER writes: no reseed, no
  *                      analytics rows (recordAnalytics: false).
  *
+ * The two halves do not take their model from the same place, and that is the
+ * subtlety this script has to keep honest. `hybridSearch` accepts no model and
+ * no endpoint: rag-service resolves both from the database's `embedding`
+ * use-case assignment. So `--models` / `--base-url` describe the EMBEDDING half,
+ * a search mode takes exactly ONE model (one arm per seeding), and the arm is
+ * refused unless it names what the database resolves — otherwise a row can
+ * attribute one model's latency to another, which is #1114's own failure class.
+ * The resolved pair, the seeded corpus language, and the LLM-queue and
+ * vector-pool ceilings all go into the report's metadata.
+ *
  * The search half REQUIRES the database to be seeded for the model already —
  * seeding is an hour of embedding and destroys the corpus you may have just
  * measured. It refuses instead: it probes the model's vector width, reads
@@ -39,21 +49,28 @@
  * one being measured and every number after that point is a cold start.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
-import { query, closePool, closeVectorPool } from '../src/core/db/postgres.js';
+import { query, closePool, closeVectorPool, getVectorPool } from '../src/core/db/postgres.js';
 import { hybridSearch, flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
 import { getFtsLanguage } from '../src/core/services/fts-language.js';
+import { getMetrics } from '../src/domains/llm/services/llm-queue.js';
+import { resolveUsecase } from '../src/domains/llm/services/llm-provider-resolver.js';
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
-import { EVAL_USER_ID } from '../src/domains/llm/eval/seed.js';
+import { EVAL_USER_ID, readCorpusLanguage } from '../src/domains/llm/eval/seed.js';
 import { FixtureSchema } from '../src/domains/llm/eval/fixture.js';
 import {
   parseBenchmarkArgs,
+  wantsHelp,
+  BENCHMARK_USAGE,
   sampleQueries,
   summarizeLatencies,
   timeConcurrently,
   timeEmbeddingCalls,
   probeEmbeddingDimensions,
   assertProbeMatchesColumn,
+  assertSearchArmMatchesAssignment,
+  checkCorpusLanguage,
   formatBenchmarkTable,
+  type BenchmarkMetadata,
   type BenchmarkReport,
   type BenchmarkRow,
 } from '../src/domains/llm/eval/query-latency.js';
@@ -107,6 +124,10 @@ function loadQueries(lang: string, count: number): string[] {
 }
 
 async function main(): Promise<void> {
+  if (wantsHelp(process.argv.slice(2))) {
+    console.log(BENCHMARK_USAGE);
+    return;
+  }
   const config = parseBenchmarkArgs(process.argv.slice(2), process.env);
   const needsDb = config.mode !== 'embedding';
 
@@ -120,20 +141,47 @@ async function main(): Promise<void> {
   // a plausible-looking default it never checked.
   let ftsLanguage = 'n/a (no database read)';
   let column: ColumnShape = { columnType: 'n/a (no database read)', dims: 0 };
+  // Search-half provenance: what the DATABASE resolves, never what the flags
+  // say. Left undefined for an embedding-only run, which resolves nothing.
+  let searchModel: string | undefined;
+  let searchBaseUrl: string | undefined;
+  let corpusLanguage: string | null | undefined;
 
   if (needsDb) {
     assertDisposableDatabase(process.env.POSTGRES_URL ?? '');
     const pages = await assertSeededCorpus();
     column = await readEmbeddingColumn();
     ftsLanguage = await getFtsLanguage();
+
+    // hybridSearch takes no model and no endpoint: rag-service resolves both
+    // from the `embedding` assignment this database carries. Read it through
+    // the product's own resolver rather than re-deriving the SQL, so a
+    // resolution rule (default-provider inheritance, an EE override) cannot
+    // drift out of step with what the timed calls will actually do.
+    const assigned = await resolveUsecase('embedding');
+    searchModel = assigned.model;
+    searchBaseUrl = assigned.config.baseUrl;
+
+    corpusLanguage = await readCorpusLanguage();
+    const corpusWarning = checkCorpusLanguage(corpusLanguage, config.lang);
+
     console.log(
-      `corpus ${pages} pages · index ${column.columnType} · fts ${ftsLanguage} `
+      `corpus ${pages} pages (${corpusLanguage ?? 'language unrecorded'}) · index ${column.columnType} `
+      + `· fts ${ftsLanguage} · search embeds with ${searchModel} @ ${searchBaseUrl} `
       + '· pipeline: hybrid, rerank off, assembly on, identifier pinning on',
     );
+    if (corpusWarning) console.warn(`\nWARNING: ${corpusWarning}\n`);
 
-    // Fail fast, before an hour of embedding: every model has to match the one
-    // index this database carries.
+    // parseBenchmarkArgs has already refused a search mode carrying more than
+    // one model, so this loop runs once — and that one arm must be the model
+    // the database will actually use, at the endpoint it will actually use.
     for (const model of config.models) {
+      assertSearchArmMatchesAssignment({
+        model,
+        baseUrl: config.baseUrl,
+        assignedModel: searchModel,
+        assignedBaseUrl: searchBaseUrl,
+      });
       const probeDims = await probeEmbeddingDimensions({ baseUrl: config.baseUrl, model });
       assertProbeMatchesColumn({ model, probeDims, columnDims: column.dims, columnType: column.columnType });
     }
@@ -186,19 +234,31 @@ async function main(): Promise<void> {
     }
   }
 
-  const report: BenchmarkReport = {
-    metadata: {
-      baseUrl: config.baseUrl,
-      lang: config.lang,
-      ftsLanguage,
-      columnType: column.columnType,
-      dims: column.dims,
-      queries: queries.length,
-      mode: config.mode,
-      generatedAt: new Date().toISOString(),
-    },
-    results,
+  const metadata: BenchmarkMetadata = {
+    baseUrl: config.baseUrl,
+    lang: config.lang,
+    ftsLanguage,
+    columnType: column.columnType,
+    dims: column.dims,
+    queries: queries.length,
+    mode: config.mode,
+    generatedAt: new Date().toISOString(),
+    ...(config.mode !== 'search' ? { embeddingQueueBypassed: true } : {}),
+    ...(needsDb
+      ? {
+        searchModel,
+        searchBaseUrl,
+        corpusLanguage: corpusLanguage ?? null,
+        // The two ceilings a rung above ~4 is really measuring. Read live
+        // rather than from the env directly: the queue is a process-wide
+        // singleton and the pool carries the ceiling it was built with, so
+        // these are the limits THIS run ran under.
+        llmConcurrency: getMetrics().concurrency,
+        vectorPoolMax: getVectorPool().options.max,
+      }
+      : {}),
   };
+  const report: BenchmarkReport = { metadata, results };
   writeFileSync(config.outPath, `${JSON.stringify(report, null, 2)}\n`);
 
   console.log(`\n${formatBenchmarkTable(report)}`);

@@ -25,7 +25,7 @@ vi.mock('../services/openai-compatible-client.js', async () => {
   return { ...actual, generateEmbedding: generateEmbeddingMock };
 });
 
-const { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk, configureFtsLanguage, assertSeededFtsLanguage, TruncatingModelError, EVAL_SPACE_KEY } = await import('./seed.js');
+const { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk, configureFtsLanguage, assertSeededFtsLanguage, recordCorpusLanguage, readCorpusLanguage, TruncatingModelError, EVAL_SPACE_KEY } = await import('./seed.js');
 const { loadCorpus } = await import('./fixture.js');
 type CorpusPage = import('./fixture.js').CorpusPage;
 
@@ -251,6 +251,23 @@ describe.skipIf(!dbAvailable)('eval seeder (#1102)', () => {
 
   it('refuses an unknown configuration instead of letting Postgres fall back to simple', async () => {
     await expect(configureFtsLanguage('klingon')).rejects.toThrow(/klingon/);
+  });
+
+  // #1114 review r1 — nothing about a seeded corpus says which language it is,
+  // so the latency benchmark's --lang (which picks the QUESTION SET) could aim
+  // German questions at an English seeding and publish the result. The seed
+  // records what it seeded; absent means "seeded before this existed", which
+  // is not the same as 'en'.
+  it('records which corpus was seeded, and reads back null when nothing recorded it', async () => {
+    expect(await readCorpusLanguage()).toBeNull();
+
+    await recordCorpusLanguage('de');
+    expect(await readCorpusLanguage()).toBe('de');
+
+    // Re-seeding another language overwrites it rather than accumulating a
+    // second row that a reader could pick either of.
+    await recordCorpusLanguage('en');
+    expect(await readCorpusLanguage()).toBe('en');
   });
 
   it('assertSeededFtsLanguage catches tsvectors built under a different configuration', async () => {

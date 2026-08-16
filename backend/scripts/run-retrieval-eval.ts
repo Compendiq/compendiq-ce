@@ -28,7 +28,7 @@ import { markdownToHtml, htmlToText } from '../src/core/services/content-convert
 import { query, closePool, closeVectorPool, runMigrations } from '../src/core/db/postgres.js';
 import { generateEmbedding } from '../src/domains/llm/services/openai-compatible-client.js';
 import { loadCorpus, loadFixture, assertFixturePower, corpusDirsForLanguage } from '../src/domains/llm/eval/fixture.js';
-import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk, configureFtsLanguage, assertSeededFtsLanguage, EVAL_USER_ID } from '../src/domains/llm/eval/seed.js';
+import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk, configureFtsLanguage, assertSeededFtsLanguage, recordCorpusLanguage, EVAL_USER_ID } from '../src/domains/llm/eval/seed.js';
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
 import { parseFtsLanguageArg, assertComparableFtsLanguage } from '../src/domains/llm/eval/fts-config.js';
 import { runEval } from '../src/domains/llm/eval/runner.js';
@@ -180,6 +180,10 @@ async function main(): Promise<void> {
   // The trigger is what actually built pages.tsv, and it is not this script's
   // code. Certify the result rather than trusting that an INSERT ordering held.
   await assertSeededFtsLanguage(ftsLanguage);
+  // AFTER the seed, because the row states what is in the database. Nothing
+  // about the seeded rows says which corpus they are, and #1114's latency
+  // benchmark needs to refuse a German question set aimed at an English one.
+  await recordCorpusLanguage(language);
 
   console.log(`running ${fixture.labels.length} queries…`);
   const { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, pinParticipatingQueries, expansionParticipatingQueries, expansionSkippedQueries, redundantSlots, returnedSlots, meanPairwiseSimilarity } = await runEval(fixture, {

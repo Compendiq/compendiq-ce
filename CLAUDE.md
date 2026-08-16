@@ -109,6 +109,20 @@ not belong there. It is non-destructive (never seeds, `recordAnalytics: false`)
 and refuses a search arm whose model width does not match the live
 `page_embeddings` column, because `hybridSearch` degrades to keyword-only on an
 embedding failure and would otherwise publish FTS latency as retrieval latency.
+**Its two halves do not take their model from the same place**, and the report
+would lie by default if that were left implicit: `hybridSearch` accepts no model
+and no endpoint, so `rag-service` resolves both from the DB's `embedding`
+assignment while `--models`/`--base-url` describe only the direct-POST embedding
+half. So a `search`/`both` arm takes exactly ONE model, is refused unless it
+names what the assignment resolves to (the width probe cannot separate two
+1024-dim models), and the report records the resolved pair. `--lang` selects the
+question set, never the corpus — `run-retrieval-eval.ts` records the seeded
+corpus in `admin_settings.eval_corpus_language` and a mismatched `--lang` is
+refused, because the dead-vector-leg guard only fires at *zero* participation.
+The metadata also carries `llmConcurrency` and `vectorPoolMax`: the search half
+runs through the shared LLM queue (default 4) and the vector pool (default 5),
+so a rung above those measures the product's serialisation, while the embedding
+half bypasses the queue and really does run N wide.
 
 - DB tests → real Postgres, never mocked.
 - Backend route tests → mock external HTTP and auth via `vi.spyOn()` passthroughs; nothing else.

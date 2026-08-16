@@ -1,11 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_LATENCY_MODELS,
+  KNOWN_FLAGS,
+  BENCHMARK_USAGE,
+  wantsHelp,
   summarizeLatencies,
   parseBenchmarkArgs,
   sampleQueries,
   embeddingsUrl,
   assertProbeMatchesColumn,
+  assertSearchArmMatchesAssignment,
+  checkCorpusLanguage,
   probeEmbeddingDimensions,
   timeConcurrently,
   timeEmbeddingCalls,
@@ -48,20 +53,48 @@ describe('parseBenchmarkArgs', () => {
   const ENV = { EVAL_EMBEDDING_BASE_URL: 'http://localhost:1234/v1' };
 
   it('defaults everything the runbook does not make the operator type', () => {
-    expect(parseBenchmarkArgs([], ENV)).toEqual({
+    // --mode embedding, because the default model list is a two-model sweep
+    // and a search mode takes exactly one; see the test below.
+    expect(parseBenchmarkArgs(['--mode', 'embedding'], ENV)).toEqual({
       baseUrl: 'http://localhost:1234/v1',
       models: DEFAULT_LATENCY_MODELS,
       concurrency: [1, 4, 8],
       queries: 40,
       lang: 'en',
-      mode: 'both',
+      mode: 'embedding',
       outPath: 'query-latency.json',
     });
+    expect(parseBenchmarkArgs(['--models', 'm'], ENV).mode).toBe('both');
+  });
+
+  it('refuses a search mode carrying more than one model — the search half has no model flag', () => {
+    // hybridSearch takes no model: rag-service resolves it from the database's
+    // `embedding` assignment. Two ids under `both` therefore produce two
+    // differently-labelled rows measuring the same thing, and the default pair
+    // (1024-dim, 2560-dim) cannot both match one seeded index anyway.
+    for (const mode of ['both', 'search']) {
+      const boom = () => parseBenchmarkArgs(['--mode', mode, '--models', 'a,b'], ENV);
+      expect(boom).toThrow(/exactly one/i);
+      expect(boom).toThrow(/assignment/i);
+      // The bare default is the two-model sweep, so it hits the same rule and
+      // must say what to type instead rather than failing at the probe later.
+      expect(() => parseBenchmarkArgs(['--mode', mode], ENV)).toThrow(/--models <id>/);
+    }
+    expect(() => parseBenchmarkArgs(['--mode', 'both', '--models', 'a'], ENV)).not.toThrow();
+    expect(() => parseBenchmarkArgs(['--mode', 'embedding', '--models', 'a,b'], ENV)).not.toThrow();
+  });
+
+  it('refuses an unknown flag instead of running the defaults under it', () => {
+    // A typo'd --concurency would otherwise publish a 1,4,8 ladder the
+    // operator did not ask for, and --help would silently run a benchmark.
+    const boom = () => parseBenchmarkArgs(['--concurency', '4', '--models', 'm'], ENV);
+    expect(boom).toThrow(/--concurency/);
+    expect(boom).toThrow(/--concurrency/);
   });
 
   it('reads both --flag value and --flag=value', () => {
-    const a = parseBenchmarkArgs(['--models', 'a,b', '--concurrency', '2,16', '--queries', '5'], ENV);
-    const b = parseBenchmarkArgs(['--models=a,b', '--concurrency=2,16', '--queries=5'], ENV);
+    const a = parseBenchmarkArgs(['--mode', 'embedding', '--models', 'a,b', '--concurrency', '2,16', '--queries', '5'], ENV);
+    const b = parseBenchmarkArgs(['--mode=embedding', '--models=a,b', '--concurrency=2,16', '--queries=5'], ENV);
     expect(a.models).toEqual(['a', 'b']);
     expect(a).toEqual(b);
     expect(a.concurrency).toEqual([2, 16]);
@@ -69,12 +102,12 @@ describe('parseBenchmarkArgs', () => {
   });
 
   it('sorts and de-duplicates the concurrency ladder so the table reads low to high', () => {
-    expect(parseBenchmarkArgs(['--concurrency', '8,1,4,4'], ENV).concurrency).toEqual([1, 4, 8]);
+    expect(parseBenchmarkArgs(['--mode', 'embedding', '--concurrency', '8,1,4,4'], ENV).concurrency).toEqual([1, 4, 8]);
   });
 
   it('requires a base URL, since there is no sensible default endpoint', () => {
     expect(() => parseBenchmarkArgs([], {})).toThrow(/--base-url|EVAL_EMBEDDING_BASE_URL/);
-    expect(parseBenchmarkArgs(['--base-url', 'http://h/v1'], {}).baseUrl).toBe('http://h/v1');
+    expect(parseBenchmarkArgs(['--mode', 'embedding', '--base-url', 'http://h/v1'], {}).baseUrl).toBe('http://h/v1');
   });
 
   it('refuses a mode, language or ladder it cannot honour instead of silently picking one', () => {
@@ -85,6 +118,93 @@ describe('parseBenchmarkArgs', () => {
     expect(() => parseBenchmarkArgs(['--queries', '0'], ENV)).toThrow(/queries/i);
     expect(() => parseBenchmarkArgs(['--queries', '1.5'], ENV)).toThrow(/queries/i);
     expect(() => parseBenchmarkArgs(['--models', ' , '], ENV)).toThrow(/models/i);
+  });
+});
+
+describe('BENCHMARK_USAGE (#1114)', () => {
+  it('documents every flag the parser accepts, with its default', () => {
+    // The runbook's flag list drifted from the parser once already. This is
+    // the copy that ships with the binary, so it is the one held to the parser.
+    for (const flag of KNOWN_FLAGS) expect(BENCHMARK_USAGE).toContain(`--${flag}`);
+    expect(BENCHMARK_USAGE).toMatch(/default: 1,4,8/);
+    expect(BENCHMARK_USAGE).toMatch(/default: 40/);
+    expect(BENCHMARK_USAGE).toMatch(/default: en/);
+    expect(BENCHMARK_USAGE).toMatch(/default: both/);
+    expect(BENCHMARK_USAGE).toMatch(/default: query-latency\.json/);
+    expect(BENCHMARK_USAGE).toContain(DEFAULT_LATENCY_MODELS.join(','));
+  });
+
+  it('says the two things a wrong run cannot recover from', () => {
+    // The search half's model comes from the database, and a second model
+    // loaded mid-run evicts the one being measured.
+    expect(BENCHMARK_USAGE).toMatch(/search half reads its\s+model from the seeded database/);
+    expect(BENCHMARK_USAGE).toMatch(/Do not touch the model server/);
+  });
+
+  it('is reachable, so the warnings above are not source-only', () => {
+    expect(wantsHelp(['--help'])).toBe(true);
+    expect(wantsHelp(['-h'])).toBe(true);
+    expect(wantsHelp(['--models', 'm'])).toBe(false);
+  });
+});
+
+describe('assertSearchArmMatchesAssignment (#1114)', () => {
+  const assignment = { assignedModel: 'bge-m3', assignedBaseUrl: 'http://localhost:1234/v1' };
+
+  it('passes when the arm names what the database will actually use', () => {
+    expect(() =>
+      assertSearchArmMatchesAssignment({ model: 'bge-m3', baseUrl: 'http://localhost:1234/v1', ...assignment }),
+    ).not.toThrow();
+  });
+
+  it('tolerates the trailing-slash spelling, which is not a mismatch', () => {
+    expect(() =>
+      assertSearchArmMatchesAssignment({ model: 'bge-m3', baseUrl: 'http://localhost:1234/v1/', ...assignment }),
+    ).not.toThrow();
+  });
+
+  it('refuses a same-width model the database was not assigned — the probe cannot see it', () => {
+    // Two 1024-dim models pass assertProbeMatchesColumn, and hybridSearch
+    // resolves its model from llm_usecase_assignments regardless of --models.
+    // The row would carry one model's name over another model's numbers.
+    const boom = () =>
+      assertSearchArmMatchesAssignment({ model: 'mxbai-embed-large', baseUrl: 'http://localhost:1234/v1', ...assignment });
+    expect(boom).toThrow(/mxbai-embed-large/);
+    expect(boom).toThrow(/bge-m3/);
+    expect(boom).toThrow(/--mode embedding/);
+  });
+
+  it('refuses an endpoint the assignment does not point at', () => {
+    const boom = () =>
+      assertSearchArmMatchesAssignment({ model: 'bge-m3', baseUrl: 'http://other-host:1234/v1', ...assignment });
+    expect(boom).toThrow(/other-host/);
+    expect(boom).toThrow(/localhost:1234/);
+  });
+});
+
+describe('checkCorpusLanguage (#1114)', () => {
+  it('passes silently when the question set matches the seeded corpus', () => {
+    expect(checkCorpusLanguage('de', 'de')).toBeNull();
+    expect(checkCorpusLanguage('en', 'en')).toBeNull();
+  });
+
+  it('refuses German questions aimed at an English corpus', () => {
+    // --lang picks the fixture, never the corpus. The dead-vector-leg guard
+    // cannot catch this: it fires only at exactly zero participation, and a
+    // mismatched corpus still returns vector hits — just wrong ones.
+    const boom = () => checkCorpusLanguage('en', 'de');
+    expect(boom).toThrow(/seeded with the "en" corpus/);
+    expect(boom).toThrow(/--lang de/);
+    expect(boom).toThrow(/run-retrieval-eval\.ts --lang de/);
+  });
+
+  it('warns rather than refuses when the seeding predates the record', () => {
+    // Refusing would make the benchmark unusable against every existing
+    // seeding until an hour of re-embedding had run.
+    const warning = checkCorpusLanguage(null, 'en');
+    expect(warning).toMatch(/records no corpus language/);
+    expect(warning).toMatch(/QUESTION SET only/);
+    expect(checkCorpusLanguage(undefined, 'de')).toMatch(/records no corpus language/);
   });
 });
 
@@ -299,6 +419,12 @@ describe('formatBenchmarkTable', () => {
         queries: 40,
         mode: 'both',
         generatedAt: '2026-08-16T00:00:00.000Z',
+        corpusLanguage: 'de',
+        searchModel: 'text-embedding-qwen3-embedding-4b',
+        searchBaseUrl: 'http://localhost:1234/v1',
+        llmConcurrency: 4,
+        vectorPoolMax: 5,
+        embeddingQueueBypassed: true,
       },
       results: [
         { model: 'm', concurrency: 1, embedding: { n: 40, meanMs: 12.3, p50Ms: 12, p95Ms: 20 } },
@@ -310,5 +436,56 @@ describe('formatBenchmarkTable', () => {
     expect(table).toMatch(/\bm\b.*\b1\b/);
     expect(table).toContain('40.1');
     expect(table).toContain('150');
+  });
+
+  it('names what the search half actually ran and the ceilings it ran under', () => {
+    // The `model` column is the --models label; the search half's model comes
+    // from the database. And above concurrency 4 a search rung is mostly
+    // waiting on the shared LLM queue, so a report that omits its width is not
+    // comparable across boxes — while the embedding half bypasses that queue
+    // entirely, which is why one row's two halves are not the same load.
+    const table = formatBenchmarkTable({
+      metadata: {
+        baseUrl: 'http://localhost:1234/v1',
+        lang: 'de',
+        ftsLanguage: 'german',
+        columnType: 'halfvec(2560)',
+        dims: 2560,
+        queries: 40,
+        mode: 'both',
+        generatedAt: '2026-08-16T00:00:00.000Z',
+        corpusLanguage: 'de',
+        searchModel: 'text-embedding-qwen3-embedding-4b',
+        searchBaseUrl: 'http://localhost:1234/v1',
+        llmConcurrency: 4,
+        vectorPoolMax: 5,
+        embeddingQueueBypassed: true,
+      },
+      results: [],
+    });
+    expect(table).toMatch(/search half: text-embedding-qwen3-embedding-4b @ http:\/\/localhost:1234\/v1/);
+    expect(table).toMatch(/llm queue 4/);
+    expect(table).toMatch(/vector pool 5/);
+    expect(table).toMatch(/queue is bypassed/);
+    expect(table).toMatch(/corpus de/);
+  });
+
+  it('says "unrecorded" rather than inventing a corpus language it never read', () => {
+    const table = formatBenchmarkTable({
+      metadata: {
+        baseUrl: 'http://h/v1',
+        lang: 'en',
+        ftsLanguage: 'n/a (no database read)',
+        columnType: 'n/a (no database read)',
+        dims: 0,
+        queries: 5,
+        mode: 'embedding',
+        generatedAt: '2026-08-16T00:00:00.000Z',
+        embeddingQueueBypassed: true,
+      },
+      results: [],
+    });
+    expect(table).toContain('corpus unrecorded');
+    expect(table).not.toMatch(/search half:/);
   });
 });

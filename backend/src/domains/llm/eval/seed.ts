@@ -162,6 +162,41 @@ export async function assertSeededFtsLanguage(language: string): Promise<void> {
   }
 }
 
+/**
+ * The `admin_settings` row recording WHICH corpus is currently seeded (#1114).
+ *
+ * Nothing about a seeded corpus says what language it is: the tables hold
+ * pages, and `page_embeddings`' width identifies the model, not the text. The
+ * latency benchmark's `--lang` chooses the QUESTION SET only, so without this
+ * row a German arm run against an English seeding produces a perfectly
+ * plausible report of a retrieval path that mostly missed — and the
+ * dead-vector-leg guard cannot see it, because it fires only at exactly zero
+ * participation.
+ */
+export const EVAL_CORPUS_LANGUAGE_KEY = 'eval_corpus_language';
+
+/**
+ * Called AFTER the corpus is seeded, never before: the row describes what is
+ * in the database, so a run that dies mid-seed must not leave a claim behind it.
+ */
+export async function recordCorpusLanguage(language: string): Promise<void> {
+  await query(
+    `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW()`,
+    [EVAL_CORPUS_LANGUAGE_KEY, language],
+  );
+}
+
+/** `null` for a database seeded before the row existed — that is not 'en'. */
+export async function readCorpusLanguage(): Promise<string | null> {
+  const r = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+    [EVAL_CORPUS_LANGUAGE_KEY],
+  );
+  return r.rows[0]?.setting_value ?? null;
+}
+
 export class TruncatingModelError extends Error {}
 
 /**

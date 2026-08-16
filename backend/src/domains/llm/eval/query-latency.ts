@@ -40,6 +40,46 @@ export type BenchmarkMode = 'embedding' | 'search' | 'both';
 const MODES: readonly BenchmarkMode[] = ['embedding', 'search', 'both'];
 const LANGS = ['en', 'de'] as const;
 
+/**
+ * Every flag this script understands. An unrecognised `--flag` is refused
+ * rather than ignored: a typo'd `--concurency` would otherwise run the default
+ * ladder and publish a report describing a run nobody asked for.
+ */
+export const KNOWN_FLAGS = [
+  'base-url', 'models', 'concurrency', 'queries', 'lang', 'mode', 'out', 'help',
+] as const;
+
+/**
+ * The flag reference, printed by `--help` and quoted into the unknown-flag
+ * refusal. It lives here rather than in the script so a test can hold it to
+ * naming every flag in `KNOWN_FLAGS` with its default — a flag added without a
+ * line here is a flag only the source explains.
+ */
+export const BENCHMARK_USAGE = [
+  'scripts/benchmark-query-latency.ts — query-time latency under concurrency (#1114)',
+  '',
+  `  --base-url <url>     embedding endpoint (default: $EVAL_EMBEDDING_BASE_URL; there is no built-in default)`,
+  `  --models a,b         model ids for the EMBEDDING half (default: ${DEFAULT_LATENCY_MODELS.join(',')}).`,
+  '                       --mode search and --mode both take exactly ONE model: the search half reads its',
+  '                       model from the seeded database, so a second id would be a label with no',
+  '                       measurement behind it.',
+  '  --concurrency 1,4,8  in-flight requests per rung (default: 1,4,8)',
+  '  --queries N          questions sampled deterministically from the fixture (default: 40)',
+  '  --lang en|de         which FIXTURE the questions come from (default: en). It does NOT choose the',
+  '                       corpus — that is whatever run-retrieval-eval.ts last seeded here.',
+  '  --mode <m>           embedding | search | both (default: both)',
+  '  --out <file>         report path (default: query-latency.json)',
+  '  --help               this text',
+  '',
+  'The search half never seeds: point POSTGRES_URL at a database run-retrieval-eval.ts has already',
+  'seeded for the model you want to time. Do not touch the model server during a run — loading a',
+  'second model evicts the one being measured and every number after that is a cold start.',
+].join('\n');
+
+export function wantsHelp(argv: readonly string[]): boolean {
+  return argv.includes('--help') || argv.includes('-h');
+}
+
 export interface BenchmarkConfig {
   baseUrl: string;
   models: string[];
@@ -87,6 +127,40 @@ export interface BenchmarkMetadata {
   queries: number;
   mode: BenchmarkMode;
   generatedAt: string;
+  /**
+   * Search arms only, and the reason they exist: `hybridSearch` takes no model
+   * and no endpoint — `rag-service` resolves both from the database's
+   * `embedding` use-case assignment. `--models` and `--base-url` describe the
+   * EMBEDDING half. Recording what the database resolved is what stops a
+   * search row claiming a model it did not run; the script also refuses an arm
+   * whose flags disagree with these.
+   */
+  searchModel?: string;
+  searchBaseUrl?: string;
+  /**
+   * The corpus `run-retrieval-eval.ts` last seeded here, recorded at seed time.
+   * `--lang` chooses the question set only, so this is the field that says
+   * which corpus the questions were asked of. `null` means the database was
+   * seeded before that was recorded.
+   */
+  corpusLanguage?: string | null;
+  /**
+   * The two ceilings that dominate the search half above ~4 in flight, so a
+   * report from one box can be compared with a report from another.
+   * `llmConcurrency` is the shared LLM queue's width (`LLM_CONCURRENCY`,
+   * default 4) — every search call's embedding goes through it, so a rung
+   * above it measures the product's own serialisation, not N-way parallelism.
+   * `vectorPoolMax` is `PG_VECTOR_POOL_MAX` (default 5), the vector leg's
+   * connection ceiling.
+   */
+  llmConcurrency?: number;
+  vectorPoolMax?: number;
+  /**
+   * Always true when the embedding half ran, and stated rather than implied:
+   * the embedding half POSTs directly, bypassing that same queue, so the two
+   * halves of one row at concurrency 8 are NOT under the same in-flight load.
+   */
+  embeddingQueueBypassed?: boolean;
 }
 
 export interface BenchmarkReport {
@@ -132,6 +206,14 @@ export function parseBenchmarkArgs(
   argv: readonly string[],
   env: Record<string, string | undefined>,
 ): BenchmarkConfig {
+  for (const arg of argv) {
+    if (!arg.startsWith('--')) continue;
+    const name = arg.slice(2).split('=')[0]!;
+    if (!(KNOWN_FLAGS as readonly string[]).includes(name)) {
+      throw new Error(`Unknown flag "--${name}".\n\n${BENCHMARK_USAGE}`);
+    }
+  }
+
   const baseUrl = flagValue(argv, 'base-url') || env.EVAL_EMBEDDING_BASE_URL;
   if (!baseUrl) {
     throw new Error(
@@ -176,6 +258,23 @@ export function parseBenchmarkArgs(
   const mode = (flagValue(argv, 'mode') ?? 'both') as BenchmarkMode;
   if (!MODES.includes(mode)) {
     throw new Error(`--mode must be one of ${MODES.join(', ')}; got "${mode}"`);
+  }
+
+  // The search half is not parameterised by --models at all: `hybridSearch`
+  // takes no model, and `rag-service` resolves one from the database's
+  // `embedding` assignment. Two ids under a search mode therefore produce two
+  // differently-labelled rows measuring the same thing — and the default pair
+  // (1024-dim bge-m3, 2560-dim Qwen3) cannot even both match one seeded index.
+  // One arm per seeding, said here rather than discovered from a table.
+  if (mode !== 'embedding' && models.length !== 1) {
+    throw new Error(
+      `--mode ${mode} runs the search half, which reads its embedding model from the seeded database's `
+      + `'embedding' use-case assignment — never from --models. `
+      + (modelsRaw === undefined
+        ? `Name the one model this database was seeded for: --models <id>`
+        : `Got ${models.length} (${models.join(', ')}); name exactly one — one arm per seeding`)
+      + '. Use --mode embedding to sweep several models against the endpoint directly.',
+    );
   }
 
   return {
@@ -241,6 +340,81 @@ export function assertProbeMatchesColumn(opts: {
     + 'erroring, so this arm would report FTS latency as retrieval latency. Seed this model first with '
     + 'scripts/run-retrieval-eval.ts, or pass --mode embedding to skip the search half.',
   );
+}
+
+/**
+ * Refuse a search arm whose flags describe a different model or endpoint from
+ * the one the database will actually use.
+ *
+ * `hybridSearch(userId, question, …)` takes neither a model nor a base URL:
+ * `rag-service` calls `resolveUsecase('embedding')` and embeds at whatever
+ * provider row that resolves to — the row `run-retrieval-eval.ts` wrote when it
+ * last seeded. So `--models` and `--base-url` describe the EMBEDDING half only,
+ * and a row labelled with them can silently attribute one model's latency to
+ * another. The width probe cannot catch it: two 1024-dim models pass it, and it
+ * says nothing about the endpoint at all.
+ *
+ * This is the same failure class as #1114's own: a published number whose
+ * configuration nobody recorded. The report records the resolved pair; this
+ * refuses the case where recording it would contradict the label.
+ */
+export function assertSearchArmMatchesAssignment(opts: {
+  model: string;
+  baseUrl: string;
+  assignedModel: string;
+  assignedBaseUrl: string;
+}): void {
+  const sameModel = opts.model === opts.assignedModel;
+  // Normalised through the same spelling rule the requests use, so
+  // `http://h/v1` and `http://h/v1/` are not reported as a mismatch.
+  const sameEndpoint = embeddingsUrl(opts.baseUrl) === embeddingsUrl(opts.assignedBaseUrl);
+  if (sameModel && sameEndpoint) return;
+
+  throw new Error(
+    `The search half would time "${opts.assignedModel}" at ${opts.assignedBaseUrl} — that is what this `
+    + `database's 'embedding' use-case assignment resolves to, and hybridSearch takes no model or endpoint `
+    + `from the command line — but this arm is labelled "${opts.model}" at ${opts.baseUrl}. `
+    + 'Publishing it would attribute one model\'s latency to another. Seed this database for the model you '
+    + 'mean (scripts/run-retrieval-eval.ts), pass --models/--base-url matching the assignment, or use '
+    + '--mode embedding, which reads no database.',
+  );
+}
+
+/**
+ * Check the `--lang` question set against the corpus this database was seeded
+ * with — recorded at seed time, because nothing about the corpus itself says
+ * which language it is.
+ *
+ * A mismatch is a refusal: `--lang` chooses the QUESTION SET, never the corpus,
+ * so German questions over an English corpus produce a perfectly plausible
+ * report of a retrieval path that mostly missed. The dead-vector-leg guard does
+ * not see it — it fires at exactly zero participation, and a mismatched corpus
+ * still returns vector hits.
+ *
+ * A database seeded before this was recorded returns a WARNING rather than a
+ * refusal: the corpus may well be the right one, and refusing every
+ * pre-existing seeding would make the benchmark unusable until an hour of
+ * re-embedding had run.
+ */
+export function checkCorpusLanguage(
+  recorded: string | null | undefined,
+  requested: string,
+): string | null {
+  if (!recorded) {
+    return `This database records no corpus language — it was seeded before that was recorded. `
+      + `--lang ${requested} selects the QUESTION SET only; the corpus is whatever was seeded here. `
+      + `Re-seed with scripts/run-retrieval-eval.ts --lang ${requested} to have it certified.`;
+  }
+  if (recorded !== requested) {
+    throw new Error(
+      `This database was seeded with the "${recorded}" corpus, but --lang says "${requested}". --lang `
+      + 'chooses the question set and never the corpus, so this arm would time '
+      + `${requested} questions against a ${recorded} corpus and publish the result as a ${requested} `
+      + `measurement. Seed the ${requested} corpus first (scripts/run-retrieval-eval.ts --lang ${requested}), `
+      + `or run this arm with --lang ${recorded}.`,
+    );
+  }
+  return null;
 }
 
 /**
@@ -350,11 +524,25 @@ export function formatBenchmarkTable(report: BenchmarkReport): string {
   const { metadata } = report;
   const lines = [
     `--- query latency (#1114) ---`,
-    `endpoint ${metadata.baseUrl} · corpus ${metadata.lang} · fts ${metadata.ftsLanguage}`,
+    `endpoint ${metadata.baseUrl} · questions ${metadata.lang} · corpus ${metadata.corpusLanguage ?? 'unrecorded'}`
+    + ` · fts ${metadata.ftsLanguage}`,
     `index ${metadata.columnType} (${metadata.dims} dims) · ${metadata.queries} queries · mode ${metadata.mode}`,
+  ];
+  if (metadata.embeddingQueueBypassed) {
+    lines.push('embedding half: direct POST — the shared LLM queue is bypassed, so a rung really runs N-wide');
+  }
+  if (metadata.searchModel !== undefined) {
+    // The search half's model is the database's, not the flag's, and the two
+    // ceilings below are what a rung above 4 is really measuring.
+    lines.push(
+      `search half: ${metadata.searchModel} @ ${metadata.searchBaseUrl} (resolved from the database)`
+      + ` · llm queue ${metadata.llmConcurrency ?? '?'} · vector pool ${metadata.vectorPoolMax ?? '?'}`,
+    );
+  }
+  lines.push(
     '',
     `${'model'.padEnd(38)}${cell('conc', 6)}${cell('n', 5)}${cell('emb mean', 10)}${cell('emb p50', 9)}${cell('emb p95', 9)}${cell('search mean', 13)}${cell('search p50', 12)}${cell('search p95', 12)}`,
-  ];
+  );
   for (const row of report.results) {
     const e = row.embedding;
     const s = row.search;
