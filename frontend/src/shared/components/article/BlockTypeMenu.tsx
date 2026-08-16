@@ -2,29 +2,27 @@ import { useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { useEditorState } from '@tiptap/react';
 import type { Editor as EditorType } from '@tiptap/react';
-import { Heading1, Heading2, Heading3, Heading4, Type, ChevronDown, Hash, Check } from 'lucide-react';
+import { Heading1, Heading2, Heading3, Heading4, Type, ChevronDown, Hash, Check, Quote, CodeSquare } from 'lucide-react';
 import { TOOLBAR_ITEM_ATTR } from './use-toolbar-roving-focus';
 import { formatKeysForPlatform } from '../../lib/shortcut-registry';
 import { isMac } from '../../lib/platform';
 import { cn } from '../../lib/cn';
 
-const MENU_CONTENT =
-  'z-50 min-w-[13rem] nm-card-elevated p-1 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95';
+const MENU_CONTENT = 'z-50 min-w-[13rem] nm-card-elevated p-1.5';
 
 const MENU_ITEM =
-  'flex cursor-pointer select-none items-center gap-2.5 rounded-md px-2.5 py-1.5 text-xs ' +
-  'text-foreground/90 outline-none transition-colors ' +
-  'hover:bg-accent/70 hover:text-foreground ' +
-  'data-[highlighted]:bg-accent/70 data-[highlighted]:text-foreground ' +
-  'data-[state=open]:bg-accent/70 data-[state=open]:text-foreground';
+  'flex cursor-pointer select-none items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] ' +
+  'text-muted-foreground outline-none ' +
+  'data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground ' +
+  'data-[state=open]:bg-foreground/10 data-[state=open]:text-foreground';
 
 const menuTriggerClass = (open: boolean) =>
   cn(
-    'inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors select-none',
+    'inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-[13px] transition-colors duration-75 select-none',
     'outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring',
     open
-      ? 'border-border-interactive bg-accent text-foreground'
-      : 'border-border/60 bg-muted/40 text-foreground/90 hover:border-border hover:bg-accent/70 hover:text-foreground',
+      ? 'border-border-interactive bg-background text-foreground'
+      : 'border-transparent text-muted-foreground hover:bg-accent hover:text-foreground',
   );
 
 function MenuShortcut({ keys }: { keys: string }) {
@@ -43,11 +41,13 @@ interface BlockTypeOption {
 }
 
 const BLOCK_TYPE_OPTIONS: readonly BlockTypeOption[] = [
+  { key: 'paragraph', label: 'Text', Icon: Type },
   { key: 'h1', label: 'Heading 1', Icon: Heading1, keys: 'ctrl+alt+1' },
   { key: 'h2', label: 'Heading 2', Icon: Heading2, keys: 'ctrl+alt+2' },
   { key: 'h3', label: 'Heading 3', Icon: Heading3, keys: 'ctrl+alt+3' },
   { key: 'h4', label: 'Heading 4', Icon: Heading4, keys: 'ctrl+alt+4' },
-  { key: 'paragraph', label: 'Text', Icon: Type },
+  { key: 'quote', label: 'Quote', Icon: Quote, keys: 'ctrl+shift+b' },
+  { key: 'codeBlock', label: 'Code block', Icon: CodeSquare, keys: 'ctrl+alt+c' },
 ];
 
 function resolveActiveKey(
@@ -64,6 +64,12 @@ function resolveActiveKey(
       if (parentNode.type.name === 'paragraph') {
         return 'paragraph';
       }
+      if (parentNode.type.name === 'blockquote') {
+        return 'quote';
+      }
+      if (parentNode.type.name === 'codeBlock') {
+        return 'codeBlock';
+      }
     }
   }
   if (editor.isActive('heading', { level: 1 })) return 'h1';
@@ -71,6 +77,8 @@ function resolveActiveKey(
   if (editor.isActive('heading', { level: 3 })) return 'h3';
   if (editor.isActive('heading', { level: 4 })) return 'h4';
   if (editor.isActive('paragraph')) return 'paragraph';
+  if (editor.isActive('blockquote')) return 'quote';
+  if (editor.isActive('codeBlock')) return 'codeBlock';
   return null;
 }
 
@@ -91,6 +99,8 @@ function runBlockType(
   else if (key === 'h3') chain.setHeading({ level: 3 }).run();
   else if (key === 'h4') chain.setHeading({ level: 4 }).run();
   else if (key === 'paragraph') chain.setParagraph().run();
+  else if (key === 'quote') chain.toggleBlockquote().run();
+  else if (key === 'codeBlock') chain.toggleCodeBlock().run();
 }
 
 export function BlockTypeMenu({
@@ -108,11 +118,9 @@ export function BlockTypeMenu({
   onToggleHeaderNumbering?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const { activeKey } = useEditorState({
+  const activeKey = useEditorState({
     editor,
-    selector: ({ editor: e }) => ({
-      activeKey: resolveActiveKey(e, getRange),
-    }),
+    selector: ({ editor: e }) => resolveActiveKey(e, getRange),
   });
 
   const current = BLOCK_TYPE_OPTIONS.find((t) => t.key === activeKey);
@@ -127,11 +135,13 @@ export function BlockTypeMenu({
           data-testid="block-type-trigger"
           title="Text style"
           aria-label={`Text style: ${current?.label ?? 'Text'}`}
-          className={cn(menuTriggerClass(open), 'w-[6.5rem] justify-start', className)}
+          className={cn(menuTriggerClass(open), 'w-[7.25rem] justify-between', className)}
         >
-          <CurrentIcon size={15} className="shrink-0 text-muted-foreground" />
-          <span className="truncate">{current?.label ?? 'Text'}</span>
-          <ChevronDown size={13} className="ml-auto shrink-0 text-muted-foreground" />
+          <div className="flex items-center gap-1.5 min-w-0">
+            <CurrentIcon size={15} className="shrink-0 opacity-80" />
+            <span className="truncate">{current?.label ?? 'Text'}</span>
+          </div>
+          <ChevronDown size={13} className="shrink-0 opacity-60 ml-auto" />
         </button>
       </DropdownMenu.Trigger>
 
@@ -145,13 +155,13 @@ export function BlockTypeMenu({
                 onSelect={() => runBlockType(editor, key, getRange)}
                 className={cn(
                   MENU_ITEM,
-                  isCurrent && 'bg-primary/10 font-semibold text-primary hover:bg-primary/15 data-[highlighted]:bg-primary/15 data-[highlighted]:text-primary',
+                  isCurrent && 'bg-foreground/10 text-foreground font-medium',
                 )}
               >
-                <Icon size={15} className={cn('shrink-0', isCurrent ? 'text-primary' : 'text-muted-foreground')} />
+                <Icon size={15} className={cn('shrink-0', isCurrent ? 'text-foreground' : 'text-muted-foreground')} />
                 <span>{label}</span>
                 {keys && <MenuShortcut keys={keys} />}
-                {isCurrent && <Check size={14} className="ml-1.5 text-primary shrink-0" />}
+                {isCurrent && <Check size={14} className="ml-1.5 text-foreground shrink-0" />}
               </DropdownMenu.Item>
             );
           })}

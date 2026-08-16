@@ -260,4 +260,56 @@ describe('EditorTableControls & Table Expansion', () => {
       expect(editor.state.doc.firstChild?.firstChild?.childCount).toBe(1);
     });
   });
+
+  it('renders context toolbars as an overlay without pushing article content when table is in column layout', async () => {
+    const TABLE_IN_COLUMN_HTML = [
+      '<div class="confluence-section">',
+      '  <div class="confluence-column">',
+      '    <table><tbody>',
+      '      <tr><th>Header</th></tr>',
+      '      <tr><td>Data</td></tr>',
+      '    </tbody></table>',
+      '  </div>',
+      '</div>',
+    ].join('');
+
+    const editor = await renderEditorWithContent(TABLE_IN_COLUMN_HTML);
+
+    // Find table cell pos
+    let cellPos = -1;
+    editor.state.doc.descendants((node, pos) => {
+      if (cellPos !== -1) return false;
+      if (node.type.name === 'tableHeader' || node.type.name === 'tableCell') {
+        cellPos = pos + 1;
+        return false;
+      }
+      return true;
+    });
+    expect(cellPos).toBeGreaterThan(0);
+    editor.chain().focus().setTextSelection(cellPos).run();
+
+    // Verify context toolbars container appears
+    await waitFor(() => {
+      expect(screen.getByTestId('editor-context-toolbars')).toBeInTheDocument();
+    });
+
+    const overlay = screen.getByTestId('editor-context-toolbars');
+    // Ensure it uses absolute positioning so it does not shift in-flow article content
+    expect(overlay.className).toContain('absolute');
+    expect(overlay.className).toContain('top-full');
+    expect(overlay.className).toContain('inset-x-0');
+
+    // Both table and column editing controls must be present
+    expect(screen.getByTestId('table-context-toolbar')).toBeInTheDocument();
+    expect(screen.getByTestId('column-context-toolbar')).toBeInTheDocument();
+  });
+
+  it('does not render context toolbars when cursor is in plain text', async () => {
+    const editor = await renderEditorWithContent('<p>Plain paragraph text</p>');
+    editor.chain().focus().setTextSelection(1).run();
+
+    expect(screen.queryByTestId('editor-context-toolbars')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('table-context-toolbar')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('column-context-toolbar')).not.toBeInTheDocument();
+  });
 });

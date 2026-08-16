@@ -475,9 +475,7 @@ export function TableContextToolbar({
       data-testid="table-context-toolbar"
       onKeyDown={roving.onKeyDown}
       onFocus={roving.onFocus}
-      className={
-        'flex max-w-full flex-wrap items-center gap-0.5 border-t border-border bg-muted/20 px-2 py-1 text-xs text-card-foreground motion-safe:animate-in motion-safe:fade-in-50'
-      }
+      className="flex max-w-full flex-wrap items-center gap-0.5 text-xs text-card-foreground"
     >
       <div className="flex h-8 items-center gap-1.5 px-1.5 text-foreground" data-testid="table-toolbar-heading">
         <Table2 size={16} strokeWidth={1.9} aria-hidden="true" />

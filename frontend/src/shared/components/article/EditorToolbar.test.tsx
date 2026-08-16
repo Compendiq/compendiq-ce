@@ -122,7 +122,7 @@ describe('EditorToolbar', () => {
     expect(screen.getByTestId('block-type-trigger')).toHaveTextContent('Text');
   });
 
-  it('offers headings and text in the dropdown, with Quote, Code block, and Divider on the toolbar', () => {
+  it('offers headings, text, quote, and code block in the dropdown, with Quote, Code block, and Divider on the toolbar', () => {
     render(<EditorToolbar editor={createMockEditor()} />);
     // Check toolbar buttons outside dropdown
     expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument();
@@ -131,12 +131,8 @@ describe('EditorToolbar', () => {
 
     openBlockMenu();
     // Check dropdown options
-    for (const label of ['Text', 'Heading 1', 'Heading 2', 'Heading 3', 'Heading 4']) {
+    for (const label of ['Text', 'Heading 1', 'Heading 2', 'Heading 3', 'Heading 4', 'Quote', 'Code block']) {
       expect(screen.getByRole('menuitem', { name: new RegExp(`^${label}`) })).toBeInTheDocument();
-    }
-    // Ensure Quote, Code block, and Divider are no longer in the dropdown
-    for (const label of ['Quote', 'Code block', 'Divider']) {
-      expect(screen.queryByRole('menuitem', { name: new RegExp(`^${label}`) })).not.toBeInTheDocument();
     }
   });
 
@@ -190,13 +186,13 @@ describe('EditorToolbar', () => {
     expect(run).toHaveBeenCalled();
   });
 
-  it('sets Heading 4 from the text-style dropdown', () => {
+  it('runs setHeading when a heading option is chosen', () => {
     const run = vi.fn();
     const setHeading = vi.fn();
-    const chain: Record<string, unknown> = new Proxy({} as Record<string, unknown>, {
-      get(_t, prop: string) {
+    const chain: Record<string, unknown> = new Proxy({ setHeading } as Record<string, unknown>, {
+      get(target, prop: string) {
+        if (prop === 'setHeading') return target.setHeading;
         if (prop === 'run') return run;
-        if (prop === 'setHeading') return setHeading;
         return () => chain;
       },
     });
@@ -221,9 +217,9 @@ describe('EditorToolbar', () => {
       'Table',
       'Image…',
       'Diagram',
+      'Mermaid diagram',
       'Status label…',
       'Expand section',
-      'UI Expand section',
       'Attachments',
       'Child pages',
       'Caption for selected image',

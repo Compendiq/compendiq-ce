@@ -215,6 +215,33 @@ describe('EditorBlockMenu — text blocks', () => {
     expect(screen.getByTestId('block-type-trigger')).toHaveTextContent('Heading 1');
   });
 
+  it('converts paragraph to Quote via the block type dropdown', async () => {
+    const { editor } = await mountMenu('<p>Quote me</p>');
+    expect(screen.getByTestId('block-type-trigger')).toHaveTextContent('Text');
+
+    fireEvent.pointerDown(screen.getByTestId('block-type-trigger'), { button: 0, pointerType: 'mouse' });
+    fireEvent.click(screen.getByTestId('block-type-trigger'));
+
+    const quoteOption = await screen.findByRole('menuitem', { name: /^Quote/ });
+    fireEvent.click(quoteOption);
+
+    expect(editor.getHTML()).toContain('<blockquote><p>Quote me</p></blockquote>');
+  });
+
+  it('converts paragraph to Code block via the block type dropdown', async () => {
+    const { editor } = await mountMenu('<p>const a = 10;</p>');
+    expect(screen.getByTestId('block-type-trigger')).toHaveTextContent('Text');
+
+    fireEvent.pointerDown(screen.getByTestId('block-type-trigger'), { button: 0, pointerType: 'mouse' });
+    fireEvent.click(screen.getByTestId('block-type-trigger'));
+
+    const codeOption = await screen.findByRole('menuitem', { name: /^Code block/ });
+    fireEvent.click(codeOption);
+
+    expect(editor.getHTML()).toContain('<pre><code');
+    expect(editor.getHTML()).toContain('const a = 10;');
+  });
+
   it('aligns the block (e.g. Center, Right, Justify) from the block menu', async () => {
     const { editor } = await mountMenu('<p>Hello world</p>');
 
@@ -896,6 +923,7 @@ describe('EditorBlockMenu — nested blocks in column containers', () => {
     expect(evalRule('confluenceColumn')).toBe(1000);
     expect(evalRule('confluenceLayoutCell')).toBe(1000);
     expect(evalRule('confluenceLayoutSection')).toBe(1000);
+    expect(evalRule('detailsSummary')).toBe(1000);
     expect(evalRule('tableRow')).toBe(1000);
     expect(evalRule('tableCell')).toBe(1000);
     expect(evalRule('tableHeader')).toBe(1000);
@@ -905,6 +933,65 @@ describe('EditorBlockMenu — nested blocks in column containers', () => {
     expect(evalRule('paragraph', 'confluenceColumn')).toBe(0);
     expect(evalRule('heading')).toBe(0);
     expect(evalRule('table')).toBe(0);
+
+    // Notion-style title/header anchor rule for outer containers
+    const anchorRule = NESTED_DRAG_OPTIONS.rules?.find((r) => r.id === 'notionContainerTitleAnchor');
+    expect(anchorRule).toBeDefined();
+
+    const evalAnchor = (nodeName: string, depth = 1, cursorDepth = 2, childIndex = 0, childCount = 2) =>
+      anchorRule?.evaluate({
+        node: { type: { name: nodeName }, childCount },
+        depth,
+        $pos: { depth: cursorDepth, index: () => childIndex },
+      });
+
+    // Expand sections (details): only anchor handle when hovering title (index 0); body (index > 0) never jumps to outer container
+    expect(evalAnchor('details', 1, 2, 0, 2)).toBe(0);
+    expect(evalAnchor('details', 1, 2, 1, 2)).toBe(1000);
+    expect(evalAnchor('details', 1, 2, 2, 2)).toBe(1000);
+    // Gap between text blocks inside details (cursorDepth === depth)
+    expect(evalAnchor('details', 1, 1, 0, 2)).toBe(1000);
+
+    // Multi-column layouts: sections always yield to inner column blocks and gaps between blocks
+    expect(evalAnchor('confluenceSection', 1, 3, 0, 2)).toBe(1000);
+    expect(evalAnchor('confluenceSection', 1, 1, 0, 2)).toBe(1000);
+    expect(evalAnchor('confluenceLayout', 1, 3, 0, 2)).toBe(1000);
+
+    // Callouts & Panels: yield to inner blocks in body (index > 0), prefer inner block in first row
+    expect(evalAnchor('panel', 1, 2, 0, 2)).toBe(200);
+    expect(evalAnchor('panel', 1, 2, 1, 2)).toBe(1000);
+    expect(evalAnchor('blockquote', 1, 2, 1, 2)).toBe(1000);
+    // Gap between text blocks inside panel/blockquote (cursorDepth === depth)
+    expect(evalAnchor('panel', 1, 1, 0, 2)).toBe(1000);
+    expect(evalAnchor('blockquote', 1, 1, 0, 2)).toBe(1000);
+    expect(evalAnchor('paragraph', 2, 2, 0, 1)).toBe(0);
+
+    // When mouse is in the outer left gutter (outside container bounding rect)
+    const mockElement = {
+      getBoundingClientRect: () => ({ left: 200, right: 800, top: 100, bottom: 300, width: 600, height: 200 }),
+    };
+    const mockView = {
+      nodeDOM: () => mockElement,
+    };
+
+    // Dispatch mouse event to left of container (x: 180 < 200 + 16)
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 180, clientY: 150 }));
+
+    const evalOuterGutter = (nodeName: string, depth = 1, pos = 0) =>
+      anchorRule?.evaluate({
+        node: { type: { name: nodeName } },
+        pos,
+        depth,
+        $pos: { depth: 2, before: () => 0, node: () => ({ type: { name: 'confluenceSection' } }) },
+        view: mockView,
+      });
+
+    // Outer container receives 0 deduction (Score 1000) when hovering in outer left gutter
+    expect(evalOuterGutter('confluenceSection', 1, 0)).toBe(0);
+    expect(evalOuterGutter('panel', 1, 0)).toBe(0);
+    expect(evalOuterGutter('details', 1, 0)).toBe(0);
+    // Inner child block yields (deduction 1000) when pointer is in outer gutter
+    expect(evalOuterGutter('paragraph', 2, 10)).toBe(1000);
   });
 
   it('targets a paragraph inside a confluenceColumn and offers block actions', async () => {

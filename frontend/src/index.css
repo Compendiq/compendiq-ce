@@ -1059,8 +1059,8 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   outline: 2px solid transparent;
   outline-offset: 2px;
   transition:
-    background-color 0.12s ease-out,
-    color 0.12s ease-out;
+    background-color 50ms ease-out,
+    color 50ms ease-out;
 
   &:hover {
     color: var(--color-foreground);
@@ -2397,7 +2397,12 @@ pre:focus-within .code-copy-btn,
   outline: none;
 }
 
-.tiptap p.is-editor-empty:first-child::before {
+.tiptap p.is-empty::before,
+.tiptap p.is-editor-empty:first-child::before,
+.tiptap h1.is-empty::before,
+.tiptap h2.is-empty::before,
+.tiptap h3.is-empty::before,
+.tiptap h4.is-empty::before {
   content: attr(data-placeholder);
   float: left;
   color: var(--color-muted-foreground);
@@ -2708,13 +2713,16 @@ pre:focus-within .code-copy-btn,
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 1.375rem;
+  width: 1.5rem;
   height: 1.625rem;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm, 0.375rem);
   cursor: grab;
   color: var(--color-muted-foreground);
   opacity: 0;
-  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+  transition:
+    opacity 50ms ease-out,
+    background-color 50ms ease-out,
+    color 50ms ease-out;
   user-select: none;
   z-index: 50;
   touch-action: none;
@@ -2726,10 +2734,12 @@ pre:focus-within .code-copy-btn,
   color: var(--color-foreground);
 }
 
-.drag-handle:active {
-  cursor: grabbing;
+.drag-handle:active,
+.drag-handle[data-dragging="true"] {
+  cursor: grabbing !important;
   background-color: oklch(from var(--color-primary) l c h / 0.15);
   color: var(--color-primary);
+  transform: scale(1.02);
 }
 
 /* Show the handle whenever the extension positions it next to a hovered block.
@@ -2738,7 +2748,7 @@ pre:focus-within .code-copy-btn,
    visible for any block under the cursor, not only when the pointer is on the
    handle itself. */
 .drag-handle:not([style*="visibility: hidden"]):not([style*="visibility:hidden"]) {
-  opacity: 0.7;
+  opacity: 0.65;
 }
 
 /* #1179 — pin the handle visible while its own context menu is open. The menu
@@ -2752,6 +2762,7 @@ pre:focus-within .code-copy-btn,
   opacity: 1 !important;
   background-color: oklch(from var(--color-primary) l c h / 0.15);
   color: var(--color-primary);
+  transform: scale(1.02);
 }
 
 /* #1179 — the block the open context menu acts on. A ProseMirror *node*
@@ -2763,16 +2774,18 @@ pre:focus-within .code-copy-btn,
   outline-offset: 3px;
   border-radius: var(--radius-sm);
   background-color: oklch(from var(--color-primary) l c h / 0.05);
+  transition: outline-color 0.12s ease, background-color 0.12s ease;
 }
 
-
-/* ProseMirror drop cursor — the blue line shown during drag */
+/* ProseMirror drop cursor — Notion-style glowing insertion bar shown during drag */
 .ProseMirror-dropcursor {
   color: var(--color-primary) !important;
   border: none !important;
   height: 2px !important;
   background-color: var(--color-primary) !important;
-  opacity: 0.7;
+  border-radius: 9999px !important;
+  opacity: 0.9 !important;
+  pointer-events: none !important;
 }
 
 /* Draw.io diagrams (shared between editor and page view) */

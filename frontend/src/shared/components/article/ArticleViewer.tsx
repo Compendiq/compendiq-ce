@@ -6,6 +6,9 @@ import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
+import { Highlight } from '@tiptap/extension-highlight';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { Color } from '@tiptap/extension-color';
 import { common, createLowlight } from 'lowlight';
 import DOMPurify from 'dompurify';
 import {
@@ -124,6 +127,9 @@ export function ArticleViewer({
         types: ['heading', 'paragraph', 'blockquote', 'tableCaption'],
         alignments: ['left', 'center', 'right', 'justify'],
       }),
+      TextStyle,
+      Color,
+      Highlight.configure({ multicolor: true }),
       ExtendedTable.configure({ resizable: false }),
       TableRow,
       TableCell,

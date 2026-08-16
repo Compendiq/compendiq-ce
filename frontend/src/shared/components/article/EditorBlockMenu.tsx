@@ -95,14 +95,18 @@ export function EditorBlockMenu({
   const live = useEditorState({
     editor,
     selector: () => {
-      const range = contentRange();
+      const nr = nodeRange();
+      if (!nr) {
+        return { present: false, hasText: false, dropsMacros: false, dropsLinks: false };
+      }
+      const range = nr.to - nr.from >= 2 ? { from: nr.from + 1, to: nr.to - 1 } : null;
       const { doc } = editor.state;
+      const hasText = range !== null && doc.textBetween(range.from, range.to, '\n').trim().length > 0;
       return {
-        present: nodeRange() !== null,
-        hasText: range !== null
-          && doc.textBetween(range.from, range.to, '\n').trim().length > 0,
-        dropsMacros: range !== null && containsStructuredInline(doc, range.from, range.to),
-        dropsLinks: range !== null && containsLossyMarks(doc, range.from, range.to),
+        present: true,
+        hasText,
+        dropsMacros: range !== null && hasText && containsStructuredInline(doc, range.from, range.to),
+        dropsLinks: range !== null && hasText && containsLossyMarks(doc, range.from, range.to),
       };
     },
   });
@@ -439,7 +443,7 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
               data-testid="editor-block-menu-content"
               className={cn(
                 'nm-card-elevated z-50 overflow-hidden rounded-lg',
-                'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
+                'motion-safe:animate-in motion-safe:fade-in-0 duration-75',
               )}
               onFocusOutside={(event) => event.preventDefault()}
               onEscapeKeyDown={(event) => absorbBlockMenuEscape(event, closeMenu)}

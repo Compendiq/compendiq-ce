@@ -3,9 +3,8 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import * as Popover from '@radix-ui/react-popover';
 import { useEditorState } from '@tiptap/react';
 import type { Editor as EditorType } from '@tiptap/react';
-import { TextSelection } from '@tiptap/pm/state';
 import {
-  Bold, Italic, Underline, Strikethrough, Code,
+  Bold, Italic, Underline, Strikethrough, Code, Code2,
   List, ListOrdered, CheckSquare, Quote, Minus, Undo2, Redo2, ChevronDown, Plus,
   Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2, Workflow, Badge,
   ChevronsUpDown, Paperclip, ListTree, ImagePlus, Table2,
@@ -13,10 +12,16 @@ import {
   Baseline, Highlighter,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
 } from 'lucide-react';
-import { LAYOUT_PRESETS } from './article-extensions';
+import {
+  LAYOUT_PRESETS,
+  insertPanel,
+  insertExpandSection,
+  captionSelectedImage,
+} from './article-extensions';
 import { ToolbarButton, ToolbarSeparator, ToolbarGroup, LayoutPreview } from './editor-toolbar-primitives';
 import { TOOLBAR_ITEM_ATTR, useToolbarRovingFocus } from './use-toolbar-roving-focus';
 import { insertTableCaption } from './table-cell-selection';
+import { BlockTypeMenu } from './BlockTypeMenu';
 import { cn } from '../../lib/cn';
 
 /**
@@ -51,7 +56,7 @@ const MENU_CONTENT = 'z-50 min-w-[13rem] nm-card-elevated p-1.5';
  */
 const MENU_ITEM =
   'flex cursor-pointer select-none items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] ' +
-  'text-muted-foreground outline-none transition-colors ' +
+  'text-muted-foreground outline-none ' +
   'data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground ' +
   'data-[state=open]:bg-foreground/10 data-[state=open]:text-foreground';
 
@@ -67,7 +72,7 @@ const MENU_LABEL =
 /** Trigger shell shared by the two labelled menus, so they cannot drift apart. */
 const menuTriggerClass = (open: boolean) =>
   cn(
-    'inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-[13px] transition-colors',
+    'inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-[13px] transition-colors duration-75',
     'outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring',
     open
       ? 'border-border-interactive bg-background text-foreground'
@@ -98,8 +103,6 @@ const PANEL_TYPES = [
   { value: 'tip', label: 'Tip', Icon: Lightbulb, swatch: 'var(--color-success)' },
 ] as const;
 
-type PanelType = (typeof PANEL_TYPES)[number]['value'];
-
 const PRESET_COLORS = [
   { label: 'Red', value: '#ef4444' },
   { label: 'Orange', value: '#f97316' },
@@ -110,101 +113,6 @@ const PRESET_COLORS = [
   { label: 'Pink', value: '#ec4899' },
   { label: 'Grey', value: '#6b7280' },
 ];
-
-/**
- * Inserts `node` and leaves the caret inside its first child, so the author
- * types straight into the new box instead of underneath it.
- *
- * `insertContent` parks the caret *after* the new block whenever content
- * follows it. Finding the block again afterwards has one subtlety: both
- * containers this is used for **nest** (`Panel.content` is 'block+',
- * `Details.content` is 'detailsSummary block*'), so stopping descent at the
- * first matching node lands the caret in the *outer* container when one is
- * inserted inside an existing one (#1140). Visiting every descendant and
- * keeping the last match at-or-before the selection finds the innermost
- * instead: a nested node starts at a higher position than its parent, so it is
- * visited — and overwrites the match — after it.
- *
- * `+ 2` is inside the first child: one past the container's own boundary is
- * that child, one more is its text. Same transaction as the insert, so a single
- * undo removes the whole thing.
- */
-function insertBlockWithCaret(editor: EditorType, typeName: string, node: Record<string, unknown>) {
-  editor
-    .chain()
-    .focus()
-    .insertContent(node)
-    .command(({ tr, dispatch }) => {
-      if (!dispatch) return true;
-      const { from } = tr.selection;
-      let caret: number | null = null;
-      tr.doc.descendants((child, pos) => {
-        if (child.type.name === typeName && pos <= from) {
-          caret = pos + 2;
-        }
-        return true;
-      });
-      if (caret !== null) {
-        tr.setSelection(TextSelection.create(tr.doc, caret));
-      }
-      return true;
-    })
-    .run();
-}
-
-/**
- * Inserts an empty panel and leaves the caret inside it, so the author types
- * straight into the box instead of clearing out placeholder copy first.
- */
-function insertPanel(editor: EditorType, panelType: PanelType) {
-  insertBlockWithCaret(editor, 'panel', {
-    type: 'panel',
-    attrs: { panelType },
-    content: [{ type: 'paragraph' }],
-  });
-}
-
-/**
- * Inserts an expand section with an EMPTY summary and leaves the caret in it.
- *
- * #1227: the summary used to be seeded with the literal `Click to expand`,
- * which an editor save then wrote to Confluence as a real `title` parameter —
- * the same fabricated title the backend fix removes, just sourced from the
- * toolbar instead of the converter. An untitled section now shows the macro's
- * default label as a decoration (article-extensions.ts) and stores nothing, so
- * a user who types gets a real title and a user who moves on to the body gets a
- * genuinely untitled section.
- */
-function insertExpandSection(editor: EditorType, macroName: 'expand' | 'ui-expand' = 'expand') {
-  insertBlockWithCaret(editor, 'details', {
-    type: 'details',
-    // A bare details node defaults to the native Atlassian expand for backwards
-    // compatibility. Stamping macroName explicitly ensures htmlToConfluence
-    // writes ac:name="expand" or ac:name="ui-expand" accordingly on save.
-    attrs: { macroName },
-    content: [
-      { type: 'detailsSummary' },
-      { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
-    ],
-  });
-}
-
-/** Wrap the image at the caret in a `figure` so it can carry a caption. */
-function captionSelectedImage(editor: EditorType) {
-  const { from } = editor.state.selection;
-  const node = editor.state.doc.nodeAt(from);
-  if (node?.type.name !== 'image') return;
-  editor
-    .chain()
-    .deleteRange({ from, to: from + node.nodeSize })
-    .insertContentAt(from, {
-      type: 'figure',
-      content: [{ type: 'image', attrs: node.attrs }, { type: 'figcaption' }],
-    })
-    .run();
-}
-
-import { BlockTypeMenu } from './BlockTypeMenu';
 
 /* ----------------------------------------------------------- insert menu -- */
 
@@ -317,6 +225,20 @@ function InsertMenu({ editor }: { editor: EditorType }) {
                   Diagram
                 </DropdownMenu.Item>
 
+                <DropdownMenu.Item
+                  onSelect={() =>
+                    editor
+                      .chain()
+                      .focus()
+                      .insertContent({ type: 'mermaidBlock', attrs: { code: 'graph TD;\n  A-->B;' } })
+                      .run()
+                  }
+                  className={MENU_ITEM}
+                >
+                  <Code2 size={15} className="shrink-0" />
+                  Mermaid diagram
+                </DropdownMenu.Item>
+
                 <DropdownMenu.Item onSelect={() => requestPrompt('status')} className={MENU_ITEM}>
                   <Badge size={15} className="shrink-0" />
                   Status label…
@@ -325,14 +247,6 @@ function InsertMenu({ editor }: { editor: EditorType }) {
                 <DropdownMenu.Item onSelect={() => insertExpandSection(editor, 'expand')} className={MENU_ITEM}>
                   <ChevronsUpDown size={15} className="shrink-0" />
                   Expand section
-                </DropdownMenu.Item>
-
-                <DropdownMenu.Item
-                  onSelect={() => insertExpandSection(editor, 'ui-expand')}
-                  className={MENU_ITEM}
-                >
-                  <ChevronsUpDown size={15} className="shrink-0" />
-                  UI Expand section
                 </DropdownMenu.Item>
 
                 <DropdownMenu.Sub>

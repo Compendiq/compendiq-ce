@@ -3,7 +3,6 @@ import * as Popover from '@radix-ui/react-popover';
 import { Tag } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { absorbPortalEscape } from '../lib/absorb-portal-escape';
-import { tagChipLabel } from '../lib/tag-utils';
 import { TagEditor, type TagEditorHandle } from './TagEditor';
 
 interface TagPopoverProps {
@@ -66,15 +65,14 @@ export function TagPopover({
       <Popover.Trigger
         type="button"
         data-testid="tag-popover-trigger"
-        title="Tags"
+        title={tags.length > 0 ? `Tags (${tags.length})` : 'Tags'}
         aria-label="Tags"
         className={cn(
-          'flex h-7 min-w-[1.75rem] shrink-0 items-center justify-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground data-[state=open]:bg-foreground/10 data-[state=open]:text-foreground',
+          'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-75 hover:bg-foreground/5 hover:text-foreground data-[state=open]:bg-foreground/10 data-[state=open]:text-foreground',
           className,
         )}
       >
-        <Tag size={15} className="shrink-0" aria-hidden />
-        <span className="tabular-nums text-[11px] font-medium">{tagChipLabel(tags.length)}</span>
+        <Tag size={15} className="shrink-0" aria-hidden="true" />
       </Popover.Trigger>
 
       <Popover.Portal>

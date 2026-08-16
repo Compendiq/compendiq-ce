@@ -165,18 +165,22 @@ export function EditorFormatBar({
   const rootRef = useRef<HTMLDivElement>(null);
   const roving = useToolbarRovingFocus(rootRef);
   const scoped = getRange !== undefined;
-  const activeState = useEditorState({
+  const marksMask = useEditorState({
     editor,
     selector: ({ editor: e }) => {
       const range = getRange?.() ?? null;
-      const marks = MARKS.map(({ mark }) => {
-        if (!scoped) return e.isActive(mark);
-        return range ? rangeIsActive(e, mark, range) : false;
-      });
-      const aligns = ALIGNMENTS.map(({ alignment }) =>
-        getAlignActive(e, alignment, range, scoped),
-      );
-      return { marks, aligns };
+      let mask = 0;
+      for (let i = 0; i < MARKS.length; i++) {
+        const mark = MARKS[i]!.mark;
+        const active = !scoped ? e.isActive(mark) : (range ? rangeIsActive(e, mark, range) : false);
+        if (active) mask |= (1 << i);
+      }
+      for (let i = 0; i < ALIGNMENTS.length; i++) {
+        const alignment = ALIGNMENTS[i]!.alignment;
+        const active = getAlignActive(e, alignment, range, scoped);
+        if (active) mask |= (1 << (i + 8));
+      }
+      return mask;
     },
   });
 
@@ -198,7 +202,7 @@ export function EditorFormatBar({
               const range = getRange();
               if (range) run(editor, range);
             }}
-            active={activeState.marks[i]}
+            active={Boolean(marksMask & (1 << i))}
             title={title}
           >
             <Icon size={15} />
@@ -217,7 +221,7 @@ export function EditorFormatBar({
               if (scoped && !range) return;
               setAlign(editor, range, alignment);
             }}
-            active={activeState.aligns[i]}
+            active={Boolean(marksMask & (1 << (i + 8)))}
             title={title}
           >
             <Icon size={15} />

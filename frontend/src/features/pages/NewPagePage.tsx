@@ -5,7 +5,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
 import { useTemplates, useUseTemplate, useImportMarkdown, useLocalSpaces } from '../../shared/hooks/use-standalone';
-import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft } from '../../shared/components/article/Editor';
+import { Editor, EditorToolbar, EditorContextToolbars, clearDraft } from '../../shared/components/article/Editor';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { LocationPicker } from '../../shared/components/LocationPicker';
 import { TagPopover } from '../../shared/components/TagPopover';
@@ -496,15 +496,13 @@ export function NewPagePage() {
         <div className="nm-card overflow-hidden">
           {/* Editor toolbar */}
           {editorInstance && (
-            <div className="border-b border-border px-1">
+            <div className="relative border-b border-border px-1">
               <EditorToolbar
                 editor={editorInstance}
                 headerNumbering={headerNumbering}
                 onToggleHeaderNumbering={toggleHeaderNumbering}
               />
-              <TableContextToolbar editor={editorInstance} />
-              <LayoutContextToolbar editor={editorInstance} />
-              <ColumnContextToolbar editor={editorInstance} />
+              <EditorContextToolbars editor={editorInstance} innerClassName="px-1" />
             </div>
           )}
 

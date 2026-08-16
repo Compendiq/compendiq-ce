@@ -58,15 +58,25 @@ function syncTabStop(root: HTMLElement): void {
   const focused = items.indexOf(document.activeElement as HTMLElement);
   const held = items.findIndex((el) => el.tabIndex === 0);
   const stop = focused >= 0 ? focused : held >= 0 ? held : 0;
+  const targetEl = items[stop]!;
 
-  // Clear every opted-in control first, disabled ones included. A disabled
-  // button is already skipped by the browser whatever its tabIndex, so leaving
-  // it at the native 0 changes no behaviour — but it makes the DOM report three
-  // tab stops where there is one, which is what any audit of this will read.
-  allItemsOf(root).forEach((el) => {
-    el.tabIndex = -1;
-  });
-  items[stop]!.tabIndex = 0;
+  const all = allItemsOf(root);
+  let needsSync = false;
+  for (let i = 0; i < all.length; i++) {
+    const el = all[i]!;
+    const expected = el === targetEl ? 0 : -1;
+    if (el.tabIndex !== expected) {
+      needsSync = true;
+      break;
+    }
+  }
+
+  if (needsSync) {
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i]!;
+      el.tabIndex = el === targetEl ? 0 : -1;
+    }
+  }
 }
 
 export function useToolbarRovingFocus(rootRef: RefObject<HTMLElement | null>): {

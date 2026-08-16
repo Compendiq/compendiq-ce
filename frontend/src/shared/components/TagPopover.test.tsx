@@ -16,22 +16,23 @@ describe('TagPopover', () => {
    * The control has a stable accessible name; the count remains visible chip
    * content and is asserted separately so the two responsibilities stay clear.
    */
-  it('renders the chip as an action when the page has no tags', () => {
+  it('renders the icon trigger with appropriate title when page has no tags', () => {
     render(<TagPopover {...defaultProps} tags={[]} />);
     const trigger = screen.getByRole('button', { name: 'Tags' });
-    expect(trigger).toHaveTextContent('Add tags');
+    expect(trigger).toBeInTheDocument();
+    expect(trigger).toHaveAttribute('title', 'Tags');
   });
 
-  it('renders the chip with a singular count for one tag', () => {
+  it('renders the icon trigger with count in title for one tag', () => {
     render(<TagPopover {...defaultProps} tags={['react']} />);
     const trigger = screen.getByRole('button', { name: 'Tags' });
-    expect(trigger).toHaveTextContent('1 tag');
+    expect(trigger).toHaveAttribute('title', 'Tags (1)');
   });
 
-  it('renders the chip with the tag count as its accessible name', () => {
+  it('renders the icon trigger with count in title for multiple tags', () => {
     render(<TagPopover {...defaultProps} />);
     const trigger = screen.getByRole('button', { name: 'Tags' });
-    expect(trigger).toHaveTextContent('2 tags');
+    expect(trigger).toHaveAttribute('title', 'Tags (2)');
   });
 
   it('keeps the editor closed until the chip is used', () => {

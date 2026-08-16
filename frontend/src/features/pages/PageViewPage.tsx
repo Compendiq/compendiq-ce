@@ -26,7 +26,7 @@ import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
-import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft, getDraft } from '../../shared/components/article/Editor';
+import { Editor, EditorToolbar, EditorContextToolbars, clearDraft, getDraft } from '../../shared/components/article/Editor';
 import type { Editor as EditorType } from '@tiptap/core';
 import { drainPendingDrawioDiagrams } from '../../shared/components/article/drawio-save-drain';
 import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
@@ -722,7 +722,7 @@ export function PageViewPage() {
             was `bg-background`, which would now paint a chassis-coloured band
             across a white document. `-top-5` still tracks the scroll
             container's `pt-5` (scroll-padding-mask.test.ts). */}
-        <div className="-mx-4 border-b border-border bg-card sm:-mx-6">
+        <div className="-mx-4 border-b border-border bg-card sm:-mx-6 relative">
           {editorInstance && (
             <div className="mx-auto max-w-[1248px] px-4 sm:px-16">
               <EditorToolbar
@@ -742,7 +742,7 @@ export function PageViewPage() {
                       onClick={handleCancelEditing}
                       title="Cancel editing (Esc)"
                       aria-label="Cancel"
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-75 hover:bg-destructive/10 hover:text-destructive"
                       data-testid="cancel-edit-btn"
                     >
                       <X size={15} />
@@ -766,10 +766,13 @@ export function PageViewPage() {
                   </>
                 }
               />
-              <TableContextToolbar editor={editorInstance} />
-              <LayoutContextToolbar editor={editorInstance} />
-              <ColumnContextToolbar editor={editorInstance} />
             </div>
+          )}
+          {editorInstance && (
+            <EditorContextToolbars
+              editor={editorInstance}
+              innerClassName="mx-auto max-w-[1248px] px-4 sm:px-16"
+            />
           )}
         </div>
         </div>

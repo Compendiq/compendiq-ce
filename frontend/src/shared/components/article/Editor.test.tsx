@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor, screen, fireEvent } from '@testing-library/react';
+import { render, waitFor, screen, fireEvent, act } from '@testing-library/react';
 
 vi.mock('../hooks/use-is-light-theme', () => ({
   useIsLightTheme: () => false,
@@ -28,6 +28,7 @@ vi.mock('sonner', () => ({
 }));
 
 import { Editor, clearDraft } from './Editor';
+import { insertExpandSection } from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
 import { TextSelection } from '@tiptap/pm/state';
 import { CellSelection, cellAround } from '@tiptap/pm/tables';
@@ -520,7 +521,9 @@ describe('Editor', () => {
     it('inserts a Refined UI Expand with its macro identity intact', async () => {
       const editor = await renderEditorWithToolbar();
 
-      chooseInsertItem('UI Expand section');
+      act(() => {
+        insertExpandSection(editor, 'ui-expand');
+      });
 
       const html = editor.getHTML();
       expect(html).toContain('data-macro-name="ui-expand"');
@@ -1553,4 +1556,73 @@ describe('draft auto-save flush on unmount (#877)', () => {
       expect(editor!.getHTML()).toContain('data-checked="true"');
     });
   });
+
+  describe('Slash command block insertion', () => {
+    it('renders slash menu and inserts heading on slash command selection', async () => {
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content="<p>/</p>"
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      act(() => {
+        editor!.commands.setTextSelection(2);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('slash-command-menu')).toBeInTheDocument();
+      });
+
+      const h1Option = screen.getByTestId('slash-cmd-item-h1');
+      act(() => {
+        fireEvent.click(h1Option);
+      });
+
+      await waitFor(() => {
+        expect(editor!.getHTML()).toContain('<h1></h1>');
+        expect(editor!.getText()).not.toContain('/h1');
+      });
+    });
+
+    it('inserts a table via slash menu in Editor', async () => {
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content="<p>/table</p>"
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      act(() => {
+        editor!.commands.setTextSelection(7);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('slash-command-menu')).toBeInTheDocument();
+      });
+
+      const tableOption = screen.getByTestId('slash-cmd-item-table');
+      act(() => {
+        fireEvent.click(tableOption);
+      });
+
+      await waitFor(() => {
+        expect(editor!.getHTML()).toContain('<table');
+        expect(editor!.getText()).not.toContain('/table');
+      });
+    });
+  });
 });
+
