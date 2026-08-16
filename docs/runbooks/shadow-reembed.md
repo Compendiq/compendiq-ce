@@ -114,9 +114,11 @@ affect other sessions.
 ## Expected duration
 
 Backfill wall-clock ≈ `total_chunks ÷ provider_throughput`. Chunk count:
-`SELECT count(*) FROM page_embeddings;`. The measured prod-corpus number for
-the acceptance criterion lands with #1101 §C / #1113's rig (the issue's own
-split); record it here when it exists.
+`SELECT count(*) FROM page_embeddings;`. There is no measured prod-corpus
+number yet, and no issue is going to produce one: #1101 (the spike) and #1113
+(the benchmark rig) are both closed. It comes from the first real backfill —
+record the chunk count, the provider and the wall-clock here when someone runs
+one.
 
 ## Degraded behaviour
 

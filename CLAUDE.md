@@ -85,7 +85,9 @@ their final word. It is a dedicated
 job, scoped to PRs that touch retrieval, so the fast path never waits on it.
 The rule above still holds everywhere else — and note this model is for
 detecting *regressions in retrieval logic*, never for judging a model upgrade:
-those comparisons need the real candidates and stay on #1113's rig.
+those comparisons need the real candidates, run locally through the same script
+(`docs/runbooks/retrieval-eval.md`), or scored on the real corpus via #1260.
+There is no separate model-comparison harness — #1113 was closed without one.
 
 - DB tests → real Postgres, never mocked.
 - Backend route tests → mock external HTTP and auth via `vi.spyOn()` passthroughs; nothing else.

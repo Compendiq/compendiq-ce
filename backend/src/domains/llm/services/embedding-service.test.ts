@@ -159,6 +159,7 @@ import {
   DIRTY_PAGE_BATCH_SIZE,
   type EmbeddingProgressEvent,
 } from './embedding-service.js';
+import { RAG_EF_SEARCH, efSearchFor } from './hnsw-ef-search.js';
 import {
   getProviderBreaker,
   invalidateProviderBreaker,
@@ -387,15 +388,18 @@ describe('embedding-service', () => {
   });
 
   describe('computePageRelationships', () => {
-    // Transaction call order on mockClient (#362 added parent_child INSERT):
-    // [0]=BEGIN, [1]=SET LOCAL statement_timeout, [2]=DELETE,
-    // [3]=similarity CTE, [4]=label CTE, [5]=parent_child INSERT, [6]=COMMIT
+    // Transaction call order on mockClient (#362 added parent_child INSERT;
+    // #1113's folded-in scope item added the ef_search SET):
+    // [0]=BEGIN, [1]=SET LOCAL statement_timeout, [2]=SET LOCAL hnsw.ef_search,
+    // [3]=DELETE, [4]=similarity CTE, [5]=label CTE, [6]=parent_child INSERT,
+    // [7]=COMMIT
 
     it('should delete existing relationships then compute new ones', async () => {
-      // Set up 7 specific client.query responses matching the transaction order
+      // Set up 8 specific client.query responses matching the transaction order
       mockClient.query
         .mockResolvedValueOnce({ rows: [] })                                           // BEGIN
         .mockResolvedValueOnce({ rows: [] })                                           // SET LOCAL statement_timeout
+        .mockResolvedValueOnce({ rows: [] })                                           // SET LOCAL hnsw.ef_search
         .mockResolvedValueOnce({ rows: [], rowCount: 0 })                             // DELETE
         .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-2', score: 0.85 }], rowCount: 1 })  // similarity INSERT
         .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-3', score: 0.5 }], rowCount: 1 })   // label INSERT
@@ -405,36 +409,97 @@ describe('embedding-service', () => {
       const totalEdges = await computePageRelationships();
 
       expect(totalEdges).toBe(3);
-      expect(mockClient.query).toHaveBeenCalledTimes(7);
+      expect(mockClient.query).toHaveBeenCalledTimes(8);
       expect(mocks.query).not.toHaveBeenCalled();
 
       // calls[0] = BEGIN
       expect(mockClient.query.mock.calls[0][0]).toBe('BEGIN');
       // calls[1] = SET LOCAL statement_timeout
       expect(mockClient.query.mock.calls[1][0]).toBe('SET LOCAL statement_timeout = 120000');
-      // calls[2] = DELETE (global, no params)
-      const deleteCall = mockClient.query.mock.calls[2][0] as string;
+      // calls[3] = DELETE (global, no params)
+      const deleteCall = mockClient.query.mock.calls[3][0] as string;
       expect(deleteCall).toContain('DELETE FROM page_relationships');
-      // calls[5] = parent_child INSERT (#362)
-      const parentChildCall = mockClient.query.mock.calls[5][0] as string;
+      // calls[6] = parent_child INSERT (#362)
+      const parentChildCall = mockClient.query.mock.calls[6][0] as string;
       expect(parentChildCall).toContain("'parent_child'");
-      // calls[6] = COMMIT
-      expect(mockClient.query.mock.calls[6][0]).toBe('COMMIT');
+      // calls[7] = COMMIT
+      expect(mockClient.query.mock.calls[7][0]).toBe('COMMIT');
+    });
+
+    // The page_avg_embedding kNN is an HNSW probe, and an HNSW probe returns at
+    // most `ef_search` rows no matter what its LIMIT says. This transaction set
+    // statement_timeout and nothing else, so it ran at PostgreSQL's default 40
+    // while the RAG vector leg ran at >= 100 — a recall gap that surfaces as
+    // missing edges in page_relationships, never as an error. Asserting on the
+    // SQL actually handed to the client (not on a computed constant) is what
+    // makes this fail when the SET is removed.
+    describe('hnsw.ef_search (relationship kNN recall)', () => {
+      /** The `SET LOCAL hnsw.ef_search` statement issued inside the transaction, if any. */
+      function efSearchStatement(): string | undefined {
+        return mockClient.query.mock.calls
+          .map((call) => call[0])
+          .filter((sql): sql is string => typeof sql === 'string')
+          .find((sql) => sql.includes('hnsw.ef_search'));
+      }
+
+      it('sets hnsw.ef_search on the transaction, at the RAG floor and never at the pgvector default', async () => {
+        await computePageRelationships();
+
+        const stmt = efSearchStatement();
+        expect(stmt).toBeDefined();
+        // SET LOCAL, not SET: the setting must die with the transaction rather
+        // than ride the pooled connection into whatever borrows it next.
+        expect(stmt).toMatch(/^SET LOCAL hnsw\.ef_search = \d+$/);
+
+        const ef = Number(stmt!.match(/= (\d+)$/)![1]);
+        // Same floor as retrieval, and the same value efSearchFor derives for
+        // TOP_K — one definition, not a second knob that can drift.
+        expect(ef).toBe(RAG_EF_SEARCH);
+        expect(ef).toBe(efSearchFor(5)); // TOP_K
+        // The bug this pins: PostgreSQL's default is 40.
+        expect(ef).toBeGreaterThan(40);
+        expect(ef).toBeLessThanOrEqual(1000); // pgvector's ceiling
+      });
+
+      it('sets it before the similarity kNN runs and inside the transaction', async () => {
+        await computePageRelationships();
+
+        const sqls = mockClient.query.mock.calls
+          .map((call) => call[0])
+          .filter((sql): sql is string => typeof sql === 'string');
+        const beginAt = sqls.indexOf('BEGIN');
+        const efAt = sqls.findIndex((sql) => sql.includes('hnsw.ef_search'));
+        const knnAt = sqls.findIndex((sql) => sql.includes('embedding_similarity'));
+
+        expect(beginAt).toBeGreaterThanOrEqual(0);
+        expect(efAt).toBeGreaterThan(beginAt); // SET LOCAL outside a transaction is a no-op
+        expect(knnAt).toBeGreaterThan(efAt);   // and after the probe would be useless
+      });
+
+      it('interpolates a bare integer — no bind params, which SET cannot take', async () => {
+        await computePageRelationships();
+
+        const efCall = mockClient.query.mock.calls.find(
+          (call) => typeof call[0] === 'string' && (call[0] as string).includes('hnsw.ef_search'),
+        );
+        expect(efCall![0]).not.toContain('$');
+        expect(efCall![1]).toBeUndefined();
+      });
     });
 
     it('should not use userId (global shared tables)', async () => {
       // Use default catch-all from beforeEach
       await computePageRelationships();
 
-      // calls[2] = DELETE has no params (global clear)
-      const deleteCall = mockClient.query.mock.calls[2][0] as string;
+      // calls[3] = DELETE has no params (global clear)
+      const deleteCall = mockClient.query.mock.calls[3][0] as string;
       expect(deleteCall).toContain('DELETE FROM page_relationships');
-      // calls[3] = similarity INSERT uses $1 (TOP_K), $2 (SIMILARITY_THRESHOLD), $3 (null for changedPageIds)
-      expect(mockClient.query.mock.calls[3][1]).toBeDefined();
-      expect(mockClient.query.mock.calls[3][1][2]).toBeNull(); // changedPageIds = null (full recompute)
-      // calls[4] = label overlap uses $1 (null for changedPageIds)
+      // calls[4] = similarity INSERT uses $1 (TOP_K), $2 (SIMILARITY_THRESHOLD), $3 (null for changedPageIds)
       expect(mockClient.query.mock.calls[4][1]).toBeDefined();
-      expect(mockClient.query.mock.calls[4][1][0]).toBeNull(); // changedPageIds = null
+      expect(mockClient.query.mock.calls[4][1][2]).toBeNull(); // changedPageIds = null (full recompute)
+      // calls[5] = label overlap uses $1 (null for changedPageIds)
+      expect(mockClient.query.mock.calls[5][1]).toBeDefined();
+      expect(mockClient.query.mock.calls[5][1][0]).toBeNull(); // changedPageIds = null
       // pool query() is NOT used
       expect(mocks.query).not.toHaveBeenCalled();
     });
@@ -463,6 +528,7 @@ describe('embedding-service', () => {
       mockClient.query
         .mockResolvedValueOnce({ rows: [] })                                     // BEGIN
         .mockResolvedValueOnce({ rows: [] })                                     // SET LOCAL statement_timeout
+        .mockResolvedValueOnce({ rows: [] })                                     // SET LOCAL hnsw.ef_search
         .mockResolvedValueOnce({ rows: [], rowCount: 0 })                       // DELETE
         .mockRejectedValueOnce(new Error('pgvector error'))                     // similarity INSERT fails
         .mockResolvedValueOnce({ rows: [] });                                    // ROLLBACK
@@ -496,7 +562,8 @@ describe('embedding-service', () => {
     });
 
     it('should delete only affected rows when changedPageIds is provided (incremental)', async () => {
-      // 8 query slots: BEGIN, SET LOCAL, DELETE (directed similarity edges),
+      // 9 query slots: BEGIN, SET LOCAL statement_timeout, SET LOCAL
+      // hnsw.ef_search, DELETE (directed similarity edges),
       // DELETE (symmetric edges), similarity INSERT, label INSERT,
       // parent_child INSERT (#362), COMMIT. Each must be explicitly mocked so the
       // assertions below pin the bind params for the new edge type instead of
@@ -508,6 +575,7 @@ describe('embedding-service', () => {
       mockClient.query
         .mockResolvedValueOnce({ rows: [] })                                                          // BEGIN
         .mockResolvedValueOnce({ rows: [] })                                                          // SET LOCAL statement_timeout
+        .mockResolvedValueOnce({ rows: [] })                                                          // SET LOCAL hnsw.ef_search
         .mockResolvedValueOnce({ rows: [], rowCount: 1 })                                             // DELETE directed embedding_similarity WHERE page_id_1 = ANY($1)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 })                                             // DELETE symmetric edges WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)
         .mockResolvedValueOnce({ rows: [{ page_id_1: 1, page_id_2: 2, score: 0.9 }], rowCount: 1 })   // similarity INSERT
@@ -520,43 +588,43 @@ describe('embedding-service', () => {
       expect(totalEdges).toBe(1);
       // Sanity: pin the slot count so a future producer that adds another query
       // can't quietly shift the assertions below to the wrong call index.
-      expect(mockClient.query).toHaveBeenCalledTimes(8);
+      expect(mockClient.query).toHaveBeenCalledTimes(9);
 
       // #916: directed similarity edges are pruned SOURCE-SIDE ONLY. This delete
       // must target relationship_type = 'embedding_similarity' and match only
       // page_id_1 = ANY($1) — never page_id_2 — so reverse edges Y→X owned by an
       // unchanged page Y survive.
-      const directedDeleteCall = mockClient.query.mock.calls[2][0] as string;
+      const directedDeleteCall = mockClient.query.mock.calls[3][0] as string;
       expect(directedDeleteCall).toContain("relationship_type = 'embedding_similarity'");
       expect(directedDeleteCall).toContain('page_id_1 = ANY($1)');
       expect(directedDeleteCall).not.toContain('page_id_2');
-      expect(mockClient.query.mock.calls[2][1]).toEqual([[1, 3]]);
+      expect(mockClient.query.mock.calls[3][1]).toEqual([[1, 3]]);
 
       // #916: all symmetric edge types are deleted on BOTH sides and must
       // explicitly exclude the directed embedding_similarity type.
-      const symmetricDeleteCall = mockClient.query.mock.calls[3][0] as string;
+      const symmetricDeleteCall = mockClient.query.mock.calls[4][0] as string;
       expect(symmetricDeleteCall).toContain("relationship_type <> 'embedding_similarity'");
       expect(symmetricDeleteCall).toContain('page_id_1 = ANY($1)');
       expect(symmetricDeleteCall).toContain('page_id_2 = ANY($1)');
-      expect(mockClient.query.mock.calls[3][1]).toEqual([[1, 3]]);
+      expect(mockClient.query.mock.calls[4][1]).toEqual([[1, 3]]);
 
       // similarity query $3 should be changedPageIds
-      const similarityCall = mockClient.query.mock.calls[4];
+      const similarityCall = mockClient.query.mock.calls[5];
       expect(similarityCall[1][2]).toEqual([1, 3]);
 
       // label query $1 should be changedPageIds
-      const labelCall = mockClient.query.mock.calls[5];
+      const labelCall = mockClient.query.mock.calls[6];
       expect(labelCall[1][0]).toEqual([1, 3]);
 
       // parent_child query (#362) $1 should be changedPageIds — pins the
       // incremental contract for the new edge type.
-      const parentChildCall = mockClient.query.mock.calls[6];
+      const parentChildCall = mockClient.query.mock.calls[7];
       expect(parentChildCall[0]).toContain("'parent_child'");
       expect(parentChildCall[1][0]).toEqual([1, 3]);
 
       // COMMIT must be the final call (would silently fall through to the
       // beforeEach catch-all if the slot count above were wrong).
-      expect(mockClient.query.mock.calls[7][0]).toBe('COMMIT');
+      expect(mockClient.query.mock.calls[8][0]).toBe('COMMIT');
     });
   });
 
