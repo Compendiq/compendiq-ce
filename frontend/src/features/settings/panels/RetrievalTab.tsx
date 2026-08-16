@@ -280,8 +280,19 @@ export function RetrievalTab() {
           : 'Retrieval settings updated (takes effect within a minute)',
       );
     },
-    onError: (err) => {
+    onError: async (err) => {
       toast.error(err instanceof Error ? err.message : 'Failed to update retrieval settings');
+      // #1114 — a failed PUT does not mean nothing landed. The knobs are
+      // written before the keyword-index transaction runs, so a rebuild
+      // failure leaves them saved; and the rebuild is deliberately unbounded
+      // server-side while the edge caps `/api/` at 300s, so a corpus that
+      // outruns that budget answers 504 here and COMMITS there. Re-reading
+      // the server is what stops the panel showing a value the database does
+      // not have. `hydrated` is left alone on purpose: `saved` recomputes
+      // from the fresh payload — which is what Save's enabled state is
+      // derived from — while the admin's unsent edits survive a transient
+      // failure.
+      await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
     },
   });
 
@@ -373,11 +384,24 @@ export function RetrievalTab() {
             <label htmlFor="ftsLanguage" className="pt-1.5 text-sm font-medium">
               Keyword index language
             </label>
+            {/*
+              The cost sentence is wired to the control, not merely printed
+              near it (ADR-010's `DeepSearchToggle` precedent): this is the one
+              control on the panel whose save re-indexes the corpus, and a
+              caveat a screen-reader user never hears is the same caveat living
+              in a `title`. The `simple` hint joins the description only while
+              it is on screen.
+            */}
             <select
               id="ftsLanguage"
               className="nm-select-md shrink-0"
               value={values.ftsLanguage}
               onChange={(event) => set('ftsLanguage', event.target.value as FtsLanguage)}
+              aria-describedby={
+                values.ftsLanguage === 'simple'
+                  ? 'ftsLanguage-help ftsLanguage-simple-hint'
+                  : 'ftsLanguage-help'
+              }
               data-testid="retrieval-ftsLanguage"
             >
               {FTS_LANGUAGE_OPTIONS.map((language) => (
@@ -388,14 +412,18 @@ export function RetrievalTab() {
             </select>
           </div>
           <div className="space-y-1.5 text-xs text-muted-foreground">
-            <p>
+            <p id="ftsLanguage-help">
               Stemming and stop words for the keyword leg of search. Saving rebuilds the keyword
               index for every page.
             </p>
             {values.ftsLanguage === 'simple' && (
               // Muted, never amber: on a default install this is permanent,
               // and ADR-010 spends amber on states that clear.
-              <p className="text-xs text-muted-foreground" data-testid="retrieval-fts-simple-hint">
+              <p
+                id="ftsLanguage-simple-hint"
+                className="text-xs text-muted-foreground"
+                data-testid="retrieval-fts-simple-hint"
+              >
                 <code className="font-mono">simple</code> does no stemming — pick the language most
                 of your content is written in.
               </p>

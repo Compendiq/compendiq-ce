@@ -626,61 +626,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
       invalidateFor.get(key)?.();
     }
 
-    // ─── #1114 — the keyword-index language ───────────────────────────────
-    //
-    // LAST, and in ONE transaction. Two separate `query()` calls autocommit on
-    // pooled connections (possibly different ones), so the row landed before
-    // the rebuild started: a rebuild that failed left `fts_language = german`
-    // with every `tsv` still built as `simple`, the panel reporting a language
-    // search was not using, and Save disabled on reload because the stored
-    // value already matched — the exact silent keyword-leg collapse this
-    // control exists to end, under copy promising the rebuild.
-    //
-    // `SET LOCAL statement_timeout = 0` for the same reason
-    // `shadow-migration-service.ts` sets it: a deployment that sets
-    // `PG_STATEMENT_TIMEOUT` applies it to every pooled connection, and a
-    // corpus-wide UPDATE is precisely the statement that outlives it — so on
-    // those instances the save would fail deterministically, every time.
-    // `SET LOCAL`, so it lasts exactly this transaction.
-    //
-    // It runs after the loop above so a failed rebuild cannot discard the
-    // other knobs the same PUT validated and wrote; the panel batches all of
-    // them into one request.
-    if (body.ftsLanguage !== undefined) {
-      const client = await getPool().connect();
-      try {
-        await client.query('BEGIN');
-        await client.query('SET LOCAL statement_timeout = 0');
-        await client.query(
-          `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
-           VALUES ('fts_language', $1, NOW())
-           ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
-          [body.ftsLanguage],
-        );
-        await client.query(
-          `UPDATE pages SET tsv = to_tsvector(
-            $1::regconfig,
-            coalesce(title, '') || ' ' || coalesce(body_text, '')
-          ) WHERE deleted_at IS NULL`,
-          [body.ftsLanguage],
-        );
-        await client.query('COMMIT');
-      } catch (err) {
-        await client.query('ROLLBACK').catch(() => {});
-        logger.error(
-          { err, ftsLanguage: body.ftsLanguage },
-          'Keyword-index rebuild failed — the language was not changed',
-        );
-        // The raw driver message is not for the panel; the operator-facing
-        // fact is that nothing changed, so retrying is safe.
-        throw fastify.httpErrors.internalServerError(
-          'Rebuilding the keyword index failed. The keyword index language was not changed.',
-        );
-      } finally {
-        client.release();
-      }
-    }
-
     // ─── #113 Phase B-3 — cluster-wide LLM queue settings ─────────────────
     // These do NOT go through the `updates` UPSERT loop above — the
     // dedicated setters in `llm-queue.ts` UPSERT the row AND publish on
@@ -761,7 +706,76 @@ export async function adminRoutes(fastify: FastifyInstance) {
       logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
     }
 
+    // ─── #1114 — the keyword-index language ───────────────────────────────
+    //
+    // LAST of the writes, and in ONE transaction. Two separate `query()` calls
+    // autocommit on pooled connections (possibly different ones), so the row
+    // landed before the rebuild started: a rebuild that failed left
+    // `fts_language = german` with every `tsv` still built as `simple`, the
+    // panel reporting a language search was not using, and Save disabled on
+    // reload because the stored value already matched — the exact silent
+    // keyword-leg collapse this control exists to end, under copy promising
+    // the rebuild.
+    //
+    // `SET LOCAL statement_timeout = 0` for the same reason
+    // `shadow-migration-service.ts` sets it: a deployment that sets
+    // `PG_STATEMENT_TIMEOUT` applies it to every pooled connection, and a
+    // corpus-wide UPDATE is precisely the statement that outlives it — so on
+    // those instances the save would fail deterministically, every time.
+    // `SET LOCAL`, so it lasts exactly this transaction.
+    //
+    // It runs after every other write — the knob loop, the queue setters, the
+    // rate limits and `embedding_dirty` — because it is the only statement in
+    // this handler that can throw at this point, and the r9 invariant above
+    // covers more than the settings row: throwing between the chunk-size
+    // upsert and `UPDATE pages SET embedding_dirty` would leave the new chunk
+    // size persisted with the corpus never re-chunked, which is the same
+    // silently mixed index, reached from the other side (review r2). The audit
+    // event is written below for what actually landed, whichever way this goes.
+    let ftsRebuildError: unknown;
+    if (body.ftsLanguage !== undefined) {
+      const client = await getPool().connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SET LOCAL statement_timeout = 0');
+        await client.query(
+          `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+           VALUES ('fts_language', $1, NOW())
+           ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+          [body.ftsLanguage],
+        );
+        // No `deleted_at IS NULL` filter (review r2). The maintenance trigger
+        // is `BEFORE INSERT OR UPDATE OF title, body_text`, and the restore
+        // path (`pages-crud.ts`) only clears `deleted_at` — so a page skipped
+        // here comes back out of the trash carrying a `tsv` built with the
+        // PREVIOUS configuration, permanently out of step with the rest of
+        // the corpus and with nothing that ever rebuilds it. Trash is small,
+        // the write is idempotent, and it is what makes "every page" true.
+        await client.query(
+          `UPDATE pages SET tsv = to_tsvector(
+            $1::regconfig,
+            coalesce(title, '') || ' ' || coalesce(body_text, '')
+          )`,
+          [body.ftsLanguage],
+        );
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        logger.error(
+          { err, ftsLanguage: body.ftsLanguage },
+          'Keyword-index rebuild failed — the language was not changed',
+        );
+        ftsRebuildError = err;
+      } finally {
+        client.release();
+      }
+    }
+
+    // What actually landed. A rolled-back rebuild leaves no language change,
+    // so recording one would put a change in the audit trail that the database
+    // does not have.
     const auditDetails = { ...body };
+    if (ftsRebuildError !== undefined) delete auditDetails.ftsLanguage;
 
     await logAuditEvent(
       request.userId,
@@ -771,6 +785,22 @@ export async function adminRoutes(fastify: FastifyInstance) {
       { action: 'update_admin_settings', ...auditDetails },
       request,
     );
+
+    if (ftsRebuildError !== undefined) {
+      // 503, not 500. `app.ts`'s error handler replaces the body message of
+      // every 500 with a flat 'Internal Server Error' (pinned by
+      // `app.test.ts`), so a 500 delivers none of this to the panel — the
+      // admin waits out a corpus-wide rebuild and is told nothing but the
+      // status. Any non-500 status keeps `error.message`, and 503 is the
+      // honest one: the rebuild could not be completed now, and retrying is
+      // safe. The raw driver message stays in the log, not on the wire.
+      const alsoSaved = Object.keys(body).length > 1;
+      throw fastify.httpErrors.serviceUnavailable(
+        alsoSaved
+          ? 'Rebuilding the keyword index failed. The keyword index language was not changed; the other settings in this request were saved.'
+          : 'Rebuilding the keyword index failed. The keyword index language was not changed.',
+      );
+    }
 
     if (hasChunkChanges) {
       return { message: 'Admin settings updated, all pages queued for re-embedding' };

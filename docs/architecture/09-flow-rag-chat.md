@@ -1110,8 +1110,22 @@ states the condition where an operator will meet it.
   `shadow-migration-service.ts` does for its own corpus-wide statements): two
   autocommitted statements would let a failed rebuild leave the row saying
   `german` while every `tsv` was still built as `simple` — the same silent
-  wrong-index failure the env var caused, reached from the panel instead. The
-  allow-list
+  wrong-index failure the env var caused, reached from the panel instead. It
+  covers **every** page, trash included: the maintenance trigger fires on
+  `title`/`body_text` only and the restore path clears `deleted_at` alone, so a
+  skipped row would come back out of the trash indexed in the previous
+  language with nothing left to rebuild it. It is also the **last** write the
+  PUT handler makes — after the other knobs, the queue setters, the rate limits
+  and `UPDATE pages SET embedding_dirty` — because it is the only one there
+  that can throw, and a persisted chunk size without a dirtied corpus is the
+  same mixed-index state from the embedding side. The refusal is a **503**
+  carrying the operator-facing message (`app.ts` flattens the body message of
+  every 500), and the audit row records what actually landed. The rollback
+  guarantee is database-side only: the statement is unbounded while nginx caps
+  `/api/` at `proxy_read_timeout 300` and closing that connection cancels
+  nothing, so a rebuild past five minutes reports a 504 to the browser and
+  commits anyway — which is why the panel re-reads `['admin-settings']` on
+  error as well as on success. The allow-list
   (`FTS_LANGUAGES` in `packages/contracts`) is shared by the select, the
   route and `getFtsLanguage`, and is closed because the chosen name is
   interpolated into SQL — PostgreSQL has no bind-parameter form for a

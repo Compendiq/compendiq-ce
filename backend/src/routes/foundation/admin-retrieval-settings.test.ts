@@ -67,6 +67,7 @@ vi.mock('nodemailer', () => ({
   default: { createTransport: vi.fn().mockReturnValue({ sendMail: vi.fn(), close: vi.fn() }) },
 }));
 
+import { logAuditEvent } from '../../core/services/audit-service.js';
 import {
   getRagFetchWidth,
   getRagRerankCandidates,
@@ -118,6 +119,7 @@ beforeEach(() => {
   pending = null;
   rebuildFails = false;
   mockRelease.mockReset();
+  vi.mocked(logAuditEvent).mockClear();
   mockQuery.mockReset();
   mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
     if (/^\s*BEGIN/i.test(sql)) {
@@ -188,12 +190,23 @@ let app: ReturnType<typeof Fastify>;
 beforeAll(async () => {
   app = Fastify({ logger: false });
   await app.register(sensible);
+  // Mirrors `app.ts`'s production handler, INCLUDING its 500-message
+  // scrubbing (`app.test.ts` pins that: "Should NOT expose the actual error
+  // message for 500 errors"). The first cut of this file sent
+  // `{ error: error.message }` for every status, which made an assertion on
+  // operator-facing copy pass against a route whose message production
+  // replaces with a flat 'Internal Server Error' (review r2).
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
       reply.status(400).send({ error: 'ValidationError', message: error.message, statusCode: 400 });
       return;
     }
-    reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+    const statusCode = (error as { statusCode?: number }).statusCode ?? 500;
+    reply.status(statusCode).send({
+      error: statusCode === 500 ? 'InternalServerError' : error.name,
+      message: statusCode === 500 ? 'Internal Server Error' : error.message,
+      statusCode,
+    });
   });
   const asAdmin = async (request: { userId: string; userRole: string }) => {
     request.userId = 'admin-user-id';
@@ -480,6 +493,15 @@ describe('admin settings — the keyword-index language comes from the row alone
     // Bound, not interpolated, on this one statement — the reader's
     // interpolation is what the allow-list exists for.
     expect(rebuild![1]).toEqual(['german']);
+    // EVERY page, trash included (review r2). The maintenance trigger fires
+    // on `title`/`body_text` only and the restore path clears `deleted_at`
+    // alone, so a skipped row returns from the trash indexed in the previous
+    // language with nothing left to rebuild it — and the panel's copy says
+    // "every page".
+    expect(
+      String(rebuild![0]),
+      'a `deleted_at` filter leaves restorable pages indexed in the old language',
+    ).not.toMatch(/deleted_at/i);
   });
 
   it('writes the row and rebuilds the corpus in ONE transaction', async () => {
@@ -513,23 +535,56 @@ describe('admin settings — the keyword-index language comes from the row alone
 
     expect(res.statusCode).toBeGreaterThanOrEqual(500);
     // What the admin needs to know is that nothing changed, so a retry is
-    // safe — not the driver's own message.
-    expect(res.json().error ?? res.json().message).toMatch(/was not changed/i);
+    // safe — not the driver's own message. It has to survive `app.ts`'s
+    // handler, which flattens the body message of every 500 (review r2), so
+    // this asserts the field the panel actually reads.
+    expect(res.json().message).toMatch(/was not changed/i);
+    expect(
+      res.statusCode,
+      'a 500 has its message replaced with "Internal Server Error" in production',
+    ).not.toBe(500);
     expect(stored('fts_language'), 'the row must roll back with the rebuild').toBeUndefined();
     expect(mockQuery.mock.calls.some(([sql]) => /^\s*ROLLBACK/i.test(String(sql)))).toBe(true);
     expect(mockRelease).toHaveBeenCalled();
   });
 
-  it('keeps the other knobs saved in the same request when the rebuild fails', async () => {
+  it('keeps the other knobs saved in the same request when the rebuild fails, and says so', async () => {
     // The panel batches the language with the nine knobs into one PUT, so a
     // rebuild failure must not discard settings that already validated and
-    // have nothing to do with the keyword index.
+    // have nothing to do with the keyword index — and the message the panel
+    // toasts is the only feedback for the whole request, so a bare "failed"
+    // reads as "nothing saved" (review r2).
     rebuildFails = true;
 
-    await put({ ftsLanguage: 'german', ragFetchWidth: 40 });
+    const res = await put({ ftsLanguage: 'german', ragFetchWidth: 40 });
 
     expect(stored('rag_fetch_width')).toBe('40');
     await expect(getRagFetchWidth()).resolves.toBe(40);
+    expect(res.json().message).toMatch(/other settings in this request were saved/i);
+  });
+
+  it('still dirties the corpus and writes the audit row when the rebuild fails', async () => {
+    // The r9 invariant at the top of the handler is not only about the
+    // settings row: a chunk change that persists without
+    // `embedding_dirty` is the same silently mixed index. The language
+    // rebuild is the one statement here that can throw, so it must run after
+    // every other write (review r2).
+    rebuildFails = true;
+
+    const res = await put({ ftsLanguage: 'german', embeddingChunkSize: 800 });
+
+    expect(res.statusCode).toBe(503);
+    expect(stored('embedding_chunk_size')).toBe('800');
+    expect(
+      mockQuery.mock.calls.some(([sql]) => /UPDATE pages SET embedding_dirty = TRUE/i.test(String(sql))),
+      'a persisted chunk size must always be paired with a dirtied corpus',
+    ).toBe(true);
+    // The audit trail records what landed — the chunk size, not a language
+    // change the database rolled back.
+    expect(logAuditEvent).toHaveBeenCalledTimes(1);
+    const details = vi.mocked(logAuditEvent).mock.calls[0]![4] as Record<string, unknown>;
+    expect(details.embeddingChunkSize).toBe(800);
+    expect(details).not.toHaveProperty('ftsLanguage');
   });
 
   it('refuses a configuration outside the contracts allow-list, writing nothing', async () => {

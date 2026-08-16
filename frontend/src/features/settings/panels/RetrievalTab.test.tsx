@@ -348,6 +348,76 @@ describe('RetrievalTab — keyword index language (#1114)', () => {
     expect(screen.queryByTestId('retrieval-fts-simple-hint')).not.toBeInTheDocument();
   });
 
+  it('wires the cost sentence and the simple hint to the control itself', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    // ADR-010's `DeepSearchToggle` rule: the copy that makes a control safe is
+    // wired to it, not merely printed beside it. This is the only control on
+    // the panel whose save re-indexes the corpus, so a screen-reader user must
+    // hear the cost before choosing.
+    const described = (select().getAttribute('aria-describedby') ?? '').split(/\s+/);
+    const text = described
+      .map((id) => document.getElementById(id)?.textContent ?? '')
+      .join(' ');
+    expect(text).toMatch(/rebuilds the keyword index for every page/i);
+    expect(text).toMatch(/does no stemming/i);
+
+    // The hint leaves the description with the hint.
+    fireEvent.change(select(), { target: { value: 'german' } });
+    const afterIds = (select().getAttribute('aria-describedby') ?? '').split(/\s+/);
+    for (const id of afterIds) expect(document.getElementById(id)).not.toBeNull();
+    expect(
+      afterIds.map((id) => document.getElementById(id)?.textContent ?? '').join(' '),
+    ).toMatch(/rebuilds the keyword index for every page/i);
+  });
+
+  it('re-reads the server when a save fails, so it cannot show a value the database lacks', async () => {
+    // Two ways a failed PUT still changes something: the nine knobs are
+    // written before the keyword-index transaction runs, and the rebuild is
+    // unbounded server-side while the edge caps `/api/` at 300s — a corpus
+    // that outruns that answers 504 to the browser and commits anyway. Either
+    // way the panel must go back to the server rather than keep rendering the
+    // value it optimistically holds.
+    let settings: Record<string, unknown> = { ...defaultSettings };
+    let gets = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') {
+          // The rebuild ran and committed; the response never made it back.
+          settings = { ...settings, ftsLanguage: 'german' };
+          return json({ message: 'Gateway Time-out' }, 504);
+        }
+        gets++;
+        return json(settings);
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+    const getsBeforeSave = gets;
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(gets).toBeGreaterThan(getsBeforeSave));
+    // The committed value is what the panel now compares against, so Save
+    // stops offering to re-run a corpus-wide rebuild that already happened.
+    await waitFor(() => expect(screen.getByTestId('retrieval-save-btn')).toBeDisabled());
+  });
+
   it('keeps Save disabled until the language actually differs', async () => {
     mockApi({ settings: { ...defaultSettings, ftsLanguage: 'german' } });
     renderTab();

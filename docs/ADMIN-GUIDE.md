@@ -448,18 +448,34 @@ stemming at all. Allowed values: `simple`, `english`, `german`, `french`,
 
 Two things separate it from the knobs below. **Saving it re-indexes the whole
 corpus inside the request** — every page's `tsv` is rebuilt with the new
-configuration — rather than taking effect on the next cached read. And the
-value is not a range but a closed allow-list, because PostgreSQL has no
-bind-parameter form for a `regconfig`, so the name is interpolated into the
-search SQL.
+configuration, pages in the trash included, so a restored page cannot come back
+indexed in the previous language — rather than taking effect on the next cached
+read. And the value is not a range but a closed allow-list, because PostgreSQL
+has no bind-parameter form for a `regconfig`, so the name is interpolated into
+the search SQL.
 
 The row and the rebuild are **one transaction**, with `statement_timeout`
 lifted for its duration (a `PG_STATEMENT_TIMEOUT` deployment would otherwise
 kill a corpus-wide UPDATE deterministically). So the save is slow on a large
-corpus, and if it fails nothing changed: the language stays as it was and you
-can retry. It is not touched by **Reset all to defaults** in the panel — a
+corpus, and if the *database* rejects it nothing changed: the language stays as
+it was and you can retry. If the same request also carried other retrieval
+knobs, those were written before the rebuild started and are kept — the error
+message says so. It is not touched by **Reset all to defaults** in the panel — a
 bulk reset of nine cheap knobs must not quietly re-index your corpus back to
 `simple`. Change it from its own control.
+
+**One failure mode is not a rollback.** The rebuild is unbounded on the
+database side, but the request still passes through your reverse proxy, and the
+bundled `frontend/nginx.conf` closes an `/api/` response after
+`proxy_read_timeout 300` (five minutes). Closing that connection does **not**
+cancel the PostgreSQL statement, so a corpus whose rebuild outruns the proxy
+budget reports a gateway timeout in the browser while the transaction goes on
+to commit. The panel re-reads the server after any failed save for exactly this
+reason: **believe the value the panel shows after the error, not the error**. If
+you front Compendiq with your own proxy and expect a rebuild longer than its
+read timeout, raise that timeout before changing the language, or run the
+rebuild during a window where a five-minute request is acceptable. Re-saving
+the same language is always safe — it just repeats the work.
 
 > **`FTS_LANGUAGE` is removed (#1114).** It was documented as the way to set
 > this and never worked on a migrated instance: migration 049 seeds the
@@ -818,6 +834,23 @@ for the full span reference.
 | `CONTAINER_CA_BUNDLE_PATH` | `/etc/ssl/certs/ca-certificates.crt` | Container path for the CA bundle |
 
 ## Upgrade Procedure
+
+### Breaking change: `FTS_LANGUAGE` is removed
+
+The keyword-index language is now set **only** in
+**Settings → AI Models → Retrieval**. Delete `FTS_LANGUAGE` from your
+environment and `docker/.env`; a leftover value is reported as ignored in the
+startup log.
+
+This one needs a look even if you never set the variable *deliberately*,
+because it never took effect: migration 049 seeds the `fts_language` row before
+the first request, so the code path that read the environment was unreachable.
+**If your content is not English, your keyword leg has been running `simple`
+— no stemming, no stop words — whatever the variable said.** Open the panel,
+set the language most of your content is written in, and Save; the save
+re-indexes the whole corpus inside the request, so read
+[Keyword index language (`fts_language`)](#keyword-index-language-fts_language)
+first if your corpus is large.
 
 ### Breaking change: `POSTGRES_PASSWORD` / `REDIS_PASSWORD` are now required
 
