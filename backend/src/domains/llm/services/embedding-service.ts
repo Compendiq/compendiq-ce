@@ -634,7 +634,22 @@ export async function embedPage(
       if (liveDimensions !== null) {
         const wrong = embeddings.find((v) => Array.isArray(v) && v.length !== liveDimensions);
         if (wrong) {
-          throw new EmbeddingDimensionMismatchError(embedModel, liveDimensions, wrong.length);
+          // A width mismatch has two very different causes and only one is an
+          // operator error. A swap committing mid-generate legitimately retypes
+          // the live column under vectors already produced for the old model —
+          // that is the #1116 race, and the epoch recheck in Phase 2 handles it
+          // far better than this can: it rolls back and re-dirties the page for
+          // a clean post-swap embed, where throwing here would mark the page
+          // failed and blame a model assignment that is about to become correct.
+          // So the config error is raised only when the epoch has NOT moved.
+          const epochNow = shadowStateFingerprint(await getShadowMigrationState());
+          if (epochNow === epochBefore) {
+            throw new EmbeddingDimensionMismatchError(embedModel, liveDimensions, wrong.length);
+          }
+          logger.info(
+            { pageId, epochBefore, epochNow, expected: liveDimensions, received: wrong.length },
+            'Vector width changed mid-embed (shadow swap) — deferring to the Phase 2 epoch recheck',
+          );
         }
       }
 
