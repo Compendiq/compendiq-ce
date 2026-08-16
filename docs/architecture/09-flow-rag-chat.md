@@ -1036,6 +1036,25 @@ states the condition where an operator will meet it.
 
 ## Retrieval details
 
+- **Query-instruction prefix (#1114).** Qwen3's embedding models are trained
+  asymmetrically: a QUERY carries an instruction preamble, a DOCUMENT is
+  embedded bare. `query-instruction.ts` applies
+  `Instruct: {task}\nQuery:{query}` — **no space after `Query:`**; the epic
+  body has one and the model's own template does not — at the vector leg's
+  `generateEmbedding` call, which is the app's **only** query-side embedding
+  call. The three document-side calls (`embedPage`, the shadow dual-write and
+  the shadow backfill) must never reach it, and a structural test in
+  `query-instruction.test.ts` fails if any of them starts to — a wrongly
+  prefixed document still returns a plausible vector, so no behavioural test
+  would go red while retrieval quietly degraded.
+  Two consequences are worth stating. It is keyed off the **resolved** model,
+  so it turns on exactly when a swap makes Qwen3 live and off again on a
+  rollback, with no second setting to keep in step. And because documents are
+  bare under every model, the stored corpus is byte-identical either way —
+  **flipping it needs no re-embed.** The matcher demands both `qwen3` and
+  `embed` and is deliberately narrow: prefixing a model not trained for it
+  corrupts every query vector, while failing to prefix one that was merely
+  gives up some accuracy, so unknown models fall to the safe side.
 - **Vector search** uses pgvector's `<=>` cosine distance against an HNSW
   index on `page_embeddings.embedding`. `ef_search` is set per request for
   a recall/latency trade-off.

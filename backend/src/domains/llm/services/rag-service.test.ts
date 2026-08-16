@@ -357,6 +357,56 @@ describe('RAG Service', () => {
       });
     });
 
+    // ── #1114 query-instruction prefix ───────────────────────────────────────
+    //
+    // The formatter itself is unit-tested in query-instruction.test.ts. These
+    // pin that it is actually WIRED to the query path and keyed off the
+    // resolved model — a correct formatter nobody calls is the failure mode
+    // unit tests cannot see.
+
+    async function runSearchWith(model: string, question: string) {
+      mocks.mockResolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: model,
+        },
+        model,
+      });
+      mocks.mockGenerateEmbedding.mockResolvedValue([[...new Array(1024).fill(0.1)]]);
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockClientQuery.mockResolvedValue({ rows: [] });
+      mocks.mockQuery.mockResolvedValue({ rows: [] });
+      await hybridSearch('user-1', question);
+      // generateEmbedding(config, model, text) — the text is arg 3.
+      return mocks.mockGenerateEmbedding.mock.calls[0]?.[2] as string;
+    }
+
+    it('#1114: sends the query bare to a non-instruction model', async () => {
+      const sent = await runSearchWith('bge-m3', 'how do I rotate the PAT?');
+      expect(sent).toBe('how do I rotate the PAT?');
+    });
+
+    it('#1114: prefixes the query for an instruction-aware model, exact format', async () => {
+      const sent = await runSearchWith('qwen3-embedding-4b', 'how do I rotate the PAT?');
+      expect(sent).toContain('Instruct: ');
+      // No space after `Query:` — the one detail the epic body got wrong.
+      expect(sent).toContain('\nQuery:how do I rotate the PAT?');
+      expect(sent).not.toContain('Query: how');
+    });
+
+    it('#1114: the prefix follows the resolved model, so it flips at a swap', async () => {
+      // Same question, two models, one process — this is what a shadow swap
+      // does to the live assignment, and nothing else has to be changed for
+      // the query side to follow it.
+      const before = await runSearchWith('bge-m3', 'q');
+      mocks.mockGenerateEmbedding.mockClear();
+      const after = await runSearchWith('qwen3-embedding-4b', 'q');
+      expect(before).toBe('q');
+      expect(after).not.toBe('q');
+      expect(after).toContain('Instruct: ');
+    });
+
     it('should use pe.page_id = cp.id JOIN (not pe.confluence_id = cp.confluence_id)', async () => {
       // providerGenerateEmbedding returns one 1024-dim vector
       const fakeEmbedding = new Array(1024).fill(0.1);
