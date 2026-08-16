@@ -5,13 +5,23 @@ import DndLocalSpaceTree from './DndLocalSpaceTree';
 import type { DndLocalSpaceTreeProps } from './DndLocalSpaceTree';
 import type { TreeNode } from './sidebar-types';
 
-// Mock @dnd-kit so we can test component logic without the full DnD runtime
+// Mock @dnd-kit so we can test component logic without the full DnD runtime.
+// useSortableSpy is `vi.hoisted` so both the mock factory (hoisted above
+// imports by vitest) and the tests below can reference the same instance —
+// tests inspect its call args to verify the component wires `handle`
+// correctly, since the real library's activator-instrumentation behavior
+// (the thing that regressed — see DndLocalSpaceTree.tsx) is exactly what this
+// mock replaces and therefore cannot exercise on its own.
+const { useSortableSpy } = vi.hoisted(() => ({
+  useSortableSpy: vi.fn((_input: unknown) => ({ ref: { current: null }, isDragging: false })),
+}));
+
 vi.mock('@dnd-kit/react', () => ({
   DragDropProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
 vi.mock('@dnd-kit/react/sortable', () => ({
-  useSortable: () => ({ ref: { current: null }, isDragging: false }),
+  useSortable: (input: unknown) => useSortableSpy(input),
   isSortable: () => false,
 }));
 
@@ -77,6 +87,7 @@ function renderTree(overrides: Partial<DndLocalSpaceTreeProps> = {}) {
 describe('DndLocalSpaceTree', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
+    useSortableSpy.mockClear();
   });
 
   it('renders all root-level pages', () => {
@@ -95,22 +106,66 @@ describe('DndLocalSpaceTree', () => {
     expect(screen.getByText('Child of Two')).toBeInTheDocument();
   });
 
-  // The grip is a mouse-drag affordance and nothing else — not focusable, and
-  // keyboard reorder is still open. It used to be a plain <span> carrying
-  // aria-label="Drag to reorder", which assistive tech ignores on a roleless
-  // span anyway, so the label promised a control screen-reader users could not
-  // reach. It is aria-hidden now, and pinned by its glyph instead.
-  it('shows a drag grip on each node, hidden from assistive tech', () => {
+  // The grip is now the SCOPED drag activator (`handle: handleRef`), which is
+  // what keeps dnd-kit's real accessibility instrumentation off the row
+  // itself. It must carry its own accessible name — aria-hidden would be a
+  // WCAG violation on an element the library makes keyboard-focusable — and
+  // must never be reachable via the tree's own roving tabindex (rovingId only
+  // ever targets a role="treeitem" row, never this handle).
+  it('shows a drag grip on each node, labelled and not aria-hidden', () => {
     const { container } = renderTree();
-    const grips = container.querySelectorAll('span[aria-hidden="true"].cursor-grab');
+    const grips = container.querySelectorAll('span.cursor-grab');
     expect(grips.length).toBeGreaterThanOrEqual(2);
-    expect(screen.queryByLabelText('Drag to reorder')).not.toBeInTheDocument();
+    for (const grip of grips) {
+      expect(grip).not.toHaveAttribute('aria-hidden');
+      expect(grip.getAttribute('aria-label')).toMatch(/^Reorder /);
+    }
+  });
+
+  // Regression guard for the bug the critique found: without an explicit
+  // `handle`, @dnd-kit/dom's Accessibility plugin instruments
+  // `draggable.handle ?? draggable.element` — i.e. falls back to whatever
+  // `sortable.ref` is attached to, the whole row — with role="button",
+  // tabindex="0", aria-pressed/aria-grabbed. That silently overwrote every
+  // row's role="treeitem"/roving-tabindex wiring, so Tab landed on an
+  // unlabelled drag wrapper instead of a page link and Enter/arrow keys did
+  // nothing. The real library is mocked out here, so this asserts the
+  // component's *contract with it* — that `handle` is wired to the grip
+  // node, not left unset — rather than the library's runtime DOM mutation,
+  // which only the live app can exercise.
+  it('scopes the drag activator to the grip handle, not the whole row', () => {
+    const { container } = renderTree();
+    expect(useSortableSpy).toHaveBeenCalled();
+    const call = useSortableSpy.mock.calls[0]![0] as { handle?: { current: unknown } };
+    expect(call.handle).toBeDefined();
+    expect(call.handle!.current).toBe(container.querySelector('.cursor-grab'));
   });
 
   it('navigates to page on click', () => {
     renderTree();
     fireEvent.click(screen.getByText('Page One'));
     expect(mockNavigate).toHaveBeenCalledWith('/pages/p1');
+  });
+
+  // Clicking a parent's title used to toggle expansion unconditionally before
+  // navigating, so opening an already-expanded section collapsed the very
+  // children the click was meant to reach — non-idempotently, since the same
+  // click expanded or collapsed depending on prior state. It must still open
+  // a *collapsed* parent (helpful); an already-open one should just navigate.
+  it('does not collapse an already-expanded parent when its title is clicked', () => {
+    const toggleExpand = vi.fn();
+    renderTree({ toggleExpand, expandedIds: new Set(['p2']) });
+    fireEvent.click(screen.getByText('Page Two'));
+    expect(toggleExpand).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/p2');
+  });
+
+  it('still expands a collapsed parent when its title is clicked', () => {
+    const toggleExpand = vi.fn();
+    renderTree({ toggleExpand });
+    fireEvent.click(screen.getByText('Page Two'));
+    expect(toggleExpand).toHaveBeenCalledWith('p2');
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/p2');
   });
 
   it('calls toggleExpand on expand button click for parent nodes', () => {
@@ -188,6 +243,27 @@ describe('DndLocalSpaceTree', () => {
 
   it('is the default export (compatible with React.lazy)', () => {
     expect(typeof DndLocalSpaceTree).toBe('function');
+  });
+
+  // aria-selected is the ARIA APG tree pattern's own signal for "the current
+  // item" — the active row used to convey it visually only (fill + weight),
+  // so which page was open never reached assistive tech.
+  it('marks the active row aria-selected and every other row aria-selected="false"', () => {
+    const { container } = renderTree({ activePageId: 'p1' });
+    const rows = container.querySelectorAll('[role="treeitem"]');
+    const active = Array.from(rows).find((r) => r.getAttribute('data-page-id') === 'p1')!;
+    const inactive = Array.from(rows).find((r) => r.getAttribute('data-page-id') === 'p2')!;
+    expect(active.getAttribute('aria-selected')).toBe('true');
+    expect(inactive.getAttribute('aria-selected')).toBe('false');
+  });
+
+  // No row attribute exposed a title clipped by `truncate`, and no other
+  // reachable affordance recovered it — see the twin note in
+  // SidebarTreeView.test.tsx.
+  it('gives every row a title attribute matching the page title', () => {
+    renderTree();
+    const row = screen.getByText('Page One').closest('[role="treeitem"]')!;
+    expect(row.getAttribute('title')).toBe('Page One');
   });
 
   // #707: the scroll-into-view logic lives in the parent SidebarTreeView and

@@ -195,6 +195,10 @@ describe('SidebarTreeView', () => {
   it('orders sibling roots by sortOrder, not alphabetically (#959)', () => {
     // "Zebra" is stored before "Alpha" (drag-reorder), so honouring sortOrder
     // must beat the title tiebreak — otherwise a drop snaps back to A→Z.
+    // Scoped to DEV (rather than left in All-Spaces) so the row's textContent
+    // is just the title — All-Spaces scope appends a spaceKey suffix, which
+    // is a different, dedicated test below and orthogonal to sort order.
+    useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
     mockTreeData = {
       items: [
         { id: 'p-alpha', spaceKey: 'DEV', title: 'Alpha', pageType: 'page' as const, parentId: null, sortOrder: 2, labels: [], lastModifiedAt: null, embeddingDirty: false },
@@ -329,6 +333,34 @@ describe('SidebarTreeView', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
   });
 
+  // A parent row does two jobs — navigate to the page, and (via its chevron,
+  // indent guide, and ArrowRight/Left) expand its children — and used to
+  // conflate them: clicking the title toggled expansion unconditionally
+  // before navigating, so opening an already-expanded section closed the very
+  // children the click was meant to reach.
+  it('does not collapse an already-expanded parent when its title is clicked', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getAllByLabelText('Expand')[0]);
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Getting Started'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-1');
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+  });
+
+  it('still expands a collapsed parent when its title is clicked', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Getting Started'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-1');
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+  });
+
   it('navigates to /ai?pageId= on click when on AI route (#417)', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper('/ai') });
     fireEvent.click(screen.getByText('API Reference'));
@@ -411,6 +443,30 @@ describe('SidebarTreeView', () => {
     fireEvent.click(screen.getByText('All Spaces'));
     expect(screen.getByText('Confluence')).toBeInTheDocument();
     expect(screen.getByText('Local')).toBeInTheDocument();
+  });
+
+  // The auto-select-space effect fires whenever a page is open and the scope
+  // is falsy — which is exactly what explicitly choosing "All Spaces" sets it
+  // to, so the effect could not tell "never chosen" apart from "explicitly
+  // chose all" and silently reverted the choice on the very next render, with
+  // no error and no visible change. Only reproduces with a page open, which
+  // is why it survived: with none open the same click worked correctly.
+  it('does not silently revert an explicit "All Spaces" choice back to the open page\'s own space', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'DEV' });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-2') });
+
+    fireEvent.click(screen.getByTestId('space-selector-toggle'));
+    fireEvent.click(screen.getByText('All Spaces'));
+
+    expect(useUiStore.getState().treeSidebarSpaceKey).toBeUndefined();
+    expect(screen.getByTestId('space-selector-toggle')).toHaveTextContent('All Spaces');
+  });
+
+  it('still auto-scopes to the open page\'s space the first time, before any explicit choice', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-2') });
+
+    expect(useUiStore.getState().treeSidebarSpaceKey).toBe('DEV');
   });
 
   describe('space filter', () => {
@@ -894,6 +950,56 @@ describe('SidebarTreeView ARIA tree semantics (#880)', () => {
     // The nested treeitem lives inside the group.
     expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
   });
+
+  // Hierarchy and "where am I" are the two things a tree exists to
+  // communicate, and neither reached assistive tech: the open page was
+  // conveyed by fill colour and font-weight alone.
+  it('marks the active row aria-selected and every other row aria-selected="false"', () => {
+    // OPS has no configured homepage, so opening root-2 does not trigger the
+    // #352 homepage-hiding rule the way DEV (root-1's owning space) would.
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-2') });
+    const active = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    const inactive = screen.getByText('Getting Started').closest('[role="treeitem"]')!;
+    expect(active.getAttribute('aria-selected')).toBe('true');
+    expect(inactive.getAttribute('aria-selected')).toBe('false');
+  });
+
+  // No row attribute exposed a title clipped by `truncate`, and no other
+  // reachable affordance (no hover card, nothing keyboard- or
+  // touch-reachable) recovered it.
+  it('gives every row a title attribute matching the page title', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    expect(row.getAttribute('title')).toBe('API Reference');
+  });
+});
+
+// All-Spaces scope merges every connected space's pages into one flat run
+// with nothing else distinguishing them — a corpus with any amount of
+// templated content (runbooks, meeting notes, duplicated drafts) reliably
+// produces same-titled rows next to each other with no way to tell them
+// apart. Scoped to one space, the panel chrome above the tree already
+// supplies that context, so the suffix would be redundant on every row.
+describe('SidebarTreeView spaceKey disambiguation in All-Spaces scope', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+  });
+
+  it('shows each row\'s spaceKey when scope is All Spaces', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    expect(within(row).getByText('DEV')).toBeInTheDocument();
+  });
+
+  it('hides the spaceKey suffix once scoped to a specific space', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    expect(within(row).queryByText('DEV')).not.toBeInTheDocument();
+  });
 });
 
 // #707: on reload the tree mounts scrolled to the top; the active page's path
@@ -1053,6 +1159,7 @@ describe('SidebarTreeNode memoization', () => {
       toggleExpand: vi.fn(),
       activePageId: 'page-1',
       isAiRoute: false,
+      showSpaceKey: false,
     };
 
     expect(component.compare(props, { ...props, toggleExpand: vi.fn() })).toBe(true);
@@ -1065,8 +1172,8 @@ describe('SidebarTreeNode memoization', () => {
     const node = makeNode('page-1', 'Test');
     const expandedSet = new Set<string>();
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: 'page-1', isAiRoute: false };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: 'page-1', isAiRoute: false, showSpaceKey: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -1077,8 +1184,8 @@ describe('SidebarTreeNode memoization', () => {
     };
     const node = makeNode('page-1', 'Test');
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -1090,8 +1197,21 @@ describe('SidebarTreeNode memoization', () => {
     const node = makeNode('page-1', 'Test');
     const expandedSet = new Set<string>();
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: true };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: true, showSpaceKey: false };
+
+    expect(component.compare(prev, next)).toBe(false);
+  });
+
+  it('custom comparator returns false (re-render) when showSpaceKey changes', () => {
+    const component = SidebarTreeNode as unknown as {
+      compare: (prev: SidebarTreeNodeProps, next: SidebarTreeNodeProps) => boolean;
+    };
+    const node = makeNode('page-1', 'Test');
+    const expandedSet = new Set<string>();
+    const toggleExpand = vi.fn();
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: true };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -1104,8 +1224,8 @@ describe('SidebarTreeNode memoization', () => {
     const toggleExpand = vi.fn();
     const node1 = makeNode('page-1', 'Test');
     const node2 = makeNode('page-1', 'Test Changed');
-    const prev: SidebarTreeNodeProps = { node: node1, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
-    const next: SidebarTreeNodeProps = { node: node2, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
+    const prev: SidebarTreeNodeProps = { node: node1, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node: node2, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -1124,6 +1244,7 @@ describe('SidebarTreeNode memoization', () => {
           toggleExpand={toggleExpand}
           activePageId={undefined}
           isAiRoute={false}
+          showSpaceKey={false}
         />
       </MemoryRouter>,
     );
@@ -1702,6 +1823,7 @@ describe('SidebarTreeNode memoization', () => {
           toggleExpand={toggleExpand}
           activePageId={undefined}
           isAiRoute={false}
+          showSpaceKey={false}
         />
       </MemoryRouter>,
     );

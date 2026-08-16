@@ -129,6 +129,12 @@ export interface SidebarTreeNodeProps {
   // every memoized row to every location/searchParams change, defeating the memo
   // comparator and re-rendering the whole tree on each navigation.
   isAiRoute: boolean;
+  // True only in "All Spaces" scope, where sibling rows can come from
+  // different spaces (and, in a real corpus, can share a title outright —
+  // see the spaceKey suffix below). Scoped to one space, the tree already
+  // carries that context via the panel chrome above it, so the suffix would
+  // be redundant on every row.
+  showSpaceKey: boolean;
   // Roving-tabindex (#880 follow-up, epic #856): exactly one row is ever
   // tab-stoppable — the one whose id matches `rovingId`. onRowFocus keeps it
   // in sync with clicks/Tab; onRowKeyDown drives Up/Down/Left/Right/Home/End.
@@ -144,6 +150,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   toggleExpand,
   activePageId,
   isAiRoute,
+  showSpaceKey,
   rovingId,
   onRowFocus,
   onRowKeyDown,
@@ -153,14 +160,22 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
 
+  // A parent row does two jobs — open the page, and (via its own chevron,
+  // indent guide, and ArrowRight/Left) expand its children — and used to
+  // conflate them: clicking the title toggled expansion unconditionally
+  // before navigating, so opening an already-expanded section closed the
+  // very children you clicked through to reach, non-idempotently (the same
+  // click expanded or collapsed depending on what was already open). Now the
+  // click only ever opens a collapsed parent; an already-open one just
+  // navigates, matching the other three expand/collapse paths.
   const handleNavigate = useCallback(() => {
-    if (hasChildren) toggleExpand(node.page.id);
+    if (hasChildren && !isExpanded) toggleExpand(node.page.id);
     if (isAiRoute) {
       navigate(`/ai?pageId=${node.page.id}`, { replace: true });
     } else {
       navigate(`/pages/${node.page.id}`);
     }
-  }, [navigate, node.page.id, hasChildren, toggleExpand, isAiRoute]);
+  }, [navigate, node.page.id, hasChildren, isExpanded, toggleExpand, isAiRoute]);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -185,6 +200,11 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         role="treeitem"
         tabIndex={rovingId === node.page.id ? 0 : -1}
         aria-expanded={hasChildren ? isExpanded : undefined}
+        // Hierarchy and "where am I" are the two things a tree exists to
+        // communicate, and neither reached assistive tech: the open page was
+        // conveyed by fill colour and font-weight alone. aria-selected is the
+        // ARIA APG's own signal for "the current item in this tree."
+        aria-selected={isActive}
         className={cn(
           // 28px rows at 13px. The tree is the tallest thing on screen, so its
           // row height sets how much of the corpus is reachable without
@@ -211,6 +231,12 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         // the new 280px default), which is the difference between reading a
         // title and reading its first 26 characters.
         style={{ paddingLeft: `${level * 12 + 28}px` }}
+        // The row has no other way to recover a title clipped by `truncate`
+        // below — no hover card, nothing keyboard- or touch-reachable — so a
+        // long or duplicate title (both routine in a real Confluence corpus)
+        // was unrecoverable without navigating away to check. A native title
+        // tooltip is a small answer, but it's the whole gap in one attribute.
+        title={node.page.title}
         onClick={handleNavigate}
         onFocus={() => onRowFocus(node.page.id)}
         onKeyDown={(e) => {
@@ -271,9 +297,20 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         {/* #767: pin the weight explicitly (conditional, never both classes)
             so titles can't inherit or synthesize a heavier weight while the
             variable font loads or the row sits on a composited layer. */}
-        <span className={cn('truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
+        <span className={cn('min-w-0 flex-1 truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
           {node.page.title}
         </span>
+        {/* All-Spaces scope merges every space's pages into one flat, sorted
+            run with nothing else distinguishing them — a corpus with any
+            amount of templated content (runbooks, meeting notes) reliably
+            produces same-titled rows next to each other. Same geometry as the
+            Pinned section's spaceKey suffix 80px above, which already solved
+            this for the same object listed a second time in this panel. */}
+        {showSpaceKey && (
+          <span className="ml-2 max-w-14 shrink-0 truncate text-[11px] opacity-65">
+            {node.page.spaceKey}
+          </span>
+        )}
       </div>
 
       {hasChildren && isExpanded && (
@@ -306,6 +343,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
               toggleExpand={toggleExpand}
               activePageId={activePageId}
               isAiRoute={isAiRoute}
+              showSpaceKey={showSpaceKey}
               rovingId={rovingId}
               onRowFocus={onRowFocus}
               onRowKeyDown={onRowKeyDown}
@@ -322,6 +360,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
     prev.activePageId === next.activePageId &&
     prev.expandedSet === next.expandedSet &&
     prev.isAiRoute === next.isAiRoute &&
+    prev.showSpaceKey === next.showSpaceKey &&
     prev.rovingId === next.rovingId &&
     prev.onRowFocus === next.onRowFocus &&
     prev.onRowKeyDown === next.onRowKeyDown
@@ -575,11 +614,24 @@ export function SidebarTreeView({
     }
   }, [activePageId, pages]);
 
-  // Auto-select space based on current page
+  // Auto-select space based on current page — but only ever once per mount,
+  // and never again after the user has explicitly touched the scope control.
+  // `treeSidebarSpaceKey === undefined` cannot tell "never chosen" apart from
+  // "explicitly chose All Spaces" — both look identical to this effect — so
+  // without the ref below, picking "All Spaces" while any page is open got
+  // silently reverted to that page's own space on the very next render: the
+  // effect saw the same falsy key and fired again, with no error and no
+  // visible change. `hasAutoSelectedSpaceRef` is set here on the one
+  // legitimate auto-fire AND in every explicit dropdown selection below, so
+  // any user choice — a specific space or "All Spaces" — permanently retires
+  // this convenience default for the rest of the mount.
+  const hasAutoSelectedSpaceRef = useRef(false);
   useEffect(() => {
+    if (hasAutoSelectedSpaceRef.current) return;
     if (activePageId && pages.length > 0 && !treeSidebarSpaceKey) {
       const currentPage = pages.find((p) => p.id === activePageId);
       if (currentPage) {
+        hasAutoSelectedSpaceRef.current = true;
         setTreeSidebarSpaceKey(currentPage.spaceKey);
       }
     }
@@ -874,6 +926,7 @@ export function SidebarTreeView({
               <div className="min-h-0 flex-1 overflow-y-auto">
               <button
                 onClick={() => {
+                  hasAutoSelectedSpaceRef.current = true;
                   setTreeSidebarSpaceKey(undefined);
                   setSpaceDropdownOpen(false);
                 }}
@@ -895,6 +948,7 @@ export function SidebarTreeView({
                     <button
                       key={space.key}
                       onClick={() => {
+                        hasAutoSelectedSpaceRef.current = true;
                         setTreeSidebarSpaceKey(space.key);
                         setSpaceDropdownOpen(false);
                       }}
@@ -905,9 +959,15 @@ export function SidebarTreeView({
                           : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                       )}
                     >
-                      <span className="flex items-center gap-1.5 truncate">
+                      {/* Only the name truncates — the key stays visible so two
+                          identically-named spaces (a real occurrence, not just
+                          seed noise) are still distinguishable. The space
+                          filter above already matches on this key; it just
+                          used to never be shown. */}
+                      <span className="flex min-w-0 items-center gap-1.5">
                         <Globe size={10} className="shrink-0 text-muted-foreground/70" />
-                        {space.name}
+                        <span className="truncate">{space.name}</span>
+                        <span className="shrink-0 text-muted-foreground/60">{space.key}</span>
                       </span>
                       <span className="shrink-0 text-muted-foreground ml-2">{space.pageCount}</span>
                     </button>
@@ -927,6 +987,7 @@ export function SidebarTreeView({
                       <button
                         key={space.key}
                         onClick={() => {
+                          hasAutoSelectedSpaceRef.current = true;
                           setTreeSidebarSpaceKey(space.key);
                           setSpaceDropdownOpen(false);
                         }}
@@ -937,9 +998,10 @@ export function SidebarTreeView({
                             : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                         )}
                       >
-                        <span className="flex items-center gap-1.5 truncate">
+                        <span className="flex min-w-0 items-center gap-1.5">
                           <SpaceGlyph size={10} className="shrink-0 text-action/70" />
-                          {space.name}
+                          <span className="truncate">{space.name}</span>
+                          <span className="shrink-0 text-muted-foreground/60">{space.key}</span>
                         </span>
                         <span className="shrink-0 text-muted-foreground ml-2">{space.pageCount}</span>
                       </button>
@@ -1292,6 +1354,7 @@ export function SidebarTreeView({
                 toggleExpand={toggleExpand}
                 activePageId={activePageId}
                 isAiRoute={isAiRoute}
+                showSpaceKey={!treeSidebarSpaceKey}
                 rovingId={rovingId}
                 onRowFocus={handleRowFocus}
                 onRowKeyDown={handleRowKeyDown}

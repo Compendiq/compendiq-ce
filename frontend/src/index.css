@@ -631,12 +631,18 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    system tinted the fill AND the label with the accent, which made ten list
    items compete with the primary button; here the accent is spent on actions,
    and "where am I" is carried by fill plus weight. The 1px outline is what
-   survives forced-colors mode. */
+   survives forced-colors mode — and it was `--color-border`, the quiet
+   separator hairline, not `--color-border-interactive` (the ≥3:1 token this
+   file elsewhere reserves for anything operable). A selected row in a nav
+   list IS an operable, currently-focused destination in every surface this
+   utility reaches (both page trees, the settings sidebar, the article
+   inspector's Outline/Details lists, the collapsed rail's active pill), so it
+   was failing 1.4.11 everywhere it appeared, not just here. */
 @utility nav-selection {
   color: var(--color-foreground);
   font-weight: 500;
   background: var(--color-accent);
-  outline: 1px solid var(--color-border);
+  outline: 1px solid var(--color-border-interactive);
   outline-offset: -1px;
 }
 
