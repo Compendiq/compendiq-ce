@@ -120,6 +120,18 @@ accepting an English arm over a half-written German corpus.
 **refused** rather than ignored: `--fts-langauge german` used to parse cleanly
 and spend an hour embedding under the default configuration.
 
+Both spellings work for every value flag — `--out report.json` and
+`--out=report.json` — and both scripts read them through the same function.
+They did not always: the unknown-flag guard checked the name half of
+`--out=…`, while the eval read its values by looking for the exact token
+`--out`, so `--baseline=prev.json` was admitted and then dropped, and the run
+printed absolute numbers with no comparison at all. The switches
+(`--rerank`, `--deep-search`, `--no-assemble`, `--no-pin`, `--mmr`) carry **no**
+value and refuse one, because they are read as bare flags: `--rerank=true`
+would otherwise have measured plain retrieval under a report saying reranked. A
+value flag given without a value is refused too, rather than falling back to a
+default nobody typed.
+
 ## Which FTS configuration a run measured (#1114)
 
 Retrieval has two legs, and `--fts-language` names the lexical one: the
@@ -303,7 +315,7 @@ Flags (`--help` prints the same list):
 
 | flag | default | note |
 | --- | --- | --- |
-| `--base-url` | `$EVAL_EMBEDDING_BASE_URL` | no built-in default; the point is to measure the server you serve from |
+| `--base-url` | `$EVAL_EMBEDDING_BASE_URL` | no built-in default; the point is to measure the server you serve from. Spelled **exactly** as the provider row is (`http://localhost:1234/v1` for LM Studio): the request goes to `<base-url>/embeddings`, which is what `generateEmbedding` does — nothing guesses a `/v1` for you, and a search arm whose `--base-url` differs from the assignment's is refused |
 | `--models a,b` | `text-embedding-bge-m3,text-embedding-qwen3-embedding-4b` | embedding half only; a `search`/`both` arm takes exactly one |
 | `--concurrency` | `1,4,8` | sorted and de-duplicated |
 | `--queries N` | `40` | sampled deterministically and evenly across the fixture — it is grouped by style, so a head slice would benchmark one query shape |
@@ -417,7 +429,11 @@ Recall@1 gain is established in German and not in English — should be re-run w
 `--lang de --fts-language german` before they are quoted again. Update
 `measuredOn` and `ftsLanguage` in the same edit. Until then the panel says so on
 screen: the provenance line names the `simple` configuration, and the closing
-note marks the German rows as pending re-measurement.
+note marks the German rows as pending re-measurement — **including the
+differences between the two models**, not only their absolute scores. That note
+and this paragraph have to agree; a rendered "the comparison still holds" beside
+a runbook saying otherwise is how the wrong half gets quoted, so
+`EmbeddingModelBenchmarks.test.tsx` fails on that sentence returning.
 
 ## Changing the corpus or the fixture
 

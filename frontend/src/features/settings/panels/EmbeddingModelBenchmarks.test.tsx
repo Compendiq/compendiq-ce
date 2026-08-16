@@ -60,6 +60,25 @@ describe('EmbeddingModelBenchmarks (#1114)', () => {
     expect(screen.getByTestId('embedding-benchmarks-body')).toHaveTextContent(/German rows/);
   });
 
+  it('does not tell the operator the German comparison survives that re-measurement', () => {
+    // Review r3. The rendered note said the absolute scores were pending "but
+    // the comparison between them still holds" — the exact claim the runbook
+    // and embedding-benchmarks.ts retract two paragraphs apart. Both arms did
+    // read the same lexical leg, so the run was like-for-like; that is not the
+    // same as the DELTA surviving, because RRF fuses a per-model vector leg
+    // with the shared keyword leg as Σ 1/(k + rank), which is nonlinear. The
+    // German Recall@1 delta is the one `established: true` number a swap
+    // decision leans on, and this panel is the only place it reaches a human.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    const body = screen.getByTestId('embedding-benchmarks-body');
+    expect(body).not.toHaveTextContent(/comparison between them still holds/i);
+    // The caveat has to name the deltas, not only the absolute scores…
+    expect(body).toHaveTextContent(/differences between the two models/i);
+    // …and say why, or it reads as an unexplained hedge.
+    expect(body).toHaveTextContent(/nonlinear/i);
+  });
+
   it('marks a higher-but-unproven number as "not established"', () => {
     // The load-bearing assertion. English Recall@1 is HIGHER for Qwen3
     // (0.6599 vs 0.6091) and did not survive a paired test (p = 0.174).

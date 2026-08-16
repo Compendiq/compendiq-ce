@@ -110,6 +110,18 @@ describe('parseBenchmarkArgs', () => {
     expect(parseBenchmarkArgs(['--mode', 'embedding', '--base-url', 'http://h/v1'], {}).baseUrl).toBe('http://h/v1');
   });
 
+  it('refuses a valueless --base-url or --out rather than quietly substituting a default', () => {
+    // #1114 review r3. These two were the only flags whose empty form was
+    // read as "unset" (`flagValue(...) || fallback`), and they are exactly the
+    // two that decide where a run POINTS and where its report LANDS: an
+    // operator who typed `--base-url` and lost the value measured the
+    // environment's endpoint under a command line that names another, and
+    // `--out` wrote over query-latency.json. Every other flag already refused.
+    expect(() => parseBenchmarkArgs(['--mode', 'embedding', '--base-url'], ENV)).toThrow(/--base-url needs a value/);
+    expect(() => parseBenchmarkArgs(['--mode', 'embedding', '--out'], ENV)).toThrow(/--out needs a value/);
+    expect(() => parseBenchmarkArgs(['--mode', 'embedding', '--out='], ENV)).toThrow(/--out needs a value/);
+  });
+
   it('refuses a mode, language or ladder it cannot honour instead of silently picking one', () => {
     expect(() => parseBenchmarkArgs(['--mode', 'quality'], ENV)).toThrow(/quality/);
     expect(() => parseBenchmarkArgs(['--lang', 'fr'], ENV)).toThrow(/fr/);
@@ -180,6 +192,22 @@ describe('assertSearchArmMatchesAssignment (#1114)', () => {
     expect(boom).toThrow(/other-host/);
     expect(boom).toThrow(/localhost:1234/);
   });
+
+  it('refuses a path difference too — /v1 and a bare host are different endpoints', () => {
+    // #1114 review r3. The comparison ran through embeddingsUrl, which guessed
+    // a `/v1` onto a bare host, so these two matched. They are not the same
+    // endpoint to the product: generateEmbedding posts `${base_url}/embeddings`
+    // verbatim, so an assignment of `http://localhost:1234` embeds at
+    // `/embeddings` while this arm's own calls went to `/v1/embeddings`.
+    const boom = () => assertSearchArmMatchesAssignment({
+      model: 'bge-m3',
+      baseUrl: 'http://localhost:1234/v1',
+      assignedModel: 'bge-m3',
+      assignedBaseUrl: 'http://localhost:1234',
+    });
+    expect(boom).toThrow(/http:\/\/localhost:1234\b/);
+    expect(boom).toThrow(/--mode embedding/);
+  });
 });
 
 describe('checkCorpusLanguage (#1114)', () => {
@@ -237,9 +265,17 @@ describe('embeddingsUrl', () => {
     expect(embeddingsUrl('http://localhost:1234/v1/')).toBe('http://localhost:1234/v1/embeddings');
   });
 
-  it('accepts a bare host and a fully-qualified endpoint too', () => {
-    expect(embeddingsUrl('http://localhost:1234')).toBe('http://localhost:1234/v1/embeddings');
-    expect(embeddingsUrl('http://localhost:1234/v1/embeddings')).toBe('http://localhost:1234/v1/embeddings');
+  it('never guesses a /v1 the product would not add', () => {
+    // #1114 review r3. This used to rewrite a bare host to `/v1/embeddings`,
+    // which is NOT what generateEmbedding does with such a provider row — it
+    // posts `${base_url}/embeddings` verbatim. Two costs: the embedding half
+    // timed an endpoint the product never calls, and
+    // assertSearchArmMatchesAssignment compared the two sides THROUGH this
+    // function, so a `/v1` arm passed against a bare-host assignment that
+    // resolves somewhere else entirely. `run-retrieval-eval.ts` writes the
+    // provider row from EVAL_EMBEDDING_BASE_URL verbatim, so the spelling that
+    // works there is the spelling that must work here.
+    expect(embeddingsUrl('http://localhost:1234')).toBe('http://localhost:1234/embeddings');
   });
 });
 

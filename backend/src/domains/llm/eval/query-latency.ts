@@ -26,7 +26,7 @@
  */
 import pLimit from 'p-limit';
 import { formatQueryForEmbedding } from '../services/query-instruction.js';
-import { assertKnownFlags, wantsHelp } from './cli-flags.js';
+import { assertKnownFlags, flagValue, wantsHelp } from './cli-flags.js';
 import { percentile, round } from './latency-stats.js';
 
 // Re-exported so this module stays the benchmark's single import surface; the
@@ -58,6 +58,12 @@ export const KNOWN_FLAGS = [
 ] as const;
 
 /**
+ * The switches: read as bare flags, never for a value, so `--help=1` must be
+ * refused rather than accepted and dropped. Every other flag here carries one.
+ */
+export const VALUELESS_FLAGS = ['help'] as const;
+
+/**
  * The flag reference, printed by `--help` and quoted into the unknown-flag
  * refusal. It lives here rather than in the script so a test can hold it to
  * naming every flag in `KNOWN_FLAGS` with its default — a flag added without a
@@ -66,7 +72,9 @@ export const KNOWN_FLAGS = [
 export const BENCHMARK_USAGE = [
   'scripts/benchmark-query-latency.ts — query-time latency under concurrency (#1114)',
   '',
-  `  --base-url <url>     embedding endpoint (default: $EVAL_EMBEDDING_BASE_URL; there is no built-in default)`,
+  `  --base-url <url>     embedding endpoint (default: $EVAL_EMBEDDING_BASE_URL; there is no built-in default).`,
+  '                       Spelled exactly as the provider row is: the request goes to <base-url>/embeddings,',
+  '                       which is what generateEmbedding does — nothing here guesses a /v1 for you.',
   `  --models a,b         model ids for the EMBEDDING half (default: ${DEFAULT_LATENCY_MODELS.join(',')}).`,
   '                       --mode search and --mode both take exactly ONE model: the search half reads its',
   '                       model from the seeded database, so a second id would be a label with no',
@@ -78,6 +86,9 @@ export const BENCHMARK_USAGE = [
   '  --mode <m>           embedding | search | both (default: both)',
   '  --out <file>         report path (default: query-latency.json)',
   '  --help               this text',
+  '',
+  'A value flag takes either spelling — "--out report.json" or "--out=report.json" — and is refused if',
+  'given without a value, rather than falling back to a default nobody typed.',
   '',
   'The search half never seeds: point POSTGRES_URL at a database run-retrieval-eval.ts has already',
   'seeded for the model you want to time. Do not touch the model server during a run — loading a',
@@ -183,22 +194,18 @@ export function summarizeLatencies(samples: readonly number[]): LatencySummary {
   };
 }
 
-function flagValue(argv: readonly string[], name: string): string | undefined {
-  const inline = argv.find((a) => a.startsWith(`--${name}=`));
-  if (inline !== undefined) return inline.slice(name.length + 3);
-  const i = argv.indexOf(`--${name}`);
-  if (i === -1) return undefined;
-  const next = argv[i + 1];
-  return next === undefined || next.startsWith('--') ? '' : next;
-}
-
 export function parseBenchmarkArgs(
   argv: readonly string[],
   env: Record<string, string | undefined>,
 ): BenchmarkConfig {
-  assertKnownFlags(argv, KNOWN_FLAGS, BENCHMARK_USAGE);
+  assertKnownFlags(argv, KNOWN_FLAGS, BENCHMARK_USAGE, VALUELESS_FLAGS);
 
-  const baseUrl = flagValue(argv, 'base-url') || env.EVAL_EMBEDDING_BASE_URL;
+  // `??`, not `||` (review r3): flagValue now refuses a valueless flag rather
+  // than answering '', so the environment is a fallback for an ABSENT
+  // --base-url only. It used to also absorb a `--base-url` whose value went
+  // missing, which points a run at one endpoint under a command line naming
+  // another — and --out did the same over the report path.
+  const baseUrl = flagValue(argv, 'base-url') ?? env.EVAL_EMBEDDING_BASE_URL;
   if (!baseUrl) {
     throw new Error(
       'No embedding endpoint: pass --base-url or set EVAL_EMBEDDING_BASE_URL (e.g. http://localhost:1234/v1). '
@@ -268,7 +275,7 @@ export function parseBenchmarkArgs(
     queries,
     lang,
     mode,
-    outPath: flagValue(argv, 'out') || 'query-latency.json',
+    outPath: flagValue(argv, 'out') ?? 'query-latency.json',
   };
 }
 
@@ -287,16 +294,27 @@ export function sampleQueries<T>(labels: readonly T[], n: number): T[] {
 }
 
 /**
- * The embeddings endpoint for a base URL, mirroring what
- * `generateEmbedding` does (`${cfg.baseUrl}/embeddings`) while tolerating the
- * two other spellings that appear in this repo's recipes: a bare host, and a
- * fully-qualified endpoint.
+ * The embeddings endpoint for a base URL: exactly what `generateEmbedding`
+ * does with a provider row, which is `${cfg.baseUrl}/embeddings` and no
+ * normalisation at all.
+ *
+ * It used to guess: a base URL without `/v1` was rewritten to
+ * `${host}/v1/embeddings`. That guess is not the product's behaviour, and it
+ * cost twice (review r3). The embedding half timed a URL the product would
+ * never call for such a row — so the number described a different request —
+ * and `assertSearchArmMatchesAssignment` compared its two endpoints *through*
+ * this function, so a `/v1` arm passed against an assignment pointing at the
+ * bare host, whose search half then embedded somewhere else. `--base-url` is
+ * the spelling that goes into `llm_providers.base_url` verbatim when
+ * `run-retrieval-eval.ts` seeds; the spelling that works there is the one that
+ * has to work here.
+ *
+ * Trailing slashes are trimmed, and only that: `http://h/v1/` and `http://h/v1`
+ * are the same endpoint to every server, and the assignment check needs the two
+ * spellings not to read as a mismatch.
  */
 export function embeddingsUrl(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, '');
-  if (trimmed.endsWith('/embeddings')) return trimmed;
-  if (trimmed.endsWith('/v1')) return `${trimmed}/embeddings`;
-  return `${trimmed}/v1/embeddings`;
+  return `${baseUrl.replace(/\/+$/, '')}/embeddings`;
 }
 
 /**
@@ -349,8 +367,10 @@ export function assertSearchArmMatchesAssignment(opts: {
   assignedBaseUrl: string;
 }): void {
   const sameModel = opts.model === opts.assignedModel;
-  // Normalised through the same spelling rule the requests use, so
-  // `http://h/v1` and `http://h/v1/` are not reported as a mismatch.
+  // Through the same spelling rule the requests use — which is now the
+  // product's own, so the only difference it forgives is a trailing slash. It
+  // forgave a missing `/v1` while that was guessed, which admitted a pair
+  // pointing at two genuinely different endpoints (review r3).
   const sameEndpoint = embeddingsUrl(opts.baseUrl) === embeddingsUrl(opts.assignedBaseUrl);
   if (sameModel && sameEndpoint) return;
 
@@ -456,7 +476,10 @@ export async function timeEmbeddingCalls(opts: {
       body: JSON.stringify({ model: opts.model, input: [formatQueryForEmbedding(opts.model, query)] }),
     });
     if (!res.ok) {
-      throw new Error(`${opts.model}: embeddings request failed with ${res.status} ${await res.text()}`);
+      // Naming the URL, because it is derived from --base-url the way the
+      // product derives it — a 404 here usually means the base URL is missing
+      // the path segment the provider row carries (e.g. /v1).
+      throw new Error(`${opts.model}: embeddings request to ${url} failed with ${res.status} ${await res.text()}`);
     }
     // Drain the body inside the timed window — a latency that stops at the
     // response headers is not the latency the caller experiences.
@@ -483,13 +506,14 @@ export async function probeEmbeddingDimensions(opts: {
   fetchImpl?: typeof fetch;
 }): Promise<number> {
   const doFetch = opts.fetchImpl ?? fetch;
-  const res = await doFetch(embeddingsUrl(opts.baseUrl), {
+  const url = embeddingsUrl(opts.baseUrl);
+  const res = await doFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: opts.model, input: ['dimension probe'] }),
   });
   if (!res.ok) {
-    throw new Error(`${opts.model}: dimension probe failed with ${res.status} ${await res.text()}`);
+    throw new Error(`${opts.model}: dimension probe to ${url} failed with ${res.status} ${await res.text()}`);
   }
   const body = await res.json() as { data?: Array<{ embedding?: number[] }> };
   const dims = body.data?.[0]?.embedding?.length ?? 0;

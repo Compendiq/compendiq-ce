@@ -89,12 +89,34 @@ describe('run-retrieval-eval.ts wiring (#1114)', () => {
   // script ignored one, so `--fts-langauge german` ran the full hour under
   // `simple`.
   it('refuses an unknown flag before anything is embedded', () => {
-    expect(flat).toContain('assertKnownFlags(process.argv.slice(2), EVAL_KNOWN_FLAGS, EVAL_USAGE)');
+    expect(flat).toContain(
+      'assertKnownFlags(process.argv.slice(2), EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS)',
+    );
     // Ahead of the database and the provider probe: a typo must cost nothing.
     const guard = raw.indexOf('assertKnownFlags(');
     const db = raw.indexOf('assertDisposableDatabase(');
     expect(guard).toBeGreaterThan(-1);
     expect(db).toBeGreaterThan(guard);
+  });
+
+  // #1114 review r3 — the guard above admits `--out=/tmp/x.json` (it checks
+  // the name half), and this script's own reader was
+  // `process.argv.indexOf('--out')`, which cannot see that token. So
+  // `--baseline=prev.json` passed the guard and was then dropped: an hour of
+  // embedding whose comparison section never prints. One reader, unit-tested
+  // in cli-flags.test.ts, is the fix — and this is the assertion that the
+  // script is actually on it.
+  it('reads its values through the shared reader, in both spellings', () => {
+    expect(flat).toContain('const arg = (name: string): string | undefined => flagValue(process.argv, name)');
+    // No hand-rolled index arithmetic left anywhere — that is the whole bug.
+    expect(code('run-retrieval-eval.ts')).not.toMatch(/process\.argv\.indexOf\(/);
+  });
+
+  it('reads --lang through that reader too, not a second bespoke parser', () => {
+    // It carried its own `=`-aware branch, which is how the two spellings came
+    // to disagree flag by flag in the first place.
+    expect(flat).toContain("const langArg = arg('lang')");
+    expect(code('run-retrieval-eval.ts')).not.toContain("startsWith('--lang=')");
   });
 
   it('knows every flag it reads — the list cannot drift from the parsing', () => {

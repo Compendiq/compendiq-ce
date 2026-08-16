@@ -153,8 +153,10 @@ export function EmbeddingModelBenchmarks() {
             from this table has not been measured, which is not the same as measuring badly.
             The German rows were scored with the same{' '}
             <code className="font-mono">{BENCHMARK_PROVENANCE.ftsLanguage}</code> keyword configuration rather than{' '}
-            <code className="font-mono">german</code>, so their absolute scores are pending re-measurement; both
-            models read the identical keyword leg, so the comparison between them still holds.
+            <code className="font-mono">german</code>, so those scores are pending re-measurement. Both models
+            read the identical keyword leg, so the run was like-for-like — but the two legs are fused
+            nonlinearly, and a stronger German keyword leg can compress or amplify the gap, so the differences
+            between the two models are pending that re-measurement as well.
           </p>
         </div>
       )}

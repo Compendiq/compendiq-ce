@@ -104,10 +104,21 @@ them and report the difference as a retrieval change. **The rule reaches the
 one surface those numbers are shown on**: Settings → AI Models' benchmark table
 carries `ftsLanguage` in `BENCHMARK_PROVENANCE`, renders it, and marks its
 German rows as pending re-measurement — enforcing it on the JSON report alone
-would move the omission one layer up rather than fix it. Both eval entrypoints
+would move the omission one layer up rather than fix it. **Pending includes the
+model-to-model differences, not only the absolute scores**, and the rendered
+note must say so: both arms did read the same lexical leg, but RRF fuses a
+per-model vector leg with the shared keyword one as `Σ 1/(k + rank)`, which is
+nonlinear, so a stronger German keyword leg can compress or amplify the gap —
+and the German Recall@1 delta is the one `established: true` number a swap
+decision leans on. Both eval entrypoints
 now **refuse an unrecognised flag** (`assertKnownFlags`, `eval/cli-flags.ts`)
 and print a usage list: `--fts-langauge german` parsed cleanly and spent an
-hour embedding under the default. And `resetEvalCorpus` drops the
+hour embedding under the default. They also share **one flag reader**
+(`flagValue`): `--out x` and `--out=x` both work, a value flag given without a
+value is refused rather than defaulted, and a switch refuses a value — the
+guard admitted `--baseline=prev.json` on its name half while the eval's own
+`indexOf('--baseline')` could not see it, so the comparison silently never ran.
+And `resetEvalCorpus` drops the
 `eval_corpus_language` claim it invalidates, so a seed that dies halfway leaves
 *no* claim rather than the previous run's — absent routes the benchmark to its
 warning, which is the safe verdict for "unknown".
@@ -125,7 +136,11 @@ and no endpoint, so `rag-service` resolves both from the DB's `embedding`
 assignment while `--models`/`--base-url` describe only the direct-POST embedding
 half. So a `search`/`both` arm takes exactly ONE model, is refused unless it
 names what the assignment resolves to (the width probe cannot separate two
-1024-dim models), and the report records the resolved pair. `--lang` selects the
+1024-dim models), and the report records the resolved pair. That endpoint
+comparison is **exact**: `--base-url` is spelled as the provider row is, because
+`generateEmbedding` posts `${base_url}/embeddings` verbatim — guessing a `/v1`
+onto a bare host both timed a URL the product never calls and let a `/v1` arm
+pass against an assignment resolving somewhere else. `--lang` selects the
 question set, never the corpus — `run-retrieval-eval.ts` records the seeded
 corpus in `admin_settings.eval_corpus_language` and a mismatched `--lang` is
 refused, because the dead-vector-leg guard only fires at *zero* participation.

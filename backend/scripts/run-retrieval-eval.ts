@@ -34,7 +34,7 @@ import { generateEmbedding } from '../src/domains/llm/services/openai-compatible
 import { loadCorpus, loadFixture, assertFixturePower, corpusDirsForLanguage } from '../src/domains/llm/eval/fixture.js';
 import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk, configureFtsLanguage, assertSeededFtsLanguage, recordCorpusLanguage, EVAL_USER_ID } from '../src/domains/llm/eval/seed.js';
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
-import { assertKnownFlags, wantsHelp, EVAL_KNOWN_FLAGS, EVAL_USAGE } from '../src/domains/llm/eval/cli-flags.js';
+import { assertKnownFlags, flagValue, wantsHelp, EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS } from '../src/domains/llm/eval/cli-flags.js';
 import { parseFtsLanguageArg, assertComparableFtsLanguage } from '../src/domains/llm/eval/fts-config.js';
 import { runEval } from '../src/domains/llm/eval/runner.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
@@ -87,10 +87,11 @@ interface Report {
   runs: QueryRun[];
 }
 
-function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`);
-  return i === -1 ? undefined : process.argv[i + 1];
-}
+// Both spellings, and a flag given with no value is refused rather than
+// answered as "unset" — see flagValue in eval/cli-flags.ts. This used to be
+// index arithmetic over `--${name}`, which could not see `--out=/tmp/x.json`
+// at all while assertKnownFlags happily admitted it (review r3).
+const arg = (name: string): string | undefined => flagValue(process.argv, name);
 
 // The destructive-database guard now lives in
 // src/domains/llm/eval/disposable-db.ts. It was private to this file, below
@@ -107,7 +108,11 @@ async function main(): Promise<void> {
   // unrecognised flag used to be ignored here, so `--fts-langauge german` ran
   // the whole hour under 'simple' (review r2). The benchmark already refused
   // one; two entrypoints disagreeing about that is drift, not a policy.
-  assertKnownFlags(process.argv.slice(2), EVAL_KNOWN_FLAGS, EVAL_USAGE);
+  // EVAL_VALUELESS_FLAGS is the other half of the same guarantee: the switches
+  // are read with `process.argv.includes`, so `--rerank=true` would otherwise
+  // pass the name-half check and measure plain retrieval under a report that
+  // says reranked.
+  assertKnownFlags(process.argv.slice(2), EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS);
 
   const baseUrl = process.env.EVAL_EMBEDDING_BASE_URL;
   const model = process.env.EVAL_EMBEDDING_MODEL;
@@ -155,8 +160,7 @@ async function main(): Promise<void> {
   // #1114: --lang de measures the translated corpus instead of the English
   // one. It is a separate measurement with its own fixture, never a variant
   // of the English gate — see corpusDirsForLanguage.
-  const langArg = process.argv.find((a) => a.startsWith('--lang='))?.split('=')[1]
-    ?? (process.argv.includes('--lang') ? process.argv[process.argv.indexOf('--lang') + 1] : undefined);
+  const langArg = arg('lang');
   const language = langArg && langArg !== 'en' ? langArg : 'en';
   const corpusDirs = corpusDirsForLanguage(language);
   const fixtureFile = language === 'en' ? 'fixture.json' : `fixture-${language}.json`;
