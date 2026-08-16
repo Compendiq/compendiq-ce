@@ -45,7 +45,25 @@ export interface BenchmarkRow {
   recallAt1: BenchmarkMetric;
   recallAt5: BenchmarkMetric;
   mrr: BenchmarkMetric;
-  /** Chunks embedded per second, same corpus and hardware. */
+  /**
+   * Chunks embedded per second, same corpus and hardware.
+   *
+   * Both figures are the EARLIER #1114 ingest run — 2,198 chunks in 3 m 31 s
+   * and 36 m 13 s — which timed the embedding phase on its own. Two later
+   * measurements qualify the absolute number without displacing it, and the
+   * runbook carries the same reconciliation:
+   *
+   * - The `german` re-seed took 4 m 21 s / 40 m 55 s, but each arm is a full
+   *   re-seed **plus its 197 eval queries**, so dividing by it understates
+   *   throughput. It reproduces the ratio (~9.4x), not the rate.
+   * - A direct `SELECT count(*) FROM page_embeddings` on this corpus read
+   *   **2,377** chunks, not 2,198 (#1114, the `ef_search` run). Nothing
+   *   reconciles the two counts, so the rate below is quoted from the run that
+   *   produced it rather than recomputed against a count from another one.
+   *
+   * The column is here for the ~10x, which every measurement agrees on. Read
+   * it as an order of magnitude on one dev Mac, never as a capacity figure.
+   */
   chunksPerSecond: number;
 }
 
@@ -113,6 +131,20 @@ export const STEMMER_COMPARISON = {
   previousBaselineRecallAt1: 0.6091,
   /** Qwen3-Embedding-4B Recall@1 under `simple`. Rendered beside the one above. */
   previousCandidateRecallAt1: 0.6904,
+  /**
+   * McNemar exact p for the ONE cell that moved detectably between the two
+   * configurations — Qwen3's top result, 1W/8L over nine discordant queries,
+   * bootstrap CI [-0.066, -0.010].
+   *
+   * Rendered, because the note demonstrates "within noise" using precisely this
+   * pair: a reader who subtracts 0.6548 from 0.6904 finds 3.6 points and has
+   * nothing on screen reconciling that with the sentence above it. Quoting the
+   * p-value and why it does not stand — Bonferroni ×4 over the four correlated
+   * recall cells puts it at 0.156, bge-m3 shows the same drift at 3W/6L
+   * p = 0.51, and one query flipping takes it to 0.18 — is what makes the claim
+   * checkable rather than asserted over its own counter-evidence.
+   */
+  candidateRecallAt1PValue: 0.039,
 } as const;
 
 export const EMBEDDING_BENCHMARKS: BenchmarkLanguage[] = [
@@ -153,7 +185,10 @@ export const EMBEDDING_BENCHMARKS: BenchmarkLanguage[] = [
         mrr: { value: 0.7702, established: true },
         // Unchanged by the re-run: the two arms of the `german` re-seed took
         // 4m21s (bge-m3) and 40m55s (Qwen3), reproducing the ~10x ingest gap
-        // these figures were derived from.
+        // these figures were derived from. Those wall clocks include each
+        // arm's 197 eval queries and are measured over a corpus later counted
+        // at 2,377 chunks, so they are not a second rate — see the field's
+        // own comment above.
         chunksPerSecond: 1.0,
       },
     ],

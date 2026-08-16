@@ -150,7 +150,8 @@ under `simple`, and deriving the configuration from the corpus language would
 silently re-measure all of them and report the difference as a retrieval
 change. Choosing `german` is an explicit act.
 
-**Every German number published on #1114 before 2026-08-16 was `fts=simple`.**
+**Every German number published on #1114 before the 2026-08-16 re-run — the
+*German result* comment of that morning included — was `fts=simple`.**
 Nothing in the eval ever wrote `admin_settings.fts_language`, so the row sat at
 migration 049's seeded `simple` for every run, and a `--lang de` run scored a
 German corpus through a language-neutral stemmer. **The German arms have since

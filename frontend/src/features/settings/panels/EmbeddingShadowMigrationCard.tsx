@@ -217,12 +217,26 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     return (
       <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
         <p>
+          {/*
+            "Search is unaffected" was half true, and this is the surface where
+            the other half shows up (#1114). Correctness really is untouched —
+            the live column serves every query, edited pages dual-write, nothing
+            is deleted before the swap. Availability is not: `runShadowBackfillJob`
+            embeds through the same process-wide LLM queue as a user's question
+            and holds one of `LLM_CONCURRENCY`'s slots for the entire run, which
+            on a non-batching provider is hours at Qwen3's ingest cost. At
+            `LLM_MAX_QUEUE_DEPTH` a query embed is rejected outright and search
+            drops to its keyword leg. Sized as "may be slower" rather than a
+            warning because that rejection needs concurrent load on top; the
+            runbook's *Search during the backfill* section carries the detail.
+          */}
           Zero-downtime re-embed to <b>{migration.model}</b> ({migration.dimensions} dims):{' '}
           <b>
             {migration.backfilledPages}/{migration.totalPages}
           </b>{' '}
-          pages backfilled{eta ? ` — about ${eta} remaining` : ''}. Search is unaffected — the
-          current index keeps serving.
+          pages backfilled{eta ? ` — about ${eta} remaining` : ''}. Results stay complete — the
+          current index keeps serving — but query embedding shares the provider with this backfill,
+          so answers may be slower until it finishes.
         </p>
         {buildingIndex && (
           <p className="mt-1 text-muted-foreground">

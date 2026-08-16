@@ -41,7 +41,10 @@ import {
  *   as "the earlier numbers understated German". They did not: the re-run
  *   landed within noise of them, with Recall@10 bit-identical query-for-query
  *   on both models. An operator one tab away can rebuild the whole keyword
- *   index from this panel's sibling, so the panel owes them that finding.
+ *   index from this panel's sibling, so the panel owes them that finding — and
+ *   it owes them the one cell that DID move, named with its p-value, because
+ *   the note demonstrates "within noise" with exactly that pair and a reader
+ *   who subtracts the two figures is otherwise left distrusting the sentence.
  *
  * Presentation follows ADR-010's rule for a MEASUREMENT rather than a state:
  * neutral throughout, no status hues. `status-connected` green for "best" would
@@ -126,16 +129,27 @@ export function EmbeddingModelBenchmarks() {
                 The configuration sits on the block, not in the shared line
                 above it: the two blocks genuinely differ now, and a global
                 label would state something false about one of them.
+
+                It is a SIBLING of the heading, not a child of it. Inside the
+                `<h4>` there was no separating text node — JSX drops the
+                whitespace-only line between an expression and an element — so
+                the accessible name came out as "Germankeyword leg: german",
+                announced exactly like that, while `ml-2` spaced it visually and
+                a `/german/i` query stayed green on the substring. The row keeps
+                the same one-line look; the heading names the language and the
+                provenance keeps its own testid.
               */}
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {lang.label}
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {lang.label}
+                </h4>
                 <span
-                  className="ml-2 font-sans text-[11px] font-normal normal-case tracking-normal"
+                  className="text-[11px] text-muted-foreground"
                   data-testid={`embedding-benchmarks-fts-${lang.code}`}
                 >
                   keyword leg: <code className="font-mono">{lang.ftsLanguage}</code>
                 </span>
-              </h4>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[34rem] border-collapse text-sm">
                   <thead>
@@ -205,8 +219,14 @@ export function EmbeddingModelBenchmarks() {
             <span className="font-mono tabular-nums">
               {STEMMER_COMPARISON.previousCandidateRecallAt1.toFixed(4)}
             </span>{' '}
-            ({previousCandidateModel}), and Recall@10 was identical query for query on both models. So choosing
-            a keyword language is not a way to buy recall, and the earlier{' '}
+            ({previousCandidateModel}), and Recall@10 was identical query for query on both models. The
+            only cell that moved detectably was the top result on {previousCandidateModel} (p ={' '}
+            <span className="font-mono tabular-nums">
+              {STEMMER_COMPARISON.candidateRecallAt1PValue.toFixed(3)}
+            </span>
+            ), and it rests on nine discordant queries out of {BENCHMARK_PROVENANCE.queries}, dies
+            under a &times;4 multiplicity correction, and has no counterpart on {previousBaselineModel}.
+            So choosing a keyword language is not a way to buy recall, and the earlier{' '}
             <code className="font-mono">{STEMMER_COMPARISON.previousFtsLanguage}</code> figures were not
             understating German. This table shows three metrics; under{' '}
             <code className="font-mono">{BENCHMARK_PROVENANCE.ftsLanguage}</code> the two it omits, Recall@3

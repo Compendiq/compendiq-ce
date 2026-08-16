@@ -196,6 +196,31 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     expect(screen.queryByRole('button', { name: /^swap/i })).not.toBeInTheDocument();
   });
 
+  it('does not claim search is unaffected — the backfill shares the provider (#1114)', async () => {
+    // This card is the surface an operator watches WHILE the backfill runs, and
+    // it used to say "Search is unaffected". Correctness is unaffected: the live
+    // column serves every query and nothing is deleted before the swap.
+    // Availability is not. `runShadowBackfillJob` embeds through the same
+    // process-wide LLM queue as a user's question and holds one of
+    // `LLM_CONCURRENCY`'s slots for the whole run, so query-embedding latency
+    // rises throughout, and at `LLM_MAX_QUEUE_DEPTH` a query embed is rejected
+    // into `degraded_reason: 'embedding_failed'` — keyword-only `/api/search`
+    // and a refused `/llm/ask` turn. `docs/runbooks/shadow-reembed.md` says all
+    // of that; a card contradicting the runbook it belongs to is the worse of
+    // the two, because it is the one on screen while it is happening.
+    mockApi({
+      active: true,
+      migration: { phase: 'backfilling', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 10, stragglerPages: 30, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
+    });
+    renderCard(null);
+
+    const card = await screen.findByTestId('shadow-migration-card');
+    expect(card).not.toHaveTextContent(/unaffected/i);
+    // Both halves, or the qualifier reads as "your results are wrong now".
+    expect(card).toHaveTextContent(/keeps serving/i);
+    expect(card).toHaveTextContent(/slower/i);
+  });
+
   it('enables the swap only when ready', async () => {
     const calls: Array<{ url: string; method: string }> = [];
     mockApi(

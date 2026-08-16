@@ -261,10 +261,12 @@ reference for the ratio: the same 275-page corpus re-seeded end to end in
 **4 m 21 s** on bge-m3 against **40 m 55 s** on Qwen3-4B — **~9.4×**, which
 tracks the ~12× per-call gap closely because corpus embedding dominates the
 wall clock and both arms embed the same chunks. (Earlier #1114 figures of
-3 m 31 s / 36 m 13 s over 2,198 chunks give the same ~10×.) Both are dev-Mac,
-single non-batching runtime, ~2,200–2,400 chunks. **Your corpus is not 2,377
-chunks and your server is not this one**, so use the ratio to sanity-check your
-own sample, never in place of it.
+3 m 31 s / 36 m 13 s over 2,198 chunks give the same ~10×; that count and the
+2,377 above describe the same corpus and are **not** reconciled — see *On the
+chunk count* below.) Both are dev-Mac, single non-batching runtime,
+~2,200–2,400 chunks. **Your corpus is not 2,377 chunks and your server is not
+this one**, so use the ratio to sanity-check your own sample, never in place of
+it.
 
 **(iii) Capture a Production benchmark baseline BEFORE the swap.**
 **Settings → AI Models → Retrieval → Production benchmark** (#1322) replays the
@@ -281,6 +283,18 @@ labelled custom suite (`POST /api/admin/retrieval-benchmark` with
 revert criterion expressed in R@5 or MRR, you need that labelled suite, and you
 need it before the swap.**
 
+**Two things the panel does not give you, so take them from the API.** The run
+id is never rendered — the panel holds it in state, shows progress and then a
+summary, and there is no list endpoint — so copy it from the
+`POST /api/admin/retrieval-benchmark` response body (`{ runId, status }`), or
+recover it later with `SELECT id, created_at FROM retrieval_benchmark_runs
+ORDER BY created_at DESC LIMIT 5`. And the summary renders **movement and
+latency only** (p50/p95 per variant, top-K overlap, top-1 changed, expansion
+counts) — Recall and MRR are computed and stored but not displayed, so read a
+labelled suite's figures from `GET /api/admin/retrieval-benchmark/:id`
+(`result.baseline.recallAtK` / `result.baseline.mrr`, and the same pair under
+`result.deepSearch`). Both routes are `requireAdmin`.
+
 **(iv) If either confidence threshold is non-zero, plan its re-tune.** See
 *Plan the confidence re-tune BEFORE you swap (#1114)* in the Go / no-go section
 above — it is the same decision, and #1344 added the mechanism that makes it
@@ -292,8 +306,13 @@ set.
 
 ### Search during the backfill
 
-**Retrieval keeps its full quality throughout — that is the point of using
-this path — but it is not free of the backfill, and the distinction matters.**
+**No query is answered from a half-migrated corpus — the live column serves
+every one of them, which is the point of using this path — but retrieval is not
+insulated from the backfill, and the distinction matters.** What is untouched
+is the live column's correctness. Consequence 2 below — a rejected query embed
+dropping search to its keyword leg — is a change in *quality*, not merely in
+latency, so **"search is unaffected" is not a claim this runbook makes**, and
+the status card no longer makes it either.
 
 **What does not change: correctness.** The backfill writes into
 `embedding_next` while the live column keeps serving every query, and edited
@@ -358,10 +377,13 @@ That is why the Qwen3 cutover is a shadow migration and not a re-embed.
 
 - All four pre-flights above are **done and recorded**, not estimated.
 - The projected backfill wall-clock from (ii) fits the window you have accepted
-  for background embedding load. Retrieval keeps its full quality throughout —
-  the live column serves every query — but the backfill shares the LLM queue
-  and the provider with query-side embeds, so pick a window where a raised
-  query-embedding p95 is acceptable (see *Search during the backfill* above).
+  for background embedding load. The live column serves every query throughout,
+  so no answer comes from a half-migrated corpus — but the backfill shares the
+  LLM queue and the provider with query-side embeds, so pick a window where
+  **both** costs are acceptable: a raised query-embedding **p95** for the whole
+  run, and — under concurrent LLM load — query embeds rejected at
+  `LLM_MAX_QUEUE_DEPTH` into keyword-only `/api/search` and refused `/llm/ask`
+  turns (see *Search during the backfill* above).
 - **p95 query-embedding latency at your expected concurrency ≤ 400 ms**, from
   (i), against the production endpoint. **This number is a proposal, not a
   measured production fact.** It is derived from two things: Qwen3's dev-Mac
@@ -371,9 +393,30 @@ That is why the Qwen3 cutover is a shadow migration and not a re-embed.
   and a completion in front of it. A deployment with a tighter answer-latency
   budget should propose a tighter number; one that batches well may clear it
   easily. Agree it before, not after.
-- **No `EmbeddingDimensionMismatchError` anywhere in the shadow probe or the
-  backfill logs.** One means the served width is not the width the column was
-  created for, and nothing downstream of it is trustworthy.
+- **The width evidence the pre-swap paths actually produce.** Not an
+  `EmbeddingDimensionMismatchError` — **none of the three paths that run before
+  the swap can raise one**, so "no mismatch error in the logs" passes vacuously
+  on exactly the deployment prerequisite 1 warns about. The probe *defines* the
+  width rather than checking it (`startShadowMigration` embeds the literal
+  `probe`, takes `vectors[0].length`, refuses only a value outside 1–16000, and
+  creates the column from that same number via `columnTypeFor` — probe and
+  column cannot disagree). The backfill has no width check at all
+  (`shadowEmbedExistingRows` writes into `embedding_next` directly, so a wrong
+  width arrives as a pgvector cast error and the page becomes a straggler). The
+  dual-write logs a **warn**, not an error class. Check these three instead:
+  - the width reported by start — and the `N dims` on the status card — reads
+    **2560** (this is prerequisite 1's verification step, promoted to a
+    criterion);
+  - **`stragglerPages` is 0** when the backfill ends
+    (`GET /api/admin/embedding/shadow-migration`; the card reaching `ready` with
+    Swap enabled is the same fact, and the swap refuses while any remain);
+  - no `Shadow dual-write returned wrong-dimension vectors` warn line appears
+    for any page.
+
+  `EmbeddingDimensionMismatchError` is the **live**-column guard
+  (`embedding-service.ts`, comparing the served width against the live column's
+  declared width), which is why it is a REVERT criterion below and not a GO
+  criterion here.
 
 ### REVERT criteria (proposed — for the owner to agree)
 
@@ -409,6 +452,14 @@ Roll back if any of:
 ### What is already measured
 
 Every row here has a source. Nothing in this table is a production figure.
+**And every retrieval row was measured with the rerank stage unassigned** —
+plain eval runs, no `--rerank`, which ADR-012 carries as open item 4 ("every run
+above is plain; #1104's cross-encoder stage was not live"). Per ADR-021 a
+deployment that assigns `rerank` runs a cross-encoder over the fused set, which
+is not the configuration these recall deltas describe, and the deltas under it
+are unmeasured. That gap is not one only production can close — the eval has a
+`--rerank` arm — but nobody has run it for this model pair, so a go/no-go
+leaning on the table should say so.
 
 | Question | Result | Source |
 | --- | --- | --- |
@@ -416,7 +467,7 @@ Every row here has a source. Nothing in this table is a production figure.
 | German fixture under `fts=simple` | R@1 +0.081 (31W/15L, p = 0.026), R@3 +0.086 (p = 0.0023), R@5 +0.046 (p = 0.122), R@10 +0.061 (p = 0.0075), MRR CI [+0.030, +0.122] | #1114 comment, *German result* |
 | German fixture under `fts=german` | R@1 +0.061 (27W/15L, p = 0.088), **R@3 +0.081 (22W/6L, p = 0.0037)**, R@5 +0.056 (19W/8L, p = 0.052), **R@10 +0.061 (15W/3L, p = 0.0075)**, MRR +0.065 (CI [+0.021, +0.110]) | #1114 comment, *German re-run under `fts=german`* |
 | Does the German stemmer help? | **No detectable effect.** R@10 bit-identical query-for-query on both models (0W/0L/197T); one nominally significant cell (Qwen3 R@1, 1W/8L, p = 0.039) that dies under correction | same |
-| Ingest cost | **~9.4–10× slower.** 4 m 21 s vs 40 m 55 s (275 pages, `german` re-run); 3 m 31 s vs 36 m 13 s (2,198 chunks, earlier run) | same, and *German result* |
+| Ingest cost | **~9.4–10× slower.** 4 m 21 s vs 40 m 55 s (275 pages, `german` re-run); 3 m 31 s vs 36 m 13 s over the earlier run's **2,198**-chunk count — see *On the chunk count* below, the same corpus was later counted at 2,377 | same, and *German result* |
 | Query latency | **~12× at concurrency 1** on the dev Mac (224 ms vs 18 ms p50 embedding) | same, latency table |
 | fp16 rounding | **Below the corpus's own rank gaps.** Largest fp16-induced \|Δdistance\| 2.67e-5 against a p01 adjacent-rank gap of 4.44e-5; 0/200 top-1 changes. **Caveat carried from the source: measured at 768 dims with `nomic-embed-text` on real corpus vectors, NOT at 2560 with Qwen3** — it is evidence that fp16 rounding is small relative to rank spacing, not a 2560-dim measurement | #1114 comment, *The fp16 gate*; ADR-012 `#1114` amendment |
 | `ef_search` at `halfvec(2560)` | **Effectively exact from ef = 40.** recall@10 = 0.9995 at the `RAG_EF_SEARCH` default of 100 and unchanged at 200/240/400/1000 | #1114 comment, *`ef_search` at `halfvec(2560)`: effectively exact from 40, and the number to watch is footprint* (2,377 chunks in `kb_eval`, PostgreSQL 17.10 + pgvector 0.8.5, read-only) |
@@ -431,6 +482,18 @@ R@1: nominally significant under `simple` (p = 0.026) and not under `german`
 that as R@1 having always been the weakest of the four — neither value survives
 multiplicity correction, and on the `simple` run a single query flipping the
 other way takes it to p = 0.054 — not as the stemmer eroding the gap.
+
+**On the chunk count.** Two numbers describe the same 275-page German corpus in
+this document and neither is dropped: the earlier ingest run reported **2,198**
+chunks, while the `ef_search` session counted **2,377** straight out of
+`page_embeddings` and recorded the difference ("the corpus holds 2,377 chunks,
+not ~2,198"). Nothing reconciles them, so each figure travels with the run that
+produced it. The ~10× ingest ratio and the ~10 / ~1 chunks-per-second rates in
+the **Settings → AI Models → Embeddings** benchmark table come from the 2,198
+count; the footprint, recall and chunks-per-page figures come from the 2,377
+one. The *ratio* is unaffected either way — a *rate* recomputed by mixing the
+two counts would not be, which is the same pages-versus-chunks trap pre-flight
+(ii) warns about, one level up.
 
 **On `ef_search`.** Leave `RAG_EF_SEARCH` at 100. On the 2,377-chunk German
 corpus, recall@10 is 0.9995 at ef = 100 and *identical* at 200, 240, 400 and
@@ -508,8 +571,11 @@ closes the same hole on the live path.
 
 ## Degraded behaviour
 
-None by design — the live column serves until the swap commits. The #1117
-coverage signal reads the live column, so it stays healthy throughout (unlike
+None by design — the live column serves until the swap commits. That is a
+statement about *results*, not about load: the backfill shares the LLM queue and
+the provider with query-side embeds, which is costed in *Search during the
+backfill* above. The #1117 coverage signal reads the live column, so it stays
+healthy throughout (unlike
 the destructive path, whose TRUNCATE window it exists to expose). Failure
 modes: a shadow-provider outage leaves straggler pages (visible in the status
 card; swap refuses); an aborted swap (lock timeout) leaves everything on the

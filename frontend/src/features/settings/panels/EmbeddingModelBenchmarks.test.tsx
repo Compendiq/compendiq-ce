@@ -98,6 +98,22 @@ describe('EmbeddingModelBenchmarks (#1114)', () => {
     expect(body).toHaveTextContent(/0\.6904/);
   });
 
+  it('admits the one cell that did move, so "within noise" is not asserted over the evidence against it', () => {
+    // The note demonstrates "within noise" with the single pair whose paired
+    // test was nominally significant: Qwen3's top result went 0.6904 → 0.6548,
+    // 1W/8L, McNemar exact p = 0.039, bootstrap CI clear of zero. A reader who
+    // does that subtraction finds 3.6 points and nothing on screen reconciling
+    // it with the sentence above. The clause is what makes the claim honest —
+    // the cell moved, and it dies under a correction for the four correlated
+    // recall tests — and the reason it stays "within noise" rather than
+    // becoming a finding.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    const body = screen.getByTestId('embedding-benchmarks-body');
+    expect(body).toHaveTextContent(/p = 0\.039/);
+    expect(body).toHaveTextContent(/nine discordant queries/i);
+  });
+
   it('says which metrics carry the German model gap, since the table omits them', () => {
     // The table has three columns; the two cells that clear significance
     // under a Bonferroni correction (Recall@3 p = 0.0037, Recall@10
@@ -125,8 +141,13 @@ describe('EmbeddingModelBenchmarks (#1114)', () => {
   it('splits by language at the top level, because the ranking differs by language', () => {
     render(<EmbeddingModelBenchmarks />);
     fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
-    expect(screen.getByRole('heading', { name: /german/i })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /english/i })).toBeInTheDocument();
+    // EXACT names. The provenance chip used to sit inside the heading with no
+    // separating text node, so the accessible name came out as
+    // "Germankeyword leg: german" — two words run together, announced that way,
+    // while a `/german/i` match stayed green because the substring survived.
+    // The chip is a sibling now; the heading names the language and nothing else.
+    expect(screen.getByRole('heading', { name: 'German' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'English' })).toBeInTheDocument();
   });
 
   it('shows indexing speed beside quality, so the table is not one-sided', () => {
@@ -218,6 +239,9 @@ describe('embedding-benchmarks data (#1114)', () => {
     expect(STEMMER_COMPARISON.previousFtsLanguage).toBe('simple');
     expect(STEMMER_COMPARISON.previousBaselineRecallAt1).toBeCloseTo(0.6091, 4);
     expect(STEMMER_COMPARISON.previousCandidateRecallAt1).toBeCloseTo(0.6904, 4);
+    // The p-value of the one discordant cell travels with the two means it
+    // qualifies, or the note can quote them and drop the caveat in one edit.
+    expect(STEMMER_COMPARISON.candidateRecallAt1PValue).toBeCloseTo(0.039, 3);
   });
 
   it('carries the FTS configuration per language, because the two blocks differ (#1114)', () => {

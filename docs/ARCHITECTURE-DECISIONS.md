@@ -1098,7 +1098,7 @@ of the two query sites or named in a commented allow-list of non-query embeds
 probe). It is therefore no longer a prerequisite of the swap.
 
 **Measured, on #1102's 197-query fixture, plain runs, no rerank, every arm
-scored under `FTS_LANGUAGE='simple'`.** Significance
+scored with `admin_settings.fts_language` = `simple`.** Significance
 columns are McNemar exact on the paired per-query hits, except MRR, which is a
 graded score and gets a paired bootstrap CI instead. **The DE column was
 re-measured under `german` on 2026-08-16 — see the resolved caveat below; only
@@ -1128,8 +1128,12 @@ significant neighbours reads as sampling noise. What is robust across both
 languages: every delta is positive and the MRR interval excludes zero in both.
 
 **Caveat, now RESOLVED (2026-08-16).** Every German number in the table above
-was scored with `FTS_LANGUAGE='simple'`, so the lexical leg did no German
-stemming or decompounding. Both arms were re-run on the same 275-page corpus
+was scored with `admin_settings.fts_language` = `simple`, so the lexical leg did
+no German stemming or decompounding. (The setting is that row, edited in
+Settings → AI Models → Retrieval and pinned per run by the eval's
+`--fts-language`. The `FTS_LANGUAGE` env var these runs predate was inert on
+every migrated instance and is retired — #1114; naming it here would send a
+reader to a variable the product ignores.) Both arms were re-run on the same 275-page corpus
 under `--fts-language german` (same `corpusManifestSha`, same 197 `queryId`s,
 scored by the repo's own `metrics.ts`), and the answer is **no detectable
 effect**: R@10 came back **bit-identical query-for-query on both models** — 197
