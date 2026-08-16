@@ -246,6 +246,23 @@ describe('computeCalibrationStatus (#1114)', () => {
     );
     expect(status?.stale).toBe(false);
   });
+
+  it('is stale on an UNRESOLVED read even when the record itself is a null pair', () => {
+    // The one cell where "err toward needs attention" used to fail closed the
+    // wrong way. A pair-diff alone reads null-vs-null as a match, so a
+    // threshold recorded against nothing plus a resolver that cannot answer
+    // scored `stale: false` — and the panel returns early on that, rendering
+    // NEITHER notice while `liveResolved: false` is on the wire saying the
+    // live side is unknown. Total silence is the worst of the three outputs:
+    // the "could not be resolved — check the provider row" copy already
+    // exists for exactly this state and had no way to appear.
+    const status = computeCalibrationStatus(
+      { providerId: null, model: null, setAt: record.setAt },
+      { resolved: false, pair: null },
+    );
+    expect(status?.stale).toBe(true);
+    expect(status?.liveResolved).toBe(false);
+  });
 });
 
 describe('warnThresholdOutlivedItsModel (#1114)', () => {

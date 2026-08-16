@@ -639,7 +639,7 @@ provider — the threshold is saved and the calibration is deliberately left
 exactly as it was, with `Could not resolve the model behind a confidence
 threshold` in the log. An unknown is never written down as "tuned against
 nothing". You are told, on screen and not only in the log: **Keep** /
-**Record** answers `Could not resolve the live &lt;basis&gt; model — the
+**Record** answers `Could not resolve the live <basis> model — the
 calibration was left as it was` instead of reporting success, and the notice
 above the control says the live model could not be resolved (with a link to
 the provider row) rather than claiming no model is assigned. Both of those

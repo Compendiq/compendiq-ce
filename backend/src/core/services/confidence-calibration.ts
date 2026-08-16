@@ -131,11 +131,14 @@ export interface LiveBasisResolution {
  *    so the note could never clear. A null pair is a claim: tuned against
  *    nothing, and stale the moment something is assigned.
  *
- * Returns whether the row actually moved (review r3). Failing is still
- * non-fatal — the threshold the operator asked for is already saved — but the
- * caller reports the outcome to the panel, whose whole remedy is this write.
- * Swallowing the failure AND answering "recorded" is how a button that cannot
- * work reports that it did.
+ * Returns false only when the write FAILED — the caller must not report a
+ * success it did not get (review r3). It is deliberately not "the row moved":
+ * the DELETE branch answers true whether or not a row was there to delete, and
+ * the `ON CONFLICT DO UPDATE` always writes. Failing is still non-fatal — the
+ * threshold the operator asked for is already saved — but the caller reports
+ * the outcome to the panel, whose whole remedy is this write. Swallowing the
+ * failure AND answering "recorded" is how a button that cannot work reports
+ * that it did.
  */
 export async function recordConfidenceCalibration(
   basis: ConfidenceBasis,
@@ -237,15 +240,22 @@ export async function readConfidenceCalibration(
  * providers serving `bge-m3` are two deployments of it, and a reranker's
  * normalisation in particular is a property of the server, not the weights.
  *
- * **A resolver failure is carried, not folded in** (review r3). It reads as
- * "no live model" for the STALENESS verdict — whatever stops this resolver
- * naming the model stops `generateEmbedding` using it too, and erring toward
- * "needs attention" is the safe direction — but `liveResolved: false` travels
- * with it so the panel does not state "no model is assigned", a specific
- * claim about `llm_usecase_assignments` that is false when the row is present
- * and merely unreadable (a rotated `PAT_ENCRYPTION_KEY`, an EE policy naming
- * a deleted provider — both persistent, both pointing the operator at the
- * wrong screen).
+ * **A resolver failure is carried, not folded in** (review r3). It is stale on
+ * its own — whatever stops this resolver naming the model stops
+ * `generateEmbedding` using it too, and erring toward "needs attention" is the
+ * safe direction — but `liveResolved: false` travels with it so the panel does
+ * not state "no model is assigned", a specific claim about
+ * `llm_usecase_assignments` that is false when the row is present and merely
+ * unreadable (a rotated `PAT_ENCRYPTION_KEY`, an EE policy naming a deleted
+ * provider — both persistent, both pointing the operator at the wrong screen).
+ *
+ * `!liveResolved` is a stale verdict in its OWN right rather than a pair-diff
+ * outcome, because the diff cannot express it in one cell: a null-pair record
+ * (tuned while the basis was genuinely unassigned) read against a resolver
+ * that threw leaves null on both sides, which a diff calls a match. The panel
+ * returns early on `stale: false`, so that cell rendered no notice at all —
+ * the single output that tells the operator nothing, in the one state where
+ * the live side is admittedly unknown.
  */
 export function computeCalibrationStatus(
   record: CalibrationRecord | null,
@@ -254,14 +264,23 @@ export function computeCalibrationStatus(
   if (!record) return null;
   const liveProviderId = live?.pair?.providerId ?? null;
   const liveModel = live?.pair?.model ?? null;
+  // `live === null` means the caller never consulted the resolver, which is an
+  // absence of an answer just as much as a throw is.
+  const liveResolved = live?.resolved ?? false;
   return {
     ...record,
     liveProviderId,
     liveModel,
-    // `live === null` means the caller never consulted the resolver, which is
-    // an absence of an answer just as much as a throw is.
-    liveResolved: live?.resolved ?? false,
-    stale: liveProviderId !== record.providerId || liveModel !== record.model,
+    liveResolved,
+    // An UNRESOLVED read is stale on its own, not merely by pair-diff. Both
+    // sides are null when a null-pair record meets a resolver that cannot
+    // answer, so the diff alone called that a match — and the panel returns
+    // early on `stale: false`, rendering NEITHER notice while `liveResolved`
+    // says the live side is unknown. Silence is the one output that helps
+    // nobody here; the "could not be resolved — check the provider row" copy
+    // is written for exactly this state. Erring toward "needs attention" is
+    // the safe direction, and this is the cell where the pair-diff refused to.
+    stale: !liveResolved || liveProviderId !== record.providerId || liveModel !== record.model,
   };
 }
 

@@ -1731,6 +1731,45 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     expect(note).not.toHaveTextContent(/against the live model/i);
   });
 
+  it('reports "no rerank model is assigned" as a SUCCESS when that is what the server recorded', async () => {
+    // The muted note's own reachable case: a rerank threshold predating #1114
+    // on an instance whose stage is unassigned (ADR-021's ordinary state).
+    // Pressing Record there records a null pair — a real outcome, not a
+    // failure — so the toast must name it and must not be an error. This is
+    // the branch the note's copy is deliberately worded for ("record the model
+    // behind it now", never "against the live model"), because there is no
+    // live pair to name; asserting only the model-named branch left the panel
+    // free to word this one as anything at all.
+    toastSuccess.mockClear();
+    toastError.mockClear();
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThresholdRerank: 0.2,
+        ragConfidenceCalibration: calibration(),
+      },
+      putResult: () => ({
+        ragConfidenceCalibrationWrite: {
+          similarity: null,
+          rerank: { outcome: 'recorded', model: null },
+        },
+      }),
+    });
+    renderTab();
+    await ready();
+
+    const note = await screen.findByTestId('retrieval-ragConfidenceThresholdRerank-calibration-unknown');
+    fireEvent.click(
+      within(note).getByTestId('retrieval-ragConfidenceThresholdRerank-calibration-record'),
+    );
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    expect(String(toastSuccess.mock.calls.at(-1)?.[0])).toMatch(/no rerank model is assigned/i);
+    // "Recorded against nothing" is still recorded. Routing it to the error
+    // toast would tell the operator their one remedy had failed.
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
   it('the muted note reads the SERVER value too', async () => {
     const settings: Record<string, unknown> = {
       ...defaultSettings,

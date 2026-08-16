@@ -851,8 +851,18 @@ transient — an `api_key` left undecryptable by a `PAT_ENCRYPTION_KEY`
 rotation, an EE org policy naming a provider that has been deleted — so
 rendering "no embedding model is assigned now" sends the operator to the
 assignment grid instead of the provider row, every time they look. The
-staleness verdict is deliberately identical in both (erring toward "this still
-needs attention" is the safe direction); only the sentence differs.
+staleness verdict errs toward "this still needs attention" in both, and only
+the sentence differs — but the two are not computed the same way, because a
+pair-diff alone cannot express the unreadable case. `!liveResolved` is a stale
+verdict in its **own right**, not a diff outcome: a record with a null pair
+(tuned while the basis was genuinely unassigned, ADR-021's ordinary rerank
+state) read against a resolver that threw leaves null on both sides, which a
+diff calls a match — and the panel returns early on `stale: false`, so that
+cell used to render *neither* notice, the one output that says nothing in the
+one state where the live side is admittedly unknown. A genuinely *unassigned*
+live side beside that same null-pair record stays quiet on purpose: nothing
+moved under the number, and the rerank pool's own status line already says the
+stage is off.
 
 **The PUT reports what it did, because 200 does not mean "recorded".** The
 threshold row always lands; the record beside it may not — the route abstains
@@ -869,9 +879,17 @@ to press, which reports success, refetches, and re-renders the same notice
 with nothing on screen explaining why.
 `warnThresholdOutlivedItsModel` logs the change at the swap, the post-swap
 rollback and the direct assignment change — never on an abort, which rewrote
-no assignment, never when either side of the comparison failed to resolve
-(unknown is not a change), and never when the threshold is 0, which is every
-instance that left the gate off. The swap's line names the INCOMING model captured
+no assignment, and never when the threshold is 0, which is every instance that
+left the gate off. The third exemption is **narrower than the other two, and
+scoped to the direct-assignment path alone** (`llm-usecases.ts`): there an
+unresolved read on either side skips the line entirely, because that route
+compares a before against an after and unknown-vs-something is not a change it
+can name. The **swap and the rollback warn anyway** — each knows an assignment
+really was rewritten, so there is a change to report whatever the resolver
+says, and both fall back to the raw `llm_usecase_assignments.model` for the
+side that would not resolve. A possibly-null model beats suppressing a swap
+warning entirely: the outgoing/incoming pair is a nicety, the fact that the
+embedder moved under a live threshold is the point. The swap's line names the INCOMING model captured
 **inside** the swap transaction, off the state it verified under the lock,
 exactly as the rollback does: the pre-lock snapshot and the verified value
 differ precisely when another lifecycle step won the lock race, and a warning
