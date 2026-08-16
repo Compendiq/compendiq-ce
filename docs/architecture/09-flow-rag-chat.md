@@ -827,17 +827,43 @@ and ADR-021's "unassigned rerank = stage disabled" all count. Only for a
 threshold that PUT actually carried (re-dating an untouched one would certify
 it against a model nobody tuned it on), re-recorded on a re-save of the same
 number (that is the panel's own remedy), and cleared when the threshold goes
-back to 0 (gate off = nothing calibrated). `GET /admin/settings` compares the
-record with the live pair and answers `ragConfidenceCalibration`, provider id
-and model name only. `warnThresholdOutlivedItsModel` logs the change at the
-swap, the post-swap rollback and the direct assignment change — never on an
-abort, which rewrote no assignment, and never when the threshold is 0, which
-is every instance that left the gate off. `RetrievalTab` renders a stale
-record as an amber `role="status"` strip above that control naming the old
-model, the live one and the scale between them, and arms Save so "keep it and
-record it" is a control rather than a trick; a threshold with no record at all
-(everything set before this shipped) gets a muted line instead, because
-absence of evidence is not evidence of a change.
+back to 0 (gate off = nothing calibrated). A basis with no assigned model is
+recorded as a **null pair inside a present record**, never as an absent
+record: a rerank threshold saved while the stage is disabled (ADR-021's
+ordinary state) was tuned against nothing, which is a fact, and it goes stale
+the moment a reranker appears behind it. Writing it as an absence instead
+reported a threshold saved seconds ago as predating the feature and made its
+own remedy a permanent no-op. `GET /admin/settings` compares the record with
+the live pair — both sides null is a match, since nothing moved — and answers
+`ragConfidenceCalibration`, provider id and model name only.
+`warnThresholdOutlivedItsModel` logs the change at the swap, the post-swap
+rollback and the direct assignment change — never on an abort, which rewrote
+no assignment, and never when the threshold is 0, which is every instance that
+left the gate off. `RetrievalTab` renders a stale record as an amber
+`role="status"` strip above that control naming the old model, the live one
+and the scale between them; a threshold with no record at all (everything set
+before this shipped) gets a muted line instead, because absence of evidence is
+not evidence of a change.
+
+**Keeping the number is its own control, not a mode of Save.** The strip's
+second remedy — "the number is right, record it against the live model" —
+changes no value, so the panel's value-diffed Save can never carry it. Arming
+Save on staleness *did* carry it, and carried it into every other save too: an
+operator editing the fetch width at the far end of the panel then re-dated a
+calibration they had made no judgement about, and the strip — the only
+standing surface saying the gate needs re-tuning once the swap's log line has
+scrolled away — silently cleared. That defeats the route's own "only a
+threshold this PUT carried" rule from one layer up, so the panel does not do
+it: Save stays a pure value diff, and the strip carries a **`Keep <value>`**
+button that PUTs exactly that one threshold, read from the server's value and
+never from the draft in the field. It takes no `aria-label` (WCAG 2.5.3 — the
+visible label is the name) and is wired to the strip's sentence with
+`aria-describedby`, so two identically-labelled buttons are still
+distinguishable. It is also its **own mutation**, not Save's: Save's success
+releases the panel's one-shot hydration so the form re-reads the server, which
+is right for a request that submitted the form and wrong for one that submits
+a row the operator did not edit — it would revert whatever else they had typed
+and not yet saved, the failure #949's `hydrated` flag exists to prevent.
 
 **The refusal as a UI state (#1119).** `Message.isRefusal` is set from that
 final frame in `runStream`, and from the stored `refused` marker in

@@ -1081,7 +1081,16 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     // Naming the mechanism is the point: an operator who is told only "stale"
     // has no way to judge whether the number is now too strict or too loose.
     expect(strip).toHaveTextContent(/similarity scale differs/);
-    expect(strip).toHaveTextContent(/re-tune it, or save it again to keep it/);
+    expect(strip).toHaveTextContent(/re-tune it below, or keep it and record it against the live model/);
+    // Both remedies are reachable: the number itself, and a control that
+    // records the number the operator already chose.
+    const keep = within(strip).getByTestId('retrieval-ragConfidenceThreshold-calibration-keep');
+    expect(keep).toHaveTextContent(/Keep 0\.35/);
+    // WCAG 2.5.3: the accessible name carries the visible label, and the
+    // strip's own sentence is what disambiguates two identically-labelled
+    // controls, via aria-describedby rather than an overriding aria-label.
+    expect(keep).not.toHaveAttribute('aria-label');
+    expect(strip.querySelector(`#${keep.getAttribute('aria-describedby')}`)).not.toBeNull();
   });
 
   it('renders it as the panel amber strip: role=status, the recipe classes and the 16px glyph', async () => {
@@ -1124,7 +1133,15 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
 
     const strip = await screen.findByTestId(stripId);
     const control = input('ragConfidenceThreshold');
-    // DOCUMENT_POSITION_FOLLOWING: the input comes after the strip.
+    // Review r1: `compareDocumentPosition` alone only asserts ORDER, and
+    // passes for a strip parked four sections earlier in the panel. What the
+    // deliverable asks for is adjacency, so assert adjacency: the strip is
+    // the immediately-preceding element sibling of the row that owns the
+    // input, inside the same section.
+    const row = control.closest('div.space-y-1\\.5');
+    expect(row).not.toBeNull();
+    expect(row!.previousElementSibling).toBe(strip);
+    // And still the right way round.
     expect(strip.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
@@ -1239,7 +1256,73 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     expect(strip).not.toHaveTextContent(/The live model is/);
   });
 
-  it('clears once the threshold is saved again — the remedy the copy promises', async () => {
+  it('says so when the threshold was recorded against NOTHING, and a model has since appeared', async () => {
+    // Review r1: saving a rerank threshold while the stage is unassigned is a
+    // normal ADR-021 state, and it used to be stored as a literal `null` that
+    // read back as "no record" — so the panel claimed the number predated the
+    // feature and offered a remedy that could never clear the note. A record
+    // with a null pair is a real record: it says "tuned against nothing", and
+    // it goes stale the moment something is assigned.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThresholdRerank: 0.2,
+        ragConfidenceCalibration: calibration({
+          rerank: {
+            providerId: null,
+            model: null,
+            setAt: '2026-08-01T10:00:00.000Z',
+            liveProviderId: '99999999-9999-4999-8999-999999999999',
+            liveModel: 'jina-reranker-v2',
+            stale: true,
+          },
+        }),
+      },
+    });
+    renderTab();
+    await ready();
+
+    const strip = await screen.findByTestId('retrieval-ragConfidenceThresholdRerank-calibration-stale');
+    expect(strip).toHaveTextContent(/Rerank basis 0\.2 was set while no rerank model was assigned/);
+    expect(strip).toHaveTextContent(/The live model is jina-reranker-v2/);
+    // Never the pre-#1114 wording: this one WAS recorded.
+    expect(
+      screen.queryByTestId('retrieval-ragConfidenceThresholdRerank-calibration-unknown'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('says nothing when the threshold was recorded against nothing and nothing is assigned still', async () => {
+    // Recorded, matching, and the disabled stage is already announced by the
+    // rerank pool's own status line. Nothing has changed under this number.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThresholdRerank: 0.2,
+        ragConfidenceCalibration: calibration({
+          rerank: {
+            providerId: null,
+            model: null,
+            setAt: '2026-08-01T10:00:00.000Z',
+            liveProviderId: null,
+            liveModel: null,
+            stale: false,
+          },
+        }),
+      },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragConfidenceThresholdRerank').value).toBe('0.2'));
+
+    expect(
+      screen.queryByTestId('retrieval-ragConfidenceThresholdRerank-calibration-stale'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('retrieval-ragConfidenceThresholdRerank-calibration-unknown'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('clears once the threshold is RE-TUNED and saved — the other remedy the copy promises', async () => {
     const settings: Record<string, unknown> = {
       ...defaultSettings,
       ragConfidenceThreshold: 0.35,
@@ -1247,10 +1330,10 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     };
     const puts = mockApi({
       settings,
-      // The server records the LIVE pair on every write of the threshold,
-      // including a re-save of the same number.
+      // The server records the LIVE pair on every write of the threshold.
       afterPut: (body, current) => {
         if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceThreshold = body.ragConfidenceThreshold;
         current.ragConfidenceCalibration = calibration({
           similarity: {
             ...staleSimilarity,
@@ -1265,21 +1348,119 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     await ready();
     await screen.findByTestId(stripId);
 
-    // "save it again to keep it": the value does not change, so the panel has
-    // to send it anyway or the remedy is a no-op.
-    type('ragConfidenceThreshold', '0.36');
-    type('ragConfidenceThreshold', '0.35');
+    type('ragConfidenceThreshold', '0.5');
     fireEvent.click(screen.getByTestId('retrieval-save-btn'));
 
     await waitFor(() => expect(puts).toHaveLength(1));
-    expect(puts[0]).toHaveProperty('ragConfidenceThreshold', 0.35);
+    expect(puts[0]).toHaveProperty('ragConfidenceThreshold', 0.5);
     await waitFor(() => expect(screen.queryByTestId(stripId)).not.toBeInTheDocument());
   });
 
-  it('arms Save while a calibration is stale — keeping the number is a control, not a trick', async () => {
-    // The strip's remedy changes no VALUE, so a Save that only diffs values is
-    // dead on the one screen telling the operator to press it.
+  it('keeping the number is its own control, aimed at that one threshold', async () => {
+    // The strip's remedy changes no VALUE, so the panel's value-diffed Save
+    // can never carry it. Review r1 settled which way that gets fixed: not by
+    // arming Save (see the test below), but by a control inside the strip
+    // that PUTs exactly the threshold the strip is about.
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+    };
     const puts = mockApi({
+      settings,
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({
+          similarity: { ...staleSimilarity, model: 'Qwen3-Embedding-4B', stale: false },
+        });
+      },
+    });
+    renderTab();
+    await ready();
+    const strip = await screen.findByTestId(stripId);
+
+    fireEvent.click(within(strip).getByTestId(`retrieval-${'ragConfidenceThreshold'}-calibration-keep`));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    // ONLY that threshold: the panel still writes no row nobody set.
+    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
+    await waitFor(() => expect(screen.queryByTestId(stripId)).not.toBeInTheDocument());
+  });
+
+  it('keeping a threshold leaves an unsaved edit elsewhere on the panel alone', async () => {
+    // Keep is aimed at one row, so it must not behave like Save. The panel's
+    // one-shot hydration exists because re-seeding from the server silently
+    // reverts the admin's unsaved edits (#949); a control that has nothing to
+    // do with those edits must not trigger it.
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+    };
+    const puts = mockApi({
+      settings,
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({
+          similarity: { ...staleSimilarity, model: 'Qwen3-Embedding-4B', stale: false },
+        });
+      },
+    });
+    renderTab();
+    await ready();
+    const strip = await screen.findByTestId(stripId);
+
+    type('ragFetchWidth', '40');
+    fireEvent.click(within(strip).getByTestId('retrieval-ragConfidenceThreshold-calibration-keep'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
+    await waitFor(() => expect(screen.queryByTestId(stripId)).not.toBeInTheDocument());
+    // The draft survives, and is still what Save would send.
+    expect(input('ragFetchWidth').value).toBe('40');
+    expect(screen.getByTestId('retrieval-save-btn')).not.toBeDisabled();
+  });
+
+  it('a save of an UNRELATED knob never certifies a stale threshold', async () => {
+    // Review r1, the blocking one. `admin.ts` deliberately re-records only a
+    // threshold the PUT actually carried — re-dating an untouched one
+    // certifies it against a model nobody tuned it on. The panel must not
+    // hand it one: an operator who edited the fetch width made no judgement
+    // about the refuse gate, and clearing the strip for them retires the only
+    // standing surface saying the gate needs re-tuning (the swap's log line is
+    // long gone by then).
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+    };
+    const puts = mockApi({
+      settings,
+      afterPut: (body, current) => {
+        Object.assign(current, body);
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({
+          similarity: { ...staleSimilarity, model: 'Qwen3-Embedding-4B', stale: false },
+        });
+      },
+    });
+    renderTab();
+    await ready();
+    await screen.findByTestId(stripId);
+
+    type('ragFetchWidth', '40');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragFetchWidth: 40 });
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('40'));
+    expect(screen.getByTestId(stripId)).toBeInTheDocument();
+  });
+
+  it('does NOT arm Save while a calibration is stale', async () => {
+    // Save is a value diff and nothing else. Arming it on staleness is what
+    // let an unrelated edit ride the threshold along.
+    mockApi({
       settings: {
         ...defaultSettings,
         ragConfidenceThreshold: 0.35,
@@ -1290,12 +1471,7 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     await ready();
     await screen.findByTestId(stripId);
 
-    expect(screen.getByTestId('retrieval-save-btn')).not.toBeDisabled();
-    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
-
-    await waitFor(() => expect(puts).toHaveLength(1));
-    // ONLY that threshold: the panel still writes no row nobody set.
-    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
+    expect(screen.getByTestId('retrieval-save-btn')).toBeDisabled();
   });
 
   it('does NOT arm Save for an unrecorded calibration', async () => {

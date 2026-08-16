@@ -612,12 +612,22 @@ once they diverge, naming the old model, the live one and which scale moved.
 **Nothing rewrites the threshold** — a shadow swap, its rollback and a direct
 use-case re-assignment all log a warning naming both models and leave the
 number exactly as you set it. Clear the notice by re-tuning the threshold
-from your own logged `rag.confidence` values on the new model, or by saving
-the same number again (which records it against the live model). A threshold
-set before this shipped has no record and shows a muted "calibration unknown"
-line instead — an absent record is not evidence that anything changed. If you
-write the row with SQL, the calibration is **not** recorded; save it once
-through the panel if you want the check.
+from your own logged `rag.confidence` values on the new model, or by pressing
+**Keep &lt;value&gt;** on the notice itself, which records the number you
+already have against the live model. That button is the only way an untouched
+threshold gets re-recorded: the panel's Save sends only knobs you actually
+edited, so saving something else on this page can never quietly certify a
+threshold you did not look at.
+
+A threshold set before this shipped has no record and shows a muted
+"calibration unknown" line instead — an absent record is not evidence that
+anything changed. If you write the row with SQL, the calibration is **not**
+recorded; save it once through the panel if you want the check. Saving a
+threshold while its stage has no model assigned (the usual case for the rerank
+basis — ADR-021 leaves the stage off until a rerank provider is assigned) is
+recorded too, as "tuned against nothing": it stays quiet while nothing is
+assigned, and turns amber the moment you assign a reranker, because the number
+then gates on a relevance scale it was never measured against.
 
 Never auto-refused, whatever the thresholds: questions with other grounding
 that actually **materialised** (an assembled sub-page tree, successfully

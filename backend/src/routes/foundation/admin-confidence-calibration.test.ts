@@ -224,9 +224,15 @@ describe('PUT /api/admin/settings — a written threshold records its model (#11
     expect(rows[CALIBRATION_SETTING_KEYS.similarity]).toBeUndefined();
   });
 
-  it('records a null pair when the rerank stage is unassigned', async () => {
+  it('records a null PAIR — a present record — when the rerank stage is unassigned', async () => {
+    // ADR-021's ordinary disabled state. Review r1: written as a literal
+    // `null` it read back as "never recorded", so the panel reported a
+    // threshold saved seconds ago as predating the feature.
     expect((await put({ ragConfidenceThresholdRerank: 0.2 })).statusCode).toBe(200);
-    expect(rows[CALIBRATION_SETTING_KEYS.rerank]).toBe('null');
+    expect(storedRecord(CALIBRATION_SETTING_KEYS.rerank)).toMatchObject({
+      providerId: null,
+      model: null,
+    });
   });
 
   it('re-records on a RE-SAVE of the same value — that is how an operator keeps it', async () => {
@@ -271,7 +277,10 @@ describe('PUT /api/admin/settings — a written threshold records its model (#11
     liveEmbedding.value = null; // no provider configured on the instance
     expect((await put({ ragConfidenceThreshold: 0.35 })).statusCode).toBe(200);
     expect(rows['rag_confidence_threshold']).toBe('0.35');
-    expect(rows[CALIBRATION_SETTING_KEYS.similarity]).toBe('null');
+    expect(storedRecord(CALIBRATION_SETTING_KEYS.similarity)).toMatchObject({
+      providerId: null,
+      model: null,
+    });
   });
 });
 
@@ -308,6 +317,22 @@ describe('GET /api/admin/settings — the staleness verdict (#1114)', () => {
 
     const { rerank } = await getCalibration();
     expect(rerank).toMatchObject({ model: 'jina-reranker-v2', liveProviderId: null, liveModel: null, stale: true });
+  });
+
+  it('turns stale when a rerank model APPEARS behind a threshold tuned without one', async () => {
+    // Review r1's second half, end to end: the rerank threshold is set while
+    // the stage is disabled, then a reranker is assigned. The number now gates
+    // on a relevance scale it was never measured against, and the record can
+    // say so because it is a record.
+    await put({ ragConfidenceThresholdRerank: 0.2 });
+    expect((await getCalibration()).rerank).toMatchObject({ model: null, stale: false });
+
+    liveRerank.value = { ...JINA };
+    expect((await getCalibration()).rerank).toMatchObject({
+      model: null,
+      liveModel: 'jina-reranker-v2',
+      stale: true,
+    });
   });
 
   it('clears back to not-stale once the threshold is saved again', async () => {

@@ -12,7 +12,7 @@ vectors throughout; the old model stays recoverable until the final cleanup.
 | 2. Backfill | background job embeds every existing chunk with the new model into `embedding_next`; edited pages dual-write both models | Yes (Abort) | none (background embedding load only) |
 | 3. Index build | HNSW indexes built on **both** shadow columns at the end of the backfill — unless the model's dimension exceeds 4000, which pgvector cannot index at all (the status card says so instead of claiming an index, and post-swap vector search scans sequentially) | Yes | none for reads; **writes to `page_embeddings` AND to `pages` queue for the build duration** (minutes) — the second index is on `pages`, so sync upserts, editor saves and embedding-status updates stall too |
 | 4. Swap | **Swap to the new model** (`POST …/swap`) — one transaction of column/index renames under `lock_timeout 5s`, ≤5 attempts | Yes (Roll back) | sub-second on success. While a lock attempt waits behind a long reader, **new searches queue behind the pending exclusive lock** — each failed attempt can stall them up to 5s (≤5 attempts), so run the swap when long queries have drained |
-| 5. Validate | run real searches; the quality gate is #1102's eval rig. **Then settle the confidence thresholds (#1114)**: if either is non-zero it is still the number tuned on the old model — read your own logged `rag.confidence` values on the new model and either re-tune it or re-save it unchanged. Until it is saved, the swap's warning stands in the log and the Retrieval tab shows an amber notice on that control | — | new model serving |
+| 5. Validate | run real searches; the quality gate is #1102's eval rig. **Then settle the confidence thresholds (#1114)**: if either is non-zero it is still the number tuned on the old model — read your own logged `rag.confidence` values on the new model and either re-tune it or press **Keep &lt;value&gt;** on the notice to record the number you already have against the new model. Until then the swap's warning stands in the log and the Retrieval tab shows an amber notice on that control — **unless that threshold was set before #1114 shipped or written with SQL**, in which case there is no recorded model to compare against and you get a muted "calibration unknown" line instead; on that instance the log warning is the signal | — | new model serving |
 | — | *(automatic, in the background)* the swap and a post-swap rollback both rebuild `page_relationships.embedding_similarity` — the persisted derivative of `pages.page_avg_embedding` — and clear the graph cache. It runs **detached from the request**, because a whole-corpus recompute can outlast an edge proxy's read timeout and a failed-looking swap invites a rollback of a swap that worked | — | graph/related-pages serve the previous edges until it finishes; if it logs a failure (or the process restarted mid-run), run `POST /api/pages/graph/refresh` |
 | 6a. Cleanup | **Clean up** (`POST …/cleanup`) — drops the `_prev` columns, restores NOT NULL | **No — old vectors deleted** | **search and page reads are down for the duration** — see below |
 | 6b. Rollback | **Roll back** (`POST …/rollback`) — reverse renames, restore the old assignment; pages embedded post-swap are re-dirtied for the normal pipeline | back to step 4 | same as 6a |
@@ -53,7 +53,14 @@ sub-second.
   don't mutate: refusal policy is the operator's, and a silently relaxed gate
   is worse than a silently strict one). It logs a warning naming both models
   and the threshold, and the Retrieval tab shows an amber notice on that
-  control until the threshold is re-saved. So decide up front whether you will
+  control until the threshold is saved again — either re-tuned, or kept via
+  the notice's own **Keep &lt;value&gt;** button. **The amber notice needs a
+  recorded model to compare against**, so a threshold set before #1114 shipped
+  (or written straight into `admin_settings` with SQL) shows a muted
+  "calibration unknown" line instead and never turns amber — which is every
+  existing instance on its first post-upgrade swap. On those, the log warning
+  is the only signal, so check the thresholds here rather than expecting the
+  panel to flag them afterwards. Either way decide up front whether you will
   re-tune the number or keep it, and budget the measurement: the sane order is
   swap → validate → read your own logged `rag.confidence` values on the new
   model → set the threshold from those.
@@ -185,4 +192,5 @@ A rollback moves the scale back, which is still a move: if you re-tuned a
 confidence threshold against the new model between swap and rollback, that
 number is now on the old model's scale. The rollback logs the same #1114
 warning with the models the other way round, and the Retrieval tab's notice
-returns until the threshold is saved again.
+returns until the threshold is saved again (same caveat as above — a threshold
+with no recorded model shows the muted line, not amber).

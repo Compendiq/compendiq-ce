@@ -351,6 +351,93 @@ describe.skipIf(!dbAvailable)('an assignment change warns about a live confidenc
 
     expect(calibrationWarnings()).toEqual([]);
   });
+
+  /**
+   * Review r1: the staleness verdict itself, driven by a REAL
+   * `llm_usecase_assignments` change rather than a mocked resolver.
+   *
+   * `admin-confidence-calibration.test.ts` mocks `resolveConfidenceBasisPair`,
+   * which is right for the write-gating rules it pins — those are about which
+   * thresholds a body carried — but it means nothing there ever exercises the
+   * resolver against a real row. CLAUDE.md's rule is to mock at the HTTP
+   * boundary, and this file already has real Postgres and the real route, so
+   * the whole loop fits: record a threshold, re-point the model, read the
+   * verdict back off `GET /admin/settings`.
+   */
+  it('reports the threshold as stale on GET after a real assignment change', async () => {
+    const providerId = await seedProvider('emb4', 'bge-m3');
+    await seedAssignment('embedding', providerId, 'bge-m3');
+
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/api/admin/settings',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ ragConfidenceThreshold: 0.35 }),
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const readCalibration = async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/admin/settings',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      return (res.json() as { ragConfidenceCalibration: { similarity: Record<string, unknown> | null } })
+        .ragConfidenceCalibration.similarity;
+    };
+
+    expect(await readCalibration()).toMatchObject({
+      providerId,
+      model: 'bge-m3',
+      liveProviderId: providerId,
+      liveModel: 'bge-m3',
+      stale: false,
+    });
+
+    expect((await put({ embedding: { providerId, model: 'Qwen3-Embedding-4B' } })).statusCode).toBe(200);
+
+    expect(await readCalibration()).toMatchObject({
+      model: 'bge-m3',
+      liveModel: 'Qwen3-Embedding-4B',
+      stale: true,
+    });
+  });
+
+  it('reports stale on GET when the rerank stage really becomes unassigned', async () => {
+    // ADR-021's disabled state, reached through the route rather than a stub:
+    // `resolveRerankUsecase` must answer null for a cleared assignment instead
+    // of inheriting the default provider, or the verdict would read "still the
+    // model this was tuned on" for a stage that is off.
+    const providerId = await seedProvider('rr4', 'bge-reranker-v2-m3');
+    await seedAssignment('rerank', providerId, 'bge-reranker-v2-m3');
+
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/api/admin/settings',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ ragConfidenceThresholdRerank: 0.2 }),
+    });
+    expect(saved.statusCode).toBe(200);
+
+    expect((await put({ rerank: { providerId: null, model: null } })).statusCode).toBe(200);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/admin/settings',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(
+      (res.json() as { ragConfidenceCalibration: { rerank: Record<string, unknown> | null } })
+        .ragConfidenceCalibration.rerank,
+    ).toMatchObject({
+      model: 'bge-reranker-v2-m3',
+      liveProviderId: null,
+      liveModel: null,
+      stale: true,
+    });
+  });
 });
 
 /**

@@ -706,6 +706,31 @@ describe('rag confidence calibration (#1114)', () => {
     );
   });
 
+  it('accepts a null RECORDED pair — "saved while nothing was assigned" is a record, not an absence', () => {
+    // Review r1. A rerank threshold set while the stage is unassigned
+    // (ADR-021's normal disabled state) used to be stored as a literal null,
+    // which read back as "never recorded" — so the panel told the operator the
+    // number predated the feature and offered a remedy that re-wrote the same
+    // absence forever. It is a record with a null pair, and it goes stale the
+    // moment a model appears behind that basis.
+    const parsed = ConfidenceCalibrationSchema.parse({
+      ...record,
+      providerId: null,
+      model: null,
+      liveProviderId: '99999999-9999-4999-8999-999999999999',
+      liveModel: 'jina-reranker-v2',
+      stale: true,
+    });
+    expect(parsed.providerId).toBeNull();
+    expect(parsed.model).toBeNull();
+    expect(parsed.stale).toBe(true);
+  });
+
+  it('rejects an EMPTY recorded model — absent is null, never the empty string', () => {
+    expect(() => ConfidenceCalibrationSchema.parse({ ...record, model: '' })).toThrow();
+    expect(() => ConfidenceCalibrationSchema.parse({ ...record, providerId: '' })).toThrow();
+  });
+
   it('rejects a setAt that is not an instant', () => {
     expect(() => ConfidenceCalibrationSchema.parse({ ...record, setAt: 'yesterday' })).toThrow();
   });

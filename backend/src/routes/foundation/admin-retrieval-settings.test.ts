@@ -277,15 +277,20 @@ describe('PUT /api/admin/settings — retrieval knobs are persisted (#1118)', ()
       rag_ranking_prior_weight: '0.003',
       // #1114 — each written threshold records the model behind its basis.
       // The similarity basis resolves to the embedder mocked above; the
-      // rerank stage is unassigned here, which is recorded as a literal
-      // `null` so a LATER assignment cannot read as "the model this was
-      // tuned on".
+      // rerank stage is unassigned here, which is recorded as a NULL PAIR in
+      // a present record (review r1) so a LATER assignment cannot read as
+      // "the model this was tuned on" — and so the panel can tell "tuned
+      // against nothing" apart from "never recorded".
       rag_confidence_threshold_calibration: JSON.stringify({
         providerId: '11111111-2222-3333-4444-555555555555',
         model: 'bge-m3',
         setAt: JSON.parse(rows['rag_confidence_threshold_calibration']!).setAt,
       }),
-      rag_confidence_threshold_rerank_calibration: 'null',
+      rag_confidence_threshold_rerank_calibration: JSON.stringify({
+        providerId: null,
+        model: null,
+        setAt: JSON.parse(rows['rag_confidence_threshold_rerank_calibration']!).setAt,
+      }),
     });
   });
 

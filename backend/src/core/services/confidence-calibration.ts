@@ -73,8 +73,19 @@ export interface CalibrationPair {
   model: string;
 }
 
-/** A stored record: the pair, plus when the threshold was written with it. */
-export interface CalibrationRecord extends CalibrationPair {
+/**
+ * A stored record: the pair, plus when the threshold was written with it.
+ *
+ * The pair is nullable, and that is a distinct state from "no record at all"
+ * (review r1). A rerank threshold saved while the stage is unassigned — the
+ * ordinary ADR-021 disabled state — was tuned against nothing, and that is a
+ * fact worth keeping: it goes stale the moment a reranker is assigned. Storing
+ * it as an absence instead made the panel report a threshold saved seconds ago
+ * as predating the feature, and made its remedy a permanent no-op.
+ */
+export interface CalibrationRecord {
+  providerId: string | null;
+  model: string | null;
   /** ISO instant. */
   setAt: string;
 }
@@ -95,11 +106,16 @@ export interface CalibrationStatus extends CalibrationRecord {
  *    nothing calibrated; leaving a stale pair behind would make the panel
  *    warn about a gate that is not running, and a later re-enable would
  *    inherit a calibration nobody performed.
- *  - **`pair === null` is written as a literal `null`**, not skipped. The
- *    rerank stage is disabled when unassigned (ADR-021), and "saved while no
- *    reranker existed" must not be readable as "still the model this was
- *    tuned on" once one is assigned. It reads back as no record, which the
- *    panel reports as unknown rather than as a change.
+ *  - **`pair === null` is recorded as a record with a NULL PAIR**, never as a
+ *    literal `null` and never skipped. The rerank stage is disabled when
+ *    unassigned (ADR-021), so "saved while no reranker existed" is an
+ *    ordinary state, and it must not be readable as "still the model this was
+ *    tuned on" once one is assigned. Review r1: writing it as `null` made it
+ *    read back as *no record*, which the panel reports as "set before models
+ *    were recorded" — false for a threshold saved seconds ago — and whose
+ *    remedy ("save it to record the live model") re-wrote the same absence,
+ *    so the note could never clear. A null pair is a claim: tuned against
+ *    nothing, and stale the moment something is assigned.
  */
 export async function recordConfidenceCalibration(
   basis: ConfidenceBasis,
@@ -112,9 +128,11 @@ export async function recordConfidenceCalibration(
       await query(`DELETE FROM admin_settings WHERE setting_key = $1`, [key]);
       return;
     }
-    const record: CalibrationRecord | null = pair
-      ? { providerId: pair.providerId, model: pair.model, setAt: new Date().toISOString() }
-      : null;
+    const record: CalibrationRecord = {
+      providerId: pair?.providerId ?? null,
+      model: pair?.model ?? null,
+      setAt: new Date().toISOString(),
+    };
     await query(
       `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
        VALUES ($1, $2, NOW())
@@ -130,7 +148,14 @@ export async function recordConfidenceCalibration(
   }
 }
 
-/** Reads a stored record, or null when absent, malformed or explicitly null. */
+/**
+ * Reads a stored record, or null when absent, malformed or explicitly null.
+ *
+ * A row that is the JSON literal `null` still reads as "no record": that is
+ * what the pre-review-r1 writer emitted for an unassigned basis, and what a
+ * hand-written or restored row may hold. It degrades to the panel's honest
+ * unknown state rather than inventing a pair.
+ */
 export async function readConfidenceCalibration(
   basis: ConfidenceBasis,
 ): Promise<CalibrationRecord | null> {
@@ -149,11 +174,16 @@ export async function readConfidenceCalibration(
     const parsed: unknown = JSON.parse(raw);
     if (parsed === null || typeof parsed !== 'object') return null;
     const { providerId, model, setAt } = parsed as Record<string, unknown>;
-    if (typeof providerId !== 'string' || providerId === '') return null;
-    if (typeof model !== 'string' || model === '') return null;
+    // Null is a value here — "recorded while nothing was assigned" — but the
+    // two fields move together: half a pair is a corrupt row, not a state.
+    const pairIsNull = providerId === null && model === null;
+    if (!pairIsNull) {
+      if (typeof providerId !== 'string' || providerId === '') return null;
+      if (typeof model !== 'string' || model === '') return null;
+    }
     return {
-      providerId,
-      model,
+      providerId: pairIsNull ? null : (providerId as string),
+      model: pairIsNull ? null : (model as string),
       // A record written before this field existed, or by hand, still names a
       // pair — which is the part the staleness verdict rests on. Fall back to
       // the epoch so the contract's `datetime()` shape always holds.
@@ -170,11 +200,16 @@ export async function readConfidenceCalibration(
 /**
  * Compare a record against the live assignment.
  *
- * `live === null` — nothing assigned for this basis — is **stale when a pair
- * was recorded**: the threshold was tuned against a model that is no longer
- * behind it. It is not a "no record" case; that is `record === null`, and the
- * two are rendered differently because absence of evidence is not evidence of
- * a change.
+ * The comparison is a plain equality of two nullable pairs, and both sides
+ * being null is a MATCH: a threshold recorded while nothing was assigned, with
+ * nothing assigned still, has had nothing move under it. The three interesting
+ * cells fall out of that — pair→different pair, pair→nothing (the model is
+ * gone) and nothing→pair (a model appeared behind a number tuned without one)
+ * are all stale.
+ *
+ * It is not a "no record" case; that is `record === null`, and the two are
+ * rendered differently because absence of evidence is not evidence of a
+ * change.
  *
  * The provider is part of the identity, not just the model name: two
  * providers serving `bge-m3` are two deployments of it, and a reranker's
@@ -185,11 +220,13 @@ export function computeCalibrationStatus(
   live: CalibrationPair | null,
 ): CalibrationStatus | null {
   if (!record) return null;
+  const liveProviderId = live?.providerId ?? null;
+  const liveModel = live?.model ?? null;
   return {
     ...record,
-    liveProviderId: live?.providerId ?? null,
-    liveModel: live?.model ?? null,
-    stale: !live || live.providerId !== record.providerId || live.model !== record.model,
+    liveProviderId,
+    liveModel,
+    stale: liveProviderId !== record.providerId || liveModel !== record.model,
   };
 }
 

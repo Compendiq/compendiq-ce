@@ -85,13 +85,20 @@ describe('recordConfidenceCalibration (#1114)', () => {
     expect(rows[CALIBRATION_SETTING_KEYS.similarity]).toBeUndefined();
   });
 
-  it('records a literal null when the basis has no model assigned', async () => {
-    // ADR-021: an unassigned rerank means the stage is disabled. Writing the
-    // pair as absent is what stops a later assignment from being read as
-    // "still the model this was tuned on".
+  it('records a NULL PAIR — not a null record — when the basis has no model assigned', async () => {
+    // ADR-021: an unassigned rerank means the stage is disabled, so saving a
+    // rerank threshold there is ordinary, not exceptional. Review r1: this
+    // used to write the JSON literal `null`, which read back as "never
+    // recorded" — the panel then told the operator the number predated the
+    // feature and offered a remedy that rewrote the same absence forever.
+    // The record is present and says what it knows: tuned against nothing.
     await recordConfidenceCalibration('rerank', 0.2, null);
-    expect(rows[CALIBRATION_SETTING_KEYS.rerank]).toBe('null');
-    expect(await readConfidenceCalibration('rerank')).toBeNull();
+    const stored = JSON.parse(rows[CALIBRATION_SETTING_KEYS.rerank]!) as Record<string, unknown>;
+    expect(stored).toMatchObject({ providerId: null, model: null });
+    expect(Date.parse(String(stored.setAt))).not.toBeNaN();
+
+    const read = await readConfidenceCalibration('rerank');
+    expect(read).toMatchObject({ providerId: null, model: null });
   });
 
   it('keeps the two bases in separate rows', async () => {
@@ -118,9 +125,22 @@ describe('readConfidenceCalibration (#1114)', () => {
 
     rows[CALIBRATION_SETTING_KEYS.similarity] = '{"providerId":"","model":""}';
     expect(await readConfidenceCalibration('similarity')).toBeNull();
+
+    // Half a pair is corruption, not the "recorded against nothing" state —
+    // the two fields are written together and must read together.
+    rows[CALIBRATION_SETTING_KEYS.similarity] = '{"providerId":null,"model":"bge-m3"}';
+    expect(await readConfidenceCalibration('similarity')).toBeNull();
   });
 
   it('answers null for an absent row', async () => {
+    expect(await readConfidenceCalibration('rerank')).toBeNull();
+  });
+
+  it('still reads a legacy literal-null row as NO record', async () => {
+    // What the pre-review-r1 writer emitted, and what a restored dump or a
+    // hand-edited row may still hold. It degrades to the panel's honest
+    // unknown state rather than inventing a pair.
+    rows[CALIBRATION_SETTING_KEYS.rerank] = 'null';
     expect(await readConfidenceCalibration('rerank')).toBeNull();
   });
 });
@@ -160,6 +180,31 @@ describe('computeCalibrationStatus (#1114)', () => {
   it('is stale when the basis has become unassigned', () => {
     const status = computeCalibrationStatus(record, null);
     expect(status).toEqual({ ...record, liveProviderId: null, liveModel: null, stale: true });
+  });
+
+  it('is stale when a model APPEARED behind a threshold tuned without one', () => {
+    // The mirror of the case above, and the one the literal-null record could
+    // not express: a rerank threshold set while the stage was disabled now
+    // gates on jina's relevance scale, which it was never measured against.
+    const tunedAgainstNothing = { providerId: null, model: null, setAt: record.setAt };
+    const status = computeCalibrationStatus(tunedAgainstNothing, {
+      providerId: '99999999-9999-4999-8999-999999999999',
+      model: 'jina-reranker-v2',
+    });
+    expect(status?.stale).toBe(true);
+    expect(status?.model).toBeNull();
+    expect(status?.liveModel).toBe('jina-reranker-v2');
+  });
+
+  it('is NOT stale when nothing was assigned then and nothing is assigned now', () => {
+    // Nothing moved under the number. The rerank pool's own status line
+    // already says the stage is disabled; a second notice saying so would be
+    // amber for a resting state.
+    const status = computeCalibrationStatus(
+      { providerId: null, model: null, setAt: record.setAt },
+      null,
+    );
+    expect(status?.stale).toBe(false);
   });
 });
 

@@ -140,18 +140,26 @@ const RagRankingPriorWeightSchema = z.number().min(0).max(0.05);
  * assignment on read, and the panel says so until the threshold is saved
  * again.
  *
- * `liveProviderId` / `liveModel` are nullable because "no rerank model is
- * assigned" is a real state (ADR-021: unassigned rerank = stage disabled),
- * and it is a STALE one when a pair was recorded — the threshold now gates
- * against nothing it was tuned on.
+ * **All four id/model fields are nullable, and the two halves mean different
+ * things** (review r1). `liveProviderId` / `liveModel` null is "nothing is
+ * assigned for this basis right now" — a real state, ADR-021's unassigned
+ * rerank = stage disabled — and it is a STALE one when a pair was recorded,
+ * because the threshold now gates against nothing it was tuned on.
+ * `providerId` / `model` null is the mirror image: the threshold was WRITTEN
+ * while nothing was assigned, which is equally real and equally a fact worth
+ * keeping. Collapsing that second case into "no record at all" made the panel
+ * report a threshold saved seconds ago as predating the feature, and made its
+ * remedy ("save it to record the live model") a permanent no-op, since saving
+ * again recorded the same absence. A record whose pair is null is a record: it
+ * goes stale the moment a model appears behind that basis.
  *
  * **Provider id and model name only.** This rides the same `GET
  * /api/admin/settings` payload as everything else on this schema; base URLs
  * and API keys stay on `/api/admin/llm-providers`, which redacts them.
  */
 export const ConfidenceCalibrationSchema = z.object({
-  providerId: z.string().min(1),
-  model: z.string().min(1),
+  providerId: z.string().min(1).nullable(),
+  model: z.string().min(1).nullable(),
   /** ISO instant the threshold was last written with this pair recorded. */
   setAt: z.string().datetime(),
   liveProviderId: z.string().min(1).nullable(),
@@ -160,10 +168,12 @@ export const ConfidenceCalibrationSchema = z.object({
 });
 
 /**
- * Both bases' calibration, `null` where none was ever recorded — a threshold
- * set before #1114, or one at 0 (nothing to calibrate). Null is deliberately
- * NOT rendered as a warning by the panel: an absent record is the absence of
- * evidence, not evidence of a change.
+ * Both bases' calibration, `null` only where none was ever recorded — a
+ * threshold set before #1114, one at 0 (nothing to calibrate), or a row that
+ * no longer parses. Null is deliberately NOT rendered as a warning by the
+ * panel: an absent record is the absence of evidence, not evidence of a
+ * change. "Recorded while no model was assigned" is NOT this case; it is a
+ * present record with a null pair (above).
  */
 export const RagConfidenceCalibrationSchema = z.object({
   similarity: ConfidenceCalibrationSchema.nullable(),

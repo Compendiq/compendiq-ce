@@ -341,41 +341,64 @@ export function RetrievalTab() {
     },
   });
 
-  /**
-   * #1114 — a stale calibration is itself an unsaved change.
-   *
-   * Save diffs values, and the remedy the amber strip offers — "save it again
-   * to keep it" — changes no value at all: the number is right, the record
-   * beside it is out of date. Diffing alone left Save dead on exactly the
-   * screen that tells the operator to press it, so keeping a threshold was
-   * only reachable by nudging the input off its value and back, which is a
-   * trick, not a control.
-   *
-   * Deliberately only the STALE case. An unrecorded calibration (every
-   * threshold set before this shipped) takes the muted note instead: nothing
-   * is known to have changed there, so leaving Save armed on every upgraded
-   * instance would be a permanent nag for a model swap that may never have
-   * happened.
-   */
-  const staleCalibrationKeys = (
-    [
-      ['ragConfidenceThreshold', settings?.ragConfidenceCalibration?.similarity],
-      ['ragConfidenceThresholdRerank', settings?.ragConfidenceCalibration?.rerank],
-    ] as const
-  )
-    .filter(([key, calibration]) => saved[key] > 0 && calibration?.stale === true)
-    .map(([key]) => key);
-
   const changed = (Object.keys(DEFAULTS) as (keyof RetrievalValues)[]).filter(
-    (key) =>
-      values[key] !== saved[key] ||
-      (staleCalibrationKeys as readonly string[]).includes(key),
+    (key) => values[key] !== saved[key],
   );
 
   function handleSave() {
     const body: Record<string, unknown> = {};
     for (const key of changed) body[key] = values[key];
     mutation.mutate(body as Partial<RetrievalValues>);
+  }
+
+  /**
+   * #1114 — "keep this number, and record it against the live model" is its
+   * own control, not a mode of Save (review r1).
+   *
+   * The remedy the amber strip offers changes no VALUE: the number is right,
+   * the record beside it is out of date. The first cut reached that by pushing
+   * the stale key into `changed`, which armed Save — and put the untouched
+   * threshold into EVERY subsequent PUT. An operator who edited the fetch
+   * width at the other end of the panel then certified the refuse gate against
+   * a model they had never measured it on, and the strip — the only standing
+   * surface saying the gate needs re-tuning once the swap's log line has
+   * scrolled away — silently vanished. `admin.ts` deliberately re-records only
+   * a threshold the request carried, for exactly that reason; handing it one
+   * unasked defeated the rule from a layer up.
+   *
+   * So Save is a value diff and nothing else, and keeping a threshold is a
+   * button inside the strip that PUTs that one key. It is aimed, it is
+   * labelled with the number it is about, and no unrelated save can fire it.
+   *
+   * It is a SEPARATE mutation from Save, and that is not tidiness. Save's
+   * `onSuccess` releases the one-shot hydration so the form re-reads the
+   * server — right for a request that submitted the form, and wrong for this
+   * one, which submits a row the operator did not edit: re-seeding would
+   * silently revert whatever else they had typed and not yet saved, the exact
+   * failure #949's `hydrated` flag exists to prevent. Keep changes no value,
+   * so there is nothing to re-seed; it invalidates the query (which is what
+   * refreshes the calibration and clears the strip) and leaves the draft
+   * alone.
+   */
+  const keepMutation = useMutation({
+    mutationFn: (body: Partial<RetrievalValues>) =>
+      apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      // Deliberately not "settings updated": no setting changed. What changed
+      // is the record of which model the number was measured against.
+      toast.success('Threshold recorded against the live model');
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to record the calibration');
+    },
+  });
+
+  function handleKeepCalibration(key: 'ragConfidenceThreshold' | 'ragConfidenceThresholdRerank') {
+    // `saved`, never `values`: the record must describe the number the SERVER
+    // is holding, which is the same reason the strip itself reads `saved`. A
+    // half-typed draft in the field must not be what gets certified.
+    keepMutation.mutate({ [key]: saved[key] } as Partial<RetrievalValues>);
   }
 
   function set<K extends keyof RetrievalValues>(key: K, value: RetrievalValues[K]) {
@@ -702,6 +725,8 @@ export function RetrievalTab() {
           label={FIELDS.ragConfidenceThreshold.label}
           value={saved.ragConfidenceThreshold}
           calibration={settings?.ragConfidenceCalibration?.similarity ?? null}
+          onKeep={() => handleKeepCalibration('ragConfidenceThreshold')}
+          keepDisabled={keepMutation.isPending || mutation.isPending}
         />
         <NumberRow
           field={FIELDS.ragConfidenceThreshold}
@@ -722,6 +747,8 @@ export function RetrievalTab() {
           label={FIELDS.ragConfidenceThresholdRerank.label}
           value={saved.ragConfidenceThresholdRerank}
           calibration={settings?.ragConfidenceCalibration?.rerank ?? null}
+          onKeep={() => handleKeepCalibration('ragConfidenceThresholdRerank')}
+          keepDisabled={keepMutation.isPending || mutation.isPending}
         />
         <NumberRow
           field={FIELDS.ragConfidenceThresholdRerank}
@@ -1048,21 +1075,34 @@ function Section({
  *    evidence of a change, and a permanent amber banner is how the panel's
  *    own no-amber-at-rest rule gets hollowed out.
  *
+ * "Recorded while nothing was assigned" is NOT the third state (review r1).
+ * A rerank threshold saved with the stage disabled is an ordinary ADR-021
+ * situation and the server records it as a present record with a null pair —
+ * so the muted line's claim ("set before models were recorded") stays true of
+ * the case it describes, and this one goes stale the moment a model appears,
+ * with copy that says which way round it happened.
+ *
  * The copy names the OLD model, the LIVE one and the scale between them,
  * because "stale" alone leaves an operator no way to judge whether their
  * number is now too strict or too loose — and it names both remedies, since
- * keeping the number is a legitimate choice that simply needs recording.
+ * keeping the number is a legitimate choice that simply needs recording. The
+ * keep remedy is a BUTTON here rather than a note telling the operator to
+ * press the panel's Save: see `handleKeepCalibration`.
  */
 function CalibrationNotice({
   fieldKey,
   label,
   value,
   calibration,
+  onKeep,
+  keepDisabled,
 }: {
   fieldKey: keyof typeof CONFIDENCE_BASIS_COPY;
   label: string;
   value: number;
   calibration: ConfidenceCalibration | null;
+  onKeep: () => void;
+  keepDisabled: boolean;
 }) {
   if (value <= 0) return null;
 
@@ -1081,6 +1121,7 @@ function CalibrationNotice({
   if (!calibration.stale) return null;
 
   const { basisNoun, scaleNoun } = CONFIDENCE_BASIS_COPY[fieldKey];
+  const sentenceId = `retrieval-${fieldKey}-calibration-sentence`;
   return (
     <div
       role="status"
@@ -1088,25 +1129,51 @@ function CalibrationNotice({
       data-testid={`retrieval-${fieldKey}-calibration-stale`}
     >
       <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-      <span>
-        {label} {value} was set while{' '}
-        <strong className="font-medium">{calibration.model}</strong> was the {basisNoun} model.{' '}
-        {calibration.liveModel ? (
-          <>
-            The live model is <strong className="font-medium">{calibration.liveModel}</strong>, whose{' '}
-            {scaleNoun} scale differs — re-tune it, or save it again to keep it and record it
-            against the live model.
-          </>
-        ) : (
-          // ADR-021: an unassigned rerank means the stage is disabled, so the
-          // threshold is measured against nothing. "The live model is null"
-          // would be worse than saying so.
-          <>
-            No {basisNoun} model is assigned now, so the threshold gates nothing it was tuned on —
-            re-tune it, or save it again to record the current state.
-          </>
-        )}
-      </span>
+      <div className="flex min-w-0 flex-1 flex-col items-start gap-2">
+        <span id={sentenceId}>
+          {label} {value} was set while{' '}
+          {calibration.model ? (
+            <>
+              <strong className="font-medium">{calibration.model}</strong> was the {basisNoun} model.
+            </>
+          ) : (
+            // The mirror case: the number was tuned with the stage disabled,
+            // and something has since been assigned behind it.
+            <>no {basisNoun} model was assigned.</>
+          )}{' '}
+          {calibration.liveModel ? (
+            <>
+              The live model is <strong className="font-medium">{calibration.liveModel}</strong>,
+              whose {scaleNoun} scale differs — re-tune it below, or keep it and record it against
+              the live model.
+            </>
+          ) : (
+            // ADR-021: an unassigned rerank means the stage is disabled, so the
+            // threshold is measured against nothing. "The live model is null"
+            // would be worse than saying so.
+            <>
+              No {basisNoun} model is assigned now, so the threshold gates nothing it was tuned on —
+              re-tune it below, or keep it and record the current state.
+            </>
+          )}
+        </span>
+        {/*
+          WCAG 2.5.3: the accessible name is the visible label, so no
+          `aria-label` overrides it. Two strips can both read "Keep 0.2"; what
+          tells them apart is `aria-describedby` pointing at the sentence
+          above, the same wiring ADR-010 pins for the deep-search toggle.
+        */}
+        <button
+          type="button"
+          onClick={onKeep}
+          disabled={keepDisabled}
+          aria-describedby={sentenceId}
+          className="nm-button-ghost shrink-0 text-xs"
+          data-testid={`retrieval-${fieldKey}-calibration-keep`}
+        >
+          Keep {value}
+        </button>
+      </div>
     </div>
   );
 }
