@@ -86,6 +86,27 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
   return roots;
 }
 
+/**
+ * Compact fallback for the row-suffix disambiguator when a page has no
+ * spaceKey (an unfiled standalone page). A static "Local" label would tell
+ * an unfiled page apart from a Confluence one, but real duplicate-titled
+ * corpora are dominated by same-titled *unfiled* pages — a static label
+ * doesn't distinguish those from each other, which is the actual failure
+ * the disambiguator exists to prevent. A short relative date does, and the
+ * existing `formatRelativeTime` helper is built for a full-width context
+ * ("3d ago", or a locale date string past a week) — too wide for this
+ * suffix's 56px (`max-w-14`) budget, hence a purpose-built short form here.
+ */
+function formatCompactDate(dateStr: string | null): string | null {
+  if (!dateStr) return null;
+  const diffDays = Math.floor((Date.now() - new Date(dateStr).getTime()) / 86_400_000);
+  if (diffDays < 1) return 'today';
+  if (diffDays < 30) return `${diffDays}d`;
+  const diffMonths = Math.floor(diffDays / 30);
+  if (diffMonths < 12) return `${diffMonths}mo`;
+  return `${Math.floor(diffMonths / 12)}y`;
+}
+
 /** Find ancestor IDs for a given page ID so we can auto-expand the path */
 function findAncestorIds(pages: PageTreeItem[], targetId: string): Set<string> {
   const parentMap = new Map<string, string>();
@@ -115,8 +136,16 @@ const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
  * its group headings, and ADR-010 pins the editor's menu section labels at
  * "uppercase at 12px, not 11" because `ui-text-legibility.test.ts` holds
  * capitals to a higher floor than body text. 11px uppercase would fail it.
+ *
+ * Full-strength `text-muted-foreground` (no opacity dilution) measures
+ * 7.46:1 on Graphite and 5.56:1 on Paper — both comfortably clear WCAG
+ * 1.4.3's 4.5:1 floor, since 12px semibold does not qualify as "large text."
+ * The previous `/80` opacity modifier composited down to 3.63:1 on Paper,
+ * failing — Graphite's darker ground happened to still clear it at 5.14:1,
+ * which is exactly the kind of theme-asymmetric failure that hides until
+ * someone measures the specific composited value instead of the token.
  */
-const SECTION_LABEL = 'text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80';
+const SECTION_LABEL = 'text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground';
 
 export interface SidebarTreeNodeProps {
   node: TreeNode;
@@ -305,10 +334,18 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
             amount of templated content (runbooks, meeting notes) reliably
             produces same-titled rows next to each other. Same geometry as the
             Pinned section's spaceKey suffix 80px above, which already solved
-            this for the same object listed a second time in this panel. */}
+            this for the same object listed a second time in this panel.
+            An unfiled standalone page has no spaceKey to show — and in a real
+            corpus, duplicate titles cluster among exactly those pages, so a
+            static "Local" label wouldn't tell one apart from another. The
+            last-modified date does.
+            No opacity dilution: the inherited `text-muted-foreground` already
+            clears WCAG 1.4.3 on its own (7.46:1 Graphite / 5.56:1 Paper) —
+            the previous `opacity-65` composited that down to 3.76:1 / 2.72:1,
+            failing on the one row whose whole job is disambiguation. */}
         {showSpaceKey && (
-          <span className="ml-2 max-w-14 shrink-0 truncate text-[11px] opacity-65">
-            {node.page.spaceKey}
+          <span className="ml-2 max-w-14 shrink-0 truncate text-[11px]">
+            {node.page.spaceKey ?? formatCompactDate(node.page.lastModifiedAt)}
           </span>
         )}
       </div>
@@ -630,12 +667,28 @@ export function SidebarTreeView({
     if (hasAutoSelectedSpaceRef.current) return;
     if (activePageId && pages.length > 0 && !treeSidebarSpaceKey) {
       const currentPage = pages.find((p) => p.id === activePageId);
-      if (currentPage) {
-        hasAutoSelectedSpaceRef.current = true;
-        setTreeSidebarSpaceKey(currentPage.spaceKey);
+      // An unfiled standalone page (spaceKey null) has no space to scope
+      // into at all — there is nothing this convenience could narrow to.
+      if (currentPage && currentPage.spaceKey) {
+        // Narrowing scope to the open page's own space is pointless — and
+        // actively harmful — when that page IS the space's configured
+        // homepage: buildTree's #352 rule hides the homepage from its own
+        // space's tree (it's reachable via the space's dedicated Home link
+        // instead), so auto-scoping here would remove the very row the user
+        // just opened, leaving the panel with no selected row at all. All
+        // Spaces never applies homepage-hiding (buildTree only receives a
+        // homepageId once a single space is selected), so leaving scope
+        // alone keeps the open page visible and correctly selected. Don't
+        // retire the auto-select convenience for the rest of the mount here
+        // — a later navigation to an ordinary sub-page should still get it.
+        const currentSpace = allSpaces.find((s) => s.key === currentPage.spaceKey);
+        if (currentSpace?.homepageId !== currentPage.id) {
+          hasAutoSelectedSpaceRef.current = true;
+          setTreeSidebarSpaceKey(currentPage.spaceKey);
+        }
       }
     }
-  }, [activePageId, pages, treeSidebarSpaceKey, setTreeSidebarSpaceKey]);
+  }, [activePageId, pages, treeSidebarSpaceKey, setTreeSidebarSpaceKey, allSpaces]);
 
   // #707: keep the open page in view. On reload the tree mounts at the top
   // with the active node's ancestors freshly auto-expanded, so the active row
@@ -1121,7 +1174,12 @@ export function SidebarTreeView({
                     aria-hidden="true"
                   />
                   <span className="min-w-0 flex-1 truncate">{item.title}</span>
-                  <span className="max-w-14 shrink-0 truncate text-[11px] opacity-65">{item.spaceKey}</span>
+                  {/* No opacity dilution — see the matching suffix in the main
+                      tree above; the inherited text-muted-foreground clears
+                      WCAG 1.4.3 on its own. */}
+                  <span className="max-w-14 shrink-0 truncate text-[11px]">
+                    {item.spaceKey ?? formatCompactDate(item.lastModifiedAt)}
+                  </span>
                 </button>
               ))}
               {pinnedData.items.length > 4 && (

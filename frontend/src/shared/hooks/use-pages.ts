@@ -137,7 +137,10 @@ export function usePages(params: PageFilters = {}) {
 
 export interface PageTreeItem {
   id: string;
-  spaceKey: string;
+  // Null for a standalone page created outside any local space (the "unfiled
+  // page" path) — the backend persists space_key as NULL there, so this was
+  // a type lie before it was fixed alongside the sidebar disambiguator bug.
+  spaceKey: string | null;
   title: string;
   pageType: PageType;
   parentId: string | null;
@@ -332,7 +335,9 @@ export function useEmbeddingStatus(enabled = true) {
 
 export interface PinnedPage {
   id: string;
-  spaceKey: string;
+  // Same nullability as PageTreeItem.spaceKey — an unfiled standalone page
+  // can be pinned too, and its space_key is NULL in the DB.
+  spaceKey: string | null;
   title: string;
   author: string | null;
   lastModifiedAt: string | null;

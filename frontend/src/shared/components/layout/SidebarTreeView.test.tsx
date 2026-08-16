@@ -469,6 +469,21 @@ describe('SidebarTreeView', () => {
     expect(useUiStore.getState().treeSidebarSpaceKey).toBe('DEV');
   });
 
+  // Opening a space's homepage used to auto-scope into DEV, whose own #352
+  // homepage-hiding rule then removed root-1 from the tree it had just been
+  // scoped to — leaving zero selected rows and no visible trace of the page
+  // the user just clicked. Staying in All Spaces keeps root-1 rendered as an
+  // ordinary row (homepage-hiding only applies once a single space is
+  // selected) and correctly selected.
+  it('does not auto-scope into a space when the open page is that space\'s own homepage', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-1') });
+
+    expect(useUiStore.getState().treeSidebarSpaceKey).toBeUndefined();
+    const active = screen.getByText('Getting Started').closest('[role="treeitem"]')!;
+    expect(active).toHaveAttribute('aria-selected', 'true');
+  });
+
   describe('space filter', () => {
     const manySpaces = Array.from({ length: 12 }, (_, i) => ({
       key: `SP${i}`,
@@ -999,6 +1014,45 @@ describe('SidebarTreeView spaceKey disambiguation in All-Spaces scope', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
     expect(within(row).queryByText('DEV')).not.toBeInTheDocument();
+  });
+
+  // Unfiled standalone pages carry spaceKey: null — rendering that bare left
+  // the suffix blank on exactly the rows a real corpus collides on (several
+  // same-titled unfiled pages). A static "Local" label wouldn't disambiguate
+  // between two unfiled duplicates either, so the fallback is a compact
+  // relative date instead.
+  it('falls back to a compact last-modified date when a page has no spaceKey', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-05T12:00:00Z'));
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined });
+    mockTreeData = {
+      items: [
+        { id: 'unfiled-1', spaceKey: null, title: 'Untitled draft', pageType: 'page' as const, parentId: null, sortOrder: 0, labels: [], lastModifiedAt: '2026-03-02T12:00:00Z', embeddingDirty: false },
+      ],
+      total: 1,
+    };
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('Untitled draft').closest('[role="treeitem"]')!;
+    expect(within(row).getByText('3d')).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('two same-titled unfiled pages get different suffixes when their last-modified dates differ', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-05T12:00:00Z'));
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined });
+    mockTreeData = {
+      items: [
+        { id: 'dup-1', spaceKey: null, title: 'Table Test Page', pageType: 'page' as const, parentId: null, sortOrder: 0, labels: [], lastModifiedAt: '2026-03-04T12:00:00Z', embeddingDirty: false },
+        { id: 'dup-2', spaceKey: null, title: 'Table Test Page', pageType: 'page' as const, parentId: null, sortOrder: 1, labels: [], lastModifiedAt: '2025-01-05T12:00:00Z', embeddingDirty: false },
+      ],
+      total: 2,
+    };
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const rows = screen.getAllByText('Table Test Page').map((el) => el.closest('[role="treeitem"]')!);
+    const suffixes = rows.map((row) => within(row).getByText(/^(today|\d+[dmy]o?)$/).textContent);
+    expect(new Set(suffixes).size).toBe(2);
+    vi.useRealTimers();
   });
 });
 

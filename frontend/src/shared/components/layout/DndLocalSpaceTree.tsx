@@ -148,17 +148,23 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
           // press are background and border changes). Selecting a page in a
           // local space nudged the row 1% larger and lit it teal; selecting one
           // in a Confluence space did neither. Same panel, same gesture.
-          'group relative flex items-center rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          // pr-7 (28px), mirroring the left gutter exactly: a 24px control
+          // plus the same 2px edge margin and 2px title gap the chevron gets
+          // on the left. See the grip below for why it moved to this edge.
+          'group relative flex items-center rounded-md h-7 pr-7 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
             ? 'nav-selection font-medium'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
-        // See SidebarTreeNode for why the gutter is built this way. This tree
-        // carries one control the other does not — the drag grip — so its
-        // gutter is 44px rather than 28, hosting grip then chevron, and it
-        // still returns ~24px per row against the old layout by dropping the
-        // leaf placeholder and the uniform FileText.
-        style={{ paddingLeft: `${level * 12 + 44}px` }}
+        // See SidebarTreeNode for why the gutter is built this way. The grip
+        // used to share this left gutter with the chevron (44px vs the plain
+        // tree's 28), which measured 82-97% title truncation in a real nested
+        // local space against SidebarTreeView's already-tight 28px baseline —
+        // the extra 16px was reserved on every row, at every depth, to serve
+        // a control that's invisible until hover. The grip now lives at the
+        // row's trailing edge instead (below), which needs no left-gutter
+        // room at all, so this matches the plain tree's 28 exactly.
+        style={{ paddingLeft: `${level * 12 + 28}px` }}
         title={node.page.title}
         onClick={handleNavigate}
         onFocus={() => onRowFocus(node.page.id)}
@@ -174,20 +180,22 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
           onRowKeyDown(e, node.page.id);
         }}
       >
-        {/* Grip and chevron both hang in the indent gutter, out of flow, so the
-            title's width pays for neither. The grip stays hover-revealed at
-            rest but is no longer charged 18px of every row for the privilege —
-            it was `opacity-0` and still occupying layout width on all of them.
+        {/* The chevron hangs in the left indent gutter, out of flow, matching
+            SidebarTreeNode exactly (`level*12 + 2`) — so the disclosure
+            control does not shift sideways when the space source changes and
+            both trees share one indent-guide formula.
 
-            The CHEVRON, not the grip, takes the leftmost slot, matching
-            SidebarTreeNode exactly. Drag handles conventionally sit outermost,
-            but these two trees swap into the same rail when you change space,
-            and the chevron is the control that persists on every row while the
-            grip appears only on hover/focus. Aligning the persistent one means
-            the tree does not shift sideways when the space source changes, and
-            it lets both trees share one indent-guide formula.
+            The grip moved to the row's TRAILING edge instead of sharing that
+            left gutter with the chevron. Sharing it used to cost every row an
+            extra 16px of title width at every depth (44px gutter vs the plain
+            tree's 28) to reserve room for a control that's invisible until
+            hover — measured at 82-97% title truncation in a real nested local
+            space. The trailing edge has no competing control, so the grip
+            needs no reserved gutter of its own: `pr-7` on the row leaves it
+            exactly the same 24px-plus-margins it had before, the left gutter
+            drops to 28, and the two trees' chevrons stay pixel-aligned.
 
-            This is now a real, keyboard-operable control — `handle: handleRef`
+            This is a real, keyboard-operable control — `handle: handleRef`
             above scopes dnd-kit's activator instrumentation here instead of to
             the whole row, so the library adds role="button", tabindex="0" (it
             is a <span>, not natively focusable), aria-roledescription, and
@@ -198,11 +206,14 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
             be keyboard-focusable. `focus-visible:opacity-100` is what makes a
             Tab stop that lands here actually visible; without it a keyboard
             user would focus an element with no visual indication of where
-            focus is, since it is invisible until hover or focus. */}
+            focus is, since it is invisible until hover or focus.
+
+            `h-6 w-6` (24x24), not the old 18px-wide box: WCAG 2.5.8 wants a
+            24x24 minimum target, and the old width fell 6px short of it while
+            the row still had 16px on the table for the taking. */}
         <span
           ref={handleRef}
-          className="absolute top-[2px] flex h-6 w-[18px] items-center justify-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity cursor-grab active:cursor-grabbing group-hover:opacity-60 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-          style={{ left: `${level * 12 + 26}px` }}
+          className="absolute right-0.5 top-[2px] flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity cursor-grab active:cursor-grabbing group-hover:opacity-60 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           aria-label={`Reorder ${node.page.title}`}
         >
           <GripVertical size={12} />

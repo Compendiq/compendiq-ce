@@ -218,12 +218,11 @@ describe('DndLocalSpaceTree', () => {
     }
   });
 
-  it('shares the plain tree\'s gutter geometry, offset for its own drag grip', () => {
+  it('shares the plain tree\'s gutter geometry exactly, now that the grip lives on the trailing edge', () => {
     const { container } = renderTree({ expandedIds: new Set(['p2']) });
 
     // The chevron takes the leftmost slot in BOTH trees (level*12 + 2), so the
-    // disclosure control does not move when the space source changes. The grip
-    // sits to its right rather than outermost for exactly that reason.
+    // disclosure control does not move when the space source changes.
     const chevron = screen.getByLabelText('Collapse');
     expect(chevron.className).toContain('absolute');
     expect(chevron.className).toContain('size-6');
@@ -233,12 +232,27 @@ describe('DndLocalSpaceTree', () => {
     // Same indent-guide formula as SidebarTreeNode: level*12 + 8.
     expect(screen.getByLabelText('Collapse Page Two').style.left).toBe('8px');
 
-    // 44px gutter (grip + chevron) vs the plain tree's 28 (chevron only), and
-    // no leaf placeholder or per-row file icon in either.
+    // 28px gutter, identical to the plain tree — the grip moved to the row's
+    // trailing edge (pr-7), which has no competing control, so it no longer
+    // needs a share of the left gutter. No leaf placeholder or per-row file
+    // icon in either tree.
     const leaf = container.querySelector<HTMLElement>('[data-page-id="p1"]')!;
-    expect(leaf.style.paddingLeft).toBe('44px');
+    expect(leaf.style.paddingLeft).toBe('28px');
+    expect(leaf.className).toContain('pr-7');
     expect(container.querySelector('.w-\\[20px\\]')).toBeNull();
     expect(leaf.querySelectorAll('svg')).toHaveLength(1); // the grip, nothing else
+  });
+
+  // Regression guard for the truncation fix: the grip is a real 24x24 target
+  // (WCAG 2.5.8) positioned off the row's trailing edge, not sharing the left
+  // indent gutter with the chevron.
+  it('positions the grip on the trailing edge as a 24x24 target, not in the left gutter', () => {
+    const { container } = renderTree();
+    const grip = container.querySelector<HTMLElement>('.cursor-grab')!;
+    expect(grip.className).toContain('h-6');
+    expect(grip.className).toContain('w-6');
+    expect(grip.className).toContain('right-0.5');
+    expect(grip.style.left).toBe('');
   });
 
   it('is the default export (compatible with React.lazy)', () => {
