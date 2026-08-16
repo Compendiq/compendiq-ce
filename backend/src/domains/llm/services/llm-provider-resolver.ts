@@ -261,11 +261,22 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
  * two are reported separately and each caller decides:
  *
  *  - the WRITE path (`PUT /admin/settings`) skips the record entirely when
- *    `resolved` is false, leaving the previous one — unknown, not asserted;
- *  - the READ path treats an unresolved pair as "no live model", because
- *    whatever stops this resolver from naming the model stops
- *    `generateEmbedding` from using it too, and that verdict is recomputed on
- *    every GET rather than stored.
+ *    `resolved` is false, leaving the previous one — unknown, not asserted —
+ *    and reports that it did, because the route still answers 200 and a panel
+ *    inferring success from the status code would tell the operator a record
+ *    was written that was not;
+ *  - the READ path treats an unresolved pair as "no live model" for the
+ *    STALENESS VERDICT, because whatever stops this resolver from naming the
+ *    model stops `generateEmbedding` from using it too, and that verdict is
+ *    recomputed on every GET rather than stored — but it ships `resolved`
+ *    alongside it (review r3), because "no model is assigned" is a claim about
+ *    `llm_usecase_assignments` and it is false when the row is present and
+ *    merely unreadable. Two of the failures here are persistent, not
+ *    transient: a `PAT_ENCRYPTION_KEY` rotation that leaves `api_key`
+ *    undecryptable, and an EE org policy naming a provider that has been
+ *    deleted (which throws a plain `Error` from the override branch below).
+ *    Reporting either as "nothing is assigned" points the operator at the
+ *    assignment grid instead of the provider row, for good.
  */
 export interface ConfidenceBasisResolution {
   /** False only when the resolver itself failed. Not "nothing is assigned". */

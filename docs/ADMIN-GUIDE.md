@@ -638,7 +638,13 @@ the provider row unreadable, an enterprise LLM policy pointing at a deleted
 provider — the threshold is saved and the calibration is deliberately left
 exactly as it was, with `Could not resolve the model behind a confidence
 threshold` in the log. An unknown is never written down as "tuned against
-nothing".
+nothing". You are told, on screen and not only in the log: **Keep** /
+**Record** answers `Could not resolve the live &lt;basis&gt; model — the
+calibration was left as it was` instead of reporting success, and the notice
+above the control says the live model could not be resolved (with a link to
+the provider row) rather than claiming no model is assigned. Both of those
+causes persist until you fix the provider, so pressing the button again will
+not help — check the provider's API key and, on Enterprise, the LLM policy.
 
 Never auto-refused, whatever the thresholds: questions with other grounding
 that actually **materialised** (an assembled sub-page tree, successfully

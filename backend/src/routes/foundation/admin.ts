@@ -6,7 +6,13 @@ import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { assertNoShadowMigration } from '../../domains/llm/services/embedding-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { UpdateAdminSettingsSchema, FtsLanguageEnum, FTS_LANGUAGES } from '@compendiq/contracts';
+import {
+  UpdateAdminSettingsSchema,
+  FtsLanguageEnum,
+  FTS_LANGUAGES,
+  type RagConfidenceCalibrationWrite,
+  type UpdateAdminSettingsResult,
+} from '@compendiq/contracts';
 import {
   getEmbeddingDimensions,
   getAdminAccessDeniedRetentionDays,
@@ -401,15 +407,24 @@ export async function adminRoutes(fastify: FastifyInstance) {
       similarityRecord ? resolveConfidenceBasisPair('similarity') : Promise.resolve(null),
       rerankRecord ? resolveConfidenceBasisPair('rerank') : Promise.resolve(null),
     ]);
-    // A resolver failure reads as "no live model" HERE and nowhere else
-    // (review r2): whatever stopped the resolver naming the model stops
-    // `generateEmbedding` using it too, so "the threshold is not gating
-    // against anything it was tuned on" is true either way — and this verdict
-    // is recomputed on every GET, so it corrects itself. The PUT below must
-    // not make the same substitution, because that one is written down.
+    // A resolver failure reads as "no live model" for the STALENESS verdict
+    // HERE and nowhere else (review r2): whatever stopped the resolver naming
+    // the model stops `generateEmbedding` using it too, so "the threshold is
+    // not gating against anything it was tuned on" is true either way — and
+    // this verdict is recomputed on every GET, so it corrects itself. The PUT
+    // below must not make the same substitution, because that one is written
+    // down.
+    //
+    // The failure still travels, on `liveResolved` (review r3). Folding it
+    // into the pair made the panel state "no {basis} model is assigned now" —
+    // a claim about `llm_usecase_assignments` that is false, and persistently
+    // so, when the row is present and merely unreadable (a rotated
+    // `PAT_ENCRYPTION_KEY`, an EE policy naming a deleted provider). The
+    // operator was then sent to the assignment grid instead of the provider
+    // row.
     const ragConfidenceCalibration = {
-      similarity: computeCalibrationStatus(similarityRecord, liveEmbedding?.pair ?? null),
-      rerank: computeCalibrationStatus(rerankRecord, liveRerank?.pair ?? null),
+      similarity: computeCalibrationStatus(similarityRecord, liveEmbedding),
+      rerank: computeCalibrationStatus(rerankRecord, liveRerank),
     };
 
     return {
@@ -687,6 +702,17 @@ export async function adminRoutes(fastify: FastifyInstance) {
     //
     // Setting a threshold to 0 clears its record (gate off = nothing
     // calibrated), which `recordConfidenceCalibration` owns.
+    // And the outcome is REPORTED (review r3). The route answers 200 whether
+    // or not the record landed — the threshold row itself always does — so a
+    // panel inferring success from the status code tells the operator
+    // "recorded", refetches, and re-renders the very notice whose button they
+    // just pressed, with nothing on screen saying why. Neither declining path
+    // is reliably transient: an undecryptable `api_key` after a key rotation
+    // and an EE policy naming a deleted provider both throw on every attempt.
+    const ragConfidenceCalibrationWrite: RagConfidenceCalibrationWrite = {
+      similarity: null,
+      rerank: null,
+    };
     const writtenThresholds: Array<[ConfidenceBasis, number | undefined]> = [
       ['similarity', body.ragConfidenceThreshold],
       ['rerank', body.ragConfidenceThresholdRerank],
@@ -697,7 +723,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // clearing needs no pair, and a provider round-trip on the way to a
       // DELETE would be a failure mode bought for nothing.
       if (!(threshold > 0)) {
-        await recordConfidenceCalibration(basis, threshold, null);
+        const cleared = await recordConfidenceCalibration(basis, threshold, null);
+        ragConfidenceCalibrationWrite[basis] = { outcome: cleared ? 'cleared' : 'failed', model: null };
         continue;
       }
       const live = await resolveConfidenceBasisPair(basis);
@@ -713,9 +740,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
           { basis, settingKey: CONFIDENCE_THRESHOLD_SETTING_KEYS[basis] },
           'Could not resolve the model behind a confidence threshold — calibration left as it was',
         );
+        ragConfidenceCalibrationWrite[basis] = { outcome: 'unresolved', model: null };
         continue;
       }
-      await recordConfidenceCalibration(basis, threshold, live.pair);
+      const recorded = await recordConfidenceCalibration(basis, threshold, live.pair);
+      ragConfidenceCalibrationWrite[basis] = recorded
+        ? { outcome: 'recorded', model: live.pair?.model ?? null }
+        : { outcome: 'failed', model: null };
     }
 
     // ─── #113 Phase B-3 — cluster-wide LLM queue settings ─────────────────
@@ -921,9 +952,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     if (hasChunkChanges) {
-      return { message: 'Admin settings updated, all pages queued for re-embedding' };
+      return {
+        message: 'Admin settings updated, all pages queued for re-embedding',
+        ragConfidenceCalibrationWrite,
+      } satisfies UpdateAdminSettingsResult;
     }
-    return { message: 'Admin settings updated' };
+    return {
+      message: 'Admin settings updated',
+      ragConfidenceCalibrationWrite,
+    } satisfies UpdateAdminSettingsResult;
   });
 
   // ── SMTP / Email settings ───────────────────────────────────────────────

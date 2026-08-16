@@ -94,7 +94,21 @@ export interface CalibrationRecord {
 export interface CalibrationStatus extends CalibrationRecord {
   liveProviderId: string | null;
   liveModel: string | null;
+  /** False when the resolver failed, not when nothing is assigned. */
+  liveResolved: boolean;
   stale: boolean;
+}
+
+/**
+ * The live side of the comparison, structurally.
+ *
+ * `llm-provider-resolver`'s `ConfidenceBasisResolution` is the concrete
+ * producer, and `core` may not import a domain (the ESLint boundary), so the
+ * shape is spelled here instead of imported.
+ */
+export interface LiveBasisResolution {
+  resolved: boolean;
+  pair: CalibrationPair | null;
 }
 
 /**
@@ -116,17 +130,23 @@ export interface CalibrationStatus extends CalibrationRecord {
  *    remedy ("save it to record the live model") re-wrote the same absence,
  *    so the note could never clear. A null pair is a claim: tuned against
  *    nothing, and stale the moment something is assigned.
+ *
+ * Returns whether the row actually moved (review r3). Failing is still
+ * non-fatal — the threshold the operator asked for is already saved — but the
+ * caller reports the outcome to the panel, whose whole remedy is this write.
+ * Swallowing the failure AND answering "recorded" is how a button that cannot
+ * work reports that it did.
  */
 export async function recordConfidenceCalibration(
   basis: ConfidenceBasis,
   threshold: number,
   pair: CalibrationPair | null,
-): Promise<void> {
+): Promise<boolean> {
   const key = CALIBRATION_SETTING_KEYS[basis];
   try {
     if (!(threshold > 0)) {
       await query(`DELETE FROM admin_settings WHERE setting_key = $1`, [key]);
-      return;
+      return true;
     }
     const record: CalibrationRecord = {
       providerId: pair?.providerId ?? null,
@@ -139,12 +159,14 @@ export async function recordConfidenceCalibration(
        ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW()`,
       [key, JSON.stringify(record)],
     );
+    return true;
   } catch (err) {
     // A diagnostic must not fail the save the operator actually asked for.
     // The threshold row is already written by the time we get here; losing
     // the record degrades this feature to "calibration unknown", which is a
     // state the panel renders honestly.
     logger.warn({ err, basis, settingKey: key }, 'Failed to record confidence-threshold calibration');
+    return false;
   }
 }
 
@@ -214,18 +236,31 @@ export async function readConfidenceCalibration(
  * The provider is part of the identity, not just the model name: two
  * providers serving `bge-m3` are two deployments of it, and a reranker's
  * normalisation in particular is a property of the server, not the weights.
+ *
+ * **A resolver failure is carried, not folded in** (review r3). It reads as
+ * "no live model" for the STALENESS verdict — whatever stops this resolver
+ * naming the model stops `generateEmbedding` using it too, and erring toward
+ * "needs attention" is the safe direction — but `liveResolved: false` travels
+ * with it so the panel does not state "no model is assigned", a specific
+ * claim about `llm_usecase_assignments` that is false when the row is present
+ * and merely unreadable (a rotated `PAT_ENCRYPTION_KEY`, an EE policy naming
+ * a deleted provider — both persistent, both pointing the operator at the
+ * wrong screen).
  */
 export function computeCalibrationStatus(
   record: CalibrationRecord | null,
-  live: CalibrationPair | null,
+  live: LiveBasisResolution | null,
 ): CalibrationStatus | null {
   if (!record) return null;
-  const liveProviderId = live?.providerId ?? null;
-  const liveModel = live?.model ?? null;
+  const liveProviderId = live?.pair?.providerId ?? null;
+  const liveModel = live?.pair?.model ?? null;
   return {
     ...record,
     liveProviderId,
     liveModel,
+    // `live === null` means the caller never consulted the resolver, which is
+    // an absence of an answer just as much as a throw is.
+    liveResolved: live?.resolved ?? false,
     stale: liveProviderId !== record.providerId || liveModel !== record.model,
   };
 }

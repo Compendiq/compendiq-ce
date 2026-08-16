@@ -333,6 +333,79 @@ describe('PUT /api/admin/settings — a written threshold records its model (#11
   });
 });
 
+describe('PUT /api/admin/settings — the write REPORTS what it did (#1114 review r3)', () => {
+  function writeOutcome(res: { json: () => unknown }) {
+    return (res.json() as { ragConfidenceCalibrationWrite?: Record<string, unknown> })
+      .ragConfidenceCalibrationWrite;
+  }
+
+  it('names the model it recorded against', async () => {
+    expect(writeOutcome(await put({ ragConfidenceThreshold: 0.35 }))).toEqual({
+      similarity: { outcome: 'recorded', model: 'bge-m3' },
+      rerank: null,
+    });
+  });
+
+  it('reports "unresolved" — NOT success — when the resolver could not answer', async () => {
+    // The route still answers 200 (the threshold row lands), so a panel that
+    // reads the status code as the outcome tells the operator "recorded",
+    // refetches, and re-renders the very notice whose button they pressed.
+    // Neither declining path is reliably transient: an undecryptable
+    // `api_key` after a key rotation and an EE policy naming a deleted
+    // provider both throw on every attempt, so that dead end is permanent.
+    liveEmbedding.resolves = false;
+    const res = await put({ ragConfidenceThreshold: 0.35 });
+    expect(res.statusCode).toBe(200);
+    expect(writeOutcome(res)).toEqual({
+      similarity: { outcome: 'unresolved', model: null },
+      rerank: null,
+    });
+  });
+
+  it('reports a recorded write with no model when the basis is genuinely unassigned', async () => {
+    // ADR-021's disabled rerank stage: a real record, not an abstention.
+    expect(writeOutcome(await put({ ragConfidenceThresholdRerank: 0.2 }))).toEqual({
+      similarity: null,
+      rerank: { outcome: 'recorded', model: null },
+    });
+  });
+
+  it('reports "cleared" at 0, and null for a basis this request never carried', async () => {
+    expect(writeOutcome(await put({ ragConfidenceThreshold: 0 }))).toEqual({
+      similarity: { outcome: 'cleared', model: null },
+      rerank: null,
+    });
+    expect(writeOutcome(await put({ ragFetchWidth: 40 }))).toEqual({
+      similarity: null,
+      rerank: null,
+    });
+  });
+
+  it('reports "failed" when the record row itself could not be written', async () => {
+    // The threshold is saved and the request succeeds; only the bookkeeping
+    // lost. Claiming "recorded" here is the same false reassurance as the
+    // unresolved branch, reached from the other side.
+    const realImpl = mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (
+        /^\s*INSERT INTO admin_settings/i.test(sql) &&
+        (params as unknown[] | undefined)?.[0] === CALIBRATION_SETTING_KEYS.similarity
+      ) {
+        throw new Error('deadlock detected');
+      }
+      return realImpl(sql, params);
+    });
+
+    const res = await put({ ragConfidenceThreshold: 0.35 });
+    expect(res.statusCode).toBe(200);
+    expect(rows['rag_confidence_threshold']).toBe('0.35');
+    expect(writeOutcome(res)).toEqual({
+      similarity: { outcome: 'failed', model: null },
+      rerank: null,
+    });
+  });
+});
+
 describe('GET /api/admin/settings — the staleness verdict (#1114)', () => {
   it('reports both bases null on an instance that never set a threshold', async () => {
     expect(await getCalibration()).toEqual({ similarity: null, rerank: null });
@@ -400,9 +473,34 @@ describe('GET /api/admin/settings — the staleness verdict (#1114)', () => {
     const calibration = await getCalibration();
     for (const basis of [calibration.similarity, calibration.rerank]) {
       expect(Object.keys(basis!).sort()).toEqual(
-        ['liveModel', 'liveProviderId', 'model', 'providerId', 'setAt', 'stale'].sort(),
+        ['liveModel', 'liveProviderId', 'liveResolved', 'model', 'providerId', 'setAt', 'stale'].sort(),
       );
     }
+  });
+
+  it('separates "nothing is assigned" from "the resolver could not answer" (review r3)', async () => {
+    // Both leave the live pair null on the wire, and the panel's copy turns
+    // on the difference: "no embedding model is assigned now" is a claim
+    // about `llm_usecase_assignments`, and it is false — persistently — when
+    // the row is there and merely unreadable (a rotated `PAT_ENCRYPTION_KEY`
+    // leaving `api_key` undecryptable, an EE policy naming a deleted
+    // provider). The operator is otherwise sent to the assignment grid
+    // instead of the provider row.
+    await put({ ragConfidenceThreshold: 0.35 });
+
+    liveEmbedding.value = null; // genuinely unassigned
+    expect((await getCalibration()).similarity).toMatchObject({
+      liveModel: null,
+      liveResolved: true,
+      stale: true,
+    });
+
+    liveEmbedding.resolves = false; // the resolver threw
+    expect((await getCalibration()).similarity).toMatchObject({
+      liveModel: null,
+      liveResolved: false,
+      stale: true,
+    });
   });
 
   it('never MUTATES the threshold, however stale the calibration is', async () => {

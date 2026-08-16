@@ -3,6 +3,9 @@ import {
   UpdateAdminSettingsSchema,
   AdminSettingsSchema,
   ConfidenceCalibrationSchema,
+  ConfidenceCalibrationWriteSchema,
+  RagConfidenceCalibrationWriteSchema,
+  UpdateAdminSettingsResultSchema,
   EmbeddingLockSnapshotSchema,
   AdminEmbeddingLocksResponseSchema,
   ForceReleaseLockResponseSchema,
@@ -664,6 +667,7 @@ describe('rag confidence calibration (#1114)', () => {
     setAt: '2026-08-16T10:00:00.000Z',
     liveProviderId: '11111111-2222-3333-4444-555555555555',
     liveModel: 'bge-m3',
+    liveResolved: true,
     stale: false,
   };
 
@@ -702,7 +706,7 @@ describe('rag confidence calibration (#1114)', () => {
     expect(parsed).not.toHaveProperty('apiKey');
     expect(parsed).not.toHaveProperty('baseUrl');
     expect(Object.keys(parsed).sort()).toEqual(
-      ['liveModel', 'liveProviderId', 'model', 'providerId', 'setAt', 'stale'].sort(),
+      ['liveModel', 'liveProviderId', 'liveResolved', 'model', 'providerId', 'setAt', 'stale'].sort(),
     );
   });
 
@@ -735,6 +739,35 @@ describe('rag confidence calibration (#1114)', () => {
     expect(() => ConfidenceCalibrationSchema.parse({ ...record, setAt: 'yesterday' })).toThrow();
   });
 
+  it('separates "nothing is assigned" from "the resolver could not answer"', () => {
+    // Review r3. Both arrive on the wire with a null live pair, and only the
+    // first is a fact about `llm_usecase_assignments` — the second is an
+    // undecryptable provider row or an EE policy naming a deleted provider,
+    // both of which persist across every GET. The panel words them
+    // differently, so the field must exist to word them from.
+    expect(() => ConfidenceCalibrationSchema.parse({ ...record, liveResolved: undefined })).toThrow();
+    const unassigned = ConfidenceCalibrationSchema.parse({
+      ...record,
+      liveProviderId: null,
+      liveModel: null,
+      liveResolved: true,
+      stale: true,
+    });
+    const unreadable = ConfidenceCalibrationSchema.parse({
+      ...record,
+      liveProviderId: null,
+      liveModel: null,
+      liveResolved: false,
+      stale: true,
+    });
+    expect(unassigned.liveResolved).toBe(true);
+    expect(unreadable.liveResolved).toBe(false);
+    // Both stay stale: erring toward "this still needs attention" is the safe
+    // direction, and the verdict is recomputed on every GET either way.
+    expect(unassigned.stale).toBe(true);
+    expect(unreadable.stale).toBe(true);
+  });
+
   it('is not settable through the update schema', () => {
     // A client that could assert the calibration could also assert "still
     // calibrated" for a threshold tuned against a model that is long gone.
@@ -744,5 +777,55 @@ describe('rag confidence calibration (#1114)', () => {
         ragConfidenceCalibration: { similarity: record, rerank: null },
       } as Record<string, unknown>),
     ).toEqual({ ragConfidenceThreshold: 0.35 });
+  });
+});
+
+// ─── #1114 review r3 — the PUT reports what it did with the record ────────
+//
+// The route answers 200 whether or not the calibration was written: the
+// threshold row itself always lands, and the bookkeeping beside it is
+// best-effort and can be declined outright when the live model cannot be
+// resolved. A client that reads the status code as the outcome tells the
+// operator "recorded" and then re-renders the same notice.
+describe('rag confidence calibration write outcome (#1114)', () => {
+  it('names the model when it recorded one', () => {
+    expect(ConfidenceCalibrationWriteSchema.parse({ outcome: 'recorded', model: 'bge-m3' })).toEqual({
+      outcome: 'recorded',
+      model: 'bge-m3',
+    });
+  });
+
+  it('accepts a recorded write with no model — the disabled rerank stage is a record', () => {
+    expect(
+      ConfidenceCalibrationWriteSchema.parse({ outcome: 'recorded', model: null }).model,
+    ).toBeNull();
+  });
+
+  it('carries the three non-recording outcomes apart', () => {
+    for (const outcome of ['cleared', 'unresolved', 'failed'] as const) {
+      expect(ConfidenceCalibrationWriteSchema.parse({ outcome, model: null }).outcome).toBe(outcome);
+    }
+    expect(() => ConfidenceCalibrationWriteSchema.parse({ outcome: 'ok', model: null })).toThrow();
+  });
+
+  it('is per basis, and null where the request carried no threshold for it', () => {
+    expect(
+      RagConfidenceCalibrationWriteSchema.parse({
+        similarity: { outcome: 'recorded', model: 'bge-m3' },
+        rerank: null,
+      }),
+    ).toEqual({ similarity: { outcome: 'recorded', model: 'bge-m3' }, rerank: null });
+  });
+
+  it('is optional on the PUT result — an older server simply says nothing', () => {
+    expect(UpdateAdminSettingsResultSchema.parse({ message: 'Admin settings updated' })).toEqual({
+      message: 'Admin settings updated',
+    });
+    expect(
+      UpdateAdminSettingsResultSchema.parse({
+        message: 'Admin settings updated',
+        ragConfidenceCalibrationWrite: { similarity: { outcome: 'unresolved', model: null }, rerank: null },
+      }).ragConfidenceCalibrationWrite?.similarity?.outcome,
+    ).toBe('unresolved');
   });
 });

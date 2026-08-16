@@ -7,6 +7,7 @@ import type {
   ConfidenceCalibration,
   FtsLanguage,
   RagConfidenceCalibration,
+  UpdateAdminSettingsResult,
   UsecaseAssignments,
 } from '@compendiq/contracts';
 import { FTS_LANGUAGES } from '@compendiq/contracts';
@@ -250,9 +251,11 @@ const LLM_PROVIDERS_PATH = `${SETTINGS_PANELS.models.path}?sub=llm`;
  * unable to judge whether their number is now too strict or too loose.
  */
 const CONFIDENCE_BASIS_COPY = {
-  ragConfidenceThreshold: { basisNoun: 'embedding', scaleNoun: 'similarity' },
-  ragConfidenceThresholdRerank: { basisNoun: 'rerank', scaleNoun: 'relevance' },
+  ragConfidenceThreshold: { basis: 'similarity', basisNoun: 'embedding', scaleNoun: 'similarity' },
+  ragConfidenceThresholdRerank: { basis: 'rerank', basisNoun: 'rerank', scaleNoun: 'relevance' },
 } as const;
+
+type CalibrationFieldKey = keyof typeof CONFIDENCE_BASIS_COPY;
 
 /** Strips floating-point noise from a stepped input without changing the value. */
 function round(value: number, decimals: number | undefined): number {
@@ -384,24 +387,64 @@ export function RetrievalTab() {
    * alone.
    */
   const keepMutation = useMutation({
-    mutationFn: (body: Partial<RetrievalValues>) =>
-      apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
-    onSuccess: async () => {
+    // `saved`, never `values`: the record must describe the number the SERVER
+    // is holding, which is the same reason the strip itself reads `saved`. A
+    // half-typed draft in the field must not be what gets certified.
+    mutationFn: async (key: CalibrationFieldKey) => {
+      const result = await apiFetch<UpdateAdminSettingsResult>('/admin/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ [key]: saved[key] }),
+      });
+      return { key, result };
+    },
+    onSuccess: async ({ key, result }) => {
       await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      // Review r3 — the toast reports what the SERVER did, not that the
+      // request returned 200. The route writes the threshold row and answers
+      // 200 whether or not the calibration beside it landed: it abstains when
+      // the live model cannot be resolved, and the record write is
+      // best-effort. Asserting success there was the same dead end review r2
+      // removed one layer up — the operator presses the button the notice
+      // told them to press, is told it worked, and the notice comes straight
+      // back with nothing on screen explaining why. And `unresolved` is not
+      // reliably transient: an undecryptable provider key after a rotation,
+      // or an EE policy naming a deleted provider, throws on every attempt.
+      const { basis, basisNoun } = CONFIDENCE_BASIS_COPY[key];
+      const write = result?.ragConfidenceCalibrationWrite?.[basis] ?? null;
+      if (!write) {
+        // A server that reported nothing has told us nothing — claim only
+        // what the status code supports. (Unreachable from the notices
+        // themselves, which need `ragConfidenceCalibration` to render at all.)
+        toast.success('Threshold saved');
+        return;
+      }
+      if (write.outcome === 'unresolved') {
+        toast.error(
+          `Could not resolve the live ${basisNoun} model — the calibration was left as it was.`,
+        );
+        return;
+      }
+      if (write.outcome !== 'recorded') {
+        toast.error('The calibration could not be recorded — it was left as it was.');
+        return;
+      }
       // Deliberately not "settings updated": no setting changed. What changed
-      // is the record of which model the number was measured against.
-      toast.success('Threshold recorded against the live model');
+      // is the record of which model the number was measured against — and it
+      // is named, because "the live model" is exactly what the operator
+      // cannot see from here.
+      toast.success(
+        write.model
+          ? `Threshold recorded against ${write.model}`
+          : `Threshold recorded — no ${basisNoun} model is assigned`,
+      );
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : 'Failed to record the calibration');
     },
   });
 
-  function handleKeepCalibration(key: 'ragConfidenceThreshold' | 'ragConfidenceThresholdRerank') {
-    // `saved`, never `values`: the record must describe the number the SERVER
-    // is holding, which is the same reason the strip itself reads `saved`. A
-    // half-typed draft in the field must not be what gets certified.
-    keepMutation.mutate({ [key]: saved[key] } as Partial<RetrievalValues>);
+  function handleKeepCalibration(key: CalibrationFieldKey) {
+    keepMutation.mutate(key);
   }
 
   function set<K extends keyof RetrievalValues>(key: K, value: RetrievalValues[K]) {
@@ -1097,13 +1140,31 @@ function Section({
  * defect review r1 fixed for the amber branch, left standing in its sibling.
  * The copy also stopped asserting a cause it cannot know: a record write that
  * failed is indistinguishable from one that never happened, so the note says
- * what is missing rather than why.
+ * what is missing rather than why. It stopped promising an OUTCOME it cannot
+ * know either (review r3): "record it against the live model" is a sentence
+ * with no live pair behind it — this branch has no calibration object to read
+ * one from — and the reachable case is ordinary, a rerank threshold set
+ * before #1114 on an instance whose rerank stage is unassigned, where
+ * pressing the button records "tuned against nothing". It names the action,
+ * not the result; the result is the toast's job, and the toast reads the
+ * server's own report of what it wrote.
  *
  * The stale copy names the OLD model, the LIVE one and the scale between
  * them, because "stale" alone leaves an operator no way to judge whether
  * their number is now too strict or too loose — and it names both remedies,
  * since keeping the number is a legitimate choice that simply needs
  * recording. See `handleKeepCalibration` for why that is its own mutation.
+ *
+ * **The no-live-model case is TWO cases, and `liveResolved` tells them apart**
+ * (review r3). "No {basisNoun} model is assigned now" is a claim about
+ * `llm_usecase_assignments`, and it is false — persistently — when the row is
+ * present and merely unreadable: an `api_key` left undecryptable by a
+ * `PAT_ENCRYPTION_KEY` rotation, or an EE org policy naming a provider that
+ * has been deleted. Both throw on every read, so the panel would keep naming
+ * the wrong cause and point the operator at the assignment grid instead of
+ * the provider row. The verdict is deliberately the same in both — erring
+ * toward "this still needs attention" is the safe direction — only the
+ * sentence differs.
  *
  * `supported` is the fourth cell and it renders NOTHING: a server that has
  * not shipped `ragConfidenceCalibration` has told us nothing at all, and
@@ -1138,7 +1199,7 @@ function CalibrationNotice({
       >
         <span id={unknownSentenceId}>
           Calibration unknown — no model is recorded for {label} {value}, so a model change behind it
-          would pass unnoticed. Record it against the live model, or re-tune it below.
+          would pass unnoticed. Record the model behind it now, or re-tune it below.
         </span>
         <button
           type="button"
@@ -1183,13 +1244,29 @@ function CalibrationNotice({
               whose {scaleNoun} scale differs — re-tune it below, or keep it and record it against
               the live model.
             </>
-          ) : (
+          ) : calibration.liveResolved ? (
             // ADR-021: an unassigned rerank means the stage is disabled, so the
             // threshold is measured against nothing. "The live model is null"
             // would be worse than saying so.
             <>
               No {basisNoun} model is assigned now, so the threshold gates nothing it was tuned on —
               re-tune it below, or keep it and record the current state.
+            </>
+          ) : (
+            // Review r3 — the sentence above is a claim about the ASSIGNMENT,
+            // and it is false when the row is present and merely unreadable:
+            // an `api_key` left undecryptable by a `PAT_ENCRYPTION_KEY`
+            // rotation, or an EE policy naming a deleted provider. Both throw
+            // on every read, so the panel would keep naming the wrong cause
+            // and send the operator to the assignment grid instead of the
+            // provider row.
+            <>
+              The live {basisNoun} model could not be resolved, so the threshold is not gating
+              against anything it was tuned on — check its provider in{' '}
+              <Link className="underline underline-offset-2" to={LLM_PROVIDERS_PATH}>
+                {SETTINGS_PANELS.models.label} → LLM providers
+              </Link>
+              , then re-tune it below or keep it and record it once the model resolves.
             </>
           )}
         </span>

@@ -6,10 +6,11 @@ import { FTS_LANGUAGES } from '@compendiq/contracts';
 import { RetrievalTab } from './RetrievalTab';
 
 const toastSuccess = vi.fn();
+const toastError = vi.fn();
 vi.mock('sonner', () => ({
   toast: {
     success: (...args: unknown[]) => toastSuccess(...args),
-    error: vi.fn(),
+    error: (...args: unknown[]) => toastError(...args),
   },
 }));
 
@@ -62,10 +63,22 @@ interface MockOptions {
    * mutation's `invalidateQueries` can race a test-side mutation.
    */
   afterPut?: (body: Record<string, unknown>, settings: Record<string, unknown>) => void;
+  /**
+   * #1114 review r3 — the PUT's own answer. The route reports what it DID
+   * with each threshold's calibration record, because it writes the threshold
+   * row and answers 200 whether or not the record beside it landed. Default:
+   * silent, which is what a server predating the field looks like.
+   */
+  putResult?: (body: Record<string, unknown>) => Record<string, unknown>;
 }
 
 /** Captures every PUT body so a test can assert what was actually sent. */
-function mockApi({ settings = defaultSettings, rerank = unassignedRerank(), afterPut }: MockOptions = {}) {
+function mockApi({
+  settings = defaultSettings,
+  rerank = unassignedRerank(),
+  afterPut,
+  putResult,
+}: MockOptions = {}) {
   const puts: Record<string, unknown>[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
@@ -99,7 +112,7 @@ function mockApi({ settings = defaultSettings, rerank = unassignedRerank(), afte
         const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
         puts.push(body);
         afterPut?.(body, settings);
-        return json({ message: 'Admin settings updated' });
+        return json({ message: 'Admin settings updated', ...(putResult?.(body) ?? {}) });
       }
       return json(settings);
     }
@@ -1051,14 +1064,20 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     ...BGE,
     liveProviderId: BGE.providerId,
     liveModel: 'Qwen3-Embedding-4B',
+    liveResolved: true,
     stale: true,
   };
   const freshSimilarity = {
     ...BGE,
     liveProviderId: BGE.providerId,
     liveModel: 'bge-m3',
+    liveResolved: true,
     stale: false,
   };
+  /** What the route answers when it really recorded the pair. */
+  const recorded = (model: string | null) => () => ({
+    ragConfidenceCalibrationWrite: { similarity: { outcome: 'recorded', model }, rerank: null },
+  });
 
   const stripId = 'retrieval-ragConfidenceThreshold-calibration-stale';
   const unknownId = 'retrieval-ragConfidenceThreshold-calibration-unknown';
@@ -1256,6 +1275,7 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
             setAt: '2026-08-01T10:00:00.000Z',
             liveProviderId: '99999999-9999-4999-8999-999999999999',
             liveModel: 'jina-reranker-v2',
+            liveResolved: true,
             stale: true,
           },
         }),
@@ -1285,6 +1305,7 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
             setAt: '2026-08-01T10:00:00.000Z',
             liveProviderId: null,
             liveModel: null,
+            liveResolved: true,
             stale: true,
           },
         }),
@@ -1316,6 +1337,7 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
             setAt: '2026-08-01T10:00:00.000Z',
             liveProviderId: '99999999-9999-4999-8999-999999999999',
             liveModel: 'jina-reranker-v2',
+            liveResolved: true,
             stale: true,
           },
         }),
@@ -1347,6 +1369,7 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
             setAt: '2026-08-01T10:00:00.000Z',
             liveProviderId: null,
             liveModel: null,
+            liveResolved: true,
             stale: false,
           },
         }),
@@ -1586,6 +1609,126 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
     // And the draft is still the admin's to save or abandon.
     expect(input('ragConfidenceThreshold').value).toBe('0.5');
+  });
+
+  it('names the model when the server says it recorded one, instead of asserting a generic success', async () => {
+    // Review r3. The route answers 200 whether or not the record beside the
+    // threshold landed, so a toast fired on the status code alone is the
+    // panel claiming an outcome it never observed.
+    toastSuccess.mockClear();
+    toastError.mockClear();
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+    };
+    mockApi({
+      settings,
+      putResult: recorded('Qwen3-Embedding-4B'),
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({
+          similarity: { ...staleSimilarity, model: 'Qwen3-Embedding-4B', stale: false },
+        });
+      },
+    });
+    renderTab();
+    await ready();
+
+    fireEvent.click(
+      within(await screen.findByTestId(stripId)).getByTestId(
+        'retrieval-ragConfidenceThreshold-calibration-keep',
+      ),
+    );
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    expect(String(toastSuccess.mock.calls.at(-1)?.[0])).toMatch(/recorded against Qwen3-Embedding-4B/);
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('does NOT report success when the server declined to record — the notice stays and says why', async () => {
+    // The one persistent failure mode: the route abstains whenever the live
+    // model cannot be resolved, and `resolved: false` is not always transient
+    // (an undecryptable provider key after a `PAT_ENCRYPTION_KEY` rotation, an
+    // EE policy naming a deleted provider). Told "recorded", the operator
+    // watches the same notice come back with no explanation.
+    toastSuccess.mockClear();
+    toastError.mockClear();
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+      putResult: () => ({
+        ragConfidenceCalibrationWrite: {
+          similarity: { outcome: 'unresolved', model: null },
+          rerank: null,
+        },
+      }),
+    });
+    renderTab();
+    await ready();
+
+    fireEvent.click(
+      within(await screen.findByTestId(stripId)).getByTestId(
+        'retrieval-ragConfidenceThreshold-calibration-keep',
+      ),
+    );
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(String(toastError.mock.calls.at(-1)?.[0])).toMatch(
+      /Could not resolve the live embedding model/i,
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
+    // And the strip is still standing, because nothing was recorded.
+    expect(await screen.findByTestId(stripId)).toBeInTheDocument();
+  });
+
+  it('says the live model could not be RESOLVED, never that none is assigned', async () => {
+    // Review r3. Both states reach the panel with a null live pair, and only
+    // one is a fact about the assignment. Naming the wrong one sends the
+    // operator to the assignment grid instead of the provider row — for good,
+    // since both causes throw on every read.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({
+          similarity: { ...BGE, liveProviderId: null, liveModel: null, liveResolved: false, stale: true },
+        }),
+      },
+    });
+    renderTab();
+    await ready();
+
+    const strip = await screen.findByTestId(stripId);
+    expect(strip).toHaveTextContent(/could not be resolved/i);
+    expect(strip).not.toHaveTextContent(/No embedding model is assigned now/i);
+    // And it points at the row that can actually be wrong.
+    expect(within(strip).getByRole('link', { name: /LLM providers/i })).toBeInTheDocument();
+  });
+
+  it('the muted note promises an ACTION, not a live model it cannot see', async () => {
+    // Review r3. This branch has no calibration object, so it has no live
+    // pair to name — and the reachable case is ordinary (a rerank threshold
+    // set before #1114 on an instance whose rerank stage is unassigned),
+    // where pressing the button records "tuned against nothing" rather than
+    // any live model. Its amber sibling was given separate copy for exactly
+    // that state.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThresholdRerank: 0.2,
+        ragConfidenceCalibration: calibration(),
+      },
+    });
+    renderTab();
+    await ready();
+
+    const note = await screen.findByTestId('retrieval-ragConfidenceThresholdRerank-calibration-unknown');
+    expect(note).toHaveTextContent(/Record the model behind it now/i);
+    expect(note).not.toHaveTextContent(/against the live model/i);
   });
 
   it('the muted note reads the SERVER value too', async () => {

@@ -843,16 +843,45 @@ DB hiccup or a decrypt error down as the claim "tuned against no model at
 all" — false on an instance whose embedder never moved, stated as fact by the
 panel, and permanent. "No provider configured at all" is not a failure but a
 state (`NoProviderConfiguredError`), so it still records a null pair and the
-day an admin assigns the first embedder still warns.
+day an admin assigns the first embedder still warns. The failure travels to
+the READ path too, on `liveResolved`: both a genuinely unassigned basis and an
+unreadable one arrive with a null live pair, and only the first is a fact
+about `llm_usecase_assignments`. Two of the second's causes are permanent, not
+transient — an `api_key` left undecryptable by a `PAT_ENCRYPTION_KEY`
+rotation, an EE org policy naming a provider that has been deleted — so
+rendering "no embedding model is assigned now" sends the operator to the
+assignment grid instead of the provider row, every time they look. The
+staleness verdict is deliberately identical in both (erring toward "this still
+needs attention" is the safe direction); only the sentence differs.
+
+**The PUT reports what it did, because 200 does not mean "recorded".** The
+threshold row always lands; the record beside it may not — the route abstains
+when the live model cannot be resolved, and the bookkeeping write is
+best-effort. So `PUT /admin/settings` answers
+`ragConfidenceCalibrationWrite: {similarity, rerank}`, each `null` (this
+request carried no threshold for that basis) or one of `recorded` (with the
+model it recorded against, `null` when the basis is genuinely unassigned),
+`cleared`, `unresolved` or `failed`. The panel's `Keep`/`Record` press words
+its toast from that — "recorded against Qwen3-Embedding-4B", or an error
+saying the calibration was left as it was — rather than from the status code.
+Without it, the one persistent failure mode is a button the notice tells you
+to press, which reports success, refetches, and re-renders the same notice
+with nothing on screen explaining why.
 `warnThresholdOutlivedItsModel` logs the change at the swap, the post-swap
 rollback and the direct assignment change — never on an abort, which rewrote
 no assignment, never when either side of the comparison failed to resolve
 (unknown is not a change), and never when the threshold is 0, which is every
-instance that left the gate off. The swap's line names the model captured
+instance that left the gate off. The swap's line names the INCOMING model captured
 **inside** the swap transaction, off the state it verified under the lock,
 exactly as the rollback does: the pre-lock snapshot and the verified value
 differ precisely when another lifecycle step won the lock race, and a warning
-naming a model the swap did not install is worse than none. `RetrievalTab`
+naming a model the swap did not install is worse than none. The OUTGOING model
+is **resolved**, never read off `llm_usecase_assignments.model` — that column
+is NULL on an assignment that pins a provider and inherits its
+`default_model`, a first-class partial pin the rollback restores verbatim, so
+a raw read printed `previousModel: null`, the one field the line exists to
+carry. The rollback is symmetric: it resolves the restored pair after the
+transaction rather than echoing `revState.prev.model`. `RetrievalTab`
 renders a stale record as an amber `role="status"` strip above that control
 naming the old model, the live one and the scale between them; a threshold
 with no record at all (everything set before this shipped, and anything
@@ -882,7 +911,7 @@ it against the live model" against a Save that only diffs values, so on every
 instance upgraded with a live threshold — the exact instance the runbook's
 go/no-go step is written for — the note was permanent and its instruction
 impossible, recording the current number reachable only by changing the gate
-to a different one and back. Same fix as the amber branch, one branch later. It is also its **own mutation**, not Save's: Save's success
+to a different one and back. Same fix as the amber branch, one branch later. Its copy names the ACTION and not the outcome — "record the model behind it now", never "against the live model" — because that branch has no calibration object and so no live pair to name, and its reachable case (a rerank threshold set before #1114 on an instance whose rerank stage is unassigned, ADR-021's default) records "tuned against nothing" rather than any live model. It is also its **own mutation**, not Save's: Save's success
 releases the panel's one-shot hydration so the form re-reads the server, which
 is right for a request that submitted the form and wrong for one that submits
 a row the operator did not edit — it would revert whatever else they had typed

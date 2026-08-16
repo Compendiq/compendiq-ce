@@ -1178,6 +1178,47 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       ]);
     });
 
+    it('names the model the pipeline WAS using when the assignment inherits it (review r3)', async () => {
+      // A provider-pinned, model-inherited assignment (`model IS NULL`) is a
+      // first-class state on this path — the rollback restores it verbatim,
+      // calling it exactly that — and a raw column read names the outgoing
+      // model `null`, which is the one field this log line exists to carry.
+      // The resolver is the only correct source: it applies inheritance, the
+      // EE override and ADR-021's rerank rule, exactly as the pipeline does.
+      //
+      // Ordered before `seedEmbeddedPage` on purpose: the provider CONFIG
+      // (its `default_model` included) is cached per id, so a resolve that
+      // ran before this UPDATE would answer from a pre-update snapshot.
+      await query(`UPDATE llm_providers SET default_model = $1 WHERE id = $2`, [
+        LIVE_MODEL,
+        liveProviderId,
+      ]);
+      await query(`UPDATE llm_usecase_assignments SET model = NULL WHERE usecase = 'embedding'`);
+      await setSimilarityThreshold('0.35');
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      await runShadowBackfillJob();
+
+      await performShadowSwap();
+
+      expect(calibrationWarnings()).toEqual([
+        expect.objectContaining({ previousModel: LIVE_MODEL, newModel: SHADOW_MODEL }),
+      ]);
+      warnSpy.mockClear();
+
+      await rollbackShadowMigration();
+
+      // Symmetric on the way back: the restored row is `{provider, NULL}`
+      // again, so the incoming model is the provider's `default_model`.
+      const restored = await query<{ model: string | null }>(
+        `SELECT model FROM llm_usecase_assignments WHERE usecase = 'embedding'`,
+      );
+      expect(restored.rows[0]!.model).toBeNull();
+      expect(calibrationWarnings()).toEqual([
+        expect.objectContaining({ previousModel: SHADOW_MODEL, newModel: LIVE_MODEL }),
+      ]);
+    });
+
     it('says nothing when the gate is off — 0 is the default on every instance', async () => {
       await seedEmbeddedPage('Doc A');
       await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
