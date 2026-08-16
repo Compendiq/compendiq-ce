@@ -89,6 +89,27 @@ those comparisons need the real candidates, run locally through the same script
 (`docs/runbooks/retrieval-eval.md`), or scored on the real corpus via #1260.
 There is no separate model-comparison harness — #1113 was closed without one.
 
+**A run states which FTS configuration it measured, and the default is
+`simple` for every language (#1114).** Hybrid retrieval has a lexical leg, and
+`pages.tsv` is built by migration 049's trigger from
+`admin_settings.fts_language` while `keywordSearch` re-reads the same row per
+query. The eval never wrote that row, so every run — `--lang de` included —
+scored its keyword leg through a language-neutral stemmer, and **every German
+number published on #1114 before this is `fts=simple`**. `--fts-language` pins
+it, the report carries `ftsLanguage`, and `--baseline` refuses a mismatched
+pair (absent means `simple`, because that is what it was). The default is
+deliberately NOT derived from `--lang`: every recorded baseline, CI's included,
+was measured under `simple`, and deriving it would silently re-measure all of
+them and report the difference as a retrieval change.
+
+**Query-time latency is measured OUTSIDE `eval/`**, by
+`backend/scripts/benchmark-query-latency.ts` — `runner.ts`'s participation
+floors assume exactly one sequential hit per query, so a concurrency flag does
+not belong there. It is non-destructive (never seeds, `recordAnalytics: false`)
+and refuses a search arm whose model width does not match the live
+`page_embeddings` column, because `hybridSearch` degrades to keyword-only on an
+embedding failure and would otherwise publish FTS latency as retrieval latency.
+
 - DB tests → real Postgres, never mocked.
 - Backend route tests → mock external HTTP and auth via `vi.spyOn()` passthroughs; nothing else.
 - Frontend tests → mock fetch/MSW at the network boundary, not internal components.

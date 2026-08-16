@@ -14,7 +14,15 @@ import { embedPage, CHUNK_HARD_LIMIT } from '../services/embedding-service.js';
 import { generateEmbedding } from '../services/openai-compatible-client.js';
 import type { ProviderConfig } from '../services/openai-compatible-client.js';
 import { logger } from '../../../core/utils/logger.js';
+import { ALLOWED_FTS_LANGUAGES } from '../../../core/services/fts-language.js';
 import { loadCorpus, type CorpusPage } from './fixture.js';
+
+/**
+ * The user every eval-rig page is seeded under. Shared so a second tool
+ * (#1114's latency benchmark) can query the seeded corpus through the product's
+ * own ACL predicates instead of inventing a user the pages are invisible to.
+ */
+export const EVAL_USER_ID = 'aaaaaaaa-1102-4000-8000-000000001102';
 
 export interface SeedResult {
   pageIdByFile: Map<string, number>;
@@ -82,6 +90,76 @@ export async function ensureVectorDimensions(dims: number): Promise<void> {
      ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
     [String(dims)],
   );
+}
+
+/**
+ * Pin the text-search configuration this run measures (#1114).
+ *
+ * Must be called BEFORE `seedCorpus`, because `pages.tsv` is built by migration
+ * 049's BEFORE INSERT trigger, which reads this row per row inserted — a value
+ * written afterwards would leave the corpus indexed under whatever was there
+ * during the seed while `keywordSearch` queried under the new one. Both halves
+ * of the lexical leg read the same row, so writing it once ahead of the seed is
+ * what makes them agree.
+ *
+ * Validated against the product's own allow-list: `getFtsLanguage()` answers
+ * 'simple' for anything else, so an unchecked value would silently produce a
+ * run that reports a configuration it never used.
+ */
+export async function configureFtsLanguage(language: string): Promise<void> {
+  if (!ALLOWED_FTS_LANGUAGES.has(language)) {
+    throw new Error(
+      `Unknown FTS configuration "${language}" — allowed: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}`,
+    );
+  }
+  await query(
+    `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+     VALUES ('fts_language', $1, NOW())
+     ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+    [language],
+  );
+}
+
+/**
+ * Certify, after seeding, that the tsvectors really were built under
+ * `language` — the trigger is the only thing that builds them and it is not
+ * this module's code, so the alternative is trusting that an INSERT ordering
+ * held.
+ *
+ * Recomputes `to_tsvector(language, title || ' ' || body_text)` per page and
+ * counts the rows whose stored vector differs. On a German corpus indexed under
+ * 'simple' every row differs; the failure this catches is precisely the one
+ * that produced #1114's published German numbers.
+ */
+export async function assertSeededFtsLanguage(language: string): Promise<void> {
+  if (!ALLOWED_FTS_LANGUAGES.has(language)) {
+    throw new Error(
+      `Unknown FTS configuration "${language}" — allowed: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}`,
+    );
+  }
+  // The configuration name is interpolated because Postgres does not accept a
+  // parameterised regconfig; the allow-list check above is what makes that safe
+  // and is the same guard `getFtsLanguage()` applies.
+  const r = await query<{ total: number; mismatched: number }>(
+    `SELECT COUNT(*)::int AS total,
+            COUNT(*) FILTER (
+              WHERE tsv IS DISTINCT FROM
+                    to_tsvector('${language}', coalesce(title, '') || ' ' || coalesce(body_text, ''))
+            )::int AS mismatched
+     FROM pages WHERE deleted_at IS NULL`,
+  );
+  const { total, mismatched } = r.rows[0]!;
+  if (total === 0) {
+    throw new Error('No pages are seeded, so the FTS configuration of the corpus cannot be certified');
+  }
+  if (mismatched > 0) {
+    throw new Error(
+      `${mismatched}/${total} seeded pages carry a tsvector that was NOT built with the "${language}" ` +
+        'configuration — the keyword leg would be scored against one index while the report named another. ' +
+        'admin_settings.fts_language must be written BEFORE the corpus is seeded (migration 049 builds ' +
+        'pages.tsv from a BEFORE INSERT trigger that reads it per row).',
+    );
+  }
 }
 
 export class TruncatingModelError extends Error {}

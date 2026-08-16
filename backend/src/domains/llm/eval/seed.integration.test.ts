@@ -25,8 +25,9 @@ vi.mock('../services/openai-compatible-client.js', async () => {
   return { ...actual, generateEmbedding: generateEmbeddingMock };
 });
 
-const { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk, TruncatingModelError, EVAL_SPACE_KEY } = await import('./seed.js');
+const { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk, configureFtsLanguage, assertSeededFtsLanguage, TruncatingModelError, EVAL_SPACE_KEY } = await import('./seed.js');
 const { loadCorpus } = await import('./fixture.js');
+type CorpusPage = import('./fixture.js').CorpusPage;
 
 // Real corpus prose, so the probe carries the token density a real chunk does
 // — repeated filler words are ~6 chars/token, corpus text is ~4 (review r2).
@@ -197,6 +198,71 @@ describe.skipIf(!dbAvailable)('eval seeder (#1102)', () => {
 
     const { getEmbeddingCoverage } = await import('../services/rag-service.js');
     expect((await getEmbeddingCoverage(USER)).coverage).toBe(1);
+  });
+
+  // #1114 — the tsvector the keyword leg scores against is built by migration
+  // 049's BEFORE INSERT trigger, which reads admin_settings.fts_language at
+  // insert time. Nothing in the eval ever wrote that row, so every `--lang de`
+  // run measured its lexical leg under 'simple' while reporting German
+  // numbers. These two tests are the seed half of the fix; fts-config.test.ts
+  // covers the flag and the baseline refusal.
+  const GERMAN_PAGE: CorpusPage = {
+    file: 'de-fts-probe.md',
+    title: 'Anwendungen und Verbindungen',
+    // 'Anwendungen' stems to 'anwend' under the german configuration and stays
+    // 'anwendungen' under 'simple' — one lexeme that tells the two apart.
+    markdown:
+      'Die Anwendungen werden in Gruppen verwaltet. Jede der Anwendungen hat eine eigene '
+      + 'Verbindung zur Datenbank, und die Verbindungen werden beim Start geprueft.',
+    source: 'test',
+  };
+
+  async function tsvOf(pageId: number): Promise<string> {
+    const r = await query<{ tsv: string }>(`SELECT tsv::text AS tsv FROM pages WHERE id = $1`, [pageId]);
+    return r.rows[0]!.tsv;
+  }
+
+  it('builds the page tsvectors with the CONFIGURED fts language, not the schema default', async () => {
+    await ensureVectorDimensions(MODEL_DIMS);
+    await configureEmbeddingProvider({ baseUrl: 'http://stub/v1', model: 'stub-embed' });
+
+    // Baseline: with no configuration written, the trigger falls back to
+    // 'simple' and the German word is indexed unstemmed.
+    const plain = await seedCorpus(USER, { corpus: [GERMAN_PAGE] });
+    const simpleTsv = await tsvOf(plain.pageIdByFile.get(GERMAN_PAGE.file)!);
+    expect(simpleTsv).toContain("'anwendungen'");
+    expect(simpleTsv).not.toContain("'anwend'");
+
+    await resetEvalCorpus();
+    await configureFtsLanguage('german');
+    const german = await seedCorpus(USER, { corpus: [GERMAN_PAGE] });
+    const germanTsv = await tsvOf(german.pageIdByFile.get(GERMAN_PAGE.file)!);
+
+    expect(germanTsv).toContain("'anwend'");
+    expect(germanTsv).not.toContain("'anwendungen'");
+    // …and the query-time leg reads the same row, so both halves of hybrid
+    // retrieval agree on the configuration the report will name.
+    const { getFtsLanguage } = await import('../../../core/services/fts-language.js');
+    expect(await getFtsLanguage()).toBe('german');
+
+    // The post-seed assertion the runner uses to prove the two agreed.
+    await expect(assertSeededFtsLanguage('german')).resolves.toBeUndefined();
+  });
+
+  it('refuses an unknown configuration instead of letting Postgres fall back to simple', async () => {
+    await expect(configureFtsLanguage('klingon')).rejects.toThrow(/klingon/);
+  });
+
+  it('assertSeededFtsLanguage catches tsvectors built under a different configuration', async () => {
+    await ensureVectorDimensions(MODEL_DIMS);
+    await configureEmbeddingProvider({ baseUrl: 'http://stub/v1', model: 'stub-embed' });
+    // Seeded under the default, then asked to certify german: the exact shape
+    // of the bug — a report labelled german over a simple index.
+    const seeded = await seedCorpus(USER, { corpus: [GERMAN_PAGE] });
+    expect(seeded.pageIdByFile.size).toBe(1);
+
+    await expect(assertSeededFtsLanguage('german')).rejects.toThrow(/german/);
+    await expect(assertSeededFtsLanguage('simple')).resolves.toBeUndefined();
   });
 
   it('configures a provider row, without which resolveUsecase throws and retrieval degrades silently', async () => {
