@@ -100,7 +100,7 @@ erDiagram
         int page_id FK
         int chunk_index
         text chunk_text
-        vector embedding "1024 dims (bge-m3)"
+        vector embedding "vector(n) or halfvec(n) — n is the resolved model's width"
         jsonb metadata
     }
 
@@ -333,11 +333,15 @@ together, which matters most for #1114's query-side prefix.
 
 - **User ownership is pervasive.** Almost every table carries `user_id`
   (UUID, FK → `users.id`) — Compendiq is multi-tenant at the user level.
-- **pgvector.** `page_embeddings.embedding` defaults to `vector(1024)` with
-  an HNSW index (`m=16`, `ef_construction=200`) for cosine similarity, sized
-  for `bge-m3`. The column type and index path are **dimension-driven** and
-  rewritten by `enqueueReembedAll({ newDimensions })` when the admin switches
-  the embedding model:
+- **pgvector — the column type is dimension-driven, not one model's shape.**
+  `page_embeddings.embedding` has no fixed width in the schema. The embedding
+  pair is resolved from `llm_usecase_assignments` (the `embedding` use case,
+  ADR-021) and the width is **probed from the model**, not typed by an
+  operator: the shadow migration embeds the literal text `probe` and takes
+  `vectors[0].length`. That number is stored in
+  `admin_settings.embedding_dimensions` and picks the column type and index
+  path via `columnTypeFor`, rewritten by `enqueueReembedAll({ newDimensions })`
+  (destructive) or by #1116's shadow swap (non-destructive):
 
   | Dimensions  | Column type   | Index                                           |
   |-------------|---------------|-------------------------------------------------|
@@ -345,10 +349,26 @@ together, which matters most for #1114's query-side prefix.
   | `2001–4000` | `halfvec(n)`  | HNSW `halfvec_cosine_ops` (float16, ~50% size)  |
   | `n > 4000`  | `vector(n)`   | no index (sequential scan; warning logged)      |
 
+  Both indexed tiers build with `m = 16`, `ef_construction = 200` for cosine
+  similarity; only the opclass changes.
+
   pgvector 0.8 caps HNSW at 2000 dims for `vector` and 4000 dims for `halfvec`;
   larger models (e.g. `qwen3-embedding:8b` at 4096) fall to the seq-scan tier.
   Query-time `ef_search` is set per request. Source of truth:
   `backend/src/domains/llm/services/embedding-service.ts` (`enqueueReembedAll`).
+
+  **Which model, in practice.** `bge-m3` at 1024 (`vector(1024)` + HNSW) is the
+  **bootstrap default** — the fresh-install fallback behind `EMBEDDING_MODEL` /
+  `EMBEDDING_DIMENSIONS`, which are deprecated and read only when the DB row is
+  absent. **Qwen3-Embedding-4B at 2560 native is the measured recommendation**
+  for production (#1114): that lands on the `halfvec(2560)` +
+  `halfvec_cosine_ops` tier — at that width fp16 is not a fallback but the only
+  indexed representation pgvector offers, and it was measured harmless at the
+  vector level. Ingest is ~10× slower per chunk, so the cutover is a scheduling
+  decision, run through #1116's shadow path rather than the destructive one.
+  The numbers, the caveats and the open operational items are in
+  `docs/ARCHITECTURE-DECISIONS.md`, ADR-012's `#1114` amendment. Nothing in this
+  file should be read as "the column is 1024 wide".
 - **Shadow re-embed columns (#1116, transient).** During a zero-downtime model
   change (`shadow-migration-service.ts`), `page_embeddings.embedding_next` and
   `pages.page_avg_embedding_next` exist as **runtime-created** nullable columns

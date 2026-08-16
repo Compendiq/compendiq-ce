@@ -426,7 +426,7 @@ CREATE TABLE page_embeddings (
   confluence_id   TEXT NOT NULL,        -- FK to cached_pages.confluence_id
   chunk_index     INT NOT NULL,         -- Order within the page
   chunk_text      TEXT NOT NULL,         -- The text chunk
-  embedding       vector(1024) NOT NULL,  -- bge-m3: 1024 dimensions
+  embedding       vector(1024) NOT NULL,  -- historical: bge-m3 at 1024 dimensions
   metadata        JSONB DEFAULT '{}',    -- {section_title, page_title, space_key}
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(user_id, confluence_id, chunk_index)
@@ -471,6 +471,15 @@ CREATE TABLE llm_improvements (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ```
+
+> **Note on `page_embeddings.embedding` (#1114):** the DDL above is the
+> original migration, kept as written. **The live column type is
+> dimension-driven** — `columnTypeFor` picks `vector(n)` + HNSW `vector_cosine_ops`
+> up to 2000 dims, `halfvec(n)` + `halfvec_cosine_ops` from 2001 to 4000, and an
+> unindexed `vector(n)` above — from a width probed off the resolved `embedding`
+> model, not from a constant. `vector(1024)` is what a fresh install running the
+> `bge-m3` default ends up with, not what the schema mandates. See ADR-012's
+> `#1114` amendment and `docs/architecture/06-data-model.md`.
 
 **Rationale**:
 - No ORM (same pattern as reference project) - parameterized SQL only for security
@@ -864,7 +873,9 @@ services:
 > builder — ranking and search snippets keep the best chunk. The embedding
 > model/dimensions
 > named below are the original defaults; the live pair is DB-configured per
-> ADR-021.
+> ADR-021, and the measured recommendation on top of it is the **`#1114`
+> amendment at the end of this ADR** — `bge-m3`@1024 is the bootstrap default,
+> Qwen3-Embedding-4B@2560 (`halfvec` tier) is what the numbers point at.
 
 ### Context
 For the "Q&A over knowledge base" feature, we need to provide relevant article context to the LLM. Full articles don't fit in small model context windows. Semantic search outperforms keyword search for natural language questions.
@@ -961,10 +972,17 @@ User Question: "How do I deploy to staging?"
 #### Embedding Model Selection
 | Model | Dimensions | Speed | Quality | Notes |
 |-------|-----------|-------|---------|-------|
-| **bge-m3** (default) | 1024 | Fast | Very High | Multilingual, MIT license, best balance |
+| **bge-m3** (bootstrap default) | 1024 | Fast | Very High | Multilingual, MIT license, best balance |
 | nomic-embed-text | 768 | Fast | High | Previous default, still usable |
 | snowflake-arctic-embed | 1024 | Fast | High | Alternative option |
-| qwen3-embedding | 1024 | Medium | Very High | If user runs Qwen family |
+| qwen3-embedding:0.6b | 1024 | Medium | Very High | **Not an upgrade** — MMTEB retrieval 80.83 vs `bge-m3`'s 80.76 is a tie |
+| **qwen3-embedding:4b** | **2560** | **~10× slower to ingest** | **Highest measured here** | `halfvec` + HNSW tier, no truncation; **measured production recommendation** (#1114) |
+| qwen3-embedding:8b | 4096 | Slow | Highest on paper | Above pgvector's `halfvec` HNSW cap → seq-scan tier unless MRL-truncated; rejected, see the `#1114` amendment |
+
+The `qwen3-embedding` row was previously unqualified at 1024, which is only
+true of the 0.6B variant — the three sizes are **1024 / 2560 / 4096**, and the
+width is what decides the column type and index tier, so the variant has to be
+named.
 
 The embedding dimension is configurable via admin settings (`EMBEDDING_DIMENSIONS` env var, default 1024). Users can select
 their chat model freely, but the embedding model is a server-wide setting (`EMBEDDING_MODEL` env var).
@@ -980,6 +998,119 @@ a deliberate trade-off: dimension changes require HNSW index rebuilds.
 - Can be paused/resumed
 
 **Rationale**: Full vector search gives the LLM the best possible context for Q&A. pgvector keeps it in PostgreSQL (no new service). Hybrid search (vector + keyword) handles both semantic similarity and exact term matching. bge-m3 provides multilingual support and is fast enough for incremental re-embedding on sync.
+
+### #1114 (2026-08-16) — the embedding model is dimension-driven, not `bge-m3` by definition
+
+**What changes:** nothing in the pipeline above, and everything about how the
+model is written down. `bge-m3`@1024 is a **bootstrap default** — the value
+`EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` supply on a fresh install, and those
+env vars are deprecated fallbacks consulted only when the DB row is absent. The
+live pair is `resolveUsecase('embedding')` (ADR-021) plus a width **probed from
+the model** (`startShadowMigration` embeds the literal text `probe` and takes
+`vectors[0].length`; no operator types a number). This amendment records the
+measured recommendation on top of that: **Qwen3-Embedding-4B at 2560 native.**
+
+**Model choice: 4B@2560 native, over 8B+MRL and over 0.6B.** The epic's going-in
+choice was Qwen3-Embedding-8B truncated by MRL to 2000, to stay under pgvector's
+`vector` HNSW ceiling. Rejected. 2000 is **not an MRL-trained boundary** —
+Qwen3's nested sizes are 512/1024/2048 — so the truncation would sit off the
+trained manifold, and 2048 needs `halfvec` anyway. Once you are paying the
+`halfvec` cost, 4B at its **native** 2560 is strictly less risky than 8B at 2048
+truncated: no truncation means the MRL-correctness question is deleted from the
+issue rather than answered, at roughly half the GPU footprint, for ~77% of the
+8B's paper gain over `bge-m3` (MMTEB retrieval 85.05 vs 86.40 vs 80.76). It also
+needs no `dimensions` field on the outbound embeddings body, which stays
+`{model, input}`. **0.6B is ruled out explicitly**: 80.83 against `bge-m3`'s
+80.76 is a tie, not an upgrade.
+
+**Tier: `halfvec(2560)` + `halfvec_cosine_ops` HNSW.** That is what
+`columnTypeFor` returns at this width, and the framing matters — at 2560, fp16
+is not a fallback anyone chose, it is **the only indexed representation pgvector
+offers**. Measured directly rather than end-to-end (see below): on `kb_eval`,
+200 probe vectors, the largest fp16-induced |Δdistance| observed was **2.67e-5**
+against a **p01 adjacent-rank gap of 4.44e-5** — the worst rounding error is
+smaller than the tightest 1% of rank boundaries in the corpus, so fp16 cannot
+reorder what it cannot perturb across a boundary (0/200 top-1 changes). An
+end-to-end Recall@K run has **no discriminating power** on this question and
+must not be used as the gate: it would report "no difference" whether or not
+fp16 were harmful. (Caveat as stated in #1114: measured at 768 dims with
+`nomic-embed-text`, on real corpus vectors, not at 2560 with Qwen3.)
+
+**Query-side instruction prefix (#1329).** Qwen3's embedding family is trained
+asymmetrically — a QUERY carries `Instruct: {task}\nQuery:{query}` (no space
+after `Query:`), a DOCUMENT is embedded bare. `query-instruction.ts` applies it
+at the vector leg's `generateEmbedding` only, keyed off the **resolved** model,
+so it turns on exactly when a swap makes Qwen3 live and off again on rollback
+with no second setting to keep in step. Documents are bare under every model, so
+the stored corpus is byte-identical either way and **flipping it needs no
+re-embed**.
+
+**Measured, on #1102's 197-query fixture, plain runs, no rerank.** Significance
+columns are McNemar exact on the paired per-query hits, except MRR, which is a
+graded score and gets a paired bootstrap CI instead:
+
+| | EN bge-m3 | EN Qwen3-4B | EN significance | DE bge-m3 | DE Qwen3-4B | DE significance |
+|---|---|---|---|---|---|---|
+| Recall@1 | 0.6091 | 0.6599 | **p = 0.174 — not established** | 0.6091 | 0.6904 | p = 0.026, CI [+0.015, +0.147] |
+| Recall@3 | 0.7919 | 0.9086 | p = 0.00003 | 0.7817 | 0.8680 | p = 0.0023 |
+| Recall@5 | 0.8477 | 0.9289 | p = 0.0015 | 0.8528 | 0.8985 | p = 0.12 |
+| Recall@10 | 0.9137 | 0.9645 | p = 0.013 | 0.8883 | 0.9492 | p = 0.0075 |
+| MRR | 0.7131 | 0.7839 | CI [+0.025, +0.115] | 0.7119 | 0.7878 | CI [+0.0302, +0.1218] |
+
+**Say the English R@1 result out loud, because the mean flatters it.** +0.051
+reads like the headline, but paired by query it is 27 wins against 17 losses —
+heavy churn for a five-point gain — and both the exact test (p = 0.17) and the
+bootstrap CI (crosses zero) decline to call it. **In English, Qwen3 has not been
+shown to improve the top-1 answer**; everything at K≥3 is solid. On the German
+translation of the same corpus (#1332, content held constant so only the
+language varies) R@1 **is** established, +0.081 at p = 0.026. Since production
+content is German, the English run was understating the benefit on the result
+users see first. Read the per-K p-values with care either way: four correlated
+tests per language, and DE R@5 at p = 0.12 sitting between two clearly
+significant neighbours reads as sampling noise. What is robust across both
+languages: every delta is positive and the MRR interval excludes zero in both.
+
+**Caveat, unresolved here:** every German number so far was scored with
+`FTS_LANGUAGE='simple'`, so the lexical leg did no German stemming or
+decompounding. That is a live loss independent of this decision, it is being
+addressed separately, and it is *not* fixed by this amendment.
+
+**The counterweight is ingest cost: ~10× slower.** Embedding the same 2,198
+chunks took **36m 13s** against `bge-m3`'s **3m 31s** (~1 chunk/s vs ~10). On a
+real corpus that is the dominant cost of the cutover, which is why the swap is a
+scheduling decision run through **#1116's shadow path** — dual-write plus
+background backfill plus an atomic rename — and not `enqueueReembedAll`, whose
+`TRUNCATE` leaves RAG on keyword fallback and `page_avg_embedding` NULL until
+the last page re-embeds, with the old vectors gone.
+
+**`bge-m3` stays the default.** This amendment is a recommendation with numbers
+behind it, not a change of the shipped default: a fresh install still bootstraps
+to `bge-m3`@1024 and `vector(1024)`, and an operator opts into 2560 through
+Settings → AI Models plus the shadow migration.
+
+**Open, and explicitly not settled by the numbers above:**
+
+1. **Query-time latency at 2560 under realistic concurrency** — not isolated in
+   any run so far. Only ingest was timed.
+2. **`ef_search` sizing at 2560** — the per-request value was tuned against a
+   1024-dim `vector` index; nothing has re-derived the recall/latency knee for
+   `halfvec(2560)`, and HNSW build time at production corpus size is unmeasured.
+3. **Cosine constants calibrated on `bge-m3` must be re-checked after a swap.**
+   Similarity scores are not comparable across embedding models, and three
+   places read a raw cosine against a number chosen under `bge-m3`:
+   `ConfidenceBadge`'s High/Medium/Low ladder at 0.7 / 0.4
+   (`frontend/src/shared/components/badges/ConfidenceBadge.tsx:14`, whose own
+   comment already says "calibrated for bge-m3; may need adjustment for other
+   models"); `SIMILARITY_THRESHOLD = 0.4` for knowledge-graph relationships
+   (`backend/src/domains/llm/services/embedding-service.ts:1305`); and #1105's
+   refuse gate, where `rag_confidence_threshold` is compared against the
+   `similarity` basis produced by `retrieval-confidence.ts` — an operator-set
+   value rather than a literal, which makes it *worse*, not better: a swap
+   leaves the number where the operator tuned it while silently changing what it
+   means. The observable symptoms are the refusal rate, the badge distribution
+   and the graph's edge count, none of which fail loudly.
+4. **Rerank interaction** — every run above is plain. #1104's cross-encoder
+   stage was not live.
 
 ---
 
@@ -1642,7 +1773,7 @@ Multi-replica deployments sit behind a load balancer. `trustProxy` MUST be set t
 | 009 | State Management | TanStack Query + Zustand | Server data vs client state separation |
 | 010 | UI Components | Radix UI + TailwindCSS + Framer Motion | Glassmorphic, accessible, same as reference |
 | 011 | Docker Stack | 4 services (frontend, backend, postgres+pgvector, redis) | Proper caching + vector search, manageable ops |
-| 012 | RAG Pipeline | pgvector + hybrid search (vector + keyword) + bge-m3 | Best LLM context quality for Q&A, multilingual |
+| 012 | RAG Pipeline | pgvector + hybrid search (vector + keyword); embedding model is a DB-resolved use case, column type follows its probed width | Best LLM context quality for Q&A, multilingual; `bge-m3`@1024 bootstrap default, Qwen3-Embedding-4B@2560 `halfvec` measured/recommended (#1114) |
 | 013 | Draw.io Support | Read-only rendering + "Edit in Confluence" link | Display diagrams, edit in Confluence |
 | 014 | Background Workers | `setInterval` + lock flag + retry limits | Simple, 4 workers (sync, embedding, quality, summary), crash-safe, admin controls |
 | 015 | Ollama Architecture | Shared server, global concurrency limit, per-user chat model | Single instance, no per-user URL complexity |

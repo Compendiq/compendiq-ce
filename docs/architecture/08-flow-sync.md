@@ -79,8 +79,8 @@ sequenceDiagram
     ES->>DB: SELECT pages WHERE embedding_dirty = true LIMIT N
     loop per page
         ES->>ES: chunk(htmlToEmbeddingText(body_html))<br/>Markdown, fence-aware, section-packed (#35;1265)
-        ES->>OL: POST /api/embeddings (bge-m3)
-        OL-->>ES: vector[1024]
+        ES->>OL: POST /api/embeddings, resolved model<br/>bare chunk text, no query prefix (#35;1329)
+        OL-->>ES: vector at the model's probed width
         ES->>DB: INSERT page_embeddings
         ES->>DB: UPDATE pages SET embedding_dirty = false
     end
@@ -570,6 +570,33 @@ invalidated by a sync/edit) using the same extractors in that rare path. The
 per-page `fs.access` cache checks stay at read time (attachment downloads change
 cache state independently of page sync). The `SyncOverviewResponse` contract is
 unchanged, so the frontend needs no change.
+
+## The embedding call in that loop
+
+Two things about the embedding worker's `ES → OL` round-trip in the sequence
+above are load-bearing, and both used to be wrong in that diagram.
+
+**The model is not `bge-m3`.** It is whatever `resolveUsecase('embedding')`
+resolves to (ADR-021) — `bge-m3` at 1024 is only the bootstrap default, and
+**Qwen3-Embedding-4B at 2560** is the measured recommendation for production
+(#1114). The returned width is not a constant either: it is probed from the
+model and drives the `page_embeddings.embedding` column type
+(`vector(n)` ≤ 2000, `halfvec(n)` 2001–4000). See
+[`06-data-model.md`](./06-data-model.md).
+
+**The text this loop sends is bare, and that asymmetry is the point (#1329).**
+Instruction-aware models (Qwen3's embedding family) are trained with a
+preamble on the QUERY and nothing on the DOCUMENT. `query-instruction.ts`
+therefore applies `Instruct: {task}\nQuery:{query}` at the vector leg's
+`generateEmbedding` call in `rag-service.ts` — the app's only query-side
+embedding call — and **never here**. `embedPage`, the shadow dual-write and
+the shadow backfill all embed the chunk verbatim; a structural test
+(`query-instruction.test.ts`) fails if any of them starts to prefix, because a
+wrongly prefixed document still returns a plausible vector and no behavioural
+test would go red while retrieval quietly degraded. The corollary is that the
+stored corpus is byte-identical whether or not the prefix is active, so
+turning it on needs no re-embed. Query side: see
+[`09-flow-rag-chat.md`](./09-flow-rag-chat.md) → Retrieval details.
 
 ## Content pipeline hand-off
 
