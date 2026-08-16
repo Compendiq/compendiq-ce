@@ -111,7 +111,14 @@ corpus before seeding. It has to — without that, a second run leaves two
 identical copies of every page, retrieval splits between the twins, and recall
 roughly halves, which the comparison reports as a credible regression caused
 by whatever you were testing. That is not hypothetical; it is how the bug was
-found.
+found. Clearing the corpus also drops the recorded corpus language, so a run
+that dies mid-seed leaves *no* claim rather than the previous run's — the
+latency benchmark then warns ("seeded before this was recorded") instead of
+accepting an English arm over a half-written German corpus.
+
+`--help` prints every flag with its default, and an unrecognised flag is
+**refused** rather than ignored: `--fts-langauge german` used to parse cleanly
+and spend an hour embedding under the default configuration.
 
 ## Which FTS configuration a run measured (#1114)
 
@@ -375,7 +382,13 @@ hand-maintained copy of results produced by this script, so **the two can
 drift** — if you re-measure, update that file in the same PR, including its
 `measuredOn` date.
 
-Three things in that file are load-bearing and must survive an edit:
+Four things in that file are load-bearing and must survive an edit:
+
+- **`ftsLanguage` in `BENCHMARK_PROVENANCE`.** The rule this issue establishes
+  is that a retrieval number states the text-search configuration it was
+  measured under, and this table is the only surface where these numbers reach
+  a human. It is `simple` today, rendered in the provenance sentence and again
+  in the closing scope note, and it moves in the same edit as the scores.
 
 - **`established` per metric.** A mean without its significance is what made
   the English Recall@1 delta look like the headline result; it moves +0.051 and
@@ -402,7 +415,9 @@ between them. So the absolute German scores are a `simple`-stemmer measurement,
 and the German deltas — the ones the swap decision leans on, since Qwen3's
 Recall@1 gain is established in German and not in English — should be re-run with
 `--lang de --fts-language german` before they are quoted again. Update
-`measuredOn` in the same edit.
+`measuredOn` and `ftsLanguage` in the same edit. Until then the panel says so on
+screen: the provenance line names the `simple` configuration, and the closing
+note marks the German rows as pending re-measurement.
 
 ## Changing the corpus or the fixture
 

@@ -100,7 +100,17 @@ it, the report carries `ftsLanguage`, and `--baseline` refuses a mismatched
 pair (absent means `simple`, because that is what it was). The default is
 deliberately NOT derived from `--lang`: every recorded baseline, CI's included,
 was measured under `simple`, and deriving it would silently re-measure all of
-them and report the difference as a retrieval change.
+them and report the difference as a retrieval change. **The rule reaches the
+one surface those numbers are shown on**: Settings → AI Models' benchmark table
+carries `ftsLanguage` in `BENCHMARK_PROVENANCE`, renders it, and marks its
+German rows as pending re-measurement — enforcing it on the JSON report alone
+would move the omission one layer up rather than fix it. Both eval entrypoints
+now **refuse an unrecognised flag** (`assertKnownFlags`, `eval/cli-flags.ts`)
+and print a usage list: `--fts-langauge german` parsed cleanly and spent an
+hour embedding under the default. And `resetEvalCorpus` drops the
+`eval_corpus_language` claim it invalidates, so a seed that dies halfway leaves
+*no* claim rather than the previous run's — absent routes the benchmark to its
+warning, which is the safe verdict for "unknown".
 
 **Query-time latency is measured OUTSIDE `eval/`**, by
 `backend/scripts/benchmark-query-latency.ts` — `runner.ts`'s participation
