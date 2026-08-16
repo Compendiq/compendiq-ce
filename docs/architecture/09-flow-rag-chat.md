@@ -1040,13 +1040,23 @@ states the condition where an operator will meet it.
   asymmetrically: a QUERY carries an instruction preamble, a DOCUMENT is
   embedded bare. `query-instruction.ts` applies
   `Instruct: {task}\nQuery:{query}` — **no space after `Query:`**; the epic
-  body has one and the model's own template does not — at the vector leg's
-  `generateEmbedding` call, which is the app's **only** query-side embedding
-  call. The three document-side calls (`embedPage`, the shadow dual-write and
-  the shadow backfill) must never reach it, and a structural test in
-  `query-instruction.test.ts` fails if any of them starts to — a wrongly
-  prefixed document still returns a plausible vector, so no behavioural test
-  would go red while retrieval quietly degraded.
+  body has one and the model's own template does not.
+  There are **two** query-side embedding calls and both apply it: the vector
+  leg's `generateEmbedding` in `rag-service.ts` (`/llm/ask`, and
+  `/api/search?mode=hybrid` through `hybridSearch`), and
+  `routes/knowledge/search.ts`, which embeds the query itself for
+  `/api/search?mode=semantic` rather than delegating. The semantic mode is not
+  an internal corner — it is one of the three buttons on the Pages search bar —
+  and it shipped unprefixed, because the first guard scanned only
+  `domains/llm/{services,eval}` and so could not see a caller in `routes/`.
+  Everything else that embeds must stay bare: `embedPage` and its shadow
+  dual-write, the shadow backfill and its dimension probe, the eval seeder, and
+  `POST /admin/embedding/probe`'s vector-width probe. A structural test in
+  `query-instruction.test.ts` now walks **all of `backend/src`**, and fails both
+  when a query site stops prefixing and when a caller appears that is in neither
+  list — a wrongly prefixed document, or a wrongly bare query, still returns a
+  plausible vector, so no behavioural test would go red while retrieval quietly
+  degraded.
   Two consequences are worth stating. It is keyed off the **resolved** model,
   so it turns on exactly when a swap makes Qwen3 live and off again on a
   rollback, with no second setting to keep in step. And because documents are

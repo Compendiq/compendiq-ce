@@ -1371,11 +1371,14 @@ async function hybridSearchInner(
     // the stored embeddings, so query-time embedding stays compatible.
     const { config, model } = await resolveUsecase('embedding');
     // #1114: instruction-aware models (Qwen3) want a preamble on the QUERY and
-    // nothing on the document. This is the app's only query-side embedding
-    // call, so it is the only place the asymmetry can be applied — and it is a
-    // no-op for every model that is not instruction-aware, so it runs
-    // unconditionally rather than behind a second flag that could drift out of
-    // step with the resolved model.
+    // nothing on the document. This is one of the app's TWO query-side
+    // embedding calls — `routes/knowledge/search.ts` is the other, embedding
+    // the query itself for `mode=semantic` instead of coming through here — and
+    // both apply the asymmetry. `query-instruction.test.ts` enumerates both,
+    // and every document-side call site, so a third path cannot pick up either
+    // policy by omission. It is a no-op for every model that is not
+    // instruction-aware, so it runs unconditionally rather than behind a second
+    // flag that could drift out of step with the resolved model.
     //
     // Keyed off the RESOLVED model, so it turns on exactly when a swap makes
     // Qwen3 live and back off on a rollback, with no separate setting to

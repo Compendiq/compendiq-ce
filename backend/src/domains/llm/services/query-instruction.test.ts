@@ -91,51 +91,129 @@ describe('query-instruction (#1114)', () => {
 
   // ── the asymmetry, pinned structurally ──────────────────────────────────────
   //
-  // Property 1 in the module header — query-only — cannot be asserted by
-  // calling anything: a document path that wrongly prefixed would still return
-  // a plausible vector, and every behavioural test would stay green while
-  // retrieval quietly degraded. What actually guards it is that the DOCUMENT
-  // embedding call sites never reach this module, so that is what is checked.
-  describe('documents are never prefixed', () => {
-    // Discovered, not enumerated. A hardcoded list of document-side files
-    // cannot fail for a path that does not exist yet, which is precisely the
-    // regression worth catching — `eval/seed.ts` was already a third document
-    // embedder missing from the first version of this list.
+  // Property 1 in the module header — query-side prefixed, document-side bare —
+  // cannot be asserted by calling anything: either half getting it wrong still
+  // returns a plausible vector, and every behavioural test stays green while
+  // retrieval quietly degrades. What actually guards it is WHICH files reach
+  // this module, so that is what is checked.
+  //
+  // The first version of this scan looked only at `domains/llm/services` and
+  // `domains/llm/eval`, and concluded there was exactly one query-side call in
+  // the app. There were two: `routes/knowledge/search.ts` embeds the query
+  // itself for `GET /api/search?mode=semantic` — a mode a user picks from the
+  // Pages search bar — and the scan could not see it because it never looked in
+  // `routes/`. A guard whose blind spot is a whole directory certifies the
+  // directory it read, so this one walks all of `backend/src`.
+  describe('the query/document asymmetry holds at every call site', () => {
+    const SRC_ROOT = join(__dirname, '..', '..', '..');
+
+    /**
+     * Every file under `backend/src` that CALLS `needle` (the declaration and
+     * the many prose mentions in comments do not count), as paths relative to
+     * `backend/src`.
+     *
+     * Discovered, not enumerated. A hardcoded list cannot fail for a path that
+     * does not exist yet, which is the regression worth catching — `eval/seed.ts`
+     * was missing from the first hand-written list, and `routes/knowledge/search.ts`
+     * from the first automated one.
+     */
     function filesCalling(needle: string): string[] {
-      const roots = [join(__dirname), join(__dirname, '..', 'eval')];
       const hits: string[] = [];
-      for (const root of roots) {
-        for (const f of readdirSync(root)) {
-          if (!f.endsWith('.ts') || f.endsWith('.test.ts')) continue;
-          const src = readFileSync(join(root, f), 'utf8');
-          // `await generateEmbedding(` etc — a CALL, not the declaration.
-          if (new RegExp(`[^.\\w]${needle}\\s*\\(`).test(src.replace(/export async function generateEmbedding/g, ''))) {
-            hits.push(join(root, f));
+      const walk = (dir: string) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+            walk(full);
+            continue;
+          }
+          if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) continue;
+          const src = readFileSync(full, 'utf8').replace(
+            new RegExp(`export async function ${needle}`, 'g'), '');
+          // `await generateEmbedding(` etc — a CALL, not the declaration and
+          // not a backticked mention in a comment.
+          if (new RegExp(`[^.\\w]${needle}\\s*\\(`).test(src)) {
+            hits.push(full.slice(SRC_ROOT.length + 1));
           }
         }
-      }
-      return hits;
+      };
+      walk(SRC_ROOT);
+      return hits.sort();
     }
 
-    it('exactly one embedding call site applies the query prefix', () => {
+    /**
+     * The QUERY-side embedding calls: the two places a user's question becomes
+     * a vector. Both must apply the prefix, and they are the only two that may.
+     */
+    const QUERY_CALL_SITES = [
+      // The RAG vector leg — `/llm/ask` and `hybridSearch`, so `mode=hybrid` on
+      // `/api/search` arrives here too.
+      'domains/llm/services/rag-service.ts',
+      // `GET /api/search?mode=semantic` embeds the query itself instead of
+      // delegating to `hybridSearch`, so it is a second, independent query path.
+      'routes/knowledge/search.ts',
+    ].sort();
+
+    /**
+     * Every NON-query embedding call site, with the reason it must stay bare.
+     * Enumerated on purpose: `filesCalling` discovers the set, and this list is
+     * the record that someone read each one and decided. A call site that is
+     * neither here nor in `QUERY_CALL_SITES` fails the first test below, so a
+     * new embedding path cannot inherit a policy by omission — which is exactly
+     * how `search.ts` went unprefixed for two PRs.
+     */
+    const NON_QUERY_CALL_SITES: Record<string, string> = {
+      // Index-time. `embedPage` embeds page CHUNKS, and the shadow dual-write
+      // beside it embeds those same texts under the shadow model. Documents are
+      // bare under every model — that is the whole asymmetry, and it is what
+      // makes the stored corpus identical whether or not the prefix is live.
+      'domains/llm/services/embedding-service.ts':
+        'index-time: page chunks, live + shadow dual-write',
+      // Index-time again (the shadow backfill re-embeds stored `chunk_text`),
+      // plus a literal `'probe'` whose returned length types the shadow column.
+      'domains/llm/services/shadow-migration-service.ts':
+        'index-time: shadow backfill; plus the dimension probe',
+      // The eval corpus seeder, and `assertModelReadsFullChunk`'s two
+      // chunk-sized probe texts. A prefixed corpus would fail nothing and
+      // quietly make every retrieval number wrong — worse than a crash, and
+      // how a model comparison gets silently invalidated.
+      'domains/llm/eval/seed.ts':
+        'eval: corpus seed + the full-chunk truncation probe',
+      // `POST /admin/embedding/probe` embeds the literal string `'probe'` to
+      // read back the VECTOR WIDTH a (provider, model) pair produces. There is
+      // no user question here to instruct the model about, and it runs against
+      // candidate pairs that are not assigned to anything yet. It stays bare —
+      // stated here rather than left to the scan's old blind spot, so the next
+      // reader can tell "deliberately excluded" from "never looked at".
+      'routes/llm/llm-embedding-probe.ts':
+        'admin: vector-width probe, not a query',
+    };
+
+    it('every embedding call site is accounted for, query-side or not', () => {
       const callers = filesCalling('generateEmbedding');
-      // Sanity: the discovery found the paths we know about, so a passing
-      // assertion below cannot be an artifact of matching nothing.
-      expect(callers.length).toBeGreaterThanOrEqual(4);
-
-      const prefixing = callers.filter((f) =>
-        readFileSync(f, 'utf8').includes('formatQueryForEmbedding'));
-
-      expect(prefixing.map((f) => f.split('/').pop())).toEqual(['rag-service.ts']);
+      // Sanity: the walk found the paths we know about, so the assertions
+      // below cannot pass by matching nothing.
+      expect(callers.length).toBeGreaterThanOrEqual(6);
+      expect(callers).toEqual(
+        [...QUERY_CALL_SITES, ...Object.keys(NON_QUERY_CALL_SITES)].sort(),
+      );
     });
 
-    it('the eval seeder embeds documents bare', () => {
-      // Called out by name because a prefixed corpus would not fail anything —
-      // it would just quietly make every eval number wrong, which is worse
-      // than a crash and is how a model comparison gets silently invalidated.
-      const seed = readFileSync(join(__dirname, '..', 'eval', 'seed.ts'), 'utf8');
-      expect(seed).toContain('generateEmbedding');
-      expect(seed).not.toContain('formatQueryForEmbedding');
+    it('exactly the query-side call sites apply the prefix', () => {
+      const callers = filesCalling('generateEmbedding');
+      const prefixing = callers.filter((f) =>
+        readFileSync(join(SRC_ROOT, f), 'utf8').includes('formatQueryForEmbedding'));
+      // Both directions in one equality: a query path that stops prefixing
+      // drops out, and a document path that starts prefixing appears.
+      expect(prefixing).toEqual(QUERY_CALL_SITES);
+    });
+
+    it('no non-query call site reaches this module', () => {
+      for (const [file, why] of Object.entries(NON_QUERY_CALL_SITES)) {
+        const src = readFileSync(join(SRC_ROOT, file), 'utf8');
+        expect(src, `${file} — ${why}`).toContain('generateEmbedding');
+        expect(src, `${file} — ${why}`).not.toContain('formatQueryForEmbedding');
+      }
     });
   });
 });

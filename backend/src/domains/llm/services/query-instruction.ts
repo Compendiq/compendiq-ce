@@ -8,10 +8,17 @@
  *
  * Three properties follow, and all three matter:
  *
- * 1. **This is query-only.** `embedPage`, the shadow dual-write and the shadow
- *    backfill embed documents and must never call it. There is exactly one
- *    query-side embedding call in the app (`rag-service.ts`'s vector leg), which
- *    is what makes that enforceable by reading four call sites.
+ * 1. **This is query-only.** `embedPage`, the shadow dual-write, the shadow
+ *    backfill, the eval seeder and the admin width probe all embed something
+ *    that is not a question, and must never call it. There are **two**
+ *    query-side calls: `rag-service.ts`'s vector leg (`/llm/ask`, and
+ *    `/api/search?mode=hybrid` through `hybridSearch`) and
+ *    `routes/knowledge/search.ts` (`/api/search?mode=semantic`, which embeds
+ *    the query itself rather than delegating). Both must apply this; nothing
+ *    else may. That is not left to be remembered — `query-instruction.test.ts`
+ *    walks all of `backend/src` for `generateEmbedding` callers and fails on
+ *    any file that is in neither list, because the first version of the guard
+ *    read only `domains/llm` and so certified a claim that was already false.
  *
  * 2. **Turning it on does not invalidate the corpus.** Because documents are
  *    embedded bare under every model, the stored vectors are byte-identical
@@ -58,7 +65,7 @@ export function wantsInstructionPrefix(model: string | null | undefined): boolea
  * The text to embed for `query` under `model`.
  *
  * Returns `query` unchanged for every model that is not instruction-aware, so
- * this is safe to call unconditionally at the one query-side call site.
+ * this is safe to call unconditionally at each query-side call site.
  *
  * The format is Qwen3's and is exact: `Instruct: {task}\nQuery:{query}`. **There
  * is no space after `Query:`** — the epic body has one, the model's own template

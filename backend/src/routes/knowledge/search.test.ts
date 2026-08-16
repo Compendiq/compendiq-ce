@@ -10,6 +10,9 @@ import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
 // in the route (and here, to construct rejections) see the real class.
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+// The real formatter (#1114) — never mocked, so these tests pin the exact text
+// the route sends rather than a local re-spelling of the template.
+import { RETRIEVAL_TASK } from '../../domains/llm/services/query-instruction.js';
 import { invalidateRagFetchWidthCache } from '../../core/services/admin-settings-service.js';
 
 vi.mock('../../core/utils/logger.js', () => ({
@@ -470,6 +473,66 @@ describe('Search Routes', () => {
       expect(body.hasEmbeddings).toBe(true);
       expect(body.items).toHaveLength(1);
       expect(body.items[0].title).toBe('Vector Result');
+    });
+
+    // ── #1114 query-instruction prefix ───────────────────────────────────────
+    //
+    // `mode=semantic` embeds the query HERE rather than delegating to
+    // `hybridSearch`, so it is a second query-side embedding call and needs the
+    // same asymmetry the vector leg got. It is not an internal corner either:
+    // `PagesPage`'s keyword/semantic/hybrid toggle is how a user reaches it.
+    // A Qwen3 query sent bare is matched against a corpus embedded bare, which
+    // gives up exactly the accuracy the preamble exists to buy back — and
+    // nothing goes red, because a bare query still returns a plausible vector.
+    //
+    // The formatter itself is unit-tested in query-instruction.test.ts; these
+    // pin that this route is WIRED to it and keyed off the RESOLVED model.
+
+    async function runSemanticWith(model: string, q: string) {
+      vi.mocked(resolveUsecase).mockResolvedValueOnce({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: model,
+        },
+        model,
+      });
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockProviderGenerateEmbedding.mockResolvedValue([[...new Array(768).fill(0.1)]]);
+      mockVectorSearch.mockResolvedValue([]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/search?q=${encodeURIComponent(q)}&mode=semantic`,
+      });
+      expect(response.statusCode).toBe(200);
+      // The client mock forwards (config, model, text) as ('test-user', text),
+      // so the embedded text is argument 2 of the spy.
+      return mockProviderGenerateEmbedding.mock.calls[0]?.[1] as string;
+    }
+
+    it('#1114: semantic mode sends the query bare to a non-instruction model', async () => {
+      const sent = await runSemanticWith('bge-m3', 'how do I rotate the PAT?');
+      expect(sent).toBe('how do I rotate the PAT?');
+    });
+
+    it('#1114: semantic mode prefixes the query for an instruction-aware model, exact format', async () => {
+      const sent = await runSemanticWith('qwen3-embedding-4b', 'how do I rotate the PAT?');
+      expect(sent).toBe(`Instruct: ${RETRIEVAL_TASK}\nQuery:how do I rotate the PAT?`);
+      // No space after `Query:` — the one detail the epic body got wrong, and
+      // the one a diff hides.
+      expect(sent).not.toContain('Query: how');
+    });
+
+    it('#1114: semantic mode follows the RESOLVED model, so it flips at a swap', async () => {
+      // Same question, two models, one process — this is what a shadow swap
+      // does to the live assignment, with nothing else to keep in step.
+      const before = await runSemanticWith('bge-m3', 'q');
+      mockProviderGenerateEmbedding.mockClear();
+      const after = await runSemanticWith('qwen3-embedding-4b', 'q');
+      expect(before).toBe('q');
+      expect(after).toContain('Instruct: ');
+      expect(after).toContain('\nQuery:q');
     });
 
     it('semantic mode fetches the stage limit, not the return limit, and slices after dedupe (#1103)', async () => {
