@@ -102,15 +102,25 @@ deliberately NOT derived from `--lang`: every recorded baseline, CI's included,
 was measured under `simple`, and deriving it would silently re-measure all of
 them and report the difference as a retrieval change. **The rule reaches the
 one surface those numbers are shown on**: Settings → AI Models' benchmark table
-carries `ftsLanguage` in `BENCHMARK_PROVENANCE`, renders it, and marks its
-German rows as pending re-measurement — enforcing it on the JSON report alone
-would move the omission one layer up rather than fix it. **Pending includes the
-model-to-model differences, not only the absolute scores**, and the rendered
-note must say so: both arms did read the same lexical leg, but RRF fuses a
-per-model vector leg with the shared keyword one as `Σ 1/(k + rank)`, which is
-nonlinear, so a stronger German keyword leg can compress or amplify the gap —
-and the German Recall@1 delta is the one `established: true` number a swap
-decision leans on. Both eval entrypoints
+carries `ftsLanguage` **per language block** and renders it beside each heading
+— enforcing it on the JSON report alone would move the omission one layer up
+rather than fix it, and one global label became a lie the moment the two blocks
+diverged. **The German re-run under `german` is done (2026-08-16) and the
+stemmer bought nothing**: R@10 came back bit-identical query-for-query on both
+models, the only nominally significant cell (Qwen3 R@1, p = 0.039) dies under
+Bonferroni ×4, and the model gap reproduced — R@3 p = 0.0037 and R@10
+p = 0.0075 clear correction under both configurations, while German R@1 fell
+from `established: true` (p = 0.026 under `simple`) to `false` (p = 0.088), so
+top-1 is now unestablished in both languages. So the panel's note states the
+result rather than a pending flag, and the Retrieval tab's keyword-language
+hint names the rebuild cost instead of promising a recall gain. `ef_search` at
+`halfvec(2560)` is settled too: effectively exact from 40, recall@10 0.9995 at
+the `RAG_EF_SEARCH=100` default and unchanged to the 1000 ceiling — leave it
+alone and watch **footprint** instead (18.6 MiB of HNSW for 2,377 vectors,
+larger than heap and TOAST combined). **The proposed go/no-go, revert criteria
+and measured costs for the Qwen3 cutover live in
+`docs/runbooks/shadow-reembed.md`** — they are proposals until the owner agrees
+them, and they must be agreed before a re-embed starts. Both eval entrypoints
 now **refuse an unrecognised flag** (`assertKnownFlags`, `eval/cli-flags.ts`)
 and print a usage list: `--fts-langauge german` parsed cleanly and spent an
 hour embedding under the default. They also share **one flag reader**

@@ -375,6 +375,32 @@ describe('RetrievalTab — keyword index language (#1114)', () => {
     expect(screen.queryByTestId('retrieval-fts-simple-hint')).not.toBeInTheDocument();
   });
 
+  it('does not promise a recall gain for switching language — that was measured, and there is none', async () => {
+    // The hint used to end "pick the language most of your content is written
+    // in", which reads as a recommendation with an upside behind it. Measured
+    // on a technical German corpus on 2026-08-16 (#1114), `german` vs `simple`
+    // moved a handful of queries either way and Recall@10 was bit-identical
+    // query-for-query on BOTH embedding models; the only nominally
+    // significant cell was a small regression that dies under correction. So
+    // the control costs a corpus-wide rebuild and buys nothing measurable
+    // here, and the copy has to say that rather than dangle a gain. The
+    // rebuild cost stays — it is why this control is not one of the cheap
+    // knobs below it.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    const hint = screen.getByTestId('retrieval-fts-simple-hint');
+    expect(hint).toHaveTextContent(/within noise/i);
+    expect(hint).not.toHaveTextContent(/pick the language most of your content/i);
+    // The whole control still names its cost, and the hint must not undercut
+    // it by implying the rebuild buys ranking.
+    expect(screen.getByTestId('retrieval-fts-language')).toHaveTextContent(
+      /rebuilds the keyword index for every page/i,
+    );
+  });
+
   it('wires the cost sentence and the simple hint to the control itself', async () => {
     mockApi();
     renderTab();

@@ -1233,7 +1233,14 @@ states the condition where an operator will meet it.
   reached — a deployment that "set the language" in its environment was in
   fact still indexing with `simple`, which is the worst possible failure for
   a non-English corpus because it is silent and looks like a working search.
-  A set `FTS_LANGUAGE` is now reported as ignored at startup. Saving the
+  A set `FTS_LANGUAGE` is now reported as ignored at startup. **Choosing the
+  matching language is correctness, not a recall upgrade:** on the #1102
+  fixture's 275-page technical German corpus, `german` against `simple`
+  measured within noise on both embedding models — R@10 bit-identical
+  query-for-query, one nominally significant cell that dies under multiplicity
+  correction (#1114, 2026-08-16; tables in
+  `docs/runbooks/retrieval-eval.md`) — so the panel's copy names the rebuild
+  cost and stops short of promising ranking. Saving the
   setting rebuilds every page's `tsv` in the same request, and the row and the
   rebuild are **one transaction** (with `SET LOCAL statement_timeout = 0` and
   `SET LOCAL lock_timeout = '30s'` — both, as `shadow-migration-service.ts`
