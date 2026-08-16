@@ -304,236 +304,271 @@ export function NewPagePage() {
 
   return (
     <div>
-      {/* ── Sticky header: action bar + title + metadata + toolbar ────────────────
-          Everything above the editor scrolls up together and sticks at the top.
-          The before:: pseudo-element masks the scroll-container padding gap that
-          would otherwise expose article content above the stuck group.          */}
+      {/* ── Sticky formatting toolbar ───────────────────────────────────────
+          The ONLY thing that stays pinned while scrolling — same "bar across
+          the column, not a floating card" treatment as PageViewPage's edit
+          toolbar (it loses the border/radius and keeps a bottom hairline).
+          It used to wrap the whole header INCLUDING the editor body in one
+          sticky box, which meant nothing actually stayed pinned once a draft
+          grew past a screenful: a sticky element's stuck position is bounded
+          by its own box, so a box as tall as the document never visibly
+          sticks. Shrinking the sticky box to just the toolbar is what makes
+          Create Page and the formatting controls reachable while scrolling a
+          long draft, matching the article editor.
+          The before:: pseudo-element masks the scroll-container padding gap
+          that would otherwise expose scrolled content above the stuck bar. */}
       <div
         data-testid="new-page-sticky-header"
-        className="sticky top-0 z-30 relative bg-background space-y-2 before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:-left-[14px] before:-right-[14px] sm:before:-left-[22px] sm:before:-right-[22px] before:bg-background"
+        className="sticky top-0 z-30 relative before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:-left-[14px] before:-right-[14px] sm:before:-left-[22px] sm:before:-right-[22px] before:bg-background"
       >
-        {/* Panel 1: Actions + Settings */}
-        <div className="nm-card space-y-3 p-3">
-          {/* Action bar. Wraps at both levels: at 390px the title, Import
-              Markdown, Use Template and Create could not all fit one line, and
-              the row clipped its right edge — losing Create, the only control
-              that completes the task this route exists for. */}
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-            <div className="flex shrink-0 items-center gap-3">
-              <button onClick={() => navigate('/pages')} aria-label="Back to pages" className="nm-icon-button">
-                <ArrowLeft size={18} />
-              </button>
-              <h1 className="text-lg font-semibold">New Page</h1>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={importMarkdownMutation.isPending}
-                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm bg-foreground/5 hover:bg-foreground/10 disabled:opacity-50 transition-colors"
-                data-testid="import-markdown-btn"
-              >
-                <Upload size={14} />
-                {importMarkdownMutation.isPending ? 'Importing...' : 'Import Markdown'}
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".md,.markdown"
-                onChange={handleImportMarkdown}
-                className="hidden"
-                data-testid="import-markdown-input"
-              />
-              <button
-                onClick={() => setShowTemplateGallery(true)}
-                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm bg-foreground/5 hover:bg-foreground/10 transition-colors"
-                data-testid="use-template-btn"
-              >
-                <LayoutTemplate size={14} />
-                Use Template
-              </button>
-              <TagPopover
-                tags={pendingLabels}
-                onAddTag={(t) => setPendingLabels((prev) => [...prev, t])}
-                onRemoveTag={(t) => setPendingLabels((prev) => prev.filter((item) => item !== t))}
-              />
-              <span title={showCreateHint ? createHint : undefined}>
-                <button
-                  onClick={handleCreate}
-                  disabled={isCreateDisabled}
-                  aria-describedby={showCreateHint ? 'create-page-hint' : undefined}
-                  className="nm-button-primary"
-                >
-                  <Save size={14} /> {isCreating ? 'Creating...' : 'Create Page'}
-                </button>
-              </span>
-            </div>
-          </div>
-
-          {/* Visible variant of the tooltip hint: title attributes are
-              mouse-hover-only, so keyboard, touch and screen-reader users
-              need the explanation as real, aria-linked text. */}
-          {showCreateHint && (
-            <p id="create-page-hint" className="text-right text-xs text-muted-foreground">
-              {createHint}
-            </p>
-          )}
-
-          {/* Metadata bar. The selected halves of these toggles are NEUTRAL
-              (value step + ink + measured ring), matching the toolbar's
-              pressed recipe: "selected" is an interaction state, and each
-              option used to light up in its badge's borrowed hue — green,
-              indigo, even amber on Private, on a control that warns of
-              nothing. */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          {/* Article type toggle */}
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground">Type</span>
-            <div className="flex gap-1" data-testid="article-type-toggle">
-              <button
-                onClick={() => handleArticleTypeChange('local')}
-                aria-pressed={articleType === 'local'}
-                className={cn(
-                  'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
-                  articleType === 'local'
-                    ? 'bg-foreground/10 text-foreground ring-1 ring-border-interactive'
-                    : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
-                )}
-                data-testid="article-type-local"
-              >
-                Local
-              </button>
-              <button
-                onClick={() => handleArticleTypeChange('confluence')}
-                aria-pressed={articleType === 'confluence'}
-                className={cn(
-                  'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
-                  articleType === 'confluence'
-                    ? 'bg-foreground/10 text-foreground ring-1 ring-border-interactive'
-                    : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
-                )}
-                data-testid="article-type-confluence"
-              >
-                Confluence
-              </button>
-            </div>
-          </div>
-
-          <div className="h-5 w-px bg-border/50" />
-
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground">Space</span>
-            <select
-              value={spaceKey}
-              onChange={(e) => handleSpaceChange(e.target.value)}
-              className="nm-select-md"
-              data-testid="space-selector"
-            >
-              <option value="">Select space...</option>
-              {articleType === 'confluence'
-                ? allSpaces.filter((s) => s.source === 'confluence').map((s) => (
-                    <option key={s.key} value={s.key}>{s.name}</option>
-                  ))
-                : allSpaces.filter((s) => s.source === 'local').map((s) => (
-                    <option key={s.key} value={s.key}>{s.name}</option>
-                  ))
-              }
-            </select>
-          </div>
-
-          {selectedSpace?.source === 'local' && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-muted-foreground">Visibility</span>
-              <div className="flex gap-1" data-testid="visibility-picker">
-                <button
-                  onClick={() => setVisibility('private')}
-                  aria-pressed={visibility === 'private'}
-                  className={cn(
-                    'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
-                    visibility === 'private'
-                      ? 'bg-foreground/10 text-foreground ring-1 ring-border-interactive'
-                      : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
-                  )}
-                  data-testid="visibility-private"
-                >
-                  <Lock size={12} /> Private
-                </button>
-                <button
-                  onClick={() => setVisibility('shared')}
-                  aria-pressed={visibility === 'shared'}
-                  className={cn(
-                    'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
-                    visibility === 'shared'
-                      ? 'bg-foreground/10 text-foreground ring-1 ring-border-interactive'
-                      : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
-                  )}
-                  data-testid="visibility-shared"
-                >
-                  <Globe size={12} /> Shared
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Location picker — select parent page within the chosen space */}
-          {!!spaceKey && (
-            <>
-              <div className="h-5 w-px bg-border/50" />
-              <div className="flex items-center gap-2" data-testid="location-picker-section">
-                <span className="text-xs font-medium text-muted-foreground">Location</span>
-                <LocationPicker
-                  spaceKey={spaceKey}
-                  parentId={parentId}
-                  onSelect={handleLocationSelect}
-                />
-              </div>
-            </>
-          )}
-        </div>
-        {/* Close Panel 1 */}
-        </div>
-
-        {/* Panel 2: Toolbar + Title + Editor */}
-        <div className="nm-card overflow-hidden">
-          {/* Editor toolbar */}
+        <div className="-mx-4 border-b border-border bg-card sm:-mx-6 relative">
           {editorInstance && (
-            <div className="relative border-b border-border px-1">
+            <div className="mx-auto max-w-[1248px] px-4 sm:px-16">
               <EditorToolbar
                 editor={editorInstance}
                 headerNumbering={headerNumbering}
                 onToggleHeaderNumbering={toggleHeaderNumbering}
+                actions={
+                  <>
+                    <TagPopover
+                      tags={pendingLabels}
+                      onAddTag={(t) => setPendingLabels((prev) => [...prev, t])}
+                      onRemoveTag={(t) => setPendingLabels((prev) => prev.filter((item) => item !== t))}
+                    />
+                    <span title={showCreateHint ? createHint : undefined}>
+                      <button
+                        onClick={handleCreate}
+                        disabled={isCreateDisabled}
+                        aria-describedby={showCreateHint ? 'create-page-hint' : undefined}
+                        className="nm-button-primary shrink-0"
+                      >
+                        <Save size={15} aria-hidden="true" /> {isCreating ? 'Creating...' : 'Create Page'}
+                      </button>
+                    </span>
+                  </>
+                }
               />
-              <EditorContextToolbars editor={editorInstance} innerClassName="px-1" />
             </div>
           )}
+          {editorInstance && (
+            <EditorContextToolbars editor={editorInstance} innerClassName="mx-auto max-w-[1248px] px-4 sm:px-16" />
+          )}
+        </div>
+      </div>
 
-          <div className="px-5 pt-5 sm:px-10 sm:pt-8">
-            {/* Same auto-growing field as the edit route: a title is one
-                logical line but not one visual line, and an <input> clipped it
-                mid-word with no ellipsis. */}
+      <div className="mt-7">
+        {/* Context bar — everything you choose before the page exists: type,
+            space, visibility, location, plus the two content-source actions.
+            Not sticky (matching the article editor's own breadcrumb strip,
+            which the sticky toolbar above replaces while editing); it scrolls
+            away with the title once you're into the body. */}
+        <div className="-mx-4 border-b border-border bg-card sm:-mx-6">
+          <div className="mx-auto max-w-[1248px] px-4 py-3 sm:px-16">
+            {/* Wraps at both levels: at 390px the title, Import Markdown and
+                Use Template could not all fit one line, and the row clipped
+                its right edge. */}
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+              <div className="flex shrink-0 items-center gap-3">
+                <button onClick={() => navigate('/pages')} aria-label="Back to pages" className="nm-icon-button -ml-1.5">
+                  <ArrowLeft size={18} />
+                </button>
+                <h1 className="text-lg font-semibold">New Page</h1>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={importMarkdownMutation.isPending}
+                  className="nm-button-ghost"
+                  data-testid="import-markdown-btn"
+                >
+                  <Upload size={14} />
+                  {importMarkdownMutation.isPending ? 'Importing...' : 'Import Markdown'}
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".md,.markdown"
+                  onChange={handleImportMarkdown}
+                  className="hidden"
+                  data-testid="import-markdown-input"
+                />
+                <button
+                  onClick={() => setShowTemplateGallery(true)}
+                  className="nm-button-ghost"
+                  data-testid="use-template-btn"
+                >
+                  <LayoutTemplate size={14} />
+                  Use Template
+                </button>
+              </div>
+            </div>
+
+            {/* Visible variant of the tooltip hint: title attributes are
+                mouse-hover-only, so keyboard, touch and screen-reader users
+                need the explanation as real, aria-linked text. */}
+            {showCreateHint && (
+              <p id="create-page-hint" className="mt-2 text-right text-xs text-muted-foreground">
+                {createHint}
+              </p>
+            )}
+
+            {/* Metadata row. The selected halves of these toggles are NEUTRAL
+                (value step + ink + measured ring), matching the toolbar's
+                pressed recipe: "selected" is an interaction state, and each
+                option used to light up in its badge's borrowed hue — green,
+                indigo, even amber on Private, on a control that warns of
+                nothing. */}
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+            {/* Article type toggle — same recessed-track segmented control as
+                PagesPage's search-mode toggle: neutral fill plus weight carries
+                "selected", not a borrowed badge hue or a ring around a loose
+                pill. */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-muted-foreground">Type</span>
+              <div
+                className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+                role="group"
+                aria-label="Article type"
+                data-testid="article-type-toggle"
+              >
+                <button
+                  onClick={() => handleArticleTypeChange('local')}
+                  aria-pressed={articleType === 'local'}
+                  className={cn(
+                    'rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                    articleType === 'local'
+                      ? 'nm-pill-active'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                  data-testid="article-type-local"
+                >
+                  Local
+                </button>
+                <button
+                  onClick={() => handleArticleTypeChange('confluence')}
+                  aria-pressed={articleType === 'confluence'}
+                  className={cn(
+                    'rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                    articleType === 'confluence'
+                      ? 'nm-pill-active'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                  data-testid="article-type-confluence"
+                >
+                  Confluence
+                </button>
+              </div>
+            </div>
+
+            <div className="h-5 w-px bg-border/50" />
+
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-muted-foreground">Space</span>
+              <select
+                value={spaceKey}
+                onChange={(e) => handleSpaceChange(e.target.value)}
+                className="nm-select-md"
+                data-testid="space-selector"
+              >
+                <option value="">Select space...</option>
+                {articleType === 'confluence'
+                  ? allSpaces.filter((s) => s.source === 'confluence').map((s) => (
+                      <option key={s.key} value={s.key}>{s.name}</option>
+                    ))
+                  : allSpaces.filter((s) => s.source === 'local').map((s) => (
+                      <option key={s.key} value={s.key}>{s.name}</option>
+                    ))
+                }
+              </select>
+            </div>
+
+            {selectedSpace?.source === 'local' && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-muted-foreground">Visibility</span>
+                <div
+                  className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+                  role="group"
+                  aria-label="Visibility"
+                  data-testid="visibility-picker"
+                >
+                  <button
+                    onClick={() => setVisibility('private')}
+                    aria-pressed={visibility === 'private'}
+                    className={cn(
+                      'flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                      visibility === 'private'
+                        ? 'nm-pill-active'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                    data-testid="visibility-private"
+                  >
+                    <Lock size={12} /> Private
+                  </button>
+                  <button
+                    onClick={() => setVisibility('shared')}
+                    aria-pressed={visibility === 'shared'}
+                    className={cn(
+                      'flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                      visibility === 'shared'
+                        ? 'nm-pill-active'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                    data-testid="visibility-shared"
+                  >
+                    <Globe size={12} /> Shared
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Location picker — select parent page within the chosen space */}
+            {!!spaceKey && (
+              <>
+                <div className="h-5 w-px bg-border/50" />
+                <div className="flex items-center gap-2" data-testid="location-picker-section">
+                  <span className="text-xs font-medium text-muted-foreground">Location</span>
+                  <LocationPicker
+                    spaceKey={spaceKey}
+                    parentId={parentId}
+                    onSelect={handleLocationSelect}
+                  />
+                </div>
+              </>
+            )}
+            </div>
+          </div>
+        </div>
+
+        {/* Title — same type ramp as the article editor's own title
+            (text-3xl/4xl bold) so a page in progress carries the same weight
+            it will have the moment it's saved. */}
+        <div className="border-b border-border py-5">
+          <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
             <AutoGrowTextarea
               value={title}
               onValueChange={setTitle}
               placeholder="Untitled page"
-              className="text-2xl font-semibold text-foreground placeholder:text-muted-foreground/50"
+              className="text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground placeholder:text-muted-foreground/40 sm:text-4xl"
               aria-label="Page title"
               data-testid="title-input"
               autoFocus
             />
           </div>
+        </div>
 
-          {/* Editor body */}
-          <div className={cn(headerNumbering && 'header-numbering')}>
-            <FeatureErrorBoundary featureName="Editor">
-              <Editor
-                content={bodyHtml}
-                placeholder="Start writing your page..."
-                draftKey={NEW_PAGE_DRAFT_KEY}
-                naked
-                hideToolbar
-                onEditorReady={setEditorInstance}
-              />
-            </FeatureErrorBoundary>
-          </div>
+        {/* Editor body — same 1200px reading column as the article editor,
+            so the writing experience matches the reading one exactly. */}
+        <div className={cn('mx-auto max-w-[1200px]', headerNumbering && 'header-numbering')}>
+          <FeatureErrorBoundary featureName="Editor">
+            <Editor
+              content={bodyHtml}
+              placeholder="Start writing your page..."
+              draftKey={NEW_PAGE_DRAFT_KEY}
+              naked
+              hideToolbar
+              onEditorReady={setEditorInstance}
+            />
+          </FeatureErrorBoundary>
         </div>
       </div>
 
@@ -585,7 +620,7 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
         <Dialog.Content
-          className="nm-card fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 p-6 outline-none"
+          className="nm-card-elevated fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 p-6 outline-none"
           data-testid="template-gallery-modal"
         >
           <div className="mb-4 flex items-center justify-between">
