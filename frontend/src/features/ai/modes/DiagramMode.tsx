@@ -8,6 +8,7 @@ import { cn } from '../../../shared/lib/cn';
 import { apiFetch } from '../../../shared/lib/api';
 import { toast } from 'sonner';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
+import { useArticleViewStore } from '../../../stores/article-view-store';
 import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 /** HTML-encode a string so it is safe to interpolate inside HTML elements. */
@@ -76,9 +77,10 @@ export function DiagramTypeSelector() {
  */
 export function DiagramPreview() {
   const { page, pageId, isStreaming, queryClient, diagramCode, isInsertingDiagram, setIsInsertingDiagram } = useAiContext();
+  const editing = useArticleViewStore((s) => s.editing);
 
   const handleInsertDiagram = useCallback(async () => {
-    if (!diagramCode || !page || !pageId || isInsertingDiagram) return;
+    if (!diagramCode || !page || !pageId || isInsertingDiagram || editing) return;
     setIsInsertingDiagram(true);
     try {
       const diagramHtml = `\n<pre><code class="language-mermaid">${escapeHtml(diagramCode)}</code></pre>\n`;
@@ -98,7 +100,7 @@ export function DiagramPreview() {
     } finally {
       setIsInsertingDiagram(false);
     }
-  }, [diagramCode, page, pageId, isInsertingDiagram, queryClient, setIsInsertingDiagram]);
+  }, [diagramCode, page, pageId, isInsertingDiagram, editing, queryClient, setIsInsertingDiagram]);
 
   if (!diagramCode || isStreaming) return null;
 
@@ -106,17 +108,26 @@ export function DiagramPreview() {
     <>
       <MermaidDiagram code={diagramCode} className="mt-4" />
       {page && pageId && (
-        <button
-          onClick={handleInsertDiagram}
-          disabled={isInsertingDiagram}
-          className="mt-2 flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          {isInsertingDiagram ? (
-            <><Loader2 size={14} className="animate-spin" /> Inserting...</>
-          ) : (
-            <><FileInput size={14} /> Use in page</>
+        <div className="mt-2 space-y-1.5">
+          <button
+            onClick={handleInsertDiagram}
+            disabled={isInsertingDiagram || editing}
+            title={editing ? 'Save or cancel editing to insert diagram' : 'Insert diagram into page'}
+            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            data-testid="diagram-insert-button"
+          >
+            {isInsertingDiagram ? (
+              <><Loader2 size={14} className="animate-spin" /> Inserting...</>
+            ) : (
+              <><FileInput size={14} /> Use in page</>
+            )}
+          </button>
+          {editing && (
+            <p className="text-xs text-muted-foreground" data-testid="diagram-editing-notice">
+              Save or cancel editing to insert this diagram into the page.
+            </p>
           )}
-        </button>
+        </div>
       )}
     </>
   );

@@ -5,7 +5,6 @@ import { toast } from 'sonner';
 import { useAiContext } from '../AiContext';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { apiFetch, ApiError } from '../../../shared/lib/api';
-import { cn } from '../../../shared/lib/cn';
 import type { DockChipId } from './dock-chips';
 
 interface DiffPart {
@@ -144,25 +143,42 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
     <div className="nm-card overflow-hidden" data-testid="dock-diff-card">
       <div className="flex items-baseline justify-between gap-3 border-b border-border px-3 py-2">
         <h3 className="text-sm font-medium text-foreground">Proposed changes</h3>
-        <span className="shrink-0 font-mono text-xs tabular-nums">
-          <span className="text-success">+{stats.additions}</span>{' '}
-          <span className="text-destructive">−{stats.deletions}</span>
+        <span
+          className="shrink-0 font-mono text-xs tabular-nums"
+          aria-label={`${stats.additions} characters added, ${stats.deletions} characters removed`}
+        >
+          <span className="text-success" aria-hidden>+{stats.additions}</span>{' '}
+          <span className="text-destructive" aria-hidden>−{stats.deletions}</span>
         </span>
       </div>
 
-      <div className="max-h-[40vh] overflow-auto px-3 py-2.5">
+      <div className="max-h-[40vh] overflow-auto overscroll-contain px-3 py-2.5">
         <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed" data-testid="dock-unified-diff">
-          {diff.map((part, i) => (
-            <span
-              key={i}
-              className={cn(
-                part.added && 'bg-success/20 text-success',
-                part.removed && 'bg-destructive/20 text-destructive line-through',
-              )}
-            >
-              {part.value}
-            </span>
-          ))}
+          {diff.map((part, i) => {
+            if (part.added) {
+              return (
+                <ins
+                  key={i}
+                  className="bg-success/20 text-success no-underline"
+                >
+                  <span className="sr-only"> [added] </span>
+                  {part.value}
+                </ins>
+              );
+            }
+            if (part.removed) {
+              return (
+                <del
+                  key={i}
+                  className="bg-destructive/20 text-destructive line-through"
+                >
+                  <span className="sr-only"> [removed] </span>
+                  {part.value}
+                </del>
+              );
+            }
+            return <span key={i}>{part.value}</span>;
+          })}
         </pre>
       </div>
 

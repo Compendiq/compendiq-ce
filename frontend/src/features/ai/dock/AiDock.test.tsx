@@ -529,4 +529,24 @@ describe('AiDock (#1126)', () => {
       expect(classes).not.toMatch(/status-(connected|disconnected|syncing|embedding|ai)/);
     });
   });
+
+  describe('long message collapse/expand', () => {
+    it('shows Show more / Show less toggle for long multi-line or lengthy user prompts', async () => {
+      renderDock();
+      await openAndSettle();
+
+      const longPrompt = 'Line 1\nLine 2\nLine 3\nLine 4: This is a long custom prompt for the assistant with lots of instructions.';
+      fireEvent.change(composer(), { target: { value: longPrompt } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      const toggle = await screen.findByTestId('dock-user-message-expand');
+      expect(toggle).toHaveTextContent('Show more');
+
+      fireEvent.click(toggle);
+      expect(toggle).toHaveTextContent('Show less');
+
+      fireEvent.click(toggle);
+      expect(toggle).toHaveTextContent('Show more');
+    });
+  });
 });

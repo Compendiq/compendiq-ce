@@ -77,6 +77,28 @@ function buildOutlineTree(headings: TocHeading[]): OutlineNode[] {
   return root;
 }
 
+interface FlatOutlineEntry {
+  id: string;
+  parentId: string | null;
+  hasChildren: boolean;
+}
+
+function flattenVisibleOutline(
+  nodes: OutlineNode[],
+  collapsedIds: Set<string>,
+  parentId: string | null = null,
+): FlatOutlineEntry[] {
+  const out: FlatOutlineEntry[] = [];
+  for (const node of nodes) {
+    const hasChildren = node.children.length > 0;
+    out.push({ id: node.heading.id, parentId, hasChildren });
+    if (hasChildren && !collapsedIds.has(node.heading.id)) {
+      out.push(...flattenVisibleOutline(node.children, collapsedIds, node.heading.id));
+    }
+  }
+  return out;
+}
+
 function findAncestorIds(nodes: OutlineNode[], targetId: string): string[] | null {
   for (const node of nodes) {
     if (node.heading.id === targetId) return [];
@@ -102,86 +124,94 @@ const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
 interface OutlineNodeItemProps {
   node: OutlineNode;
   activeId: string | null;
+  rovingId: string | undefined;
   collapsedIds: Set<string>;
   onNavigate: (id: string) => void;
   onToggleCollapsed: (id: string) => void;
+  onKeyDown: (e: React.KeyboardEvent, id: string) => void;
+  onFocus: (id: string) => void;
   level?: number;
 }
 
 const OutlineNodeItem = memo(function OutlineNodeItem({
   node,
   activeId,
+  rovingId,
   collapsedIds,
   onNavigate,
   onToggleCollapsed,
+  onKeyDown,
+  onFocus,
   level = 0,
 }: OutlineNodeItemProps) {
   const { heading, children } = node;
   const hasChildren = children.length > 0;
   const isOpen = !collapsedIds.has(heading.id);
   const isActive = activeId === heading.id;
+  const isRovingTarget = heading.id === rovingId;
 
   return (
-    <div>
+    <div role="none">
       <div
-        // #880: make the outline row a real keyboard-operable widget.
-        // role="treeitem" (not "button") because the collapse chevron is a
-        // nested <button>. Enter/Space jump to the heading.
+        // WAI-ARIA Treeview: role="treeitem", roving tabindex, aria-selected, aria-level.
+        // Enter/Space jump to the heading; arrow keys navigate the tree.
         role="treeitem"
-        tabIndex={0}
+        tabIndex={isRovingTarget ? 0 : -1}
+        aria-level={level + 1}
+        aria-selected={isActive}
         aria-expanded={hasChildren ? isOpen : undefined}
+        data-heading-id={heading.id}
         className={cn(
-          'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          'group flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
             ? 'nav-selection font-medium'
-            : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+            : 'text-muted-foreground hover:bg-muted hover:text-foreground',
         )}
-        style={{ paddingLeft: `${level * 16 + 8}px` }}
+        style={{ paddingLeft: `${level * 12 + 6}px` }}
         onClick={() => onNavigate(heading.id)}
+        onFocus={() => onFocus(heading.id)}
         onKeyDown={(e) => {
-          // Ignore keydown bubbling up from the nested chevron button so the
-          // row doesn't double-activate when the chevron is focused.
           if (e.target !== e.currentTarget) return;
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault(); // Space would otherwise scroll the page
-            onNavigate(heading.id);
-          }
+          onKeyDown(e, heading.id);
         }}
       >
         {hasChildren ? (
           <button
+            type="button"
+            tabIndex={-1}
             onClick={(e) => {
               e.stopPropagation();
               onToggleCollapsed(heading.id);
             }}
-            className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
+            className="flex size-4 shrink-0 items-center justify-center rounded p-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={isOpen ? 'Collapse section' : 'Expand section'}
           >
-            {isOpen ? (
-              <ChevronRight size={14} className="rotate-90 transition-transform duration-150" />
-            ) : (
-              <ChevronRight size={14} className="transition-transform duration-150" />
-            )}
+            <ChevronRight
+              size={13}
+              className={cn('transition-transform duration-150', isOpen && 'rotate-90')}
+            />
           </button>
         ) : (
-          <span className="w-[20px] shrink-0" />
+          <span className="size-4 shrink-0" />
         )}
-        <ListTree size={15} className={cn('shrink-0 opacity-70', isActive && 'text-primary-ink opacity-100')} />
-        <span className="truncate text-sm">{heading.text}</span>
+        <span className="truncate" title={heading.text}>
+          {heading.text}
+        </span>
       </div>
 
       {hasChildren && isOpen && (
-        // #880: role="group" gives the nested treeitem rows a valid ARIA
-        // required-parent (a treeitem must be owned by a tree or group).
         <div role="group">
           {children.map((child) => (
             <OutlineNodeItem
               key={child.heading.id}
               node={child}
               activeId={activeId}
+              rovingId={rovingId}
               collapsedIds={collapsedIds}
               onNavigate={onNavigate}
               onToggleCollapsed={onToggleCollapsed}
+              onKeyDown={onKeyDown}
+              onFocus={onFocus}
               level={level + 1}
             />
           ))}
@@ -317,6 +347,14 @@ export function ArticleRightPane({
   const [activeInspectorView, setActiveInspectorView] = useState<InspectorView>(() =>
     headings.length > 0 ? 'outline' : 'details',
   );
+  const [assistantMounted, setAssistantMounted] = useState(() => activeInspectorView === 'assistant');
+
+  useEffect(() => {
+    if (activeInspectorView === 'assistant') {
+      setAssistantMounted(true);
+    }
+  }, [activeInspectorView]);
+
   const inspectorViewTouchedRef = useRef(false);
   const previousInspectorPageIdRef = useRef(id);
   // Collapsing this pane drops the outline entirely — the rail carries actions
@@ -343,6 +381,7 @@ export function ArticleRightPane({
       // `headings` still belongs to the previous page during this render.
       // Start from Details until the destination publishes its own structure.
       setActiveInspectorView('details');
+      setAssistantMounted(false);
       return;
     }
     if (!inspectorViewTouchedRef.current) {
@@ -482,6 +521,96 @@ export function ArticleRightPane({
     scrollRoot.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     setActiveId(headingId);
   }, []);
+
+  const expandedTreeRef = useRef<HTMLDivElement>(null);
+  const flyoutTreeRef = useRef<HTMLDivElement>(null);
+
+  const flatOutline = useMemo(
+    () => flattenVisibleOutline(tree, collapsedIds),
+    [tree, collapsedIds],
+  );
+  const [explicitRovingId, setExplicitRovingId] = useState<string | undefined>(undefined);
+  const rovingId = useMemo(() => {
+    if (explicitRovingId && flatOutline.some((e) => e.id === explicitRovingId)) {
+      return explicitRovingId;
+    }
+    if (activeId && flatOutline.some((e) => e.id === activeId)) {
+      return activeId;
+    }
+    return flatOutline[0]?.id;
+  }, [explicitRovingId, flatOutline, activeId]);
+
+  const moveFocusTo = useCallback(
+    (targetId: string | undefined, containerRef: React.RefObject<HTMLElement | null>) => {
+      if (!targetId) return;
+      setExplicitRovingId(targetId);
+      requestAnimationFrame(() => {
+        const container = containerRef.current;
+        if (!container) return;
+        const row = container.querySelector<HTMLElement>(`[data-heading-id="${CSS.escape(targetId)}"]`);
+        row?.focus();
+      });
+    },
+    [],
+  );
+
+  const handleOutlineKeyDown = useCallback(
+    (
+      e: React.KeyboardEvent,
+      headingId: string,
+      containerRef: React.RefObject<HTMLElement | null>,
+    ) => {
+      const index = flatOutline.findIndex((item) => item.id === headingId);
+      if (index === -1) return;
+      const entry = flatOutline[index];
+      if (!entry) return;
+
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault();
+          moveFocusTo(flatOutline[index + 1]?.id, containerRef);
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          moveFocusTo(flatOutline[index - 1]?.id, containerRef);
+          break;
+        case 'ArrowRight':
+          if (entry.hasChildren) {
+            e.preventDefault();
+            if (collapsedIds.has(headingId)) {
+              handleToggleCollapsed(headingId);
+            } else {
+              moveFocusTo(flatOutline[index + 1]?.id, containerRef);
+            }
+          }
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          if (entry.hasChildren && !collapsedIds.has(headingId)) {
+            handleToggleCollapsed(headingId);
+          } else if (entry.parentId) {
+            moveFocusTo(entry.parentId, containerRef);
+          }
+          break;
+        case 'Home':
+          e.preventDefault();
+          moveFocusTo(flatOutline[0]?.id, containerRef);
+          break;
+        case 'End':
+          e.preventDefault();
+          moveFocusTo(flatOutline[flatOutline.length - 1]?.id, containerRef);
+          break;
+        case 'Enter':
+        case ' ':
+          e.preventDefault();
+          handleNavigate(headingId);
+          break;
+        default:
+          break;
+      }
+    },
+    [flatOutline, collapsedIds, handleToggleCollapsed, handleNavigate, moveFocusTo],
+  );
 
   const handleResizeStart = useCallback(
     (e: React.MouseEvent) => {
@@ -650,7 +779,7 @@ export function ArticleRightPane({
   // Collapsed rail — glass pill style
   if (collapsed) {
     const railIconBtn =
-      'rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
+      'rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
     return (
       <>
       {/* Positioning context for the outline flyout. `mouseleave` fires on DOM
@@ -711,7 +840,7 @@ export function ArticleRightPane({
               entirely (WCAG 2.4.7), and click toggles it for touch. */}
           {headings.length > 0 && (
             <>
-              <div className="my-1 h-px w-6 bg-[var(--glass-sidebar-divider)]" />
+              <div className="my-1 h-px w-6 bg-border" />
               <button
                 ref={outlineTriggerRef}
                 onMouseEnter={() => {
@@ -743,7 +872,7 @@ export function ArticleRightPane({
 
           {!editing && page && (
             <>
-              <div className="my-1 h-px w-6 bg-[var(--glass-sidebar-divider)]" />
+              <div className="my-1 h-px w-6 bg-border" />
               {/* min-h-0 + overflow-y-auto so the action stack scrolls on
                   short viewports — without this, the outer overflow-hidden on
                   the rail would clip the bottom buttons (e.g. Delete). */}
@@ -806,13 +935,35 @@ export function ArticleRightPane({
                     'rounded-lg p-1.5 transition-colors',
                     isPinned
                       ? 'nm-pill-active text-action'
-                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground',
                   )}
                   aria-label={isPinned ? 'Unpin' : 'Pin'}
                   title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
                 >
                   <Pin size={16} className={cn(isPinned && 'fill-current')} />
                 </button>
+
+                {id && (
+                  <VersionHistory
+                    pageId={id}
+                    renderTrigger={(historyOpen) => (
+                      <button
+                        type="button"
+                        className={cn(
+                          'rounded-lg p-1.5 transition-colors',
+                          historyOpen
+                            ? 'nm-pill-active text-action'
+                            : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                        )}
+                        aria-label="Version history"
+                        title="Version history"
+                        data-testid="article-history-rail-btn"
+                      >
+                        <History size={16} />
+                      </button>
+                    )}
+                  />
+                )}
 
                 {settings?.confluenceUrl && page.confluenceId && (
                   <a
@@ -909,11 +1060,11 @@ export function ArticleRightPane({
             <div className="nm-card-elevated flex min-h-0 w-64 flex-col overflow-hidden">
             <div className="shrink-0 px-3 pb-2 pt-2.5">
               <div className="flex items-center justify-between">
-                <span className="flex items-center gap-2 text-xs font-semibold text-muted-foreground/60">
-                  <ListTree size={13} />
+                <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground/85">
+                  <ListTree size={13} className="text-muted-foreground" />
                   Outline
                 </span>
-                <span className="text-[11px] tabular-nums text-muted-foreground/50">
+                <span className="text-[11px] tabular-nums text-muted-foreground">
                   {headings.length} section{headings.length === 1 ? '' : 's'}
                 </span>
               </div>
@@ -921,15 +1072,23 @@ export function ArticleRightPane({
                 <div className="h-full rounded-full bg-action" style={{ width: `${readingProgress}%` }} />
               </div>
             </div>
-            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-1.5" role="tree" aria-label="Article outline">
+            <div
+              ref={flyoutTreeRef}
+              className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-1.5"
+              role="tree"
+              aria-label="Article outline"
+            >
               {tree.map((node) => (
                 <OutlineNodeItem
                   key={node.heading.id}
                   node={node}
                   activeId={activeId}
+                  rovingId={rovingId}
                   collapsedIds={collapsedIds}
                   onNavigate={handleNavigate}
                   onToggleCollapsed={handleToggleCollapsed}
+                  onKeyDown={(e, hid) => handleOutlineKeyDown(e, hid, flyoutTreeRef)}
+                  onFocus={setExplicitRovingId}
                 />
               ))}
             </div>
@@ -1006,6 +1165,8 @@ export function ArticleRightPane({
           id="page-context-tab-assistant"
           aria-controls="page-context-panel-assistant"
           aria-selected={activeInspectorView === 'assistant'}
+          tabIndex={activeInspectorView === 'assistant' ? 0 : -1}
+          title="Assistant (Alt+I)"
           onClick={() => {
             inspectorViewTouchedRef.current = true;
             setActiveInspectorView('assistant');
@@ -1031,6 +1192,7 @@ export function ArticleRightPane({
           id="page-context-tab-outline"
           aria-controls="page-context-panel-outline"
           aria-selected={activeInspectorView === 'outline'}
+          tabIndex={activeInspectorView === 'outline' ? 0 : -1}
           title="Outline (Alt+O)"
           onClick={() => {
             inspectorViewTouchedRef.current = true;
@@ -1042,6 +1204,7 @@ export function ArticleRightPane({
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',
           )}
+          data-testid="page-context-tab-outline"
         >
           <ListTree size={13} />
           Outline
@@ -1055,6 +1218,7 @@ export function ArticleRightPane({
           id="page-context-tab-details"
           aria-controls="page-context-panel-details"
           aria-selected={activeInspectorView === 'details'}
+          tabIndex={activeInspectorView === 'details' ? 0 : -1}
           title="Details (Alt+D)"
           onClick={() => {
             inspectorViewTouchedRef.current = true;
@@ -1066,6 +1230,7 @@ export function ArticleRightPane({
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',
           )}
+          data-testid="page-context-tab-details"
         >
           <FileText size={13} />
           Details
@@ -1074,7 +1239,7 @@ export function ArticleRightPane({
 
         <button
           onClick={toggleSidebar}
-          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="Collapse page sidebar"
           title="Collapse sidebar (.)"
         >
@@ -1082,12 +1247,15 @@ export function ArticleRightPane({
         </button>
       </div>
 
-      {activeInspectorView === 'assistant' && (
+      {assistantMounted && (
         <div
           id="page-context-panel-assistant"
           role="tabpanel"
           aria-labelledby="page-context-tab-assistant"
-          className="flex min-h-0 flex-1 flex-col"
+          className={cn(
+            'flex min-h-0 flex-1 flex-col',
+            activeInspectorView !== 'assistant' && 'hidden',
+          )}
         >
           {/* `DockPanel` keeps its own composer, chips and thread; only its
               chrome changes. `variant="tab"` drops the header and close button
@@ -1095,10 +1263,11 @@ export function ArticleRightPane({
               two headers stacked was the giveaway that a column had been
               stuffed into a tab.
 
-              Mounting it here also preserves #1126's provider economy: the
-              panel is the only `AiContext` consumer, and it still only mounts
-              while its view is selected, so the provider stays inert on an
-              article the user never asks about. */}
+              Mounting it lazily on first open preserves #1126's provider economy: the
+              panel is the only `AiContext` consumer, and it stays inert on an
+              article the user never asks about. Once opened, it remains mounted
+              (hidden via CSS when viewing Outline/Details) to preserve staged
+              attachments and deep-search state during tab switching. */}
           <DockPanel variant="tab" onClose={() => setActiveInspectorView('outline')} />
         </div>
       )}
@@ -1123,29 +1292,69 @@ export function ArticleRightPane({
           <AutoTagger
             pageId={id}
             currentLabels={page?.labels ?? []}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           />
         </div>
       )}
 
-      {/* Action buttons — glass button style */}
+      {/* Action buttons — primary collaboration and history actions top-level */}
       {!editing && page && (
         <div className="space-y-0.5 px-2 pb-3 pt-4" data-testid="article-actions">
           <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
             Page actions
           </div>
-          {/* No "AI Assistant" action here. It was a page action when the
-              assistant was a separate column — something this pane could open.
-              Now the assistant is the tab immediately to the left of Details,
-              so the button was a control that switched to its own sibling: it
-              duplicated the tablist one row below it, and it made "Page
-              actions" mean two different things (act on the page vs. change
-              which panel you are looking at). The tab, the rail icon and Alt+I
-              are the three ways in, and they are enough. */}
+
+          {id && (
+            <VersionHistory
+              pageId={id}
+              renderTrigger={(historyOpen) => (
+                <button
+                  type="button"
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+                    historyOpen
+                      ? 'nav-selection font-medium'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                  )}
+                  title="Version history"
+                >
+                  <History size={15} className="shrink-0 opacity-70" />
+                  <span className="truncate">Version history</span>
+                </button>
+              )}
+            />
+          )}
+
+          <button
+            onClick={handlePinToggle}
+            className={cn(
+              'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+              isPinned
+                ? 'nav-selection font-medium'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+            )}
+            title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
+          >
+            <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current opacity-100')} />
+            <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
+          </button>
+
+          {settings?.confluenceUrl && page.confluenceId && (
+            <a
+              href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+            >
+              <ExternalLink size={15} className="shrink-0 opacity-70" />
+              <span className="truncate">Open in Confluence</span>
+            </a>
+          )}
+
           <button
             onClick={handleExportPdf}
             disabled={exportPdf.isPending}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
             title="Export as PDF"
           >
             {exportPdf.isPending ? (
@@ -1156,70 +1365,23 @@ export function ArticleRightPane({
             <span className="truncate">Export PDF</span>
           </button>
 
-          <button
-            onClick={handlePinToggle}
-            className={cn(
-              'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
-              isPinned
-                ? 'nav-selection font-medium'
-                : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-            )}
-            title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
-          >
-            <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current opacity-100')} />
-            <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
-          </button>
-
           <details className="group mt-2 border-t border-border pt-2">
-            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <ChevronRight
                 size={13}
                 className="shrink-0 transition-transform group-open:rotate-90"
                 aria-hidden="true"
               />
               <span className="flex-1">More actions</span>
-              <span className="text-[11px] font-normal opacity-70">Source &amp; maintenance</span>
+              <span className="text-[11px] font-normal opacity-70">Maintenance &amp; AI</span>
             </summary>
             <div className="mt-1 space-y-0.5">
               {id && aiAutoTagAvailable && (
                 <AutoTagger
                   pageId={id}
                   currentLabels={page?.labels ?? []}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
                 />
-              )}
-
-              {id && (
-                <VersionHistory
-                  pageId={id}
-                  renderTrigger={(historyOpen) => (
-                    <button
-                      type="button"
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
-                        historyOpen
-                          ? 'nav-selection font-medium'
-                          : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-                      )}
-                      title="Version history"
-                    >
-                      <History size={15} className="shrink-0 opacity-70" />
-                      <span className="truncate">Version history</span>
-                    </button>
-                  )}
-                />
-              )}
-
-              {settings?.confluenceUrl && page.confluenceId && (
-                <a
-                  href={`${settings.confluenceUrl.replace(/\/+$/, "")}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-                >
-                  <ExternalLink size={15} className="shrink-0 opacity-70" />
-                  <span className="truncate">Open in Confluence</span>
-                </a>
               )}
 
               {/* Re-sync from Confluence — only for Confluence-sourced articles.
@@ -1228,7 +1390,7 @@ export function ArticleRightPane({
                 <button
                   onClick={handleResync}
                   disabled={resyncMutation.isPending}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
                   title="Re-sync from Confluence"
                   data-testid="article-resync-btn"
                 >
@@ -1243,7 +1405,7 @@ export function ArticleRightPane({
               <button
                 onClick={handleReembed}
                 disabled={reembedMutation.isPending}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
                 title="Re-embed for RAG"
                 data-testid="article-reembed-btn"
               >
@@ -1258,7 +1420,7 @@ export function ArticleRightPane({
               <button
                 onClick={handleRequality}
                 disabled={requalityMutation.isPending}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
                 title="Re-check quality"
                 data-testid="article-requality-btn"
               >
@@ -1293,8 +1455,8 @@ export function ArticleRightPane({
         </div>
       )}
 
-      {/* Page facts are structured for scanning; health badges remain semantic. */}
-      {page && !editing && (
+      {/* Page facts are structured for scanning; rendered in both read and edit modes */}
+      {page && (
         <div className="border-t border-border px-3 py-4">
           <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
           <dl className="mt-2 divide-y divide-border/45 text-xs">
@@ -1306,14 +1468,14 @@ export function ArticleRightPane({
               <dt className="text-muted-foreground">Type</dt>
               <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
                 {page.hasChildren
-                  ? <><FolderOpen size={12} className="text-muted-foreground" /> Folder</>
-                  : <><FileText size={12} className="text-muted-foreground" /> Article</>}
+                  ? <><FolderOpen size={13} className="text-muted-foreground" /> Folder</>
+                  : <><FileText size={13} className="text-muted-foreground" /> Article</>}
               </dd>
             </div>
             {page.author && (
               <div className="flex items-center justify-between gap-3 py-2">
                 <dt className="text-muted-foreground">Author</dt>
-                <dd className="max-w-[150px] truncate font-medium text-foreground/85">{page.author}</dd>
+                <dd className="truncate font-medium text-foreground/85">{page.author}</dd>
               </div>
             )}
             <div className="flex items-center justify-between gap-3 py-2">
@@ -1322,14 +1484,16 @@ export function ArticleRightPane({
             </div>
           </dl>
 
-          <div className="mt-4 text-[11px] font-semibold text-muted-foreground">Health &amp; labels</div>
-          <div className="mt-2 flex flex-wrap gap-1.5">
+          <div className="mt-4">
+            <div className="text-[11px] font-semibold text-muted-foreground">Document health</div>
+            <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-health-badges">
               {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
               <EmbeddingStatusBadge
                 embeddingStatus={page.embeddingStatus}
                 embeddingDirty={page.embeddingDirty}
                 embeddedAt={page.embeddedAt}
                 embeddingError={page.embeddingError}
+                onRetry={handleReembed}
               />
               {page.qualityScore !== undefined && page.qualityScore !== null && (
                 <QualityScoreBadge
@@ -1345,15 +1509,24 @@ export function ArticleRightPane({
                   qualityError={page.qualityError}
                 />
               )}
-              {page.labels.map((label) => (
-                <span
-                  key={label}
-                  className="nm-pill-active rounded-full px-2 py-0.5 text-[11px] text-muted-foreground"
-                >
-                  {label}
-                </span>
-              ))}
+            </div>
           </div>
+
+          {page.labels.length > 0 && (
+            <div className="mt-4">
+              <div className="text-[11px] font-semibold text-muted-foreground">Labels</div>
+              <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-labels">
+                {page.labels.map((label) => (
+                  <span
+                    key={label}
+                    className="nm-pill-active rounded-full px-2 py-0.5 text-[11px] text-muted-foreground"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
       </div>
@@ -1368,19 +1541,14 @@ export function ArticleRightPane({
       >
         {/* Outline header + progress */}
         {headings.length > 0 && (
-          <div className="px-3 pb-2 pt-4">
+          <div className="px-3 pb-2 pt-3">
             <div className="flex items-center justify-between">
-              <div>
-                <div className="text-xs font-semibold text-foreground/85">On this page</div>
-                <div className="mt-0.5 text-[11px] text-muted-foreground">
-                  Follow the document structure
-                </div>
-              </div>
+              <div className="text-xs font-semibold text-foreground/85">On this page</div>
               <span className="text-[11px] tabular-nums text-muted-foreground">
-                {Math.round(readingProgress)}%
+                {headings.length} section{headings.length === 1 ? '' : 's'} · {Math.round(readingProgress)}%
               </span>
             </div>
-            <div className="mt-3 h-1 overflow-hidden rounded-full bg-foreground/8">
+            <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-foreground/8">
               <m.div
                 className="h-full rounded-full bg-action"
                 style={{ width: `${readingProgress}%` }}
@@ -1391,7 +1559,11 @@ export function ArticleRightPane({
         )}
 
         {/* Outline tree — with scroll mask */}
-        <div className="mt-1 flex-1 overflow-y-auto border-t border-border p-2 scroll-mask" data-testid="article-outline-tree">
+        <div
+          ref={expandedTreeRef}
+          className="mt-1 flex-1 overflow-y-auto border-t border-border p-2 scroll-mask"
+          data-testid="article-outline-tree"
+        >
         {headings.length === 0 ? (
           <div className="flex h-full min-h-40 flex-col items-center justify-center px-5 text-center">
             <span className="flex size-9 items-center justify-center rounded-xl bg-foreground/[0.05] text-muted-foreground">
@@ -1403,19 +1575,18 @@ export function ArticleRightPane({
             </p>
           </div>
         ) : (
-          // #880: role="tree" + label give the role="treeitem" outline rows a
-          // valid required-parent context and expose real tree semantics to
-          // screen readers. Full roving-tabindex/arrow-key nav remains a tracked
-          // follow-up (epic #856).
           <div className="space-y-0.5" role="tree" aria-label="Article outline">
             {tree.map((node) => (
               <OutlineNodeItem
                 key={node.heading.id}
                 node={node}
                 activeId={activeId}
+                rovingId={rovingId}
                 collapsedIds={collapsedIds}
                 onNavigate={handleNavigate}
                 onToggleCollapsed={handleToggleCollapsed}
+                onKeyDown={(e, hid) => handleOutlineKeyDown(e, hid, expandedTreeRef)}
+                onFocus={setExplicitRovingId}
               />
             ))}
           </div>
