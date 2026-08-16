@@ -519,4 +519,151 @@ describe('EditorToolbar', () => {
       window.ResizeObserver = originalRO;
     }
   });
+
+  // ---------- narrow-viewport overlap (P0) ----------
+
+  it('gives the formatting group its own scroll region instead of overflowing onto the actions group', () => {
+    // jsdom performs no real layout, so this can't measure pixels the way a
+    // headless-browser fixture would — but the specific bug (Cancel painted
+    // over Bullet List, Tags over Italic at 390px) traces to one missing
+    // class: `min-w-0` lets the formatting group's box shrink below its
+    // content's width, and without `overflow-x-auto` that shrunk box still
+    // paints its children at full size past its own right edge. Pin the
+    // class so the fix can't silently regress.
+    render(
+      <EditorToolbar
+        editor={createMockEditor()}
+        actions={<button aria-label="Save">Save</button>}
+      />,
+    );
+    const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
+    expect(toolbar.className).toContain('min-w-0');
+    expect(toolbar.className).toContain('overflow-x-auto');
+
+    // The actions group must stay `shrink-0` — if it started shrinking too,
+    // scrolling the formatting group would no longer be sufficient to keep
+    // Save/Cancel/Tags fully visible and tappable.
+    const actionsGroup = screen.getByRole('group', { name: 'Page actions' });
+    expect(actionsGroup.className).toContain('shrink-0');
+  });
+
+  // ---------- More formatting overflow (P2) ----------
+  // Strikethrough, Inline Code, Task List, Alignment, Text Color and
+  // Highlight used to fold into NOTHING when the responsive collapse hid
+  // them, despite the code's own comment claiming they "gracefully fold
+  // into the Insert dropdown" — only Quote/Code block/Divider actually did.
+
+  function resizeTo(width: number) {
+    let resizeCallback: ((entries: Array<{ contentRect: { width: number } }>) => void) | null = null;
+    class MockResizeObserver {
+      constructor(cb: (entries: Array<{ contentRect: { width: number } }>) => void) {
+        resizeCallback = cb;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    const originalRO = window.ResizeObserver;
+    window.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+    return {
+      apply: () => act(() => resizeCallback?.([{ contentRect: { width } }])),
+      restore: () => { window.ResizeObserver = originalRO; },
+    };
+  }
+
+  it('has no More formatting trigger when every control already has its own button', () => {
+    render(<EditorToolbar editor={createMockEditor()} />);
+    expect(screen.queryByTestId('more-formatting-trigger')).not.toBeInTheDocument();
+  });
+
+  it('surfaces Task List, Inline Code, Strikethrough, Alignment and Colors behind More formatting once the toolbar narrows past their thresholds', () => {
+    const resize = resizeTo(650); // below all of 760/820/900/980 (not 1060 — Quote/Code block/Divider already live in Insert)
+    try {
+      render(<EditorToolbar editor={createMockEditor()} />);
+      resize.apply();
+
+      // The inline buttons are gone...
+      expect(screen.queryByRole('button', { name: 'Strikethrough (Ctrl+Shift+X)' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Inline Code (Ctrl+E)' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Task List' })).not.toBeInTheDocument();
+      expect(screen.queryByTestId('align-menu-trigger')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('color-picker-trigger')).not.toBeInTheDocument();
+
+      // ...but every one of them is reachable from More formatting.
+      open(screen.getByTestId('more-formatting-trigger'));
+      for (const label of ['Task List', 'Inline Code', 'Strikethrough', 'Alignment', 'Text Color', 'Highlight']) {
+        expect(screen.getByText(label)).toBeInTheDocument();
+      }
+    } finally {
+      resize.restore();
+    }
+  });
+
+  it('runs the hidden Strikethrough toggle from the overflow menu and closes it', () => {
+    const toggleStrike = vi.fn(() => chain);
+    const chain: Record<string, unknown> = new Proxy({ toggleStrike } as Record<string, unknown>, {
+      get(target, prop: string) {
+        if (prop === 'toggleStrike') return target.toggleStrike;
+        if (prop === 'run') return vi.fn();
+        return () => chain;
+      },
+    });
+    const editor = createMockEditor({ chain: () => chain });
+    const resize = resizeTo(650);
+    try {
+      render(<EditorToolbar editor={editor} />);
+      resize.apply();
+      open(screen.getByTestId('more-formatting-trigger'));
+      fireEvent.click(screen.getByText('Strikethrough'));
+      expect(toggleStrike).toHaveBeenCalledTimes(1);
+    } finally {
+      resize.restore();
+    }
+  });
+
+  it('applies alignment from the overflow menu’s Alignment submenu', () => {
+    const setTextAlign = vi.fn(() => chain);
+    const chain: Record<string, unknown> = new Proxy({ setTextAlign } as Record<string, unknown>, {
+      get(target, prop: string) {
+        if (prop === 'setTextAlign') return target.setTextAlign;
+        if (prop === 'run') return vi.fn();
+        return () => chain;
+      },
+    });
+    const editor = createMockEditor({ chain: () => chain });
+    const resize = resizeTo(650);
+    try {
+      render(<EditorToolbar editor={editor} />);
+      resize.apply();
+      open(screen.getByTestId('more-formatting-trigger'));
+      open(screen.getByText('Alignment'));
+      fireEvent.click(screen.getByText('Align Center'));
+      expect(setTextAlign).toHaveBeenCalledWith('center');
+    } finally {
+      resize.restore();
+    }
+  });
+
+  it('applies a text color from the overflow menu’s Text Color submenu', () => {
+    const setColor = vi.fn(() => chain);
+    const chain: Record<string, unknown> = new Proxy({ setColor } as Record<string, unknown>, {
+      get(target, prop: string) {
+        if (prop === 'setColor') return target.setColor;
+        if (prop === 'run') return vi.fn();
+        return () => chain;
+      },
+    });
+    const editor = createMockEditor({ chain: () => chain });
+    const resize = resizeTo(650);
+    try {
+      render(<EditorToolbar editor={editor} />);
+      resize.apply();
+      open(screen.getByTestId('more-formatting-trigger'));
+      open(screen.getByText('Text Color'));
+      fireEvent.click(screen.getByLabelText('Red'));
+      expect(setColor).toHaveBeenCalledWith('#ef4444');
+    } finally {
+      resize.restore();
+    }
+  });
 });

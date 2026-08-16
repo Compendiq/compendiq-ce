@@ -1437,6 +1437,27 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 }
 
 /* ============================================
+   Base prose type — reading measure
+   ============================================
+   `.prose` set no font-size of its own, so the article inherited the app's
+   14px UI text and, unconstrained by the outer 1200px column, wrapped at up
+   to ~128 characters per line at wide viewports — twice the comfortable
+   45–75cpl measure, on the one surface whose entire job is reading (#P1).
+   16px/1.65 is the type; the 68ch cap on TEXT elements specifically (not
+   `.prose` itself) is the measure — tables, images, code blocks and
+   Confluence macros stay unconstrained so they keep using the full column,
+   because a narrower `.prose` would drag them down to 68ch too. Both halves
+   are required together: widening the type alone pushes cpl further up,
+   and capping the measure alone leaves the type undersized. */
+.prose {
+  font-size: 1rem;
+}
+
+.prose :where(h1, h2, h3, h4, h5, h6, p, li, blockquote) {
+  max-width: 68ch;
+}
+
+/* ============================================
    Inline code & code block styles
    ============================================ */
 
@@ -1632,7 +1653,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 .prose :where(p) {
   margin-top: 0.5rem;
   margin-bottom: 0.5rem;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
 /* Links — theme-colored with underline on hover */
