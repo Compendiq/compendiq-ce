@@ -1141,9 +1141,15 @@ ties, zero movement, so the stemmer never changed *which* pages reached the top
 ten — and the only nominally significant cell in either arm (Qwen3 R@1, 1W/8L,
 p = 0.039) rests on nine discordant queries, dies under a Bonferroni ×4
 correction and has no partner on the other model. Plausibly because this is
-technical German, where identifiers, loanwords and code tokens carry the
-lexical match and `simple` already does exact-token work; that is a post-hoc
-reading, not something the runs tested.
+technical German **translated from English OSS documentation** — content held
+constant by construction — where identifiers, loanwords and code tokens carry
+the lexical match and `simple` already does exact-token work; that is a
+post-hoc reading, not something the runs tested. **The provenance travels with
+the conclusion**: a translation holds less of the compounding and inflection a
+German stemmer exists to fold than natively-authored pages, so what this
+establishes is that `german` is not an assumable recall upgrade, not that it is
+inert on a German-authored corpus. See *On the stemmer null result, and how far
+it travels* in `docs/runbooks/shadow-reembed.md`.
 
 **Two corrections follow, and they point in opposite directions.**
 
@@ -1204,7 +1210,12 @@ are proposals until the owner agrees them, and #1114 asks for that agreement
    runbook's pre-flight (i) is that step. Table in
    `docs/runbooks/shadow-reembed.md`.
 2. **`ef_search` sizing at 2560** — **measured 2026-08-16 on a 2,377-chunk
-   corpus.** `halfvec(2560)` HNSW is effectively exact from `ef_search` = 40:
+   corpus** (the same 275-page German corpus as above; 2,377 counted directly
+   out of `page_embeddings` in that session, while the **2,198** quoted for
+   ingest cost is the earlier run's count — the two are not reconciled, and
+   which figures ride on which is set out in *On the chunk count* in
+   `docs/runbooks/shadow-reembed.md`). `halfvec(2560)` HNSW is effectively
+   exact from `ef_search` = 40:
    recall@10 = 0.9995 at the `RAG_EF_SEARCH` default of 100 and *identical* at
    200, 240, 400 and pgvector's 1000 ceiling, with the single non-matching row
    a 7×10⁻⁷ distance tie inside halfvec's own fp16 noise. Leave the default

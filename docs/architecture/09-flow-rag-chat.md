@@ -1235,12 +1235,16 @@ states the condition where an operator will meet it.
   a non-English corpus because it is silent and looks like a working search.
   A set `FTS_LANGUAGE` is now reported as ignored at startup. **Choosing the
   matching language is correctness, not a recall upgrade:** on the #1102
-  fixture's 275-page technical German corpus, `german` against `simple`
+  fixture's 275-page corpus of technical German **translated from English OSS
+  documentation**, `german` against `simple`
   measured within noise on both embedding models — R@10 bit-identical
   query-for-query, one nominally significant cell that dies under multiplicity
   correction (#1114, 2026-08-16; tables in
-  `docs/runbooks/retrieval-eval.md`) — so the panel's copy names the rebuild
-  cost and stops short of promising ranking. Saving the
+  `docs/runbooks/retrieval-eval.md`). That provenance is part of the result: a
+  translation holds less of the compounding and inflection a German stemmer
+  folds than natively-authored pages, so the measurement bounds the *upside you
+  may assume* rather than proving the stemmer inert. Either way the panel's
+  copy names the rebuild cost and stops short of promising ranking. Saving the
   setting rebuilds every page's `tsv` in the same request, and the row and the
   rebuild are **one transaction** (with `SET LOCAL statement_timeout = 0` and
   `SET LOCAL lock_timeout = '30s'` — both, as `shadow-migration-service.ts`

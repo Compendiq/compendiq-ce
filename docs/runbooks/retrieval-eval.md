@@ -192,9 +192,17 @@ p = 0.039, and it should not be leaned on: four correlated tests per pair
 (one flip takes it to p = 0.18), and the same change on bge-m3 gives 3W/6L,
 p = 0.51. Call it **"no detectable effect, possibly a small cost at rank 1"**,
 not "German FTS is worse". Post-hoc reading, untested by these runs: this is
-technical German, so much of what discriminates is identifiers, loanwords and
-code tokens that Snowball German either passes through or over-truncates, and
-the lexical leg is mostly doing exact-token work `simple` already does.
+technical German **translated from English OSS documentation** (the vendored
+MIT docs run through a translation pass, which is what holds content constant
+across the two languages), so much of what discriminates is identifiers,
+loanwords and code tokens that Snowball German either passes through or
+over-truncates, and the lexical leg is mostly doing exact-token work `simple`
+already does. **Carry that provenance with the conclusion.** It strengthens the
+reading above — translated technical prose is identifier-dense — and it bounds
+it: a translation holds systematically less of the compounding and inflection a
+German stemmer exists to fold than pages a German speaker wrote, so this is
+evidence that `german` is not an assumable recall upgrade, not evidence that it
+does nothing on a natively-authored German corpus.
 
 **The model gap is unaffected by the stemmer** — bge-m3 → Qwen3-4B under
 `german`:

@@ -219,6 +219,16 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     // Both halves, or the qualifier reads as "your results are wrong now".
     expect(card).toHaveTextContent(/keeps serving/i);
     expect(card).toHaveTextContent(/slower/i);
+    // And it names the QUEUE, not the provider. The queue is one module-level
+    // `pLimit` in the API process, so slot contention holds in every
+    // configuration. Provider identity does not: the migration takes its own
+    // `providerId` in the start body and the SWAP is what rewrites
+    // `llm_usecase_assignments`, so during the backfill live query embeds can
+    // resolve a different provider row entirely — on those instances a card
+    // blaming the provider names a coupling that is not there, while the real
+    // one goes unmentioned. The user-visible conclusion is the same either way.
+    expect(card).toHaveTextContent(/shares the embedding queue with this backfill/i);
+    expect(card).not.toHaveTextContent(/shares the provider/i);
   });
 
   it('enables the swap only when ready', async () => {

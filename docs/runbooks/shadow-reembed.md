@@ -324,7 +324,11 @@ behaviour* section for the lifecycle-level statement and its failure modes.
 **What does change: the embedding provider is busy, and the queue in front of
 it is shared.** `runShadowBackfillJob` embeds through the same
 `generateEmbedding` as a user's question, which means the same process-wide
-LLM queue (`enqueue`, `LLM_CONCURRENCY`, **default 4**) and the same provider.
+LLM queue (`enqueue`, `LLM_CONCURRENCY`, **default 4**) — and, where the shadow
+model is served by the same provider, that endpoint too. The queue is the
+coupling that holds in *every* configuration: it is one module-level `pLimit`,
+while the provider is whatever `start` was given and need not be the row live
+query embeds currently resolve to (the swap is what rewrites the assignment).
 There is no separate worker host to isolate it in: BullMQ's workers are started
 by the API process, and with `USE_BULLMQ=false` the job runs inline in it. The
 backfill is strictly sequential (worker concurrency 1, one 16-chunk batch in
@@ -394,8 +398,8 @@ That is why the Qwen3 cutover is a shadow migration and not a re-embed.
   budget should propose a tighter number; one that batches well may clear it
   easily. Agree it before, not after.
 - **The width evidence the pre-swap paths actually produce.** Not an
-  `EmbeddingDimensionMismatchError` — **none of the three paths that run before
-  the swap can raise one**, so "no mismatch error in the logs" passes vacuously
+  `EmbeddingDimensionMismatchError` — **none of the three SHADOW paths can
+  raise one**, so "no mismatch error in the logs" passes vacuously
   on exactly the deployment prerequisite 1 warns about. The probe *defines* the
   width rather than checking it (`startShadowMigration` embeds the literal
   `probe`, takes `vectors[0].length`, refuses only a value outside 1–16000, and
@@ -404,9 +408,12 @@ That is why the Qwen3 cutover is a shadow migration and not a re-embed.
   (`shadowEmbedExistingRows` writes into `embedding_next` directly, so a wrong
   width arrives as a pgvector cast error and the page becomes a straggler). The
   dual-write logs a **warn**, not an error class. Check these three instead:
-  - the width reported by start — and the `N dims` on the status card — reads
-    **2560** (this is prerequisite 1's verification step, promoted to a
-    criterion);
+  - the width reported by start, or `migration.dimensions` from
+    `GET /api/admin/embedding/shadow-migration`, reads **2560** (this is
+    prerequisite 1's verification step, promoted to a criterion). The status
+    card prints `N dims` only while it is *backfilling*; by the time you are
+    making this call it reads `ready` and shows the model and page count, so
+    take the width from start's response or from the endpoint;
   - **`stragglerPages` is 0** when the backfill ends
     (`GET /api/admin/embedding/shadow-migration`; the card reaching `ready` with
     Swap enabled is the same fact, and the swap refuses while any remain);
@@ -416,7 +423,10 @@ That is why the Qwen3 cutover is a shadow migration and not a re-embed.
   `EmbeddingDimensionMismatchError` is the **live**-column guard
   (`embedding-service.ts`, comparing the served width against the live column's
   declared width), which is why it is a REVERT criterion below and not a GO
-  criterion here.
+  criterion here. It does fire before the swap — an edited page re-embeds into
+  the live column throughout the backfill, which is exactly the #1327 pre-flight
+  prerequisite 3 relies on — but it is a statement about the *live* pair, not
+  about the shadow width this criterion is checking.
 
 ### REVERT criteria (proposed — for the owner to agree)
 
@@ -466,7 +476,7 @@ leaning on the table should say so.
 | English fixture, Qwen3 vs bge-m3 | R@3 (p = 0.00003), R@5 (p = 0.0015), R@10 (p = 0.013) and MRR (CI [+0.025, +0.115]) established; **R@1 not** (+0.051 but 27W/17L, p = 0.174, CI crosses zero) | #1114 comment, *Phase 1 measured on the English fixture*; ADR-012 `#1114` amendment |
 | German fixture under `fts=simple` | R@1 +0.081 (31W/15L, p = 0.026), R@3 +0.086 (p = 0.0023), R@5 +0.046 (p = 0.122), R@10 +0.061 (p = 0.0075), MRR CI [+0.030, +0.122] | #1114 comment, *German result* |
 | German fixture under `fts=german` | R@1 +0.061 (27W/15L, p = 0.088), **R@3 +0.081 (22W/6L, p = 0.0037)**, R@5 +0.056 (19W/8L, p = 0.052), **R@10 +0.061 (15W/3L, p = 0.0075)**, MRR +0.065 (CI [+0.021, +0.110]) | #1114 comment, *German re-run under `fts=german`* |
-| Does the German stemmer help? | **No detectable effect.** R@10 bit-identical query-for-query on both models (0W/0L/197T); one nominally significant cell (Qwen3 R@1, 1W/8L, p = 0.039) that dies under correction | same |
+| Does the German stemmer help? | **No detectable effect.** R@10 bit-identical query-for-query on both models (0W/0L/197T); one nominally significant cell (Qwen3 R@1, 1W/8L, p = 0.039) that dies under correction. **Corpus caveat: technical German *translated from English OSS documentation*** — see *On the stemmer null result* below | same |
 | Ingest cost | **~9.4–10× slower.** 4 m 21 s vs 40 m 55 s (275 pages, `german` re-run); 3 m 31 s vs 36 m 13 s over the earlier run's **2,198**-chunk count — see *On the chunk count* below, the same corpus was later counted at 2,377 | same, and *German result* |
 | Query latency | **~12× at concurrency 1** on the dev Mac (224 ms vs 18 ms p50 embedding) | same, latency table |
 | fp16 rounding | **Below the corpus's own rank gaps.** Largest fp16-induced \|Δdistance\| 2.67e-5 against a p01 adjacent-rank gap of 4.44e-5; 0/200 top-1 changes. **Caveat carried from the source: measured at 768 dims with `nomic-embed-text` on real corpus vectors, NOT at 2560 with Qwen3** — it is evidence that fp16 rounding is small relative to rank spacing, not a 2560-dim measurement | #1114 comment, *The fp16 gate*; ADR-012 `#1114` amendment |
@@ -482,6 +492,22 @@ R@1: nominally significant under `simple` (p = 0.026) and not under `german`
 that as R@1 having always been the weakest of the four — neither value survives
 multiplicity correction, and on the `simple` run a single query flipping the
 other way takes it to p = 0.054 — not as the stemmer eroding the gap.
+
+**On the stemmer null result, and how far it travels.** The corpus is
+**technical German translated from English OSS documentation**, not
+natively-authored German — the #1102 fixture's vendored MIT docs run through a
+translation pass, which is what let the model gap be measured with content held
+constant. That provenance cuts both ways, and both belong in a go/no-go. It
+*strengthens* the post-hoc reading offered for the null result (much of what
+discriminates is identifiers, loanwords and code tokens, and `simple` already
+does exact-token work on those), because translated technical prose is
+identifier-dense. It also *limits* how far the result transfers: a translation
+is systematically poorer in the compounding and inflection a German stemmer
+exists to fold than pages a German speaker wrote, so "the stemmer bought
+nothing here" is not the same claim as "it will buy nothing on your Confluence
+space". What it does establish is that `german` is not a *recall upgrade* you
+can assume — which is the only claim the runbook, the ADR and the in-product
+copy make.
 
 **On the chunk count.** Two numbers describe the same 275-page German corpus in
 this document and neither is dropped: the earlier ingest run reported **2,198**
@@ -571,10 +597,14 @@ closes the same hole on the live path.
 
 ## Degraded behaviour
 
-None by design — the live column serves until the swap commits. That is a
-statement about *results*, not about load: the backfill shares the LLM queue and
-the provider with query-side embeds, which is costed in *Search during the
-backfill* above. The #1117 coverage signal reads the live column, so it stays
+None by design — nothing is deleted and the live column serves every query
+until the swap commits. That is a statement about the **corpus**, not about
+load, and **load does reach results**: the backfill holds one of the shared
+LLM queue's slots for the whole run, so under `LLM_MAX_QUEUE_DEPTH` pressure a
+query embed is rejected outright and search drops to its keyword leg —
+keyword-only `/api/search`, a refused `/llm/ask` turn. That is costed in
+*Search during the backfill* above, which is where the mechanism and its
+likelihood live. The #1117 coverage signal reads the live column, so it stays
 healthy throughout (unlike
 the destructive path, whose TRUNCATE window it exists to expose). Failure
 modes: a shadow-provider outage leaves straggler pages (visible in the status

@@ -401,6 +401,30 @@ describe('RetrievalTab — keyword index language (#1114)', () => {
     );
   });
 
+  it('says the measured corpus was translated, so the null result is not read as advice about German pages', async () => {
+    // The hint states a null result as guidance about an admin's OWN content,
+    // and the corpus behind it is the #1102 fixture's vendored English OSS
+    // docs run through a translation pass — not pages a German speaker wrote.
+    // That matters in exactly one direction: a translation holds less of the
+    // compounding and inflection a Snowball German stemmer exists to fold, so
+    // "measured within noise" bounds the upside an operator may assume rather
+    // than showing the stemmer inert on native German. Without the word, this
+    // reads as "german buys nothing", which is a stronger claim than anything
+    // that was run. The ADR carries the caveat ten lines from the conclusion;
+    // this is the surface where the conclusion is acted on.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    const hint = screen.getByTestId('retrieval-fts-simple-hint');
+    expect(hint).toHaveTextContent(/translated from English/i);
+    // Still the quiet, permanent-condition treatment (ADR-010) and still short
+    // — the caveat may not turn a one-line hint into a paragraph.
+    expect(hint.className).toContain('text-muted-foreground');
+    expect(hint.textContent?.length ?? 0).toBeLessThan(400);
+  });
+
   it('wires the cost sentence and the simple hint to the control itself', async () => {
     mockApi();
     renderTab();

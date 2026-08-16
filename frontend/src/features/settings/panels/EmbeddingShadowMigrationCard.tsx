@@ -229,14 +229,23 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
             drops to its keyword leg. Sized as "may be slower" rather than a
             warning because that rejection needs concurrent load on top; the
             runbook's *Search during the backfill* section carries the detail.
+
+            The copy names the QUEUE, not the provider. The queue is one
+            module-level `pLimit` in the API process, so the contention holds in
+            every configuration. Provider identity does not: this migration
+            carries its own `providerId` from the start body, and the SWAP is
+            what rewrites `llm_usecase_assignments` — so while the backfill runs,
+            live query embeds may still resolve an entirely different provider
+            row. Blaming the provider would name a coupling that is absent on
+            those instances and leave the one that is always there unsaid.
           */}
           Zero-downtime re-embed to <b>{migration.model}</b> ({migration.dimensions} dims):{' '}
           <b>
             {migration.backfilledPages}/{migration.totalPages}
           </b>{' '}
           pages backfilled{eta ? ` — about ${eta} remaining` : ''}. Results stay complete — the
-          current index keeps serving — but query embedding shares the provider with this backfill,
-          so answers may be slower until it finishes.
+          current index keeps serving — but query embedding shares the embedding queue with this
+          backfill, so answers may be slower until it finishes.
         </p>
         {buildingIndex && (
           <p className="mt-1 text-muted-foreground">

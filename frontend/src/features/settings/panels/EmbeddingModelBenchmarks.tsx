@@ -205,6 +205,16 @@ export function EmbeddingModelBenchmarks() {
             an operator who reads `german` here and infers an upgrade would
             rebuild their whole corpus for a ranking change that was measured
             and is not there.
+
+            It carries the corpus's provenance because the conclusion is stated
+            generally and the evidence is not general: the German arm is the
+            #1102 fixture's vendored English OSS docs run through a translation
+            pass. That is the reason the two language arms are comparable at all
+            (content held constant), and the reason the null result is a ceiling
+            on the assumable gain rather than proof the stemmer does nothing —
+            a translation is thinner in exactly the compounding and inflection
+            Snowball German exists to fold. It also strengthens the explanation
+            the runbook offers, translated technical prose being identifier-dense.
           */}
           <p className="text-xs text-muted-foreground">
             The German rows were re-measured under the{' '}
@@ -228,7 +238,11 @@ export function EmbeddingModelBenchmarks() {
             under a &times;4 multiplicity correction, and has no counterpart on {previousBaselineModel}.
             So choosing a keyword language is not a way to buy recall, and the earlier{' '}
             <code className="font-mono">{STEMMER_COMPARISON.previousFtsLanguage}</code> figures were not
-            understating German. This table shows three metrics; under{' '}
+            understating German. Read that with its corpus: this is technical German translated from
+            English OSS documentation, which is what held the content constant across the two
+            language arms and is also why it carries less of the compounding and inflection a German
+            stemmer folds than natively-authored pages would — so it bounds the gain you may assume,
+            not the gain that exists everywhere. This table shows three metrics; under{' '}
             <code className="font-mono">{BENCHMARK_PROVENANCE.ftsLanguage}</code> the two it omits, Recall@3
             and Recall@10, are the ones whose model difference holds up after correcting for the four
             correlated tests, so read the two &ldquo;not established&rdquo; cells as the noisiest part of the

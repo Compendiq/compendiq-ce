@@ -128,6 +128,23 @@ describe('EmbeddingModelBenchmarks (#1114)', () => {
     expect(body).toHaveTextContent(/Recall@10/);
   });
 
+  it('names the German corpus as translated, so the stemmer verdict carries its provenance', () => {
+    // "Choosing a keyword language is not a way to buy recall" is stated here
+    // as a general conclusion, and the corpus it rests on is technical German
+    // TRANSLATED FROM English OSS documentation — the translation pass is what
+    // holds content constant across the two language arms, and it is also why
+    // the corpus is thinner in the compounding and inflection a German stemmer
+    // folds than natively-authored pages would be. The provenance strengthens
+    // the offered explanation (identifier-dense prose that `simple` already
+    // matches exactly) and bounds how far the null result travels. This panel
+    // is what an operator reads before touching the keyword-language control,
+    // so the caveat has to be here and not only in the runbook.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    const body = screen.getByTestId('embedding-benchmarks-body');
+    expect(body).toHaveTextContent(/translated from English/i);
+  });
+
   it('marks a higher-but-unproven number as "not established"', () => {
     // The load-bearing assertion. English Recall@1 is HIGHER for Qwen3
     // (0.6599 vs 0.6091) and did not survive a paired test (p = 0.174).
