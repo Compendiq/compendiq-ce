@@ -416,6 +416,81 @@ describe('RetrievalTab — keyword index language (#1114)', () => {
     // The committed value is what the panel now compares against, so Save
     // stops offering to re-run a corpus-wide rebuild that already happened.
     await waitFor(() => expect(screen.getByTestId('retrieval-save-btn')).toBeDisabled());
+
+    // …and says so on screen (review r3). Re-reading silently leaves the admin
+    // with an error toast beside a dead Save button, which is "it failed" and
+    // "there is nothing left to save" at the same time. The resolution used to
+    // live only in the admin guide.
+    const strip = await screen.findByTestId('retrieval-fts-save-failed');
+    expect(strip).toHaveTextContent(/server now reports/i);
+    expect(strip).toHaveTextContent(/German/);
+    expect(strip).toHaveTextContent(/believe the value shown here, not the error/i);
+  });
+
+  it('says the language was NOT changed when the rebuild rolled back', async () => {
+    // The other half of the same failure: a 503 from the rebuild leaves the
+    // row untouched, the admin's unsent choice on screen and Save still
+    // offered. Reporting "believe what you see" there would be a lie — the
+    // refetched value is what distinguishes the two, so the panel reads it.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') {
+          return json({ message: 'Keyword index rebuild failed — the language was not changed' }, 503);
+        }
+        return json(defaultSettings);
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    const strip = await screen.findByTestId('retrieval-fts-save-failed');
+    expect(strip).toHaveTextContent(/still reports/i);
+    expect(strip).toHaveTextContent(/Simple \(no stemming\)/);
+    expect(strip).toHaveTextContent(/was not changed/i);
+    // The unsent choice survives, so Save is still the way to retry — which is
+    // what the strip tells the admin to do.
+    expect(select().value).toBe('german');
+    expect(screen.getByTestId('retrieval-save-btn')).toBeEnabled();
+  });
+
+  it('says nothing about a failed save that never carried the language', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') return json({ message: 'Nope' }, 500);
+        return json(defaultSettings);
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    type('ragFetchWidth', '40');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(screen.getByTestId('retrieval-save-btn')).toBeEnabled());
+    expect(screen.queryByTestId('retrieval-fts-save-failed')).not.toBeInTheDocument();
   });
 
   it('keeps Save disabled until the language actually differs', async () => {
@@ -492,6 +567,86 @@ describe('RetrievalTab — keyword index language (#1114)', () => {
     // click happens, not in a tooltip.
     expect(screen.getByTestId('retrieval-reset-all-scope')).toHaveTextContent(
       /keyword index language/i,
+    );
+  });
+});
+
+/**
+ * Review r3. Every field on this panel falls back to `DEFAULTS` when the
+ * settings document is missing, and react-query settles a failed query with
+ * `data === undefined` and `isLoading === false` — so a failed GET used to
+ * render a complete, plausible, WRONG settings page. `ftsLanguage` is where
+ * that stops being cosmetic: it reports `simple` on an instance whose row says
+ * `german`, under a hint telling the admin to pick a language, and acting on
+ * that costs a corpus-wide re-index that was never needed. Same failure
+ * CLAUDE.md pins for `usePageTree`, reached on a settings surface.
+ */
+describe('RetrievalTab — a failed settings fetch is a failure, not a defaults document', () => {
+  function mockFailingSettings() {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return new Response(
+          JSON.stringify({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.includes('/admin/settings')) {
+        return new Response(JSON.stringify({ message: 'Service Unavailable' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('Not found', { status: 404 });
+    });
+  }
+
+  it('renders a retryable error instead of a form full of defaults', async () => {
+    mockFailingSettings();
+    renderTab();
+
+    await waitFor(() => expect(screen.getByTestId('retrieval-tab-error')).toBeInTheDocument());
+    expect(screen.getByTestId('retrieval-tab-retry')).toBeInTheDocument();
+    expect(screen.queryByTestId('retrieval-tab')).not.toBeInTheDocument();
+  });
+
+  it('never reports a keyword-index language it did not read', async () => {
+    mockFailingSettings();
+    renderTab();
+
+    await waitFor(() => expect(screen.getByTestId('retrieval-tab-error')).toBeInTheDocument());
+    // The two things a fabricated `simple` would put on screen: the value
+    // itself, and the hint that invites the admin to change it.
+    expect(screen.queryByTestId('retrieval-ftsLanguage')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('retrieval-fts-simple-hint')).not.toBeInTheDocument();
+  });
+
+  it('recovers into the real document when the retry succeeds', async () => {
+    let fail = true;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (fail) return json({ message: 'Service Unavailable' }, 503);
+        return json({ ...defaultSettings, ftsLanguage: 'german' });
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await waitFor(() => expect(screen.getByTestId('retrieval-tab-error')).toBeInTheDocument());
+
+    fail = false;
+    fireEvent.click(screen.getByTestId('retrieval-tab-retry'));
+
+    await waitFor(() =>
+      expect((screen.getByTestId('retrieval-ftsLanguage') as HTMLSelectElement).value).toBe('german'),
     );
   });
 });

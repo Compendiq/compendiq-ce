@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import type { FtsLanguage, UsecaseAssignments } from '@compendiq/contracts';
 import { FTS_LANGUAGES } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
+import { ErrorState } from '../../../shared/components/feedback/ErrorState';
 import { SETTINGS_PANELS } from '../settings-nav';
 
 /**
@@ -33,7 +34,19 @@ import { SETTINGS_PANELS } from '../settings-nav';
  * an untouched knob keeps no row at all. Absent and explicitly-default read
  * alike today, but `rag_context_chars_per_page`'s last-good fallback is
  * written assuming no phantom row, and a row nobody set misrepresents what the
- * operator configured.
+ * operator configured. (The one exception is `fts_language`, which migration
+ * 049 seeds with `simple` on every instance — the whole reason the removed
+ * `FTS_LANGUAGE` env var was unreachable.)
+ *
+ * **A failed settings fetch is a failure, not a defaults document** (review
+ * r3). `useQuery` is consumed with `isError`, because every field on this
+ * panel falls back to `DEFAULTS` when `data` is undefined — and react-query
+ * settles a failed query with `data === undefined` and `isLoading === false`.
+ * Rendering that reports `simple` on a German instance and offers the "pick
+ * the language most of your content is written in" hint underneath it, which
+ * invites an admin to re-save a language that was already set and pay for a
+ * corpus-wide rebuild that was never needed. Same failure CLAUDE.md pins for
+ * `usePageTree`, reached on a settings surface.
  */
 
 /** Mirrors the reader defaults in `backend/src/core/services/admin-settings-service.ts`. */
@@ -228,7 +241,14 @@ export function RetrievalTab() {
   const [benchmarkDays, setBenchmarkDays] = useState(30);
   const [benchmarkLimit, setBenchmarkLimit] = useState(25);
 
-  const { data: settings, isLoading } = useQuery<Partial<RetrievalValues>>({
+  const {
+    data: settings,
+    isLoading,
+    isFetching: settingsFetching,
+    isError: settingsError,
+    error: settingsErrorObj,
+    refetch: refetchSettings,
+  } = useQuery<Partial<RetrievalValues>>({
     queryKey: ['admin-settings'],
     queryFn: () => apiFetch('/admin/settings'),
   });
@@ -310,6 +330,30 @@ export function RetrievalTab() {
     setValues((prev) => ({ ...prev, [key]: value }));
   }
 
+  // #1114, review r3 — the failure this control was designed around has to be
+  // legible where the control is, not only in the admin guide. In the
+  // documented 504 case the toast says "Gateway Time-out" while the panel
+  // re-reads `german` and Save goes dead: on screen that is "it failed" beside
+  // "there is nothing left to save", a contradiction the guide needed a
+  // paragraph to resolve. So the panel resolves it itself, and it can say
+  // which of the two happened because the refetched value is the evidence:
+  // the server reporting the language the admin picked means the transaction
+  // committed, and reporting the old one means it rolled back.
+  //
+  // Amber, not muted, and not the panel's own no-amber rule: that rule is
+  // about *permanent* notices (the disabled optional stages), and ADR-010's
+  // `usePageTree` precedent puts exactly this state — the request failed, the
+  // data is intact but suspect — in an amber `role="status"` strip. Red is
+  // failure; amber is degraded. It clears on the next successful save.
+  // Withheld while the refetch is in flight, or it would announce the
+  // rollback wording for a frame and then contradict itself.
+  const failedSaveTouchedLanguage =
+    mutation.isError &&
+    mutation.variables !== undefined &&
+    'ftsLanguage' in mutation.variables &&
+    !settingsFetching;
+  const languageSurvivedFailedSave = saved.ftsLanguage === values.ftsLanguage;
+
   // The rerank STAGE, per ADR-021: on iff an assignment exists AND the server
   // could resolve a model for it. `resolveRerankUsecase` returning the nil
   // sentinel means assigned-but-unresolvable, which is still a disabled stage.
@@ -346,6 +390,28 @@ export function RetrievalTab() {
 
   if (isLoading) {
     return <div className="text-sm text-muted-foreground">Loading...</div>;
+  }
+
+  // Before the form, never beside it (review r3). Every control here reads
+  // `DEFAULTS` when the document is missing, so a failed GET renders a
+  // complete, plausible, wrong settings page — `simple` on an instance whose
+  // row says `german`, under a hint telling the admin to go set a language
+  // that is already set. There is no honest partial render, so there is no
+  // partial render.
+  if (settingsError) {
+    return (
+      <ErrorState
+        title="Couldn't load retrieval settings"
+        description={
+          settingsErrorObj instanceof Error
+            ? `${settingsErrorObj.message} — nothing below is the deployment's configuration until this loads.`
+            : "Nothing below is the deployment's configuration until this loads."
+        }
+        onRetry={() => refetchSettings()}
+        testId="retrieval-tab-error"
+        retryTestId="retrieval-tab-retry"
+      />
+    );
   }
 
   return (
@@ -429,6 +495,29 @@ export function RetrievalTab() {
               </p>
             )}
           </div>
+          {failedSaveTouchedLanguage && (
+            <p
+              role="status"
+              className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
+              data-testid="retrieval-fts-save-failed"
+            >
+              {languageSurvivedFailedSave ? (
+                <>
+                  The save reported an error, but the server now reports{' '}
+                  <strong className="font-medium">{ftsLanguageLabel(saved.ftsLanguage)}</strong>. A
+                  rebuild that outruns your reverse proxy&apos;s read timeout answers a gateway
+                  timeout while the database goes on to commit — believe the value shown here, not
+                  the error.
+                </>
+              ) : (
+                <>
+                  The save reported an error and the server still reports{' '}
+                  <strong className="font-medium">{ftsLanguageLabel(saved.ftsLanguage)}</strong> —
+                  the language was not changed. Save again to retry.
+                </>
+              )}
+            </p>
+          )}
         </div>
       </Section>
 

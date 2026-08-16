@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
-import { adminRoutes } from './admin.js';
+import { adminRoutes, FTS_REBUILD_LOCK_TIMEOUT_MS } from './admin.js';
 
 /**
  * #1118 — the retrieval knobs' write path, tested against the **real**
@@ -107,6 +107,8 @@ let pending: Record<string, string> | null;
  * the previous configuration.
  */
 let rebuildFails: boolean;
+/** PostgreSQL SQLSTATE the faked rebuild throws with. 57014 = statement timeout, 55P03 = lock_not_available. */
+let rebuildFailureCode: string;
 
 function settingKeysIn(sql: string): string[] {
   // The getters' SELECTs name their key(s) as literals except the confidence
@@ -118,6 +120,7 @@ beforeEach(() => {
   rows = {};
   pending = null;
   rebuildFails = false;
+  rebuildFailureCode = '57014';
   mockRelease.mockReset();
   vi.mocked(logAuditEvent).mockClear();
   mockQuery.mockReset();
@@ -137,9 +140,14 @@ beforeEach(() => {
     }
     if (/UPDATE pages SET tsv/i.test(sql)) {
       if (rebuildFails) {
-        const err = Object.assign(new Error('canceling statement due to statement timeout'), {
-          code: '57014',
-        });
+        const err = Object.assign(
+          new Error(
+            rebuildFailureCode === '55P03'
+              ? 'canceling statement due to lock timeout'
+              : 'canceling statement due to statement timeout',
+          ),
+          { code: rebuildFailureCode },
+        );
         throw err;
       }
       return { rows: [], rowCount: 0 };
@@ -521,6 +529,41 @@ describe('admin settings — the keyword-index language comes from the row alone
     // PG_STATEMENT_TIMEOUT kills, and it is applied pool-wide.
     expect(sqls.some((s) => /SET LOCAL statement_timeout = 0/i.test(s))).toBe(true);
     expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('bounds the LOCK wait too — lifting statement_timeout removes the only cancellation there was', async () => {
+    // Review r3. `UPDATE pages` carries no WHERE, so it is the widest lock the
+    // app takes, and no pool sets `lock_timeout` (only `runMigrations`, to 0).
+    // With `statement_timeout` lifted and nothing in its place, a page row held
+    // by an in-flight save makes this transaction wait forever, holding one of
+    // PG_POOL_MAX connections and blocking every page write behind it — and
+    // closing the browser tab cancels no PostgreSQL statement. The precedent
+    // this handler cites (`shadow-migration-service.ts`) sets both for exactly
+    // this reason.
+    await put({ ftsLanguage: 'german' });
+
+    const sqls = mockQuery.mock.calls.map(([sql]) => String(sql));
+    const lock = sqls.findIndex((s) => /SET LOCAL lock_timeout/i.test(s));
+    const rebuild = sqls.findIndex((s) => /UPDATE pages SET tsv/i.test(s));
+
+    expect(lock, 'the rebuild must bound how long it waits for page locks').toBeGreaterThanOrEqual(0);
+    expect(rebuild, 'the bound has to be in force before the widest lock is taken').toBeGreaterThan(lock);
+    expect(sqls[lock]).toContain(`${FTS_REBUILD_LOCK_TIMEOUT_MS}ms`);
+  });
+
+  it('turns a lock wait that times out into the same retryable refusal, not a hang', async () => {
+    // 55P03 is what the bound above produces. It must land in the handler's
+    // catch like any other rebuild failure: ROLLBACK, no language change, and
+    // the operator-facing message that makes a retry obviously safe.
+    rebuildFails = true;
+    rebuildFailureCode = '55P03';
+
+    const res = await put({ ftsLanguage: 'german' });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json().message).toMatch(/was not changed/i);
+    expect(stored('fts_language')).toBeUndefined();
+    expect(mockQuery.mock.calls.some(([sql]) => /^\s*ROLLBACK/i.test(String(sql)))).toBe(true);
   });
 
   it('stores no language when the rebuild fails, so the row cannot outlive the index', async () => {

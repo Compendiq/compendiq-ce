@@ -394,10 +394,14 @@ panel writes the same `admin_settings` rows.
 
 Three things worth knowing before you use it.
 
-**The panel writes only what you changed.** A knob you never touched keeps no
-`admin_settings` row at all — an absent row and an explicitly-default one read
-alike, but the assembly budget's fail-toward-last-known behaviour is written
-assuming no row exists until an operator sets one.
+**The panel writes only what you changed.** A *numeric or on/off* knob you
+never touched keeps no `admin_settings` row at all — an absent row and an
+explicitly-default one read alike, but the assembly budget's
+fail-toward-last-known behaviour is written assuming no row exists until an
+operator sets one. `fts_language` is the exception, and deliberately so:
+migration 049 seeds it with `simple` on every instance before the first
+request, which is exactly what made the removed `FTS_LANGUAGE` environment
+variable unreachable (see below).
 
 **A save of a numeric or on/off knob takes effect within a minute.** Each of
 the nine is read through a 60-second in-process cache. The server that handled
@@ -456,9 +460,13 @@ the search SQL.
 
 The row and the rebuild are **one transaction**, with `statement_timeout`
 lifted for its duration (a `PG_STATEMENT_TIMEOUT` deployment would otherwise
-kill a corpus-wide UPDATE deterministically). So the save is slow on a large
-corpus, and if the *database* rejects it nothing changed: the language stays as
-it was and you can retry. If the same request also carried other retrieval
+kill a corpus-wide UPDATE deterministically) and `lock_timeout` set to 30
+seconds in its place — the rebuild's own work is unbounded, but the wait to
+*start* it is not, so a page row held by an in-flight edit makes the save fail
+and retry rather than hang on a database connection. So the save is slow on a
+large corpus, and if the *database* rejects it nothing changed: the language
+stays as it was and you can retry (if it reports a lock timeout, retry when
+editing has quietened). If the same request also carried other retrieval
 knobs, those were written before the rebuild started and are kept — the error
 message says so. It is not touched by **Reset all to defaults** in the panel — a
 bulk reset of nine cheap knobs must not quietly re-index your corpus back to
@@ -471,7 +479,12 @@ bundled `frontend/nginx.conf` closes an `/api/` response after
 cancel the PostgreSQL statement, so a corpus whose rebuild outruns the proxy
 budget reports a gateway timeout in the browser while the transaction goes on
 to commit. The panel re-reads the server after any failed save for exactly this
-reason: **believe the value the panel shows after the error, not the error**. If
+reason: **believe the value the panel shows after the error, not the error**.
+You do not have to remember that — after a failed save that carried the
+language, the panel says on screen which of the two happened, because the value
+it just re-read is the evidence: "the server now reports German" means the
+transaction committed despite the error, and "the server still reports Simple —
+the language was not changed" means it rolled back and Save is the retry. If
 you front Compendiq with your own proxy and expect a rebuild longer than its
 read timeout, raise that timeout before changing the language, or run the
 rebuild during a window where a five-minute request is acceptable. Re-saving

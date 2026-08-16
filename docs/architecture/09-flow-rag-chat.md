@@ -1106,8 +1106,14 @@ states the condition where an operator will meet it.
   a non-English corpus because it is silent and looks like a working search.
   A set `FTS_LANGUAGE` is now reported as ignored at startup. Saving the
   setting rebuilds every page's `tsv` in the same request, and the row and the
-  rebuild are **one transaction** (with `SET LOCAL statement_timeout = 0`, as
-  `shadow-migration-service.ts` does for its own corpus-wide statements): two
+  rebuild are **one transaction** (with `SET LOCAL statement_timeout = 0` and
+  `SET LOCAL lock_timeout = '30s'` — both, as `shadow-migration-service.ts`
+  does for its own corpus-wide statements: lifting the statement timeout
+  removes this statement's only cancellation, and `UPDATE pages` carries no
+  WHERE, so without the second one a page row held by an in-flight save would
+  make the save wait forever on a pooled connection while blocking every page
+  write behind it; a lock wait that expires rolls back into the ordinary,
+  retryable 503 below): two
   autocommitted statements would let a failed rebuild leave the row saying
   `german` while every `tsv` was still built as `simple` — the same silent
   wrong-index failure the env var caused, reached from the panel instead. It

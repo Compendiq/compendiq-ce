@@ -71,6 +71,15 @@ const LabelNameParamSchema = z.object({ name: z.string().min(1) });
 // Rate limit for admin endpoints (dynamic via admin settings, default 20/min)
 const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
 
+/**
+ * How long the keyword-index rebuild waits for the page locks it needs before
+ * giving up. See the block comment at the rebuild itself: lifting
+ * `statement_timeout` there removes the statement's only cancellation, so this
+ * is what keeps a corpus-wide `UPDATE pages` from waiting forever behind an
+ * in-flight page write. Exported for the test that pins the pairing.
+ */
+export const FTS_REBUILD_LOCK_TIMEOUT_MS = 30_000;
+
 export async function adminRoutes(fastify: FastifyInstance) {
   // All admin routes require admin role
   fastify.addHook('onRequest', fastify.requireAdmin);
@@ -724,6 +733,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
     // those instances the save would fail deterministically, every time.
     // `SET LOCAL`, so it lasts exactly this transaction.
     //
+    // And `SET LOCAL lock_timeout` beside it, for the reason the same
+    // precedent pairs the two (review r3). Lifting `statement_timeout`
+    // removes the ONLY cancellation this statement had, and `UPDATE pages`
+    // with no WHERE is the widest lock the app takes: a row held by an
+    // in-flight page save would otherwise make this wait forever, holding one
+    // of `PG_POOL_MAX` connections and blocking every page write queued
+    // behind it, with no way out for the admin (closing the browser tab does
+    // not cancel a PostgreSQL statement). The rebuild's own *work* stays
+    // unbounded, which is the point; only the wait to start it is bounded.
+    // 30s rather than the swap's 5s because there is no retry loop here and
+    // the admin is already waiting on a corpus-wide rebuild — but a timeout
+    // lands in the catch below, so it rolls back to the honest, retryable
+    // "the language was not changed" 503 instead of hanging.
+    //
     // It runs after every other write — the knob loop, the queue setters, the
     // rate limits and `embedding_dirty` — because it is the only statement in
     // this handler that can throw at this point, and the r9 invariant above
@@ -738,6 +761,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       try {
         await client.query('BEGIN');
         await client.query('SET LOCAL statement_timeout = 0');
+        await client.query(`SET LOCAL lock_timeout = '${FTS_REBUILD_LOCK_TIMEOUT_MS}ms'`);
         await client.query(
           `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
            VALUES ('fts_language', $1, NOW())
