@@ -1076,6 +1076,14 @@ states the condition where an operator will meet it.
   from a copy (it used to hardcode Qwen's stock *web search* task, so its
   prefix-on/off delta measured a preamble the app never sends), and refuses to
   run a `prefix: true` arm for a model the shipping matcher would not prefix.
+  That first assertion pins the **argument count**, not just the callee:
+  `formatQueryForEmbedding(model, query, task)` takes an optional third
+  argument, so calling the shipping wrapper and still sending the stock web
+  search task is one argument away — and the task string carries no literal
+  `Instruct: ` for the no-hardcoded-preamble check to catch. The same
+  two-argument rule is asserted for `rag-service.ts` and
+  `routes/knowledge/search.ts`, because a per-site task is a divergence in the
+  app for the same reason it is one in the harness.
   Two consequences are worth stating. It is keyed off the **resolved** model,
   so it turns on exactly when a swap makes Qwen3 live and off again on a
   rollback, with no second setting to keep in step. And because documents are

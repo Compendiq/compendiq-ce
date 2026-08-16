@@ -26,7 +26,11 @@
  *    BINDING rather than assuming it is the exported name: the third version
  *    saw `import { generateEmbedding }` + `generateEmbedding(` and nothing
  *    else, so an alias, a namespace import, or a `scripts/*.mts` dynamic
- *    import — all three live style in this repo — were invisible to it.
+ *    import — all three live style in this repo — were invisible to it. And it
+ *    pins each `formatQueryForEmbedding` call to TWO arguments: `task` below is
+ *    optional, so the divergence the offline harness was fixed for — sending
+ *    Qwen's stock web-search task instead of `RETRIEVAL_TASK` — came back
+ *    through that parameter with every earlier assertion green.
  *
  * 2. **Turning it on does not invalidate the corpus.** Because documents are
  *    embedded bare under every model, the stored vectors are byte-identical

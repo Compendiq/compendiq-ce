@@ -317,7 +317,10 @@ with `backend/scripts/compare-embedding-variants.mts`. Note its Qwen arms now
 build the query preamble from `query-instruction.ts`'s exported `RETRIEVAL_TASK`
 rather than from a hardcoded copy of Qwen's stock web-search task, so a re-run
 measures the prefix that ships and its absolute numbers may shift a little
-against the ones recorded above.
+against the ones recorded above. `query-instruction.test.ts` holds that by
+pinning the call to two arguments — the task is reachable only through the
+default parameter, so it cannot be overridden back to the stock wording while
+the harness still calls the shipping formatter.
 
 The invariant that work exposed is kept regardless: **every document-side embed
 must send the model byte-identical text** — the live embed in `embedPage`, its

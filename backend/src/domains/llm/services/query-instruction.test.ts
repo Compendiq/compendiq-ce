@@ -147,6 +147,34 @@ describe('query-instruction (#1114)', () => {
       return out;
     }
 
+    /**
+     * The individual arguments of one call's argument text, split on the
+     * commas that are not nested inside a bracket of any kind.
+     *
+     * Same "good enough for this file's job" caveat as `callArgumentLists`,
+     * and it errs in the safe direction: a comma inside a string argument
+     * over-counts, so a call carrying one fails loudly rather than passing
+     * quietly. There is none at any of these call sites. `''` (a zero-argument
+     * call) is length 0, not 1.
+     */
+    function topLevelArgs(argText: string): string[] {
+      const args: string[] = [];
+      let depth = 0;
+      let start = 0;
+      for (let i = 0; i < argText.length; i++) {
+        const c = argText[i]!;
+        if (c === '(' || c === '[' || c === '{') depth++;
+        else if (c === ')' || c === ']' || c === '}') depth--;
+        else if (c === ',' && depth === 0) {
+          args.push(argText.slice(start, i));
+          start = i + 1;
+        }
+      }
+      const last = argText.slice(start);
+      if (args.length > 0 || last.trim() !== '') args.push(last);
+      return args;
+    }
+
     /** The first capture group of every match of `re` in `src`. */
     function captures(src: string, re: RegExp): string[] {
       return [...src.matchAll(re)].map((m) => m[1]);
@@ -447,6 +475,40 @@ describe('query-instruction (#1114)', () => {
       expect(src).toContain('formatQueryForEmbedding(');
       // The half that actually catches a revert: no literal preamble anywhere.
       expect(src).not.toMatch(/['"`]Instruct: /);
+    });
+
+    it('no caller overrides the retrieval task', () => {
+      // The two assertions above ask only that the WRAPPER is called, and
+      // `formatQueryForEmbedding(model, query, task)` takes an optional THIRD
+      // argument. So the exact divergence this block exists to prevent comes
+      // straight back through that parameter with everything still green:
+      // passing Qwen's stock `'Given a web search query, retrieve relevant
+      // passages that answer the query'` satisfies `toContain(
+      // 'formatQueryForEmbedding(')`, and the no-literal check never fires
+      // because a task string carries no `Instruct: ` of its own — the module
+      // supplies that. Verified by mutation at the previous head: adding that
+      // third argument to the harness left all 22 tests passing.
+      //
+      // The docs make the stronger claim (`09-flow-rag-chat.md`: "it builds its
+      // prefix from the exported `RETRIEVAL_TASK` rather than from a copy";
+      // `06-data-model.md` says the same of the Qwen arms) — a symbol the
+      // harness reaches only through the DEFAULT parameter. Pinning the
+      // argument count is what makes the default the only path to it, and it is
+      // asserted for the shipping query sites too: a per-site task is a
+      // divergence in the app just as much as in the harness. The override
+      // parameter stays on the API for tests and for a deliberate future
+      // change — which then updates this list rather than slipping past it.
+      for (const file of [...QUERY_CALL_SITES, 'scripts/compare-embedding-variants.mts']) {
+        const src = readFileSync(join(BACKEND_ROOT, file), 'utf8');
+        const calls = embeddingCalls(src, 'formatQueryForEmbedding');
+        expect(calls.length, `${file} never calls formatQueryForEmbedding`).toBeGreaterThan(0);
+        for (const args of calls) {
+          expect(
+            topLevelArgs(args),
+            `${file}: formatQueryForEmbedding(${args.trim()}) — pass (model, query) only`,
+          ).toHaveLength(2);
+        }
+      }
     });
   });
 });
