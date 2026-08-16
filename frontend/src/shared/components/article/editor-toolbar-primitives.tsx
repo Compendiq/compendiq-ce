@@ -22,6 +22,7 @@ export function ToolbarButton({
   title,
   label,
   testId,
+  className,
 }: {
   onClick: () => void;
   active?: boolean;
@@ -37,6 +38,7 @@ export function ToolbarButton({
    */
   label?: string;
   testId?: string;
+  className?: string;
 }) {
   return (
     <button
@@ -49,14 +51,14 @@ export function ToolbarButton({
       title={title}
       aria-label={label ?? title}
       aria-pressed={active}
-      className="nm-icon-button"
+      className={cn('nm-icon-button', className)}
     >
       {children}
     </button>
   );
 }
 
-export function ToolbarSeparator() {
+export function ToolbarSeparator({ className }: { className?: string } = {}) {
   // Hidden below `sm`, where the bar wraps: a divider that lands at the end of
   // a wrapped row separates a group from nothing. The container opens its
   // horizontal gap at those widths so the grouping still reads.
@@ -64,18 +66,26 @@ export function ToolbarSeparator() {
     <div
       role="separator"
       aria-orientation="vertical"
-      className="mx-1 hidden h-5 w-px bg-border sm:block"
+      className={cn('mx-1 hidden h-5 w-px bg-border sm:block', className)}
     />
   );
 }
 
-export function ToolbarGroup({ name, children }: { name: string; children: React.ReactNode }) {
+export function ToolbarGroup({
+  name,
+  className,
+  children,
+}: {
+  name: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div
       role="group"
       aria-label={name}
       data-testid={`toolbar-group-${name}`}
-      className="flex items-center gap-0.5"
+      className={cn('flex items-center gap-0.5', className)}
     >
       {children}
     </div>

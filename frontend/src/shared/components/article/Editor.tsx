@@ -130,8 +130,8 @@ export function EditorContextToolbars({
  * `NewPagePage` and the editor tests all import it alongside `Editor`, and the
  * three context strips below still live in this file.
  */
-import { EditorToolbar } from './EditorToolbar';
-export { EditorToolbar };
+import { EditorToolbar, EmojiPicker } from './EditorToolbar';
+export { EditorToolbar, EmojiPicker };
 
 const ConfluenceImage = Image.extend({
   addAttributes() {
