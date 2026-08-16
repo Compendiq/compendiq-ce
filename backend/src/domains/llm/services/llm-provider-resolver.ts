@@ -230,7 +230,7 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   `;
   const r = await query<ResolveRow>(sql, [usecase]);
   const row = r.rows[0];
-  if (!row) throw new Error('No default provider configured — set one in Settings → AI Models.');
+  if (!row) throw new NoProviderConfiguredError('No default provider configured — set one in Settings → AI Models.');
 
   const cfg = loadProviderFromRow(row);
   const model = row.usecase_model ?? cfg.defaultModel ?? '';
@@ -250,23 +250,63 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
  * would name a pair the pipeline is not using, which is the exact class of
  * mismatch the calibration record exists to report.
  *
- * Never throws. A deployment with no provider configured is a real state and
- * must not take the settings page down with it; it reads as "no live pair",
- * which makes any existing calibration stale — correctly, since the threshold
- * is no longer gating against anything it was tuned on.
+ * Never throws — but it never collapses a FAILURE into an answer either
+ * (review r2). "Nothing is assigned" and "the resolver could not tell us" are
+ * different facts, and only the first is a fact about the deployment: a DB
+ * hiccup inside the CTE, a decrypt failure on the provider row or an EE
+ * override that throws all produce the same `null` as a genuinely empty
+ * assignment. Read back, that null is the claim "this threshold was tuned
+ * against no model at all" — false on an instance with an embedder assigned
+ * the whole time, and permanent once the write path has persisted it. So the
+ * two are reported separately and each caller decides:
+ *
+ *  - the WRITE path (`PUT /admin/settings`) skips the record entirely when
+ *    `resolved` is false, leaving the previous one — unknown, not asserted;
+ *  - the READ path treats an unresolved pair as "no live model", because
+ *    whatever stops this resolver from naming the model stops
+ *    `generateEmbedding` from using it too, and that verdict is recomputed on
+ *    every GET rather than stored.
  */
+export interface ConfidenceBasisResolution {
+  /** False only when the resolver itself failed. Not "nothing is assigned". */
+  resolved: boolean;
+  /** The live pair, or null when nothing is assigned / nothing resolved. */
+  pair: CalibrationPair | null;
+}
+
+/**
+ * "Nothing is configured on this deployment" — a knowable STATE, which is why
+ * it keeps its exact message and is only subclassed. A fresh install with no
+ * provider genuinely has no model behind either basis, and recording that is
+ * true; an unexpected throw from the same call is not.
+ */
+export class NoProviderConfiguredError extends Error {}
+
 export async function resolveConfidenceBasisPair(
   basis: ConfidenceBasis,
-): Promise<CalibrationPair | null> {
+): Promise<ConfidenceBasisResolution> {
   try {
     if (basis === 'rerank') {
       const resolved = await resolveRerankUsecase();
-      return resolved ? { providerId: resolved.config.providerId, model: resolved.model } : null;
+      return {
+        resolved: true,
+        pair: resolved ? { providerId: resolved.config.providerId, model: resolved.model } : null,
+      };
     }
     const resolved = await resolveUsecase('embedding');
-    return resolved.model ? { providerId: resolved.config.providerId, model: resolved.model } : null;
+    return {
+      resolved: true,
+      pair: resolved.model ? { providerId: resolved.config.providerId, model: resolved.model } : null,
+    };
   } catch (err) {
+    if (err instanceof NoProviderConfiguredError) {
+      // Configured-with-nothing, not unknown. Recording "tuned against no
+      // model" is TRUE here, and the transition out of it — an admin
+      // assigning the first embedder behind a live threshold — is exactly a
+      // scale change the operator should hear about.
+      return { resolved: true, pair: null };
+    }
     logger.warn({ err, basis }, 'Could not resolve the model behind a confidence threshold');
-    return null;
+    return { resolved: false, pair: null };
   }
 }

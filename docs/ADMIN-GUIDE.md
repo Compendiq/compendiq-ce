@@ -621,13 +621,24 @@ threshold you did not look at.
 
 A threshold set before this shipped has no record and shows a muted
 "calibration unknown" line instead — an absent record is not evidence that
-anything changed. If you write the row with SQL, the calibration is **not**
-recorded; save it once through the panel if you want the check. Saving a
-threshold while its stage has no model assigned (the usual case for the rerank
-basis — ADR-021 leaves the stage off until a rerank provider is assigned) is
-recorded too, as "tuned against nothing": it stays quiet while nothing is
-assigned, and turns amber the moment you assign a reranker, because the number
-then gates on a relevance scale it was never measured against.
+anything changed. A threshold you write with SQL lands in the same state,
+because only the panel's PUT records a pair. Both clear the same way: press
+**Record &lt;value&gt;** on that line, which writes the number already in the
+row against the live model. (Pressing Save will not do it — Save sends only
+knobs you edited, which is the same rule that stops an unrelated edit
+certifying a gate you never looked at.) Saving a threshold while its stage has
+no model assigned (the usual case for the rerank basis — ADR-021 leaves the
+stage off until a rerank provider is assigned) is recorded too, as "tuned
+against nothing": it stays quiet while nothing is assigned, and turns amber the
+moment you assign a reranker, because the number then gates on a relevance
+scale it was never measured against.
+
+If the server cannot resolve the model behind a basis at the moment you save —
+the provider row unreadable, an enterprise LLM policy pointing at a deleted
+provider — the threshold is saved and the calibration is deliberately left
+exactly as it was, with `Could not resolve the model behind a confidence
+threshold` in the log. An unknown is never written down as "tuned against
+nothing".
 
 Never auto-refused, whatever the thresholds: questions with other grounding
 that actually **materialised** (an assembled sub-page tree, successfully

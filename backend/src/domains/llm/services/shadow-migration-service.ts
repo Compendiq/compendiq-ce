@@ -746,6 +746,12 @@ export async function performShadowSwap(opts?: {
     dimensions: parseInt(prevDims.rows[0]?.setting_value ?? '1024', 10) || 1024,
   };
 
+  // #1114 — captured INSIDE the transaction, off the state this swap verified
+  // under the lock, exactly as the rollback below does (review r2). `status`
+  // is a PRE-LOCK snapshot and the assignment is written from `state`; the two
+  // differ precisely when another lifecycle step won the lock race, and a
+  // warning naming a model the swap did not install is worse than none.
+  let swappedTo: string | null = null;
   await withLockRetry(
     { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
     async (client) => {
@@ -808,6 +814,7 @@ export async function performShadowSwap(opts?: {
       if (await embeddingPolicyOverride()) {
         throw new Error(POLICY_OVERRIDE_MSG);
       }
+      swappedTo = state.model;
       await client.query(
         `INSERT INTO llm_usecase_assignments (usecase, provider_id, model, updated_at)
          VALUES ('embedding', $1, $2, NOW())
@@ -840,7 +847,7 @@ export async function performShadowSwap(opts?: {
   await warnThresholdOutlivedItsModel({
     basis: 'similarity',
     previousModel: prev.model,
-    newModel: status.model,
+    newModel: swappedTo,
   });
 }
 

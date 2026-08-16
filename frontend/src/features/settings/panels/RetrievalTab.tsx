@@ -353,7 +353,10 @@ export function RetrievalTab() {
 
   /**
    * #1114 — "keep this number, and record it against the live model" is its
-   * own control, not a mode of Save (review r1).
+   * own control, not a mode of Save (review r1). Both calibration notices
+   * reach it: the amber one as `Keep <value>`, the muted "no record" one as
+   * `Record <value>` (review r2 — that branch shipped with a remedy no
+   * control could perform).
    *
    * The remedy the amber strip offers changes no VALUE: the number is right,
    * the record beside it is out of date. The first cut reached that by pushing
@@ -724,6 +727,7 @@ export function RetrievalTab() {
           fieldKey="ragConfidenceThreshold"
           label={FIELDS.ragConfidenceThreshold.label}
           value={saved.ragConfidenceThreshold}
+          supported={settings?.ragConfidenceCalibration !== undefined}
           calibration={settings?.ragConfidenceCalibration?.similarity ?? null}
           onKeep={() => handleKeepCalibration('ragConfidenceThreshold')}
           keepDisabled={keepMutation.isPending || mutation.isPending}
@@ -746,6 +750,7 @@ export function RetrievalTab() {
           fieldKey="ragConfidenceThresholdRerank"
           label={FIELDS.ragConfidenceThresholdRerank.label}
           value={saved.ragConfidenceThresholdRerank}
+          supported={settings?.ragConfidenceCalibration !== undefined}
           calibration={settings?.ragConfidenceCalibration?.rerank ?? null}
           onKeep={() => handleKeepCalibration('ragConfidenceThresholdRerank')}
           keepDisabled={keepMutation.isPending || mutation.isPending}
@@ -1078,21 +1083,38 @@ function Section({
  * "Recorded while nothing was assigned" is NOT the third state (review r1).
  * A rerank threshold saved with the stage disabled is an ordinary ADR-021
  * situation and the server records it as a present record with a null pair —
- * so the muted line's claim ("set before models were recorded") stays true of
- * the case it describes, and this one goes stale the moment a model appears,
- * with copy that says which way round it happened.
+ * so it goes stale the moment a model appears, with copy that says which way
+ * round it happened.
  *
- * The copy names the OLD model, the LIVE one and the scale between them,
- * because "stale" alone leaves an operator no way to judge whether their
- * number is now too strict or too loose — and it names both remedies, since
- * keeping the number is a legitimate choice that simply needs recording. The
- * keep remedy is a BUTTON here rather than a note telling the operator to
- * press the panel's Save: see `handleKeepCalibration`.
+ * **Both notices carry the same aimed button, and the muted one needs it
+ * most** (review r2). Its remedy used to read "save to record it against the
+ * live model" while Save is a pure value diff and this branch rendered no
+ * control — so the one thing the operator wants (record THIS number against
+ * the live model) was reachable only by changing the gate to a different
+ * number, saving, changing it back and saving again. Every instance upgraded
+ * with a non-zero threshold lands in exactly this state, which made the note
+ * permanent and its instruction false; it is the same "remedy is a no-op"
+ * defect review r1 fixed for the amber branch, left standing in its sibling.
+ * The copy also stopped asserting a cause it cannot know: a record write that
+ * failed is indistinguishable from one that never happened, so the note says
+ * what is missing rather than why.
+ *
+ * The stale copy names the OLD model, the LIVE one and the scale between
+ * them, because "stale" alone leaves an operator no way to judge whether
+ * their number is now too strict or too loose — and it names both remedies,
+ * since keeping the number is a legitimate choice that simply needs
+ * recording. See `handleKeepCalibration` for why that is its own mutation.
+ *
+ * `supported` is the fourth cell and it renders NOTHING: a server that has
+ * not shipped `ragConfidenceCalibration` has told us nothing at all, and
+ * "calibration unknown" beside a button that cannot clear it would be the
+ * same dead end one deployment skew away.
  */
 function CalibrationNotice({
   fieldKey,
   label,
   value,
+  supported,
   calibration,
   onKeep,
   keepDisabled,
@@ -1100,21 +1122,35 @@ function CalibrationNotice({
   fieldKey: keyof typeof CONFIDENCE_BASIS_COPY;
   label: string;
   value: number;
+  supported: boolean;
   calibration: ConfidenceCalibration | null;
   onKeep: () => void;
   keepDisabled: boolean;
 }) {
-  if (value <= 0) return null;
+  if (value <= 0 || !supported) return null;
 
   if (!calibration) {
+    const unknownSentenceId = `retrieval-${fieldKey}-calibration-unknown-sentence`;
     return (
-      <p
-        className="text-xs text-muted-foreground"
+      <div
+        className="flex flex-col items-start gap-2 text-xs text-muted-foreground"
         data-testid={`retrieval-${fieldKey}-calibration-unknown`}
       >
-        Calibration unknown — set before models were recorded; save to record it against the live
-        model.
-      </p>
+        <span id={unknownSentenceId}>
+          Calibration unknown — no model is recorded for {label} {value}, so a model change behind it
+          would pass unnoticed. Record it against the live model, or re-tune it below.
+        </span>
+        <button
+          type="button"
+          onClick={onKeep}
+          disabled={keepDisabled}
+          aria-describedby={unknownSentenceId}
+          className="nm-button-ghost shrink-0 text-xs"
+          data-testid={`retrieval-${fieldKey}-calibration-record`}
+        >
+          Record {value}
+        </button>
+      </div>
     );
   }
 

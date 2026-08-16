@@ -836,14 +836,31 @@ reported a threshold saved seconds ago as predating the feature and made its
 own remedy a permanent no-op. `GET /admin/settings` compares the record with
 the live pair — both sides null is a match, since nothing moved — and answers
 `ragConfidenceCalibration`, provider id and model name only.
+A resolver that *fails* is not an answer: `resolveConfidenceBasisPair` reports
+`{resolved, pair}` separately, and the write path abstains entirely when
+`resolved` is false, leaving the previous record. Collapsing the two wrote a
+DB hiccup or a decrypt error down as the claim "tuned against no model at
+all" — false on an instance whose embedder never moved, stated as fact by the
+panel, and permanent. "No provider configured at all" is not a failure but a
+state (`NoProviderConfiguredError`), so it still records a null pair and the
+day an admin assigns the first embedder still warns.
 `warnThresholdOutlivedItsModel` logs the change at the swap, the post-swap
 rollback and the direct assignment change — never on an abort, which rewrote
-no assignment, and never when the threshold is 0, which is every instance that
-left the gate off. `RetrievalTab` renders a stale record as an amber
-`role="status"` strip above that control naming the old model, the live one
-and the scale between them; a threshold with no record at all (everything set
-before this shipped) gets a muted line instead, because absence of evidence is
-not evidence of a change.
+no assignment, never when either side of the comparison failed to resolve
+(unknown is not a change), and never when the threshold is 0, which is every
+instance that left the gate off. The swap's line names the model captured
+**inside** the swap transaction, off the state it verified under the lock,
+exactly as the rollback does: the pre-lock snapshot and the verified value
+differ precisely when another lifecycle step won the lock race, and a warning
+naming a model the swap did not install is worse than none. `RetrievalTab`
+renders a stale record as an amber `role="status"` strip above that control
+naming the old model, the live one and the scale between them; a threshold
+with no record at all (everything set before this shipped, and anything
+written by SQL) gets a muted line instead, because absence of evidence is not
+evidence of a change. That line says what is *missing*, not why — a record
+write that failed and one that never happened are the same absence — and a
+server that has not shipped `ragConfidenceCalibration` at all renders neither,
+since it has told us nothing.
 
 **Keeping the number is its own control, not a mode of Save.** The strip's
 second remedy — "the number is right, record it against the live model" —
@@ -859,7 +876,13 @@ button that PUTs exactly that one threshold, read from the server's value and
 never from the draft in the field. It takes no `aria-label` (WCAG 2.5.3 — the
 visible label is the name) and is wired to the strip's sentence with
 `aria-describedby`, so two identically-labelled buttons are still
-distinguishable. It is also its **own mutation**, not Save's: Save's success
+distinguishable. **The muted "no record" line carries the same control**
+(`Record <value>`), and needs it more: its remedy used to read "save to record
+it against the live model" against a Save that only diffs values, so on every
+instance upgraded with a live threshold — the exact instance the runbook's
+go/no-go step is written for — the note was permanent and its instruction
+impossible, recording the current number reachable only by changing the gate
+to a different one and back. Same fix as the amber branch, one branch later. It is also its **own mutation**, not Save's: Save's success
 releases the panel's one-shot hydration so the form re-reads the server, which
 is right for a request that submitted the form and wrong for one that submits
 a row the operator did not edit — it would revert whatever else they had typed

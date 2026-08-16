@@ -12,6 +12,7 @@ import {
   resolveUsecase,
   resolveRerankUsecase,
   resolveConfidenceBasisPair,
+  type ConfidenceBasisResolution,
 } from '../../domains/llm/services/llm-provider-resolver.js';
 import {
   warnThresholdOutlivedItsModel,
@@ -177,7 +178,7 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       // captured before the transaction, because after it the old answer is
       // gone. Only for a basis this body touches: a `summary` re-point must
       // cost nothing here.
-      const basisBefore = new Map<ConfidenceBasis, CalibrationPair | null>();
+      const basisBefore = new Map<ConfidenceBasis, ConfidenceBasisResolution>();
       for (const [usecase, basis] of CONFIDENCE_BASIS_BY_USECASE) {
         if (updates[usecase]) basisBefore.set(basis, await resolveConfidenceBasisPair(basis));
       }
@@ -231,14 +232,19 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       // After `bumpProviderCacheVersion`, or the "after" read could still be
       // answered from the pre-save provider cache.
       for (const [, basis] of CONFIDENCE_BASIS_BY_USECASE) {
-        if (!basisBefore.has(basis)) continue;
-        const before = basisBefore.get(basis) ?? null;
+        const before = basisBefore.get(basis);
+        if (!before) continue;
         const after = await resolveConfidenceBasisPair(basis);
-        if (samePair(before, after)) continue;
+        // Review r2 — an UNRESOLVED side is not a changed side. A resolver
+        // that threw on either read would otherwise be reported as
+        // "bge-m3 → nothing", a model change that never happened, in a log
+        // line whose whole job is to name the two models.
+        if (!before.resolved || !after.resolved) continue;
+        if (samePair(before.pair, after.pair)) continue;
         await warnThresholdOutlivedItsModel({
           basis,
-          previousModel: before?.model ?? null,
-          newModel: after?.model ?? null,
+          previousModel: before.pair?.model ?? null,
+          newModel: after.pair?.model ?? null,
         });
       }
 

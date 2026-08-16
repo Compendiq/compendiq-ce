@@ -66,9 +66,10 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
  * calibration's own behaviour is `admin-confidence-calibration.test.ts`.
  */
 vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
-  resolveConfidenceBasisPair: vi.fn(async (basis: string) =>
-    basis === 'rerank' ? null : { providerId: '11111111-2222-3333-4444-555555555555', model: 'bge-m3' },
-  ),
+  resolveConfidenceBasisPair: vi.fn(async (basis: string) => ({
+    resolved: true,
+    pair: basis === 'rerank' ? null : { providerId: '11111111-2222-3333-4444-555555555555', model: 'bge-m3' },
+  })),
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({

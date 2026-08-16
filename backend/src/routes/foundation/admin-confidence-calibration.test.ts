@@ -66,12 +66,26 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
  * `llm_usecase_assignments` here would test a different question than the one
  * the pipeline asks. `null` is a first-class answer, not a failure.
  */
-const liveEmbedding = { value: null as { providerId: string; model: string } | null };
-const liveRerank = { value: null as { providerId: string; model: string } | null };
+const liveEmbedding = {
+  value: null as { providerId: string; model: string } | null,
+  /**
+   * Review r2 — the seam reports "could not resolve" separately from "nothing
+   * is assigned". `resolves: false` is a DB hiccup, a decrypt failure or an EE
+   * override that threw; `{resolves: true, value: null}` is an instance with
+   * genuinely no model behind the basis. The write path treats them
+   * differently and nothing else in this file could tell them apart.
+   */
+  resolves: true,
+};
+const liveRerank = {
+  value: null as { providerId: string; model: string } | null,
+  resolves: true,
+};
 vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
-  resolveConfidenceBasisPair: vi.fn(async (basis: string) =>
-    basis === 'rerank' ? liveRerank.value : liveEmbedding.value,
-  ),
+  resolveConfidenceBasisPair: vi.fn(async (basis: string) => {
+    const live = basis === 'rerank' ? liveRerank : liveEmbedding;
+    return live.resolves ? { resolved: true, pair: live.value } : { resolved: false, pair: null };
+  }),
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({
@@ -101,7 +115,9 @@ beforeEach(() => {
   rows = {};
   pending = null;
   liveEmbedding.value = { ...BGE };
+  liveEmbedding.resolves = true;
   liveRerank.value = null;
+  liveRerank.resolves = true;
   mockRelease.mockReset();
   mockQuery.mockReset();
   mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
@@ -281,6 +297,39 @@ describe('PUT /api/admin/settings — a written threshold records its model (#11
       providerId: null,
       model: null,
     });
+  });
+
+  it('records NOTHING when the resolver FAILED — and leaves the previous record standing', async () => {
+    // Review r2. A resolver that throws (DB hiccup, decrypt failure, an EE
+    // override that raised) used to arrive here as the same `null` an
+    // unassigned basis produces, and got written down as the claim "this
+    // threshold was tuned against no model at all" — false on an instance
+    // that has had an embedder assigned the whole time, and permanent, since
+    // the panel then states it as fact and rates it stale the moment the
+    // resolver recovers. Unknown is not a finding: keep the last thing we
+    // actually knew.
+    expect((await put({ ragConfidenceThreshold: 0.35 })).statusCode).toBe(200);
+    const recorded = rows[CALIBRATION_SETTING_KEYS.similarity];
+    expect(storedRecord(CALIBRATION_SETTING_KEYS.similarity)).toMatchObject({ model: 'bge-m3' });
+
+    liveEmbedding.resolves = false;
+    expect((await put({ ragConfidenceThreshold: 0.5 })).statusCode).toBe(200);
+
+    // The knob the operator asked for still lands; only the diagnostic
+    // abstains.
+    expect(rows['rag_confidence_threshold']).toBe('0.5');
+    expect(rows[CALIBRATION_SETTING_KEYS.similarity]).toBe(recorded);
+  });
+
+  it('still CLEARS the calibration at 0 when the resolver is failing', async () => {
+    // Clearing needs no pair, so an unreachable resolver must not strand a
+    // record beside a gate that is off — the panel would warn about a
+    // threshold that runs nothing.
+    expect((await put({ ragConfidenceThreshold: 0.35 })).statusCode).toBe(200);
+    liveEmbedding.resolves = false;
+    expect((await put({ ragConfidenceThreshold: 0 })).statusCode).toBe(200);
+
+    expect(rows[CALIBRATION_SETTING_KEYS.similarity]).toBeUndefined();
   });
 });
 

@@ -1195,11 +1195,53 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
 
     const note = await screen.findByTestId(unknownId);
     expect(note).toHaveTextContent(/Calibration unknown/i);
-    expect(note).toHaveTextContent(/save to record it against the live model/i);
+    // Review r2 — it states what is MISSING, never why. A record write that
+    // failed and one that never happened are the same absence here, and
+    // "set before models were recorded" is a false claim about the first.
+    expect(note).not.toHaveTextContent(/set before models were recorded/i);
     expect(note.className).toContain('text-muted-foreground');
     expect(note.className).not.toMatch(/warning/);
     expect(note).not.toHaveAttribute('role', 'status');
     expect(screen.queryByTestId(stripId)).not.toBeInTheDocument();
+  });
+
+  it('the muted note names a remedy the panel can actually perform', async () => {
+    // Review r2, the blocking one. The note used to say "save to record it
+    // against the live model" while Save is a pure value diff and this branch
+    // rendered no control — so recording the number you already have was
+    // reachable only by changing the gate to a different number and back.
+    // Every upgraded instance with a live threshold lands here, which made a
+    // permanent note out of a false instruction.
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration(),
+    };
+    const puts = mockApi({
+      settings,
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({ similarity: freshSimilarity });
+      },
+    });
+    renderTab();
+    await ready();
+
+    const note = await screen.findByTestId(unknownId);
+    const record = within(note).getByTestId('retrieval-ragConfidenceThreshold-calibration-record');
+    expect(record).toHaveTextContent(/Record 0\.35/);
+    // Same WCAG 2.5.3 wiring as the amber strip's button: the visible label is
+    // the accessible name, and the sentence above disambiguates the two.
+    expect(record).not.toHaveAttribute('aria-label');
+    expect(note.querySelector(`#${record.getAttribute('aria-describedby')}`)).not.toBeNull();
+
+    fireEvent.click(record);
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    // Exactly the one threshold, exactly the SERVER's number: recording a
+    // calibration must not smuggle a value change through.
+    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
+    await waitFor(() => expect(screen.queryByTestId(unknownId)).not.toBeInTheDocument());
   });
 
   it('warns per basis — the rerank threshold gets its own strip and its own scale word', async () => {
@@ -1502,13 +1544,68 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     expect(container.innerHTML).not.toMatch(/\b(text|bg|border)-warning\b/);
   });
 
-  it('survives a server that has not shipped the field yet', async () => {
+  it('survives a server that has not shipped the field yet, and claims nothing', async () => {
     // A frontend deployed ahead of its backend must render the panel, not
-    // crash on `settings.ragConfidenceCalibration.similarity`.
+    // crash on `settings.ragConfidenceCalibration.similarity` — and it must
+    // not report "calibration unknown" either (review r2): a server that has
+    // not shipped the field has told us nothing, and the note's own remedy
+    // would be a dead end against a backend that records nothing.
     mockApi({ settings: { ...defaultSettings, ragConfidenceThreshold: 0.35 } });
     renderTab();
     await ready();
     await waitFor(() => expect(input('ragConfidenceThreshold').value).toBe('0.35'));
     expect(screen.queryByTestId(stripId)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(unknownId)).not.toBeInTheDocument();
+  });
+
+  it('reads the SERVER value, never the draft in the field', async () => {
+    // Review r2 — the rule the component comment, CLAUDE.md and
+    // 09-flow-rag-chat.md all call load-bearing, and which nothing tested:
+    // swapping `saved` for `values` left the suite green. Two regressions
+    // ride on it — typing 0 would make the notice vanish while the server is
+    // still gated at 0.35, and Keep would certify a number nobody submitted.
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+    };
+    const puts = mockApi({ settings });
+    renderTab();
+    await ready();
+    await screen.findByTestId(stripId);
+
+    type('ragConfidenceThreshold', '0.5');
+
+    const strip = screen.getByTestId(stripId);
+    expect(strip).toHaveTextContent(/Similarity basis 0\.35 was set while/);
+    const keep = within(strip).getByTestId('retrieval-ragConfidenceThreshold-calibration-keep');
+    expect(keep).toHaveTextContent(/Keep 0\.35/);
+
+    fireEvent.click(keep);
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
+    // And the draft is still the admin's to save or abandon.
+    expect(input('ragConfidenceThreshold').value).toBe('0.5');
+  });
+
+  it('the muted note reads the SERVER value too', async () => {
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration(),
+    };
+    const puts = mockApi({ settings });
+    renderTab();
+    await ready();
+    await screen.findByTestId(unknownId);
+
+    type('ragConfidenceThreshold', '0.5');
+
+    const note = screen.getByTestId(unknownId);
+    expect(note).toHaveTextContent(/Similarity basis 0\.35/);
+    fireEvent.click(within(note).getByTestId('retrieval-ragConfidenceThreshold-calibration-record'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
   });
 });

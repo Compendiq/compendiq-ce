@@ -32,6 +32,7 @@ import {
   computeCalibrationStatus,
   readConfidenceCalibration,
   recordConfidenceCalibration,
+  CONFIDENCE_THRESHOLD_SETTING_KEYS,
   type ConfidenceBasis,
 } from '../../core/services/confidence-calibration.js';
 import { resolveConfidenceBasisPair } from '../../domains/llm/services/llm-provider-resolver.js';
@@ -396,13 +397,19 @@ export async function adminRoutes(fastify: FastifyInstance) {
       readConfidenceCalibration('similarity'),
       readConfidenceCalibration('rerank'),
     ]);
-    const [liveEmbeddingPair, liveRerankPair] = await Promise.all([
+    const [liveEmbedding, liveRerank] = await Promise.all([
       similarityRecord ? resolveConfidenceBasisPair('similarity') : Promise.resolve(null),
       rerankRecord ? resolveConfidenceBasisPair('rerank') : Promise.resolve(null),
     ]);
+    // A resolver failure reads as "no live model" HERE and nowhere else
+    // (review r2): whatever stopped the resolver naming the model stops
+    // `generateEmbedding` using it too, so "the threshold is not gating
+    // against anything it was tuned on" is true either way — and this verdict
+    // is recomputed on every GET, so it corrects itself. The PUT below must
+    // not make the same substitution, because that one is written down.
     const ragConfidenceCalibration = {
-      similarity: computeCalibrationStatus(similarityRecord, liveEmbeddingPair),
-      rerank: computeCalibrationStatus(rerankRecord, liveRerankPair),
+      similarity: computeCalibrationStatus(similarityRecord, liveEmbedding?.pair ?? null),
+      rerank: computeCalibrationStatus(rerankRecord, liveRerank?.pair ?? null),
     };
 
     return {
@@ -689,8 +696,26 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // The resolver is consulted only for a threshold being switched ON;
       // clearing needs no pair, and a provider round-trip on the way to a
       // DELETE would be a failure mode bought for nothing.
-      const pair = threshold > 0 ? await resolveConfidenceBasisPair(basis) : null;
-      await recordConfidenceCalibration(basis, threshold, pair);
+      if (!(threshold > 0)) {
+        await recordConfidenceCalibration(basis, threshold, null);
+        continue;
+      }
+      const live = await resolveConfidenceBasisPair(basis);
+      if (!live.resolved) {
+        // Review r2 — a resolver FAILURE is not the finding "tuned against
+        // nothing". Recording it as one turns a transient DB hiccup or a
+        // decrypt error into a permanent, false claim about a threshold saved
+        // seconds ago, and the panel then states it as fact ("was set while
+        // no embedding model was assigned"). Leave the previous record
+        // standing: unknown or unchanged are both honest, and the read path
+        // recomputes its verdict on every GET.
+        logger.warn(
+          { basis, settingKey: CONFIDENCE_THRESHOLD_SETTING_KEYS[basis] },
+          'Could not resolve the model behind a confidence threshold — calibration left as it was',
+        );
+        continue;
+      }
+      await recordConfidenceCalibration(basis, threshold, live.pair);
     }
 
     // ─── #113 Phase B-3 — cluster-wide LLM queue settings ─────────────────

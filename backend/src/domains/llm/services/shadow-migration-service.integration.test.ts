@@ -1142,6 +1142,15 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
           guidance: expect.stringContaining('Settings → AI Models → Retrieval'),
         }),
       ]);
+      // Review r2 — the warning must name the model this swap INSTALLED, not
+      // the one its pre-lock snapshot saw. The two only diverge when another
+      // lifecycle step wins the lock race, which no test can schedule
+      // deterministically; what is assertable is the invariant itself, read
+      // off the row the transaction wrote.
+      const assigned = await query<{ model: string | null }>(
+        `SELECT model FROM llm_usecase_assignments WHERE usecase = 'embedding'`,
+      );
+      expect(calibrationWarnings()[0]!.newModel).toBe(assigned.rows[0]!.model);
       // Warn, don't mutate: the swap never changes refusal policy.
       const after = await query<{ setting_value: string }>(
         `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_confidence_threshold'`,
