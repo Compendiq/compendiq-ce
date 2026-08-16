@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import * as Popover from '@radix-ui/react-popover';
 import { useEditorState } from '@tiptap/react';
@@ -11,6 +11,7 @@ import {
   Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb,
   Baseline, Highlighter,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
+  Smile,
 } from 'lucide-react';
 import {
   LAYOUT_PRESETS,
@@ -22,6 +23,9 @@ import { ToolbarButton, ToolbarSeparator, ToolbarGroup, LayoutPreview } from './
 import { TOOLBAR_ITEM_ATTR, useToolbarRovingFocus } from './use-toolbar-roving-focus';
 import { insertTableCaption } from './table-cell-selection';
 import { BlockTypeMenu } from './BlockTypeMenu';
+import { EmojiPicker, EmojiPickerContent } from './EmojiPicker';
+export { EmojiPicker };
+import { absorbPortalEscape } from '../../lib/absorb-portal-escape';
 import { cn } from '../../lib/cn';
 
 /**
@@ -126,7 +130,7 @@ const PRESET_COLORS = [
  * menu, where a free-form Improve input inside a context menu could not be
  * typed into. Anything with a text field has to leave the menu.
  */
-type PendingPrompt = 'image' | 'status' | null;
+type PendingPrompt = 'image' | 'status' | 'emoji' | null;
 
 function InsertMenu({ editor }: { editor: EditorType }) {
   const [open, setOpen] = useState(false);
@@ -242,6 +246,26 @@ function InsertMenu({ editor }: { editor: EditorType }) {
                 <DropdownMenu.Item onSelect={() => requestPrompt('status')} className={MENU_ITEM}>
                   <Badge size={15} className="shrink-0" />
                   Status label…
+                </DropdownMenu.Item>
+
+                <DropdownMenu.Item onSelect={() => requestPrompt('emoji')} className={MENU_ITEM}>
+                  <Smile size={15} className="shrink-0" />
+                  Emoji…
+                </DropdownMenu.Item>
+
+                <DropdownMenu.Item onSelect={() => editor.chain().focus().toggleBlockquote().run()} className={MENU_ITEM}>
+                  <Quote size={15} className="shrink-0" />
+                  Quote
+                </DropdownMenu.Item>
+
+                <DropdownMenu.Item onSelect={() => editor.chain().focus().toggleCodeBlock().run()} className={MENU_ITEM}>
+                  <CodeSquare size={15} className="shrink-0" />
+                  Code block
+                </DropdownMenu.Item>
+
+                <DropdownMenu.Item onSelect={() => editor.chain().focus().setHorizontalRule().run()} className={MENU_ITEM}>
+                  <Minus size={15} className="shrink-0" />
+                  Divider
                 </DropdownMenu.Item>
 
                 <DropdownMenu.Item onSelect={() => insertExpandSection(editor, 'expand')} className={MENU_ITEM}>
@@ -363,8 +387,17 @@ function InsertMenu({ editor }: { editor: EditorType }) {
         <Popover.Content
           align="start"
           sideOffset={6}
-          className="z-50 w-64 nm-card-elevated p-3 outline-none"
-          aria-label={pending === 'image' ? 'Insert image' : 'Insert status label'}
+          className={cn(
+            'z-50 nm-card-elevated outline-none',
+            pending === 'emoji' ? 'w-80 p-2.5 rounded-lg border border-border' : 'w-64 p-3',
+          )}
+          aria-label={
+            pending === 'image'
+              ? 'Insert image'
+              : pending === 'status'
+                ? 'Insert status label'
+                : 'Emoji Picker'
+          }
           onOpenAutoFocus={(e) => {
             // Focus the field, not the panel. Radix's default lands on the
             // content box, which costs a Tab before typing on the one surface
@@ -373,6 +406,7 @@ function InsertMenu({ editor }: { editor: EditorType }) {
             const el = e.currentTarget as HTMLElement;
             el.querySelector<HTMLInputElement>('input')?.focus();
           }}
+          onEscapeKeyDown={(e) => absorbPortalEscape(e, closePrompt)}
         >
           {pending === 'image' && (
             <>
@@ -464,6 +498,10 @@ function InsertMenu({ editor }: { editor: EditorType }) {
                 </button>
               </div>
             </>
+          )}
+
+          {pending === 'emoji' && (
+            <EmojiPickerContent editor={editor} onClose={closePrompt} />
           )}
         </Popover.Content>
       </Popover.Portal>
@@ -648,6 +686,36 @@ function AlignMenuDropdown({ editor }: { editor: EditorType }) {
 
 /* --------------------------------------------------------------- toolbar -- */
 
+function useToolbarContainerWidth(ref: React.RefObject<HTMLDivElement | null>) {
+  // Default to 1200 so tests (in jsdom) and initial SSR render include all controls.
+  const [width, setWidth] = useState<number>(1200);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    if (el.clientWidth > 0) {
+      setWidth(el.clientWidth);
+    }
+
+    if (typeof ResizeObserver === 'undefined') return;
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const measured = entry.contentRect?.width || el.clientWidth;
+        if (measured > 0) {
+          setWidth(measured);
+        }
+      }
+    });
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return width;
+}
+
 export function EditorToolbar({
   editor,
   headerNumbering,
@@ -659,8 +727,24 @@ export function EditorToolbar({
   onToggleHeaderNumbering?: () => void;
   actions?: React.ReactNode;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const containerWidth = useToolbarContainerWidth(containerRef);
+
   const rootRef = useRef<HTMLDivElement>(null);
   const roving = useToolbarRovingFocus(rootRef);
+
+  // Responsive folding based on actual available toolbar container width:
+  // Thresholds start folding secondary tools early so Save/Cancel actions and tags
+  // on the right always remain fully visible and accessible across all container widths.
+  const showBlockActions = containerWidth >= 1060;
+  const showAlign = containerWidth >= 980;
+  const showColors = containerWidth >= 900;
+  const showTaskList = containerWidth >= 820;
+  const showCode = containerWidth >= 820;
+  const showStrike = containerWidth >= 760;
+  const showEmojiButton = containerWidth >= 700;
+  const showOrderedList = containerWidth >= 640;
+  const showUnderline = containerWidth >= 640;
 
   // Subscribe to editor state so the toggles re-render on selection and
   // formatting changes (#16).
@@ -684,14 +768,18 @@ export function EditorToolbar({
 
   return (
     // Single non-wrapping row: actions live on the right, formatting tools on
-    // the left. overflow-x-auto allows horizontal scrolling on narrow viewports
-    // while guaranteeing flex items never wrap into a 2nd row.
-    <div className="flex h-[calc(3rem-1px)] min-h-[calc(3rem-1px)] flex-nowrap items-center justify-between gap-x-2 overflow-x-auto scrollbar-none py-1 px-1">
+    // the left. When the container is narrow, secondary controls gracefully fold
+    // into the Insert dropdown and BlockTypeMenu so the toolbar never generates
+    // horizontal scrollbars or expands the document width.
+    <div
+      ref={containerRef}
+      className="flex h-[calc(3rem-1px)] min-h-[calc(3rem-1px)] w-full flex-nowrap items-center justify-between gap-x-1 sm:gap-x-2 py-1 px-1"
+    >
       <div
         ref={rootRef}
         role="toolbar"
         aria-label="Page editor toolbar"
-        className="flex flex-nowrap items-center gap-x-1 shrink-0"
+        className="flex min-w-0 flex-nowrap items-center gap-x-0.5 sm:gap-x-1"
         onKeyDown={roving.onKeyDown}
         onFocus={roving.onFocus}
       >
@@ -723,15 +811,21 @@ export function EditorToolbar({
           <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={activeState.italic} title="Italic (Ctrl+I)">
             <Italic size={15} />
           </ToolbarButton>
-          <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} active={activeState.underline} title="Underline (Ctrl+U)">
-            <Underline size={15} />
-          </ToolbarButton>
-          <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={activeState.strike} title="Strikethrough (Ctrl+Shift+X)">
-            <Strikethrough size={15} />
-          </ToolbarButton>
-          <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={activeState.code} title="Inline Code (Ctrl+E)">
-            <Code size={15} />
-          </ToolbarButton>
+          {showUnderline && (
+            <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} active={activeState.underline} title="Underline (Ctrl+U)">
+              <Underline size={15} />
+            </ToolbarButton>
+          )}
+          {showStrike && (
+            <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={activeState.strike} title="Strikethrough (Ctrl+Shift+X)">
+              <Strikethrough size={15} />
+            </ToolbarButton>
+          )}
+          {showCode && (
+            <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={activeState.code} title="Inline Code (Ctrl+E)">
+              <Code size={15} />
+            </ToolbarButton>
+          )}
         </ToolbarGroup>
 
         <ToolbarSeparator />
@@ -740,62 +834,77 @@ export function EditorToolbar({
           <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
             <List size={15} />
           </ToolbarButton>
-          <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={activeState.orderedList} title="Ordered List (Ctrl+Shift+7)">
-            <ListOrdered size={15} />
-          </ToolbarButton>
-          <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={activeState.taskList} title="Task List">
-            <CheckSquare size={15} />
-          </ToolbarButton>
-          <AlignMenuDropdown editor={editor} />
+          {showOrderedList && (
+            <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={activeState.orderedList} title="Ordered List (Ctrl+Shift+7)">
+              <ListOrdered size={15} />
+            </ToolbarButton>
+          )}
+          {showTaskList && (
+            <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={activeState.taskList} title="Task List">
+              <CheckSquare size={15} />
+            </ToolbarButton>
+          )}
+          {showAlign && (
+            <AlignMenuDropdown editor={editor} />
+          )}
         </ToolbarGroup>
 
-        <ToolbarSeparator />
+        {showBlockActions && (
+          <>
+            <ToolbarSeparator />
+            <ToolbarGroup name="block-actions">
+              <ToolbarButton
+                onClick={() => editor.chain().focus().toggleBlockquote().run()}
+                active={activeState.blockquote}
+                title="Quote"
+              >
+                <Quote size={15} />
+              </ToolbarButton>
+              <ToolbarButton
+                onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+                active={activeState.codeBlock}
+                title="Code Block"
+              >
+                <CodeSquare size={15} />
+              </ToolbarButton>
+              <ToolbarButton
+                onClick={() => editor.chain().focus().setHorizontalRule().run()}
+                title="Divider"
+              >
+                <Minus size={15} />
+              </ToolbarButton>
+            </ToolbarGroup>
+          </>
+        )}
 
-        <ToolbarGroup name="block-actions">
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleBlockquote().run()}
-            active={activeState.blockquote}
-            title="Quote"
-          >
-            <Quote size={15} />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
-            active={activeState.codeBlock}
-            title="Code Block"
-          >
-            <CodeSquare size={15} />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().setHorizontalRule().run()}
-            title="Divider"
-          >
-            <Minus size={15} />
-          </ToolbarButton>
-        </ToolbarGroup>
-
-        <ToolbarSeparator />
-
-        <ToolbarGroup name="colors">
-          <ColorPickerDropdown
-            icon={<Baseline size={15} />}
-            title="Text Color"
-            activeColor={activeState.textColor}
-            onSelect={(color) => editor.chain().focus().setColor(color).run()}
-            onReset={() => editor.chain().focus().unsetColor().run()}
-          />
-          <ColorPickerDropdown
-            icon={<Highlighter size={15} />}
-            title="Highlight (Ctrl+Shift+H)"
-            activeColor={activeState.highlightColor}
-            onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
-            onReset={() => editor.chain().focus().unsetHighlight().run()}
-          />
-        </ToolbarGroup>
+        {showColors && (
+          <>
+            <ToolbarSeparator />
+            <ToolbarGroup name="colors">
+              <ColorPickerDropdown
+                icon={<Baseline size={15} />}
+                title="Text Color"
+                activeColor={activeState.textColor}
+                onSelect={(color) => editor.chain().focus().setColor(color).run()}
+                onReset={() => editor.chain().focus().unsetColor().run()}
+              />
+              <ColorPickerDropdown
+                icon={<Highlighter size={15} />}
+                title="Highlight (Ctrl+Shift+H)"
+                activeColor={activeState.highlightColor}
+                onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+                onReset={() => editor.chain().focus().unsetHighlight().run()}
+              />
+            </ToolbarGroup>
+          </>
+        )}
 
         <ToolbarSeparator />
 
         <ToolbarGroup name="insert">
+          {showEmojiButton && (
+            <EmojiPicker editor={editor} />
+          )}
           <InsertMenu editor={editor} />
         </ToolbarGroup>
       </div>

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { Editor as EditorType } from '@tiptap/react';
 import { EditorToolbar } from './EditorToolbar';
 
@@ -51,11 +51,11 @@ describe('EditorToolbar', () => {
     expect(screen.getByRole('toolbar', { name: 'Page editor toolbar' })).toBeInTheDocument();
   });
 
-  it('presents eighteen main controls plus utilities', () => {
+  it('presents nineteen main controls plus utilities', () => {
     render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
-    // 18 = (block type + quote + code block + divider) + 5 marks + 1 align dropdown + 3 lists + 2 colours + Insert + undo + redo
-    expect(toolbar.querySelectorAll('button').length).toBe(18);
+    // 19 = (block type + quote + code block + divider) + 5 marks + 1 align dropdown + 3 lists + 2 colours + 1 emoji + Insert + undo + redo
+    expect(toolbar.querySelectorAll('button').length).toBe(19);
   });
 
   it('renders the groups in the restructured order', () => {
@@ -219,6 +219,10 @@ describe('EditorToolbar', () => {
       'Diagram',
       'Mermaid diagram',
       'Status label…',
+      'Emoji…',
+      'Quote',
+      'Code block',
+      'Divider',
       'Expand section',
       'Attachments',
       'Child pages',
@@ -322,6 +326,56 @@ describe('EditorToolbar', () => {
     });
   });
 
+  it('inserts an emoji from the Insert menu popup', () => {
+    const insertContent = vi.fn(() => chain);
+    const chain: Record<string, unknown> = new Proxy({ insertContent } as Record<string, unknown>, {
+      get(target, prop: string) {
+        if (prop === 'insertContent') return target.insertContent;
+        if (prop === 'run') return vi.fn();
+        return () => chain;
+      },
+    });
+    render(<EditorToolbar editor={createMockEditor({ chain: () => chain })} />);
+    openInsertMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Emoji…' }));
+
+    expect(screen.getByRole('dialog', { name: 'Emoji Picker' })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('popular-emoji-✨'));
+    expect(insertContent).toHaveBeenCalledWith('✨');
+  });
+
+  it('runs quote, code block, and divider from the Insert menu', () => {
+    const toggleBlockquote = vi.fn(() => chain);
+    const toggleCodeBlock = vi.fn(() => chain);
+    const setHorizontalRule = vi.fn(() => chain);
+    const run = vi.fn();
+    const chain: Record<string, unknown> = new Proxy(
+      { toggleBlockquote, toggleCodeBlock, setHorizontalRule } as Record<string, unknown>,
+      {
+        get(target, prop: string) {
+          if (prop === 'toggleBlockquote') return target.toggleBlockquote;
+          if (prop === 'toggleCodeBlock') return target.toggleCodeBlock;
+          if (prop === 'setHorizontalRule') return target.setHorizontalRule;
+          if (prop === 'run') return run;
+          return () => chain;
+        },
+      },
+    );
+    render(<EditorToolbar editor={createMockEditor({ chain: () => chain })} />);
+
+    openInsertMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Quote' }));
+    expect(toggleBlockquote).toHaveBeenCalled();
+
+    openInsertMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Code block' }));
+    expect(toggleCodeBlock).toHaveBeenCalled();
+
+    openInsertMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Divider' }));
+    expect(setHorizontalRule).toHaveBeenCalled();
+  });
+
   // ---------- pressed state ----------
 
   it('exposes aria-pressed on active and inactive toggles (#955)', () => {
@@ -379,12 +433,90 @@ describe('EditorToolbar', () => {
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
-  it('disables undo and redo when the history is empty', () => {
-    const editor = createMockEditor({
-      can: () => new Proxy({}, { get: () => () => false }),
+  // ---------- emoji picker ----------
+
+  it('renders the emoji picker trigger with accessible attributes', () => {
+    render(<EditorToolbar editor={createMockEditor()} />);
+    const trigger = screen.getByTestId('emoji-picker-trigger');
+    expect(trigger).toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-label', 'Insert Emoji');
+    expect(trigger).toHaveAttribute('title', 'Insert Emoji');
+    expect(trigger.className).toContain('nm-icon-button');
+  });
+
+  it('opens emoji picker and inserts selected emoji into document', () => {
+    const insertContent = vi.fn(() => chain);
+    const chain: Record<string, unknown> = new Proxy({ insertContent } as Record<string, unknown>, {
+      get(target, prop: string) {
+        if (prop === 'insertContent') return target.insertContent;
+        if (prop === 'run') return vi.fn();
+        return () => chain;
+      },
     });
+    const editor = createMockEditor({ chain: () => chain });
     render(<EditorToolbar editor={editor} />);
-    expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Redo' })).toBeDisabled();
+
+    const trigger = screen.getByTestId('emoji-picker-trigger');
+    open(trigger);
+
+    expect(screen.getByRole('dialog', { name: 'Emoji Picker' })).toBeInTheDocument();
+    const popularEmoji = screen.getByTestId('popular-emoji-🚀');
+    fireEvent.click(popularEmoji);
+
+    expect(insertContent).toHaveBeenCalledWith('🚀');
+  });
+
+  // ---------- responsive folding ----------
+
+  it('folds secondary items when toolbar container width narrows', () => {
+    let resizeCallback: ((entries: Array<{ contentRect: { width: number } }>) => void) | null = null;
+    class MockResizeObserver {
+      constructor(cb: (entries: Array<{ contentRect: { width: number } }>) => void) {
+        resizeCallback = cb;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    const originalRO = window.ResizeObserver;
+    window.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+
+    try {
+      render(<EditorToolbar editor={createMockEditor()} />);
+
+      // Initially at wide default (1200px), all buttons are present
+      expect(screen.getByRole('button', { name: 'Underline (Ctrl+U)' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument();
+      expect(screen.getByTestId('emoji-picker-trigger')).toBeInTheDocument();
+
+      // Trigger resize to narrow width (500px)
+      act(() => {
+        resizeCallback?.([{ contentRect: { width: 500 } }]);
+      });
+
+      // Essential items remain:
+      expect(screen.getByRole('button', { name: 'Bold (Ctrl+B)' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Italic (Ctrl+I)' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Bullet List (Ctrl+Shift+8)' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Insert' })).toBeInTheDocument();
+
+      // Folded items are removed from toolbar (accessible via Insert menu):
+      expect(screen.queryByRole('button', { name: 'Underline (Ctrl+U)' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Quote' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Code Block' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Divider' })).not.toBeInTheDocument();
+      expect(screen.queryByTestId('emoji-picker-trigger')).not.toBeInTheDocument();
+
+      // Trigger resize back to wide width (1200px)
+      act(() => {
+        resizeCallback?.([{ contentRect: { width: 1200 } }]);
+      });
+
+      expect(screen.getByRole('button', { name: 'Underline (Ctrl+U)' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument();
+      expect(screen.getByTestId('emoji-picker-trigger')).toBeInTheDocument();
+    } finally {
+      window.ResizeObserver = originalRO;
+    }
   });
 });
