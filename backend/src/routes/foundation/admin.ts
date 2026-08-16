@@ -6,7 +6,13 @@ import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { assertNoShadowMigration } from '../../domains/llm/services/embedding-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { UpdateAdminSettingsSchema, FtsLanguageEnum, FTS_LANGUAGES } from '@compendiq/contracts';
+import {
+  UpdateAdminSettingsSchema,
+  FtsLanguageEnum,
+  FTS_LANGUAGES,
+  type RagConfidenceCalibrationWrite,
+  type UpdateAdminSettingsResult,
+} from '@compendiq/contracts';
 import {
   getEmbeddingDimensions,
   getAdminAccessDeniedRetentionDays,
@@ -28,6 +34,14 @@ import {
   invalidateRagMmrCache,
   invalidateRagRankingPriorCache,
 } from '../../core/services/admin-settings-service.js';
+import {
+  computeCalibrationStatus,
+  readConfidenceCalibration,
+  recordConfidenceCalibration,
+  CONFIDENCE_THRESHOLD_SETTING_KEYS,
+  type ConfidenceBasis,
+} from '../../core/services/confidence-calibration.js';
+import { resolveConfidenceBasisPair } from '../../domains/llm/services/llm-provider-resolver.js';
 import { toFixedDecimalString } from '../../core/utils/fixed-decimal.js';
 import { getRegistrationMode } from '../../core/services/registration-policy-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
@@ -378,6 +392,41 @@ export async function adminRoutes(fastify: FastifyInstance) {
       map[row.setting_key] = row.setting_value;
     }
 
+    // #1114 — the staleness verdict is computed HERE, not in the panel. The
+    // recorded pair is a server fact and so is the live assignment (the
+    // resolvers carry inheritance and the EE override), so shipping both and
+    // letting the client diff them would put a rule with two special cases in
+    // the place least able to keep it. The live pairs are resolved only when
+    // there is something to compare against: on a default instance (both
+    // thresholds 0, no record) this costs nothing.
+    const [similarityRecord, rerankRecord] = await Promise.all([
+      readConfidenceCalibration('similarity'),
+      readConfidenceCalibration('rerank'),
+    ]);
+    const [liveEmbedding, liveRerank] = await Promise.all([
+      similarityRecord ? resolveConfidenceBasisPair('similarity') : Promise.resolve(null),
+      rerankRecord ? resolveConfidenceBasisPair('rerank') : Promise.resolve(null),
+    ]);
+    // A resolver failure reads as "no live model" for the STALENESS verdict
+    // HERE and nowhere else (review r2): whatever stopped the resolver naming
+    // the model stops `generateEmbedding` using it too, so "the threshold is
+    // not gating against anything it was tuned on" is true either way — and
+    // this verdict is recomputed on every GET, so it corrects itself. The PUT
+    // below must not make the same substitution, because that one is written
+    // down.
+    //
+    // The failure still travels, on `liveResolved` (review r3). Folding it
+    // into the pair made the panel state "no {basis} model is assigned now" —
+    // a claim about `llm_usecase_assignments` that is false, and persistently
+    // so, when the row is present and merely unreadable (a rotated
+    // `PAT_ENCRYPTION_KEY`, an EE policy naming a deleted provider). The
+    // operator was then sent to the assignment grid instead of the provider
+    // row.
+    const ragConfidenceCalibration = {
+      similarity: computeCalibrationStatus(similarityRecord, liveEmbedding),
+      rerank: computeCalibrationStatus(rerankRecord, liveRerank),
+    };
+
     return {
       embeddingDimensions,
       // #1114 — resolved above by `getFtsLanguage`, not read out of `map`.
@@ -430,6 +479,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragMmrEnabled: ragMmr.enabled,
       ragMmrLambda: ragMmr.lambda,
       ragRankingPriorWeight,
+      // #1114 — which model each threshold was tuned against, and whether it
+      // is still the live one. Provider id + model name only: this payload is
+      // the settings document, not the provider document.
+      ragConfidenceCalibration,
     };
   });
 
@@ -635,6 +688,67 @@ export async function adminRoutes(fastify: FastifyInstance) {
       invalidateFor.get(key)?.();
     }
 
+    // ─── #1114 — record which model each written threshold was tuned on ───
+    //
+    // AFTER the rows land, and only for a threshold THIS body carried. The
+    // gating rule is the important half: a PUT that changed the fetch width
+    // must not re-date a calibration, because that would certify the rerank
+    // threshold against a model nobody tuned it on — the exact false
+    // reassurance this record exists to prevent.
+    //
+    // A re-save of the SAME value re-records deliberately: "save it again to
+    // keep it" is the panel's remedy for a stale calibration, and a
+    // value-diffed write would make that remedy a no-op.
+    //
+    // Setting a threshold to 0 clears its record (gate off = nothing
+    // calibrated), which `recordConfidenceCalibration` owns.
+    // And the outcome is REPORTED (review r3). The route answers 200 whether
+    // or not the record landed — the threshold row itself always does — so a
+    // panel inferring success from the status code tells the operator
+    // "recorded", refetches, and re-renders the very notice whose button they
+    // just pressed, with nothing on screen saying why. Neither declining path
+    // is reliably transient: an undecryptable `api_key` after a key rotation
+    // and an EE policy naming a deleted provider both throw on every attempt.
+    const ragConfidenceCalibrationWrite: RagConfidenceCalibrationWrite = {
+      similarity: null,
+      rerank: null,
+    };
+    const writtenThresholds: Array<[ConfidenceBasis, number | undefined]> = [
+      ['similarity', body.ragConfidenceThreshold],
+      ['rerank', body.ragConfidenceThresholdRerank],
+    ];
+    for (const [basis, threshold] of writtenThresholds) {
+      if (threshold === undefined) continue;
+      // The resolver is consulted only for a threshold being switched ON;
+      // clearing needs no pair, and a provider round-trip on the way to a
+      // DELETE would be a failure mode bought for nothing.
+      if (!(threshold > 0)) {
+        const cleared = await recordConfidenceCalibration(basis, threshold, null);
+        ragConfidenceCalibrationWrite[basis] = { outcome: cleared ? 'cleared' : 'failed', model: null };
+        continue;
+      }
+      const live = await resolveConfidenceBasisPair(basis);
+      if (!live.resolved) {
+        // Review r2 — a resolver FAILURE is not the finding "tuned against
+        // nothing". Recording it as one turns a transient DB hiccup or a
+        // decrypt error into a permanent, false claim about a threshold saved
+        // seconds ago, and the panel then states it as fact ("was set while
+        // no embedding model was assigned"). Leave the previous record
+        // standing: unknown or unchanged are both honest, and the read path
+        // recomputes its verdict on every GET.
+        logger.warn(
+          { basis, settingKey: CONFIDENCE_THRESHOLD_SETTING_KEYS[basis] },
+          'Could not resolve the model behind a confidence threshold — calibration left as it was',
+        );
+        ragConfidenceCalibrationWrite[basis] = { outcome: 'unresolved', model: null };
+        continue;
+      }
+      const recorded = await recordConfidenceCalibration(basis, threshold, live.pair);
+      ragConfidenceCalibrationWrite[basis] = recorded
+        ? { outcome: 'recorded', model: live.pair?.model ?? null }
+        : { outcome: 'failed', model: null };
+    }
+
     // ─── #113 Phase B-3 — cluster-wide LLM queue settings ─────────────────
     // These do NOT go through the `updates` UPSERT loop above — the
     // dedicated setters in `llm-queue.ts` UPSERT the row AND publish on
@@ -838,9 +952,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     if (hasChunkChanges) {
-      return { message: 'Admin settings updated, all pages queued for re-embedding' };
+      return {
+        message: 'Admin settings updated, all pages queued for re-embedding',
+        ragConfidenceCalibrationWrite,
+      } satisfies UpdateAdminSettingsResult;
     }
-    return { message: 'Admin settings updated' };
+    return {
+      message: 'Admin settings updated',
+      ragConfidenceCalibrationWrite,
+    } satisfies UpdateAdminSettingsResult;
   });
 
   // ── SMTP / Email settings ───────────────────────────────────────────────

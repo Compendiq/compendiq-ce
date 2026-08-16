@@ -6,10 +6,11 @@ import { FTS_LANGUAGES } from '@compendiq/contracts';
 import { RetrievalTab } from './RetrievalTab';
 
 const toastSuccess = vi.fn();
+const toastError = vi.fn();
 vi.mock('sonner', () => ({
   toast: {
     success: (...args: unknown[]) => toastSuccess(...args),
-    error: vi.fn(),
+    error: (...args: unknown[]) => toastError(...args),
   },
 }));
 
@@ -55,10 +56,29 @@ function assignedRerank() {
 interface MockOptions {
   settings?: Record<string, unknown>;
   rerank?: ReturnType<typeof unassignedRerank>;
+  /**
+   * #1114 — lets a test model the half of the server the panel's remedy
+   * depends on: saving a threshold RE-RECORDS its calibration, so the next
+   * GET answers differently. Applied inside the PUT handler, before the
+   * mutation's `invalidateQueries` can race a test-side mutation.
+   */
+  afterPut?: (body: Record<string, unknown>, settings: Record<string, unknown>) => void;
+  /**
+   * #1114 review r3 — the PUT's own answer. The route reports what it DID
+   * with each threshold's calibration record, because it writes the threshold
+   * row and answers 200 whether or not the record beside it landed. Default:
+   * silent, which is what a server predating the field looks like.
+   */
+  putResult?: (body: Record<string, unknown>) => Record<string, unknown>;
 }
 
 /** Captures every PUT body so a test can assert what was actually sent. */
-function mockApi({ settings = defaultSettings, rerank = unassignedRerank() }: MockOptions = {}) {
+function mockApi({
+  settings = defaultSettings,
+  rerank = unassignedRerank(),
+  afterPut,
+  putResult,
+}: MockOptions = {}) {
   const puts: Record<string, unknown>[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
@@ -89,8 +109,10 @@ function mockApi({ settings = defaultSettings, rerank = unassignedRerank() }: Mo
     }
     if (url.includes('/admin/settings')) {
       if (method === 'PUT') {
-        puts.push(JSON.parse(String(init?.body ?? '{}')));
-        return json({ message: 'Admin settings updated' });
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        puts.push(body);
+        afterPut?.(body, settings);
+        return json({ message: 'Admin settings updated', ...(putResult?.(body) ?? {}) });
       }
       return json(settings);
     }
@@ -1010,5 +1032,762 @@ describe('RetrievalTab — ADR-010: the off state is neutral, and amber is not b
     await waitFor(() => expect(screen.getByTestId('retrieval-benchmark-summary')).toBeInTheDocument());
     expect(screen.getByTestId('retrieval-benchmark-summary')).toHaveTextContent('2 production questions compared');
     expect(screen.getByTestId('retrieval-benchmark-summary')).toHaveTextContent('19 / 30 ms');
+  });
+});
+
+/**
+ * #1114 — a threshold remembers the model it was tuned on.
+ *
+ * A cosine threshold is a number on a scale the EMBEDDER decides, and a
+ * rerank threshold on one the reranker decides. Nothing used to connect a
+ * model swap to the knob measured against it, so 0.35 tuned on bge-m3 quietly
+ * became a different gate the day the corpus moved to Qwen3.
+ *
+ * The ruling is warn-don't-mutate, so this panel is where an operator finds
+ * out. Three states, and the third is the one that is easy to get wrong: no
+ * record at all is the ABSENCE of evidence, not evidence of a change.
+ */
+describe('RetrievalTab — confidence calibration (#1114)', () => {
+  const BGE = {
+    providerId: '11111111-2222-3333-4444-555555555555',
+    model: 'bge-m3',
+    setAt: '2026-08-01T10:00:00.000Z',
+  };
+
+  function calibration(
+    over: Partial<Record<'similarity' | 'rerank', Record<string, unknown> | null>> = {},
+  ) {
+    return { similarity: null, rerank: null, ...over };
+  }
+
+  const staleSimilarity = {
+    ...BGE,
+    liveProviderId: BGE.providerId,
+    liveModel: 'Qwen3-Embedding-4B',
+    liveResolved: true,
+    stale: true,
+  };
+  const freshSimilarity = {
+    ...BGE,
+    liveProviderId: BGE.providerId,
+    liveModel: 'bge-m3',
+    liveResolved: true,
+    stale: false,
+  };
+  /** What the route answers when it really recorded the pair. */
+  const recorded = (model: string | null) => () => ({
+    ragConfidenceCalibrationWrite: { similarity: { outcome: 'recorded', model }, rerank: null },
+  });
+
+  const stripId = 'retrieval-ragConfidenceThreshold-calibration-stale';
+  const unknownId = 'retrieval-ragConfidenceThreshold-calibration-unknown';
+
+  it('names the old model, the live one and the remedy when the calibration is stale', async () => {
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+    });
+    renderTab();
+    await ready();
+
+    const strip = await screen.findByTestId(stripId);
+    expect(strip).toHaveTextContent(/Similarity basis 0\.35 was set while/);
+    expect(strip).toHaveTextContent(/bge-m3 was the embedding model/);
+    expect(strip).toHaveTextContent(/The live model is Qwen3-Embedding-4B/);
+    // Naming the mechanism is the point: an operator who is told only "stale"
+    // has no way to judge whether the number is now too strict or too loose.
+    expect(strip).toHaveTextContent(/similarity scale differs/);
+    expect(strip).toHaveTextContent(/re-tune it below, or keep it and record it against the live model/);
+    // Both remedies are reachable: the number itself, and a control that
+    // records the number the operator already chose.
+    const keep = within(strip).getByTestId('retrieval-ragConfidenceThreshold-calibration-keep');
+    expect(keep).toHaveTextContent(/Keep 0\.35/);
+    // WCAG 2.5.3: the accessible name carries the visible label, and the
+    // strip's own sentence is what disambiguates two identically-labelled
+    // controls, via aria-describedby rather than an overriding aria-label.
+    expect(keep).not.toHaveAttribute('aria-label');
+    expect(strip.querySelector(`#${keep.getAttribute('aria-describedby')}`)).not.toBeNull();
+  });
+
+  it('renders it as the panel amber strip: role=status, the recipe classes and the 16px glyph', async () => {
+    // ADR-010 / the panel's own failed-save strip: colour is the weaker
+    // channel under `forced-colors` and for a colour-blind admin.
+    const { container } = (() => {
+      mockApi({
+        settings: {
+          ...defaultSettings,
+          ragConfidenceThreshold: 0.35,
+          ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+        },
+      });
+      return renderTab();
+    })();
+    await ready();
+
+    const strip = await screen.findByTestId(stripId);
+    expect(strip).toHaveAttribute('role', 'status');
+    expect(strip.className).toMatch(/border-warning\/30/);
+    expect(strip.className).toMatch(/bg-warning\/10/);
+    expect(strip.className).toMatch(/text-warning/);
+    const glyph = strip.querySelector('svg');
+    expect(glyph).not.toBeNull();
+    expect(glyph!.getAttribute('width')).toBe('16');
+    expect(glyph!.getAttribute('aria-hidden')).toBe('true');
+    expect(container).toBeTruthy();
+  });
+
+  it('sits directly above the control it is about', async () => {
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+    });
+    renderTab();
+    await ready();
+
+    const strip = await screen.findByTestId(stripId);
+    const control = input('ragConfidenceThreshold');
+    // Review r1: `compareDocumentPosition` alone only asserts ORDER, and
+    // passes for a strip parked four sections earlier in the panel. What the
+    // deliverable asks for is adjacency, so assert adjacency: the strip is
+    // the immediately-preceding element sibling of the row that owns the
+    // input, inside the same section.
+    const row = control.closest('div.space-y-1\\.5');
+    expect(row).not.toBeNull();
+    expect(row!.previousElementSibling).toBe(strip);
+    // And still the right way round.
+    expect(strip.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('says nothing when the recorded pair is still the live one', async () => {
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: freshSimilarity }),
+      },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragConfidenceThreshold').value).toBe('0.35'));
+
+    expect(screen.queryByTestId(stripId)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(unknownId)).not.toBeInTheDocument();
+  });
+
+  it('says nothing when the gate is OFF, however stale the record', async () => {
+    // 0 means the gate does not run. Warning about the calibration of a
+    // threshold that gates nothing is noise on the most reserved colour.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragConfidenceThreshold').value).toBe('0'));
+
+    expect(screen.queryByTestId(stripId)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(unknownId)).not.toBeInTheDocument();
+  });
+
+  it('reports an unrecorded calibration MUTED, not amber', async () => {
+    // Every threshold set before this feature existed lands here. Absence of
+    // evidence is not evidence of a change, and an amber strip on every
+    // upgraded instance is how amber stops meaning anything.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration(),
+      },
+    });
+    renderTab();
+    await ready();
+
+    const note = await screen.findByTestId(unknownId);
+    expect(note).toHaveTextContent(/Calibration unknown/i);
+    // Review r2 — it states what is MISSING, never why. A record write that
+    // failed and one that never happened are the same absence here, and
+    // "set before models were recorded" is a false claim about the first.
+    expect(note).not.toHaveTextContent(/set before models were recorded/i);
+    expect(note.className).toContain('text-muted-foreground');
+    expect(note.className).not.toMatch(/warning/);
+    expect(note).not.toHaveAttribute('role', 'status');
+    expect(screen.queryByTestId(stripId)).not.toBeInTheDocument();
+  });
+
+  it('the muted note names a remedy the panel can actually perform', async () => {
+    // Review r2, the blocking one. The note used to say "save to record it
+    // against the live model" while Save is a pure value diff and this branch
+    // rendered no control — so recording the number you already have was
+    // reachable only by changing the gate to a different number and back.
+    // Every upgraded instance with a live threshold lands here, which made a
+    // permanent note out of a false instruction.
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration(),
+    };
+    const puts = mockApi({
+      settings,
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({ similarity: freshSimilarity });
+      },
+    });
+    renderTab();
+    await ready();
+
+    const note = await screen.findByTestId(unknownId);
+    const record = within(note).getByTestId('retrieval-ragConfidenceThreshold-calibration-record');
+    expect(record).toHaveTextContent(/Record 0\.35/);
+    // Same WCAG 2.5.3 wiring as the amber strip's button: the visible label is
+    // the accessible name, and the sentence above disambiguates the two.
+    expect(record).not.toHaveAttribute('aria-label');
+    expect(note.querySelector(`#${record.getAttribute('aria-describedby')}`)).not.toBeNull();
+
+    fireEvent.click(record);
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    // Exactly the one threshold, exactly the SERVER's number: recording a
+    // calibration must not smuggle a value change through.
+    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
+    await waitFor(() => expect(screen.queryByTestId(unknownId)).not.toBeInTheDocument());
+  });
+
+  it('warns per basis — the rerank threshold gets its own strip and its own scale word', async () => {
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThresholdRerank: 0.2,
+        ragConfidenceCalibration: calibration({
+          rerank: {
+            providerId: '99999999-9999-4999-8999-999999999999',
+            model: 'bge-reranker-v2-m3',
+            setAt: '2026-08-01T10:00:00.000Z',
+            liveProviderId: '99999999-9999-4999-8999-999999999999',
+            liveModel: 'jina-reranker-v2',
+            liveResolved: true,
+            stale: true,
+          },
+        }),
+      },
+    });
+    renderTab();
+    await ready();
+
+    const strip = await screen.findByTestId('retrieval-ragConfidenceThresholdRerank-calibration-stale');
+    expect(strip).toHaveTextContent(/Rerank basis 0\.2 was set while/);
+    expect(strip).toHaveTextContent(/bge-reranker-v2-m3 was the rerank model/);
+    expect(strip).toHaveTextContent(/relevance scale differs/);
+    // The similarity threshold is 0 and unrecorded — nothing about it.
+    expect(screen.queryByTestId(stripId)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(unknownId)).not.toBeInTheDocument();
+  });
+
+  it('says the basis gates nothing when its model is gone entirely', async () => {
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThresholdRerank: 0.2,
+        ragConfidenceCalibration: calibration({
+          rerank: {
+            providerId: '99999999-9999-4999-8999-999999999999',
+            model: 'bge-reranker-v2-m3',
+            setAt: '2026-08-01T10:00:00.000Z',
+            liveProviderId: null,
+            liveModel: null,
+            liveResolved: true,
+            stale: true,
+          },
+        }),
+      },
+    });
+    renderTab();
+    await ready();
+
+    const strip = await screen.findByTestId('retrieval-ragConfidenceThresholdRerank-calibration-stale');
+    expect(strip).toHaveTextContent(/No rerank model is assigned now/);
+    expect(strip).not.toHaveTextContent(/The live model is/);
+  });
+
+  it('says so when the threshold was recorded against NOTHING, and a model has since appeared', async () => {
+    // Review r1: saving a rerank threshold while the stage is unassigned is a
+    // normal ADR-021 state, and it used to be stored as a literal `null` that
+    // read back as "no record" — so the panel claimed the number predated the
+    // feature and offered a remedy that could never clear the note. A record
+    // with a null pair is a real record: it says "tuned against nothing", and
+    // it goes stale the moment something is assigned.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThresholdRerank: 0.2,
+        ragConfidenceCalibration: calibration({
+          rerank: {
+            providerId: null,
+            model: null,
+            setAt: '2026-08-01T10:00:00.000Z',
+            liveProviderId: '99999999-9999-4999-8999-999999999999',
+            liveModel: 'jina-reranker-v2',
+            liveResolved: true,
+            stale: true,
+          },
+        }),
+      },
+    });
+    renderTab();
+    await ready();
+
+    const strip = await screen.findByTestId('retrieval-ragConfidenceThresholdRerank-calibration-stale');
+    expect(strip).toHaveTextContent(/Rerank basis 0\.2 was set while no rerank model was assigned/);
+    expect(strip).toHaveTextContent(/The live model is jina-reranker-v2/);
+    // Never the pre-#1114 wording: this one WAS recorded.
+    expect(
+      screen.queryByTestId('retrieval-ragConfidenceThresholdRerank-calibration-unknown'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('says nothing when the threshold was recorded against nothing and nothing is assigned still', async () => {
+    // Recorded, matching, and the disabled stage is already announced by the
+    // rerank pool's own status line. Nothing has changed under this number.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThresholdRerank: 0.2,
+        ragConfidenceCalibration: calibration({
+          rerank: {
+            providerId: null,
+            model: null,
+            setAt: '2026-08-01T10:00:00.000Z',
+            liveProviderId: null,
+            liveModel: null,
+            liveResolved: true,
+            stale: false,
+          },
+        }),
+      },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragConfidenceThresholdRerank').value).toBe('0.2'));
+
+    expect(
+      screen.queryByTestId('retrieval-ragConfidenceThresholdRerank-calibration-stale'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('retrieval-ragConfidenceThresholdRerank-calibration-unknown'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('clears once the threshold is RE-TUNED and saved — the other remedy the copy promises', async () => {
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+    };
+    const puts = mockApi({
+      settings,
+      // The server records the LIVE pair on every write of the threshold.
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceThreshold = body.ragConfidenceThreshold;
+        current.ragConfidenceCalibration = calibration({
+          similarity: {
+            ...staleSimilarity,
+            model: 'Qwen3-Embedding-4B',
+            setAt: '2026-08-16T12:00:00.000Z',
+            stale: false,
+          },
+        });
+      },
+    });
+    renderTab();
+    await ready();
+    await screen.findByTestId(stripId);
+
+    type('ragConfidenceThreshold', '0.5');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toHaveProperty('ragConfidenceThreshold', 0.5);
+    await waitFor(() => expect(screen.queryByTestId(stripId)).not.toBeInTheDocument());
+  });
+
+  it('keeping the number is its own control, aimed at that one threshold', async () => {
+    // The strip's remedy changes no VALUE, so the panel's value-diffed Save
+    // can never carry it. Review r1 settled which way that gets fixed: not by
+    // arming Save (see the test below), but by a control inside the strip
+    // that PUTs exactly the threshold the strip is about.
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+    };
+    const puts = mockApi({
+      settings,
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({
+          similarity: { ...staleSimilarity, model: 'Qwen3-Embedding-4B', stale: false },
+        });
+      },
+    });
+    renderTab();
+    await ready();
+    const strip = await screen.findByTestId(stripId);
+
+    fireEvent.click(within(strip).getByTestId(`retrieval-${'ragConfidenceThreshold'}-calibration-keep`));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    // ONLY that threshold: the panel still writes no row nobody set.
+    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
+    await waitFor(() => expect(screen.queryByTestId(stripId)).not.toBeInTheDocument());
+  });
+
+  it('keeping a threshold leaves an unsaved edit elsewhere on the panel alone', async () => {
+    // Keep is aimed at one row, so it must not behave like Save. The panel's
+    // one-shot hydration exists because re-seeding from the server silently
+    // reverts the admin's unsaved edits (#949); a control that has nothing to
+    // do with those edits must not trigger it.
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+    };
+    const puts = mockApi({
+      settings,
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({
+          similarity: { ...staleSimilarity, model: 'Qwen3-Embedding-4B', stale: false },
+        });
+      },
+    });
+    renderTab();
+    await ready();
+    const strip = await screen.findByTestId(stripId);
+
+    type('ragFetchWidth', '40');
+    fireEvent.click(within(strip).getByTestId('retrieval-ragConfidenceThreshold-calibration-keep'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
+    await waitFor(() => expect(screen.queryByTestId(stripId)).not.toBeInTheDocument());
+    // The draft survives, and is still what Save would send.
+    expect(input('ragFetchWidth').value).toBe('40');
+    expect(screen.getByTestId('retrieval-save-btn')).not.toBeDisabled();
+  });
+
+  it('a save of an UNRELATED knob never certifies a stale threshold', async () => {
+    // Review r1, the blocking one. `admin.ts` deliberately re-records only a
+    // threshold the PUT actually carried — re-dating an untouched one
+    // certifies it against a model nobody tuned it on. The panel must not
+    // hand it one: an operator who edited the fetch width made no judgement
+    // about the refuse gate, and clearing the strip for them retires the only
+    // standing surface saying the gate needs re-tuning (the swap's log line is
+    // long gone by then).
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+    };
+    const puts = mockApi({
+      settings,
+      afterPut: (body, current) => {
+        Object.assign(current, body);
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({
+          similarity: { ...staleSimilarity, model: 'Qwen3-Embedding-4B', stale: false },
+        });
+      },
+    });
+    renderTab();
+    await ready();
+    await screen.findByTestId(stripId);
+
+    type('ragFetchWidth', '40');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragFetchWidth: 40 });
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('40'));
+    expect(screen.getByTestId(stripId)).toBeInTheDocument();
+  });
+
+  it('does NOT arm Save while a calibration is stale', async () => {
+    // Save is a value diff and nothing else. Arming it on staleness is what
+    // let an unrelated edit ride the threshold along.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+    });
+    renderTab();
+    await ready();
+    await screen.findByTestId(stripId);
+
+    expect(screen.getByTestId('retrieval-save-btn')).toBeDisabled();
+  });
+
+  it('does NOT arm Save for an unrecorded calibration', async () => {
+    // Every pre-#1114 threshold is unrecorded. Arming Save there would be a
+    // permanent nag on every upgraded instance for a change nobody observed.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration(),
+      },
+    });
+    renderTab();
+    await ready();
+    await screen.findByTestId(unknownId);
+
+    expect(screen.getByTestId('retrieval-save-btn')).toBeDisabled();
+  });
+
+  it('keeps the panel free of amber at rest, with the calibration wired in', async () => {
+    // The default document: both gates off, nothing ever recorded. The
+    // panel's standing no-amber guard has to survive this feature.
+    mockApi({ settings: { ...defaultSettings, ragConfidenceCalibration: calibration() } });
+    const { container } = renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragConfidenceThreshold').value).toBe('0'));
+
+    expect(container.innerHTML).not.toMatch(/\b(text|bg|border)-warning\b/);
+  });
+
+  it('survives a server that has not shipped the field yet, and claims nothing', async () => {
+    // A frontend deployed ahead of its backend must render the panel, not
+    // crash on `settings.ragConfidenceCalibration.similarity` — and it must
+    // not report "calibration unknown" either (review r2): a server that has
+    // not shipped the field has told us nothing, and the note's own remedy
+    // would be a dead end against a backend that records nothing.
+    mockApi({ settings: { ...defaultSettings, ragConfidenceThreshold: 0.35 } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragConfidenceThreshold').value).toBe('0.35'));
+    expect(screen.queryByTestId(stripId)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(unknownId)).not.toBeInTheDocument();
+  });
+
+  it('reads the SERVER value, never the draft in the field', async () => {
+    // Review r2 — the rule the component comment, CLAUDE.md and
+    // 09-flow-rag-chat.md all call load-bearing, and which nothing tested:
+    // swapping `saved` for `values` left the suite green. Two regressions
+    // ride on it — typing 0 would make the notice vanish while the server is
+    // still gated at 0.35, and Keep would certify a number nobody submitted.
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+    };
+    const puts = mockApi({ settings });
+    renderTab();
+    await ready();
+    await screen.findByTestId(stripId);
+
+    type('ragConfidenceThreshold', '0.5');
+
+    const strip = screen.getByTestId(stripId);
+    expect(strip).toHaveTextContent(/Similarity basis 0\.35 was set while/);
+    const keep = within(strip).getByTestId('retrieval-ragConfidenceThreshold-calibration-keep');
+    expect(keep).toHaveTextContent(/Keep 0\.35/);
+
+    fireEvent.click(keep);
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
+    // And the draft is still the admin's to save or abandon.
+    expect(input('ragConfidenceThreshold').value).toBe('0.5');
+  });
+
+  it('names the model when the server says it recorded one, instead of asserting a generic success', async () => {
+    // Review r3. The route answers 200 whether or not the record beside the
+    // threshold landed, so a toast fired on the status code alone is the
+    // panel claiming an outcome it never observed.
+    toastSuccess.mockClear();
+    toastError.mockClear();
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+    };
+    mockApi({
+      settings,
+      putResult: recorded('Qwen3-Embedding-4B'),
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({
+          similarity: { ...staleSimilarity, model: 'Qwen3-Embedding-4B', stale: false },
+        });
+      },
+    });
+    renderTab();
+    await ready();
+
+    fireEvent.click(
+      within(await screen.findByTestId(stripId)).getByTestId(
+        'retrieval-ragConfidenceThreshold-calibration-keep',
+      ),
+    );
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    expect(String(toastSuccess.mock.calls.at(-1)?.[0])).toMatch(/recorded against Qwen3-Embedding-4B/);
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('does NOT report success when the server declined to record — the notice stays and says why', async () => {
+    // The one persistent failure mode: the route abstains whenever the live
+    // model cannot be resolved, and `resolved: false` is not always transient
+    // (an undecryptable provider key after a `PAT_ENCRYPTION_KEY` rotation, an
+    // EE policy naming a deleted provider). Told "recorded", the operator
+    // watches the same notice come back with no explanation.
+    toastSuccess.mockClear();
+    toastError.mockClear();
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+      putResult: () => ({
+        ragConfidenceCalibrationWrite: {
+          similarity: { outcome: 'unresolved', model: null },
+          rerank: null,
+        },
+      }),
+    });
+    renderTab();
+    await ready();
+
+    fireEvent.click(
+      within(await screen.findByTestId(stripId)).getByTestId(
+        'retrieval-ragConfidenceThreshold-calibration-keep',
+      ),
+    );
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(String(toastError.mock.calls.at(-1)?.[0])).toMatch(
+      /Could not resolve the live embedding model/i,
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
+    // And the strip is still standing, because nothing was recorded.
+    expect(await screen.findByTestId(stripId)).toBeInTheDocument();
+  });
+
+  it('says the live model could not be RESOLVED, never that none is assigned', async () => {
+    // Review r3. Both states reach the panel with a null live pair, and only
+    // one is a fact about the assignment. Naming the wrong one sends the
+    // operator to the assignment grid instead of the provider row — for good,
+    // since both causes throw on every read.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({
+          similarity: { ...BGE, liveProviderId: null, liveModel: null, liveResolved: false, stale: true },
+        }),
+      },
+    });
+    renderTab();
+    await ready();
+
+    const strip = await screen.findByTestId(stripId);
+    expect(strip).toHaveTextContent(/could not be resolved/i);
+    expect(strip).not.toHaveTextContent(/No embedding model is assigned now/i);
+    // And it points at the row that can actually be wrong.
+    expect(within(strip).getByRole('link', { name: /LLM providers/i })).toBeInTheDocument();
+  });
+
+  it('the muted note promises an ACTION, not a live model it cannot see', async () => {
+    // Review r3. This branch has no calibration object, so it has no live
+    // pair to name — and the reachable case is ordinary (a rerank threshold
+    // set before #1114 on an instance whose rerank stage is unassigned),
+    // where pressing the button records "tuned against nothing" rather than
+    // any live model. Its amber sibling was given separate copy for exactly
+    // that state.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThresholdRerank: 0.2,
+        ragConfidenceCalibration: calibration(),
+      },
+    });
+    renderTab();
+    await ready();
+
+    const note = await screen.findByTestId('retrieval-ragConfidenceThresholdRerank-calibration-unknown');
+    expect(note).toHaveTextContent(/Record the model behind it now/i);
+    expect(note).not.toHaveTextContent(/against the live model/i);
+  });
+
+  it('reports "no rerank model is assigned" as a SUCCESS when that is what the server recorded', async () => {
+    // The muted note's own reachable case: a rerank threshold predating #1114
+    // on an instance whose stage is unassigned (ADR-021's ordinary state).
+    // Pressing Record there records a null pair — a real outcome, not a
+    // failure — so the toast must name it and must not be an error. This is
+    // the branch the note's copy is deliberately worded for ("record the model
+    // behind it now", never "against the live model"), because there is no
+    // live pair to name; asserting only the model-named branch left the panel
+    // free to word this one as anything at all.
+    toastSuccess.mockClear();
+    toastError.mockClear();
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThresholdRerank: 0.2,
+        ragConfidenceCalibration: calibration(),
+      },
+      putResult: () => ({
+        ragConfidenceCalibrationWrite: {
+          similarity: null,
+          rerank: { outcome: 'recorded', model: null },
+        },
+      }),
+    });
+    renderTab();
+    await ready();
+
+    const note = await screen.findByTestId('retrieval-ragConfidenceThresholdRerank-calibration-unknown');
+    fireEvent.click(
+      within(note).getByTestId('retrieval-ragConfidenceThresholdRerank-calibration-record'),
+    );
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    expect(String(toastSuccess.mock.calls.at(-1)?.[0])).toMatch(/no rerank model is assigned/i);
+    // "Recorded against nothing" is still recorded. Routing it to the error
+    // toast would tell the operator their one remedy had failed.
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('the muted note reads the SERVER value too', async () => {
+    const settings: Record<string, unknown> = {
+      ...defaultSettings,
+      ragConfidenceThreshold: 0.35,
+      ragConfidenceCalibration: calibration(),
+    };
+    const puts = mockApi({ settings });
+    renderTab();
+    await ready();
+    await screen.findByTestId(unknownId);
+
+    type('ragConfidenceThreshold', '0.5');
+
+    const note = screen.getByTestId(unknownId);
+    expect(note).toHaveTextContent(/Similarity basis 0\.35/);
+    fireEvent.click(within(note).getByTestId('retrieval-ragConfidenceThreshold-calibration-record'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
   });
 });

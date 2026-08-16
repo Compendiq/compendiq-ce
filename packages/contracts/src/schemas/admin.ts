@@ -123,6 +123,134 @@ const RagMmrLambdaSchema = z.number().min(0).max(1);
  */
 const RagRankingPriorWeightSchema = z.number().min(0).max(0.05);
 
+/**
+ * #1114 — which model a confidence threshold was calibrated against, and
+ * whether that model is still the live one.
+ *
+ * The two thresholds sit on scales the MODELS decide: cosine similarity is
+ * whatever the embedder's geometry makes it, rerank relevance whatever the
+ * reranker's normalisation makes it (the argument for splitting them into
+ * two knobs in the first place — see `RagConfidenceThresholdSchema`). So an
+ * embedding swap or a rerank re-assignment silently reinterprets a number
+ * nobody touched: 0.35 tuned on bge-m3 is a different gate on Qwen3.
+ *
+ * The ruling is **warn, don't mutate** — a model change never rewrites
+ * refusal policy behind the operator's back. The server records the pair
+ * beside the threshold when it is written, compares it with the live
+ * assignment on read, and the panel says so until the threshold is saved
+ * again.
+ *
+ * **All four id/model fields are nullable, and the two halves mean different
+ * things** (review r1). `liveProviderId` / `liveModel` null is "nothing is
+ * assigned for this basis right now" — a real state, ADR-021's unassigned
+ * rerank = stage disabled — and it is a STALE one when a pair was recorded,
+ * because the threshold now gates against nothing it was tuned on.
+ * `providerId` / `model` null is the mirror image: the threshold was WRITTEN
+ * while nothing was assigned, which is equally real and equally a fact worth
+ * keeping. Collapsing that second case into "no record at all" made the panel
+ * report a threshold saved seconds ago as predating the feature, and made its
+ * remedy ("save it to record the live model") a permanent no-op, since saving
+ * again recorded the same absence. A record whose pair is null is a record: it
+ * goes stale the moment a model appears behind that basis.
+ *
+ * **A resolver FAILURE is a third state, and it rides on `liveResolved`**
+ * (review r3). The write path already refuses to collapse the two — it
+ * abstains rather than persist "tuned against nothing" — but the read path
+ * shipped `{resolved:false, pair:null}` and `{resolved:true, pair:null}` to
+ * the wire identically, and the panel then stated the second one's copy ("no
+ * model is assigned now") as a fact about `llm_usecase_assignments`. That is
+ * false, and persistently so, when the row is present and merely unreadable:
+ * a `PAT_ENCRYPTION_KEY` rotation that leaves `api_key` undecryptable, or an
+ * EE org policy pointing at a deleted provider, both throw on every GET. The
+ * operator is then sent to the assignment grid instead of to the provider
+ * row. `stale` is deliberately unchanged by it — erring toward "this still
+ * needs attention" is the safe direction — but the sentence must name the
+ * cause it actually knows.
+ *
+ * **Provider id and model name only.** This rides the same `GET
+ * /api/admin/settings` payload as everything else on this schema; base URLs
+ * and API keys stay on `/api/admin/llm-providers`, which redacts them.
+ */
+export const ConfidenceCalibrationSchema = z.object({
+  providerId: z.string().min(1).nullable(),
+  model: z.string().min(1).nullable(),
+  /** ISO instant the threshold was last written with this pair recorded. */
+  setAt: z.string().datetime(),
+  liveProviderId: z.string().min(1).nullable(),
+  liveModel: z.string().min(1).nullable(),
+  /**
+   * False when the resolver itself could not answer. Then `liveProviderId` /
+   * `liveModel` are null for lack of an answer, NOT because nothing is
+   * assigned — a distinction the panel's copy turns on.
+   */
+  liveResolved: z.boolean(),
+  stale: z.boolean(),
+});
+
+/**
+ * Both bases' calibration, `null` only where none was ever recorded — a
+ * threshold set before #1114, one at 0 (nothing to calibrate), or a row that
+ * no longer parses. Null is deliberately NOT rendered as a warning by the
+ * panel: an absent record is the absence of evidence, not evidence of a
+ * change. "Recorded while no model was assigned" is NOT this case; it is a
+ * present record with a null pair (above).
+ */
+export const RagConfidenceCalibrationSchema = z.object({
+  similarity: ConfidenceCalibrationSchema.nullable(),
+  rerank: ConfidenceCalibrationSchema.nullable(),
+});
+
+/**
+ * #1114 review r3 — what `PUT /api/admin/settings` DID with a threshold's
+ * calibration, reported per basis.
+ *
+ * The panel's remedy for a stale (or unrecorded) calibration is a button that
+ * re-writes the same number so the server re-records the pair beside it. The
+ * server can decline: it abstains when `resolveConfidenceBasisPair` reports
+ * `resolved: false`, and the bookkeeping row itself is written best-effort.
+ * Either way the threshold row lands and the route answers **200**, so a
+ * client that infers success from the status code tells the operator
+ * "recorded", invalidates the query, and the notice comes straight back with
+ * nothing on screen explaining why. `resolved: false` is not always
+ * transient — an undecryptable `api_key` after a key rotation and an EE
+ * policy naming a deleted provider both persist — so that is a permanent
+ * dead end, the same shape review r2 removed one layer up.
+ *
+ * Four outcomes, because each needs different words:
+ *  - `recorded` — written; `model` names the pair it was recorded against,
+ *    `null` when nothing is assigned for that basis (a real record, ADR-021's
+ *    disabled rerank stage);
+ *  - `cleared` — the threshold went to 0, so the record was deleted;
+ *  - `unresolved` — the live model could not be resolved; the previous record
+ *    stands;
+ *  - `failed` — the record write itself failed; the previous record stands.
+ *
+ * `model` only. The provider id is part of the *stored* identity (two
+ * providers serving one model are two deployments of it) but this object
+ * exists to word a toast, and a UUID in a toast is noise.
+ */
+export const ConfidenceCalibrationWriteSchema = z.object({
+  outcome: z.enum(['recorded', 'cleared', 'unresolved', 'failed']),
+  model: z.string().min(1).nullable(),
+});
+
+/** Per basis, `null` where this request carried no threshold for it. */
+export const RagConfidenceCalibrationWriteSchema = z.object({
+  similarity: ConfidenceCalibrationWriteSchema.nullable(),
+  rerank: ConfidenceCalibrationWriteSchema.nullable(),
+});
+
+/** The body of a successful `PUT /api/admin/settings`. */
+export const UpdateAdminSettingsResultSchema = z.object({
+  message: z.string(),
+  /**
+   * Absent on the empty-body "No changes" answer, and on a server that
+   * predates #1114 — the panel treats absence as "the server said nothing",
+   * never as a failure.
+   */
+  ragConfidenceCalibrationWrite: RagConfidenceCalibrationWriteSchema.optional(),
+});
+
 // AdminSettings is now scoped to non-LLM configuration only.
 // LLM provider configuration lives in the `llm_providers` table and is
 // managed through `/api/admin/llm-providers` + `/api/admin/llm-usecases`.
@@ -222,6 +350,13 @@ export const AdminSettingsSchema = z.object({
   ragMmrEnabled: RagMmrEnabledSchema,
   ragMmrLambda: RagMmrLambdaSchema,
   ragRankingPriorWeight: RagRankingPriorWeightSchema,
+  /**
+   * #1114 — read-only, and deliberately absent from the update schema below.
+   * The server resolves the pair itself when it writes a threshold; a client
+   * that could assert this could also assert "still calibrated" for a
+   * threshold tuned against a model that is long gone.
+   */
+  ragConfidenceCalibration: RagConfidenceCalibrationSchema,
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -287,6 +422,16 @@ export const UpdateAdminSettingsSchema = z.object({
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;
+/** #1114 — one basis' calibration record plus the live comparison. */
+export type ConfidenceCalibration = z.infer<typeof ConfidenceCalibrationSchema>;
+/** #1114 — both bases, as `GET /api/admin/settings` reports them. */
+export type RagConfidenceCalibration = z.infer<typeof RagConfidenceCalibrationSchema>;
+/** #1114 — what the PUT did with one basis' calibration record. */
+export type ConfidenceCalibrationWrite = z.infer<typeof ConfidenceCalibrationWriteSchema>;
+/** #1114 — both bases, as `PUT /api/admin/settings` reports them. */
+export type RagConfidenceCalibrationWrite = z.infer<typeof RagConfidenceCalibrationWriteSchema>;
+/** #1114 — the body of a successful `PUT /api/admin/settings`. */
+export type UpdateAdminSettingsResult = z.infer<typeof UpdateAdminSettingsResultSchema>;
 export type UpdateAdminSettingsInput = z.infer<typeof UpdateAdminSettingsSchema>;
 
 // ─── Issue #257 — admin embedding-lock visibility + force-release ────────

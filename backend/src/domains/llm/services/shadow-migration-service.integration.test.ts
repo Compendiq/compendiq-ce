@@ -90,6 +90,8 @@ const {
   cleanupShadowMigration,
 } = await import('./shadow-migration-service.js');
 const { embedPage, enqueueReembedAll, reEmbedAll, assertNoShadowMigration, assertShadowRollbackWindowClear } = await import('./embedding-service.js');
+const { logger } = await import('../../../core/utils/logger.js');
+const { invalidateRagConfidenceThresholdCache } = await import('../../../core/services/admin-settings-service.js');
 
 const dbAvailable = await isDbAvailable();
 
@@ -1080,6 +1082,164 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       expect(await columnInfo('pages', 'page_avg_embedding_prev')).toBeUndefined();
       expect((await columnInfo('page_embeddings', 'embedding'))!.is_nullable).toBe('NO');
       expect(await getShadowMigrationState()).toBeNull();
+    });
+  });
+
+  /**
+   * #1114 — the swap moves the cosine scale; the refuse threshold does not
+   * move with it. The ruling is WARN, DON'T MUTATE, so these assert exactly
+   * two things: an operator with the gate on hears about it at both moments
+   * the assignment is rewritten, and the threshold itself is never touched.
+   */
+  describe('confidence threshold survives the swap, and says so (#1114)', () => {
+    async function setSimilarityThreshold(value: string): Promise<void> {
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         VALUES ('rag_confidence_threshold', $1, NOW())
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+        [value],
+      );
+      // The reader is TTL-cached process-wide; without this a previous test's
+      // 0 would decide whether this one hears anything.
+      invalidateRagConfidenceThresholdCache();
+    }
+
+    function calibrationWarnings(): Array<Record<string, unknown>> {
+      return warnSpy.mock.calls
+        .map((call) => call[0])
+        .filter(
+          (fields): fields is Record<string, unknown> =>
+            typeof fields === 'object' && fields !== null && 'settingKey' in fields,
+        );
+    }
+
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(logger, 'warn').mockImplementation((() => logger) as never);
+    });
+
+    afterEach(async () => {
+      warnSpy.mockRestore();
+      await query(`DELETE FROM admin_settings WHERE setting_key = 'rag_confidence_threshold'`);
+      invalidateRagConfidenceThresholdCache();
+    });
+
+    it('warns at the swap, names both models, and leaves the threshold alone', async () => {
+      await seedEmbeddedPage('Doc A');
+      await setSimilarityThreshold('0.35');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      await runShadowBackfillJob();
+
+      await performShadowSwap();
+
+      expect(calibrationWarnings()).toEqual([
+        expect.objectContaining({
+          previousModel: LIVE_MODEL,
+          newModel: SHADOW_MODEL,
+          threshold: 0.35,
+          settingKey: 'rag_confidence_threshold',
+          guidance: expect.stringContaining('Settings → AI Models → Retrieval'),
+        }),
+      ]);
+      // Review r2 — the warning must name the model this swap INSTALLED, not
+      // the one its pre-lock snapshot saw. The two only diverge when another
+      // lifecycle step wins the lock race, which no test can schedule
+      // deterministically; what is assertable is the invariant itself, read
+      // off the row the transaction wrote.
+      const assigned = await query<{ model: string | null }>(
+        `SELECT model FROM llm_usecase_assignments WHERE usecase = 'embedding'`,
+      );
+      expect(calibrationWarnings()[0]!.newModel).toBe(assigned.rows[0]!.model);
+      // Warn, don't mutate: the swap never changes refusal policy.
+      const after = await query<{ setting_value: string }>(
+        `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_confidence_threshold'`,
+      );
+      expect(after.rows[0]!.setting_value).toBe('0.35');
+    });
+
+    it('warns again at the rollback, with the models the other way round', async () => {
+      await seedEmbeddedPage('Doc A');
+      await setSimilarityThreshold('0.35');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      await runShadowBackfillJob();
+      await performShadowSwap();
+      warnSpy.mockClear();
+
+      await rollbackShadowMigration();
+
+      expect(calibrationWarnings()).toEqual([
+        expect.objectContaining({
+          previousModel: SHADOW_MODEL,
+          newModel: LIVE_MODEL,
+          threshold: 0.35,
+          settingKey: 'rag_confidence_threshold',
+        }),
+      ]);
+    });
+
+    it('names the model the pipeline WAS using when the assignment inherits it (review r3)', async () => {
+      // A provider-pinned, model-inherited assignment (`model IS NULL`) is a
+      // first-class state on this path — the rollback restores it verbatim,
+      // calling it exactly that — and a raw column read names the outgoing
+      // model `null`, which is the one field this log line exists to carry.
+      // The resolver is the only correct source: it applies inheritance, the
+      // EE override and ADR-021's rerank rule, exactly as the pipeline does.
+      //
+      // Ordered before `seedEmbeddedPage` on purpose: the provider CONFIG
+      // (its `default_model` included) is cached per id, so a resolve that
+      // ran before this UPDATE would answer from a pre-update snapshot.
+      await query(`UPDATE llm_providers SET default_model = $1 WHERE id = $2`, [
+        LIVE_MODEL,
+        liveProviderId,
+      ]);
+      await query(`UPDATE llm_usecase_assignments SET model = NULL WHERE usecase = 'embedding'`);
+      await setSimilarityThreshold('0.35');
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      await runShadowBackfillJob();
+
+      await performShadowSwap();
+
+      expect(calibrationWarnings()).toEqual([
+        expect.objectContaining({ previousModel: LIVE_MODEL, newModel: SHADOW_MODEL }),
+      ]);
+      warnSpy.mockClear();
+
+      await rollbackShadowMigration();
+
+      // Symmetric on the way back: the restored row is `{provider, NULL}`
+      // again, so the incoming model is the provider's `default_model`.
+      const restored = await query<{ model: string | null }>(
+        `SELECT model FROM llm_usecase_assignments WHERE usecase = 'embedding'`,
+      );
+      expect(restored.rows[0]!.model).toBeNull();
+      expect(calibrationWarnings()).toEqual([
+        expect.objectContaining({ previousModel: SHADOW_MODEL, newModel: LIVE_MODEL }),
+      ]);
+    });
+
+    it('says nothing when the gate is off — 0 is the default on every instance', async () => {
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      await runShadowBackfillJob();
+
+      await performShadowSwap();
+      await rollbackShadowMigration();
+
+      // A warning every operator sees on a knob nobody set is a warning
+      // everybody learns to skip.
+      expect(calibrationWarnings()).toEqual([]);
+    });
+
+    it('says nothing on an ABORT — the live assignment was never rewritten', async () => {
+      await seedEmbeddedPage('Doc A');
+      await setSimilarityThreshold('0.35');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+
+      await rollbackShadowMigration(); // status 'active' → abort, not revert
+
+      expect(calibrationWarnings()).toEqual([]);
     });
   });
 

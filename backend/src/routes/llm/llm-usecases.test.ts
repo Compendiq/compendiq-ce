@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 
 // Short-circuit DNS lookups performed by the SSRF guard — the tests POST
@@ -38,6 +38,8 @@ import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '.
 import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
+import { logger } from '../../core/utils/logger.js';
+import { invalidateRagConfidenceThresholdCache } from '../../core/services/admin-settings-service.js';
 import { UsecaseDefaultSchema } from '@compendiq/contracts';
 
 // Local helper — mirrors llm-providers.test.ts.
@@ -196,6 +198,245 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases', () => {
     // the call genuinely never happens, not when the runner is slow.
     await vi.waitFor(() => expect(mockRefreshVisionCapability).toHaveBeenCalledTimes(1));
     expect(mockRefreshVisionCapability).toHaveBeenCalledWith(providerId, 'qwen2.5vl');
+  });
+});
+
+/**
+ * #1114 — re-pointing an embedding or rerank assignment moves the scale the
+ * matching confidence threshold sits on. The shadow swap is the loud path;
+ * THIS is the quiet one — a plain assignment change, no migration, no
+ * runbook. Warn, don't mutate: the operator hears about it and the threshold
+ * is left exactly as they set it.
+ */
+describe.skipIf(!dbAvailable)('an assignment change warns about a live confidence threshold (#1114)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(logger, 'warn').mockImplementation((() => logger) as never);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    invalidateRagConfidenceThresholdCache();
+  });
+
+  function calibrationWarnings(): Array<Record<string, unknown>> {
+    return warnSpy.mock.calls
+      .map((call) => call[0])
+      .filter(
+        (fields): fields is Record<string, unknown> =>
+          typeof fields === 'object' && fields !== null && 'settingKey' in fields,
+      );
+  }
+
+  async function setThreshold(key: string, value: string): Promise<void> {
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW()`,
+      [key, value],
+    );
+    invalidateRagConfidenceThresholdCache();
+  }
+
+  /**
+   * Seeded with SQL, not through `POST /admin/llm-providers`: every admin
+   * route shares one per-minute budget (`ADMIN_LIMIT` → `getRateLimits()`),
+   * and this file already spends most of it. The subject here is
+   * `PUT /admin/llm-usecases`, so that is the only admin request each test
+   * makes — the setup has no reason to compete with it for the quota.
+   */
+  async function seedProvider(name: string, model: string): Promise<string> {
+    const res = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, is_default, default_model)
+       VALUES ($1, $2, 'none', true, false, $3) RETURNING id`,
+      [name, `http://${name}/v1`, model],
+    );
+    return res.rows[0]!.id;
+  }
+
+  async function seedAssignment(usecase: string, providerId: string | null, model: string | null): Promise<void> {
+    await query(
+      `INSERT INTO llm_usecase_assignments (usecase, provider_id, model, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (usecase) DO UPDATE SET provider_id = $2, model = $3, updated_at = NOW()`,
+      [usecase, providerId, model],
+    );
+  }
+
+  const put = (payload: Record<string, unknown>) => app.inject({
+    method: 'PUT', url: '/api/admin/llm-usecases',
+    headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+    payload: JSON.stringify(payload),
+  });
+
+  it('warns when the embedding model moves under a live similarity threshold', async () => {
+    const providerId = await seedProvider('emb', 'bge-m3');
+    await seedAssignment('embedding', providerId, 'bge-m3');
+    await setThreshold('rag_confidence_threshold', '0.35');
+    warnSpy.mockClear();
+
+    expect((await put({ embedding: { providerId, model: 'Qwen3-Embedding-4B' } })).statusCode).toBe(200);
+
+    expect(calibrationWarnings()).toEqual([
+      expect.objectContaining({
+        previousModel: 'bge-m3',
+        newModel: 'Qwen3-Embedding-4B',
+        threshold: 0.35,
+        settingKey: 'rag_confidence_threshold',
+        guidance: expect.stringContaining('Settings → AI Models → Retrieval'),
+      }),
+    ]);
+    // Warn, don't mutate.
+    const after = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_confidence_threshold'`,
+    );
+    expect(after.rows[0]!.setting_value).toBe('0.35');
+  });
+
+  it('warns when the rerank assignment moves under a live rerank threshold', async () => {
+    const providerId = await seedProvider('rr', 'bge-reranker-v2-m3');
+    await seedAssignment('rerank', providerId, 'bge-reranker-v2-m3');
+    await setThreshold('rag_confidence_threshold_rerank', '0.2');
+    warnSpy.mockClear();
+
+    expect((await put({ rerank: { providerId, model: 'jina-reranker-v2' } })).statusCode).toBe(200);
+
+    expect(calibrationWarnings()).toEqual([
+      expect.objectContaining({
+        previousModel: 'bge-reranker-v2-m3',
+        newModel: 'jina-reranker-v2',
+        settingKey: 'rag_confidence_threshold_rerank',
+      }),
+    ]);
+  });
+
+  it('warns when the rerank stage is turned OFF under a live rerank threshold', async () => {
+    const providerId = await seedProvider('rr2', 'bge-reranker-v2-m3');
+    await seedAssignment('rerank', providerId, null); // model inherits default_model
+    await setThreshold('rag_confidence_threshold_rerank', '0.2');
+    warnSpy.mockClear();
+
+    // ADR-021: clearing the assignment disables the stage. The threshold now
+    // gates nothing it was tuned on, which is worth saying out loud.
+    expect((await put({ rerank: { providerId: null, model: null } })).statusCode).toBe(200);
+
+    expect(calibrationWarnings()).toEqual([
+      expect.objectContaining({ previousModel: 'bge-reranker-v2-m3', newModel: null }),
+    ]);
+  });
+
+  it('says nothing when the gate is off — 0 is the default on every instance', async () => {
+    const providerId = await seedProvider('emb2', 'bge-m3');
+    await seedAssignment('embedding', providerId, 'bge-m3');
+    warnSpy.mockClear();
+
+    expect((await put({ embedding: { providerId, model: 'Qwen3-Embedding-4B' } })).statusCode).toBe(200);
+
+    expect(calibrationWarnings()).toEqual([]);
+  });
+
+  it('says nothing when the save re-writes the SAME pair, or moves an unrelated use case', async () => {
+    const providerId = await seedProvider('emb3', 'bge-m3');
+    await seedAssignment('embedding', providerId, 'bge-m3');
+    await setThreshold('rag_confidence_threshold', '0.35');
+    await setThreshold('rag_confidence_threshold_rerank', '0.2');
+    warnSpy.mockClear();
+
+    // Both in one request: nothing about the embedding pair moved, and
+    // `summary` has no confidence basis at all.
+    expect(
+      (await put({ embedding: { providerId, model: 'bge-m3' }, summary: { providerId, model: 'mA' } })).statusCode,
+    ).toBe(200);
+
+    expect(calibrationWarnings()).toEqual([]);
+  });
+
+  /**
+   * Review r1: the staleness verdict itself, driven by a REAL
+   * `llm_usecase_assignments` change rather than a mocked resolver.
+   *
+   * `admin-confidence-calibration.test.ts` mocks `resolveConfidenceBasisPair`,
+   * which is right for the write-gating rules it pins — those are about which
+   * thresholds a body carried — but it means nothing there ever exercises the
+   * resolver against a real row. CLAUDE.md's rule is to mock at the HTTP
+   * boundary, and this file already has real Postgres and the real route, so
+   * the whole loop fits: record a threshold, re-point the model, read the
+   * verdict back off `GET /admin/settings`.
+   */
+  it('reports the threshold as stale on GET after a real assignment change', async () => {
+    const providerId = await seedProvider('emb4', 'bge-m3');
+    await seedAssignment('embedding', providerId, 'bge-m3');
+
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/api/admin/settings',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ ragConfidenceThreshold: 0.35 }),
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const readCalibration = async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/admin/settings',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      return (res.json() as { ragConfidenceCalibration: { similarity: Record<string, unknown> | null } })
+        .ragConfidenceCalibration.similarity;
+    };
+
+    expect(await readCalibration()).toMatchObject({
+      providerId,
+      model: 'bge-m3',
+      liveProviderId: providerId,
+      liveModel: 'bge-m3',
+      stale: false,
+    });
+
+    expect((await put({ embedding: { providerId, model: 'Qwen3-Embedding-4B' } })).statusCode).toBe(200);
+
+    expect(await readCalibration()).toMatchObject({
+      model: 'bge-m3',
+      liveModel: 'Qwen3-Embedding-4B',
+      stale: true,
+    });
+  });
+
+  it('reports stale on GET when the rerank stage really becomes unassigned', async () => {
+    // ADR-021's disabled state, reached through the route rather than a stub:
+    // `resolveRerankUsecase` must answer null for a cleared assignment instead
+    // of inheriting the default provider, or the verdict would read "still the
+    // model this was tuned on" for a stage that is off.
+    const providerId = await seedProvider('rr4', 'bge-reranker-v2-m3');
+    await seedAssignment('rerank', providerId, 'bge-reranker-v2-m3');
+
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/api/admin/settings',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ ragConfidenceThresholdRerank: 0.2 }),
+    });
+    expect(saved.statusCode).toBe(200);
+
+    expect((await put({ rerank: { providerId: null, model: null } })).statusCode).toBe(200);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/admin/settings',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(
+      (res.json() as { ragConfidenceCalibration: { rerank: Record<string, unknown> | null } })
+        .ragConfidenceCalibration.rerank,
+    ).toMatchObject({
+      model: 'bge-reranker-v2-m3',
+      liveProviderId: null,
+      liveModel: null,
+      stale: true,
+    });
   });
 });
 

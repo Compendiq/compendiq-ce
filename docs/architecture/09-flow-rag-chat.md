@@ -806,6 +806,135 @@ logged when it engages), which is why the thresholds are operator knobs
 with no universal constant and why `tieredMinScoreForCorpus`'s hardcoded
 tiers were deliberately not ported.
 
+**A threshold remembers the model it was tuned on (#1114).** The paragraph
+above ends at "operator knobs with no universal constant", and that is exactly
+what leaves them exposed: the constant is deployment-specific because the
+MODEL sets it, so a model change reinterprets a number nobody edited. A #1116
+shadow swap rewrites the `embedding` assignment (and a rollback rewrites it
+back), and a plain `PUT /admin/llm-usecases` rewrites either assignment
+outright — none of them touched `rag_confidence_threshold` or
+`rag_confidence_threshold_rerank`, so an instance tuned to 0.35 against
+`bge-m3` kept 0.35 on `Qwen3-Embedding-4B`'s scale and silently refused too
+much or too little. **The ruling is warn, don't mutate**: a swap must never
+rewrite refusal policy, because an operator who set a gate deliberately would
+find it moved by an action about embeddings, and a silently *relaxed* gate is
+worse than a silently strict one. So the evidence is kept instead. Writing a
+threshold through `PUT /admin/settings` records the pair it was written
+against beside it — `rag_confidence_threshold_calibration` and
+`rag_confidence_threshold_rerank_calibration`, `{providerId, model, setAt}`,
+resolved through `resolveConfidenceBasisPair` so inheritance, the EE override
+and ADR-021's "unassigned rerank = stage disabled" all count. Only for a
+threshold that PUT actually carried (re-dating an untouched one would certify
+it against a model nobody tuned it on), re-recorded on a re-save of the same
+number (that is the panel's own remedy), and cleared when the threshold goes
+back to 0 (gate off = nothing calibrated). A basis with no assigned model is
+recorded as a **null pair inside a present record**, never as an absent
+record: a rerank threshold saved while the stage is disabled (ADR-021's
+ordinary state) was tuned against nothing, which is a fact, and it goes stale
+the moment a reranker appears behind it. Writing it as an absence instead
+reported a threshold saved seconds ago as predating the feature and made its
+own remedy a permanent no-op. `GET /admin/settings` compares the record with
+the live pair — both sides null is a match, since nothing moved — and answers
+`ragConfidenceCalibration`, provider id and model name only.
+A resolver that *fails* is not an answer: `resolveConfidenceBasisPair` reports
+`{resolved, pair}` separately, and the write path abstains entirely when
+`resolved` is false, leaving the previous record. Collapsing the two wrote a
+DB hiccup or a decrypt error down as the claim "tuned against no model at
+all" — false on an instance whose embedder never moved, stated as fact by the
+panel, and permanent. "No provider configured at all" is not a failure but a
+state (`NoProviderConfiguredError`), so it still records a null pair and the
+day an admin assigns the first embedder still warns. The failure travels to
+the READ path too, on `liveResolved`: both a genuinely unassigned basis and an
+unreadable one arrive with a null live pair, and only the first is a fact
+about `llm_usecase_assignments`. Two of the second's causes are permanent, not
+transient — an `api_key` left undecryptable by a `PAT_ENCRYPTION_KEY`
+rotation, an EE org policy naming a provider that has been deleted — so
+rendering "no embedding model is assigned now" sends the operator to the
+assignment grid instead of the provider row, every time they look. The
+staleness verdict errs toward "this still needs attention" in both, and only
+the sentence differs — but the two are not computed the same way, because a
+pair-diff alone cannot express the unreadable case. `!liveResolved` is a stale
+verdict in its **own right**, not a diff outcome: a record with a null pair
+(tuned while the basis was genuinely unassigned, ADR-021's ordinary rerank
+state) read against a resolver that threw leaves null on both sides, which a
+diff calls a match — and the panel returns early on `stale: false`, so that
+cell used to render *neither* notice, the one output that says nothing in the
+one state where the live side is admittedly unknown. A genuinely *unassigned*
+live side beside that same null-pair record stays quiet on purpose: nothing
+moved under the number, and the rerank pool's own status line already says the
+stage is off.
+
+**The PUT reports what it did, because 200 does not mean "recorded".** The
+threshold row always lands; the record beside it may not — the route abstains
+when the live model cannot be resolved, and the bookkeeping write is
+best-effort. So `PUT /admin/settings` answers
+`ragConfidenceCalibrationWrite: {similarity, rerank}`, each `null` (this
+request carried no threshold for that basis) or one of `recorded` (with the
+model it recorded against, `null` when the basis is genuinely unassigned),
+`cleared`, `unresolved` or `failed`. The panel's `Keep`/`Record` press words
+its toast from that — "recorded against Qwen3-Embedding-4B", or an error
+saying the calibration was left as it was — rather than from the status code.
+Without it, the one persistent failure mode is a button the notice tells you
+to press, which reports success, refetches, and re-renders the same notice
+with nothing on screen explaining why.
+`warnThresholdOutlivedItsModel` logs the change at the swap, the post-swap
+rollback and the direct assignment change — never on an abort, which rewrote
+no assignment, and never when the threshold is 0, which is every instance that
+left the gate off. The third exemption is **narrower than the other two, and
+scoped to the direct-assignment path alone** (`llm-usecases.ts`): there an
+unresolved read on either side skips the line entirely, because that route
+compares a before against an after and unknown-vs-something is not a change it
+can name. The **swap and the rollback warn anyway** — each knows an assignment
+really was rewritten, so there is a change to report whatever the resolver
+says, and both fall back to the raw `llm_usecase_assignments.model` for the
+side that would not resolve. A possibly-null model beats suppressing a swap
+warning entirely: the outgoing/incoming pair is a nicety, the fact that the
+embedder moved under a live threshold is the point. The swap's line names the INCOMING model captured
+**inside** the swap transaction, off the state it verified under the lock,
+exactly as the rollback does: the pre-lock snapshot and the verified value
+differ precisely when another lifecycle step won the lock race, and a warning
+naming a model the swap did not install is worse than none. The OUTGOING model
+is **resolved**, never read off `llm_usecase_assignments.model` — that column
+is NULL on an assignment that pins a provider and inherits its
+`default_model`, a first-class partial pin the rollback restores verbatim, so
+a raw read printed `previousModel: null`, the one field the line exists to
+carry. The rollback is symmetric: it resolves the restored pair after the
+transaction rather than echoing `revState.prev.model`. `RetrievalTab`
+renders a stale record as an amber `role="status"` strip above that control
+naming the old model, the live one and the scale between them; a threshold
+with no record at all (everything set before this shipped, and anything
+written by SQL) gets a muted line instead, because absence of evidence is not
+evidence of a change. That line says what is *missing*, not why — a record
+write that failed and one that never happened are the same absence — and a
+server that has not shipped `ragConfidenceCalibration` at all renders neither,
+since it has told us nothing.
+
+**Keeping the number is its own control, not a mode of Save.** The strip's
+second remedy — "the number is right, record it against the live model" —
+changes no value, so the panel's value-diffed Save can never carry it. Arming
+Save on staleness *did* carry it, and carried it into every other save too: an
+operator editing the fetch width at the far end of the panel then re-dated a
+calibration they had made no judgement about, and the strip — the only
+standing surface saying the gate needs re-tuning once the swap's log line has
+scrolled away — silently cleared. That defeats the route's own "only a
+threshold this PUT carried" rule from one layer up, so the panel does not do
+it: Save stays a pure value diff, and the strip carries a **`Keep <value>`**
+button that PUTs exactly that one threshold, read from the server's value and
+never from the draft in the field. It takes no `aria-label` (WCAG 2.5.3 — the
+visible label is the name) and is wired to the strip's sentence with
+`aria-describedby`, so two identically-labelled buttons are still
+distinguishable. **The muted "no record" line carries the same control**
+(`Record <value>`), and needs it more: its remedy used to read "save to record
+it against the live model" against a Save that only diffs values, so on every
+instance upgraded with a live threshold — the exact instance the runbook's
+go/no-go step is written for — the note was permanent and its instruction
+impossible, recording the current number reachable only by changing the gate
+to a different one and back. Same fix as the amber branch, one branch later. Its copy names the ACTION and not the outcome — "record the model behind it now", never "against the live model" — because that branch has no calibration object and so no live pair to name, and its reachable case (a rerank threshold set before #1114 on an instance whose rerank stage is unassigned, ADR-021's default) records "tuned against nothing" rather than any live model. It is also its **own mutation**, not Save's: Save's success
+releases the panel's one-shot hydration so the form re-reads the server, which
+is right for a request that submitted the form and wrong for one that submits
+a row the operator did not edit — it would revert whatever else they had typed
+and not yet saved, the failure #949's `hydrated` flag exists to prevent.
+
 **The refusal as a UI state (#1119).** `Message.isRefusal` is set from that
 final frame in `runStream`, and from the stored `refused` marker in
 `loadConversation` — without the second, reopening a thread downgrades the

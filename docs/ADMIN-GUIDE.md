@@ -600,6 +600,52 @@ setting_value) VALUES ('rag_confidence_threshold', '0.35') ON CONFLICT
 (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value;`
 (60-second read cache — takes effect within a minute).
 
+**A threshold is tied to the model it was tuned on (#1114).** Because the
+scales belong to the models, changing a model reinterprets a number you did
+not touch: 0.35 tuned on `bge-m3` is a different gate on
+`Qwen3-Embedding-4B`. Saving a threshold through the Retrieval panel records
+the resolved provider + model beside it
+(`rag_confidence_threshold_calibration` /
+`rag_confidence_threshold_rerank_calibration`); the panel then compares that
+record against the live assignment and shows an amber notice on that control
+once they diverge, naming the old model, the live one and which scale moved.
+**Nothing rewrites the threshold** — a shadow swap, its rollback and a direct
+use-case re-assignment all log a warning naming both models and leave the
+number exactly as you set it. Clear the notice by re-tuning the threshold
+from your own logged `rag.confidence` values on the new model, or by pressing
+**Keep &lt;value&gt;** on the notice itself, which records the number you
+already have against the live model. That button is the only way an untouched
+threshold gets re-recorded: the panel's Save sends only knobs you actually
+edited, so saving something else on this page can never quietly certify a
+threshold you did not look at.
+
+A threshold set before this shipped has no record and shows a muted
+"calibration unknown" line instead — an absent record is not evidence that
+anything changed. A threshold you write with SQL lands in the same state,
+because only the panel's PUT records a pair. Both clear the same way: press
+**Record &lt;value&gt;** on that line, which writes the number already in the
+row against the live model. (Pressing Save will not do it — Save sends only
+knobs you edited, which is the same rule that stops an unrelated edit
+certifying a gate you never looked at.) Saving a threshold while its stage has
+no model assigned (the usual case for the rerank basis — ADR-021 leaves the
+stage off until a rerank provider is assigned) is recorded too, as "tuned
+against nothing": it stays quiet while nothing is assigned, and turns amber the
+moment you assign a reranker, because the number then gates on a relevance
+scale it was never measured against.
+
+If the server cannot resolve the model behind a basis at the moment you save —
+the provider row unreadable, an enterprise LLM policy pointing at a deleted
+provider — the threshold is saved and the calibration is deliberately left
+exactly as it was, with `Could not resolve the model behind a confidence
+threshold` in the log. An unknown is never written down as "tuned against
+nothing". You are told, on screen and not only in the log: **Keep** /
+**Record** answers `Could not resolve the live <basis> model — the
+calibration was left as it was` instead of reporting success, and the notice
+above the control says the live model could not be resolved (with a link to
+the provider row) rather than claiming no model is assigned. Both of those
+causes persist until you fix the provider, so pressing the button again will
+not help — check the provider's API key and, on Enterprise, the LLM policy.
+
 Never auto-refused, whatever the thresholds: questions with other grounding
 that actually **materialised** (an assembled sub-page tree, successfully
 fetched URLs, web results that came back, a prior substantive assistant

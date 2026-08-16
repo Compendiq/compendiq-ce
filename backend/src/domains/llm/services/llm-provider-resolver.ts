@@ -3,6 +3,11 @@ import { decryptPat } from '../../../core/utils/crypto.js';
 import { invalidateDispatcher, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
 import { getProviderCacheVersion, onProviderCacheBump, onProviderDeleted } from './cache-bus.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
+import { logger } from '../../../core/utils/logger.js';
+import type {
+  CalibrationPair,
+  ConfidenceBasis,
+} from '../../../core/services/confidence-calibration.js';
 import type { LlmUsecase } from '@compendiq/contracts';
 
 interface ResolveRow {
@@ -225,9 +230,94 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   `;
   const r = await query<ResolveRow>(sql, [usecase]);
   const row = r.rows[0];
-  if (!row) throw new Error('No default provider configured — set one in Settings → AI Models.');
+  if (!row) throw new NoProviderConfiguredError('No default provider configured — set one in Settings → AI Models.');
 
   const cfg = loadProviderFromRow(row);
   const model = row.usecase_model ?? cfg.defaultModel ?? '';
   return { config: cfg, model };
+}
+
+/**
+ * #1114 — the provider+model behind a confidence basis, right now.
+ *
+ * The refuse gate's two thresholds sit on scales their models decide, so
+ * "which model is this threshold gating against?" is a question with exactly
+ * one correct source: the resolvers above. Not `llm_usecase_assignments` —
+ * that row does not carry inheritance from the default provider, the EE
+ * org-policy override, or ADR-021's "unassigned rerank means the stage is
+ * disabled" (which is why rerank answers null here rather than falling back
+ * to the default provider, whose `/v1/rerank` does not exist). A raw row read
+ * would name a pair the pipeline is not using, which is the exact class of
+ * mismatch the calibration record exists to report.
+ *
+ * Never throws — but it never collapses a FAILURE into an answer either
+ * (review r2). "Nothing is assigned" and "the resolver could not tell us" are
+ * different facts, and only the first is a fact about the deployment: a DB
+ * hiccup inside the CTE, a decrypt failure on the provider row or an EE
+ * override that throws all produce the same `null` as a genuinely empty
+ * assignment. Read back, that null is the claim "this threshold was tuned
+ * against no model at all" — false on an instance with an embedder assigned
+ * the whole time, and permanent once the write path has persisted it. So the
+ * two are reported separately and each caller decides:
+ *
+ *  - the WRITE path (`PUT /admin/settings`) skips the record entirely when
+ *    `resolved` is false, leaving the previous one — unknown, not asserted —
+ *    and reports that it did, because the route still answers 200 and a panel
+ *    inferring success from the status code would tell the operator a record
+ *    was written that was not;
+ *  - the READ path treats an unresolved pair as "no live model" for the
+ *    STALENESS VERDICT, because whatever stops this resolver from naming the
+ *    model stops `generateEmbedding` from using it too, and that verdict is
+ *    recomputed on every GET rather than stored — but it ships `resolved`
+ *    alongside it (review r3), because "no model is assigned" is a claim about
+ *    `llm_usecase_assignments` and it is false when the row is present and
+ *    merely unreadable. Two of the failures here are persistent, not
+ *    transient: a `PAT_ENCRYPTION_KEY` rotation that leaves `api_key`
+ *    undecryptable, and an EE org policy naming a provider that has been
+ *    deleted (which throws a plain `Error` from the override branch below).
+ *    Reporting either as "nothing is assigned" points the operator at the
+ *    assignment grid instead of the provider row, for good.
+ */
+export interface ConfidenceBasisResolution {
+  /** False only when the resolver itself failed. Not "nothing is assigned". */
+  resolved: boolean;
+  /** The live pair, or null when nothing is assigned / nothing resolved. */
+  pair: CalibrationPair | null;
+}
+
+/**
+ * "Nothing is configured on this deployment" — a knowable STATE, which is why
+ * it keeps its exact message and is only subclassed. A fresh install with no
+ * provider genuinely has no model behind either basis, and recording that is
+ * true; an unexpected throw from the same call is not.
+ */
+export class NoProviderConfiguredError extends Error {}
+
+export async function resolveConfidenceBasisPair(
+  basis: ConfidenceBasis,
+): Promise<ConfidenceBasisResolution> {
+  try {
+    if (basis === 'rerank') {
+      const resolved = await resolveRerankUsecase();
+      return {
+        resolved: true,
+        pair: resolved ? { providerId: resolved.config.providerId, model: resolved.model } : null,
+      };
+    }
+    const resolved = await resolveUsecase('embedding');
+    return {
+      resolved: true,
+      pair: resolved.model ? { providerId: resolved.config.providerId, model: resolved.model } : null,
+    };
+  } catch (err) {
+    if (err instanceof NoProviderConfiguredError) {
+      // Configured-with-nothing, not unknown. Recording "tuned against no
+      // model" is TRUE here, and the transition out of it — an admin
+      // assigning the first embedder behind a live threshold — is exactly a
+      // scale change the operator should hear about.
+      return { resolved: true, pair: null };
+    }
+    logger.warn({ err, basis }, 'Could not resolve the model behind a confidence threshold');
+    return { resolved: false, pair: null };
+  }
 }

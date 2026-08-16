@@ -5,6 +5,8 @@ import { getProviderById } from './llm-provider-service.js';
 import { bumpProviderCacheVersion } from './cache-bus.js';
 import { enqueueJob, getJobStatus } from '../../../core/services/queue-service.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
+import { warnThresholdOutlivedItsModel } from '../../../core/services/confidence-calibration.js';
+import { resolveConfidenceBasisPair } from './llm-provider-resolver.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import { invalidateGraphCache } from '../../../core/services/redis-cache.js';
@@ -745,6 +747,29 @@ export async function performShadowSwap(opts?: {
     dimensions: parseInt(prevDims.rows[0]?.setting_value ?? '1024', 10) || 1024,
   };
 
+  // #1114 review r3 — the OUTGOING model comes from the resolver, never from
+  // `prev.model`. That column is NULL on an instance that pins a provider and
+  // inherits its `default_model` — a first-class partial pin the rollback
+  // below restores verbatim — so a raw read names the outgoing model `null`,
+  // which is the one field this whole log line exists to carry. It is the
+  // same raw-row-vs-resolver mistake `resolveConfidenceBasisPair`'s own doc
+  // forbids, and `prev.model` must keep its raw value regardless: that is what
+  // the rollback restores.
+  //
+  // Read here rather than inside the transaction because the resolver runs
+  // its own connection, and this is the pair the pipeline was embedding with
+  // when the swap began. An unresolved read falls back to the raw column: a
+  // possibly-null model beats suppressing the warning entirely.
+  const prevResolved = await resolveConfidenceBasisPair('similarity');
+  const previousModel = prevResolved.resolved ? (prevResolved.pair?.model ?? null) : prev.model;
+
+  // #1114 — captured INSIDE the transaction, off the state this swap verified
+  // under the lock, exactly as the rollback below does (review r2). `status`
+  // is a PRE-LOCK snapshot and the assignment is written from `state`; the two
+  // differ precisely when another lifecycle step won the lock race, and a
+  // warning naming a model the swap did not install is worse than none. No
+  // resolver needed on this side: the swap always writes an explicit model.
+  let swappedTo: string | null = null;
   await withLockRetry(
     { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
     async (client) => {
@@ -807,6 +832,7 @@ export async function performShadowSwap(opts?: {
       if (await embeddingPolicyOverride()) {
         throw new Error(POLICY_OVERRIDE_MSG);
       }
+      swappedTo = state.model;
       await client.query(
         `INSERT INTO llm_usecase_assignments (usecase, provider_id, model, updated_at)
          VALUES ('embedding', $1, $2, NOW())
@@ -829,6 +855,18 @@ export async function performShadowSwap(opts?: {
   await bumpProviderCacheVersion();
   startSimilarityEdgeRefresh('swap');
   logger.info('Shadow migration swapped — new model is live; run cleanup once validated, or rollback to revert');
+  // #1114 — the cosine scale just moved and `rag_confidence_threshold` did
+  // not. READ-ONLY by owner ruling: an operator who set a refuse gate
+  // deliberately must not find it rewritten by an action about embeddings,
+  // and a silently *relaxed* gate is worse than a silently strict one. The
+  // Retrieval panel carries the same notice for operators who do not read
+  // logs. After the transaction, because a swap that renamed the columns
+  // successfully must not fail on a diagnostic.
+  await warnThresholdOutlivedItsModel({
+    basis: 'similarity',
+    previousModel,
+    newModel: swappedTo,
+  });
 }
 
 export async function rollbackShadowMigration(opts?: {
@@ -901,6 +939,14 @@ export async function rollbackShadowMigration(opts?: {
   }
 
   // status === 'swapped': reverse the renames and restore the assignment.
+  //
+  // #1114 — captured INSIDE the transaction, off the state this revert
+  // verified under the lock (review r5's discipline, for the same reason):
+  // the pre-lock snapshot and the verified one differ exactly when another
+  // lifecycle step won the lock race, and a warning naming the wrong pair of
+  // models is worse than none.
+  let revertedFrom: string | null = null;
+  let revertedTo: string | null = null;
   await withLockRetry(
     { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
     async (client) => {
@@ -916,6 +962,8 @@ export async function rollbackShadowMigration(opts?: {
       if (!revState || revState.status !== 'swapped') {
         throw new Error(`Migration state changed mid-rollback (now ${revState?.status ?? 'absent'}) — rollback refused`);
       }
+      revertedFrom = revState.model;
+      revertedTo = revState.prev?.model ?? null;
       await client.query(`ALTER TABLE page_embeddings RENAME COLUMN embedding TO embedding_next`);
       await client.query(`ALTER TABLE page_embeddings RENAME COLUMN embedding_prev TO embedding`);
       await client.query(`ALTER TABLE pages RENAME COLUMN page_avg_embedding TO page_avg_embedding_next`);
@@ -986,6 +1034,25 @@ export async function rollbackShadowMigration(opts?: {
   // old-model vectors.
   startSimilarityEdgeRefresh('rollback');
   logger.info('Shadow migration reverted — old model is live again; state back to active');
+  // #1114 review r3 — the model that is live AGAIN, resolved rather than read
+  // off `revState.prev.model`. The restore a few lines up deliberately writes
+  // that column back verbatim, NULL included ("a first-class partial pin"), so
+  // on a provider-pinned/model-inherited assignment the raw value names the
+  // incoming model `null` — the one field the line carries. Resolved after
+  // the transaction and after `bumpProviderCacheVersion()`, so it reads the
+  // assignment this rollback just restored; `resolveUsecase` re-queries the
+  // row on every call and caches only the provider config.
+  const restoredResolved = await resolveConfidenceBasisPair('similarity');
+  // #1114 — a revert moves the cosine scale back, which is still a move: an
+  // operator who re-tuned the threshold after the swap is now on the OLD
+  // model's scale with the NEW model's number. Symmetric with the swap, and
+  // deliberately only on this branch — an abort never rewrote the live
+  // assignment, so there is nothing to report.
+  await warnThresholdOutlivedItsModel({
+    basis: 'similarity',
+    previousModel: revertedFrom,
+    newModel: restoredResolved.resolved ? (restoredResolved.pair?.model ?? null) : revertedTo,
+  });
   return 'reverted';
 }
 

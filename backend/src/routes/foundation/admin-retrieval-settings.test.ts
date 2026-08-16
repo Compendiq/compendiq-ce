@@ -59,6 +59,19 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   assertNoShadowMigration: vi.fn().mockResolvedValue(undefined),
 }));
 
+/**
+ * #1114 — writing a confidence threshold now records the model it was tuned
+ * against, which means this handler resolves the live pair. Pinned to one
+ * embedder here so the knob assertions below stay about the knobs; the
+ * calibration's own behaviour is `admin-confidence-calibration.test.ts`.
+ */
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveConfidenceBasisPair: vi.fn(async (basis: string) => ({
+    resolved: true,
+    pair: basis === 'rerank' ? null : { providerId: '11111111-2222-3333-4444-555555555555', model: 'bge-m3' },
+  })),
+}));
+
 vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
@@ -263,6 +276,22 @@ describe('PUT /api/admin/settings — retrieval knobs are persisted (#1118)', ()
       rag_mmr_enabled: 'true',
       rag_mmr_lambda: '0.5',
       rag_ranking_prior_weight: '0.003',
+      // #1114 — each written threshold records the model behind its basis.
+      // The similarity basis resolves to the embedder mocked above; the
+      // rerank stage is unassigned here, which is recorded as a NULL PAIR in
+      // a present record (review r1) so a LATER assignment cannot read as
+      // "the model this was tuned on" — and so the panel can tell "tuned
+      // against nothing" apart from "never recorded".
+      rag_confidence_threshold_calibration: JSON.stringify({
+        providerId: '11111111-2222-3333-4444-555555555555',
+        model: 'bge-m3',
+        setAt: JSON.parse(rows['rag_confidence_threshold_calibration']!).setAt,
+      }),
+      rag_confidence_threshold_rerank_calibration: JSON.stringify({
+        providerId: null,
+        model: null,
+        setAt: JSON.parse(rows['rag_confidence_threshold_rerank_calibration']!).setAt,
+      }),
     });
   });
 
