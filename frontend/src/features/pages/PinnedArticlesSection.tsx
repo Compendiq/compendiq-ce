@@ -104,7 +104,7 @@ export function PinnedArticlesSection() {
               tabIndex={0}
               onClick={() => navigate(`/pages/${item.id}`)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/pages/${item.id}`); }}
-              className="group relative flex w-full cursor-pointer flex-col gap-2 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/45"
+              className="group relative flex h-full w-full cursor-pointer flex-col gap-2 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/45"
               data-testid={`pinned-card-${item.id}`}
             >
               {/* Unpin button */}
