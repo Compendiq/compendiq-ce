@@ -125,6 +125,25 @@ describe('PinnedArticlesSection', () => {
     expect(titleElement.className).not.toContain('truncate');
   });
 
+  it('stretches every card to fill its grid row so uneven content does not leave ragged heights', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify(mockPinnedResponse), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('pinned-articles-section');
+
+    // jsdom performs no layout, so this is a proxy for the real assertion:
+    // grid items stretch to the row's height by default, and only a card
+    // that also claims h-full actually fills that height instead of sizing
+    // to its own (shorter) content and leaving empty space in its cell.
+    expect(screen.getByTestId('pinned-card-page-1').className).toContain('h-full');
+    expect(screen.getByTestId('pinned-card-page-2').className).toContain('h-full');
+  });
+
   it('shows unpin button on each card', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(mockPinnedResponse), {
