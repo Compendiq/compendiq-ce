@@ -120,6 +120,30 @@ number yet, and no issue is going to produce one: #1101 (the spike) and #1113
 record the chunk count, the provider and the wall-clock here when someone runs
 one.
 
+## If you changed the model WITHOUT this runbook
+
+Repointing the `embedding` use case at a model of a different width is the
+mistake this lifecycle exists to prevent, and it is now caught up front
+(#1114). `embedPage` reads the live column's declared width from the catalog
+and refuses a batch whose vectors do not match, **before** opening the Phase 2
+transaction — so nothing is deleted, nothing is written, and the page is left
+dirty with an `embedding_error` naming the model and both widths:
+
+> Embedding model "qwen3-embedding-4b" returned 2560-dimensional vectors but
+> the page_embeddings.embedding column holds 1024. Nothing was written.
+
+Previously this surfaced only when pgvector rejected the INSERT — after the
+whole page had been embedded and paid for, as a cast error naming neither the
+model nor either width. The remedy is either to put the assignment back, or to
+run the shadow migration above, which is what actually moves the corpus to the
+new width.
+
+The check **fails open**: if the catalog cannot be read it is skipped, and the
+INSERT remains the backstop it has always been. It resolves lazily, so a page
+whose every batch is skipped for context length does not pay a query for it.
+The shadow dual-write has had an equivalent guard since its own review; this
+closes the same hole on the live path.
+
 ## Degraded behaviour
 
 None by design — the live column serves until the swap commits. The #1117

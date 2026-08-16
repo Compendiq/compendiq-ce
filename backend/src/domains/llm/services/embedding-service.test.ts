@@ -1464,6 +1464,74 @@ describe('embedPage', () => {
     expect(mockClient.release).not.toHaveBeenCalled();
   });
 
+  // ── #1114 pre-flight dimension check ─────────────────────────────────────────
+  //
+  // The live path had no width validation: a model repoint that changed the
+  // vector length was caught only by pgvector at the Phase 2 INSERT, i.e. after
+  // the whole page had been embedded and paid for, and reported as a cast error
+  // naming neither the model nor either width. These pin that it now fails in
+  // Phase 1 — before BEGIN — and that an unreadable catalog does not block work.
+
+  /** Make the catalog lookup answer `dims` (or nothing, for the null case). */
+  function catalogReturns(dims: number | null) {
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('atttypmod')) {
+        return { rows: dims === null ? [] : [{ atttypmod: dims }] };
+      }
+      return { rows: [] };
+    });
+  }
+
+  it('#1114: a wrong-width model fails before Phase 2 and names both widths', async () => {
+    catalogReturns(1024);
+    // Provider now answers 2560-wide — the Qwen3 case this check exists for.
+    mocks.providerGenerateEmbedding.mockImplementation((_u: string, texts: string[]) =>
+      Promise.resolve(texts.map(() => new Array(2560).fill(0.1))),
+    );
+
+    await expect(embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>')).rejects.toThrow(
+      /returned 2560-dimensional vectors but the .* column holds 1024/,
+    );
+
+    // The point of the check: it fires in Phase 1, so no transaction is opened
+    // and the page's existing embeddings are never even DELETEd.
+    expect(mockClient.query).not.toHaveBeenCalled();
+    expect(mockClient.release).not.toHaveBeenCalled();
+  });
+
+  it('#1114: the error names the model and the remedy, not a pgvector cast', async () => {
+    catalogReturns(1024);
+    mocks.providerGenerateEmbedding.mockImplementation((_u: string, texts: string[]) =>
+      Promise.resolve(texts.map(() => new Array(2560).fill(0.1))),
+    );
+
+    const err = await embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>').catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).name).toBe('EmbeddingDimensionMismatchError');
+    // Reaches the operator via pages.embedding_error — it has to say which
+    // model, and what to do about it.
+    expect((err as Error).message).toContain('bge-m3');
+    expect((err as Error).message).toContain('zero-downtime re-embed');
+  });
+
+  it('#1114: a matching width embeds normally', async () => {
+    catalogReturns(1024);
+    // Default provider mock is already 1024-wide.
+    await expect(embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>')).resolves.toBeGreaterThan(0);
+    expect(mockClient.query).toHaveBeenCalled();
+  });
+
+  it('#1114: an unreadable catalog does not block embedding (fails open)', async () => {
+    // No atttypmod row — the INSERT stays the backstop it always was, and a
+    // catalog we cannot read must not stop the corpus being embedded.
+    catalogReturns(null);
+    mocks.providerGenerateEmbedding.mockImplementation((_u: string, texts: string[]) =>
+      Promise.resolve(texts.map(() => new Array(2560).fill(0.1))),
+    );
+
+    await expect(embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>')).resolves.toBeGreaterThan(0);
+  });
+
   it('Phase 2 INSERT failure: ROLLBACK called, client released', async () => {
     // Phase 1 succeeds (default mock provides embeddings)
     // Phase 2: BEGIN ok, DELETE ok, INSERT throws

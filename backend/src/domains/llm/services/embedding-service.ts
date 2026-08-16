@@ -27,6 +27,53 @@ import { toUserFacingEmbeddingError } from './embedding-error-message.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import pgvector from 'pgvector';
 
+/**
+ * The `embedding` use case resolved to a model whose vectors do not fit the
+ * live column (#1114).
+ *
+ * Its own type, rather than a bare `Error`, because the message is the whole
+ * point: it reaches the operator through `pages.embedding_error` and the
+ * embedding status UI, and it must name the model and both widths. The
+ * previous behaviour surfaced this as a pgvector cast failure naming neither.
+ */
+export class EmbeddingDimensionMismatchError extends Error {
+  constructor(
+    readonly model: string,
+    readonly expected: number,
+    readonly received: number,
+  ) {
+    super(
+      `Embedding model "${model}" returned ${received}-dimensional vectors but the ` +
+      `page_embeddings.embedding column holds ${expected}. Nothing was written. ` +
+      `Change the embedding assignment back, or run a zero-downtime re-embed ` +
+      `(Settings → AI Models → Start zero-downtime re-embed) to move the corpus to ${received}.`,
+    );
+    this.name = 'EmbeddingDimensionMismatchError';
+  }
+}
+
+/**
+ * The dimension the live `embedding` column accepts, or `null` when it cannot
+ * be determined.
+ *
+ * `null` means "do not check" — an unreadable catalog must not stop embedding,
+ * since the INSERT remains the backstop it has always been. `atttypmod` is
+ * where pgvector keeps the declared width for both `vector` and `halfvec`, and
+ * is -1 when the column is unqualified.
+ */
+async function liveEmbeddingDimensions(): Promise<number | null> {
+  try {
+    const r = await query<{ atttypmod: number }>(
+      `SELECT atttypmod FROM pg_attribute
+       WHERE attrelid = 'page_embeddings'::regclass AND attname = 'embedding'`,
+    );
+    const mod = r.rows[0]?.atttypmod;
+    return mod === undefined || mod === null || mod < 0 ? null : Number(mod);
+  } catch {
+    return null;
+  }
+}
+
 const CHUNK_SIZE = 500;          // ~500 tokens target
 const CHUNK_OVERLAP = 50;        // ~50 token overlap
 export const CHARS_PER_TOKEN = 3; // conservative estimate (code/tables can be 1–3 chars/token)
@@ -555,12 +602,41 @@ export async function embedPage(
   // keeps all chunks of one page consistent.
   const { config: embedConfig, model: embedModel } = await resolveUsecase('embedding');
 
+  // #1114 pre-flight: the width the live `embedding` column will actually
+  // accept. Without this, a model whose vectors are the wrong length is only
+  // caught by pgvector at the Phase 2 INSERT — after every chunk of the page
+  // has been embedded and paid for, and reported as an opaque type error
+  // rather than "expected 1024, got 2560". The shadow dual-write below has had
+  // this guard since its own review; the live path, which is the one a plain
+  // model repoint goes through, never did.
+  //
+  // Deliberately NOT cached across pages. One indexed catalog lookup is noise
+  // beside the page's embedding HTTP calls, whereas a TTL cache would keep
+  // rejecting correct vectors for the length of its window after a swap
+  // legitimately changes the column — failing closed on exactly the operation
+  // this check exists to support.
+  //
+  // Resolved lazily, on the first batch that actually returns vectors: a page
+  // whose every batch is skipped for context length produces nothing to check,
+  // and must not spend a query proving it.
+  let liveDimensions: number | null | undefined;
+
   for (let i = 0; i < chunks.length; i += batchSize) {
     const batch = chunks.slice(i, i + batchSize);
     const texts = batch.map((c) => c.text);
 
     try {
       const embeddings = await generateEmbedding(embedConfig, embedModel, texts);
+
+      // Checked before accumulating, so the failure names the model and both
+      // widths instead of surfacing as a pgvector cast error many chunks later.
+      if (liveDimensions === undefined) liveDimensions = await liveEmbeddingDimensions();
+      if (liveDimensions !== null) {
+        const wrong = embeddings.find((v) => Array.isArray(v) && v.length !== liveDimensions);
+        if (wrong) {
+          throw new EmbeddingDimensionMismatchError(embedModel, liveDimensions, wrong.length);
+        }
+      }
 
       for (let j = 0; j < batch.length; j++) {
         allEmbeddings.push({
