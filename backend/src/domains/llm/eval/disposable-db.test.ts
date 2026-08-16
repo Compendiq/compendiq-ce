@@ -38,4 +38,25 @@ describe('assertDisposableDatabase', () => {
     process.env.EVAL_ALLOW_DESTRUCTIVE = 'yes-wipe-this-database';
     expect(() => assertDisposableDatabase('postgresql://u:p@h/compendiq')).not.toThrow();
   });
+
+  // #1114 review r2 — the guard is shared by a destructive script and a
+  // read-only one, and the message described only the destructive one. An
+  // operator pointing the LATENCY BENCHMARK at the wrong database was told it
+  // truncates tables and retypes columns, which it never does; the sentence
+  // that follows then invites EVAL_ALLOW_DESTRUCTIVE, a far bigger commitment
+  // than a timing run needs, in a shell they may reuse for the real eval.
+  it('describes what the CALLING script does, not what the eval rig does', () => {
+    const readOnly = () => assertDisposableDatabase('postgresql://u:p@h/compendiq', {
+      what: 'The latency benchmark only READS a seeded corpus.',
+    });
+    expect(readOnly).toThrow(/does not look disposable/);
+    expect(readOnly).toThrow(/only READS a seeded corpus/);
+    expect(readOnly).not.toThrow(/TRUNCATES/);
+    expect(readOnly).not.toThrow(/RETYPES/);
+  });
+
+  it('still names the destructive behaviour by default — the eval rig is the common caller', () => {
+    expect(() => assertDisposableDatabase('postgresql://u:p@h/compendiq')).toThrow(/TRUNCATES/);
+    expect(() => assertDisposableDatabase('postgresql://u:p@h/compendiq')).toThrow(/RETYPES/);
+  });
 });

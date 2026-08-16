@@ -26,6 +26,14 @@
  */
 import pLimit from 'p-limit';
 import { formatQueryForEmbedding } from '../services/query-instruction.js';
+import { assertKnownFlags, wantsHelp } from './cli-flags.js';
+import { percentile, round } from './latency-stats.js';
+
+// Re-exported so this module stays the benchmark's single import surface; the
+// definitions themselves are shared with production-benchmark.ts, because two
+// copies of one percentile rule is how two "p95" figures stop meaning the same
+// thing (review r2).
+export { percentile, wantsHelp };
 
 /**
  * The two LM Studio model ids the #1114 comparison is between — the live
@@ -75,10 +83,6 @@ export const BENCHMARK_USAGE = [
   'seeded for the model you want to time. Do not touch the model server during a run — loading a',
   'second model evicts the one being measured and every number after that is a cold start.',
 ].join('\n');
-
-export function wantsHelp(argv: readonly string[]): boolean {
-  return argv.includes('--help') || argv.includes('-h');
-}
 
 export interface BenchmarkConfig {
   baseUrl: string;
@@ -168,20 +172,6 @@ export interface BenchmarkReport {
   results: BenchmarkRow[];
 }
 
-function round(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-/**
- * Nearest-rank percentile, the same definition `production-benchmark.ts` uses,
- * so two latency figures in this repo mean the same thing.
- */
-export function percentile(values: readonly number[], fraction: number): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)]!;
-}
-
 export function summarizeLatencies(samples: readonly number[]): LatencySummary {
   if (samples.length === 0) return { n: 0, meanMs: 0, p50Ms: 0, p95Ms: 0 };
   const total = samples.reduce((sum, value) => sum + value, 0);
@@ -206,13 +196,7 @@ export function parseBenchmarkArgs(
   argv: readonly string[],
   env: Record<string, string | undefined>,
 ): BenchmarkConfig {
-  for (const arg of argv) {
-    if (!arg.startsWith('--')) continue;
-    const name = arg.slice(2).split('=')[0]!;
-    if (!(KNOWN_FLAGS as readonly string[]).includes(name)) {
-      throw new Error(`Unknown flag "--${name}".\n\n${BENCHMARK_USAGE}`);
-    }
-  }
+  assertKnownFlags(argv, KNOWN_FLAGS, BENCHMARK_USAGE);
 
   const baseUrl = flagValue(argv, 'base-url') || env.EVAL_EMBEDDING_BASE_URL;
   if (!baseUrl) {

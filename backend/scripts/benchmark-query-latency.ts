@@ -148,7 +148,15 @@ async function main(): Promise<void> {
   let corpusLanguage: string | null | undefined;
 
   if (needsDb) {
-    assertDisposableDatabase(process.env.POSTGRES_URL ?? '');
+    // The guard is shared with the destructive eval, but its default message
+    // is not: this script only READS, and telling its operator that tables are
+    // about to be truncated sends them reaching for EVAL_ALLOW_DESTRUCTIVE
+    // over a timing run (review r2).
+    assertDisposableDatabase(process.env.POSTGRES_URL ?? '', {
+      what: 'This benchmark only READS — it never seeds and records no analytics — but the only '
+        + 'database that should be carrying an eval corpus is a disposable one, so a pointer at '
+        + 'anything else means the URL is wrong.',
+    });
     const pages = await assertSeededCorpus();
     column = await readEmbeddingColumn();
     ftsLanguage = await getFtsLanguage();

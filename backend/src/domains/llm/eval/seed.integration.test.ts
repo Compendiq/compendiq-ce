@@ -270,6 +270,33 @@ describe.skipIf(!dbAvailable)('eval seeder (#1102)', () => {
     expect(await readCorpusLanguage()).toBe('en');
   });
 
+  // #1114 review r2 — the claim outlived the corpus it described.
+  // resetEvalCorpus truncates pages; recordCorpusLanguage runs only after a
+  // SUCCESSFUL seed. So a `--lang de` run that died mid-seed left a German
+  // corpus behind a row still saying 'en', and checkCorpusLanguage then
+  // ACCEPTED an English arm over it — the unsafe direction of the very guard
+  // it was added for. Absent routes to the warning path instead, which is the
+  // right verdict for "unknown".
+  it('drops the corpus-language claim when the corpus it describes is cleared', async () => {
+    await recordCorpusLanguage('en');
+    expect(await readCorpusLanguage()).toBe('en');
+
+    await resetEvalCorpus();
+
+    expect(await readCorpusLanguage()).toBeNull();
+  });
+
+  it('leaves the FTS configuration alone when it clears the corpus', async () => {
+    // fts_language is written BEFORE the seed (migration 049's trigger reads
+    // it per row), so clearing the corpus must not take it with it — that
+    // ordering is what makes the tsvectors and the query-time leg agree.
+    await configureFtsLanguage('german');
+    await resetEvalCorpus();
+
+    const { getFtsLanguage } = await import('../../../core/services/fts-language.js');
+    expect(await getFtsLanguage()).toBe('german');
+  });
+
   it('assertSeededFtsLanguage catches tsvectors built under a different configuration', async () => {
     await ensureVectorDimensions(MODEL_DIMS);
     await configureEmbeddingProvider({ baseUrl: 'http://stub/v1', model: 'stub-embed' });

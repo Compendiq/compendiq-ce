@@ -272,8 +272,22 @@ export const EVAL_SPACE_KEY = 'EVAL';
  * CASCADE reaches page_embeddings and page_relationships; search_analytics is
  * cleared separately because it references users rather than pages and would
  * otherwise accumulate a run's worth of rows each time.
+ *
+ * It also drops the `eval_corpus_language` claim, because that row describes a
+ * corpus that no longer exists (#1114 review r2). Without this the claim
+ * outlives the thing it names: a successful `--lang en` run writes 'en', a
+ * later `--lang de` run truncates and then dies mid-seed or at
+ * `assertSeededFtsLanguage`, and the database is left holding German pages
+ * under a row still saying English. `checkCorpusLanguage` then ACCEPTS an
+ * English arm — the unsafe direction of the guard it was added for, and
+ * `assertSeededCorpus` cannot see it either, since it only checks for
+ * non-emptiness. Absent routes to the warning path instead, which is the
+ * correct verdict for "unknown". `fts_language` is deliberately NOT cleared:
+ * it is written BEFORE the seed, because migration 049's trigger reads it per
+ * inserted row.
  */
 export async function resetEvalCorpus(): Promise<void> {
+  await query(`DELETE FROM admin_settings WHERE setting_key = $1`, [EVAL_CORPUS_LANGUAGE_KEY]);
   await query(`TRUNCATE pages CASCADE`);
   await query(`TRUNCATE search_analytics`);
 }

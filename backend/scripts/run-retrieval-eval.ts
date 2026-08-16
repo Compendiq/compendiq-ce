@@ -18,6 +18,10 @@
  *                             of the lexical half run under (default 'simple'
  *                             for every language — see fts-config.ts)
  *
+ * `--help` prints the full list (EVAL_USAGE in eval/cli-flags.ts), and an
+ * unrecognised flag is refused rather than ignored — a typo'd --fts-langauge
+ * used to cost an hour of embedding under the default configuration.
+ *
  * Environment:
  *   EVAL_EMBEDDING_BASE_URL   OpenAI-compatible endpoint (Ollama's /v1 shim works)
  *   EVAL_EMBEDDING_MODEL      model name to embed with
@@ -30,6 +34,7 @@ import { generateEmbedding } from '../src/domains/llm/services/openai-compatible
 import { loadCorpus, loadFixture, assertFixturePower, corpusDirsForLanguage } from '../src/domains/llm/eval/fixture.js';
 import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk, configureFtsLanguage, assertSeededFtsLanguage, recordCorpusLanguage, EVAL_USER_ID } from '../src/domains/llm/eval/seed.js';
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
+import { assertKnownFlags, wantsHelp, EVAL_KNOWN_FLAGS, EVAL_USAGE } from '../src/domains/llm/eval/cli-flags.js';
 import { parseFtsLanguageArg, assertComparableFtsLanguage } from '../src/domains/llm/eval/fts-config.js';
 import { runEval } from '../src/domains/llm/eval/runner.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
@@ -94,6 +99,16 @@ function arg(name: string): string | undefined {
 // same protection against the same database.
 
 async function main(): Promise<void> {
+  if (wantsHelp(process.argv.slice(2))) {
+    console.log(EVAL_USAGE);
+    return;
+  }
+  // FIRST, before the endpoint check and long before anything is embedded: an
+  // unrecognised flag used to be ignored here, so `--fts-langauge german` ran
+  // the whole hour under 'simple' (review r2). The benchmark already refused
+  // one; two entrypoints disagreeing about that is drift, not a policy.
+  assertKnownFlags(process.argv.slice(2), EVAL_KNOWN_FLAGS, EVAL_USAGE);
+
   const baseUrl = process.env.EVAL_EMBEDDING_BASE_URL;
   const model = process.env.EVAL_EMBEDDING_MODEL;
   if (!baseUrl || !model) {

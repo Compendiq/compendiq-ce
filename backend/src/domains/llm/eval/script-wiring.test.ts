@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { EVAL_KNOWN_FLAGS } from './cli-flags.js';
 
 /**
  * #1114 review r1 — the eval entrypoints are the one place no other test can
@@ -32,6 +33,18 @@ function source(name: string): string {
 /** Collapsed, so an argument list broken across lines still matches. */
 function collapsed(name: string): string {
   return source(name).replace(/\s+/g, ' ');
+}
+
+/**
+ * Comments in these scripts quote flags too — including the typo that motivated
+ * the unknown-flag guard — so a scan for "which flags does this script read"
+ * has to read CODE. The `[^:]` guard keeps a `http://` in a string from
+ * swallowing the rest of its line.
+ */
+function code(name: string): string {
+  return source(name)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
 describe('run-retrieval-eval.ts wiring (#1114)', () => {
@@ -71,6 +84,32 @@ describe('run-retrieval-eval.ts wiring (#1114)', () => {
     const record = raw.indexOf('await recordCorpusLanguage(language)');
     expect(record).toBeGreaterThan(seed);
   });
+
+  // #1114 review r2 — the benchmark refused an unrecognised flag and this
+  // script ignored one, so `--fts-langauge german` ran the full hour under
+  // `simple`.
+  it('refuses an unknown flag before anything is embedded', () => {
+    expect(flat).toContain('assertKnownFlags(process.argv.slice(2), EVAL_KNOWN_FLAGS, EVAL_USAGE)');
+    // Ahead of the database and the provider probe: a typo must cost nothing.
+    const guard = raw.indexOf('assertKnownFlags(');
+    const db = raw.indexOf('assertDisposableDatabase(');
+    expect(guard).toBeGreaterThan(-1);
+    expect(db).toBeGreaterThan(guard);
+  });
+
+  it('knows every flag it reads — the list cannot drift from the parsing', () => {
+    // Both spellings the script uses: a literal `--flag` test, and `arg('flag')`
+    // (which is how --mmr-lambda is read, with no literal anywhere).
+    const body = code('run-retrieval-eval.ts');
+    const inSource = new Set([
+      ...[...body.matchAll(/--([a-z][a-z0-9-]*)/g)].map((m) => m[1]!),
+      ...[...body.matchAll(/\barg\('([a-z][a-z0-9-]*)'\)/g)].map((m) => m[1]!),
+    ]);
+    // The scan has to find something, or a broken regex passes silently.
+    expect(inSource.size).toBeGreaterThanOrEqual(8);
+    const unknown = [...inSource].filter((f) => !(EVAL_KNOWN_FLAGS as readonly string[]).includes(f));
+    expect(unknown).toEqual([]);
+  });
 });
 
 describe('benchmark-query-latency.ts wiring (#1114)', () => {
@@ -100,5 +139,14 @@ describe('benchmark-query-latency.ts wiring (#1114)', () => {
   it('reads the live ceilings a search rung above 4 is really measuring', () => {
     expect(flat).toContain('llmConcurrency: getMetrics().concurrency');
     expect(flat).toContain('vectorPoolMax: getVectorPool().options.max');
+  });
+
+  // #1114 review r2 — the shared guard's default message describes the eval
+  // rig's TRUNCATE/RETYPE, which this script never does. Told that, an
+  // operator of a read-only timing run reaches for
+  // EVAL_ALLOW_DESTRUCTIVE — in a shell they may later reuse for the eval.
+  it('tells the disposable-database guard that it only reads', () => {
+    expect(flat).toMatch(/assertDisposableDatabase\(process\.env\.POSTGRES_URL \?\? '', \{ what: /);
+    expect(flat).toMatch(/what: '[^']*READS[^']*'/);
   });
 });
