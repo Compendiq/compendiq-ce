@@ -1050,13 +1050,23 @@ states the condition where an operator will meet it.
   and it shipped unprefixed, because the first guard scanned only
   `domains/llm/{services,eval}` and so could not see a caller in `routes/`.
   Everything else that embeds must stay bare: `embedPage` and its shadow
-  dual-write, the shadow backfill and its dimension probe, the eval seeder, and
-  `POST /admin/embedding/probe`'s vector-width probe. A structural test in
-  `query-instruction.test.ts` now walks **all of `backend/src`**, and fails both
-  when a query site stops prefixing and when a caller appears that is in neither
-  list — a wrongly prefixed document, or a wrongly bare query, still returns a
-  plausible vector, so no behavioural test would go red while retrieval quietly
-  degraded.
+  dual-write, the shadow backfill and its dimension probe, the eval seeder,
+  `POST /admin/embedding/probe`'s vector-width probe, and the retrieval-eval
+  harness's own width probe in `backend/scripts/run-retrieval-eval.ts`. A
+  structural test in `query-instruction.test.ts` walks **`backend/src` and
+  `backend/scripts`** — both directories `npm run lint -w backend` covers — and
+  fails when a query site stops prefixing, when a query site gains a second
+  unprefixed embed, and when a caller appears that is in neither list. It
+  asserts on each `generateEmbedding(…)` **call's arguments**, not on whether
+  the file mentions the module: the first cut of that check was a whole-file
+  `includes`, which the bare `import` line satisfied on its own, so dropping the
+  wrapper from the call left the guard green. A wrongly prefixed document, or a
+  wrongly bare query, still returns a plausible vector, so no behavioural test
+  would go red while retrieval quietly degraded. `compare-embedding-variants.mts`
+  is the one query-side embed the walk cannot see — it embeds the fixture
+  queries over its own `fetch` — so it builds its prefix from the exported
+  `RETRIEVAL_TASK` rather than from a copy, and refuses to run a `prefix: true`
+  arm for a model the shipping matcher would not prefix.
   Two consequences are worth stating. It is keyed off the **resolved** model,
   so it turns on exactly when a swap makes Qwen3 live and off again on a
   rollback, with no second setting to keep in step. And because documents are

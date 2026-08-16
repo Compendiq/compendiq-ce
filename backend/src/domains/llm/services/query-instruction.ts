@@ -16,9 +16,13 @@
  *    `routes/knowledge/search.ts` (`/api/search?mode=semantic`, which embeds
  *    the query itself rather than delegating). Both must apply this; nothing
  *    else may. That is not left to be remembered — `query-instruction.test.ts`
- *    walks all of `backend/src` for `generateEmbedding` callers and fails on
- *    any file that is in neither list, because the first version of the guard
- *    read only `domains/llm` and so certified a claim that was already false.
+ *    walks `backend/src` AND `backend/scripts` for `generateEmbedding` callers
+ *    and fails on any file that is in neither list, because the first version
+ *    of the guard read only `domains/llm` and so certified a claim that was
+ *    already false. It checks each CALL's arguments, not merely whether the
+ *    file mentions this module: the second version was satisfied by the bare
+ *    `import` line, so a query site could drop the prefix — or gain a second,
+ *    unprefixed embed — and stay green.
  *
  * 2. **Turning it on does not invalidate the corpus.** Because documents are
  *    embedded bare under every model, the stored vectors are byte-identical

@@ -94,8 +94,8 @@ describe('query-instruction (#1114)', () => {
   // Property 1 in the module header — query-side prefixed, document-side bare —
   // cannot be asserted by calling anything: either half getting it wrong still
   // returns a plausible vector, and every behavioural test stays green while
-  // retrieval quietly degrades. What actually guards it is WHICH files reach
-  // this module, so that is what is checked.
+  // retrieval quietly degrades. What actually guards it is WHICH embedding calls
+  // reach this module, so that is what is checked.
   //
   // The first version of this scan looked only at `domains/llm/services` and
   // `domains/llm/eval`, and concluded there was exactly one query-side call in
@@ -103,41 +103,97 @@ describe('query-instruction (#1114)', () => {
   // itself for `GET /api/search?mode=semantic` — a mode a user picks from the
   // Pages search bar — and the scan could not see it because it never looked in
   // `routes/`. A guard whose blind spot is a whole directory certifies the
-  // directory it read, so this one walks all of `backend/src`.
+  // directory it read, so this one walks every directory the backend lints and
+  // typechecks: `backend/src` AND `backend/scripts`.
+  //
+  // The second version was file-granular — it asked whether the FILE mentioned
+  // `formatQueryForEmbedding` anywhere — which the bare `import` line satisfies
+  // on its own. Verified by mutation: dropping the prefix from `search.ts`'s
+  // call while leaving the import in place kept the file in the "prefixing" set
+  // and the guard stayed green. It also could not see a SECOND, unprefixed
+  // embed added to a file already on the list, which is precisely how a new
+  // query path would inherit the wrong policy again. So the query side is now
+  // asserted per CALL: every `generateEmbedding(...)` argument list in a
+  // query-side file must carry `formatQueryForEmbedding(`.
   describe('the query/document asymmetry holds at every call site', () => {
-    const SRC_ROOT = join(__dirname, '..', '..', '..');
+    /** `backend/` — the walk covers both directories `npm run lint -w backend` does. */
+    const BACKEND_ROOT = join(__dirname, '..', '..', '..', '..');
+    const SCAN_ROOTS = ['src', 'scripts'];
 
     /**
-     * Every file under `backend/src` that CALLS `needle` (the declaration and
-     * the many prose mentions in comments do not count), as paths relative to
-     * `backend/src`.
+     * The argument text of every `needle(...)` call in `src`, by counting
+     * parens from each call's opening bracket. Good enough for this file's job
+     * — a paren inside a string argument would skew it, and there is none at
+     * any of these call sites — and it is what lets the query-side assertion
+     * below talk about a CALL rather than about a file.
+     */
+    function callArgumentLists(src: string, needle: string): string[] {
+      const out: string[] = [];
+      // `await generateEmbedding(` etc — a CALL, not `foo.generateEmbedding(`
+      // and not the `export async function` declaration.
+      const re = new RegExp(`[^.\\w]${needle}\\s*\\(`, 'g');
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(src)) !== null) {
+        let depth = 1;
+        let i = m.index + m[0].length;
+        const from = i;
+        while (i < src.length && depth > 0) {
+          if (src[i] === '(') depth++;
+          else if (src[i] === ')') depth--;
+          i++;
+        }
+        out.push(src.slice(from, i - 1));
+      }
+      return out;
+    }
+
+    /** Whether `src` imports `needle` by name (the declaring module does not). */
+    function importsSymbol(src: string, needle: string): boolean {
+      return new RegExp(`import\\s*\\{[^}]*\\b${needle}\\b[^}]*\\}\\s*from`, 's').test(src);
+    }
+
+    /**
+     * Every file under `backend/{src,scripts}` that CALLS `needle`, as paths
+     * relative to `backend/`.
      *
      * Discovered, not enumerated. A hardcoded list cannot fail for a path that
      * does not exist yet, which is the regression worth catching — `eval/seed.ts`
-     * was missing from the first hand-written list, and `routes/knowledge/search.ts`
-     * from the first automated one.
+     * was missing from the first hand-written list, `routes/knowledge/search.ts`
+     * from the first automated one, and `scripts/run-retrieval-eval.ts` from the
+     * second.
+     *
+     * A file counts only if it also IMPORTS the symbol. That is what keeps the
+     * many prose mentions out: `generateEmbedding()` written in a doc comment
+     * used to be indistinguishable from a call (verified — one such line added
+     * to `core/utils/version.ts`, a file with no embedding code at all, failed
+     * this guard), and the tempting fix for that failure is to add the innocent
+     * file to `NON_QUERY_CALL_SITES`, where it passes and the allow-list quietly
+     * stops meaning what it says. Stripping comments instead needs a real
+     * tokenizer — a regex literal or a URL containing `//` makes a naive
+     * stripper blank a whole line, and over-stripping fails in the DANGEROUS
+     * direction, hiding a real call. The import is exact, and eslint's
+     * unused-import rule already forbids importing without calling.
      */
     function filesCalling(needle: string): string[] {
       const hits: string[] = [];
-      const walk = (dir: string) => {
+      const walk = (dir: string, rel: string) => {
         for (const entry of readdirSync(dir, { withFileTypes: true })) {
           const full = join(dir, entry.name);
+          const relPath = `${rel}/${entry.name}`;
           if (entry.isDirectory()) {
             if (entry.name === 'node_modules' || entry.name === 'dist') continue;
-            walk(full);
+            walk(full, relPath);
             continue;
           }
-          if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) continue;
-          const src = readFileSync(full, 'utf8').replace(
-            new RegExp(`export async function ${needle}`, 'g'), '');
-          // `await generateEmbedding(` etc — a CALL, not the declaration and
-          // not a backticked mention in a comment.
-          if (new RegExp(`[^.\\w]${needle}\\s*\\(`).test(src)) {
-            hits.push(full.slice(SRC_ROOT.length + 1));
-          }
+          // `.mts` too: `scripts/` holds one, and an extension the walk does
+          // not know is the same blind spot as a directory it does not enter.
+          if (!/\.m?ts$/.test(entry.name) || entry.name.endsWith('.test.ts')) continue;
+          const src = readFileSync(full, 'utf8');
+          if (!importsSymbol(src, needle)) continue;
+          if (callArgumentLists(src, needle).length > 0) hits.push(relPath);
         }
       };
-      walk(SRC_ROOT);
+      for (const root of SCAN_ROOTS) walk(join(BACKEND_ROOT, root), root);
       return hits.sort();
     }
 
@@ -148,10 +204,10 @@ describe('query-instruction (#1114)', () => {
     const QUERY_CALL_SITES = [
       // The RAG vector leg — `/llm/ask` and `hybridSearch`, so `mode=hybrid` on
       // `/api/search` arrives here too.
-      'domains/llm/services/rag-service.ts',
+      'src/domains/llm/services/rag-service.ts',
       // `GET /api/search?mode=semantic` embeds the query itself instead of
       // delegating to `hybridSearch`, so it is a second, independent query path.
-      'routes/knowledge/search.ts',
+      'src/routes/knowledge/search.ts',
     ].sort();
 
     /**
@@ -167,17 +223,17 @@ describe('query-instruction (#1114)', () => {
       // beside it embeds those same texts under the shadow model. Documents are
       // bare under every model — that is the whole asymmetry, and it is what
       // makes the stored corpus identical whether or not the prefix is live.
-      'domains/llm/services/embedding-service.ts':
+      'src/domains/llm/services/embedding-service.ts':
         'index-time: page chunks, live + shadow dual-write',
       // Index-time again (the shadow backfill re-embeds stored `chunk_text`),
       // plus a literal `'probe'` whose returned length types the shadow column.
-      'domains/llm/services/shadow-migration-service.ts':
+      'src/domains/llm/services/shadow-migration-service.ts':
         'index-time: shadow backfill; plus the dimension probe',
       // The eval corpus seeder, and `assertModelReadsFullChunk`'s two
       // chunk-sized probe texts. A prefixed corpus would fail nothing and
       // quietly make every retrieval number wrong — worse than a crash, and
       // how a model comparison gets silently invalidated.
-      'domains/llm/eval/seed.ts':
+      'src/domains/llm/eval/seed.ts':
         'eval: corpus seed + the full-chunk truncation probe',
       // `POST /admin/embedding/probe` embeds the literal string `'probe'` to
       // read back the VECTOR WIDTH a (provider, model) pair produces. There is
@@ -185,33 +241,55 @@ describe('query-instruction (#1114)', () => {
       // candidate pairs that are not assigned to anything yet. It stays bare —
       // stated here rather than left to the scan's old blind spot, so the next
       // reader can tell "deliberately excluded" from "never looked at".
-      'routes/llm/llm-embedding-probe.ts':
+      'src/routes/llm/llm-embedding-probe.ts':
         'admin: vector-width probe, not a query',
+      // The retrieval-eval harness embeds `'dimension probe'` to read a model's
+      // vector width before it seeds. Its QUERIES never reach this call — they
+      // go through `hybridSearch`, so they inherit the prefix from
+      // `rag-service.ts`. It sits outside `backend/src`, which is why the walk
+      // covers `backend/scripts` too: `npm run lint -w backend` (`eslint src/
+      // scripts/`) and `tsconfig.scripts.json` already treat that directory as
+      // part of the backend, and it is exactly where an "embed the eval queries
+      // directly" change would land and silently measure the bare query.
+      'scripts/run-retrieval-eval.ts':
+        'eval harness: vector-width probe, not a query',
+      // Deliberately not in this list because it is not a `generateEmbedding`
+      // caller and so the walk cannot see it: `scripts/compare-embedding-
+      // variants.mts` embeds the 144 fixture queries over its own `fetch`. Its
+      // prefix is built from the exported `RETRIEVAL_TASK`, so the harness
+      // measures the string that ships rather than a copy of it.
     };
 
     it('every embedding call site is accounted for, query-side or not', () => {
       const callers = filesCalling('generateEmbedding');
       // Sanity: the walk found the paths we know about, so the assertions
       // below cannot pass by matching nothing.
-      expect(callers.length).toBeGreaterThanOrEqual(6);
+      expect(callers.length).toBeGreaterThanOrEqual(7);
       expect(callers).toEqual(
         [...QUERY_CALL_SITES, ...Object.keys(NON_QUERY_CALL_SITES)].sort(),
       );
     });
 
-    it('exactly the query-side call sites apply the prefix', () => {
-      const callers = filesCalling('generateEmbedding');
-      const prefixing = callers.filter((f) =>
-        readFileSync(join(SRC_ROOT, f), 'utf8').includes('formatQueryForEmbedding'));
-      // Both directions in one equality: a query path that stops prefixing
-      // drops out, and a document path that starts prefixing appears.
-      expect(prefixing).toEqual(QUERY_CALL_SITES);
+    it('every query-side embedding CALL applies the prefix — not merely the file', () => {
+      for (const file of QUERY_CALL_SITES) {
+        const src = readFileSync(join(BACKEND_ROOT, file), 'utf8');
+        const calls = callArgumentLists(src, 'generateEmbedding');
+        // A query site that stops embedding altogether fails the accounted-for
+        // test above; here it must not silently match zero calls.
+        expect(calls.length, `${file} embeds nothing`).toBeGreaterThan(0);
+        for (const args of calls) {
+          expect(args, `${file}: generateEmbedding(${args.trim()})`)
+            .toContain('formatQueryForEmbedding(');
+        }
+      }
     });
 
     it('no non-query call site reaches this module', () => {
       for (const [file, why] of Object.entries(NON_QUERY_CALL_SITES)) {
-        const src = readFileSync(join(SRC_ROOT, file), 'utf8');
+        const src = readFileSync(join(BACKEND_ROOT, file), 'utf8');
         expect(src, `${file} — ${why}`).toContain('generateEmbedding');
+        // Whole-file, deliberately stricter than the per-call check above: a
+        // document-side path has no business importing this module at all.
         expect(src, `${file} — ${why}`).not.toContain('formatQueryForEmbedding');
       }
     });

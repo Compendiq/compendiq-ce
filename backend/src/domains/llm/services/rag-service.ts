@@ -1375,8 +1375,10 @@ async function hybridSearchInner(
     // embedding calls — `routes/knowledge/search.ts` is the other, embedding
     // the query itself for `mode=semantic` instead of coming through here — and
     // both apply the asymmetry. `query-instruction.test.ts` enumerates both,
-    // and every document-side call site, so a third path cannot pick up either
-    // policy by omission. It is a no-op for every model that is not
+    // and every document-side call site, and asserts on each `generateEmbedding`
+    // CALL rather than on the file — so neither a third path nor a second,
+    // unprefixed embed added right here can pick up either policy by omission.
+    // It is a no-op for every model that is not
     // instruction-aware, so it runs unconditionally rather than behind a second
     // flag that could drift out of step with the resolved model.
     //

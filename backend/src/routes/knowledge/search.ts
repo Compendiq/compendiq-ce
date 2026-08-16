@@ -113,7 +113,9 @@ async function generateSearchEmbedding(
     // every model that is not instruction-aware, which is why it runs
     // unconditionally rather than behind a second flag that could drift.
     // `query-instruction.test.ts` enumerates both query sites and every
-    // document site, so neither half can be added or dropped unnoticed.
+    // document site, and asserts on the CALL's arguments rather than on the
+    // file, so neither half can be added or dropped unnoticed — and dropping
+    // the wrapper here while leaving the import behind is red, not green.
     const embeddings = await generateEmbedding(
       resolved.config, resolved.model, formatQueryForEmbedding(resolved.model, q),
     );

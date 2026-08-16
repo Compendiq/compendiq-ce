@@ -313,7 +313,11 @@ headings, `section_title` carries real (flattened) heading prose, and the
 chunking change alone measured Recall@1 0.3889 → 0.5069 / MRR 0.5830 → 0.6501
 on the #1102 fixture. The title-prefix question specifically (this section's
 subject) remains open and re-measurable with real sections now; reproduce
-with `backend/scripts/compare-embedding-variants.mts`.
+with `backend/scripts/compare-embedding-variants.mts`. Note its Qwen arms now
+build the query preamble from `query-instruction.ts`'s exported `RETRIEVAL_TASK`
+rather than from a hardcoded copy of Qwen's stock web-search task, so a re-run
+measures the prefix that ships and its absolute numbers may shift a little
+against the ones recorded above.
 
 The invariant that work exposed is kept regardless: **every document-side embed
 must send the model byte-identical text** — the live embed in `embedPage`, its
