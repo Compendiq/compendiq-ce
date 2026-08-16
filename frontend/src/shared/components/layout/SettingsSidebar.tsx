@@ -141,17 +141,17 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
                         }
                         end
                       >
-                        {({ isActive }) => (
+                        {() => (
                           <>
-                            {/* Active-row indicator: 2px steel rule on the
-                                leading edge — quietly reclaims brand colour
-                                in the rail without shouting. */}
-                            {isActive && (
-                              <span
-                                aria-hidden="true"
-                                className="absolute left-0 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-full bg-[var(--color-primary-ink)]"
-                              />
-                            )}
+                            {/* The 2px leading rule that used to sit here is
+                                gone. `nav-selection` already marks this row as
+                                active — the rule was a SECOND indicator layered
+                                on the shared recipe, and the only one of its
+                                kind in the app, so "selected" looked different
+                                in this rail than in the page tree that occupies
+                                the same slot on every other route. It was also
+                                the coloured leading edge the craft floor
+                                refuses on list items. */}
                             <span>{item.label}</span>
                             {item.enterpriseOnly && (
                               <span className="ml-2 rounded-sm border border-current/30 px-1.5 py-0.5 align-middle text-[12px] font-medium uppercase tracking-wider opacity-70">

@@ -104,6 +104,20 @@ function findAncestorIds(pages: PageTreeItem[], targetId: string): Set<string> {
 
 const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
 
+/**
+ * One treatment for every section label in this panel. There were four:
+ * "Pages" at 12px sentence case in `text-foreground/85`, "Pinned" at 11px
+ * sentence case in `text-muted-foreground`, and the dropdown's "Confluence" /
+ * "Local" headings at 11px again — four weights and two colours for one role,
+ * inside one 280px column.
+ *
+ * Uppercase at 12px is the settled convention: `SettingsSidebar` uses it for
+ * its group headings, and ADR-010 pins the editor's menu section labels at
+ * "uppercase at 12px, not 11" because `ui-text-legibility.test.ts` holds
+ * capitals to a higher floor than body text. 11px uppercase would fail it.
+ */
+const SECTION_LABEL = 'text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80';
+
 export interface SidebarTreeNodeProps {
   node: TreeNode;
   level?: number;
@@ -424,6 +438,8 @@ export function SidebarTreeView({
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const [spaceDropdownOpen, setSpaceDropdownOpen] = useState(false);
+  const [spaceFilter, setSpaceFilter] = useState('');
+  const spaceFilterRef = useRef<HTMLInputElement>(null);
   const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [newPageTitle, setNewPageTitle] = useState('');
@@ -443,7 +459,17 @@ export function SidebarTreeView({
     if (treeScrollRef.current) scrollTopBeforeToggle.current = treeScrollRef.current.scrollTop;
   }, []);
 
-  const closeSpaceDropdown = useCallback(() => setSpaceDropdownOpen(false), []);
+  // The filter is a scale affordance, so it appears only at scale: below this
+  // the whole list fits and a search box would be a row of chrome above six
+  // items. It also resets whenever the dropdown closes — a remembered filter
+  // would silently hide spaces from the next person to open it.
+  const SPACE_FILTER_THRESHOLD = 8;
+  const showSpaceFilter = allSpaces.length > SPACE_FILTER_THRESHOLD;
+
+  const closeSpaceDropdown = useCallback(() => {
+    setSpaceDropdownOpen(false);
+    setSpaceFilter('');
+  }, []);
   const spaceDropdownRef = useClickOutside<HTMLDivElement>(closeSpaceDropdown, spaceDropdownOpen);
   const createPage = useCreatePage();
 
@@ -485,6 +511,15 @@ export function SidebarTreeView({
       newPageTitleRef.current?.focus();
     }
   }, [showNewPageInput]);
+
+  // Opening the list puts the caret in the filter when there is one, so a
+  // keyboard user can start narrowing immediately instead of tabbing past the
+  // whole list to reach it.
+  useEffect(() => {
+    if (spaceDropdownOpen && showSpaceFilter) {
+      spaceFilterRef.current?.focus();
+    }
+  }, [spaceDropdownOpen, showSpaceFilter]);
 
   const handleResizeStart = useCallback(
     (e: React.MouseEvent) => {
@@ -707,9 +742,16 @@ export function SidebarTreeView({
     );
   }
 
-  // Combine spaces for display, grouped by source
-  const confluenceOptions = allSpaces.filter((s) => s.source === 'confluence');
-  const localOptions = allSpaces.filter((s) => s.source === 'local');
+  // Combine spaces for display, grouped by source. Filtering matches name OR
+  // key, because an operator who knows a space as "OPS" should not have to
+  // remember that it is called "Operations Handbook".
+  const spaceFilterQuery = spaceFilter.trim().toLowerCase();
+  const matchesSpaceFilter = (s: SpaceOption) =>
+    !spaceFilterQuery ||
+    s.name.toLowerCase().includes(spaceFilterQuery) ||
+    s.key.toLowerCase().includes(spaceFilterQuery);
+  const confluenceOptions = allSpaces.filter((s) => s.source === 'confluence' && matchesSpaceFilter(s));
+  const localOptions = allSpaces.filter((s) => s.source === 'local' && matchesSpaceFilter(s));
 
   return (
     <m.aside
@@ -755,7 +797,10 @@ export function SidebarTreeView({
       <div className="shrink-0 px-2 py-2">
         <div ref={spaceDropdownRef} className="relative">
           <button
-            onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
+            // Routed through closeSpaceDropdown on the way shut so the filter
+            // clears here too — wiring only useClickOutside to it left a
+            // filtered list behind whenever you closed with the toggle.
+            onClick={() => (spaceDropdownOpen ? closeSpaceDropdown() : setSpaceDropdownOpen(true))}
             data-testid="space-selector-toggle"
             className="panel-context group flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:border-primary/55"
             aria-expanded={spaceDropdownOpen}
@@ -781,7 +826,52 @@ export function SidebarTreeView({
             <ChevronsUpDown size={13} className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
           </button>
           {spaceDropdownOpen && (
-            <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto rounded-xl nm-sidebar p-1">
+            // `nm-card-elevated`, not `nm-sidebar`. nm-sidebar is the PANEL
+            // CHASSIS utility — `background: var(--color-background)` plus a
+            // border-RIGHT — so this floating layer was painting the same
+            // colour as the panel it covers and edging it on one side only.
+            // Measured in Graphite: box-shadow none, background rgb(13,14,17),
+            // identical to the sidebar beneath, and you genuinely could not see
+            // where the dropdown ended and the tree resumed.
+            //
+            // ADR-010 keeps exactly one real shadow, --shadow-overlay, for
+            // "content that genuinely floats above the page: popovers,
+            // dropdowns, dialogs". This is the canonical case and it was the
+            // one thing not using it. nm-card-elevated carries that shadow, a
+            // full 1px border and the elevated card surface.
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 flex max-h-72 flex-col nm-card-elevated p-1">
+              {/* A filter, once the list stops fitting. The dropdown was a
+                  capped scroller with no search and no scroll affordance: six
+                  spaces plus two headings already filled it here, and a real
+                  Confluence instance with thirty spaces got a blind 256px
+                  scroller. It appears only when it earns its row, so small
+                  instances keep the list they had.
+
+                  Safe as a text input because this is a plain div of buttons,
+                  not a Radix menu — there is no role="menu" typeahead to
+                  swallow the keystrokes (the trap documented on the editor's
+                  block menu and Insert menu). */}
+              {showSpaceFilter && (
+                <div className="shrink-0 px-1 pb-1 pt-0.5">
+                  <input
+                    ref={spaceFilterRef}
+                    value={spaceFilter}
+                    onChange={(e) => setSpaceFilter(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        e.stopPropagation();
+                        if (spaceFilter) setSpaceFilter('');
+                        else setSpaceDropdownOpen(false);
+                      }
+                    }}
+                    placeholder="Filter spaces"
+                    aria-label="Filter spaces by name"
+                    className="w-full rounded-md bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 ring-border transition-colors focus:ring-ring"
+                  />
+                </div>
+              )}
+
+              <div className="min-h-0 flex-1 overflow-y-auto">
               <button
                 onClick={() => {
                   setTreeSidebarSpaceKey(undefined);
@@ -798,7 +888,7 @@ export function SidebarTreeView({
               {/* Confluence spaces */}
               {confluenceOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1.5 text-[11px] font-semibold text-muted-foreground">
+                  <div className={cn('px-2.5 py-1.5', SECTION_LABEL)}>
                     Confluence
                   </div>
                   {confluenceOptions.map((space) => (
@@ -828,7 +918,7 @@ export function SidebarTreeView({
               {/* Local spaces */}
               {localOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1.5 text-[11px] font-semibold text-muted-foreground">
+                  <div className={cn('px-2.5 py-1.5', SECTION_LABEL)}>
                     Local
                   </div>
                   {localOptions.map((space) => {
@@ -858,6 +948,17 @@ export function SidebarTreeView({
                 </>
               )}
 
+              {/* Nothing matched the filter. Without this the dropdown just
+                  emptied out and looked broken. */}
+              {showSpaceFilter && confluenceOptions.length === 0 && localOptions.length === 0 && (
+                <p className="px-2.5 py-3 text-center text-[11px] text-muted-foreground">
+                  No spaces match &ldquo;{spaceFilter}&rdquo;
+                </p>
+              )}
+              </div>
+
+              {/* Footer actions stay pinned below the scroller — they are how
+                  you leave this list, so they must not scroll out of it. */}
               {/* Manage the selected local space (settings page is local-only) */}
               {isLocalSpace && treeSidebarSpaceKey && (
                 <button
@@ -898,7 +999,7 @@ export function SidebarTreeView({
             onClick={() => setPinnedSectionCollapsed((value) => !value)}
             aria-expanded={!pinnedSectionCollapsed}
             aria-controls="sidebar-pinned-list"
-            className="flex h-7 w-full items-center gap-2 rounded-md px-1.5 text-left text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            className={cn('flex h-7 w-full items-center gap-2 rounded-md px-1.5 text-left transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground', SECTION_LABEL)}
           >
             <Pin size={12} className="shrink-0 text-action" aria-hidden="true" />
             <span id="sidebar-pinned-heading" className="flex-1">Pinned</span>
@@ -985,7 +1086,7 @@ export function SidebarTreeView({
           pageType 'page' (not 'folder')") since before this change — it was
           documented rather than resolved. */}
       <div className="flex h-9 shrink-0 items-center justify-between border-y border-border px-3">
-        <span className="text-xs font-semibold text-foreground/85">Pages</span>
+        <span className={SECTION_LABEL}>Pages</span>
         <button
           onClick={() => {
             setShowNewPageInput((v) => !v);
@@ -1161,7 +1262,7 @@ export function SidebarTreeView({
           <Suspense fallback={
             <div className="space-y-1 px-2">
               {Array.from({ length: 6 }, (_, i) => (
-                <div key={i} className="h-9 animate-pulse rounded-[10px] bg-foreground/5" />
+                <div key={i} className="h-9 animate-pulse rounded-xl bg-foreground/5" />
               ))}
             </div>
           }>

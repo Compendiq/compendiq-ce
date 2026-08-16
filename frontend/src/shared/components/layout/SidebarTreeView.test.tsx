@@ -75,10 +75,12 @@ let mockPinnedData = { items: [] as Array<{
   pinOrder: number;
 }>, total: 0 };
 
-const mockSpaces = [
+const defaultSpaces = [
   { key: 'DEV', name: 'Development', homepageId: 'root-1', lastSynced: '2026-03-01T00:00:00Z', pageCount: 4, source: 'confluence' as const },
   { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 2, source: 'confluence' as const },
 ];
+
+let mockSpacesData = [...defaultSpaces];
 
 const defaultLocalSpaces = [
   { key: 'NOTES', name: 'My Notes', description: null, icon: null as string | null, pageCount: 3, createdBy: null, createdAt: '2026-03-01T00:00:00Z', source: 'local' as const },
@@ -101,7 +103,7 @@ vi.mock('../../hooks/use-pages', () => ({
 }));
 
 vi.mock('../../hooks/use-spaces', () => ({
-  useSpaces: () => ({ data: mockSpaces }),
+  useSpaces: () => ({ data: mockSpacesData }),
 }));
 
 vi.mock('../../hooks/use-standalone', () => ({
@@ -130,6 +132,7 @@ describe('SidebarTreeView', () => {
     mockTreeData = { ...defaultTreeData };
     mockPinnedData = { items: [], total: 0 };
     mockLocalSpaces = [...defaultLocalSpaces];
+    mockSpacesData = [...defaultSpaces];
     resetQueryState();
     useUiStore.setState({
       treeSidebarCollapsed: false,
@@ -408,6 +411,77 @@ describe('SidebarTreeView', () => {
     fireEvent.click(screen.getByText('All Spaces'));
     expect(screen.getByText('Confluence')).toBeInTheDocument();
     expect(screen.getByText('Local')).toBeInTheDocument();
+  });
+
+  describe('space filter', () => {
+    const manySpaces = Array.from({ length: 12 }, (_, i) => ({
+      key: `SP${i}`,
+      name: `Space ${i}`,
+      homepageId: null,
+      lastSynced: '2026-03-01T00:00:00Z',
+      pageCount: i,
+      source: 'confluence' as const,
+    }));
+
+    it('stays out of the way until the list stops fitting', () => {
+      // Two confluence + one local by default: a search box above three items
+      // is chrome, not an affordance.
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      expect(screen.queryByLabelText('Filter spaces by name')).not.toBeInTheDocument();
+    });
+
+    it('appears past the threshold and filters on name or key', () => {
+      mockSpacesData = manySpaces;
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+
+      const filter = screen.getByLabelText('Filter spaces by name');
+      expect(filter).toBeInTheDocument();
+
+      fireEvent.change(filter, { target: { value: 'Space 1' } });
+      expect(screen.getByText('Space 1')).toBeInTheDocument();
+      expect(screen.queryByText('Space 2')).not.toBeInTheDocument();
+
+      // An operator who knows a space as "SP7" should not have to remember its
+      // display name.
+      fireEvent.change(filter, { target: { value: 'sp7' } });
+      expect(screen.getByText('Space 7')).toBeInTheDocument();
+      expect(screen.queryByText('Space 1')).not.toBeInTheDocument();
+    });
+
+    it('says so when nothing matches instead of emptying out', () => {
+      mockSpacesData = manySpaces;
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      fireEvent.change(screen.getByLabelText('Filter spaces by name'), { target: { value: 'zzzz' } });
+      expect(screen.getByText(/No spaces match/)).toBeInTheDocument();
+    });
+
+    it('keeps the escape routes reachable while filtering', () => {
+      // New Space is how you leave this list, so it must not be filtered away
+      // or scrolled out of reach.
+      mockSpacesData = manySpaces;
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      fireEvent.change(screen.getByLabelText('Filter spaces by name'), { target: { value: 'zzzz' } });
+      expect(screen.getByText('New Space')).toBeInTheDocument();
+    });
+
+    it('forgets the filter when the list closes', () => {
+      // A remembered filter would silently hide spaces from whoever opens it
+      // next, including the same user a minute later.
+      mockSpacesData = manySpaces;
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      fireEvent.change(screen.getByLabelText('Filter spaces by name'), { target: { value: 'Space 3' } });
+      expect(screen.queryByText('Space 4')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('space-selector-toggle')); // close
+      fireEvent.click(screen.getByTestId('space-selector-toggle')); // reopen
+      expect(screen.getByLabelText('Filter spaces by name')).toHaveValue('');
+      expect(screen.getByText('Space 4')).toBeInTheDocument();
+    });
   });
 
   it('shows "New Space" button in dropdown', () => {
@@ -1342,6 +1416,61 @@ describe('SidebarTreeNode memoization', () => {
     const guide = screen.getByLabelText('Collapse Deep Parent');
     // level=3 => left = 3*12+8 = 44px
     expect(guide.style.left).toBe('44px');
+  });
+
+  // ---------------------------------------------------------------------
+  // Overlay treatment and section labels.
+  // ---------------------------------------------------------------------
+
+  it('gives the space dropdown a real overlay treatment', () => {
+    const { container } = render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('space-selector-toggle'));
+
+    const dropdown = container.querySelector('.absolute.z-50, [class*="nm-card-elevated"]');
+    expect(dropdown?.className).toContain('nm-card-elevated');
+    // nm-sidebar is the PANEL CHASSIS utility (background: var(--color-background)
+    // + border-RIGHT only), so wearing it made this floating layer paint the
+    // exact colour of the panel it covers, edged on one side. Measured in
+    // Graphite: box-shadow none, background rgb(13,14,17), identical to the
+    // sidebar beneath it.
+    expect(dropdown?.className).not.toContain('nm-sidebar');
+  });
+
+  it('uses one section-label treatment throughout the panel', () => {
+    mockPinnedData = {
+      total: 1,
+      items: [{ id: 'pin-1', spaceKey: 'DEV', title: 'Pinned page', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: '2026-03-01T00:00:00Z', pinOrder: 1 }],
+    };
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('space-selector-toggle'));
+
+    // There were four treatments for one role in a 280px column: "Pages" at
+    // 12px sentence case in text-foreground/85, "Pinned" at 11px, and the
+    // dropdown's two group headings at 11px again.
+    // "Pages" is scoped to the toolbar span — the nav strip has a "Pages"
+    // link with the same text.
+    const labels = [
+      screen.getByText(
+        (_, el) => el?.tagName === 'SPAN' && el.textContent === 'Pages' && el.className.includes('uppercase'),
+      ),
+      screen.getByText('Pinned'),
+      screen.getByText('Confluence'),
+      screen.getByText('Local'),
+    ];
+    // "Pinned" is an inner <span className="flex-1"> inside the styled button,
+    // so resolve each label to whichever element actually carries the recipe.
+    const styled = (el: HTMLElement) =>
+      (el.className.includes('uppercase') ? el : el.closest<HTMLElement>('.uppercase')) ?? el;
+
+    for (const raw of labels) {
+      const el = styled(raw as HTMLElement);
+      const cls = el.className;
+      expect(cls).toContain('uppercase');
+      expect(cls).toContain('text-[12px]');
+      expect(cls).toContain('tracking-[0.08em]');
+      // 11px uppercase would fail ui-text-legibility's higher floor for caps.
+      expect(cls).not.toContain('text-[11px]');
+    }
   });
 
   // ---------------------------------------------------------------------
