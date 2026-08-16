@@ -25,7 +25,7 @@ flowchart TB
             wsum["Summary worker"]
         end
 
-        pg[("<b>postgres</b><br/>PostgreSQL 17 + pgvector<br/>(HNSW, 1024-dim embeddings)")]
+        pg[("<b>postgres</b><br/>PostgreSQL 17 + pgvector<br/>(HNSW; embedding width follows the model)")]
         redis[("<b>redis</b><br/>Redis 8<br/>cache, queue, locks, rate limit")]
 
         mcp["<b>mcp-docs</b><br/>Documentation sidecar<br/>(MCP server)"]
@@ -61,6 +61,15 @@ network isolation. The sidecar runs `NODE_ENV=production` and **fails closed**
 — `/mcp` returns `401` until the token is set on both services (`/health`
 stays open). See [`05-deployment.md`](./05-deployment.md) → MCP sidecar
 authentication.
+
+**The postgres box carries no vector width on purpose.** `page_embeddings.embedding`
+is typed from the *resolved* embedding model's probed width, not from a constant:
+`vector(n)` + HNSW up to 2000 dims, `halfvec(n)` + `halfvec_cosine_ops` from 2001
+to 4000, unindexed above that. `bge-m3` at 1024 is the bootstrap default and
+**Qwen3-Embedding-4B at 2560 (`halfvec`) is the measured recommendation** (#1114);
+switching between them changes the column type, so it goes through #1116's shadow
+path rather than a redeploy. Details in [`06-data-model.md`](./06-data-model.md)
+and ADR-012's `#1114` amendment.
 
 ## Containers at a glance
 

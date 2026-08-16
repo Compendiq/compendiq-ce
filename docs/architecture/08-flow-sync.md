@@ -79,8 +79,8 @@ sequenceDiagram
     ES->>DB: SELECT pages WHERE embedding_dirty = true LIMIT N
     loop per page
         ES->>ES: chunk(htmlToEmbeddingText(body_html))<br/>Markdown, fence-aware, section-packed (#35;1265)
-        ES->>OL: POST /api/embeddings (bge-m3)
-        OL-->>ES: vector[1024]
+        ES->>OL: POST /api/embeddings, resolved model<br/>bare chunk text, no query prefix (#35;1329)
+        OL-->>ES: vector at the model's probed width
         ES->>DB: INSERT page_embeddings
         ES->>DB: UPDATE pages SET embedding_dirty = false
     end
@@ -570,6 +570,51 @@ invalidated by a sync/edit) using the same extractors in that rare path. The
 per-page `fs.access` cache checks stay at read time (attachment downloads change
 cache state independently of page sync). The `SyncOverviewResponse` contract is
 unchanged, so the frontend needs no change.
+
+## The embedding call in that loop
+
+Two things about the embedding worker's `ES → OL` round-trip in the sequence
+above are load-bearing, and both used to be wrong in that diagram.
+
+**The model is not `bge-m3`.** It is whatever `resolveUsecase('embedding')`
+resolves to (ADR-021) — `bge-m3` at 1024 is only the bootstrap default, and
+**Qwen3-Embedding-4B at 2560** is the measured recommendation for production
+(#1114). The returned width is not a constant either: it is probed from the
+model and drives the `page_embeddings.embedding` column type
+(`vector(n)` ≤ 2000, `halfvec(n)` 2001–4000). See
+[`06-data-model.md`](./06-data-model.md).
+
+**The text this loop sends is bare, and that asymmetry is the point (#1329).**
+Instruction-aware models (Qwen3's embedding family) are trained with a
+preamble on the QUERY and nothing on the DOCUMENT. `query-instruction.ts`
+therefore applies `Instruct: {task}\nQuery:{query}` on the query side — and
+**never here**. `embedPage`, the shadow dual-write and the shadow backfill all
+embed the chunk verbatim; a structural test (`query-instruction.test.ts`) fails
+if any of them starts to prefix, because a wrongly prefixed document still
+returns a plausible vector and no behavioural test would go red while retrieval
+quietly degraded. The corollary is that the stored corpus is byte-identical
+whether or not the prefix is active, so turning it on needs no re-embed. Query
+side: see [`09-flow-rag-chat.md`](./09-flow-rag-chat.md) → Retrieval details.
+
+**There are two query-side embedding calls, and both prefix (#1339, fixed in
+#1335).** One is the RAG retrieval leg's `generateEmbedding` in
+`rag-service.ts`, which serves `/llm/ask` and `/api/search?mode=hybrid` (that
+mode delegates to `hybridSearch`). The other is `generateSearchEmbedding` in
+`routes/knowledge/search.ts`, which embeds the query itself for
+`/api/search?mode=semantic` instead of delegating, so it has to apply the
+asymmetry independently. `mode=keyword` embeds nothing.
+
+That second site shipped bare for two PRs — inert under the `bge-m3` default,
+where the prefix is a no-op, and a silent retrieval regression the moment an
+operator swapped to Qwen3 — and the structural guard could not see it: its
+discovery roots were `domains/llm/services` and `domains/llm/eval`, so a caller
+in `routes/` was outside its world and its "exactly one query-side call"
+conclusion read as verified when it was merely unlooked-at. The guard now walks
+all of `backend/src` **and** `backend/scripts` and asserts two-way set
+equality: the files applying `formatQueryForEmbedding` must be exactly
+`rag-service.ts` and `routes/knowledge/search.ts`, and every other
+`generateEmbedding` caller must appear in a commented allow-list of non-query
+embeds. A new embedding path can no longer inherit a policy by omission.
 
 ## Content pipeline hand-off
 
