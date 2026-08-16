@@ -360,6 +360,45 @@ describe('DndLocalSpaceTree', () => {
       expect(rowTwo.getAttribute('tabindex')).toBe('0');
     });
 
+    // P1 follow-up to #1340: dnd-kit's Accessibility plugin makes the grip a
+    // real keyboard drag activator by writing tabindex="0" onto it
+    // unconditionally, independent of `rovingId` — so every row's grip was
+    // its own permanent tab stop and a 5-row tree cost 6 Tab presses to leave
+    // instead of the plain tree's 1 (confirmed live: Tab walked grip -> grip
+    // -> grip, never reaching a second row's own treeitem). Only the roving
+    // row's grip should be tabbable, same contract as the treeitem itself.
+    it('gives only the rovingId row\'s grip tabIndex 0, the rest -1', () => {
+      const { container } = renderTree({ rovingId: 'p2' });
+      const gripOne = container.querySelector<HTMLElement>('[data-page-id="p1"] .cursor-grab')!;
+      const gripTwo = container.querySelector<HTMLElement>('[data-page-id="p2"] .cursor-grab')!;
+      expect(gripOne.getAttribute('tabindex')).toBe('-1');
+      expect(gripTwo.getAttribute('tabindex')).toBe('0');
+    });
+
+    it('moves the tabbable grip when rovingId changes', () => {
+      const { container, rerender } = renderTree({ rovingId: 'p1' });
+      expect(container.querySelector('[data-page-id="p1"] .cursor-grab')!.getAttribute('tabindex')).toBe('0');
+      expect(container.querySelector('[data-page-id="p2"] .cursor-grab')!.getAttribute('tabindex')).toBe('-1');
+
+      rerender(
+        <MemoryRouter>
+          <DndLocalSpaceTree
+            tree={[makeNode('p1', 'Page One'), makeNode('p2', 'Page Two', [makeNode('p2-c1', 'Child of Two')])]}
+            expandedIds={new Set<string>()}
+            toggleExpand={vi.fn()}
+            activePageId={undefined}
+            reorderPage={{ mutate: vi.fn() }}
+            rovingId="p2"
+            onRowFocus={vi.fn()}
+            onRowKeyDown={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+
+      expect(container.querySelector('[data-page-id="p1"] .cursor-grab')!.getAttribute('tabindex')).toBe('-1');
+      expect(container.querySelector('[data-page-id="p2"] .cursor-grab')!.getAttribute('tabindex')).toBe('0');
+    });
+
     it('calls onRowFocus with the row id when a row is focused', () => {
       const onRowFocus = vi.fn();
       renderTree({ onRowFocus });

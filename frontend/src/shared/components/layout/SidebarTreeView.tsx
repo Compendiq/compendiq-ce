@@ -774,8 +774,16 @@ export function SidebarTreeView({
               rail could not answer was "which space am I looking at?", and the
               only way to find out was to expand. It is the selector's own glyph,
               and it expands the panel, so it reads as scope AND acts as a way
-              back to changing it. */}
-          <div className="mt-2 flex w-full flex-col items-center border-t border-border pt-2">
+              back to changing it.
+
+              The explanation used to live only in `title` — invisible to a
+              sighted keyboard user, who gets neither the mouse-hover tooltip
+              nor a screen reader's aria-label announcement. `group` +
+              `group-focus-visible` shows the same text as a flyout on Tab
+              focus too, no new dependency, matching the flat/no-glass surface
+              rules (nm-card-elevated, the one real shadow) rather than
+              inventing a second tooltip system. */}
+          <div className="group relative mt-2 flex w-full flex-col items-center border-t border-border pt-2">
             <button
               onClick={() => {
                 if (forceCollapsed && !treeSidebarCollapsed) onForceExpand?.();
@@ -788,6 +796,13 @@ export function SidebarTreeView({
             >
               <SelectedSpaceGlyph size={14} aria-hidden="true" />
             </button>
+            <span
+              role="tooltip"
+              data-testid="rail-space-scope-flyout"
+              className="pointer-events-none absolute left-full top-0 z-50 ml-2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+            >
+              {selectedSpaceLabel} · Expand to change
+            </span>
           </div>
         </m.aside>
       </AnimatePresence>
@@ -1156,7 +1171,18 @@ export function SidebarTreeView({
           }}
           className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
           aria-expanded={showNewPageInput}
-          title="Create a page in this space"
+          // Used to read "Create a page in this space" unconditionally — a lie
+          // in All Spaces scope, where `handleCreatePage` below falls back to
+          // the `__local__` sentinel and the backend stores the page with NO
+          // space at all (pages-crud.ts: spaceSource stays null for the
+          // sentinel, so the final spaceKey is null, not "this space" or even
+          // a nameable default). Naming the real target in both branches closes
+          // that gap without changing behavior.
+          title={
+            selectedSpaceOption
+              ? `Create a page in ${selectedSpaceOption.name}`
+              : 'Create an unfiled page — no space is selected'
+          }
         >
           <FilePlus size={13} />
           New page
@@ -1203,6 +1229,17 @@ export function SidebarTreeView({
               {createPage.isPending ? 'Creating' : 'Create'}
             </button>
           </div>
+          {/* Visible, not hover-only — a title tooltip alone is unreachable by
+              touch or keyboard, and this is exactly the case the toolbar
+              button's own title attribute above cannot cover for those users.
+              Only shown in All Spaces scope, where there's a real destination
+              mismatch to disclose; a page created against a selected space
+              needs no such notice. */}
+          {!treeSidebarSpaceKey && (
+            <p className="mt-1.5 pl-[22px] text-[11px] text-muted-foreground">
+              Creates an unfiled page — pick a space above to file it there instead.
+            </p>
+          )}
           {/* Sits under the field it describes, wired by aria-describedby, and
               in a live region so it is announced rather than only drawn. The
               typed title is still in the input above it. */}
