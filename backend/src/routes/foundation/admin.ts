@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { query } from '../../core/db/postgres.js';
+import { query, getPool } from '../../core/db/postgres.js';
 import { encryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
 import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
@@ -30,6 +30,7 @@ import {
 } from '../../core/services/admin-settings-service.js';
 import { toFixedDecimalString } from '../../core/utils/fixed-decimal.js';
 import { getRegistrationMode } from '../../core/services/registration-policy-service.js';
+import { getFtsLanguage } from '../../core/services/fts-language.js';
 import {
   setLlmConcurrencyClusterWide,
   setLlmMaxQueueDepthClusterWide,
@@ -316,6 +317,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       llmMaxConcurrentStreamsPerUser,
       adminAccessDeniedRetentionDays,
       registrationMode,
+      ftsLanguage,
       ragFetchWidth,
       ragRerankCandidates,
       ragConfidenceThreshold,
@@ -332,6 +334,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
       getStreamCap(),
       getAdminAccessDeniedRetentionDays(),
       getRegistrationMode(),
+      // #1114 — read the keyword-index language through its own reader for
+      // the same reason as the nine below: `getFtsLanguage` DISCARDS a value
+      // outside the closed allow-list (a row from psql, a restored dump or a
+      // future migration never passes through Zod), so the raw row can name a
+      // configuration the search legs are not using — and one this route's own
+      // `AdminSettingsSchema` rejects, leaving the panel's select with no
+      // matching option. It is uncached, so this is one extra SELECT per
+      // settings page view.
+      getFtsLanguage(),
       // #1118 — read the retrieval knobs through their own getters rather
       // than adding nine keys to the SELECT below. Each getter owns a
       // 60-second cache and a soft-fail path (the assembly budget's is a
@@ -350,7 +361,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
-       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'fts_language', 'reembed_history_retention')`,
+       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'reembed_history_retention')`,
     );
 
     const map: Record<string, string> = {};
@@ -360,10 +371,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     return {
       embeddingDimensions,
-      // #1114 — the row, or the seeded default. No `process.env.FTS_LANGUAGE`
-      // arm: migration 049 seeds the row on every instance, so the env var was
-      // unreachable here and only ever contradicted what the panel showed.
-      ftsLanguage: map['fts_language'] ?? 'simple',
+      // #1114 — resolved above by `getFtsLanguage`, not read out of `map`.
+      // No `process.env.FTS_LANGUAGE` arm either: migration 049 seeds the row
+      // on every instance, so the env var was unreachable here and only ever
+      // contradicted what the panel showed.
+      ftsLanguage,
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
@@ -468,23 +480,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (body.ftsLanguage !== undefined && !FtsLanguageEnum.safeParse(body.ftsLanguage).success) {
       throw fastify.httpErrors.badRequest(
         `Invalid FTS language: "${body.ftsLanguage}". Allowed: ${FTS_LANGUAGES.join(', ')}`,
-      );
-    }
-
-    if (body.ftsLanguage !== undefined) {
-      // Persist the new fts_language and rebuild all tsvectors with it.
-      await query(
-        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
-         VALUES ('fts_language', $1, NOW())
-         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
-        [body.ftsLanguage],
-      );
-      await query(
-        `UPDATE pages SET tsv = to_tsvector(
-          $1::regconfig,
-          coalesce(title, '') || ' ' || coalesce(body_text, '')
-        ) WHERE deleted_at IS NULL`,
-        [body.ftsLanguage],
       );
     }
 
@@ -629,6 +624,61 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // and no others. Other pods still converge on the TTL, as with the
       // stream cap.
       invalidateFor.get(key)?.();
+    }
+
+    // ─── #1114 — the keyword-index language ───────────────────────────────
+    //
+    // LAST, and in ONE transaction. Two separate `query()` calls autocommit on
+    // pooled connections (possibly different ones), so the row landed before
+    // the rebuild started: a rebuild that failed left `fts_language = german`
+    // with every `tsv` still built as `simple`, the panel reporting a language
+    // search was not using, and Save disabled on reload because the stored
+    // value already matched — the exact silent keyword-leg collapse this
+    // control exists to end, under copy promising the rebuild.
+    //
+    // `SET LOCAL statement_timeout = 0` for the same reason
+    // `shadow-migration-service.ts` sets it: a deployment that sets
+    // `PG_STATEMENT_TIMEOUT` applies it to every pooled connection, and a
+    // corpus-wide UPDATE is precisely the statement that outlives it — so on
+    // those instances the save would fail deterministically, every time.
+    // `SET LOCAL`, so it lasts exactly this transaction.
+    //
+    // It runs after the loop above so a failed rebuild cannot discard the
+    // other knobs the same PUT validated and wrote; the panel batches all of
+    // them into one request.
+    if (body.ftsLanguage !== undefined) {
+      const client = await getPool().connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SET LOCAL statement_timeout = 0');
+        await client.query(
+          `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+           VALUES ('fts_language', $1, NOW())
+           ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+          [body.ftsLanguage],
+        );
+        await client.query(
+          `UPDATE pages SET tsv = to_tsvector(
+            $1::regconfig,
+            coalesce(title, '') || ' ' || coalesce(body_text, '')
+          ) WHERE deleted_at IS NULL`,
+          [body.ftsLanguage],
+        );
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        logger.error(
+          { err, ftsLanguage: body.ftsLanguage },
+          'Keyword-index rebuild failed — the language was not changed',
+        );
+        // The raw driver message is not for the panel; the operator-facing
+        // fact is that nothing changed, so retrying is safe.
+        throw fastify.httpErrors.internalServerError(
+          'Rebuilding the keyword index failed. The keyword index language was not changed.',
+        );
+      } finally {
+        client.release();
+      }
     }
 
     // ─── #113 Phase B-3 — cluster-wide LLM queue settings ─────────────────

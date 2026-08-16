@@ -1,4 +1,4 @@
-import { FTS_LANGUAGES } from '@compendiq/contracts';
+import { FTS_LANGUAGES, type FtsLanguage } from '@compendiq/contracts';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
@@ -18,6 +18,11 @@ import { logger } from '../utils/logger.js';
  */
 const ALLOWED_FTS_LANGUAGES: ReadonlySet<string> = new Set<string>(FTS_LANGUAGES);
 
+/** Narrows a raw `admin_settings` value onto the contracts enum. */
+function isFtsLanguage(value: string): value is FtsLanguage {
+  return ALLOWED_FTS_LANGUAGES.has(value);
+}
+
 /**
  * Returns the configured PostgreSQL text search configuration name.
  *
@@ -28,15 +33,12 @@ const ALLOWED_FTS_LANGUAGES: ReadonlySet<string> = new Set<string>(FTS_LANGUAGES
  * the Settings panel. `warnIfFtsLanguageEnvSet` reports a leftover value at
  * startup instead.
  */
-export async function getFtsLanguage(): Promise<string> {
+export async function getFtsLanguage(): Promise<FtsLanguage> {
   const r = await query<{ setting_value: string }>(
     `SELECT setting_value FROM admin_settings WHERE setting_key='fts_language'`,
   );
   const lang = r.rows[0]?.setting_value ?? 'simple';
-  if (!ALLOWED_FTS_LANGUAGES.has(lang)) {
-    return 'simple';
-  }
-  return lang;
+  return isFtsLanguage(lang) ? lang : 'simple';
 }
 
 /**

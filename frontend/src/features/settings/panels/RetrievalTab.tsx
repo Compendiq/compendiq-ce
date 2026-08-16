@@ -197,6 +197,22 @@ function ftsLanguageLabel(language: FtsLanguage): string {
   return FTS_LANGUAGE_LABELS[language] ?? language.charAt(0).toUpperCase() + language.slice(1);
 }
 
+/**
+ * Render order for the select. `FTS_LANGUAGES` is the canonical VALIDATION
+ * list — the reader, the route and this control all read it — and its order
+ * is the historical one it was written in, neither alphabetical nor
+ * PostgreSQL's. Rendering that verbatim put "Romanian" seventeenth, so
+ * seventeen entries had to be read to find one. Order is presentation:
+ * `simple` leads (it is the default and the one entry that is not a
+ * language), the rest sort by the label the eye actually scans.
+ */
+const FTS_LANGUAGE_OPTIONS: readonly FtsLanguage[] = [
+  'simple',
+  ...FTS_LANGUAGES.filter((language) => language !== 'simple').sort((a, b) =>
+    ftsLanguageLabel(a).localeCompare(ftsLanguageLabel(b)),
+  ),
+];
+
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 const LLM_PROVIDERS_PATH = `${SETTINGS_PANELS.models.path}?sub=llm`;
 
@@ -251,10 +267,18 @@ export function RetrievalTab() {
   const mutation = useMutation({
     mutationFn: (body: Partial<RetrievalValues>) =>
       apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
-    onSuccess: async () => {
+    onSuccess: async (_data, variables) => {
       setHydrated(false);
       await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
-      toast.success('Retrieval settings updated (takes effect within a minute)');
+      // #1114 — "within a minute" describes the nine cached knobs. The
+      // keyword index was rebuilt inside the request that just returned, so
+      // reporting a delay for it would be the same false generalisation the
+      // panel's intro used to make.
+      toast.success(
+        'ftsLanguage' in variables
+          ? 'Retrieval settings updated (keyword index rebuilt)'
+          : 'Retrieval settings updated (takes effect within a minute)',
+      );
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : 'Failed to update retrieval settings');
@@ -315,11 +339,20 @@ export function RetrievalTab() {
 
   return (
     <div className="space-y-6" data-testid="retrieval-tab">
+      {/*
+        #1114 — the timing sentence is scoped. It described the nine cached
+        knobs, and it is read directly above the keyword index section, whose
+        value is read uncached and whose save re-indexes the corpus inside the
+        request. A generalisation that is false for the first control under it
+        is worse than no generalisation.
+      */}
       <p className="text-sm text-muted-foreground">
-        How the AI assistant gathers knowledge-base context for a question: how many candidates
-        each stage considers, how much of a page it carries, and which optional stages run. Saved
-        values apply within a minute — immediately on the server that handled the save, and on
-        every other server once its 60-second read cache expires.
+        How the AI assistant gathers knowledge-base context for a question: the language the
+        keyword index is built with, how many candidates each stage considers, how much of a page
+        it carries, and which optional stages run. The numeric and on/off settings apply within a
+        minute of saving — immediately on the server that handled the save, and on every other
+        server once its 60-second read cache expires. The keyword index language is the
+        exception: it applies as soon as its rebuild finishes.
       </p>
 
       {/* ── Keyword index ───────────────────────────────────────────────── */}
@@ -347,7 +380,7 @@ export function RetrievalTab() {
               onChange={(event) => set('ftsLanguage', event.target.value as FtsLanguage)}
               data-testid="retrieval-ftsLanguage"
             >
-              {FTS_LANGUAGES.map((language) => (
+              {FTS_LANGUAGE_OPTIONS.map((language) => (
                 <option key={language} value={language}>
                   {ftsLanguageLabel(language)}
                 </option>
@@ -664,23 +697,40 @@ export function RetrievalTab() {
         )}
       </Section>
 
-      <div className="flex items-center gap-3 border-t border-border pt-4">
-        <button
-          onClick={handleSave}
-          disabled={changed.length === 0 || mutation.isPending}
-          className="nm-button-primary"
-          data-testid="retrieval-save-btn"
-        >
-          {mutation.isPending ? 'Saving...' : 'Save'}
-        </button>
-        <button
-          onClick={() => setValues(DEFAULTS)}
-          disabled={mutation.isPending}
-          className="text-sm text-muted-foreground hover:text-foreground"
-          data-testid="retrieval-reset-all-btn"
-        >
-          Reset all to defaults
-        </button>
+      <div className="space-y-2 border-t border-border pt-4">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleSave}
+            disabled={changed.length === 0 || mutation.isPending}
+            className="nm-button-primary"
+            data-testid="retrieval-save-btn"
+          >
+            {mutation.isPending ? 'Saving...' : 'Save'}
+          </button>
+          <button
+            // #1114 — the keyword-index language is deliberately NOT reset
+            // here. Every other control on this panel is a number or a
+            // checkbox: resetting one costs nothing and is undone by
+            // resetting it back. This one's default is `simple`, and saving
+            // it re-indexes every page — so a German deployment was one click
+            // among nine cheap resets away from putting its keyword leg back
+            // on no stemming, which is the failure this panel shipped to fix.
+            onClick={() => setValues((prev) => ({ ...DEFAULTS, ftsLanguage: prev.ftsLanguage }))}
+            disabled={mutation.isPending}
+            className="text-sm text-muted-foreground hover:text-foreground"
+            data-testid="retrieval-reset-all-btn"
+          >
+            Reset all to defaults
+          </button>
+        </div>
+        {/*
+          A button labelled "all" that skips a field has to say so where the
+          click happens — a `title` is unreachable by touch and keyboard.
+        */}
+        <p className="text-xs text-muted-foreground" data-testid="retrieval-reset-all-scope">
+          Leaves the keyword index language alone — changing it re-indexes every page, so it is
+          set only from its own control above.
+        </p>
       </div>
     </div>
   );

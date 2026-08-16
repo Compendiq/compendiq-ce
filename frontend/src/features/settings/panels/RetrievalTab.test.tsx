@@ -5,6 +5,14 @@ import { MemoryRouter } from 'react-router-dom';
 import { FTS_LANGUAGES } from '@compendiq/contracts';
 import { RetrievalTab } from './RetrievalTab';
 
+const toastSuccess = vi.fn();
+vi.mock('sonner', () => ({
+  toast: {
+    success: (...args: unknown[]) => toastSuccess(...args),
+    error: vi.fn(),
+  },
+}));
+
 const authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
 vi.mock('../../../stores/auth-store', () => ({
   useAuthStore: Object.assign(
@@ -280,7 +288,23 @@ describe('RetrievalTab — keyword index language (#1114)', () => {
     await waitFor(() => expect(select().value).toBe('german'));
     // The reader discards anything outside this list, so the control must not
     // offer a language that would silently read back as `simple`.
-    expect([...select().options].map((option) => option.value)).toEqual([...FTS_LANGUAGES]);
+    const values = [...select().options].map((option) => option.value);
+    expect([...values].sort()).toEqual([...FTS_LANGUAGES].sort());
+  });
+
+  it('leads with simple and sorts the languages by the label people scan', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+
+    const options = [...select().options];
+    // `simple` is not a language and it is the default, so it leads. The
+    // other sixteen are alphabetical: the contracts order is a validation
+    // list, and rendering it verbatim made "Romanian" the seventeenth thing
+    // to read. Order here is presentation — `FTS_LANGUAGES` stays canonical.
+    expect(options[0]!.value).toBe('simple');
+    const labels = options.slice(1).map((option) => option.textContent ?? '');
+    expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
   });
 
   it('sends only the language when nothing else changed', async () => {
@@ -351,6 +375,54 @@ describe('RetrievalTab — keyword index language (#1114)', () => {
     // the invalidated query lands back on it. One that kept its optimistic
     // value would show `german` for a save the server never applied.
     await waitFor(() => expect(select().value).toBe('simple'));
+  });
+
+  it('survives "Reset all to defaults" — a bulk reset must not re-index the corpus', async () => {
+    // Every other control here is a number or a checkbox: resetting one costs
+    // nothing and is undone by resetting it back. This one is the whole
+    // corpus's `tsv`, and its default is `simple` — the value this issue
+    // exists to move German deployments OFF. One click among nine cheap
+    // resets, then Save, and the keyword leg is back to no stemming.
+    const puts = mockApi({
+      settings: { ...defaultSettings, ftsLanguage: 'german', ragFetchWidth: 40 },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('german'));
+
+    fireEvent.click(screen.getByTestId('retrieval-reset-all-btn'));
+
+    expect(select().value).toBe('german');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragFetchWidth: 10 });
+  });
+
+  it('does not report a delay for a save that already rebuilt the index', async () => {
+    const puts = mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    // The nine knobs converge on a 60-second read cache; this one was rebuilt
+    // inside the request that just returned.
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    expect(String(toastSuccess.mock.calls.at(-1)?.[0])).not.toMatch(/within a minute/i);
+  });
+
+  it('says on screen that the bulk reset leaves it alone', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    // A button labelled "all" that skips one field has to say so where the
+    // click happens, not in a tooltip.
+    expect(screen.getByTestId('retrieval-reset-all-scope')).toHaveTextContent(
+      /keyword index language/i,
+    );
   });
 });
 

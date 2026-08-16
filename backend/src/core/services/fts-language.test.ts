@@ -17,6 +17,7 @@
  *   - a set `FTS_LANGUAGE` is reported at startup as ignored, naming the
  *     setting that replaced it.
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockQuery = vi.fn();
@@ -117,5 +118,38 @@ describe('warnIfFtsLanguageEnvSet (#1114)', () => {
     vi.stubEnv('FTS_LANGUAGE', '');
     warnIfFtsLanguageEnvSet();
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The tests above prove the function warns. They cannot prove anything
+   * CALLS it: `index.ts` boots a server and no suite imports it, so deleting
+   * the call site leaves every backend test green — and with it the only
+   * thing that tells an upgrading operator their `FTS_LANGUAGE=german` never
+   * worked. Read the source instead, the way
+   * `docker-compose-invariants.test.ts` reads compose and
+   * `frontend/src/ai-scroll-chain.test.ts` reads a class list: an assertion
+   * that fails BY NAME is worth more than no assertion at all.
+   */
+  describe('the startup call site', () => {
+    const source = readFileSync(
+      new URL('../../index.ts', import.meta.url),
+      'utf8',
+    );
+
+    it('is wired into index.ts', () => {
+      expect(
+        source,
+        'backend/src/index.ts must call warnIfFtsLanguageEnvSet() at startup',
+      ).toContain('warnIfFtsLanguageEnvSet();');
+    });
+
+    it('runs after migrations, so the row it points at exists', () => {
+      // The message tells the operator to go and set `fts_language` in
+      // Settings. On a fresh install migration 049 is what creates that row.
+      const migrations = source.indexOf('await runMigrations()');
+      const warn = source.indexOf('warnIfFtsLanguageEnvSet();');
+      expect(migrations).toBeGreaterThanOrEqual(0);
+      expect(warn).toBeGreaterThan(migrations);
+    });
   });
 });

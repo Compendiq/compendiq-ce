@@ -399,11 +399,16 @@ Three things worth knowing before you use it.
 alike, but the assembly budget's fail-toward-last-known behaviour is written
 assuming no row exists until an operator sets one.
 
-**A save takes effect within a minute.** Each knob is read through a 60-second
-in-process cache. The server that handled your save drops its cache
-immediately; every other server in the deployment converges as its own TTL
-expires. (Before #1118 the cache was never dropped at all, so a saved value
-could take a full minute even on the server that wrote it.)
+**A save of a numeric or on/off knob takes effect within a minute.** Each of
+the nine is read through a 60-second in-process cache. The server that handled
+your save drops its cache immediately; every other server in the deployment
+converges as its own TTL expires. (Before #1118 the cache was never dropped at
+all, so a saved value could take a full minute even on the server that wrote
+it.) **The keyword index language is the exception**: it is read uncached, and
+saving it rebuilds every page's `tsv` inside the request, so it is in effect
+the moment the save returns — and the save takes as long as re-indexing your
+corpus does (see below). If that rebuild fails, the language is rolled back
+with it, so the setting and the index cannot disagree.
 
 **The rerank *stage* is not on this panel.** It is on if and only if a `rerank`
 use-case assignment exists (ADR-021 — rerank never inherits the default
@@ -447,6 +452,14 @@ configuration — rather than taking effect on the next cached read. And the
 value is not a range but a closed allow-list, because PostgreSQL has no
 bind-parameter form for a `regconfig`, so the name is interpolated into the
 search SQL.
+
+The row and the rebuild are **one transaction**, with `statement_timeout`
+lifted for its duration (a `PG_STATEMENT_TIMEOUT` deployment would otherwise
+kill a corpus-wide UPDATE deterministically). So the save is slow on a large
+corpus, and if it fails nothing changed: the language stays as it was and you
+can retry. It is not touched by **Reset all to defaults** in the panel — a
+bulk reset of nine cheap knobs must not quietly re-index your corpus back to
+`simple`. Change it from its own control.
 
 > **`FTS_LANGUAGE` is removed (#1114).** It was documented as the way to set
 > this and never worked on a migrated instance: migration 049 seeds the

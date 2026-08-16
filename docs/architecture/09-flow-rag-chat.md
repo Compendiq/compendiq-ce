@@ -1105,7 +1105,13 @@ states the condition where an operator will meet it.
   fact still indexing with `simple`, which is the worst possible failure for
   a non-English corpus because it is silent and looks like a working search.
   A set `FTS_LANGUAGE` is now reported as ignored at startup. Saving the
-  setting rebuilds every page's `tsv` in the same request; the allow-list
+  setting rebuilds every page's `tsv` in the same request, and the row and the
+  rebuild are **one transaction** (with `SET LOCAL statement_timeout = 0`, as
+  `shadow-migration-service.ts` does for its own corpus-wide statements): two
+  autocommitted statements would let a failed rebuild leave the row saying
+  `german` while every `tsv` was still built as `simple` — the same silent
+  wrong-index failure the env var caused, reached from the panel instead. The
+  allow-list
   (`FTS_LANGUAGES` in `packages/contracts`) is shared by the select, the
   route and `getFtsLanguage`, and is closed because the chosen name is
   interpolated into SQL — PostgreSQL has no bind-parameter form for a

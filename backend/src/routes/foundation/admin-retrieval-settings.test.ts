@@ -20,9 +20,20 @@ import { adminRoutes } from './admin.js';
  */
 
 const mockQuery = vi.fn();
+const mockRelease = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (sql: string, params?: unknown[]) => mockQuery(sql, params),
-  getPool: vi.fn().mockReturnValue({}),
+  // #1114 — the keyword-index save runs on a CHECKED-OUT client inside a
+  // transaction, so the fake pool has to hand one out. Its statements go
+  // through the same `mockQuery`, which models BEGIN / COMMIT / ROLLBACK
+  // below: a rolled-back write must really be invisible in `rows`, or the
+  // atomicity assertions would pass against a handler that has none.
+  getPool: vi.fn().mockReturnValue({
+    connect: async () => ({
+      query: (sql: string, params?: unknown[]) => mockQuery(sql, params),
+      release: mockRelease,
+    }),
+  }),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
@@ -82,6 +93,20 @@ import {
  */
 let rows: Record<string, string>;
 
+/**
+ * Writes made since `BEGIN`, applied to `rows` on COMMIT and dropped on
+ * ROLLBACK. `null` outside a transaction, where writes autocommit.
+ */
+let pending: Record<string, string> | null;
+
+/**
+ * #1114 — when true, the corpus-wide `UPDATE pages SET tsv` fails the way a
+ * `PG_STATEMENT_TIMEOUT` deployment makes it fail (57014). That is the case
+ * that used to leave `fts_language` committed while every `tsv` still held
+ * the previous configuration.
+ */
+let rebuildFails: boolean;
+
 function settingKeysIn(sql: string): string[] {
   // The getters' SELECTs name their key(s) as literals except the confidence
   // reader, which parameterises. Both shapes are handled by the caller.
@@ -90,19 +115,45 @@ function settingKeysIn(sql: string): string[] {
 
 beforeEach(() => {
   rows = {};
+  pending = null;
+  rebuildFails = false;
+  mockRelease.mockReset();
   mockQuery.mockReset();
   mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+    if (/^\s*BEGIN/i.test(sql)) {
+      pending = {};
+      return { rows: [], rowCount: 0 };
+    }
+    if (/^\s*COMMIT/i.test(sql)) {
+      Object.assign(rows, pending ?? {});
+      pending = null;
+      return { rows: [], rowCount: 0 };
+    }
+    if (/^\s*ROLLBACK/i.test(sql)) {
+      pending = null;
+      return { rows: [], rowCount: 0 };
+    }
+    if (/UPDATE pages SET tsv/i.test(sql)) {
+      if (rebuildFails) {
+        const err = Object.assign(new Error('canceling statement due to statement timeout'), {
+          code: '57014',
+        });
+        throw err;
+      }
+      return { rows: [], rowCount: 0 };
+    }
     if (/^\s*INSERT INTO admin_settings/i.test(sql)) {
       // Two upsert shapes reach this table: the batch one binds `($1, $2)`,
       // while `fts_language` names its key as a literal and binds only the
       // value (it is written on its own, ahead of the tsvector rebuild).
+      const target = pending ?? rows;
       const literalKey = sql.match(/VALUES\s*\('([a-z_]+)'/);
       if (literalKey) {
-        rows[literalKey[1]!] = String((params as unknown[])[0]);
+        target[literalKey[1]!] = String((params as unknown[])[0]);
         return { rows: [], rowCount: 1 };
       }
       const [key, value] = params as [string, string];
-      rows[key] = value;
+      target[key] = value;
       return { rows: [], rowCount: 1 };
     }
     if (/SELECT setting_key, setting_value FROM admin_settings/i.test(sql)) {
@@ -405,6 +456,18 @@ describe('admin settings — the keyword-index language comes from the row alone
     expect(res.json()).toMatchObject({ ftsLanguage: 'german' });
   });
 
+  it('GET answers what the reader resolves, not the raw row', async () => {
+    // A row that never passed through Zod — psql, a restored dump, a future
+    // migration. `getFtsLanguage` discards it and the keyword leg really runs
+    // `simple`, so reporting the raw value would show the panel a language
+    // search is not using — and one `AdminSettingsSchema` itself rejects,
+    // leaving the select with no matching option and Save disabled.
+    rows['fts_language'] = 'klingon';
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ftsLanguage: 'simple' });
+  });
+
   it('PUT persists the language and rebuilds every page tsvector with it', async () => {
     const res = await put({ ftsLanguage: 'german' });
     expect(res.statusCode).toBe(200);
@@ -417,6 +480,56 @@ describe('admin settings — the keyword-index language comes from the row alone
     // Bound, not interpolated, on this one statement — the reader's
     // interpolation is what the allow-list exists for.
     expect(rebuild![1]).toEqual(['german']);
+  });
+
+  it('writes the row and rebuilds the corpus in ONE transaction', async () => {
+    await put({ ftsLanguage: 'german' });
+
+    const sqls = mockQuery.mock.calls.map(([sql]) => String(sql));
+    const begin = sqls.findIndex((s) => /^\s*BEGIN/i.test(s));
+    const upsert = sqls.findIndex((s) => /INSERT INTO admin_settings[\s\S]*'fts_language'/i.test(s));
+    const rebuild = sqls.findIndex((s) => /UPDATE pages SET tsv/i.test(s));
+    const commit = sqls.findIndex((s) => /^\s*COMMIT/i.test(s));
+
+    expect(begin, 'the language save must open a transaction').toBeGreaterThanOrEqual(0);
+    expect(upsert).toBeGreaterThan(begin);
+    expect(rebuild).toBeGreaterThan(upsert);
+    expect(commit).toBeGreaterThan(rebuild);
+    // A corpus-wide rebuild is exactly the statement a deployment's
+    // PG_STATEMENT_TIMEOUT kills, and it is applied pool-wide.
+    expect(sqls.some((s) => /SET LOCAL statement_timeout = 0/i.test(s))).toBe(true);
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('stores no language when the rebuild fails, so the row cannot outlive the index', async () => {
+    // Before the transaction, the upsert autocommitted first: a rebuild that
+    // timed out left `fts_language = german` with every `tsv` still built
+    // with the previous configuration, and the panel reported the language
+    // search was NOT using — the silent wrong-index failure this issue is
+    // about, reachable from a control whose copy promises the rebuild.
+    rebuildFails = true;
+
+    const res = await put({ ftsLanguage: 'german' });
+
+    expect(res.statusCode).toBeGreaterThanOrEqual(500);
+    // What the admin needs to know is that nothing changed, so a retry is
+    // safe — not the driver's own message.
+    expect(res.json().error ?? res.json().message).toMatch(/was not changed/i);
+    expect(stored('fts_language'), 'the row must roll back with the rebuild').toBeUndefined();
+    expect(mockQuery.mock.calls.some(([sql]) => /^\s*ROLLBACK/i.test(String(sql)))).toBe(true);
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('keeps the other knobs saved in the same request when the rebuild fails', async () => {
+    // The panel batches the language with the nine knobs into one PUT, so a
+    // rebuild failure must not discard settings that already validated and
+    // have nothing to do with the keyword index.
+    rebuildFails = true;
+
+    await put({ ftsLanguage: 'german', ragFetchWidth: 40 });
+
+    expect(stored('rag_fetch_width')).toBe('40');
+    await expect(getRagFetchWidth()).resolves.toBe(40);
   });
 
   it('refuses a configuration outside the contracts allow-list, writing nothing', async () => {
