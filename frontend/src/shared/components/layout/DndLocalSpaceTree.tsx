@@ -159,8 +159,13 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
             onClick={handleToggle}
             // z-10: see the twin in SidebarTreeNode — the guide's click target
             // and a child chevron share ~6px of column at a 12px indent.
-            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground"
             style={{ left: `${level * 12 + 2}px` }}
+            // Mouse-only, out of the tab order and the a11y tree — see the twin
+            // in SidebarTreeNode for why (it was defeating the roving tabindex
+            // and announcing a bare "Expand" with no object).
+            tabIndex={-1}
+            aria-hidden="true"
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
           >
             {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -185,6 +190,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
             className="indent-guide"
             style={{ left: `${level * 12 + 8}px` }}
             aria-label={`Collapse ${node.page.title}`}
+            aria-hidden="true"
             tabIndex={-1}
           />
           {node.children.map((child, idx) => (

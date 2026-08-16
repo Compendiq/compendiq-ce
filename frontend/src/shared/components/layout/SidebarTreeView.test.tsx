@@ -1345,6 +1345,113 @@ describe('SidebarTreeNode memoization', () => {
   });
 
   // ---------------------------------------------------------------------
+  // Keyboard and landmark semantics.
+  // ---------------------------------------------------------------------
+
+  it('keeps exactly one tab stop no matter how many parents are expanded', () => {
+    // The tree's roving tabindex promises "exactly one row is ever
+    // tab-stoppable". Every chevron was a plain <button> with no tabIndex, so
+    // it was natively focusable and the promise was false: a 20-parent tree was
+    // 21 tab stops. Nothing is lost by removing them — the row carries
+    // aria-expanded and sidebar-tree-keyboard handles ArrowRight/ArrowLeft.
+    const tree = makeNode('p', 'Parent', [
+      makeNode('c1', 'Child 1', [makeNode('g1', 'Grandchild')]),
+      makeNode('c2', 'Child 2'),
+    ]);
+
+    const { container } = render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={tree}
+          level={0}
+          expandedSet={new Set(['p', 'c1'])}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+          isAiRoute={false}
+          rovingId="p"
+          onRowFocus={vi.fn()}
+          onRowKeyDown={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    const tabStops = [...container.querySelectorAll<HTMLElement>('a,button,[tabindex]')]
+      .filter((el) => el.getAttribute('tabindex') !== '-1');
+    expect(tabStops).toHaveLength(1);
+    expect(tabStops[0].getAttribute('role')).toBe('treeitem');
+    // Four rows rendered, so this is not passing by rendering nothing.
+    expect(screen.getAllByRole('treeitem')).toHaveLength(4);
+  });
+
+  it('hides the chevron and indent guide from assistive tech', () => {
+    const parent = makeNode('parent', 'Parent', [makeNode('child-1', 'Child')]);
+
+    const { container } = render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={parent}
+          level={0}
+          expandedSet={new Set(['parent'])}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+          isAiRoute={false}
+        />
+      </MemoryRouter>,
+    );
+
+    // Both are mouse shortcuts for something the row already exposes; two
+    // announced ways to collapse the same node is noise, and the chevron's
+    // bare "Collapse" named nothing anyway.
+    const chevron = screen.getByLabelText('Collapse');
+    expect(chevron).toHaveAttribute('aria-hidden', 'true');
+    expect(chevron).toHaveAttribute('tabindex', '-1');
+
+    const guide = container.querySelector('.indent-guide')!;
+    expect(guide).toHaveAttribute('aria-hidden', 'true');
+    expect(guide).toHaveAttribute('tabindex', '-1');
+
+    // The row remains the control, and still says so.
+    expect(screen.getAllByRole('treeitem')[0]).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('stays a named complementary landmark in both expanded and collapsed states', () => {
+    const { unmount } = render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.getByRole('complementary', { name: 'Page tree' })).toBeInTheDocument();
+    unmount();
+
+    // Collapsing used to render a <div>, deleting the landmark outright — a
+    // screen-reader user who collapsed the tree lost the region, not just its
+    // contents.
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.getByRole('complementary', { name: 'Page tree' })).toBeInTheDocument();
+  });
+
+  it('keeps the current scope visible on the collapsed rail', () => {
+    // Collapsing dropped every trace of scope — not the space, not the open
+    // page, not the count — so the rail could not answer "which space am I in?"
+    // and expanding was the only way to find out.
+    useUiStore.setState({ treeSidebarCollapsed: true, treeSidebarSpaceKey: 'DEV' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    const scope = screen.getByTestId('rail-space-scope');
+    expect(scope).toHaveAccessibleName(/Development/);
+
+    // It is also the way back: activating it expands the panel.
+    fireEvent.click(scope);
+    expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
+  });
+
+  it('announces the resize handle width with a unit', () => {
+    useUiStore.setState({ treeSidebarWidth: 320 });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // aria-valuenow alone announces a bare "320" on a control whose entire job
+    // is a measurement.
+    expect(screen.getByRole('separator', { name: 'Resize tree sidebar' }))
+      .toHaveAttribute('aria-valuetext', '320 pixels');
+  });
+
+  // ---------------------------------------------------------------------
   // Row gutter (see SidebarTreeNode's style comment).
   //
   // These pin the reclaimed horizontal budget. The panel's job is choosing a

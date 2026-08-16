@@ -227,8 +227,28 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
             // its children's chevrons now share ~6px of column. Without this the
             // guide would sit on top and clicking a child's left edge would
             // collapse its parent instead of toggling the child.
-            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground"
             style={{ left: `${level * 12 + 2}px` }}
+            // A MOUSE affordance, and only that — hence out of the tab order and
+            // out of the accessibility tree.
+            //
+            // As a plain <button> it was natively focusable, so the tree's
+            // roving tabindex ("exactly one row is ever tab-stoppable") was
+            // defeated by every parent: a 20-parent tree was 21 tab stops, not
+            // one. And each announced the same bare "Expand" with no object, so
+            // in a list of twenty identical "Expand" buttons none of them could
+            // be told apart anyway.
+            //
+            // Nothing is lost. The row IS the control per ARIA APG: it carries
+            // aria-expanded, and sidebar-tree-keyboard handles ArrowRight to
+            // expand-then-descend and ArrowLeft to collapse, both covered by
+            // its own tests. aria-hidden is safe on a tabindex="-1" element —
+            // axe's aria-hidden-focus rule tests tab-order focusability.
+            //
+            // The aria-label stays as a test hook and an intent marker; it is
+            // not announced.
+            tabIndex={-1}
+            aria-hidden="true"
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
           >
             {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -256,7 +276,11 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
             onClick={handleToggle}
             className="indent-guide"
             style={{ left: `${level * 12 + 8}px` }}
+            // Same story as the chevron above: a mouse shortcut duplicating a
+            // control the row already exposes, so it is hidden rather than
+            // announced as a second way to do the same thing.
             aria-label={`Collapse ${node.page.title}`}
+            aria-hidden="true"
             tabIndex={-1}
           />
           {node.children.map((child) => (
@@ -604,14 +628,32 @@ export function SidebarTreeView({
     containerRef: treeScrollRef,
   });
 
+  // A local space's chosen icon (spaces.icon) brands the selector chip;
+  // unset falls back to the generic HardDrive local mark inside getSpaceIcon.
+  // Confluence spaces and "All Spaces" keep Globe. Computed above the collapsed
+  // branch because the rail shows it too.
+  const SelectedSpaceGlyph =
+    selectedSpaceOption?.source === 'local'
+      ? getSpaceIcon(selectedSpaceOption.icon)
+      : Globe;
+  const selectedSpaceLabel = selectedSpaceOption?.name ?? 'All Spaces';
+
   // Collapsed rail -- nav icons + expand toggle
   const collapsed = treeSidebarCollapsed || forceCollapsed;
 
   if (collapsed) {
     return (
       <AnimatePresence mode="wait">
-        <m.div
+        {/* <aside>, not <div>. The expanded panel below is an <aside>, so
+            collapsing the rail used to DELETE the complementary landmark from
+            the page — a screen-reader user who collapsed the tree lost the
+            region, not just its contents. Both branches are the same region in
+            two sizes, and both are named: the app renders two unlabelled
+            <aside>s otherwise (this and the article inspector), which announce
+            as two indistinguishable "complementary" regions. */}
+        <m.aside
           key="collapsed-rail"
+          aria-label="Page tree"
           initial={reduceEffects ? false : { width: 0, opacity: 0 }}
           animate={{ width: 40, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
@@ -639,7 +681,28 @@ export function SidebarTreeView({
 
           {/* Nav icons */}
           <MainNavStripCollapsed onNavigate={onNavigate} />
-        </m.div>
+
+          {/* Current scope. Collapsing used to drop every trace of it — not the
+              space, not the open page, not the count — so the one question the
+              rail could not answer was "which space am I looking at?", and the
+              only way to find out was to expand. It is the selector's own glyph,
+              and it expands the panel, so it reads as scope AND acts as a way
+              back to changing it. */}
+          <div className="mt-2 flex w-full flex-col items-center border-t border-border pt-2">
+            <button
+              onClick={() => {
+                if (forceCollapsed && !treeSidebarCollapsed) onForceExpand?.();
+                else toggleTreeSidebar();
+              }}
+              data-testid="rail-space-scope"
+              className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary-ink transition-colors hover:bg-primary/20"
+              aria-label={`Scope: ${selectedSpaceLabel}. Expand sidebar to change.`}
+              title={selectedSpaceLabel}
+            >
+              <SelectedSpaceGlyph size={14} aria-hidden="true" />
+            </button>
+          </div>
+        </m.aside>
       </AnimatePresence>
     );
   }
@@ -648,23 +711,16 @@ export function SidebarTreeView({
   const confluenceOptions = allSpaces.filter((s) => s.source === 'confluence');
   const localOptions = allSpaces.filter((s) => s.source === 'local');
 
-  // A local space's chosen icon (spaces.icon) brands the selector chip;
-  // unset falls back to the generic HardDrive local mark inside getSpaceIcon.
-  // Confluence spaces and "All Spaces" keep Globe.
-  const SelectedSpaceGlyph =
-    selectedSpaceOption?.source === 'local'
-      ? getSpaceIcon(selectedSpaceOption.icon)
-      : Globe;
-
   return (
     <m.aside
       ref={sidebarRef}
       key="expanded-sidebar"
+      aria-label="Page tree"
       initial={reduceEffects ? false : { width: 0, opacity: 0 }}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
       transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'app-sidebar relative flex flex-col border-r overflow-hidden',
+        'app-sidebar relative flex max-w-full flex-col border-r overflow-hidden',
         isResizing && 'select-none',
       )}
     >
@@ -1161,6 +1217,9 @@ export function SidebarTreeView({
         aria-valuemin={180}
         aria-valuemax={600}
         aria-valuenow={treeSidebarWidth}
+        // Without this a screen reader announces a bare "256" — a number with
+        // no unit, on a control whose whole job is a measurement.
+        aria-valuetext={`${treeSidebarWidth} pixels`}
         tabIndex={0}
         onMouseDown={handleResizeStart}
         onDoubleClick={() => setTreeSidebarWidth(280)}

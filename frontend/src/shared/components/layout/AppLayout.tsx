@@ -522,7 +522,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
               transition={{ type: 'spring', stiffness: 400, damping: 35 }}
-              className="fixed inset-y-0 left-0 z-50 w-72 md:hidden"
+              // The sidebar inside animates to the persisted `treeSidebarWidth`,
+              // which clamps at 600 — so a fixed `w-72` (288px) container let a
+              // user who had widened the tree on desktop overflow the drawer on
+              // a phone. Sizing the drawer to the viewport with a cap contains
+              // it, and `overflow-hidden` makes that a clip rather than a
+              // horizontal scroll. The sidebar itself carries `max-w-full`.
+              className="fixed inset-y-0 left-0 z-50 w-[85vw] max-w-[20rem] overflow-hidden md:hidden"
             >
               {isSettingsRoute
                 ? <SettingsSidebar onNavigate={closeMobileSidebar} />
