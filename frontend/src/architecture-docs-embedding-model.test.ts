@@ -135,3 +135,97 @@ describe('06-data-model.md page_embeddings.embedding attribute (#1114)', () => {
     expect(comment).not.toMatch(PINNED_WIDTH_RE);
   });
 });
+
+/**
+ * Docs↔code drift guards for the two claims the #1114 prose makes ABOUT
+ * BACKEND CODE. Both were review findings on the first cut of this PR: the
+ * docs stated something the code does not do, and nothing would have gone red.
+ * Reading backend source from a frontend test is the `nginx-api-body-limit`
+ * precedent — the assertion belongs wherever the claim is written down, and
+ * these claims are written down in `docs/`.
+ *
+ * Neither is a mirror of the prose: they pin the code facts the prose depends
+ * on, so the failure message says which sentence has gone stale.
+ */
+const backendSrc = resolve(__dirname, '../../backend/src');
+
+describe('backend facts the #1114 docs assert (#1114 review)', () => {
+  /** Every .ts under backend/src, tests included. */
+  function backendSources(dir = backendSrc): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = resolve(dir, entry.name);
+      if (entry.isDirectory()) out.push(...backendSources(full));
+      else if (entry.name.endsWith('.ts')) out.push(full);
+    }
+    return out;
+  }
+
+  it('EMBEDDING_MODEL is inert — nothing reads its value', () => {
+    // ADR-012's `#1114` amendment and 06-data-model.md both say `bge-m3` is
+    // NOT injected by an env var: `EMBEDDING_MODEL` has had no effect since
+    // migration 054 and survives only in `llm-provider-bootstrap.ts`'s
+    // `DEPRECATED_VARS` list, where the deprecation loop tests it for
+    // truthiness through `process.env[v]` and logs. That dynamic read is why
+    // this looks for an explicit one instead of the bare name.
+    const readers = backendSources()
+      .filter((f) => /process\.env\.EMBEDDING_MODEL|process\.env\[\s*['"]EMBEDDING_MODEL/.test(
+        readFileSync(f, 'utf-8'),
+      ))
+      .map((f) => f.slice(backendSrc.length + 1));
+
+    expect(
+      readers,
+      'Something reads `process.env.EMBEDDING_MODEL` again. The docs say it has no ' +
+        'effect since migration 054 (ADR-012 `#1114` amendment, and 06-data-model.md ' +
+        '→ "Which model, in practice") — update them, or drop the read.',
+    ).toEqual([]);
+  });
+
+  it('EMBEDDING_DIMENSIONS is still the width fallback (non-vacuity)', () => {
+    // The same paragraphs draw a line between the two env vars: the width DOES
+    // fall back to env when `admin_settings.embedding_dimensions` is missing.
+    // Without this, a typo in the regex above would make that test pass over
+    // nothing and the distinction the docs draw would be unguarded.
+    const readers = backendSources()
+      .filter((f) => /process\.env\.EMBEDDING_DIMENSIONS/.test(readFileSync(f, 'utf-8')))
+      .map((f) => f.slice(backendSrc.length + 1));
+
+    expect(readers).toContain('core/services/admin-settings-service.ts');
+  });
+
+  it('/api/search mode=semantic still embeds the query bare (#1339 open)', () => {
+    // 08-flow-sync.md and 09-flow-rag-chat.md both now say the #1329 query
+    // prefix is applied on the RAG leg ONLY, and name `/api/search`'s semantic
+    // mode as the query-side call that misses it. `query-instruction.test.ts`
+    // cannot see this: its discovery roots are `domains/llm/services` and
+    // `domains/llm/eval`, so a route file is outside them entirely.
+    //
+    // This failing is GOOD NEWS — it means #1339 was fixed. Delete the "open
+    // gap" paragraphs in both docs, the comments in `routes/knowledge/search.ts`
+    // and `rag-service.ts`, and then this assertion.
+    const search = readFileSync(resolve(backendSrc, 'routes/knowledge/search.ts'), 'utf-8');
+    // Comments stripped: the file *names* `formatQueryForEmbedding` in the
+    // comment that records this gap, and a naive substring match would read
+    // its own documentation as the fix.
+    const code = search.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    expect(code, 'the query-side embedding call this guard tracks has moved').toMatch(
+      /generateEmbedding\(/,
+    );
+    expect(
+      /formatQueryForEmbedding/.test(code),
+      'routes/knowledge/search.ts now applies the query prefix — #1339 is closed. ' +
+        'Remove the open-gap notes from 08-flow-sync.md, 09-flow-rag-chat.md, ' +
+        'rag-service.ts and search.ts, then delete this assertion.',
+    ).toBe(false);
+
+    // Non-vacuity in the other direction: the docs must actually carry the
+    // caveat while the gap is open, in both files that make the claim.
+    for (const file of ['08-flow-sync.md', '09-flow-rag-chat.md']) {
+      expect(
+        readFileSync(resolve(architectureDir, file), 'utf-8'),
+        `${file} states the query-prefix asymmetry but no longer names the /api/search gap`,
+      ).toContain('#1339');
+    }
+  });
+});

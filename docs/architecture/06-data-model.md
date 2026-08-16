@@ -358,9 +358,17 @@ together, which matters most for #1114's query-side prefix.
   `backend/src/domains/llm/services/embedding-service.ts` (`enqueueReembedAll`).
 
   **Which model, in practice.** `bge-m3` at 1024 (`vector(1024)` + HNSW) is the
-  **bootstrap default** — the fresh-install fallback behind `EMBEDDING_MODEL` /
-  `EMBEDDING_DIMENSIONS`, which are deprecated and read only when the DB row is
-  absent. **Qwen3-Embedding-4B at 2560 native is the measured recommendation**
+  **bootstrap shape**, and only the *width* half of it is shipped by the code:
+  migration 048 types the column `vector(1024)` and writes
+  `admin_settings.embedding_dimensions = '1024'`, with the deprecated
+  `EMBEDDING_DIMENSIONS` env read only if that row goes missing. The *model* half
+  is not — `EMBEDDING_MODEL` has had no effect since migration 054 (it is logged
+  as deprecated and never read), nothing seeds a `bge-m3` assignment on a fresh
+  install, and `resolveUsecase('embedding')` therefore falls through to the
+  default provider's `default_model` until an admin assigns the use case in
+  Settings → AI Models. `bge-m3` is the model `.env.example` tells an operator
+  to pull, matching the width the schema ships.
+  **Qwen3-Embedding-4B at 2560 native is the measured recommendation**
   for production (#1114): that lands on the `halfvec(2560)` +
   `halfvec_cosine_ops` tier — at that width fp16 is not a fallback but the only
   indexed representation pgvector offers, and it was measured harmless at the

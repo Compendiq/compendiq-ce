@@ -472,14 +472,19 @@ CREATE TABLE llm_improvements (
 );
 ```
 
-> **Note on `page_embeddings.embedding` (#1114):** the DDL above is the
-> original migration, kept as written. **The live column type is
-> dimension-driven** — `columnTypeFor` picks `vector(n)` + HNSW `vector_cosine_ops`
-> up to 2000 dims, `halfvec(n)` + `halfvec_cosine_ops` from 2001 to 4000, and an
-> unindexed `vector(n)` above — from a width probed off the resolved `embedding`
-> model, not from a constant. `vector(1024)` is what a fresh install running the
-> `bge-m3` default ends up with, not what the schema mandates. See ADR-012's
-> `#1114` amendment and `docs/architecture/06-data-model.md`.
+> **Note on `page_embeddings.embedding` (#1114):** the DDL above is this ADR's
+> schema snapshot, not the migration file, and its `-- historical:` comment is an
+> annotation added here rather than migration text — `006_page_embeddings.sql`
+> actually shipped `embedding vector(768) NOT NULL` with no comment, and 1024
+> arrives only with migration 048 (`ALTER COLUMN embedding TYPE vector(1024)`,
+> which also writes `admin_settings.embedding_dimensions = '1024'`). **The live
+> column type is dimension-driven** — `columnTypeFor` picks `vector(n)` + HNSW
+> `vector_cosine_ops` up to 2000 dims, `halfvec(n)` + `halfvec_cosine_ops` from
+> 2001 to 4000, and an unindexed `vector(n)` above — from a width probed off the
+> resolved `embedding` model, not from a constant. So `vector(1024)` is where the
+> migrations leave a fresh install, not a width the schema mandates: a model swap
+> re-types the column. See ADR-012's `#1114` amendment and
+> `docs/architecture/06-data-model.md`.
 
 **Rationale**:
 - No ORM (same pattern as reference project) - parameterized SQL only for security
@@ -990,6 +995,18 @@ Changing the embedding model via admin settings triggers automatic re-embedding 
 rebuilds the HNSW index with the new dimensions. This is
 a deliberate trade-off: dimension changes require HNSW index rebuilds.
 
+> **Corrected (#1114, 2026-08-16):** the two env vars named in the paragraph
+> above are historical. Since ADR-021 / migration 054 the embedding **model** is
+> a DB use-case assignment (`resolveUsecase('embedding')`), and `EMBEDDING_MODEL`
+> has no effect whatsoever — `llm-provider-bootstrap.ts` keeps it only to log a
+> deprecation notice, and nothing reads its value. The **width** is probed from
+> the resolved model rather than typed by an operator; `EMBEDDING_DIMENSIONS`
+> survives only as the fallback for a missing `admin_settings.embedding_dimensions`
+> row. The rest still holds — the pair is server-wide, and a change still means a
+> re-embed and an index rebuild — except that since #1116 the non-destructive
+> route is the shadow migration rather than the in-place `enqueueReembedAll`. See
+> the `#1114` amendment at the end of this ADR.
+
 #### Background Embedding Worker
 - Runs as a background task after sync
 - Processes pages where `embedding_dirty = TRUE`
@@ -1002,13 +1019,33 @@ a deliberate trade-off: dimension changes require HNSW index rebuilds.
 ### #1114 (2026-08-16) — the embedding model is dimension-driven, not `bge-m3` by definition
 
 **What changes:** nothing in the pipeline above, and everything about how the
-model is written down. `bge-m3`@1024 is a **bootstrap default** — the value
-`EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` supply on a fresh install, and those
-env vars are deprecated fallbacks consulted only when the DB row is absent. The
-live pair is `resolveUsecase('embedding')` (ADR-021) plus a width **probed from
-the model** (`startShadowMigration` embeds the literal text `probe` and takes
-`vectors[0].length`; no operator types a number). This amendment records the
-measured recommendation on top of that: **Qwen3-Embedding-4B at 2560 native.**
+model is written down. `bge-m3`@1024 is the **bootstrap shape** — and the two
+halves of that pair reach a fresh install by different routes, which is worth
+being exact about, because the ADR's own text above still says both come from
+env vars.
+
+- **The width does ship in the schema.** Migration 048 types the column
+  `vector(1024)` and writes `admin_settings.embedding_dimensions = '1024'`;
+  `getEmbeddingDimensions()` falls back to the deprecated `EMBEDDING_DIMENSIONS`
+  env (default 1024) only if that row is missing.
+- **The model does not.** `EMBEDDING_MODEL` has had **no effect since migration
+  054**: it survives only inside `llm-provider-bootstrap.ts`'s `DEPRECATED_VARS`
+  list so that setting it logs a notice — nothing reads its value, and
+  `docker-compose.yml` does not even pass it. No migration seeds a `bge-m3` row
+  either (054 seeds the `embedding` assignment only from a *pre-existing* legacy
+  `admin_settings.embedding_model`, which a fresh install does not have). So on
+  a fresh install `resolveUsecase('embedding')` falls through to the default
+  provider's `default_model` — whatever that happens to be — until an admin
+  assigns the `embedding` use case in Settings → AI Models. `bge-m3` is a
+  documented recommendation to pull (`.env.example`: "BGE-M3 via Ollama
+  (1024 dims). Run: `ollama pull bge-m3`") that matches the width the schema
+  ships, not a value the code injects.
+
+The live pair is `resolveUsecase('embedding')` (ADR-021) plus a width **probed
+from the model** (`startShadowMigration` embeds the literal text `probe` and
+takes `vectors[0].length`; no operator types a number). This amendment records
+the measured recommendation on top of that: **Qwen3-Embedding-4B at 2560
+native.**
 
 **Model choice: 4B@2560 native, over 8B+MRL and over 0.6B.** The epic's going-in
 choice was Qwen3-Embedding-8B truncated by MRL to 2000, to stay under pgvector's
@@ -1043,7 +1080,11 @@ at the vector leg's `generateEmbedding` only, keyed off the **resolved** model,
 so it turns on exactly when a swap makes Qwen3 live and off again on rollback
 with no second setting to keep in step. Documents are bare under every model, so
 the stored corpus is byte-identical either way and **flipping it needs no
-re-embed**.
+re-embed**. It is applied at that one call site and no other, which is not the
+same as covering every query: `/api/search` with `mode=semantic` has its own
+query-side `generateEmbedding` and does not prefix (**#1339**, open) — inert
+today, live the moment a swap makes this whole amendment's recommendation real —
+item 5 on the open list below.
 
 **Measured, on #1102's 197-query fixture, plain runs, no rerank.** Significance
 columns are McNemar exact on the paired per-query hits, except MRR, which is a
@@ -1084,9 +1125,10 @@ background backfill plus an atomic rename — and not `enqueueReembedAll`, whose
 the last page re-embeds, with the old vectors gone.
 
 **`bge-m3` stays the default.** This amendment is a recommendation with numbers
-behind it, not a change of the shipped default: a fresh install still bootstraps
-to `bge-m3`@1024 and `vector(1024)`, and an operator opts into 2560 through
-Settings → AI Models plus the shadow migration.
+behind it, not a change of shipped behaviour: a fresh install still lands on
+`vector(1024)` with `bge-m3` as the model the docs tell an operator to pull, and
+opting into 2560 is a deliberate act — Settings → AI Models plus the shadow
+migration.
 
 **Open, and explicitly not settled by the numbers above:**
 
@@ -1111,6 +1153,14 @@ Settings → AI Models plus the shadow migration.
    and the graph's edge count, none of which fail loudly.
 4. **Rerank interaction** — every run above is plain. #1104's cross-encoder
    stage was not live.
+5. **A second query-side embedding call skips the prefix (#1339).**
+   `/api/search` with `mode=semantic` embeds the raw search string in
+   `generateSearchEmbedding` (`routes/knowledge/search.ts`) without
+   `formatQueryForEmbedding`. It costs nothing under `bge-m3`, where the prefix
+   is a no-op, and becomes a silent retrieval regression on that one route
+   under Qwen3 — so it is a prerequisite of the swap, not of this decision.
+   `query-instruction.test.ts` cannot see it: its discovery roots stop at
+   `domains/llm`. `mode=hybrid` is unaffected (it goes through `hybridSearch`).
 
 ---
 
