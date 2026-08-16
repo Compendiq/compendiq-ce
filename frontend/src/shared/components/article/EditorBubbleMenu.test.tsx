@@ -14,6 +14,7 @@ vi.mock('../../lib/sse', () => ({
 
 import {
   BubbleMenuContent,
+  EditorBubbleMenu,
   improvePanelPlacement,
   selectionShouldShow,
   editorBubbleMenuPluginKey,
@@ -976,3 +977,49 @@ describe('BubbleMenuContent — empty result feedback', () => {
     expect(screen.queryByText('Fix spelling & grammar')).not.toBeInTheDocument();
   });
 });
+
+describe('EditorBubbleMenu — update loop prevention (#cpu)', () => {
+  function BubbleHarness({ onReady }: { onReady: (e: EditorType) => void }) {
+    const editor = useEditor({
+      extensions: [StarterKit],
+      content: '<p>Sample document</p>',
+      immediatelyRender: false,
+    });
+
+    useEffect(() => {
+      if (editor) onReady(editor);
+    }, [editor, onReady]);
+
+    if (!editor) return null;
+    return (
+      <>
+        <EditorContent editor={editor} />
+        <EditorBubbleMenu editor={editor} />
+      </>
+    );
+  }
+
+  it('does not continuously dispatch updateOptions transactions when idle', async () => {
+    let editor: EditorType | null = null;
+    let updateCount = 0;
+
+    render(<BubbleHarness onReady={(e) => {
+      editor = e;
+      e.on('transaction', ({ transaction }) => {
+        const meta = transaction.getMeta(editorBubbleMenuPluginKey);
+        if (meta && typeof meta === 'object' && (meta as { type?: string }).type === 'updateOptions') {
+          updateCount += 1;
+        }
+      });
+    }} />);
+
+    await waitFor(() => expect(editor).not.toBeNull());
+
+    // Give React and ProseMirror a window to settle.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Must be 0 (no extra transactions triggered by unmemoized options prop changes).
+    expect(updateCount).toBe(0);
+  });
+});
+

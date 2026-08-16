@@ -902,4 +902,28 @@ describe('ArticleViewer', () => {
       expect(checkbox.checked).toBe(true);
     });
   });
+
+  describe('text color and highlight in read mode', () => {
+    it('renders text color span in view mode', async () => {
+      const html = '<p><span style="color: rgb(239, 68, 68)">Colored text</span></p>';
+      const { container } = render(<ArticleViewer content={html} />);
+
+      await waitFor(() => {
+        const span = container.querySelector('span[style*="color"]');
+        expect(span).toBeTruthy();
+        expect(span?.textContent).toBe('Colored text');
+      });
+    });
+
+    it('renders text highlight mark in view mode', async () => {
+      const html = '<p><mark data-color="#fef08a" style="background-color: #fef08a">Highlighted text</mark></p>';
+      const { container } = render(<ArticleViewer content={html} />);
+
+      await waitFor(() => {
+        const mark = container.querySelector('mark');
+        expect(mark).toBeTruthy();
+        expect(mark?.textContent).toBe('Highlighted text');
+      });
+    });
+  });
 });

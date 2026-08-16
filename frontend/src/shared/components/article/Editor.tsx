@@ -13,7 +13,7 @@ import { Color } from '@tiptap/extension-color';
 import { lowlight } from '../../lib/lowlight';
 import { SearchAndReplaceExtension } from './search-extension';
 import { SearchAndReplace } from './SearchAndReplace';
-import { ArrowLeftFromLine, ArrowRightFromLine, Trash2, Columns3, Square } from 'lucide-react';
+import { ArrowLeftFromLine, ArrowRightFromLine, Trash2, Columns3, Columns2, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { apiFetch } from '../../lib/api';
@@ -56,6 +56,8 @@ import { VimExtension, type VimState } from './vim-extension';
 import { VimModeIndicator } from './VimModeIndicator';
 import { EditorBubbleMenu } from './EditorBubbleMenu';
 import { EditorBlockHandle } from './EditorBlockMenu';
+import { SlashCommandExtension } from './slash-command-extension';
+import { EditorSlashMenu } from './EditorSlashMenu';
 import { TableContextToolbar } from './EditorTableControls';
 export { TableContextToolbar };
 import {
@@ -65,6 +67,62 @@ import {
   syncTableLayoutAttributes,
 } from './table-cell-selection';
 import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar-primitives';
+
+export function EditorContextToolbars({
+  editor,
+  className,
+  innerClassName,
+}: {
+  editor: EditorType;
+  className?: string;
+  innerClassName?: string;
+}) {
+  const { inTable, inLayout, inSection } = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      inTable: e.isActive('table'),
+      inLayout: isInConfluenceLayout(e),
+      inSection: isInConfluenceSection(e),
+    }),
+  });
+
+  if (!inTable && !inLayout && !inSection) return null;
+
+  return (
+    <div
+      data-testid="editor-context-toolbars"
+      className={cn(
+        'absolute top-full inset-x-0 z-20 border-b border-border bg-card',
+        className,
+      )}
+    >
+      <div
+        className={cn(
+          'flex flex-wrap items-center gap-x-2 gap-y-1 bg-muted/20 px-2 py-1 text-xs text-card-foreground motion-safe:animate-in motion-safe:fade-in-50',
+          innerClassName,
+        )}
+      >
+        {inTable && <TableContextToolbar editor={editor} />}
+        {inTable && inLayout && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            className="mx-0.5 h-4 w-px bg-border max-sm:hidden"
+          />
+        )}
+        {inLayout && <LayoutContextToolbar editor={editor} />}
+        {(inTable || inLayout) && inSection && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            className="mx-0.5 h-4 w-px bg-border max-sm:hidden"
+          />
+        )}
+        {inSection && <ColumnContextToolbar editor={editor} />}
+      </div>
+    </div>
+  );
+}
 
 /**
  * The main toolbar moved to its own module when its 27 flat icons were
@@ -287,9 +345,12 @@ export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
       role="toolbar"
       aria-label="Layout editing controls"
       data-testid="layout-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-border bg-muted/20 px-2 py-1 text-xs text-card-foreground motion-safe:animate-in motion-safe:fade-in-50"
+      className="flex flex-wrap items-center gap-0.5 text-xs text-card-foreground"
     >
-      <span className="mr-1 text-xs font-semibold text-muted-foreground select-none">Layout</span>
+      <div className="flex h-8 items-center gap-1.5 px-1.5 text-foreground" data-testid="layout-toolbar-heading">
+        <Columns2 size={16} strokeWidth={1.9} aria-hidden="true" />
+        <span className="text-xs font-semibold">Layout</span>
+      </div>
 
       <ToolbarSeparator />
 
@@ -303,8 +364,6 @@ export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
           <LayoutPreview bars={preset.bars} />
         </ToolbarButton>
       ))}
-
-      <div className="flex-1" />
 
       <ToolbarButton
         onClick={() => editor.chain().focus().deleteLayout().run()}
@@ -331,9 +390,12 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
       role="toolbar"
       aria-label="Column editing controls"
       data-testid="column-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-border bg-muted/20 px-2 py-1 text-xs text-card-foreground motion-safe:animate-in motion-safe:fade-in-50"
+      className="flex flex-wrap items-center gap-0.5 text-xs text-card-foreground"
     >
-      <span className="mr-1 text-xs font-semibold text-muted-foreground select-none">Columns</span>
+      <div className="flex h-8 items-center gap-1.5 px-1.5 text-foreground" data-testid="column-toolbar-heading">
+        <Columns3 size={16} strokeWidth={1.9} aria-hidden="true" />
+        <span className="text-xs font-semibold">Columns</span>
+      </div>
 
       <ToolbarSeparator />
 
@@ -370,8 +432,6 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
       >
         <Square size={15} />
       </ToolbarButton>
-
-      <div className="flex-1" />
 
       {/* Delete row (section = row in Confluence layout model) */}
       <ToolbarButton
@@ -761,9 +821,19 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TableIndex,
       TitledCodeBlock.configure({ lowlight }),
       ConfluenceImage.configure({ inline: false }),
-      Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),
+      Placeholder.configure({
+        placeholder: ({ node, editor }) => {
+          if (placeholder && editor.isEmpty) return placeholder;
+          if (node.type.name === 'heading') {
+            return `Heading ${node.attrs.level}`;
+          }
+          return "Press '/' for commands";
+        },
+        includeChildren: true,
+      }),
       SearchAndReplaceExtension,
       BlockShortcutsExtension,
+      SlashCommandExtension,
       ...(vimEnabled ? [VimExtension.configure({
         onStateChange: setVimDisplayState,
         onSave: () => {
@@ -876,11 +946,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   return (
     <div className={cn('relative', naked ? '' : 'nm-card', headerNumbering && 'header-numbering')}>
       {editable && editor && !hideToolbar && (
-        <div className="sticky top-0 z-30 border-b border-border bg-card px-1">
+        <div className="sticky top-0 z-30 border-b border-border bg-card px-1 relative">
           <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} />
-          <TableContextToolbar editor={editor} />
-          <LayoutContextToolbar editor={editor} />
-          <ColumnContextToolbar editor={editor} />
+          <EditorContextToolbars editor={editor} innerClassName="px-1" />
         </div>
       )}
       {editable && editor && <SearchAndReplace editor={editor} />}
@@ -889,6 +957,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           menu live together in EditorBlockMenu: they share the hovered-node
           tracking, the handle lock and the target marker. */}
       {editable && editor && <EditorBlockHandle editor={editor} />}
+      {editable && editor && <EditorSlashMenu editor={editor} />}
       <EditorContent
         editor={editor}
         className={cn(

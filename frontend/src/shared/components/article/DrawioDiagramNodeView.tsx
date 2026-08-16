@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import { NodeViewWrapper } from '@tiptap/react';
 import { Pencil, Trash2, Plus, GripVertical } from 'lucide-react';
 import { DrawioEditor } from '../diagrams/DrawioEditor';
+import { useAuthenticatedSrc } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
 import type { NodeViewProps } from '@tiptap/react';
 
@@ -26,8 +27,9 @@ export function DrawioDiagramNodeView({ node, updateAttributes, deleteNode, edit
   const { src, alt, diagramName, xml, pngDataUri } = node.attrs;
 
   // The image to display: prefer pngDataUri (locally edited) over src (server-backed)
-  const displaySrc = pngDataUri || src;
-  const hasImage = Boolean(displaySrc);
+  const { blobSrc } = useAuthenticatedSrc(pngDataUri ? null : src);
+  const displaySrc = pngDataUri || blobSrc || src;
+  const hasImage = Boolean(pngDataUri || src);
   const hasXml = Boolean(xml);
 
   const handleEdit = useCallback(() => {

@@ -1,6 +1,6 @@
 import { Extension, Node, mergeAttributes, type Editor } from '@tiptap/core';
 import { Table } from '@tiptap/extension-table';
-import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
 import { toast } from 'sonner';
@@ -160,7 +160,7 @@ export const Details = Node.create({
             },
             focus(view) {
               if (!view.editable) return false;
-              const detailsEls = view.dom.querySelectorAll('details');
+              const detailsEls = view.dom.querySelectorAll('details:not([open])');
               detailsEls.forEach((el) => el.setAttribute('open', ''));
               return false;
             },
@@ -170,7 +170,7 @@ export const Details = Node.create({
           // On init: force open in edit mode
           function forceOpen() {
             if (!editorView.editable) return;
-            const detailsEls = editorView.dom.querySelectorAll('details');
+            const detailsEls = editorView.dom.querySelectorAll('details:not([open])');
             detailsEls.forEach((el) => el.setAttribute('open', ''));
           }
           // Run after initial render
@@ -1469,5 +1469,75 @@ export const BlockShortcutsExtension = Extension.create({
     };
   },
 });
+
+export type PanelType = 'info' | 'warning' | 'note' | 'tip';
+
+/**
+ * Inserts `node` and leaves the caret inside its first child, so the author
+ * types straight into the new box instead of underneath it.
+ */
+export function insertBlockWithCaret(editor: Editor, typeName: string, node: Record<string, unknown>) {
+  editor
+    .chain()
+    .focus()
+    .insertContent(node)
+    .command(({ tr, dispatch }) => {
+      if (!dispatch) return true;
+      const { from } = tr.selection;
+      let caret: number | null = null;
+      tr.doc.descendants((child, pos) => {
+        if (child.type.name === typeName && pos <= from) {
+          caret = pos + 2;
+        }
+        return true;
+      });
+      if (caret !== null) {
+        tr.setSelection(TextSelection.create(tr.doc, caret));
+      }
+      return true;
+    })
+    .run();
+}
+
+/**
+ * Inserts an empty panel and leaves the caret inside it, so the author types
+ * straight into the box instead of clearing out placeholder copy first.
+ */
+export function insertPanel(editor: Editor, panelType: PanelType) {
+  insertBlockWithCaret(editor, 'panel', {
+    type: 'panel',
+    attrs: { panelType },
+    content: [{ type: 'paragraph' }],
+  });
+}
+
+/**
+ * Inserts an expand section with an EMPTY summary and leaves the caret in it.
+ */
+export function insertExpandSection(editor: Editor, macroName: 'expand' | 'ui-expand' = 'expand') {
+  insertBlockWithCaret(editor, 'details', {
+    type: 'details',
+    attrs: { macroName },
+    content: [
+      { type: 'detailsSummary' },
+      { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
+    ],
+  });
+}
+
+/** Wrap the image at the caret in a `figure` so it can carry a caption. */
+export function captionSelectedImage(editor: Editor) {
+  const { from } = editor.state.selection;
+  const node = editor.state.doc.nodeAt(from);
+  if (node?.type.name !== 'image') return;
+  editor
+    .chain()
+    .deleteRange({ from, to: from + node.nodeSize })
+    .insertContentAt(from, {
+      type: 'figure',
+      content: [{ type: 'image', attrs: node.attrs }, { type: 'figcaption' }],
+    })
+    .run();
+}
 
 

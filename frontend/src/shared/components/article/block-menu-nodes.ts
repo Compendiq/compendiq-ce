@@ -184,6 +184,64 @@ export function containsLossyMarks(doc: PMNode, from: number, to: number): boole
   });
 }
 
+let lastMouseCoords: { x: number; y: number } | null = null;
+if (typeof window !== 'undefined') {
+  window.addEventListener(
+    'mousemove',
+    (e) => {
+      lastMouseCoords = { x: e.clientX, y: e.clientY };
+    },
+    { passive: true, capture: true },
+  );
+}
+
+const rectCache = new WeakMap<Element, { time: number; rect: DOMRect }>();
+
+export function getCachedBoundingClientRect(el: Element): DOMRect {
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const cached = rectCache.get(el);
+  if (cached && now - cached.time < 50) {
+    return cached.rect;
+  }
+  const rect = el.getBoundingClientRect();
+  rectCache.set(el, { time: now, rect });
+  return rect;
+}
+
+const domCache = new WeakMap<object, { time: number; map: Map<number, Element | null> }>();
+
+function getDomElement(view: unknown, pos: number): Element | null {
+  if (!view || typeof view !== 'object' || pos < 0) return null;
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  let entry = domCache.get(view);
+  if (!entry || now - entry.time > 50) {
+    entry = { time: now, map: new Map() };
+    domCache.set(view, entry);
+  }
+  if (entry.map.has(pos)) {
+    return entry.map.get(pos) ?? null;
+  }
+  const v = view as { nodeDOM?: (pos: number) => Node | null; domAtPos?: (pos: number) => { node?: Node } };
+  let result: Element | null = null;
+  try {
+    const dom = v.nodeDOM?.(pos);
+    if (dom && 'getBoundingClientRect' in dom && typeof (dom as Element).getBoundingClientRect === 'function') {
+      result = dom as Element;
+    } else {
+      const domAtPos = v.domAtPos?.(pos)?.node;
+      if (domAtPos && 'getBoundingClientRect' in domAtPos && typeof (domAtPos as Element).getBoundingClientRect === 'function') {
+        result = domAtPos as Element;
+      } else if (domAtPos?.parentElement && typeof domAtPos.parentElement.getBoundingClientRect === 'function') {
+        result = domAtPos.parentElement;
+      }
+    }
+  } catch {
+    // Ignore DOM resolution errors during unmount or synthetic events
+  }
+  entry.map.set(pos, result);
+  return result;
+}
+
 /**
  * Configuration for nested drag handle behavior.
  * Enables drag handles on blocks inside columns, layout cells, panels, quotes, and expand sections,
@@ -200,6 +258,7 @@ export const NESTED_DRAG_OPTIONS = {
           'confluenceColumn',
           'confluenceLayoutCell',
           'confluenceLayoutSection',
+          'detailsSummary',
           'tableRow',
           'tableCell',
           'tableHeader',
@@ -212,6 +271,116 @@ export const NESTED_DRAG_OPTIONS = {
         return 0;
       },
     },
+    {
+      id: 'notionContainerTitleAnchor',
+      evaluate: ({
+        node,
+        pos,
+        depth,
+        $pos,
+        view,
+      }: {
+        node: { type: { name: string }; childCount?: number };
+        pos?: number;
+        depth?: number;
+        $pos?: { depth: number; index?: (d?: number) => number; before?: (d?: number) => number; node?: (d?: number) => { type: { name: string } } } | null;
+        view?: unknown;
+      }) => {
+        const currentDepth = depth ?? 0;
+        const cursorDepth = $pos?.depth ?? 0;
+        const childCount = (node as { childCount?: number }).childCount ?? 0;
+        const nodeName = node.type.name;
+
+        const outerContainerTypes = [
+          'confluenceSection',
+          'confluenceLayout',
+          'panel',
+          'details',
+          'blockquote',
+        ];
+        const isOuterContainer = outerContainerTypes.includes(nodeName);
+
+        // Check if pointer is in the outer left gutter (to the left of the container boundary)
+        let isPointerInOuterGutter = false;
+        if (lastMouseCoords && view) {
+          if (isOuterContainer && pos !== undefined) {
+            const containerDom = getDomElement(view, pos);
+            if (containerDom) {
+              const rect = getCachedBoundingClientRect(containerDom);
+              if (lastMouseCoords.x < rect.left + 16) {
+                isPointerInOuterGutter = true;
+              }
+            }
+          } else if (currentDepth > 1 && $pos?.before) {
+            const ancestorNode = $pos.node ? $pos.node(1) : null;
+            if (ancestorNode && outerContainerTypes.includes(ancestorNode.type.name)) {
+              const ancestorPos = $pos.before(1);
+              const ancestorDom = getDomElement(view, ancestorPos);
+              if (ancestorDom) {
+                const rect = getCachedBoundingClientRect(ancestorDom);
+                if (lastMouseCoords.x < rect.left + 16) {
+                  isPointerInOuterGutter = true;
+                }
+              }
+            }
+          }
+        }
+
+        // When pointer is in the outer left gutter:
+        // The outer container is the intended target (Score 1000), and inner blocks yield (deduction 1000).
+        if (isPointerInOuterGutter) {
+          if (isOuterContainer) {
+            return 0;
+          }
+          if (currentDepth > 1) {
+            return 1000;
+          }
+        }
+
+        // When pointer is inside the content area of the container:
+        // Multi-column layouts: sections and layout containers always yield to their column content
+        // and never steal focus when hovering inside columns or between column blocks.
+        if (nodeName === 'confluenceSection' || nodeName === 'confluenceLayout') {
+          if (cursorDepth >= currentDepth) {
+            return 1000;
+          }
+          return 0;
+        }
+
+        // Expand sections (details): only anchor the whole Expand handle when hovering the title (index 0).
+        // Body content and gaps between body blocks never jump to the parent expand container.
+        if (nodeName === 'details') {
+          if (cursorDepth > currentDepth) {
+            const childIndex = typeof $pos?.index === 'function' ? $pos.index(currentDepth) : 0;
+            if (childIndex > 0) {
+              return 1000;
+            }
+            return 0;
+          }
+          if (cursorDepth === currentDepth && childCount > 1) {
+            return 1000;
+          }
+          return 0;
+        }
+
+        // Callout Panels and Blockquotes: yield to inner blocks in the body (childIndex > 0),
+        // and never steal focus when hovering in the gap between text blocks inside the container.
+        if (nodeName === 'panel' || nodeName === 'blockquote') {
+          if (cursorDepth > currentDepth) {
+            const childIndex = typeof $pos?.index === 'function' ? $pos.index(currentDepth) : 0;
+            if (childIndex > 0) {
+              return 1000;
+            }
+            return 200;
+          }
+          if (cursorDepth === currentDepth && childCount > 0) {
+            return 1000;
+          }
+          return 0;
+        }
+
+        return 0;
+      },
+    },
   ],
 };
-

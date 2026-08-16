@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { BubbleMenu } from '@tiptap/react/menus';
 import { useEditorState } from '@tiptap/react';
 import { posToDOMRect } from '@tiptap/core';
@@ -485,31 +485,31 @@ export function EditorBubbleMenu({ editor }: { editor: EditorType }) {
     setImprovePanelPosition('below');
   }, []);
 
+  const bubbleMenuOptions = useMemo(
+    () => ({
+      placement: 'bottom' as const,
+      offset: 8,
+      flip: { padding: 8 },
+      shift: { padding: 8 },
+      size: {
+        padding: 8,
+        apply({ availableHeight, elements }: { availableHeight: number; elements: { floating: HTMLElement } }) {
+          elements.floating.style.maxHeight = `${Math.max(0, availableHeight)}px`;
+          elements.floating.style.overflowY = 'auto';
+        },
+      },
+      onUpdate: updateImprovePanelPosition,
+    }),
+    [updateImprovePanelPosition],
+  );
+
   return (
     <BubbleMenu
       ref={menuRef}
       editor={editor}
       pluginKey={editorBubbleMenuPluginKey}
       shouldShow={shouldShow}
-      // A single merged panel, anchored below the selection by default. When
-      // its full height cannot fit there, `flip` moves it above the selection;
-      // `onUpdate` then puts the AI controls above the toolbar as well. `size`
-      // makes the rare too-tall panel scroll inside the viewport instead of
-      // escaping it.
-      options={{
-        placement: 'bottom',
-        offset: 8,
-        flip: { padding: 8 },
-        shift: { padding: 8 },
-        size: {
-          padding: 8,
-          apply({ availableHeight, elements }) {
-            elements.floating.style.maxHeight = `${Math.max(0, availableHeight)}px`;
-            elements.floating.style.overflowY = 'auto';
-          },
-        },
-        onUpdate: updateImprovePanelPosition,
-      }}
+      options={bubbleMenuOptions}
       updateDelay={100}
     >
       <BubbleMenuContent
