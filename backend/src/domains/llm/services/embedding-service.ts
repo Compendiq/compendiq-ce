@@ -23,9 +23,31 @@ import {
   shadowEpochFromClient,
 } from './shadow-migration-service.js';
 import { listRelationshipProducers } from './embedding-relationship-hooks.js';
-import { toUserFacingEmbeddingError } from './embedding-error-message.js';
+import { toUserFacingEmbeddingError, EmbeddingDimensionMismatchError } from './embedding-error-message.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import pgvector from 'pgvector';
+
+/**
+ * The dimension the live `embedding` column accepts, or `null` when it cannot
+ * be determined.
+ *
+ * `null` means "do not check" — an unreadable catalog must not stop embedding,
+ * since the INSERT remains the backstop it has always been. `atttypmod` is
+ * where pgvector keeps the declared width for both `vector` and `halfvec`, and
+ * is -1 when the column is unqualified.
+ */
+async function liveEmbeddingDimensions(): Promise<number | null> {
+  try {
+    const r = await query<{ atttypmod: number }>(
+      `SELECT atttypmod FROM pg_attribute
+       WHERE attrelid = 'page_embeddings'::regclass AND attname = 'embedding'`,
+    );
+    const mod = r.rows[0]?.atttypmod;
+    return mod === undefined || mod === null || mod < 0 ? null : Number(mod);
+  } catch {
+    return null;
+  }
+}
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
 const CHUNK_OVERLAP = 50;        // ~50 token overlap
@@ -555,12 +577,56 @@ export async function embedPage(
   // keeps all chunks of one page consistent.
   const { config: embedConfig, model: embedModel } = await resolveUsecase('embedding');
 
+  // #1114 pre-flight: the width the live `embedding` column will actually
+  // accept. Without this, a model whose vectors are the wrong length is only
+  // caught by pgvector at the Phase 2 INSERT — after every chunk of the page
+  // has been embedded and paid for, and reported as an opaque type error
+  // rather than "expected 1024, got 2560". The shadow dual-write below has had
+  // this guard since its own review; the live path, which is the one a plain
+  // model repoint goes through, never did.
+  //
+  // Deliberately NOT cached across pages. One indexed catalog lookup is noise
+  // beside the page's embedding HTTP calls, whereas a TTL cache would keep
+  // rejecting correct vectors for the length of its window after a swap
+  // legitimately changes the column — failing closed on exactly the operation
+  // this check exists to support.
+  //
+  // Resolved lazily, on the first batch that actually returns vectors: a page
+  // whose every batch is skipped for context length produces nothing to check,
+  // and must not spend a query proving it.
+  let liveDimensions: number | null | undefined;
+
   for (let i = 0; i < chunks.length; i += batchSize) {
     const batch = chunks.slice(i, i + batchSize);
     const texts = batch.map((c) => c.text);
 
     try {
       const embeddings = await generateEmbedding(embedConfig, embedModel, texts);
+
+      // Checked before accumulating, so the failure names the model and both
+      // widths instead of surfacing as a pgvector cast error many chunks later.
+      if (liveDimensions === undefined) liveDimensions = await liveEmbeddingDimensions();
+      if (liveDimensions !== null) {
+        const wrong = embeddings.find((v) => Array.isArray(v) && v.length !== liveDimensions);
+        if (wrong) {
+          // A width mismatch has two very different causes and only one is an
+          // operator error. A swap committing mid-generate legitimately retypes
+          // the live column under vectors already produced for the old model —
+          // that is the #1116 race, and the epoch recheck in Phase 2 handles it
+          // far better than this can: it rolls back and re-dirties the page for
+          // a clean post-swap embed, where throwing here would mark the page
+          // failed and blame a model assignment that is about to become correct.
+          // So the config error is raised only when the epoch has NOT moved.
+          const epochNow = shadowStateFingerprint(await getShadowMigrationState());
+          if (epochNow === epochBefore) {
+            throw new EmbeddingDimensionMismatchError(embedModel, liveDimensions, wrong.length);
+          }
+          logger.info(
+            { pageId, epochBefore, epochNow, expected: liveDimensions, received: wrong.length },
+            'Vector width changed mid-embed (shadow swap) — deferring to the Phase 2 epoch recheck',
+          );
+        }
+      }
 
       for (let j = 0; j < batch.length; j++) {
         allEmbeddings.push({
