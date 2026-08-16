@@ -131,7 +131,7 @@ describe('query-instruction (#1114)', () => {
       const out: string[] = [];
       // `await generateEmbedding(` etc — a CALL, not `foo.generateEmbedding(`
       // and not the `export async function` declaration.
-      const re = new RegExp(`[^.\\w]${needle}\\s*\\(`, 'g');
+      const re = new RegExp(`(?:^|[^.\\w])${needle.replace(/\./g, '\\.')}\\s*\\(`, 'g');
       let m: RegExpExecArray | null;
       while ((m = re.exec(src)) !== null) {
         let depth = 1;
@@ -147,9 +147,78 @@ describe('query-instruction (#1114)', () => {
       return out;
     }
 
-    /** Whether `src` imports `needle` by name (the declaring module does not). */
-    function importsSymbol(src: string, needle: string): boolean {
-      return new RegExp(`import\\s*\\{[^}]*\\b${needle}\\b[^}]*\\}\\s*from`, 's').test(src);
+    /** The first capture group of every match of `re` in `src`. */
+    function captures(src: string, re: RegExp): string[] {
+      return [...src.matchAll(re)].map((m) => m[1]);
+    }
+
+    /**
+     * Every local name `needle` is reachable under in `src`.
+     *
+     * The exported name is NOT the local name, and assuming it is was this
+     * walk's own blind spot — see the fixture block below for the mutations
+     * that proved it. Four binding forms are recognised, which is all four the
+     * backend writes:
+     *
+     *   import { generateEmbedding }               → `generateEmbedding`
+     *   import { generateEmbedding as embedText }  → `embedText`
+     *   import * as client from '…'                → `client.generateEmbedding`
+     *   const { generateEmbedding } = await import(…)  → `generateEmbedding`
+     *
+     * A namespace binding is added for EVERY namespace in the file rather than
+     * only for the client module, because the walk has no module graph and a
+     * path can be spelled a dozen ways. It costs nothing: `import * as jose`
+     * contributes the binding `jose.generateEmbedding`, which matches no call.
+     *
+     * Returning `[]` is what keeps the many prose mentions out: a doc comment
+     * binds nothing. `generateEmbedding()` written in a comment used to be
+     * indistinguishable from a call (verified — one such line added to
+     * `core/utils/version.ts`, a file with no embedding code at all, failed this
+     * guard), and the tempting fix for that failure is to add the innocent file
+     * to `NON_QUERY_CALL_SITES`, where it passes and the allow-list quietly
+     * stops meaning what it says. Stripping comments instead needs a real
+     * tokenizer — a regex literal or a URL containing `//` makes a naive
+     * stripper blank a whole line, and over-stripping fails in the DANGEROUS
+     * direction, hiding a real call. Binding is exact, and eslint's
+     * unused-import rule already forbids importing without calling.
+     */
+    function localBindings(src: string, needle: string): string[] {
+      const names = new Set<string>();
+
+      /** `generateEmbedding` / `… as local` / `…: local` inside a brace list. */
+      const fromClause = (clause: string, renameOp: string) => {
+        const m = new RegExp(`\\b${needle}\\b(?:${renameOp}(\\w+))?`).exec(clause);
+        if (m) names.add(m[1] ?? needle);
+      };
+
+      // `import { a, generateEmbedding as b } from '…'` — a static named
+      // import, where the rename operator is `as`.
+      for (const clause of captures(src, /import\s*(?:type\s+)?\{([^}]*)\}\s*from/g)) {
+        fromClause(clause, '\\s+as\\s+');
+      }
+      // `const { generateEmbedding: b } = await import('…')` — a destructuring
+      // pattern, where the rename operator is `:` instead. Every `scripts/*.mts`
+      // reaches `src` this way, because scripts run against `dist`.
+      for (const clause of captures(src, /(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:await\s+)?import\s*\(/g)) {
+        fromClause(clause, '\\s*:\\s*');
+      }
+      // `import * as ns from '…'` and `const ns = await import('…')` — the
+      // symbol is reached as a member, so the binding carries the namespace.
+      for (const ns of captures(src, /import\s*\*\s*as\s+(\w+)\s*from/g)) {
+        names.add(`${ns}.${needle}`);
+      }
+      for (const ns of captures(src, /(?:const|let|var)\s+(\w+)\s*=\s*(?:await\s+)?import\s*\(/g)) {
+        names.add(`${ns}.${needle}`);
+      }
+      return [...names];
+    }
+
+    /**
+     * The argument text of every call to `needle` in `src`, under whatever
+     * local name the file bound it to.
+     */
+    function embeddingCalls(src: string, needle: string): string[] {
+      return localBindings(src, needle).flatMap((binding) => callArgumentLists(src, binding));
     }
 
     /**
@@ -161,18 +230,6 @@ describe('query-instruction (#1114)', () => {
      * was missing from the first hand-written list, `routes/knowledge/search.ts`
      * from the first automated one, and `scripts/run-retrieval-eval.ts` from the
      * second.
-     *
-     * A file counts only if it also IMPORTS the symbol. That is what keeps the
-     * many prose mentions out: `generateEmbedding()` written in a doc comment
-     * used to be indistinguishable from a call (verified — one such line added
-     * to `core/utils/version.ts`, a file with no embedding code at all, failed
-     * this guard), and the tempting fix for that failure is to add the innocent
-     * file to `NON_QUERY_CALL_SITES`, where it passes and the allow-list quietly
-     * stops meaning what it says. Stripping comments instead needs a real
-     * tokenizer — a regex literal or a URL containing `//` makes a naive
-     * stripper blank a whole line, and over-stripping fails in the DANGEROUS
-     * direction, hiding a real call. The import is exact, and eslint's
-     * unused-import rule already forbids importing without calling.
      */
     function filesCalling(needle: string): string[] {
       const hits: string[] = [];
@@ -189,8 +246,7 @@ describe('query-instruction (#1114)', () => {
           // not know is the same blind spot as a directory it does not enter.
           if (!/\.m?ts$/.test(entry.name) || entry.name.endsWith('.test.ts')) continue;
           const src = readFileSync(full, 'utf8');
-          if (!importsSymbol(src, needle)) continue;
-          if (callArgumentLists(src, needle).length > 0) hits.push(relPath);
+          if (embeddingCalls(src, needle).length > 0) hits.push(relPath);
         }
       };
       for (const root of SCAN_ROOTS) walk(join(BACKEND_ROOT, root), root);
@@ -257,8 +313,89 @@ describe('query-instruction (#1114)', () => {
       // caller and so the walk cannot see it: `scripts/compare-embedding-
       // variants.mts` embeds the 144 fixture queries over its own `fetch`. Its
       // prefix is built from the exported `RETRIEVAL_TASK`, so the harness
-      // measures the string that ships rather than a copy of it.
+      // measures the string that ships rather than a copy of it — asserted by
+      // path in the last test of this block, because a comment is not a guard.
     };
+
+    // ── the walk's own reach, pinned on fixtures ────────────────────────────
+    //
+    // Everything above is only as good as `embeddingCalls`, and the version
+    // that shipped the per-call check assumed the LOCAL name is the EXPORTED
+    // name — `import { generateEmbedding }` followed by `generateEmbedding(`.
+    // Three other spellings are live style in this repo and every one of them
+    // was invisible to it. Verified by mutation at the PR head: a probe file
+    // added under `routes/knowledge/` with a plain named import turned the
+    // accounted-for test RED, and the same file rewritten with an alias, with a
+    // namespace import, or as a `scripts/*.mts` dynamic import left all 13
+    // tests GREEN. The repo already writes all three — `app.ts:82` has
+    // `close as closeCacheBus`, `core/plugins/auth.ts:3` has `import * as
+    // jose`, and every `scripts/*.mts` reaches `src` through `await import()`
+    // because scripts run against `dist` — so this was not a hypothetical: it
+    // is exactly how a new query-side embed inherits the wrong policy in
+    // silence, which is the one thing this whole block exists to prevent.
+    //
+    // Fixtures rather than probe files, because a temporary file under `src`
+    // that a crashed run leaves behind fails the suite for the next reader with
+    // an error about a path they never wrote.
+    describe('the walk resolves the local binding, not the exported name', () => {
+      const FORMS: Record<string, string> = {
+        'plain named import': `
+          import { generateEmbedding } from './openai-compatible-client.js';
+          export const run = (c: C, m: string, q: string) => generateEmbedding(c, m, q);
+        `,
+        'aliased named import': `
+          import { generateEmbedding as embedText } from './openai-compatible-client.js';
+          export const run = (c: C, m: string, q: string) => embedText(c, m, q);
+        `,
+        'namespace import': `
+          import * as client from './openai-compatible-client.js';
+          export const run = (c: C, m: string, q: string) => client.generateEmbedding(c, m, q);
+        `,
+        'dynamic import, destructured': `
+          const { generateEmbedding } = await import(\`\${REPO}/services/openai-compatible-client.js\`);
+          export const run = (c: C, m: string, q: string) => generateEmbedding(c, m, q);
+        `,
+        'dynamic import, destructured and renamed': `
+          const { generateEmbedding: embedText } = await import('./openai-compatible-client.js');
+          export const run = (c: C, m: string, q: string) => embedText(c, m, q);
+        `,
+        'dynamic import, namespace binding': `
+          const client = await import('./openai-compatible-client.js');
+          export const run = (c: C, m: string, q: string) => client.generateEmbedding(c, m, q);
+        `,
+      };
+
+      it.each(Object.entries(FORMS))('sees the call through a %s', (_form, src) => {
+        const calls = embeddingCalls(src, 'generateEmbedding');
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toBe('c, m, q');
+      });
+
+      it('still ignores a mention that binds nothing', () => {
+        // The rule that keeps prose out. A doc comment naming the function, in
+        // a file that imports something else entirely, is not a call site — and
+        // the tempting fix for a false positive here is to add the innocent
+        // file to `NON_QUERY_CALL_SITES`, where it passes and the allow-list
+        // quietly stops meaning what it says.
+        const src = `
+          import { readFileSync } from 'node:fs';
+          /** Mirrors what generateEmbedding(config, model, text) returns. */
+          export const read = (p: string) => readFileSync(p, 'utf8');
+        `;
+        expect(embeddingCalls(src, 'generateEmbedding')).toEqual([]);
+      });
+
+      it('does not credit an unrelated namespace with the symbol', () => {
+        // `import * as jose` is real in `core/plugins/auth.ts`. The namespace
+        // binding is `jose.generateEmbedding`, which matches no call — so a
+        // namespace-importing file is not swept in for having one.
+        const src = `
+          import * as jose from 'jose';
+          export const verify = (t: string) => jose.jwtVerify(t, key);
+        `;
+        expect(embeddingCalls(src, 'generateEmbedding')).toEqual([]);
+      });
+    });
 
     it('every embedding call site is accounted for, query-side or not', () => {
       const callers = filesCalling('generateEmbedding');
@@ -273,7 +410,7 @@ describe('query-instruction (#1114)', () => {
     it('every query-side embedding CALL applies the prefix — not merely the file', () => {
       for (const file of QUERY_CALL_SITES) {
         const src = readFileSync(join(BACKEND_ROOT, file), 'utf8');
-        const calls = callArgumentLists(src, 'generateEmbedding');
+        const calls = embeddingCalls(src, 'generateEmbedding');
         // A query site that stops embedding altogether fails the accounted-for
         // test above; here it must not silently match zero calls.
         expect(calls.length, `${file} embeds nothing`).toBeGreaterThan(0);
@@ -292,6 +429,24 @@ describe('query-instruction (#1114)', () => {
         // document-side path has no business importing this module at all.
         expect(src, `${file} — ${why}`).not.toContain('formatQueryForEmbedding');
       }
+    });
+
+    it('the offline comparison harness builds its prefix from the shipping module', () => {
+      // The one query-side embed the walk cannot see: `compare-embedding-
+      // variants.mts` embeds the 144 fixture queries over its own `fetch`, so
+      // it never calls `generateEmbedding` and never enters `filesCalling`.
+      // Naming it in a comment is what the rest of this PR argues is not a
+      // guard, so it gets a real one — read by its known path, not discovered.
+      //
+      // It previously hardcoded `'Instruct: Given a web search query, retrieve
+      // relevant passages that answer the query\nQuery:'` — Qwen's stock task,
+      // not `RETRIEVAL_TASK` — so its prefix-on/off delta measured a preamble
+      // the app never sends, and those numbers are quoted on #1108 and in
+      // `06-data-model.md`. Re-hardcoding it is a one-line silent revert.
+      const src = readFileSync(join(BACKEND_ROOT, 'scripts/compare-embedding-variants.mts'), 'utf8');
+      expect(src).toContain('formatQueryForEmbedding(');
+      // The half that actually catches a revert: no literal preamble anywhere.
+      expect(src).not.toMatch(/['"`]Instruct: /);
     });
   });
 });

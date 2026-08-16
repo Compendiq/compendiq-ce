@@ -1060,13 +1060,22 @@ states the condition where an operator will meet it.
   asserts on each `generateEmbedding(…)` **call's arguments**, not on whether
   the file mentions the module: the first cut of that check was a whole-file
   `includes`, which the bare `import` line satisfied on its own, so dropping the
-  wrapper from the call left the guard green. A wrongly prefixed document, or a
-  wrongly bare query, still returns a plausible vector, so no behavioural test
-  would go red while retrieval quietly degraded. `compare-embedding-variants.mts`
-  is the one query-side embed the walk cannot see — it embeds the fixture
-  queries over its own `fetch` — so it builds its prefix from the exported
-  `RETRIEVAL_TASK` rather than from a copy, and refuses to run a `prefix: true`
-  arm for a model the shipping matcher would not prefix.
+  wrapper from the call left the guard green. It also resolves each caller's
+  **local binding** instead of assuming it is the exported name — the cut before
+  this one matched `import { generateEmbedding }` + `generateEmbedding(` and
+  nothing else, so an aliased import (`app.ts` writes `close as closeCacheBus`),
+  a namespace import (`core/plugins/auth.ts` writes `import * as jose`) and a
+  `scripts/*.mts` dynamic import (how every script reaches `src`, because
+  scripts run against `dist`) each passed green, verified by mutation. A wrongly
+  prefixed document, or a wrongly bare query, still returns a plausible vector,
+  so no behavioural test would go red while retrieval quietly degraded.
+  `compare-embedding-variants.mts` is the one query-side embed the walk cannot
+  see — it embeds the fixture queries over its own `fetch`, so it never calls
+  `generateEmbedding` at all — and it therefore carries its own assertion, read
+  by path: it builds its prefix from the exported `RETRIEVAL_TASK` rather than
+  from a copy (it used to hardcode Qwen's stock *web search* task, so its
+  prefix-on/off delta measured a preamble the app never sends), and refuses to
+  run a `prefix: true` arm for a model the shipping matcher would not prefix.
   Two consequences are worth stating. It is keyed off the **resolved** model,
   so it turns on exactly when a swap makes Qwen3 live and off again on a
   rollback, with no second setting to keep in step. And because documents are

@@ -22,7 +22,11 @@
  *    already false. It checks each CALL's arguments, not merely whether the
  *    file mentions this module: the second version was satisfied by the bare
  *    `import` line, so a query site could drop the prefix — or gain a second,
- *    unprefixed embed — and stay green.
+ *    unprefixed embed — and stay green. And it resolves the caller's LOCAL
+ *    BINDING rather than assuming it is the exported name: the third version
+ *    saw `import { generateEmbedding }` + `generateEmbedding(` and nothing
+ *    else, so an alias, a namespace import, or a `scripts/*.mts` dynamic
+ *    import — all three live style in this repo — were invisible to it.
  *
  * 2. **Turning it on does not invalidate the corpus.** Because documents are
  *    embedded bare under every model, the stored vectors are byte-identical
