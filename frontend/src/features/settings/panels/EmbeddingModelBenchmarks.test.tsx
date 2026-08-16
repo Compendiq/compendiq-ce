@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { EmbeddingModelBenchmarks } from './EmbeddingModelBenchmarks';
-import { EMBEDDING_BENCHMARKS, BENCHMARK_PROVENANCE, findBenchmarkRow } from './embedding-benchmarks';
+import {
+  EMBEDDING_BENCHMARKS,
+  BENCHMARK_PROVENANCE,
+  STEMMER_COMPARISON,
+  findBenchmarkRow,
+} from './embedding-benchmarks';
 
 /**
  * The risk this panel carries is not that it renders wrongly — it is that it
@@ -75,6 +80,22 @@ describe('EmbeddingModelBenchmarks (#1114)', () => {
     const body = screen.getByTestId('embedding-benchmarks-body');
     expect(body).toHaveTextContent(/within noise/i);
     expect(body).toHaveTextContent(/simple/);
+  });
+
+  it('shows the `simple` Recall@1 figures the German rows replaced, so "within noise" is checkable', () => {
+    // "Within noise" is an assertion about two numbers, and the reader could
+    // see neither: the table now carries only the `german` run and the
+    // `simple` figures lived in an exported constant nothing rendered. An
+    // operator who remembers "Qwen3 scored 0.69 on the top result" and now
+    // reads 0.6548 has no way to tell a re-measurement from a regression
+    // unless the note prints what it is comparing against. Rendering them
+    // also puts the constants under test, which is what stops them drifting
+    // away from the analysis they were copied from.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    const body = screen.getByTestId('embedding-benchmarks-body');
+    expect(body).toHaveTextContent(/0\.6091/);
+    expect(body).toHaveTextContent(/0\.6904/);
   });
 
   it('says which metrics carry the German model gap, since the table omits them', () => {
@@ -165,6 +186,13 @@ describe('embedding-benchmarks data (#1114)', () => {
     // MRR is what survives on both sides — bootstrap CI clear of zero in each.
     expect(de.mrr.established).toBe(true);
     expect(en.mrr.established).toBe(true);
+    // Recall@5 is the cell most likely to be rounded up, and it was the one
+    // `established` flag in the corrected block that no test held: German is
+    // p = 0.0522 (19W/8L) — positive and just the wrong side of the line —
+    // against English at p = 0.0015. Unpinned, "just under 0.05" becomes
+    // "basically significant" in one edit, with the suite still green.
+    expect(de.recallAt5.established).toBe(false);
+    expect(en.recallAt5.established).toBe(true);
   });
 
   it('carries the German scores measured under `german`, not the `simple` ones', () => {
@@ -180,6 +208,16 @@ describe('embedding-benchmarks data (#1114)', () => {
     expect(qwen.recallAt1.value).toBeCloseTo(0.6548, 4);
     expect(qwen.recallAt5.value).toBeCloseTo(0.9036, 4);
     expect(qwen.mrr.value).toBeCloseTo(0.7702, 4);
+  });
+
+  it('keeps the `simple` Recall@1 figures the note quotes tied to the published run', () => {
+    // These two are rendered, so the panel makes a checkable claim with them —
+    // which is only worth anything if they still match what was published on
+    // #1114 and in ADR-012. Pinned as literals rather than derived, because a
+    // test that reads the constant it is meant to guard passes on any drift.
+    expect(STEMMER_COMPARISON.previousFtsLanguage).toBe('simple');
+    expect(STEMMER_COMPARISON.previousBaselineRecallAt1).toBeCloseTo(0.6091, 4);
+    expect(STEMMER_COMPARISON.previousCandidateRecallAt1).toBeCloseTo(0.6904, 4);
   });
 
   it('carries the FTS configuration per language, because the two blocks differ (#1114)', () => {

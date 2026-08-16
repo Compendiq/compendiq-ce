@@ -71,6 +71,17 @@ function Metric({ metric }: { metric: BenchmarkMetric }) {
   );
 }
 
+/**
+ * The two models the stemmer note compares, read off the German block rather
+ * than spelled again. `STEMMER_COMPARISON` holds the two `simple` Recall@1
+ * figures the German rows replaced, and a figure needs the model it belongs
+ * to — but a second hand-written copy of the model names is one rename away
+ * from attributing a number to the wrong encoder.
+ */
+const GERMAN_ROWS = EMBEDDING_BENCHMARKS.find((l) => l.code === 'de')?.rows ?? [];
+const previousBaselineModel = GERMAN_ROWS.find((r) => r.baseline)?.model;
+const previousCandidateModel = GERMAN_ROWS.find((r) => !r.baseline)?.model;
+
 export function EmbeddingModelBenchmarks() {
   const [open, setOpen] = useState(false);
 
@@ -186,8 +197,16 @@ export function EmbeddingModelBenchmarks() {
             <code className="font-mono">{BENCHMARK_PROVENANCE.ftsLanguage}</code> keyword configuration on{' '}
             {BENCHMARK_PROVENANCE.measuredOn}. The same corpus scored under{' '}
             <code className="font-mono">{STEMMER_COMPARISON.previousFtsLanguage}</code> landed within noise of
-            these numbers — Recall@10 was identical query for query on both models — so choosing a keyword
-            language is not a way to buy recall, and the earlier{' '}
+            these numbers: the top-result means it replaced were{' '}
+            <span className="font-mono tabular-nums">
+              {STEMMER_COMPARISON.previousBaselineRecallAt1.toFixed(4)}
+            </span>{' '}
+            ({previousBaselineModel}) and{' '}
+            <span className="font-mono tabular-nums">
+              {STEMMER_COMPARISON.previousCandidateRecallAt1.toFixed(4)}
+            </span>{' '}
+            ({previousCandidateModel}), and Recall@10 was identical query for query on both models. So choosing
+            a keyword language is not a way to buy recall, and the earlier{' '}
             <code className="font-mono">{STEMMER_COMPARISON.previousFtsLanguage}</code> figures were not
             understating German. This table shows three metrics; under{' '}
             <code className="font-mono">{BENCHMARK_PROVENANCE.ftsLanguage}</code> the two it omits, Recall@3

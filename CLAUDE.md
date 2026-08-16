@@ -114,11 +114,13 @@ from `established: true` (p = 0.026 under `simple`) to `false` (p = 0.088), so
 top-1 is now unestablished in both languages. So the panel's note states the
 result rather than a pending flag, and the Retrieval tab's keyword-language
 hint names the rebuild cost instead of promising a recall gain. `ef_search` at
-`halfvec(2560)` is settled too: effectively exact from 40, recall@10 0.9995 at
-the `RAG_EF_SEARCH=100` default and unchanged to the 1000 ceiling — leave it
-alone and watch **footprint** instead (18.6 MiB of HNSW for 2,377 vectors,
-larger than heap and TOAST combined). **The proposed go/no-go, revert criteria
-and measured costs for the Qwen3 cutover live in
+`halfvec(2560)` is **measured, not settled**: effectively exact from 40,
+recall@10 0.9995 at the `RAG_EF_SEARCH=100` default and unchanged to the 1000
+ceiling — leave it alone and watch **footprint** instead (18.6 MiB of HNSW for
+2,377 vectors, larger than heap and TOAST combined). That was one
+cache-resident 2,377-chunk corpus with **build time unmeasured**, so it does not
+license extrapolating to production scale. **The proposed go/no-go, revert
+criteria and measured costs for the Qwen3 cutover live in
 `docs/runbooks/shadow-reembed.md`** — they are proposals until the owner agrees
 them, and they must be agreed before a re-embed starts. Both eval entrypoints
 now **refuse an unrecognised flag** (`assertKnownFlags`, `eval/cli-flags.ts`)

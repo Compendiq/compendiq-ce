@@ -187,8 +187,8 @@ issue's acceptance criteria ask for a stated go/no-go and a revert criterion
    reads the live column's declared width from the catalog and refuses a batch
    whose vectors do not match **before** opening the Phase 2 transaction. That
    is what turns "someone repointed the assignment by hand" into a dirty page
-   with a legible `embedding_error` instead of a half-written corpus. See *If
-   you changed the model WITHOUT this runbook* above.
+   with a legible `embedding_error` instead of a half-written corpus. See the
+   *If you changed the model WITHOUT this runbook* section.
 4. **The `halfvec(2560)` HNSW tier is automatic.** `columnTypeFor`
    (`shadow-migration-service.ts`) picks `halfvec` + `halfvec_cosine_ops` at
    this width; nobody types a column type. At 2560, fp16 is not a fallback
@@ -242,8 +242,19 @@ this pre-flight is run against your own endpoint and the table above is a
 *relative* model cost on identical hardware and nothing more.
 
 **(ii) A shadow-backfill throughput sample, taken from the real backfill.**
-Start the migration (step 1), let it run past ~100 pages, read the rate off the
-status card and project the total from `SELECT count(*) FROM page_embeddings`.
+Start the migration (step 1) and let it run past ~100 pages. The status card
+does the projection for you: after it has watched five pages of progress it
+renders **"about N remaining"** beside the `backfilled/total` count, computed
+from the rate it has actually observed. Take that number.
+
+**Keep the arithmetic in pages if you do it by hand.** The card counts
+**pages** (`backfilledPages` / `totalPages`); `SELECT count(*) FROM
+page_embeddings` counts **chunks**, and the two differ by the chunks-per-page
+ratio — 2,377 / 275 ≈ 8.6 on the measured corpus, so dividing a chunk count by
+a page rate over-projects the window by roughly that factor. Either
+`totalPages ÷ (Δ backfilledPages ÷ Δt)`, or chunks against a chunks-per-second
+figure as the *Expected duration* section above pairs them. Not one of each.
+
 Do this before committing to a maintenance window, not instead of one: an
 Abort at that point drops the shadow columns and changes nothing else. Dev
 reference for the ratio: the same 275-page corpus re-seeded end to end in
@@ -281,31 +292,76 @@ set.
 
 ### Search during the backfill
 
-**It is not degraded, and that is the point of using this path.** The backfill
-writes into `embedding_next` while the live column keeps serving, and edited
-pages dual-write both models; the #1117 coverage signal reads the **live**
-column, so it stays healthy throughout. See *Degraded behaviour* above for the
-full statement and its failure modes. The costs during the backfill are
-background embedding load on your provider and, at the end of it, the index
-build in step 3 — which stalls **writes** to `page_embeddings` and to `pages`
-(sync upserts, editor saves, embedding-status updates) for minutes, while reads
-are unaffected. The only sub-second step is the swap itself; **cleanup and
-post-swap rollback are the maintenance window**, not the backfill.
+**Retrieval keeps its full quality throughout — that is the point of using
+this path — but it is not free of the backfill, and the distinction matters.**
 
-The contrast is the destructive path this lifecycle replaced:
+**What does not change: correctness.** The backfill writes into
+`embedding_next` while the live column keeps serving every query, and edited
+pages dual-write both models; the #1117 coverage signal reads the **live**
+column, so it stays healthy start to finish. No query is ever answered from a
+half-migrated corpus, and nothing is deleted before the swap. See the *Degraded
+behaviour* section for the lifecycle-level statement and its failure modes.
+
+**What does change: the embedding provider is busy, and the queue in front of
+it is shared.** `runShadowBackfillJob` embeds through the same
+`generateEmbedding` as a user's question, which means the same process-wide
+LLM queue (`enqueue`, `LLM_CONCURRENCY`, **default 4**) and the same provider.
+There is no separate worker host to isolate it in: BullMQ's workers are started
+by the API process, and with `USE_BULLMQ=false` the job runs inline in it. The
+backfill is strictly sequential (worker concurrency 1, one 16-chunk batch in
+flight at a time), so it occupies **one** of those slots, not all of them; what
+it does is hold that slot for the entire run and keep the provider working
+continuously. Two consequences, in order of how likely you are to meet them:
+
+1. **Query-embedding latency rises for the duration.** On a runtime that does
+   not batch — the dev rig, and any single-process server — a user's query
+   embed waits behind whatever chunk batch is mid-flight. At Qwen3's ingest
+   cost that duration is hours on a real corpus, so this is not a blip.
+2. **Under concurrent LLM load, a query embed can be rejected outright.** When
+   `pendingCount` reaches `LLM_MAX_QUEUE_DEPTH` (**default 50**) `enqueue`
+   throws `QueueFullError`, and `rag-service` does not treat that differently
+   from any other embedding failure: `degraded_reason = 'embedding_failed'`,
+   `/api/search` falls back to **keyword-only**, and `/llm/ask` **refuses the
+   turn** (`semantic_index_unavailable` — #1105's honest refusal, which is
+   ungated). The backfill contributes one pending item, so it cannot fill that
+   queue by itself; it removes a quarter of the drain capacity and saturates
+   the provider, which is enough to put a load that used to fit over the line.
+
+**Watch:** the warn line `Embedding failed — vector leg down, keyword leg only
+(degraded_reason: embedding_failed)`, and `search_analytics.degraded_reason`,
+which records the same verdict per query. The LLM queue's own counters
+(`getMetrics().totalRejected`) are process-local and are not exposed on any
+endpoint today, so the log line and that column are what an operator has.
+
+**Mitigate by scheduling, not by tuning.** Run the backfill off-peak; that is
+the whole reason pre-flight (ii) projects a wall-clock before you commit to it.
+Raising `LLM_CONCURRENCY` only helps if the provider genuinely absorbs more
+concurrency — on a serialising runtime it moves the queue rather than draining
+it, which is exactly what the concurrency rungs in (i) measured.
+
+The remaining costs are the provider budget for that load and, at the end of
+it, the index build in step 3 — which stalls **writes** to `page_embeddings`
+and to `pages` (sync upserts, editor saves, embedding-status updates) for
+minutes, while reads are unaffected. The only sub-second step is the swap
+itself; **cleanup and post-swap rollback are the maintenance window**, not the
+backfill.
+
+**None of which makes the destructive path competitive.**
 `enqueueReembedAll`'s `TRUNCATE` leaves RAG on keyword fallback and
 `page_avg_embedding` NULL until the last page re-embeds, with the old vectors
 already gone. At ~9.4× ingest cost, that window is 40 minutes on a 275-page
-corpus and hours on a real one — which is why the Qwen3 cutover is a shadow
-migration and not a re-embed.
+corpus and hours on a real one — a guaranteed, total degradation for the whole
+re-embed, against a latency rise and a load-dependent rejection risk here.
+That is why the Qwen3 cutover is a shadow migration and not a re-embed.
 
 ### GO criteria (proposed — for the owner to agree)
 
 - All four pre-flights above are **done and recorded**, not estimated.
 - The projected backfill wall-clock from (ii) fits the window you have accepted
-  for background embedding load. The backfill itself does not degrade search
-  (see *Search during the backfill* above); the window is about provider budget
-  and load, not availability.
+  for background embedding load. Retrieval keeps its full quality throughout —
+  the live column serves every query — but the backfill shares the LLM queue
+  and the provider with query-side embeds, so pick a window where a raised
+  query-embedding p95 is acceptable (see *Search during the backfill* above).
 - **p95 query-embedding latency at your expected concurrency ≤ 400 ms**, from
   (i), against the production endpoint. **This number is a proposal, not a
   measured production fact.** It is derived from two things: Qwen3's dev-Mac
@@ -362,8 +418,8 @@ Every row here has a source. Nothing in this table is a production figure.
 | Does the German stemmer help? | **No detectable effect.** R@10 bit-identical query-for-query on both models (0W/0L/197T); one nominally significant cell (Qwen3 R@1, 1W/8L, p = 0.039) that dies under correction | same |
 | Ingest cost | **~9.4–10× slower.** 4 m 21 s vs 40 m 55 s (275 pages, `german` re-run); 3 m 31 s vs 36 m 13 s (2,198 chunks, earlier run) | same, and *German result* |
 | Query latency | **~12× at concurrency 1** on the dev Mac (224 ms vs 18 ms p50 embedding) | same, latency table |
-| fp16 rounding | **Below the corpus's own rank gaps.** Largest fp16-induced \|Δdistance\| 2.67e-5 against a p01 adjacent-rank gap of 4.44e-5; 0/200 top-1 changes. **Caveat carried from the source: measured at 768 dims with `nomic-embed-text` on real corpus vectors, NOT at 2560 with Qwen3** — it is evidence that fp16 rounding is small relative to rank spacing, not a 2560-dim measurement | #1114 fp16 comment; ADR-012 `#1114` amendment |
-| `ef_search` at `halfvec(2560)` | **Effectively exact from ef = 40.** recall@10 = 0.9995 at the `RAG_EF_SEARCH` default of 100 and unchanged at 200/240/400/1000 | #1114 `ef_search` measurement, 2026-08-16 (2,377 chunks in `kb_eval`, PostgreSQL 17.10 + pgvector 0.8.5, read-only) |
+| fp16 rounding | **Below the corpus's own rank gaps.** Largest fp16-induced \|Δdistance\| 2.67e-5 against a p01 adjacent-rank gap of 4.44e-5; 0/200 top-1 changes. **Caveat carried from the source: measured at 768 dims with `nomic-embed-text` on real corpus vectors, NOT at 2560 with Qwen3** — it is evidence that fp16 rounding is small relative to rank spacing, not a 2560-dim measurement | #1114 comment, *The fp16 gate*; ADR-012 `#1114` amendment |
+| `ef_search` at `halfvec(2560)` | **Effectively exact from ef = 40.** recall@10 = 0.9995 at the `RAG_EF_SEARCH` default of 100 and unchanged at 200/240/400/1000 | #1114 comment, *`ef_search` at `halfvec(2560)`: effectively exact from 40, and the number to watch is footprint* (2,377 chunks in `kb_eval`, PostgreSQL 17.10 + pgvector 0.8.5, read-only) |
 
 **On the two German configurations.** The model gap is the sturdiest thing in
 this data and it does not depend on the stemmer: under `german`, Qwen3 is ahead

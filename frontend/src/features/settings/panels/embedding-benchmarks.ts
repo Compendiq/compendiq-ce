@@ -100,9 +100,18 @@ export const BENCHMARK_PROVENANCE = {
 export const STEMMER_COMPARISON = {
   /** The configuration the German rows above were previously measured under. */
   previousFtsLanguage: 'simple',
-  /** bge-m3 Recall@1 under `simple`, for the "within noise" claim. */
+  /**
+   * bge-m3 Recall@1 under `simple` — RENDERED in the panel's stemmer note, not
+   * held here for reference. "Within noise" is a claim about two numbers, and
+   * a reader who can see only one of them has to take it on trust; worse, an
+   * operator who remembers 0.6904 from the issue and now reads 0.6548 cannot
+   * tell a re-measurement from a regression. Quoted at four decimal places,
+   * as the issue comments, ADR-012 and the runbook quote them, so the note is
+   * checkable against the published record rather than merely internally
+   * consistent — which is also why these are not the table's percentages.
+   */
   previousBaselineRecallAt1: 0.6091,
-  /** Qwen3-Embedding-4B Recall@1 under `simple`. */
+  /** Qwen3-Embedding-4B Recall@1 under `simple`. Rendered beside the one above. */
   previousCandidateRecallAt1: 0.6904,
 } as const;
 

@@ -1097,13 +1097,16 @@ of the two query sites or named in a commented allow-list of non-query embeds
 (index-time, the eval seeder, the admin width probe, the eval harness's width
 probe). It is therefore no longer a prerequisite of the swap.
 
-**Measured, on #1102's 197-query fixture, plain runs, no rerank.** Significance
+**Measured, on #1102's 197-query fixture, plain runs, no rerank, every arm
+scored under `FTS_LANGUAGE='simple'`.** Significance
 columns are McNemar exact on the paired per-query hits, except MRR, which is a
-graded score and gets a paired bootstrap CI instead:
+graded score and gets a paired bootstrap CI instead. **The DE column was
+re-measured under `german` on 2026-08-16 — see the resolved caveat below; only
+the R@1 verdict changed:**
 
 | | EN bge-m3 | EN Qwen3-4B | EN significance | DE bge-m3 | DE Qwen3-4B | DE significance |
 |---|---|---|---|---|---|---|
-| Recall@1 | 0.6091 | 0.6599 | **p = 0.174 — not established** | 0.6091 | 0.6904 | p = 0.026, CI [+0.015, +0.147] |
+| Recall@1 | 0.6091 | 0.6599 | **p = 0.174 — not established** | 0.6091 | 0.6904 | p = 0.026 under `simple` — **superseded: not established** (p = 0.088 under `german`) |
 | Recall@3 | 0.7919 | 0.9086 | p = 0.00003 | 0.7817 | 0.8680 | p = 0.0023 |
 | Recall@5 | 0.8477 | 0.9289 | p = 0.0015 | 0.8528 | 0.8985 | p = 0.12 |
 | Recall@10 | 0.9137 | 0.9645 | p = 0.013 | 0.8883 | 0.9492 | p = 0.0075 |
@@ -1115,20 +1118,56 @@ heavy churn for a five-point gain — and both the exact test (p = 0.17) and the
 bootstrap CI (crosses zero) decline to call it. **In English, Qwen3 has not been
 shown to improve the top-1 answer**; everything at K≥3 is solid. On the German
 translation of the same corpus (#1332, content held constant so only the
-language varies) R@1 **is** established, +0.081 at p = 0.026. Since production
-content is German, the English run was understating the benefit on the result
-users see first. Read the per-K p-values with care either way: four correlated
+language varies) R@1 measured +0.081 at p = 0.026, which read as the English
+run understating the benefit on the result users see first — production content
+being German. **Superseded on 2026-08-16:** the re-run under `german` puts that
+cell at p = 0.088, and top-1 is unestablished in *both* languages. See the
+resolved caveat below. Read the per-K p-values with care either way: four correlated
 tests per language, and DE R@5 at p = 0.12 sitting between two clearly
 significant neighbours reads as sampling noise. What is robust across both
 languages: every delta is positive and the MRR interval excludes zero in both.
 
-**Caveat, unresolved here:** every German number so far was scored with
-`FTS_LANGUAGE='simple'`, so the lexical leg did no German stemming or
-decompounding. That is a live loss independent of this decision, it is being
-addressed separately, and it is *not* fixed by this amendment.
+**Caveat, now RESOLVED (2026-08-16).** Every German number in the table above
+was scored with `FTS_LANGUAGE='simple'`, so the lexical leg did no German
+stemming or decompounding. Both arms were re-run on the same 275-page corpus
+under `--fts-language german` (same `corpusManifestSha`, same 197 `queryId`s,
+scored by the repo's own `metrics.ts`), and the answer is **no detectable
+effect**: R@10 came back **bit-identical query-for-query on both models** — 197
+ties, zero movement, so the stemmer never changed *which* pages reached the top
+ten — and the only nominally significant cell in either arm (Qwen3 R@1, 1W/8L,
+p = 0.039) rests on nine discordant queries, dies under a Bonferroni ×4
+correction and has no partner on the other model. Plausibly because this is
+technical German, where identifiers, loanwords and code tokens carry the
+lexical match and `simple` already does exact-token work; that is a post-hoc
+reading, not something the runs tested.
+
+**Two corrections follow, and they point in opposite directions.**
+
+1. **The model gap survives the stemmer, and is the sturdy part.** Re-measured
+   with `german` on both sides, Qwen3 is ahead at every K and on MRR
+   (+0.061 / +0.081 / +0.056 / +0.061, MRR +0.065), and **R@3 (p = 0.0037) and
+   R@10 (p = 0.0075) clear significance even after Bonferroni ×4** — the same
+   two cells that carried it under `simple` (p = 0.0023 and p = 0.0075). So the
+   comparison in the table was not an artefact of scoring German text under
+   `simple`.
+2. **German R@1 is NOT established.** Under `german` it is 27W/15L, p = 0.088
+   (CI [−0.005, +0.127]) where under `simple` it was 31W/15L, p = 0.026. The
+   point estimate barely moved (+0.081 → +0.061), so this is not the stemmer
+   eroding the gap — it is a reminder that R@1 was always the weakest of the
+   four numbers quoted above. **Neither value survives a ×4 multiplicity
+   correction** (0.026 × 4 = 0.104), and on the `simple` run's 46-query
+   discordant set a *single* query flipping the other way (30W/16L) already
+   takes it to p = 0.054. **Top-1 is therefore unestablished in BOTH
+   languages**, which is what the shipped benchmark panel now renders
+   (`embedding-benchmarks.ts`, `established: false` on both).
+
+Sources: the #1114 comment *German re-run under `fts=german`*, and
+`docs/runbooks/retrieval-eval.md`, which carries both configurations' tables.
 
 **The counterweight is ingest cost: ~10× slower.** Embedding the same 2,198
-chunks took **36m 13s** against `bge-m3`'s **3m 31s** (~1 chunk/s vs ~10). On a
+chunks took **36m 13s** against `bge-m3`'s **3m 31s** (~1 chunk/s vs ~10). The
+`german` re-run reproduced it independently on a full re-seed of the 275-page
+corpus: **40m 55s** against **4m 21s**, ~9.4×. On a
 real corpus that is the dominant cost of the cutover, which is why the swap is a
 scheduling decision run through **#1116's shadow path** — dual-write plus
 background backfill plus an atomic rename — and not `enqueueReembedAll`, whose
@@ -1141,13 +1180,40 @@ behind it, not a change of shipped behaviour: a fresh install still lands on
 opting into 2560 is a deliberate act — Settings → AI Models plus the shadow
 migration.
 
-**Open, and explicitly not settled by the numbers above:**
+**Was open, and explicitly not settled by the numbers above.** Items 1 and 2
+were answered on 2026-08-16 and are kept here with their results and their
+limits rather than deleted, because what each measurement does *not* cover is
+the part a production swap has to plan around. **The proposed go/no-go and
+revert criteria that consume all of this live in
+`docs/runbooks/shadow-reembed.md`** (*Cutover to Qwen3-Embedding-4B*) — they
+are proposals until the owner agrees them, and #1114 asks for that agreement
+**before** a re-embed starts.
 
-1. **Query-time latency at 2560 under realistic concurrency** — not isolated in
-   any run so far. Only ingest was timed.
-2. **`ef_search` sizing at 2560** — the per-request value was tuned against a
-   1024-dim `vector` index; nothing has re-derived the recall/latency knee for
-   `halfvec(2560)`, and HNSW build time at production corpus size is unmeasured.
+1. **Query-time latency at 2560** — **measured 2026-08-16, on a dev rig only.**
+   `backend/scripts/benchmark-query-latency.ts` puts the model gap at roughly
+   **12× on the embedding call** at concurrency 1 (224 ms vs 18 ms p50) and ~8×
+   end-to-end. The concurrency rungs above 1 do **not** answer the "realistic
+   concurrency" half: LM Studio serialises inference, so p50 rises almost
+   exactly linearly with in-flight requests (×3.5 at 4-wide, ×8.0 at 8-wide) —
+   those rungs measure queue depth, not request cost. **A batching server has a
+   different shape, and an operator must measure their own endpoint**; the
+   runbook's pre-flight (i) is that step. Table in
+   `docs/runbooks/shadow-reembed.md`.
+2. **`ef_search` sizing at 2560** — **measured 2026-08-16 on a 2,377-chunk
+   corpus.** `halfvec(2560)` HNSW is effectively exact from `ef_search` = 40:
+   recall@10 = 0.9995 at the `RAG_EF_SEARCH` default of 100 and *identical* at
+   200, 240, 400 and pgvector's 1000 ceiling, with the single non-matching row
+   a 7×10⁻⁷ distance tie inside halfvec's own fp16 noise. Leave the default
+   alone; the number that moved is **footprint** — 18.6 MiB of HNSW for 2,377
+   vectors, 8.2 kB per vector, larger than heap and TOAST combined, scaling
+   linearly with chunk count. **Still open inside this item:** HNSW **build**
+   time, unmeasured at any scale (that session built no index), and cache
+   behaviour — all 35 MiB fit in a 128 MB `shared_buffers`, so the timings are
+   CPU-only and the planner's index-vs-seqscan choice will flip as the corpus
+   grows. None of it licenses extrapolating to a corpus two or three orders of
+   magnitude larger without re-measuring. Source: the #1114 comment
+   *`ef_search` at `halfvec(2560)`*; caveats carried in
+   `docs/runbooks/shadow-reembed.md`.
 3. **Cosine constants calibrated on `bge-m3` must be re-checked after a swap.**
    Similarity scores are not comparable across embedding models, and three
    places read a raw cosine against a number chosen under `bge-m3`:
