@@ -461,14 +461,18 @@ the search SQL.
 The row and the rebuild are **one transaction**, with `statement_timeout`
 lifted for its duration (a `PG_STATEMENT_TIMEOUT` deployment would otherwise
 kill a corpus-wide UPDATE deterministically) and `lock_timeout` set to 30
-seconds in its place — the rebuild's own work is unbounded, but the wait to
-*start* it is not, so a page row held by an in-flight edit makes the save fail
-and retry rather than hang on a database connection. So the save is slow on a
-large corpus, and if the *database* rejects it nothing changed: the language
-stays as it was and you can retry (if it reports a lock timeout, retry when
-editing has quietened). If the same request also carried other retrieval
-knobs, those were written before the rebuild started and are kept — the error
-message says so. It is not touched by **Reset all to defaults** in the panel — a
+seconds in its place — the rebuild's own work is unbounded, but **no single
+lock wait exceeds 30 seconds** (`lock_timeout` applies to every lock the
+statement waits on, not only the first), so a page row held by an in-flight
+edit makes the save fail and retry rather than hang on a database connection.
+So the save is slow on a large corpus, and if the *database* rejects it nothing
+changed: the language stays as it was and you can retry. The panel cannot tell
+you *why* it was rejected — the 503 it shows is a fixed message and the driver
+error stays off the wire — so the cause is in the **server log**; if that names
+a lock timeout, retry when editing has quietened. If the same request also
+carried other retrieval knobs, those were written before the rebuild started
+and are kept — the error message says so.
+It is not touched by **Reset all to defaults** in the panel — a
 bulk reset of nine cheap knobs must not quietly re-index your corpus back to
 `simple`. Change it from its own control.
 

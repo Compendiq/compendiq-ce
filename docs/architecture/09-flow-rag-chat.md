@@ -1112,8 +1112,12 @@ states the condition where an operator will meet it.
   removes this statement's only cancellation, and `UPDATE pages` carries no
   WHERE, so without the second one a page row held by an in-flight save would
   make the save wait forever on a pooled connection while blocking every page
-  write behind it; a lock wait that expires rolls back into the ordinary,
-  retryable 503 below): two
+  write behind it. `lock_timeout` bounds **every** lock this statement waits
+  on, not only the first: the guarantee is that *no single lock wait exceeds
+  30s*, so the rebuild's own work stays unbounded and may run arbitrarily long
+  while making progress, but it can never block indefinitely on any one lock.
+  A lock wait that expires rolls back into the ordinary, retryable 503 below):
+  two
   autocommitted statements would let a failed rebuild leave the row saying
   `german` while every `tsv` was still built as `simple` — the same silent
   wrong-index failure the env var caused, reached from the panel instead. It

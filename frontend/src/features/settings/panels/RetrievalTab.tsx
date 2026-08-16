@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import type { FtsLanguage, UsecaseAssignments } from '@compendiq/contracts';
@@ -46,7 +47,11 @@ import { SETTINGS_PANELS } from '../settings-nav';
  * the language most of your content is written in" hint underneath it, which
  * invites an admin to re-save a language that was already set and pay for a
  * corpus-wide rebuild that was never needed. Same failure CLAUDE.md pins for
- * `usePageTree`, reached on a settings surface.
+ * `usePageTree`, reached on a settings surface — including its THREE states
+ * (review r4): failed-with-nothing-cached is the destructive `ErrorState`,
+ * failed-with-cache is an amber `role="status"` strip over an intact form, and
+ * loaded is the form. `isError` alone conflated the first two and tore down a
+ * known-good document the panel had really read.
  */
 
 /** Mirrors the reader defaults in `backend/src/core/services/admin-settings-service.ts`. */
@@ -347,12 +352,27 @@ export function RetrievalTab() {
   // failure; amber is degraded. It clears on the next successful save.
   // Withheld while the refetch is in flight, or it would announce the
   // rollback wording for a frame and then contradict itself.
+  //
+  // The evidence is what was SENT (`mutation.variables`), never the live
+  // select (review r4). `values` is a draft the admin can still edit while
+  // `isError` is true, so comparing the refetched value against it let them
+  // flip the verdict by abandoning their own change: picking `german`,
+  // getting the 503 rollback, then putting the select back to `simple` made
+  // the two sides match and the panel announced a commit — "believe the value
+  // shown here, not the error" — for a transaction that rolled back and a
+  // proxy timeout that never happened. The question the strip answers is "did
+  // the server end up with what we asked for?", which only the request can ask.
+  //
+  // And withheld when the re-read ITSELF failed, for the same reason: on a
+  // backend that is down the PUT fails and the `onError` refetch fails with
+  // it, leaving a cached value from before the save. Reading a verdict off
+  // that would state "the language was not changed" from evidence nobody
+  // collected. The degraded strip at the top of the panel says what is
+  // actually known — the settings could not be re-read.
+  const submittedLanguage = (mutation.variables as Partial<RetrievalValues> | undefined)?.ftsLanguage;
   const failedSaveTouchedLanguage =
-    mutation.isError &&
-    mutation.variables !== undefined &&
-    'ftsLanguage' in mutation.variables &&
-    !settingsFetching;
-  const languageSurvivedFailedSave = saved.ftsLanguage === values.ftsLanguage;
+    mutation.isError && submittedLanguage !== undefined && !settingsFetching && !settingsError;
+  const languageSurvivedFailedSave = saved.ftsLanguage === submittedLanguage;
 
   // The rerank STAGE, per ADR-021: on iff an assignment exists AND the server
   // could resolve a model for it. `resolveRerankUsecase` returning the nil
@@ -398,14 +418,24 @@ export function RetrievalTab() {
   // row says `german`, under a hint telling the admin to go set a language
   // that is already set. There is no honest partial render, so there is no
   // partial render.
-  if (settingsError) {
+  //
+  // Three states, not two (review r4): `settingsError && !settings` is the
+  // destructive one — nothing was ever read, so the error IS the content.
+  // react-query settles a failed REFETCH with `status: 'error'` while keeping
+  // `data`, and `isError` alone tore down a known-good settings document plus
+  // the admin's unsent edit. That is reachable from this panel's own
+  // `onError`, which invalidates `['admin-settings']`: when the backend is
+  // down the follow-on GET fails too, and the failed-save strip below — the
+  // whole point of that re-read — never rendered. Failed-with-cache is
+  // DEGRADED, and takes the amber strip above an intact form instead.
+  if (settingsError && !settings) {
     return (
       <ErrorState
         title="Couldn't load retrieval settings"
         description={
           settingsErrorObj instanceof Error
-            ? `${settingsErrorObj.message} — nothing below is the deployment's configuration until this loads.`
-            : "Nothing below is the deployment's configuration until this loads."
+            ? `${settingsErrorObj.message} — the panel is hidden rather than showing defaults that are not this deployment's configuration.`
+            : "The panel is hidden rather than showing defaults that are not this deployment's configuration."
         }
         onRetry={() => refetchSettings()}
         testId="retrieval-tab-error"
@@ -416,6 +446,33 @@ export function RetrievalTab() {
 
   return (
     <div className="space-y-6" data-testid="retrieval-tab">
+      {/*
+        Failed-with-cache. Amber and `role="status"`, not red and not a
+        teardown: the form below is the last document this panel really read,
+        so it is degraded rather than wrong, and the admin's unsent edits are
+        still on it.
+      */}
+      {settingsError && (
+        <div
+          role="status"
+          className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+          data-testid="retrieval-settings-stale"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>
+            The retrieval settings could not be re-read, so the values below may be stale.{' '}
+            <button
+              type="button"
+              onClick={() => refetchSettings()}
+              className="font-medium underline underline-offset-2"
+              data-testid="retrieval-settings-stale-retry"
+            >
+              Try again
+            </button>
+          </span>
+        </div>
+      )}
+
       {/*
         #1114 — the timing sentence is scoped. It described the nine cached
         knobs, and it is read directly above the keyword index section, whose
@@ -496,27 +553,35 @@ export function RetrievalTab() {
             )}
           </div>
           {failedSaveTouchedLanguage && (
-            <p
+            // The 16px AlertTriangle is part of this class recipe everywhere
+            // else in the app (ADR-010): colour is the weaker channel under
+            // `forced-colors` and for a colour-blind admin, and this strip is
+            // the only thing on screen resolving "it failed" against a Save
+            // button that just went dead.
+            <div
               role="status"
-              className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
+              className="flex items-start gap-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
               data-testid="retrieval-fts-save-failed"
             >
-              {languageSurvivedFailedSave ? (
-                <>
-                  The save reported an error, but the server now reports{' '}
-                  <strong className="font-medium">{ftsLanguageLabel(saved.ftsLanguage)}</strong>. A
-                  rebuild that outruns your reverse proxy&apos;s read timeout answers a gateway
-                  timeout while the database goes on to commit — believe the value shown here, not
-                  the error.
-                </>
-              ) : (
-                <>
-                  The save reported an error and the server still reports{' '}
-                  <strong className="font-medium">{ftsLanguageLabel(saved.ftsLanguage)}</strong> —
-                  the language was not changed. Save again to retry.
-                </>
-              )}
-            </p>
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+              <span>
+                {languageSurvivedFailedSave ? (
+                  <>
+                    The save reported an error, but the server now reports{' '}
+                    <strong className="font-medium">{ftsLanguageLabel(saved.ftsLanguage)}</strong>. A
+                    rebuild that outruns your reverse proxy&apos;s read timeout answers a gateway
+                    timeout while the database goes on to commit — believe the value shown here, not
+                    the error.
+                  </>
+                ) : (
+                  <>
+                    The save reported an error and the server still reports{' '}
+                    <strong className="font-medium">{ftsLanguageLabel(saved.ftsLanguage)}</strong> —
+                    the language was not changed. Save again to retry.
+                  </>
+                )}
+              </span>
+            </div>
           )}
         </div>
       </Section>

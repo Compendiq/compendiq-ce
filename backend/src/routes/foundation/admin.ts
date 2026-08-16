@@ -710,6 +710,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     // Only mark pages dirty for re-embedding when chunk settings changed — NOT for drawioEmbedUrl
+    //
+    // Knowingly left unbounded (review r4): this is the same no-WHERE,
+    // corpus-wide `UPDATE pages` on a pooled connection that the keyword-index
+    // rebuild below now bounds with `lock_timeout`, and it carries no
+    // cancellation of its own on a deployment that does not set
+    // `PG_STATEMENT_TIMEOUT`. Pre-existing and out of scope here; wrapping it
+    // in the same bounded transaction is a follow-up.
     if (hasChunkChanges) {
       await query('UPDATE pages SET embedding_dirty = TRUE');
       logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
@@ -741,7 +748,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
     // of `PG_POOL_MAX` connections and blocking every page write queued
     // behind it, with no way out for the admin (closing the browser tab does
     // not cancel a PostgreSQL statement). The rebuild's own *work* stays
-    // unbounded, which is the point; only the wait to start it is bounded.
+    // unbounded, which is the point; what is bounded is that **no single lock
+    // wait exceeds 30s** — `lock_timeout` applies to every lock this statement
+    // waits on, not merely the first, so the scan may run arbitrarily long
+    // while making progress and still aborts the moment it blocks anywhere for
+    // 30 seconds. Unbounded work, never an indefinite block.
     // 30s rather than the swap's 5s because there is no retry loop here and
     // the admin is already waiting on a corpus-wide rebuild — but a timeout
     // lands in the catch below, so it rolls back to the honest, retryable

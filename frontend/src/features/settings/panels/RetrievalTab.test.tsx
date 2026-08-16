@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { FTS_LANGUAGES } from '@compendiq/contracts';
@@ -101,13 +101,18 @@ function mockApi({ settings = defaultSettings, rerank = unassignedRerank() }: Mo
 
 function renderTab() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <RetrievalTab />
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return {
+    // Handed back so a test can fail a REFETCH of an already-loaded query —
+    // the failed-with-cache state, which no first-load mock can reach.
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <RetrievalTab />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 async function ready() {
@@ -467,6 +472,130 @@ describe('RetrievalTab — keyword index language (#1114)', () => {
     expect(screen.getByTestId('retrieval-save-btn')).toBeEnabled();
   });
 
+  it('keeps the rollback wording when the admin edits the select after the failure', async () => {
+    // The strip reports what the SERVER did with what was SENT, so its
+    // evidence is `mutation.variables`, not the live select. Comparing the
+    // refetched value against a mutable draft lets the admin flip the verdict
+    // by abandoning their own edit: putting the select back to `simple` made
+    // the two sides match, and the panel announced a commit — "believe the
+    // value shown here, not the error" — for a transaction that rolled back
+    // and a proxy timeout that never happened.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') {
+          return json({ message: 'Keyword index rebuild failed — the language was not changed' }, 503);
+        }
+        return json(defaultSettings); // still `simple`: the rebuild rolled back
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    const strip = await screen.findByTestId('retrieval-fts-save-failed');
+    expect(strip).toHaveTextContent(/was not changed/i);
+
+    // The admin gives up on the change and puts the select back. Nothing about
+    // the failed request changed, so neither may the verdict.
+    fireEvent.change(select(), { target: { value: 'simple' } });
+    expect(screen.getByTestId('retrieval-fts-save-failed')).toHaveTextContent(/was not changed/i);
+    expect(screen.getByTestId('retrieval-fts-save-failed')).not.toHaveTextContent(
+      /believe the value shown here/i,
+    );
+  });
+
+  it('carries the amber strip glyph, not colour alone', async () => {
+    // ADR-010: every amber strip in the app pairs this class recipe with a
+    // 16px AlertTriangle. Colour is the weaker channel under `forced-colors`
+    // and for a colour-blind admin, and this strip is the only thing on screen
+    // resolving "it failed" against a Save button that just went dead.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') return json({ message: 'Rebuild failed' }, 503);
+        return json(defaultSettings);
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    const strip = await screen.findByTestId('retrieval-fts-save-failed');
+    expect(strip.querySelector('svg')).not.toBeNull();
+  });
+
+  it('withholds the verdict when the re-read that would prove it also failed', async () => {
+    // The strip's entire basis is "the refetched value is the evidence". When
+    // the backend is down, the PUT fails and the `onError` re-read fails with
+    // it — so the cached value is the value from BEFORE the save, and
+    // announcing "the server still reports Simple — the language was not
+    // changed" from it states a verdict nothing confirmed. The degraded strip
+    // says what is actually known: the settings could not be re-read.
+    let getsAfterPut = 0;
+    let putDone = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') {
+          putDone = true;
+          return json({ message: 'Service Unavailable' }, 503);
+        }
+        if (putDone) {
+          getsAfterPut++;
+          return json({ message: 'Service Unavailable' }, 503);
+        }
+        return json(defaultSettings);
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(getsAfterPut).toBeGreaterThan(0));
+    // Degraded, not torn down — and not a verdict either.
+    expect(await screen.findByTestId('retrieval-settings-stale')).toBeInTheDocument();
+    expect(screen.queryByTestId('retrieval-fts-save-failed')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('retrieval-tab-error')).not.toBeInTheDocument();
+    expect(select().value).toBe('german');
+  });
+
   it('says nothing about a failed save that never carried the language', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
@@ -620,6 +749,61 @@ describe('RetrievalTab — a failed settings fetch is a failure, not a defaults 
     // itself, and the hint that invites the admin to change it.
     expect(screen.queryByTestId('retrieval-ftsLanguage')).not.toBeInTheDocument();
     expect(screen.queryByTestId('retrieval-fts-simple-hint')).not.toBeInTheDocument();
+  });
+
+  /**
+   * Three states, not two (CLAUDE.md's `usePageTree` rule): failed-with-
+   * nothing-cached is destructive and the error IS the content; failed-with-
+   * cache is DEGRADED — amber `role="status"` over an intact form. react-query
+   * settles a failed REFETCH with `status: 'error'` while keeping `data`, so
+   * gating the destructive card on `isError` alone threw away a known-good
+   * settings document plus the admin's unsent edit. It is reachable from the
+   * mutation's own `onError`, which invalidates this very query: when the
+   * backend is down, the follow-on GET fails too.
+   */
+  it('keeps the form and degrades to amber when a REFETCH fails over cached settings', async () => {
+    let fail = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (fail) return json({ message: 'Service Unavailable' }, 503);
+        return json({ ...defaultSettings, ftsLanguage: 'german' });
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    const { queryClient } = renderTab();
+    await ready();
+    const select = () => screen.getByTestId('retrieval-ftsLanguage') as HTMLSelectElement;
+    await waitFor(() => expect(select().value).toBe('german'));
+
+    // An unsent edit the admin would lose if the panel swapped itself out.
+    fireEvent.change(select(), { target: { value: 'english' } });
+
+    fail = true;
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['admin-settings'] });
+    });
+
+    // Red is failure; amber is degraded. Nothing was lost, so nothing is torn down.
+    const strip = await screen.findByTestId('retrieval-settings-stale');
+    expect(screen.queryByTestId('retrieval-tab-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('retrieval-tab')).toBeInTheDocument();
+    expect(select().value).toBe('english');
+
+    expect(strip).toHaveAttribute('role', 'status');
+    expect(strip.className).toMatch(/border-warning\/30/);
+    expect(strip.className).toMatch(/bg-warning\/10/);
+    expect(strip).toHaveTextContent(/could not be re-read/i);
+    expect(strip).toHaveTextContent(/stale/i);
+    // Same ADR-010 recipe as every other amber strip: colour is not the only channel.
+    expect(strip.querySelector('svg')).not.toBeNull();
   });
 
   it('recovers into the real document when the retry succeeds', async () => {
