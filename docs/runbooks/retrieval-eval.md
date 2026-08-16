@@ -188,6 +188,31 @@ different vectors. `all-minilm` returns byte-identical ones.
   re-vendored. Re-label before comparing; the fixture records the manifest
   hash it was written against.
 
+## These numbers are also shown to admins (#1114)
+
+Settings → AI Models → Embeddings renders a **Model comparison (reference corpus)** table
+from `frontend/src/features/settings/panels/embedding-benchmarks.ts`. It is a
+hand-maintained copy of results produced by this script, so **the two can
+drift** — if you re-measure, update that file in the same PR, including its
+`measuredOn` date.
+
+Three things in that file are load-bearing and must survive an edit:
+
+- **`established` per metric.** A mean without its significance is what made
+  the English Recall@1 delta look like the headline result; it moves +0.051 and
+  does not survive a paired test (p = 0.174). The UI renders "not established"
+  next to such a number, and a data edit that drops the flag turns an artifact
+  back into a claim.
+- **Language is a top-level split.** The two models do not rank identically in
+  both: Qwen3's Recall@1 gain is established in German and is not in English.
+  A blended table hides the distinction most likely to change a decision.
+- **Indexing speed sits beside quality.** Qwen3 embeds ~10x slower than bge-m3
+  on the same corpus and hardware. A quality-only table recommends a model
+  while hiding the dominant cost of switching to it.
+
+Absence from that table means "not measured", never "measured badly", and the
+UI says so.
+
 ## Changing the corpus or the fixture
 
 The corpus is committed, not fetched: CI has no network for it, and a corpus

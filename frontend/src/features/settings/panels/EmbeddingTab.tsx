@@ -5,6 +5,7 @@ import type { AdminSettings } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 import { ActiveEmbeddingLocksBanner } from './ActiveEmbeddingLocksBanner';
+import { EmbeddingModelBenchmarks } from './EmbeddingModelBenchmarks';
 
 export function EmbeddingTab() {
   const queryClient = useQueryClient();
@@ -88,6 +89,14 @@ export function EmbeddingTab() {
     <div className="space-y-6">
       {/* Issue #257 — admin visibility for in-flight per-user embedding locks. */}
       <ActiveEmbeddingLocksBanner />
+
+      {/*
+        #1114: the model choice itself is made in AI Models, but this is the
+        page named for embeddings and the one an admin lands on when asking
+        "which model should I use". Collapsed by default — it is reference
+        material, not a setting, and it must not crowd the controls above it.
+      */}
+      <EmbeddingModelBenchmarks />
 
       <div className="nm-card border-warning/30 p-3 text-sm text-warning">
         These settings are shared across all users. Changing chunk settings will trigger re-embedding of all pages, which may take several minutes.
