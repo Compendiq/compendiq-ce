@@ -1395,6 +1395,41 @@ describe('SidebarTreeNode memoization', () => {
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
   });
 
+  // In All Spaces scope, handleCreatePage falls back to the `__local__`
+  // sentinel and the backend stores the resulting page with NO space at all
+  // (pages-crud.ts skips the space lookup for the sentinel, so the final
+  // spaceKey is null) — not "this space", and not a nameable default. The
+  // button used to claim "Create a page in this space" unconditionally, which
+  // was simply false here. Both the tooltip and a visible (non-hover-only)
+  // hint under the input must say so, since a title attribute alone is
+  // unreachable by touch or keyboard.
+  it('names the real destination when no space is selected: an unfiled page', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const trigger = screen.getByRole('button', { name: 'New page' });
+    expect(trigger).toHaveAttribute('title', 'Create an unfiled page — no space is selected');
+
+    fireEvent.click(trigger);
+    expect(screen.getByTestId('new-page-input')).toHaveTextContent(
+      'Creates an unfiled page — pick a space above to file it there instead.',
+    );
+  });
+
+  // With a space actually selected, the destination is real and nameable —
+  // the tooltip should say which space, not the generic "this space" that
+  // never named anything even in the scoped case, and the unfiled hint must
+  // not appear (there's no destination mismatch to disclose).
+  it('names the selected space when one is selected, and shows no unfiled hint', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const trigger = screen.getByRole('button', { name: 'New page' });
+    expect(trigger).toHaveAttribute('title', 'Create a page in Operations');
+
+    fireEvent.click(trigger);
+    expect(screen.getByTestId('new-page-input')).not.toHaveTextContent(
+      'Creates an unfiled page',
+    );
+  });
+
   // The label and the behaviour now agree. `folder` is a real page type that
   // the embedding, quality and summary workers all skip, so a control saying
   // "Folder" while creating a `page` promised an unindexed container and
@@ -1690,6 +1725,22 @@ describe('SidebarTreeNode memoization', () => {
     // It is also the way back: activating it expands the panel.
     fireEvent.click(scope);
     expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
+  });
+
+  // The scope explanation used to live only in `title` — invisible to a
+  // sighted keyboard user, who gets neither the mouse-hover tooltip nor a
+  // screen reader's aria-label announcement. A flyout now shows the same text
+  // on focus too, not just hover.
+  it('shows the scope explanation as a flyout, reachable by keyboard focus', () => {
+    useUiStore.setState({ treeSidebarCollapsed: true, treeSidebarSpaceKey: 'DEV' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    const flyout = screen.getByTestId('rail-space-scope-flyout');
+    expect(flyout).toHaveTextContent(/Development/);
+    // Hidden at rest, but present in the DOM and reachable — not display:none,
+    // which would also hide it from the accessibility tree.
+    expect(flyout.className).toContain('opacity-0');
+    expect(flyout.className).toContain('group-focus-within:opacity-100');
   });
 
   it('announces the resize handle width with a unit', () => {

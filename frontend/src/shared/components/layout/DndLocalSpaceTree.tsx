@@ -1,4 +1,4 @@
-import { memo, useCallback, useRef } from 'react';
+import { memo, useCallback, useLayoutEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ChevronRight,
@@ -77,6 +77,24 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
     disabled: false,
     handle: handleRef,
   });
+
+  // dnd-kit's Accessibility plugin makes the handle a real keyboard drag
+  // activator by writing tabindex="0" onto it imperatively and unconditionally
+  // — independent of the tree's own roving-tabindex scheme on the treeitem
+  // below. Left alone, every row's grip is its own permanent tab stop: a
+  // 5-row tree costs 6 Tab presses to leave instead of the plain tree's 1,
+  // confirmed live (Tab walked grip -> grip -> grip, never reaching a second
+  // row's own treeitem at all). Reasserting tabIndex here — declared after
+  // useSortable, so this effect commits after dnd-kit's own on the same pass
+  // — keeps exactly one grip tabbable at a time: the roving row's, reachable
+  // with a single Tab right after arrow-keying to that row, same contract as
+  // the treeitem itself. Keyboard reordering (Space to pick up, arrows to
+  // move) still works on that one grip; it's just no longer N extra stops.
+  useLayoutEffect(() => {
+    const handle = handleRef.current;
+    if (!handle) return;
+    handle.tabIndex = rovingId === node.page.id ? 0 : -1;
+  }, [rovingId, node.page.id]);
 
   // A parent row does two jobs — open the page, and (via its own chevron,
   // indent guide, and ArrowRight/Left) expand its children — and used to
