@@ -4,7 +4,7 @@ import {
   ChevronRight,
   ChevronDown,
   FileText,
-  FolderPlus,
+  FilePlus,
   ChevronsUpDown,
   PanelLeft,
   PanelLeftClose,
@@ -383,9 +383,9 @@ export function SidebarTreeView({
   const [spaceDropdownOpen, setSpaceDropdownOpen] = useState(false);
   const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
-  const [newFolderName, setNewFolderName] = useState('');
-  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
-  const newFolderInputRef = useRef<HTMLInputElement>(null);
+  const [newPageTitle, setNewPageTitle] = useState('');
+  const [showNewPageInput, setShowNewPageInput] = useState(false);
+  const newPageTitleRef = useRef<HTMLInputElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const treeScrollRef = useRef<HTMLDivElement>(null);
   // Snapshot the tree's scroll position the instant a node is pressed — before
@@ -404,8 +404,8 @@ export function SidebarTreeView({
   const spaceDropdownRef = useClickOutside<HTMLDivElement>(closeSpaceDropdown, spaceDropdownOpen);
   const createPage = useCreatePage();
 
-  const handleCreateFolder = useCallback(async () => {
-    const trimmed = newFolderName.trim();
+  const handleCreatePage = useCallback(async () => {
+    const trimmed = newPageTitle.trim();
     if (!trimmed) return;
 
     const spaceKey = treeSidebarSpaceKey || '__local__';
@@ -416,18 +416,18 @@ export function SidebarTreeView({
         bodyHtml: '',
         pageType: 'page',
       });
-      setNewFolderName('');
-      setShowNewFolderInput(false);
+      setNewPageTitle('');
+      setShowNewPageInput(false);
     } catch {
       // error handled by mutation
     }
-  }, [newFolderName, treeSidebarSpaceKey, createPage]);
+  }, [newPageTitle, treeSidebarSpaceKey, createPage]);
 
   useEffect(() => {
-    if (showNewFolderInput) {
-      newFolderInputRef.current?.focus();
+    if (showNewPageInput) {
+      newPageTitleRef.current?.focus();
     }
-  }, [showNewFolderInput]);
+  }, [showNewPageInput]);
 
   const handleResizeStart = useCallback(
     (e: React.MouseEvent) => {
@@ -874,49 +874,75 @@ export function SidebarTreeView({
         </section>
       )}
 
-      {/* Page collection toolbar — actions are scoped to the tree below. */}
+      {/* Page collection toolbar — actions are scoped to the tree below.
+
+          The action here said "Folder" and wore a FolderPlus, and it calls
+          createPage({ pageType: 'page' }).
+
+          `folder` is a REAL page type — PageTypeEnum is z.enum(['page',
+          'folder']) — and it is not cosmetic: embedding-service, quality-worker
+          and summary-worker all exclude `page_type = 'folder'`, so a folder is
+          precisely the thing that does NOT get indexed, scored or summarised.
+          A control labelled "Folder" that creates a `page` therefore promises a
+          container and hands back an indexed document, which then collects
+          embeddings, a quality score and a summary — everything a container
+          should not have.
+
+          This is labelled as what it does, which is the change that cannot be
+          wrong. Making it create an actual `pageType: 'folder'` instead is the
+          other way to close the gap, but that is a behaviour change with
+          pipeline consequences and it is the owner's call, not a copy fix. The
+          test below has pinned the mismatch by NAME ("creates new folder as
+          pageType 'page' (not 'folder')") since before this change — it was
+          documented rather than resolved. */}
       <div className="flex h-9 shrink-0 items-center justify-between border-y border-border px-3">
         <span className="text-xs font-semibold text-foreground/85">Pages</span>
         <button
           onClick={() => {
-            setShowNewFolderInput((v) => !v);
-            setNewFolderName('');
+            setShowNewPageInput((v) => !v);
+            setNewPageTitle('');
           }}
           className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-          aria-label="New Folder"
-          title="Create new folder"
+          aria-expanded={showNewPageInput}
+          title="Create a page in this space"
         >
-          <FolderPlus size={13} />
-          Folder
+          <FilePlus size={13} />
+          New page
         </button>
       </div>
 
-      {/* New Folder inline input */}
-      {showNewFolderInput && (
-        <div className="px-2 py-1.5" data-testid="new-folder-input">
+      {/* Inline new-page input */}
+      {showNewPageInput && (
+        <div className="px-2 py-1.5" data-testid="new-page-input">
           <div className="flex items-center gap-1.5">
-            <FolderPlus size={14} className="shrink-0 text-action/70" />
+            <FilePlus size={14} className="shrink-0 text-action/70" aria-hidden="true" />
             <input
-              ref={newFolderInputRef}
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
+              ref={newPageTitleRef}
+              value={newPageTitle}
+              onChange={(e) => setNewPageTitle(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') handleCreateFolder();
+                if (e.key === 'Enter') handleCreatePage();
                 if (e.key === 'Escape') {
-                  setShowNewFolderInput(false);
-                  setNewFolderName('');
+                  setShowNewPageInput(false);
+                  setNewPageTitle('');
                 }
               }}
-              placeholder="Folder name..."
+              // Placeholder is an example, not the label — the accessible name
+              // below is what names the field.
+              placeholder="Page title"
               className="flex-1 rounded-md bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 ring-primary/30 focus:ring-ring transition-colors"
-              aria-label="New folder name"
+              aria-label="Title of the new page"
             />
+            {/* "Create", not "Add": it names the action, and "Add" alongside a
+                title field reads as adding the title to something. The pending
+                label is a word rather than an ellipsis so a screen reader
+                announces a state instead of three dots. */}
             <button
-              onClick={handleCreateFolder}
-              disabled={!newFolderName.trim() || createPage.isPending}
+              onClick={handleCreatePage}
+              disabled={!newPageTitle.trim() || createPage.isPending}
               className="inline-flex items-center rounded-md border border-action bg-transparent px-2 py-1 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:opacity-40"
             >
-              {createPage.isPending ? '...' : 'Add'}
+              {createPage.isPending ? 'Creating' : 'Create'}
             </button>
           </div>
         </div>

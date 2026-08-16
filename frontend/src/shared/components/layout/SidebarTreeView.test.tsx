@@ -1032,28 +1032,77 @@ describe('SidebarTreeNode memoization', () => {
     expect(screen.getByText('Memoized Page')).toBeInTheDocument();
   });
 
-  it('has a New Folder button in sidebar header', () => {
+  it('has a New page button in the tree toolbar', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByLabelText('New Folder')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New page' })).toBeInTheDocument();
+    // "Folder" is gone: it promised a container and created a document.
+    expect(screen.queryByRole('button', { name: /folder/i })).not.toBeInTheDocument();
   });
 
-  it('shows new folder inline input when New Folder button is clicked', () => {
+  it('shows the inline title input when New page is clicked', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByLabelText('New Folder'));
-    expect(screen.getByTestId('new-folder-input')).toBeInTheDocument();
-    expect(screen.getByLabelText('New folder name')).toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: 'New page' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(trigger);
+    expect(screen.getByTestId('new-page-input')).toBeInTheDocument();
+    expect(screen.getByLabelText('Title of the new page')).toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('creates new folder as pageType "page" (not "folder")', async () => {
+  // The label and the behaviour now agree. `folder` is a real page type that
+  // the embedding, quality and summary workers all skip, so a control saying
+  // "Folder" while creating a `page` promised an unindexed container and
+  // returned an indexed document. The behaviour is deliberately unchanged —
+  // whether this should instead create a true `pageType: 'folder'` is a
+  // product decision with pipeline consequences, not a copy fix.
+  it('creates a page, and says so', async () => {
     mockCreatePageMutateAsync.mockResolvedValue({ id: 'new-1' });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByLabelText('New Folder'));
-    const input = screen.getByLabelText('New folder name');
-    fireEvent.change(input, { target: { value: 'My Container' } });
+    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
+    const input = screen.getByLabelText('Title of the new page');
+    fireEvent.change(input, { target: { value: 'Runbooks' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(mockCreatePageMutateAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ pageType: 'page', title: 'My Container', bodyHtml: '' }),
+      expect.objectContaining({ pageType: 'page', title: 'Runbooks', bodyHtml: '' }),
     );
+  });
+
+  it('submits from the Create button, which names the action and stays inert until there is a title', () => {
+    mockCreatePageMutateAsync.mockResolvedValue({ id: 'new-2' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
+
+    // "Create", not "Add" — "Add" beside a title field reads as adding the
+    // title to something rather than creating the page.
+    const create = screen.getByRole('button', { name: 'Create' });
+    expect(create).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Title of the new page'), { target: { value: 'Postmortems' } });
+    expect(create).toBeEnabled();
+    fireEvent.click(create);
+    expect(mockCreatePageMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ pageType: 'page', title: 'Postmortems' }),
+    );
+  });
+
+  it('abandons the inline input on Escape', () => {
+    // This describe block does not reset the create mock between tests.
+    mockCreatePageMutateAsync.mockClear();
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
+    const input = screen.getByLabelText('Title of the new page');
+    fireEvent.change(input, { target: { value: 'Half-typed' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(screen.queryByTestId('new-page-input')).not.toBeInTheDocument();
+    expect(mockCreatePageMutateAsync).not.toHaveBeenCalled();
+
+    // Reopening starts clean rather than restoring the abandoned draft.
+    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
+    expect(screen.getByLabelText('Title of the new page')).toHaveValue('');
   });
 
   it('pages with pageType folder navigate on click like normal pages', () => {
