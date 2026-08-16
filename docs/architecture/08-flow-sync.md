@@ -587,28 +587,34 @@ model and drives the `page_embeddings.embedding` column type
 **The text this loop sends is bare, and that asymmetry is the point (#1329).**
 Instruction-aware models (Qwen3's embedding family) are trained with a
 preamble on the QUERY and nothing on the DOCUMENT. `query-instruction.ts`
-therefore applies `Instruct: {task}\nQuery:{query}` at the RAG retrieval leg's
-`generateEmbedding` call in `rag-service.ts` — and **never here**. `embedPage`,
-the shadow dual-write and the shadow backfill all embed the chunk verbatim; a
-structural test (`query-instruction.test.ts`) fails if any of them starts to
-prefix, because a wrongly prefixed document still returns a plausible vector
-and no behavioural test would go red while retrieval quietly degraded. The
-corollary is that the stored corpus is byte-identical whether or not the prefix
-is active, so turning it on needs no re-embed. Query side: see
-[`09-flow-rag-chat.md`](./09-flow-rag-chat.md) → Retrieval details.
+therefore applies `Instruct: {task}\nQuery:{query}` on the query side — and
+**never here**. `embedPage`, the shadow dual-write and the shadow backfill all
+embed the chunk verbatim; a structural test (`query-instruction.test.ts`) fails
+if any of them starts to prefix, because a wrongly prefixed document still
+returns a plausible vector and no behavioural test would go red while retrieval
+quietly degraded. The corollary is that the stored corpus is byte-identical
+whether or not the prefix is active, so turning it on needs no re-embed. Query
+side: see [`09-flow-rag-chat.md`](./09-flow-rag-chat.md) → Retrieval details.
 
-**The RAG leg is not the app's only query-side embedding call, and the other
-one does not prefix (#1339, open).** `/api/search` with `mode=semantic` embeds
-the raw search string in `generateSearchEmbedding`
-(`routes/knowledge/search.ts`) and never imports `formatQueryForEmbedding`;
-`mode=hybrid` is fine because it delegates to `hybridSearch`, and `mode=keyword`
-embeds nothing. It is inert under the `bge-m3` default — the prefix is a no-op
-for a model that is not instruction-aware — and becomes a live, silent
-degradation the moment an operator swaps to Qwen3. `query-instruction.test.ts`
-cannot catch it either: its discovery roots are `domains/llm/services` and
-`domains/llm/eval`, so the route is outside them. Stated here rather than
-glossed, because the asymmetry above is only enforced app-wide once #1339
-lands.
+**There are two query-side embedding calls, and both prefix (#1339, fixed in
+#1335).** One is the RAG retrieval leg's `generateEmbedding` in
+`rag-service.ts`, which serves `/llm/ask` and `/api/search?mode=hybrid` (that
+mode delegates to `hybridSearch`). The other is `generateSearchEmbedding` in
+`routes/knowledge/search.ts`, which embeds the query itself for
+`/api/search?mode=semantic` instead of delegating, so it has to apply the
+asymmetry independently. `mode=keyword` embeds nothing.
+
+That second site shipped bare for two PRs — inert under the `bge-m3` default,
+where the prefix is a no-op, and a silent retrieval regression the moment an
+operator swapped to Qwen3 — and the structural guard could not see it: its
+discovery roots were `domains/llm/services` and `domains/llm/eval`, so a caller
+in `routes/` was outside its world and its "exactly one query-side call"
+conclusion read as verified when it was merely unlooked-at. The guard now walks
+all of `backend/src` **and** `backend/scripts` and asserts two-way set
+equality: the files applying `formatQueryForEmbedding` must be exactly
+`rag-service.ts` and `routes/knowledge/search.ts`, and every other
+`generateEmbedding` caller must appear in a commented allow-list of non-query
+embeds. A new embedding path can no longer inherit a policy by omission.
 
 ## Content pipeline hand-off
 

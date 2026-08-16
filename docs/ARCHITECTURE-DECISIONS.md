@@ -1073,18 +1073,29 @@ must not be used as the gate: it would report "no difference" whether or not
 fp16 were harmful. (Caveat as stated in #1114: measured at 768 dims with
 `nomic-embed-text`, on real corpus vectors, not at 2560 with Qwen3.)
 
-**Query-side instruction prefix (#1329).** Qwen3's embedding family is trained
-asymmetrically — a QUERY carries `Instruct: {task}\nQuery:{query}` (no space
-after `Query:`), a DOCUMENT is embedded bare. `query-instruction.ts` applies it
-at the vector leg's `generateEmbedding` only, keyed off the **resolved** model,
-so it turns on exactly when a swap makes Qwen3 live and off again on rollback
-with no second setting to keep in step. Documents are bare under every model, so
-the stored corpus is byte-identical either way and **flipping it needs no
-re-embed**. It is applied at that one call site and no other, which is not the
-same as covering every query: `/api/search` with `mode=semantic` has its own
-query-side `generateEmbedding` and does not prefix (**#1339**, open) — inert
-today, live the moment a swap makes this whole amendment's recommendation real —
-item 5 on the open list below.
+**Query-side instruction prefix (#1329, completed by #1335).** Qwen3's embedding
+family is trained asymmetrically — a QUERY carries `Instruct: {task}\nQuery:{query}`
+(no space after `Query:`), a DOCUMENT is embedded bare. `query-instruction.ts`'s
+`formatQueryForEmbedding` wraps **both** query-side `generateEmbedding` calls,
+keyed off the **resolved** model, so it turns on exactly when a swap makes Qwen3
+live and off again on rollback with no second setting to keep in step: the
+vector leg in
+`rag-service.ts` (`/llm/ask`, and `/api/search?mode=hybrid` through
+`hybridSearch`), and `routes/knowledge/search.ts`, which embeds the query itself
+for `/api/search?mode=semantic` rather than delegating. Documents are bare under
+every model, so the stored corpus is byte-identical either way and **flipping it
+needs no re-embed**.
+
+That second site was missed by #1329 and shipped bare — filed as **#1339**, and
+inert only because `bge-m3` is not instruction-aware, so it would have become a
+silent retrieval regression on exactly the swap this amendment recommends.
+**#1335** applied the prefix there and rebuilt the structural guard, which had
+scanned `domains/llm/{services,eval}` only and so certified a claim it had never
+looked at. `query-instruction.test.ts` now walks all of `backend/src` and
+`backend/scripts` and requires every `generateEmbedding` caller to be either one
+of the two query sites or named in a commented allow-list of non-query embeds
+(index-time, the eval seeder, the admin width probe, the eval harness's width
+probe). It is therefore no longer a prerequisite of the swap.
 
 **Measured, on #1102's 197-query fixture, plain runs, no rerank.** Significance
 columns are McNemar exact on the paired per-query hits, except MRR, which is a
@@ -1153,14 +1164,12 @@ migration.
    and the graph's edge count, none of which fail loudly.
 4. **Rerank interaction** — every run above is plain. #1104's cross-encoder
    stage was not live.
-5. **A second query-side embedding call skips the prefix (#1339).**
-   `/api/search` with `mode=semantic` embeds the raw search string in
-   `generateSearchEmbedding` (`routes/knowledge/search.ts`) without
-   `formatQueryForEmbedding`. It costs nothing under `bge-m3`, where the prefix
-   is a no-op, and becomes a silent retrieval regression on that one route
-   under Qwen3 — so it is a prerequisite of the swap, not of this decision.
-   `query-instruction.test.ts` cannot see it: its discovery roots stop at
-   `domains/llm`. `mode=hybrid` is unaffected (it goes through `hybridSearch`).
+
+A fifth item stood here — `/api/search?mode=semantic` embedding the query
+without the prefix (**#1339**) — and it is **closed**: #1335 applied the prefix
+at that call site and widened the structural guard to the whole backend, so the
+asymmetry is now enforced app-wide rather than at one remembered call. See the
+query-side prefix paragraph above.
 
 ---
 

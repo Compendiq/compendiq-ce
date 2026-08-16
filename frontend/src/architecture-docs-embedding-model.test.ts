@@ -137,15 +137,15 @@ describe('06-data-model.md page_embeddings.embedding attribute (#1114)', () => {
 });
 
 /**
- * Docs↔code drift guards for the two claims the #1114 prose makes ABOUT
- * BACKEND CODE. Both were review findings on the first cut of this PR: the
- * docs stated something the code does not do, and nothing would have gone red.
- * Reading backend source from a frontend test is the `nginx-api-body-limit`
- * precedent — the assertion belongs wherever the claim is written down, and
- * these claims are written down in `docs/`.
+ * Docs↔code drift guards for the claims the #1114 prose makes ABOUT BACKEND
+ * CODE. Each was a review finding on an earlier cut of this PR: the docs stated
+ * something the code does not do, and nothing would have gone red. Reading
+ * backend source from a frontend test is the `nginx-api-body-limit` precedent —
+ * the assertion belongs wherever the claim is written down, and these claims are
+ * written down in `docs/`.
  *
- * Neither is a mirror of the prose: they pin the code facts the prose depends
- * on, so the failure message says which sentence has gone stale.
+ * None is a mirror of the prose: they pin the code facts the prose depends on,
+ * so the failure message says which sentence has gone stale.
  */
 const backendSrc = resolve(__dirname, '../../backend/src');
 
@@ -217,51 +217,115 @@ describe('backend facts the #1114 docs assert (#1114 review)', () => {
     expect(readers).toContain('core/services/admin-settings-service.ts');
   });
 
-  it('/api/search mode=semantic still embeds the query bare (#1339 open)', () => {
-    // 08-flow-sync.md and 09-flow-rag-chat.md both now say the #1329 query
-    // prefix is applied on the RAG leg ONLY, and name `/api/search`'s semantic
-    // mode as the query-side call that misses it. `query-instruction.test.ts`
-    // cannot see this: its discovery roots are `domains/llm/services` and
-    // `domains/llm/eval`, so a route file is outside them entirely.
-    //
-    // This failing is GOOD NEWS — it means #1339 was fixed. Delete the "open
-    // gap" paragraphs in both docs, the comments in `routes/knowledge/search.ts`,
-    // `rag-service.ts` and `query-instruction.ts`, and then this assertion.
-    const search = readFileSync(resolve(backendSrc, 'routes/knowledge/search.ts'), 'utf-8');
-    // Comments stripped: the file *names* `formatQueryForEmbedding` in the
-    // comment that records this gap, and a naive substring match would read
-    // its own documentation as the fix.
-    const code = search.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    expect(code, 'the query-side embedding call this guard tracks has moved').toMatch(
-      /generateEmbedding\(/,
-    );
-    expect(
-      /formatQueryForEmbedding/.test(code),
-      'routes/knowledge/search.ts now applies the query prefix — #1339 is closed. ' +
-        'Remove the open-gap notes from 08-flow-sync.md, 09-flow-rag-chat.md, ' +
-        'rag-service.ts, search.ts and query-instruction.ts, then delete this assertion.',
-    ).toBe(false);
+  /** `src` with block and line comments removed, so prose cannot satisfy a match. */
+  function codeOf(relPath: string): string {
+    return readFileSync(resolve(backendSrc, relPath), 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+  }
 
-    // Non-vacuity in the other direction: every place that states the
-    // query-prefix asymmetry must carry the caveat while the gap is open, or
-    // the corrected copies drift apart again — which is exactly what happened
-    // once. `query-instruction.ts`'s module header is in the list because it is
-    // the canonical statement of the doctrine: it is where "this is query-only"
-    // is argued, and it justified the narrow scan in `query-instruction.test.ts`
-    // with a call-site count that was already wrong.
+  it('both query-side embedding calls apply the instruction prefix (#1335)', () => {
+    // The docs state a COUNT — "there are two query-side embedding calls and
+    // both prefix" — and an earlier cut of this PR stated the opposite, that
+    // `/api/search?mode=semantic` skipped it (#1339). #1335 closed that gap, so
+    // the guard here flips with it: it pins the corrected claim rather than the
+    // caveat, and fails again if either site loses the wrapper.
+    //
+    // Comments are stripped first, because both files *name*
+    // `formatQueryForEmbedding` in the comment explaining why they call it, and
+    // a whole-file substring match would read that documentation as the fix —
+    // the exact vacuity `query-instruction.test.ts` was rebuilt to remove.
+    for (const site of ['domains/llm/services/rag-service.ts', 'routes/knowledge/search.ts']) {
+      const code = codeOf(site);
+      expect(code, `${site}: the query-side embedding call this guard tracks has moved`).toMatch(
+        /generateEmbedding\(/,
+      );
+      expect(
+        code,
+        `${site} embeds a query without \`formatQueryForEmbedding\`. 08-flow-sync.md, ` +
+          "09-flow-rag-chat.md and ADR-012's `#1114` amendment all say BOTH query-side " +
+          'calls prefix (#1339, fixed in #1335) — restore the wrapper, or correct all three.',
+      ).toMatch(/formatQueryForEmbedding\(/);
+    }
+  });
+
+  it('the backend guard enumerates both query sites and allow-lists the rest', () => {
+    // The docs do not just claim the two call sites prefix; they claim that is
+    // ENFORCED, by a discovery guard over the whole backend with an explicit
+    // allow-list of non-query embeds. That claim is the reason a reader trusts
+    // the count, and it is exactly what was false before #1335: the guard read
+    // `domains/llm/{services,eval}` only, so a caller in `routes/` was outside
+    // its world and "exactly one query-side call" read as verified when it was
+    // merely unlooked-at. Pinned here so the docs cannot outlive the guard.
+    const guard = readFileSync(
+      resolve(backendSrc, 'domains/llm/services/query-instruction.test.ts'),
+      'utf-8',
+    );
+    for (const site of [
+      'src/domains/llm/services/rag-service.ts',
+      'src/routes/knowledge/search.ts',
+    ]) {
+      expect(guard, `query-instruction.test.ts no longer names ${site} as a query site`).toContain(
+        site,
+      );
+    }
+    expect(
+      guard,
+      'query-instruction.test.ts no longer carries an allow-list of non-query embed sites — ' +
+        'without it a new embedding path inherits the query policy by omission, which is how ' +
+        'routes/knowledge/search.ts went unprefixed for two PRs.',
+    ).toContain('NON_QUERY_CALL_SITES');
+    expect(
+      guard,
+      'query-instruction.test.ts stopped scanning `backend/scripts` — the offline eval harness ' +
+        'lives there and is exactly where an "embed the eval queries directly" change lands.',
+    ).toContain("'scripts'");
+  });
+
+  it('every doc stating the asymmetry states the fixed version of it', () => {
+    // The gap was written into four places at once and had to be corrected in
+    // four places at once; this keeps the corrected copies from drifting apart
+    // again. Two rules, both of which the pre-#1335 wording fails.
+    //
+    // (1) Each site must name BOTH call sites — a copy that names only
+    //     `rag-service.ts` is the overclaim #1339 was filed against.
+    // (2) A site may still tell the story, but not as if it were still open:
+    //     naming #1339 without #1335 beside it IS the stale copy. `#1335` is
+    //     the merge that closed it, so it is the token that dates the sentence.
+    //
+    // `query-instruction.ts`'s module header is in the list because it is the
+    // canonical statement of the doctrine — it is where "this is query-only" is
+    // argued, and it justified the narrow scan with a call-site count that was
+    // already wrong.
     const claimSites: Array<[string, string]> = [
       ['08-flow-sync.md', resolve(architectureDir, '08-flow-sync.md')],
       ['09-flow-rag-chat.md', resolve(architectureDir, '09-flow-rag-chat.md')],
+      ['ARCHITECTURE-DECISIONS.md', resolve(__dirname, '../../docs/ARCHITECTURE-DECISIONS.md')],
       [
         'domains/llm/services/query-instruction.ts',
         resolve(backendSrc, 'domains/llm/services/query-instruction.ts'),
       ],
     ];
+
     for (const [label, path] of claimSites) {
-      expect(
-        readFileSync(path, 'utf-8'),
-        `${label} states the query-prefix asymmetry but no longer names the /api/search gap`,
-      ).toContain('#1339');
+      const text = readFileSync(path, 'utf-8');
+
+      for (const site of ['rag-service.ts', 'routes/knowledge/search.ts']) {
+        expect(
+          text,
+          `${label} states the query-prefix asymmetry but no longer names ${site} as a ` +
+            'query-side call. There are two, and naming one is the overclaim #1339 was ' +
+            'filed against.',
+        ).toContain(site);
+      }
+
+      if (text.includes('#1339')) {
+        expect(
+          text,
+          `${label} still names #1339 without #1335. #1339 (semantic-mode search embedding ` +
+            'the query bare) was CLOSED by #1335 — say so, or drop the reference.',
+        ).toContain('#1335');
+      }
     }
   });
 });
