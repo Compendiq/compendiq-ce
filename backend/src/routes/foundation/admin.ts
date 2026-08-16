@@ -1,12 +1,12 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { query } from '../../core/db/postgres.js';
+import { query, getPool } from '../../core/db/postgres.js';
 import { encryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
 import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { assertNoShadowMigration } from '../../domains/llm/services/embedding-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { UpdateAdminSettingsSchema } from '@compendiq/contracts';
+import { UpdateAdminSettingsSchema, FtsLanguageEnum, FTS_LANGUAGES } from '@compendiq/contracts';
 import {
   getEmbeddingDimensions,
   getAdminAccessDeniedRetentionDays,
@@ -30,6 +30,7 @@ import {
 } from '../../core/services/admin-settings-service.js';
 import { toFixedDecimalString } from '../../core/utils/fixed-decimal.js';
 import { getRegistrationMode } from '../../core/services/registration-policy-service.js';
+import { getFtsLanguage } from '../../core/services/fts-language.js';
 import {
   setLlmConcurrencyClusterWide,
   setLlmMaxQueueDepthClusterWide,
@@ -38,7 +39,6 @@ import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRu
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { getStreamCap, invalidateStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
-import { ALLOWED_FTS_LANGUAGES } from '../../core/services/fts-language.js';
 import { getSmtpConfig, updateSmtpConfig, sendTestEmail, stripMaskedSmtpPass } from '../../core/services/email-service.js';
 
 const AuditLogQuerySchema = z.object({
@@ -70,6 +70,15 @@ const LabelNameParamSchema = z.object({ name: z.string().min(1) });
 // Rate limit config for admin endpoints (20 requests per minute)
 // Rate limit for admin endpoints (dynamic via admin settings, default 20/min)
 const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
+
+/**
+ * How long the keyword-index rebuild waits for the page locks it needs before
+ * giving up. See the block comment at the rebuild itself: lifting
+ * `statement_timeout` there removes the statement's only cancellation, so this
+ * is what keeps a corpus-wide `UPDATE pages` from waiting forever behind an
+ * in-flight page write. Exported for the test that pins the pairing.
+ */
+export const FTS_REBUILD_LOCK_TIMEOUT_MS = 30_000;
 
 export async function adminRoutes(fastify: FastifyInstance) {
   // All admin routes require admin role
@@ -317,6 +326,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       llmMaxConcurrentStreamsPerUser,
       adminAccessDeniedRetentionDays,
       registrationMode,
+      ftsLanguage,
       ragFetchWidth,
       ragRerankCandidates,
       ragConfidenceThreshold,
@@ -333,6 +343,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
       getStreamCap(),
       getAdminAccessDeniedRetentionDays(),
       getRegistrationMode(),
+      // #1114 — read the keyword-index language through its own reader for
+      // the same reason as the nine below: `getFtsLanguage` DISCARDS a value
+      // outside the closed allow-list (a row from psql, a restored dump or a
+      // future migration never passes through Zod), so the raw row can name a
+      // configuration the search legs are not using — and one this route's own
+      // `AdminSettingsSchema` rejects, leaving the panel's select with no
+      // matching option. It is uncached, so this is one extra SELECT per
+      // settings page view.
+      getFtsLanguage(),
       // #1118 — read the retrieval knobs through their own getters rather
       // than adding nine keys to the SELECT below. Each getter owns a
       // 60-second cache and a soft-fail path (the assembly budget's is a
@@ -351,7 +370,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
-       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'fts_language', 'reembed_history_retention')`,
+       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'reembed_history_retention')`,
     );
 
     const map: Record<string, string> = {};
@@ -361,7 +380,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     return {
       embeddingDimensions,
-      ftsLanguage: map['fts_language'] ?? process.env.FTS_LANGUAGE ?? 'simple',
+      // #1114 — resolved above by `getFtsLanguage`, not read out of `map`.
+      // No `process.env.FTS_LANGUAGE` arm either: migration 049 seeds the row
+      // on every instance, so the env var was unreachable here and only ever
+      // contradicted what the panel showed.
+      ftsLanguage,
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
@@ -454,27 +477,18 @@ export async function adminRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Validate FTS language before persisting (invalid values would break the tsvector trigger)
-    if (body.ftsLanguage !== undefined && !ALLOWED_FTS_LANGUAGES.has(body.ftsLanguage)) {
+    // #1114 — re-validate the FTS language against the SAME contracts enum
+    // `UpdateAdminSettingsSchema` used, rather than a second hand-rolled list.
+    //
+    // This check is redundant on the parse path above and stays deliberately:
+    // the stored value is later INTERPOLATED into SQL as a `regconfig` (there
+    // is no bind-parameter form for one), so the allow-list is a security
+    // boundary and gets a belt-and-braces check on the way in as well as in
+    // `getFtsLanguage` on the way out. An invalid value would also break the
+    // tsvector rebuild below.
+    if (body.ftsLanguage !== undefined && !FtsLanguageEnum.safeParse(body.ftsLanguage).success) {
       throw fastify.httpErrors.badRequest(
-        `Invalid FTS language: "${body.ftsLanguage}". Allowed: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}`,
-      );
-    }
-
-    if (body.ftsLanguage !== undefined) {
-      // Persist the new fts_language and rebuild all tsvectors with it.
-      await query(
-        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
-         VALUES ('fts_language', $1, NOW())
-         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
-        [body.ftsLanguage],
-      );
-      await query(
-        `UPDATE pages SET tsv = to_tsvector(
-          $1::regconfig,
-          coalesce(title, '') || ' ' || coalesce(body_text, '')
-        ) WHERE deleted_at IS NULL`,
-        [body.ftsLanguage],
+        `Invalid FTS language: "${body.ftsLanguage}". Allowed: ${FTS_LANGUAGES.join(', ')}`,
       );
     }
 
@@ -696,12 +710,107 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     // Only mark pages dirty for re-embedding when chunk settings changed — NOT for drawioEmbedUrl
+    //
+    // Knowingly left unbounded (review r4): this is the same no-WHERE,
+    // corpus-wide `UPDATE pages` on a pooled connection that the keyword-index
+    // rebuild below now bounds with `lock_timeout`, and it carries no
+    // cancellation of its own on a deployment that does not set
+    // `PG_STATEMENT_TIMEOUT`. Pre-existing and out of scope here; wrapping it
+    // in the same bounded transaction is a follow-up.
     if (hasChunkChanges) {
       await query('UPDATE pages SET embedding_dirty = TRUE');
       logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
     }
 
+    // ─── #1114 — the keyword-index language ───────────────────────────────
+    //
+    // LAST of the writes, and in ONE transaction. Two separate `query()` calls
+    // autocommit on pooled connections (possibly different ones), so the row
+    // landed before the rebuild started: a rebuild that failed left
+    // `fts_language = german` with every `tsv` still built as `simple`, the
+    // panel reporting a language search was not using, and Save disabled on
+    // reload because the stored value already matched — the exact silent
+    // keyword-leg collapse this control exists to end, under copy promising
+    // the rebuild.
+    //
+    // `SET LOCAL statement_timeout = 0` for the same reason
+    // `shadow-migration-service.ts` sets it: a deployment that sets
+    // `PG_STATEMENT_TIMEOUT` applies it to every pooled connection, and a
+    // corpus-wide UPDATE is precisely the statement that outlives it — so on
+    // those instances the save would fail deterministically, every time.
+    // `SET LOCAL`, so it lasts exactly this transaction.
+    //
+    // And `SET LOCAL lock_timeout` beside it, for the reason the same
+    // precedent pairs the two (review r3). Lifting `statement_timeout`
+    // removes the ONLY cancellation this statement had, and `UPDATE pages`
+    // with no WHERE is the widest lock the app takes: a row held by an
+    // in-flight page save would otherwise make this wait forever, holding one
+    // of `PG_POOL_MAX` connections and blocking every page write queued
+    // behind it, with no way out for the admin (closing the browser tab does
+    // not cancel a PostgreSQL statement). The rebuild's own *work* stays
+    // unbounded, which is the point; what is bounded is that **no single lock
+    // wait exceeds 30s** — `lock_timeout` applies to every lock this statement
+    // waits on, not merely the first, so the scan may run arbitrarily long
+    // while making progress and still aborts the moment it blocks anywhere for
+    // 30 seconds. Unbounded work, never an indefinite block.
+    // 30s rather than the swap's 5s because there is no retry loop here and
+    // the admin is already waiting on a corpus-wide rebuild — but a timeout
+    // lands in the catch below, so it rolls back to the honest, retryable
+    // "the language was not changed" 503 instead of hanging.
+    //
+    // It runs after every other write — the knob loop, the queue setters, the
+    // rate limits and `embedding_dirty` — because it is the only statement in
+    // this handler that can throw at this point, and the r9 invariant above
+    // covers more than the settings row: throwing between the chunk-size
+    // upsert and `UPDATE pages SET embedding_dirty` would leave the new chunk
+    // size persisted with the corpus never re-chunked, which is the same
+    // silently mixed index, reached from the other side (review r2). The audit
+    // event is written below for what actually landed, whichever way this goes.
+    let ftsRebuildError: unknown;
+    if (body.ftsLanguage !== undefined) {
+      const client = await getPool().connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SET LOCAL statement_timeout = 0');
+        await client.query(`SET LOCAL lock_timeout = '${FTS_REBUILD_LOCK_TIMEOUT_MS}ms'`);
+        await client.query(
+          `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+           VALUES ('fts_language', $1, NOW())
+           ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+          [body.ftsLanguage],
+        );
+        // No `deleted_at IS NULL` filter (review r2). The maintenance trigger
+        // is `BEFORE INSERT OR UPDATE OF title, body_text`, and the restore
+        // path (`pages-crud.ts`) only clears `deleted_at` — so a page skipped
+        // here comes back out of the trash carrying a `tsv` built with the
+        // PREVIOUS configuration, permanently out of step with the rest of
+        // the corpus and with nothing that ever rebuilds it. Trash is small,
+        // the write is idempotent, and it is what makes "every page" true.
+        await client.query(
+          `UPDATE pages SET tsv = to_tsvector(
+            $1::regconfig,
+            coalesce(title, '') || ' ' || coalesce(body_text, '')
+          )`,
+          [body.ftsLanguage],
+        );
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        logger.error(
+          { err, ftsLanguage: body.ftsLanguage },
+          'Keyword-index rebuild failed — the language was not changed',
+        );
+        ftsRebuildError = err;
+      } finally {
+        client.release();
+      }
+    }
+
+    // What actually landed. A rolled-back rebuild leaves no language change,
+    // so recording one would put a change in the audit trail that the database
+    // does not have.
     const auditDetails = { ...body };
+    if (ftsRebuildError !== undefined) delete auditDetails.ftsLanguage;
 
     await logAuditEvent(
       request.userId,
@@ -711,6 +820,22 @@ export async function adminRoutes(fastify: FastifyInstance) {
       { action: 'update_admin_settings', ...auditDetails },
       request,
     );
+
+    if (ftsRebuildError !== undefined) {
+      // 503, not 500. `app.ts`'s error handler replaces the body message of
+      // every 500 with a flat 'Internal Server Error' (pinned by
+      // `app.test.ts`), so a 500 delivers none of this to the panel — the
+      // admin waits out a corpus-wide rebuild and is told nothing but the
+      // status. Any non-500 status keeps `error.message`, and 503 is the
+      // honest one: the rebuild could not be completed now, and retrying is
+      // safe. The raw driver message stays in the log, not on the wire.
+      const alsoSaved = Object.keys(body).length > 1;
+      throw fastify.httpErrors.serviceUnavailable(
+        alsoSaved
+          ? 'Rebuilding the keyword index failed. The keyword index language was not changed; the other settings in this request were saved.'
+          : 'Rebuilding the keyword index failed. The keyword index language was not changed.',
+      );
+    }
 
     if (hasChunkChanges) {
       return { message: 'Admin settings updated, all pages queued for re-embedding' };

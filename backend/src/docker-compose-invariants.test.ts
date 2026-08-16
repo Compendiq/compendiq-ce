@@ -468,6 +468,33 @@ describe('.env.example stays authoritative for env vars the backend reads', () =
   });
 });
 
+describe('FTS_LANGUAGE is retired, not merely undocumented (#1114)', () => {
+  // The keyword-index language lives in `admin_settings.fts_language` and is
+  // edited in Settings → AI Models → Retrieval. The env var was inert on every
+  // migrated instance — migration 049 seeds that row before the first request,
+  // so the `?? process.env.FTS_LANGUAGE` fallback could never be reached —
+  // which is precisely how a German corpus stays indexed with `simple` while
+  // its operator believes the deployment honoured their setting.
+  it('is not passed into the backend container', () => {
+    expect(extractServiceBlock(composeProd, 'backend')).not.toContain('FTS_LANGUAGE');
+  });
+
+  it('is not seeded by the installer either', () => {
+    expect(installSh).not.toContain('FTS_LANGUAGE');
+  });
+
+  it('is marked removed in .env.example and points at the panel that replaced it', () => {
+    // Not merely deleted: an operator upgrading with FTS_LANGUAGE already in
+    // their .env needs to be told where the setting went, not left to wonder
+    // why the line vanished.
+    expect(envExample, 'FTS_LANGUAGE must not read as a live tunable').not.toMatch(
+      /^#?\s*FTS_LANGUAGE=/m,
+    );
+    expect(envExample).toMatch(/\(Removed\)\s*FTS_LANGUAGE/);
+    expect(envExample).toContain('Settings → AI Models → Retrieval');
+  });
+});
+
 describe('.github/workflows/pr-check.yml runs validation for every author', () => {
   it('does not skip typecheck/lint/test/hoist checks for Dependabot PRs', () => {
     expect(prCheckWorkflow).not.toContain('dependabot[bot]');

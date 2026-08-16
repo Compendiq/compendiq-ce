@@ -375,12 +375,13 @@ Tier-downgrade (license change to a non-enterprise tier) disables the flag. Exis
 
 ### Retrieval settings panel (`Settings → AI Models → Retrieval`)
 
-All nine retrieval knobs below are edited from one admin panel (#1118). They
-were DB-only until it shipped, and raw SQL still works — the panel writes the
-same `admin_settings` rows.
+Every retrieval setting below is edited from one admin panel (#1118, extended
+by #1114). They were DB-only until it shipped, and raw SQL still works — the
+panel writes the same `admin_settings` rows.
 
 | Setting | Key | Default | Range |
 | --- | --- | --- | --- |
+| Keyword index language | `fts_language` | `simple` | see allow-list below |
 | Fetch width | `rag_fetch_width` | 10 | 10–200 |
 | Rerank candidate pool | `rag_rerank_candidates` | 30 | 10–100 |
 | Confidence gate, similarity basis | `rag_confidence_threshold` | 0 (off) | 0 – <1 |
@@ -393,16 +394,25 @@ same `admin_settings` rows.
 
 Three things worth knowing before you use it.
 
-**The panel writes only what you changed.** A knob you never touched keeps no
-`admin_settings` row at all — an absent row and an explicitly-default one read
-alike, but the assembly budget's fail-toward-last-known behaviour is written
-assuming no row exists until an operator sets one.
+**The panel writes only what you changed.** A *numeric or on/off* knob you
+never touched keeps no `admin_settings` row at all — an absent row and an
+explicitly-default one read alike, but the assembly budget's
+fail-toward-last-known behaviour is written assuming no row exists until an
+operator sets one. `fts_language` is the exception, and deliberately so:
+migration 049 seeds it with `simple` on every instance before the first
+request, which is exactly what made the removed `FTS_LANGUAGE` environment
+variable unreachable (see below).
 
-**A save takes effect within a minute.** Each knob is read through a 60-second
-in-process cache. The server that handled your save drops its cache
-immediately; every other server in the deployment converges as its own TTL
-expires. (Before #1118 the cache was never dropped at all, so a saved value
-could take a full minute even on the server that wrote it.)
+**A save of a numeric or on/off knob takes effect within a minute.** Each of
+the nine is read through a 60-second in-process cache. The server that handled
+your save drops its cache immediately; every other server in the deployment
+converges as its own TTL expires. (Before #1118 the cache was never dropped at
+all, so a saved value could take a full minute even on the server that wrote
+it.) **The keyword index language is the exception**: it is read uncached, and
+saving it rebuilds every page's `tsv` inside the request, so it is in effect
+the moment the save returns — and the save takes as long as re-indexing your
+corpus does (see below). If that rebuild fails, the language is rolled back
+with it, so the setting and the index cannot disagree.
 
 **The rerank *stage* is not on this panel.** It is on if and only if a `rerank`
 use-case assignment exists (ADR-021 — rerank never inherits the default
@@ -430,6 +440,68 @@ ground-truth labels by default, the production report does not claim Recall or
 MRR. An explicitly labelled custom suite can be submitted to
 POST /api/admin/retrieval-benchmark when the team has expected page IDs; only
 those labels produce Recall/MRR.
+
+### Keyword index language (`fts_language`)
+
+The PostgreSQL text-search configuration the keyword leg of hybrid search is
+built and queried with — that is, its stemming and stop-word rules.
+`admin_settings` key `fts_language`; **default `simple`**, which does no
+stemming at all. Allowed values: `simple`, `english`, `german`, `french`,
+`spanish`, `italian`, `portuguese`, `dutch`, `swedish`, `norwegian`, `danish`,
+`finnish`, `hungarian`, `turkish`, `russian`, `arabic`, `romanian`.
+
+Two things separate it from the knobs below. **Saving it re-indexes the whole
+corpus inside the request** — every page's `tsv` is rebuilt with the new
+configuration, pages in the trash included, so a restored page cannot come back
+indexed in the previous language — rather than taking effect on the next cached
+read. And the value is not a range but a closed allow-list, because PostgreSQL
+has no bind-parameter form for a `regconfig`, so the name is interpolated into
+the search SQL.
+
+The row and the rebuild are **one transaction**, with `statement_timeout`
+lifted for its duration (a `PG_STATEMENT_TIMEOUT` deployment would otherwise
+kill a corpus-wide UPDATE deterministically) and `lock_timeout` set to 30
+seconds in its place — the rebuild's own work is unbounded, but **no single
+lock wait exceeds 30 seconds** (`lock_timeout` applies to every lock the
+statement waits on, not only the first), so a page row held by an in-flight
+edit makes the save fail and retry rather than hang on a database connection.
+So the save is slow on a large corpus, and if the *database* rejects it nothing
+changed: the language stays as it was and you can retry. The panel cannot tell
+you *why* it was rejected — the 503 it shows is a fixed message and the driver
+error stays off the wire — so the cause is in the **server log**; if that names
+a lock timeout, retry when editing has quietened. If the same request also
+carried other retrieval knobs, those were written before the rebuild started
+and are kept — the error message says so.
+It is not touched by **Reset all to defaults** in the panel — a
+bulk reset of nine cheap knobs must not quietly re-index your corpus back to
+`simple`. Change it from its own control.
+
+**One failure mode is not a rollback.** The rebuild is unbounded on the
+database side, but the request still passes through your reverse proxy, and the
+bundled `frontend/nginx.conf` closes an `/api/` response after
+`proxy_read_timeout 300` (five minutes). Closing that connection does **not**
+cancel the PostgreSQL statement, so a corpus whose rebuild outruns the proxy
+budget reports a gateway timeout in the browser while the transaction goes on
+to commit. The panel re-reads the server after any failed save for exactly this
+reason: **believe the value the panel shows after the error, not the error**.
+You do not have to remember that — after a failed save that carried the
+language, the panel says on screen which of the two happened, because the value
+it just re-read is the evidence: "the server now reports German" means the
+transaction committed despite the error, and "the server still reports Simple —
+the language was not changed" means it rolled back and Save is the retry. If
+you front Compendiq with your own proxy and expect a rebuild longer than its
+read timeout, raise that timeout before changing the language, or run the
+rebuild during a window where a five-minute request is acceptable. Re-saving
+the same language is always safe — it just repeats the work.
+
+> **`FTS_LANGUAGE` is removed (#1114).** It was documented as the way to set
+> this and never worked on a migrated instance: migration 049 seeds the
+> `fts_language` row before the first request, so the code path that read the
+> environment variable was unreachable. If your content is not English and you
+> "set the language" that way, your keyword leg is still running `simple` —
+> open **Settings → AI Models → Retrieval** and set it there. A leftover
+> `FTS_LANGUAGE` in the environment is reported as ignored in the startup log
+> and can be deleted.
 
 ### Retrieval fetch width (`rag_fetch_width`)
 
@@ -779,6 +851,23 @@ for the full span reference.
 | `CONTAINER_CA_BUNDLE_PATH` | `/etc/ssl/certs/ca-certificates.crt` | Container path for the CA bundle |
 
 ## Upgrade Procedure
+
+### Breaking change: `FTS_LANGUAGE` is removed
+
+The keyword-index language is now set **only** in
+**Settings → AI Models → Retrieval**. Delete `FTS_LANGUAGE` from your
+environment and `docker/.env`; a leftover value is reported as ignored in the
+startup log.
+
+This one needs a look even if you never set the variable *deliberately*,
+because it never took effect: migration 049 seeds the `fts_language` row before
+the first request, so the code path that read the environment was unreachable.
+**If your content is not English, your keyword leg has been running `simple`
+— no stemming, no stop words — whatever the variable said.** Open the panel,
+set the language most of your content is written in, and Save; the save
+re-indexes the whole corpus inside the request, so read
+[Keyword index language (`fts_language`)](#keyword-index-language-fts_language)
+first if your corpus is large.
 
 ### Breaking change: `POSTGRES_PASSWORD` / `REDIS_PASSWORD` are now required
 

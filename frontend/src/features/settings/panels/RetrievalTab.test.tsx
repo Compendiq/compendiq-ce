@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+import { FTS_LANGUAGES } from '@compendiq/contracts';
 import { RetrievalTab } from './RetrievalTab';
+
+const toastSuccess = vi.fn();
+vi.mock('sonner', () => ({
+  toast: {
+    success: (...args: unknown[]) => toastSuccess(...args),
+    error: vi.fn(),
+  },
+}));
 
 const authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
 vi.mock('../../../stores/auth-store', () => ({
@@ -16,6 +25,7 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /** GET /admin/settings answering with every knob at its reader default. */
 const defaultSettings = {
+  ftsLanguage: 'simple',
   ragFetchWidth: 10,
   ragRerankCandidates: 30,
   ragConfidenceThreshold: 0,
@@ -91,13 +101,18 @@ function mockApi({ settings = defaultSettings, rerank = unassignedRerank() }: Mo
 
 function renderTab() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <RetrievalTab />
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return {
+    // Handed back so a test can fail a REFETCH of an already-loaded query —
+    // the failed-with-cache state, which no first-load mock can reach.
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <RetrievalTab />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 async function ready() {
@@ -255,6 +270,568 @@ describe('RetrievalTab — the nine knobs', () => {
     expect(input('ragRankingPriorWeight').max).toBe('0.05');
     expect(input('ragContextCharsPerPage').max).toBe('24000');
     expect(input('ragMmrLambda').max).toBe('1');
+  });
+});
+
+/**
+ * #1114 — the keyword-index language.
+ *
+ * It has been an `admin_settings` row since migration 049 with no control
+ * anywhere: the documented way to change it was `FTS_LANGUAGE`, which that
+ * same migration made inert. So a German deployment that "set the language"
+ * has been running the keyword leg on `simple` — no stemming, no stop words —
+ * ever since. This panel is now the only place it is set.
+ */
+describe('RetrievalTab — keyword index language (#1114)', () => {
+  const select = () => screen.getByTestId('retrieval-ftsLanguage') as HTMLSelectElement;
+
+  it('shows the stored language and offers exactly the contracts allow-list', async () => {
+    mockApi({ settings: { ...defaultSettings, ftsLanguage: 'german' } });
+    renderTab();
+    await ready();
+
+    await waitFor(() => expect(select().value).toBe('german'));
+    // The reader discards anything outside this list, so the control must not
+    // offer a language that would silently read back as `simple`.
+    const values = [...select().options].map((option) => option.value);
+    expect([...values].sort()).toEqual([...FTS_LANGUAGES].sort());
+  });
+
+  it('leads with simple and sorts the languages by the label people scan', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+
+    const options = [...select().options];
+    // `simple` is not a language and it is the default, so it leads. The
+    // other sixteen are alphabetical: the contracts order is a validation
+    // list, and rendering it verbatim made "Romanian" the seventeenth thing
+    // to read. Order here is presentation — `FTS_LANGUAGES` stays canonical.
+    expect(options[0]!.value).toBe('simple');
+    const labels = options.slice(1).map((option) => option.textContent ?? '');
+    expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
+  });
+
+  it('sends only the language when nothing else changed', async () => {
+    const puts = mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ftsLanguage: 'german' });
+  });
+
+  it('names the cost of saving: every page is re-indexed', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    // Unlike the nine numeric knobs, this one does corpus-wide work inside the
+    // request that saves it. A control that does not say so is a trap.
+    expect(screen.getByTestId('retrieval-fts-language')).toHaveTextContent(
+      /rebuilds the keyword index for every page/i,
+    );
+  });
+
+  it('warns that simple does no stemming — and only while simple is selected', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    const hint = screen.getByTestId('retrieval-fts-simple-hint');
+    expect(hint).toHaveTextContent(/does no stemming/i);
+    // ADR-010: this is a permanent condition on a default install, not an
+    // attention state. Amber would be spent on something that never clears.
+    expect(hint.className).toContain('text-muted-foreground');
+    expect(hint.className).not.toMatch(/warning|status-syncing/);
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    expect(screen.queryByTestId('retrieval-fts-simple-hint')).not.toBeInTheDocument();
+  });
+
+  it('wires the cost sentence and the simple hint to the control itself', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    // ADR-010's `DeepSearchToggle` rule: the copy that makes a control safe is
+    // wired to it, not merely printed beside it. This is the only control on
+    // the panel whose save re-indexes the corpus, so a screen-reader user must
+    // hear the cost before choosing.
+    const described = (select().getAttribute('aria-describedby') ?? '').split(/\s+/);
+    const text = described
+      .map((id) => document.getElementById(id)?.textContent ?? '')
+      .join(' ');
+    expect(text).toMatch(/rebuilds the keyword index for every page/i);
+    expect(text).toMatch(/does no stemming/i);
+
+    // The hint leaves the description with the hint.
+    fireEvent.change(select(), { target: { value: 'german' } });
+    const afterIds = (select().getAttribute('aria-describedby') ?? '').split(/\s+/);
+    for (const id of afterIds) expect(document.getElementById(id)).not.toBeNull();
+    expect(
+      afterIds.map((id) => document.getElementById(id)?.textContent ?? '').join(' '),
+    ).toMatch(/rebuilds the keyword index for every page/i);
+  });
+
+  it('re-reads the server when a save fails, so it cannot show a value the database lacks', async () => {
+    // Two ways a failed PUT still changes something: the nine knobs are
+    // written before the keyword-index transaction runs, and the rebuild is
+    // unbounded server-side while the edge caps `/api/` at 300s — a corpus
+    // that outruns that answers 504 to the browser and commits anyway. Either
+    // way the panel must go back to the server rather than keep rendering the
+    // value it optimistically holds.
+    let settings: Record<string, unknown> = { ...defaultSettings };
+    let gets = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') {
+          // The rebuild ran and committed; the response never made it back.
+          settings = { ...settings, ftsLanguage: 'german' };
+          return json({ message: 'Gateway Time-out' }, 504);
+        }
+        gets++;
+        return json(settings);
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+    const getsBeforeSave = gets;
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(gets).toBeGreaterThan(getsBeforeSave));
+    // The committed value is what the panel now compares against, so Save
+    // stops offering to re-run a corpus-wide rebuild that already happened.
+    await waitFor(() => expect(screen.getByTestId('retrieval-save-btn')).toBeDisabled());
+
+    // …and says so on screen (review r3). Re-reading silently leaves the admin
+    // with an error toast beside a dead Save button, which is "it failed" and
+    // "there is nothing left to save" at the same time. The resolution used to
+    // live only in the admin guide.
+    const strip = await screen.findByTestId('retrieval-fts-save-failed');
+    expect(strip).toHaveTextContent(/server now reports/i);
+    expect(strip).toHaveTextContent(/German/);
+    expect(strip).toHaveTextContent(/believe the value shown here, not the error/i);
+  });
+
+  it('says the language was NOT changed when the rebuild rolled back', async () => {
+    // The other half of the same failure: a 503 from the rebuild leaves the
+    // row untouched, the admin's unsent choice on screen and Save still
+    // offered. Reporting "believe what you see" there would be a lie — the
+    // refetched value is what distinguishes the two, so the panel reads it.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') {
+          return json({ message: 'Keyword index rebuild failed — the language was not changed' }, 503);
+        }
+        return json(defaultSettings);
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    const strip = await screen.findByTestId('retrieval-fts-save-failed');
+    expect(strip).toHaveTextContent(/still reports/i);
+    expect(strip).toHaveTextContent(/Simple \(no stemming\)/);
+    expect(strip).toHaveTextContent(/was not changed/i);
+    // The unsent choice survives, so Save is still the way to retry — which is
+    // what the strip tells the admin to do.
+    expect(select().value).toBe('german');
+    expect(screen.getByTestId('retrieval-save-btn')).toBeEnabled();
+  });
+
+  it('keeps the rollback wording when the admin edits the select after the failure', async () => {
+    // The strip reports what the SERVER did with what was SENT, so its
+    // evidence is `mutation.variables`, not the live select. Comparing the
+    // refetched value against a mutable draft lets the admin flip the verdict
+    // by abandoning their own edit: putting the select back to `simple` made
+    // the two sides match, and the panel announced a commit — "believe the
+    // value shown here, not the error" — for a transaction that rolled back
+    // and a proxy timeout that never happened.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') {
+          return json({ message: 'Keyword index rebuild failed — the language was not changed' }, 503);
+        }
+        return json(defaultSettings); // still `simple`: the rebuild rolled back
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    const strip = await screen.findByTestId('retrieval-fts-save-failed');
+    expect(strip).toHaveTextContent(/was not changed/i);
+
+    // The admin gives up on the change and puts the select back. Nothing about
+    // the failed request changed, so neither may the verdict.
+    fireEvent.change(select(), { target: { value: 'simple' } });
+    expect(screen.getByTestId('retrieval-fts-save-failed')).toHaveTextContent(/was not changed/i);
+    expect(screen.getByTestId('retrieval-fts-save-failed')).not.toHaveTextContent(
+      /believe the value shown here/i,
+    );
+  });
+
+  it('carries the amber strip glyph, not colour alone', async () => {
+    // ADR-010: every amber strip in the app pairs this class recipe with a
+    // 16px AlertTriangle. Colour is the weaker channel under `forced-colors`
+    // and for a colour-blind admin, and this strip is the only thing on screen
+    // resolving "it failed" against a Save button that just went dead.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') return json({ message: 'Rebuild failed' }, 503);
+        return json(defaultSettings);
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    const strip = await screen.findByTestId('retrieval-fts-save-failed');
+    expect(strip.querySelector('svg')).not.toBeNull();
+  });
+
+  it('withholds the verdict when the re-read that would prove it also failed', async () => {
+    // The strip's entire basis is "the refetched value is the evidence". When
+    // the backend is down, the PUT fails and the `onError` re-read fails with
+    // it — so the cached value is the value from BEFORE the save, and
+    // announcing "the server still reports Simple — the language was not
+    // changed" from it states a verdict nothing confirmed. The degraded strip
+    // says what is actually known: the settings could not be re-read.
+    let getsAfterPut = 0;
+    let putDone = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') {
+          putDone = true;
+          return json({ message: 'Service Unavailable' }, 503);
+        }
+        if (putDone) {
+          getsAfterPut++;
+          return json({ message: 'Service Unavailable' }, 503);
+        }
+        return json(defaultSettings);
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(getsAfterPut).toBeGreaterThan(0));
+    // Degraded, not torn down — and not a verdict either.
+    expect(await screen.findByTestId('retrieval-settings-stale')).toBeInTheDocument();
+    expect(screen.queryByTestId('retrieval-fts-save-failed')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('retrieval-tab-error')).not.toBeInTheDocument();
+    expect(select().value).toBe('german');
+  });
+
+  it('says nothing about a failed save that never carried the language', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (method === 'PUT') return json({ message: 'Nope' }, 500);
+        return json(defaultSettings);
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await ready();
+    type('ragFetchWidth', '40');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(screen.getByTestId('retrieval-save-btn')).toBeEnabled());
+    expect(screen.queryByTestId('retrieval-fts-save-failed')).not.toBeInTheDocument();
+  });
+
+  it('keeps Save disabled until the language actually differs', async () => {
+    mockApi({ settings: { ...defaultSettings, ftsLanguage: 'german' } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('german'));
+
+    expect(screen.getByTestId('retrieval-save-btn')).toBeDisabled();
+    fireEvent.change(select(), { target: { value: 'french' } });
+    expect(screen.getByTestId('retrieval-save-btn')).toBeEnabled();
+    fireEvent.change(select(), { target: { value: 'german' } });
+    expect(screen.getByTestId('retrieval-save-btn')).toBeDisabled();
+  });
+
+  it('re-reads the server after a save instead of trusting its own state (#1118)', async () => {
+    const puts = mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+    await waitFor(() => expect(puts).toHaveLength(1));
+
+    // The mocked GET still answers `simple`, so a panel that re-hydrates from
+    // the invalidated query lands back on it. One that kept its optimistic
+    // value would show `german` for a save the server never applied.
+    await waitFor(() => expect(select().value).toBe('simple'));
+  });
+
+  it('survives "Reset all to defaults" — a bulk reset must not re-index the corpus', async () => {
+    // Every other control here is a number or a checkbox: resetting one costs
+    // nothing and is undone by resetting it back. This one is the whole
+    // corpus's `tsv`, and its default is `simple` — the value this issue
+    // exists to move German deployments OFF. One click among nine cheap
+    // resets, then Save, and the keyword leg is back to no stemming.
+    const puts = mockApi({
+      settings: { ...defaultSettings, ftsLanguage: 'german', ragFetchWidth: 40 },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('german'));
+
+    fireEvent.click(screen.getByTestId('retrieval-reset-all-btn'));
+
+    expect(select().value).toBe('german');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragFetchWidth: 10 });
+  });
+
+  it('does not report a delay for a save that already rebuilt the index', async () => {
+    const puts = mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    // The nine knobs converge on a 60-second read cache; this one was rebuilt
+    // inside the request that just returned.
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    expect(String(toastSuccess.mock.calls.at(-1)?.[0])).not.toMatch(/within a minute/i);
+  });
+
+  it('says on screen that the bulk reset leaves it alone', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    // A button labelled "all" that skips one field has to say so where the
+    // click happens, not in a tooltip.
+    expect(screen.getByTestId('retrieval-reset-all-scope')).toHaveTextContent(
+      /keyword index language/i,
+    );
+  });
+});
+
+/**
+ * Review r3. Every field on this panel falls back to `DEFAULTS` when the
+ * settings document is missing, and react-query settles a failed query with
+ * `data === undefined` and `isLoading === false` — so a failed GET used to
+ * render a complete, plausible, WRONG settings page. `ftsLanguage` is where
+ * that stops being cosmetic: it reports `simple` on an instance whose row says
+ * `german`, under a hint telling the admin to pick a language, and acting on
+ * that costs a corpus-wide re-index that was never needed. Same failure
+ * CLAUDE.md pins for `usePageTree`, reached on a settings surface.
+ */
+describe('RetrievalTab — a failed settings fetch is a failure, not a defaults document', () => {
+  function mockFailingSettings() {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return new Response(
+          JSON.stringify({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.includes('/admin/settings')) {
+        return new Response(JSON.stringify({ message: 'Service Unavailable' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('Not found', { status: 404 });
+    });
+  }
+
+  it('renders a retryable error instead of a form full of defaults', async () => {
+    mockFailingSettings();
+    renderTab();
+
+    await waitFor(() => expect(screen.getByTestId('retrieval-tab-error')).toBeInTheDocument());
+    expect(screen.getByTestId('retrieval-tab-retry')).toBeInTheDocument();
+    expect(screen.queryByTestId('retrieval-tab')).not.toBeInTheDocument();
+  });
+
+  it('never reports a keyword-index language it did not read', async () => {
+    mockFailingSettings();
+    renderTab();
+
+    await waitFor(() => expect(screen.getByTestId('retrieval-tab-error')).toBeInTheDocument());
+    // The two things a fabricated `simple` would put on screen: the value
+    // itself, and the hint that invites the admin to change it.
+    expect(screen.queryByTestId('retrieval-ftsLanguage')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('retrieval-fts-simple-hint')).not.toBeInTheDocument();
+  });
+
+  /**
+   * Three states, not two (CLAUDE.md's `usePageTree` rule): failed-with-
+   * nothing-cached is destructive and the error IS the content; failed-with-
+   * cache is DEGRADED — amber `role="status"` over an intact form. react-query
+   * settles a failed REFETCH with `status: 'error'` while keeping `data`, so
+   * gating the destructive card on `isError` alone threw away a known-good
+   * settings document plus the admin's unsent edit. It is reachable from the
+   * mutation's own `onError`, which invalidates this very query: when the
+   * backend is down, the follow-on GET fails too.
+   */
+  it('keeps the form and degrades to amber when a REFETCH fails over cached settings', async () => {
+    let fail = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (fail) return json({ message: 'Service Unavailable' }, 503);
+        return json({ ...defaultSettings, ftsLanguage: 'german' });
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    const { queryClient } = renderTab();
+    await ready();
+    const select = () => screen.getByTestId('retrieval-ftsLanguage') as HTMLSelectElement;
+    await waitFor(() => expect(select().value).toBe('german'));
+
+    // An unsent edit the admin would lose if the panel swapped itself out.
+    fireEvent.change(select(), { target: { value: 'english' } });
+
+    fail = true;
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['admin-settings'] });
+    });
+
+    // Red is failure; amber is degraded. Nothing was lost, so nothing is torn down.
+    const strip = await screen.findByTestId('retrieval-settings-stale');
+    expect(screen.queryByTestId('retrieval-tab-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('retrieval-tab')).toBeInTheDocument();
+    expect(select().value).toBe('english');
+
+    expect(strip).toHaveAttribute('role', 'status');
+    expect(strip.className).toMatch(/border-warning\/30/);
+    expect(strip.className).toMatch(/bg-warning\/10/);
+    expect(strip).toHaveTextContent(/could not be re-read/i);
+    expect(strip).toHaveTextContent(/stale/i);
+    // Same ADR-010 recipe as every other amber strip: colour is not the only channel.
+    expect(strip.querySelector('svg')).not.toBeNull();
+  });
+
+  it('recovers into the real document when the retry succeeds', async () => {
+    let fail = true;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/admin/llm-usecases')) {
+        const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
+        return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank: unassignedRerank() });
+      }
+      if (url.includes('/admin/settings')) {
+        if (fail) return json({ message: 'Service Unavailable' }, 503);
+        return json({ ...defaultSettings, ftsLanguage: 'german' });
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    renderTab();
+    await waitFor(() => expect(screen.getByTestId('retrieval-tab-error')).toBeInTheDocument());
+
+    fail = false;
+    fireEvent.click(screen.getByTestId('retrieval-tab-retry'));
+
+    await waitFor(() =>
+      expect((screen.getByTestId('retrieval-ftsLanguage') as HTMLSelectElement).value).toBe('german'),
+    );
   });
 });
 

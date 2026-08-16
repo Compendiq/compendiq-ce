@@ -1,9 +1,12 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import type { UsecaseAssignments } from '@compendiq/contracts';
+import type { FtsLanguage, UsecaseAssignments } from '@compendiq/contracts';
+import { FTS_LANGUAGES } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
+import { ErrorState } from '../../../shared/components/feedback/ErrorState';
 import { SETTINGS_PANELS } from '../settings-nav';
 
 /**
@@ -32,11 +35,35 @@ import { SETTINGS_PANELS } from '../settings-nav';
  * an untouched knob keeps no row at all. Absent and explicitly-default read
  * alike today, but `rag_context_chars_per_page`'s last-good fallback is
  * written assuming no phantom row, and a row nobody set misrepresents what the
- * operator configured.
+ * operator configured. (The one exception is `fts_language`, which migration
+ * 049 seeds with `simple` on every instance — the whole reason the removed
+ * `FTS_LANGUAGE` env var was unreachable.)
+ *
+ * **A failed settings fetch is a failure, not a defaults document** (review
+ * r3). `useQuery` is consumed with `isError`, because every field on this
+ * panel falls back to `DEFAULTS` when `data` is undefined — and react-query
+ * settles a failed query with `data === undefined` and `isLoading === false`.
+ * Rendering that reports `simple` on a German instance and offers the "pick
+ * the language most of your content is written in" hint underneath it, which
+ * invites an admin to re-save a language that was already set and pay for a
+ * corpus-wide rebuild that was never needed. Same failure CLAUDE.md pins for
+ * `usePageTree`, reached on a settings surface — including its THREE states
+ * (review r4): failed-with-nothing-cached is the destructive `ErrorState`,
+ * failed-with-cache is an amber `role="status"` strip over an intact form, and
+ * loaded is the form. `isError` alone conflated the first two and tore down a
+ * known-good document the panel had really read.
  */
 
 /** Mirrors the reader defaults in `backend/src/core/services/admin-settings-service.ts`. */
 interface RetrievalValues {
+  /**
+   * #1114 — `admin_settings.fts_language`, read by
+   * `core/services/fts-language.ts`. It sits with the retrieval knobs because
+   * it configures one of the two retrieval legs, but it is not one of the
+   * nine: saving it rebuilds every page's tsvector inside the request, and
+   * `FTS_LANGUAGES` is a closed allow-list rather than a range.
+   */
+  ftsLanguage: FtsLanguage;
   ragFetchWidth: number;
   ragRerankCandidates: number;
   ragConfidenceThreshold: number;
@@ -86,6 +113,7 @@ interface BenchmarkRun {
 }
 
 const DEFAULTS: RetrievalValues = {
+  ftsLanguage: 'simple',
   ragFetchWidth: 10,
   ragRerankCandidates: 30,
   ragConfidenceThreshold: 0,
@@ -172,6 +200,37 @@ const FIELDS: Record<NumericKey, NumericField> = {
   },
 };
 
+/**
+ * Display names for the PostgreSQL text-search configurations. Only `simple`
+ * needs one: it is the odd entry in a list of languages, and an operator
+ * scanning the dropdown should be able to see that before selecting it rather
+ * than after. Everything else is its own regconfig name, capitalised, so the
+ * value in `admin_settings` stays recognisable from the UI.
+ */
+const FTS_LANGUAGE_LABELS: Partial<Record<FtsLanguage, string>> = {
+  simple: 'Simple (no stemming)',
+};
+
+function ftsLanguageLabel(language: FtsLanguage): string {
+  return FTS_LANGUAGE_LABELS[language] ?? language.charAt(0).toUpperCase() + language.slice(1);
+}
+
+/**
+ * Render order for the select. `FTS_LANGUAGES` is the canonical VALIDATION
+ * list — the reader, the route and this control all read it — and its order
+ * is the historical one it was written in, neither alphabetical nor
+ * PostgreSQL's. Rendering that verbatim put "Romanian" seventeenth, so
+ * seventeen entries had to be read to find one. Order is presentation:
+ * `simple` leads (it is the default and the one entry that is not a
+ * language), the rest sort by the label the eye actually scans.
+ */
+const FTS_LANGUAGE_OPTIONS: readonly FtsLanguage[] = [
+  'simple',
+  ...FTS_LANGUAGES.filter((language) => language !== 'simple').sort((a, b) =>
+    ftsLanguageLabel(a).localeCompare(ftsLanguageLabel(b)),
+  ),
+];
+
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 const LLM_PROVIDERS_PATH = `${SETTINGS_PANELS.models.path}?sub=llm`;
 
@@ -187,7 +246,14 @@ export function RetrievalTab() {
   const [benchmarkDays, setBenchmarkDays] = useState(30);
   const [benchmarkLimit, setBenchmarkLimit] = useState(25);
 
-  const { data: settings, isLoading } = useQuery<Partial<RetrievalValues>>({
+  const {
+    data: settings,
+    isLoading,
+    isFetching: settingsFetching,
+    isError: settingsError,
+    error: settingsErrorObj,
+    refetch: refetchSettings,
+  } = useQuery<Partial<RetrievalValues>>({
     queryKey: ['admin-settings'],
     queryFn: () => apiFetch('/admin/settings'),
   });
@@ -226,13 +292,32 @@ export function RetrievalTab() {
   const mutation = useMutation({
     mutationFn: (body: Partial<RetrievalValues>) =>
       apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
-    onSuccess: async () => {
+    onSuccess: async (_data, variables) => {
       setHydrated(false);
       await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
-      toast.success('Retrieval settings updated (takes effect within a minute)');
+      // #1114 — "within a minute" describes the nine cached knobs. The
+      // keyword index was rebuilt inside the request that just returned, so
+      // reporting a delay for it would be the same false generalisation the
+      // panel's intro used to make.
+      toast.success(
+        'ftsLanguage' in variables
+          ? 'Retrieval settings updated (keyword index rebuilt)'
+          : 'Retrieval settings updated (takes effect within a minute)',
+      );
     },
-    onError: (err) => {
+    onError: async (err) => {
       toast.error(err instanceof Error ? err.message : 'Failed to update retrieval settings');
+      // #1114 — a failed PUT does not mean nothing landed. The knobs are
+      // written before the keyword-index transaction runs, so a rebuild
+      // failure leaves them saved; and the rebuild is deliberately unbounded
+      // server-side while the edge caps `/api/` at 300s, so a corpus that
+      // outruns that budget answers 504 here and COMMITS there. Re-reading
+      // the server is what stops the panel showing a value the database does
+      // not have. `hydrated` is left alone on purpose: `saved` recomputes
+      // from the fresh payload — which is what Save's enabled state is
+      // derived from — while the admin's unsent edits survive a transient
+      // failure.
+      await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
     },
   });
 
@@ -249,6 +334,45 @@ export function RetrievalTab() {
   function set<K extends keyof RetrievalValues>(key: K, value: RetrievalValues[K]) {
     setValues((prev) => ({ ...prev, [key]: value }));
   }
+
+  // #1114, review r3 — the failure this control was designed around has to be
+  // legible where the control is, not only in the admin guide. In the
+  // documented 504 case the toast says "Gateway Time-out" while the panel
+  // re-reads `german` and Save goes dead: on screen that is "it failed" beside
+  // "there is nothing left to save", a contradiction the guide needed a
+  // paragraph to resolve. So the panel resolves it itself, and it can say
+  // which of the two happened because the refetched value is the evidence:
+  // the server reporting the language the admin picked means the transaction
+  // committed, and reporting the old one means it rolled back.
+  //
+  // Amber, not muted, and not the panel's own no-amber rule: that rule is
+  // about *permanent* notices (the disabled optional stages), and ADR-010's
+  // `usePageTree` precedent puts exactly this state — the request failed, the
+  // data is intact but suspect — in an amber `role="status"` strip. Red is
+  // failure; amber is degraded. It clears on the next successful save.
+  // Withheld while the refetch is in flight, or it would announce the
+  // rollback wording for a frame and then contradict itself.
+  //
+  // The evidence is what was SENT (`mutation.variables`), never the live
+  // select (review r4). `values` is a draft the admin can still edit while
+  // `isError` is true, so comparing the refetched value against it let them
+  // flip the verdict by abandoning their own change: picking `german`,
+  // getting the 503 rollback, then putting the select back to `simple` made
+  // the two sides match and the panel announced a commit — "believe the value
+  // shown here, not the error" — for a transaction that rolled back and a
+  // proxy timeout that never happened. The question the strip answers is "did
+  // the server end up with what we asked for?", which only the request can ask.
+  //
+  // And withheld when the re-read ITSELF failed, for the same reason: on a
+  // backend that is down the PUT fails and the `onError` refetch fails with
+  // it, leaving a cached value from before the save. Reading a verdict off
+  // that would state "the language was not changed" from evidence nobody
+  // collected. The degraded strip at the top of the panel says what is
+  // actually known — the settings could not be re-read.
+  const submittedLanguage = (mutation.variables as Partial<RetrievalValues> | undefined)?.ftsLanguage;
+  const failedSaveTouchedLanguage =
+    mutation.isError && submittedLanguage !== undefined && !settingsFetching && !settingsError;
+  const languageSurvivedFailedSave = saved.ftsLanguage === submittedLanguage;
 
   // The rerank STAGE, per ADR-021: on iff an assignment exists AND the server
   // could resolve a model for it. `resolveRerankUsecase` returning the nil
@@ -288,14 +412,179 @@ export function RetrievalTab() {
     return <div className="text-sm text-muted-foreground">Loading...</div>;
   }
 
+  // Before the form, never beside it (review r3). Every control here reads
+  // `DEFAULTS` when the document is missing, so a failed GET renders a
+  // complete, plausible, wrong settings page — `simple` on an instance whose
+  // row says `german`, under a hint telling the admin to go set a language
+  // that is already set. There is no honest partial render, so there is no
+  // partial render.
+  //
+  // Three states, not two (review r4): `settingsError && !settings` is the
+  // destructive one — nothing was ever read, so the error IS the content.
+  // react-query settles a failed REFETCH with `status: 'error'` while keeping
+  // `data`, and `isError` alone tore down a known-good settings document plus
+  // the admin's unsent edit. That is reachable from this panel's own
+  // `onError`, which invalidates `['admin-settings']`: when the backend is
+  // down the follow-on GET fails too, and the failed-save strip below — the
+  // whole point of that re-read — never rendered. Failed-with-cache is
+  // DEGRADED, and takes the amber strip above an intact form instead.
+  if (settingsError && !settings) {
+    return (
+      <ErrorState
+        title="Couldn't load retrieval settings"
+        description={
+          settingsErrorObj instanceof Error
+            ? `${settingsErrorObj.message} — the panel is hidden rather than showing defaults that are not this deployment's configuration.`
+            : "The panel is hidden rather than showing defaults that are not this deployment's configuration."
+        }
+        onRetry={() => refetchSettings()}
+        testId="retrieval-tab-error"
+        retryTestId="retrieval-tab-retry"
+      />
+    );
+  }
+
   return (
     <div className="space-y-6" data-testid="retrieval-tab">
+      {/*
+        Failed-with-cache. Amber and `role="status"`, not red and not a
+        teardown: the form below is the last document this panel really read,
+        so it is degraded rather than wrong, and the admin's unsent edits are
+        still on it.
+      */}
+      {settingsError && (
+        <div
+          role="status"
+          className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+          data-testid="retrieval-settings-stale"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>
+            The retrieval settings could not be re-read, so the values below may be stale.{' '}
+            <button
+              type="button"
+              onClick={() => refetchSettings()}
+              className="font-medium underline underline-offset-2"
+              data-testid="retrieval-settings-stale-retry"
+            >
+              Try again
+            </button>
+          </span>
+        </div>
+      )}
+
+      {/*
+        #1114 — the timing sentence is scoped. It described the nine cached
+        knobs, and it is read directly above the keyword index section, whose
+        value is read uncached and whose save re-indexes the corpus inside the
+        request. A generalisation that is false for the first control under it
+        is worse than no generalisation.
+      */}
       <p className="text-sm text-muted-foreground">
-        How the AI assistant gathers knowledge-base context for a question: how many candidates
-        each stage considers, how much of a page it carries, and which optional stages run. Saved
-        values apply within a minute — immediately on the server that handled the save, and on
-        every other server once its 60-second read cache expires.
+        How the AI assistant gathers knowledge-base context for a question: the language the
+        keyword index is built with, how many candidates each stage considers, how much of a page
+        it carries, and which optional stages run. The numeric and on/off settings apply within a
+        minute of saving — immediately on the server that handled the save, and on every other
+        server once its 60-second read cache expires. The keyword index language is the
+        exception: it applies as soon as its rebuild finishes.
       </p>
+
+      {/* ── Keyword index ───────────────────────────────────────────────── */}
+      {/*
+        #1114. Unlike the nine knobs below, this one is not a pool size or a
+        threshold: it decides how the keyword leg's tsvector is BUILT, so
+        saving it re-indexes the corpus inside the request rather than taking
+        effect on the next read. The copy carries that cost; the control is
+        deliberately in this panel and nowhere else, because the environment
+        variable that used to claim to set it never did.
+      */}
+      <Section
+        title="Keyword index"
+        description="The PostgreSQL text-search configuration the keyword leg of hybrid search is built and queried with."
+      >
+        <div className="space-y-1.5" data-testid="retrieval-fts-language">
+          <div className="flex items-start justify-between gap-4">
+            <label htmlFor="ftsLanguage" className="pt-1.5 text-sm font-medium">
+              Keyword index language
+            </label>
+            {/*
+              The cost sentence is wired to the control, not merely printed
+              near it (ADR-010's `DeepSearchToggle` precedent): this is the one
+              control on the panel whose save re-indexes the corpus, and a
+              caveat a screen-reader user never hears is the same caveat living
+              in a `title`. The `simple` hint joins the description only while
+              it is on screen.
+            */}
+            <select
+              id="ftsLanguage"
+              className="nm-select-md shrink-0"
+              value={values.ftsLanguage}
+              onChange={(event) => set('ftsLanguage', event.target.value as FtsLanguage)}
+              aria-describedby={
+                values.ftsLanguage === 'simple'
+                  ? 'ftsLanguage-help ftsLanguage-simple-hint'
+                  : 'ftsLanguage-help'
+              }
+              data-testid="retrieval-ftsLanguage"
+            >
+              {FTS_LANGUAGE_OPTIONS.map((language) => (
+                <option key={language} value={language}>
+                  {ftsLanguageLabel(language)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5 text-xs text-muted-foreground">
+            <p id="ftsLanguage-help">
+              Stemming and stop words for the keyword leg of search. Saving rebuilds the keyword
+              index for every page.
+            </p>
+            {values.ftsLanguage === 'simple' && (
+              // Muted, never amber: on a default install this is permanent,
+              // and ADR-010 spends amber on states that clear.
+              <p
+                id="ftsLanguage-simple-hint"
+                className="text-xs text-muted-foreground"
+                data-testid="retrieval-fts-simple-hint"
+              >
+                <code className="font-mono">simple</code> does no stemming — pick the language most
+                of your content is written in.
+              </p>
+            )}
+          </div>
+          {failedSaveTouchedLanguage && (
+            // The 16px AlertTriangle is part of this class recipe everywhere
+            // else in the app (ADR-010): colour is the weaker channel under
+            // `forced-colors` and for a colour-blind admin, and this strip is
+            // the only thing on screen resolving "it failed" against a Save
+            // button that just went dead.
+            <div
+              role="status"
+              className="flex items-start gap-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
+              data-testid="retrieval-fts-save-failed"
+            >
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+              <span>
+                {languageSurvivedFailedSave ? (
+                  <>
+                    The save reported an error, but the server now reports{' '}
+                    <strong className="font-medium">{ftsLanguageLabel(saved.ftsLanguage)}</strong>. A
+                    rebuild that outruns your reverse proxy&apos;s read timeout answers a gateway
+                    timeout while the database goes on to commit — believe the value shown here, not
+                    the error.
+                  </>
+                ) : (
+                  <>
+                    The save reported an error and the server still reports{' '}
+                    <strong className="font-medium">{ftsLanguageLabel(saved.ftsLanguage)}</strong> —
+                    the language was not changed. Save again to retry.
+                  </>
+                )}
+              </span>
+            </div>
+          )}
+        </div>
+      </Section>
 
       {/* ── Candidate pools ─────────────────────────────────────────────── */}
       <Section
@@ -590,23 +879,40 @@ export function RetrievalTab() {
         )}
       </Section>
 
-      <div className="flex items-center gap-3 border-t border-border pt-4">
-        <button
-          onClick={handleSave}
-          disabled={changed.length === 0 || mutation.isPending}
-          className="nm-button-primary"
-          data-testid="retrieval-save-btn"
-        >
-          {mutation.isPending ? 'Saving...' : 'Save'}
-        </button>
-        <button
-          onClick={() => setValues(DEFAULTS)}
-          disabled={mutation.isPending}
-          className="text-sm text-muted-foreground hover:text-foreground"
-          data-testid="retrieval-reset-all-btn"
-        >
-          Reset all to defaults
-        </button>
+      <div className="space-y-2 border-t border-border pt-4">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleSave}
+            disabled={changed.length === 0 || mutation.isPending}
+            className="nm-button-primary"
+            data-testid="retrieval-save-btn"
+          >
+            {mutation.isPending ? 'Saving...' : 'Save'}
+          </button>
+          <button
+            // #1114 — the keyword-index language is deliberately NOT reset
+            // here. Every other control on this panel is a number or a
+            // checkbox: resetting one costs nothing and is undone by
+            // resetting it back. This one's default is `simple`, and saving
+            // it re-indexes every page — so a German deployment was one click
+            // among nine cheap resets away from putting its keyword leg back
+            // on no stemming, which is the failure this panel shipped to fix.
+            onClick={() => setValues((prev) => ({ ...DEFAULTS, ftsLanguage: prev.ftsLanguage }))}
+            disabled={mutation.isPending}
+            className="text-sm text-muted-foreground hover:text-foreground"
+            data-testid="retrieval-reset-all-btn"
+          >
+            Reset all to defaults
+          </button>
+        </div>
+        {/*
+          A button labelled "all" that skips a field has to say so where the
+          click happens — a `title` is unreachable by touch and keyboard.
+        */}
+        <p className="text-xs text-muted-foreground" data-testid="retrieval-reset-all-scope">
+          Leaves the keyword index language alone — changing it re-indexes every page, so it is
+          set only from its own control above.
+        </p>
       </div>
     </div>
   );

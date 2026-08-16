@@ -14,6 +14,7 @@ import {
 import { initLlmQueue } from './domains/llm/services/llm-queue.js';
 import { initRateLimiter } from './domains/confluence/services/confluence-rate-limiter.js';
 import { initEmailService, closeEmailService } from './core/services/email-service.js';
+import { warnIfFtsLanguageEnvSet } from './core/services/fts-language.js';
 import { isValidEncryptionKey } from './core/utils/crypto.js';
 
 const PORT = parseInt(process.env.BACKEND_PORT ?? '3051', 10);
@@ -49,6 +50,11 @@ async function start() {
 
   // Legacy single-provider setup (`LLM_PROVIDER`) removed — providers are
   // now registered in `llm_providers` and selected per use-case.
+  //
+  // `FTS_LANGUAGE` is retired the same way (#1114). Reported after migrations
+  // so the row it points at is guaranteed to exist by the time an operator
+  // follows the message.
+  warnIfFtsLanguageEnvSet();
   await initLlmQueue();
   await initRateLimiter();
   await initEmailService();

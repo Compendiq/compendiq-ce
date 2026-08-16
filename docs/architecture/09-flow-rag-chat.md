@@ -1095,9 +1095,51 @@ states the condition where an operator will meet it.
 - **Vector search** uses pgvector's `<=>` cosine distance against an HNSW
   index on `page_embeddings.embedding`. `ef_search` is set per request for
   a recall/latency trade-off.
-- **Keyword search** uses the PostgreSQL text-search configuration from
-  `FTS_LANGUAGE` (default `simple`; set `german`, `english`, etc. for
-  language-aware stemming). The parser is **chosen per query** (#1110,
+- **Keyword search** uses the PostgreSQL text-search configuration stored in
+  `admin_settings.fts_language` (default `simple`; set `german`, `english`,
+  etc. for language-aware stemming), edited in
+  Settings → AI Models → Retrieval. There is no environment variable: the
+  `FTS_LANGUAGE` fallback was retired in #1114 because migration 049 seeds
+  that row on every instance before the first request, so it could never be
+  reached — a deployment that "set the language" in its environment was in
+  fact still indexing with `simple`, which is the worst possible failure for
+  a non-English corpus because it is silent and looks like a working search.
+  A set `FTS_LANGUAGE` is now reported as ignored at startup. Saving the
+  setting rebuilds every page's `tsv` in the same request, and the row and the
+  rebuild are **one transaction** (with `SET LOCAL statement_timeout = 0` and
+  `SET LOCAL lock_timeout = '30s'` — both, as `shadow-migration-service.ts`
+  does for its own corpus-wide statements: lifting the statement timeout
+  removes this statement's only cancellation, and `UPDATE pages` carries no
+  WHERE, so without the second one a page row held by an in-flight save would
+  make the save wait forever on a pooled connection while blocking every page
+  write behind it. `lock_timeout` bounds **every** lock this statement waits
+  on, not only the first: the guarantee is that *no single lock wait exceeds
+  30s*, so the rebuild's own work stays unbounded and may run arbitrarily long
+  while making progress, but it can never block indefinitely on any one lock.
+  A lock wait that expires rolls back into the ordinary, retryable 503 below):
+  two
+  autocommitted statements would let a failed rebuild leave the row saying
+  `german` while every `tsv` was still built as `simple` — the same silent
+  wrong-index failure the env var caused, reached from the panel instead. It
+  covers **every** page, trash included: the maintenance trigger fires on
+  `title`/`body_text` only and the restore path clears `deleted_at` alone, so a
+  skipped row would come back out of the trash indexed in the previous
+  language with nothing left to rebuild it. It is also the **last** write the
+  PUT handler makes — after the other knobs, the queue setters, the rate limits
+  and `UPDATE pages SET embedding_dirty` — because it is the only one there
+  that can throw, and a persisted chunk size without a dirtied corpus is the
+  same mixed-index state from the embedding side. The refusal is a **503**
+  carrying the operator-facing message (`app.ts` flattens the body message of
+  every 500), and the audit row records what actually landed. The rollback
+  guarantee is database-side only: the statement is unbounded while nginx caps
+  `/api/` at `proxy_read_timeout 300` and closing that connection cancels
+  nothing, so a rebuild past five minutes reports a 504 to the browser and
+  commits anyway — which is why the panel re-reads `['admin-settings']` on
+  error as well as on success. The allow-list
+  (`FTS_LANGUAGES` in `packages/contracts`) is shared by the select, the
+  route and `getFtsLanguage`, and is closed because the chosen name is
+  interpolated into SQL — PostgreSQL has no bind-parameter form for a
+  `regconfig`. The parser is **chosen per query** (#1110,
   `core/utils/lexical-query.ts`) — normally `websearch_to_tsquery`, so users
   get `"quoted phrases"` as real phrase matches and `-term` as a genuine
   exclusion — the latter was previously **inverted**, because
