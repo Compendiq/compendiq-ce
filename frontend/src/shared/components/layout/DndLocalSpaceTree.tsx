@@ -1,4 +1,4 @@
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ChevronRight,
@@ -56,20 +56,44 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
 
+  // Without an explicit `handle`, dnd-kit's built-in accessibility plugin
+  // (@dnd-kit/dom's Accessibility) makes the DRAGGABLE ELEMENT ITSELF the
+  // keyboard activator — here, the whole row, via `sortable.ref` below. That
+  // silently overwrote the row's own role="treeitem"/roving-tabindex wiring
+  // with role="button" tabindex="0" on every rendered row (confirmed against
+  // the installed @dnd-kit/dom source: `draggable.handle ?? draggable.element`
+  // is the activator it instruments), so Tab landed on an unlabelled drag
+  // wrapper instead of a page link, Enter and the arrow keys did nothing, and
+  // a 13-page tree cost 21 tab stops instead of the roving tree's 1. Scoping
+  // `handle` to the grip moves that instrumentation onto a dedicated control
+  // instead of the row — which is also what finally wires up real keyboard
+  // reordering (Space to pick up, arrows to move), since KeyboardSensor is
+  // already in this app's default sensor set; it just had nowhere correct to
+  // attach.
+  const handleRef = useRef<HTMLSpanElement>(null);
   const sortable = useSortable({
     id: node.page.id,
     index: sortableIndex,
     disabled: false,
+    handle: handleRef,
   });
 
+  // A parent row does two jobs — open the page, and (via its own chevron,
+  // indent guide, and ArrowRight/Left) expand its children — and used to
+  // conflate them: clicking the title toggled expansion unconditionally
+  // before navigating, so opening an already-expanded section closed the very
+  // children you clicked through to reach, non-idempotently (the same click
+  // expanded or collapsed depending on what was already open). Now the click
+  // only ever opens a collapsed parent; an already-open one just navigates,
+  // matching the other three expand/collapse paths and SidebarTreeNode's twin.
   const handleNavigate = useCallback(() => {
-    if (hasChildren) toggleExpand(node.page.id);
+    if (hasChildren && !isExpanded) toggleExpand(node.page.id);
     if (isAiRoute) {
       navigate(`/ai?pageId=${node.page.id}`, { replace: true });
     } else {
       navigate(`/pages/${node.page.id}`);
     }
-  }, [navigate, node.page.id, hasChildren, toggleExpand, isAiRoute]);
+  }, [navigate, node.page.id, hasChildren, isExpanded, toggleExpand, isAiRoute]);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -92,6 +116,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
         role="treeitem"
         tabIndex={rovingId === node.page.id ? 0 : -1}
         aria-expanded={hasChildren ? isExpanded : undefined}
+        aria-selected={isActive}
         className={cn(
           // Must stay in step with SidebarTreeView's row: the two trees render
           // in the same rail — the same panel, swapped by space source — so any
@@ -116,6 +141,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
         // still returns ~24px per row against the old layout by dropping the
         // leaf placeholder and the uniform FileText.
         style={{ paddingLeft: `${level * 12 + 44}px` }}
+        title={node.page.title}
         onClick={handleNavigate}
         onFocus={() => onRowFocus(node.page.id)}
         onKeyDown={(e) => {
@@ -131,26 +157,35 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
         }}
       >
         {/* Grip and chevron both hang in the indent gutter, out of flow, so the
-            title's width pays for neither. The grip stays hover-revealed but is
-            no longer charged 18px of every row for the privilege — it was
-            `opacity-0` and still occupying layout width on all of them.
+            title's width pays for neither. The grip stays hover-revealed at
+            rest but is no longer charged 18px of every row for the privilege —
+            it was `opacity-0` and still occupying layout width on all of them.
 
             The CHEVRON, not the grip, takes the leftmost slot, matching
             SidebarTreeNode exactly. Drag handles conventionally sit outermost,
             but these two trees swap into the same rail when you change space,
             and the chevron is the control that persists on every row while the
-            grip appears only on hover. Aligning the persistent one means the
-            tree does not shift sideways when the space source changes, and it
-            lets both trees share one indent-guide formula.
+            grip appears only on hover/focus. Aligning the persistent one means
+            the tree does not shift sideways when the space source changes, and
+            it lets both trees share one indent-guide formula.
 
-            aria-hidden because it is a mouse-drag affordance and nothing else:
-            it is not focusable, and keyboard reorder is still open (see the
-            note on the tree container below). The `aria-label` it used to carry
-            sat on a plain <span> with no role, where assistive tech ignores it. */}
+            This is now a real, keyboard-operable control — `handle: handleRef`
+            above scopes dnd-kit's activator instrumentation here instead of to
+            the whole row, so the library adds role="button", tabindex="0" (it
+            is a <span>, not natively focusable), aria-roledescription, and
+            aria-pressed/aria-grabbed on this element at runtime. It therefore
+            needs a real accessible name (dnd-kit supplies a description via
+            aria-describedby, not a name) and a visible focus treatment, since
+            it can no longer be aria-hidden — an aria-hidden element must never
+            be keyboard-focusable. `focus-visible:opacity-100` is what makes a
+            Tab stop that lands here actually visible; without it a keyboard
+            user would focus an element with no visual indication of where
+            focus is, since it is invisible until hover or focus. */}
         <span
-          className="absolute top-[2px] flex h-6 w-[18px] items-center justify-center text-muted-foreground/70 opacity-0 transition-opacity cursor-grab active:cursor-grabbing group-hover:opacity-60"
+          ref={handleRef}
+          className="absolute top-[2px] flex h-6 w-[18px] items-center justify-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity cursor-grab active:cursor-grabbing group-hover:opacity-60 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           style={{ left: `${level * 12 + 26}px` }}
-          aria-hidden="true"
+          aria-label={`Reorder ${node.page.title}`}
         >
           <GripVertical size={12} />
         </span>
@@ -260,8 +295,10 @@ export default function DndLocalSpaceTree({
           readers. Roving-tabindex + arrow-key nav (rovingId/onRowFocus/
           onRowKeyDown, computed once by SidebarTreeView) closes out the
           epic #856 follow-up this comment used to defer. Keyboard *reorder*
-          (moving a page via the keyboard, not just navigating to it) is
-          still open. */}
+          (moving a page via the keyboard, not just navigating to it) now
+          works too, via each row's grip handle — see the `handle: handleRef`
+          note in DndSortableTreeNode for why that was the actual blocker on
+          BOTH keyboard navigation and keyboard reorder at once. */}
       <div className="space-y-0.5" role="tree" aria-label="Pages">
         {tree.map((node, idx) => (
           <DndSortableTreeNode
