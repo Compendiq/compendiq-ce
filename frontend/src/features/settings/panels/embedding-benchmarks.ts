@@ -12,9 +12,10 @@
  *    not read "0.69" as "69% of my questions will be answered".
  * 2. **A delta is not a result without its significance.** The English
  *    Recall@1 gap looked like the headline (+0.051) and does not survive a
- *    paired test (p = 0.174); the German one is smaller in appearance but
- *    real. Shipping means without that distinction would invite exactly the
- *    wrong conclusion, so `established` is carried per metric and rendered.
+ *    paired test (p = 0.174). Neither does the German one, once the German
+ *    arms are scored with the German stemmer: +0.061 at 27W/15L, p = 0.088.
+ *    Shipping means without that distinction would invite exactly the wrong
+ *    conclusion, so `established` is carried per metric and rendered.
  *
  * The ingest column is not decoration either. Qwen3 embeds ~10x slower than
  * bge-m3 on the same corpus and hardware, which for a large knowledge base is
@@ -44,13 +45,44 @@ export interface BenchmarkRow {
   recallAt1: BenchmarkMetric;
   recallAt5: BenchmarkMetric;
   mrr: BenchmarkMetric;
-  /** Chunks embedded per second, same corpus and hardware. */
+  /**
+   * Chunks embedded per second, same corpus and hardware.
+   *
+   * Both figures are the EARLIER #1114 ingest run — 2,198 chunks in 3 m 31 s
+   * and 36 m 13 s — which timed the embedding phase on its own. Two later
+   * measurements qualify the absolute number without displacing it, and the
+   * runbook carries the same reconciliation:
+   *
+   * - The `german` re-seed took 4 m 21 s / 40 m 55 s, but each arm is a full
+   *   re-seed **plus its 197 eval queries**, so dividing by it understates
+   *   throughput. It reproduces the ratio (~9.4x), not the rate.
+   * - A direct `SELECT count(*) FROM page_embeddings` on this corpus read
+   *   **2,377** chunks, not 2,198 (#1114, the `ef_search` run). Nothing
+   *   reconciles the two counts, so the rate below is quoted from the run that
+   *   produced it rather than recomputed against a count from another one.
+   *
+   * The column is here for the ~10x, which every measurement agrees on. Read
+   * it as an order of magnitude on one dev Mac, never as a capacity figure.
+   */
   chunksPerSecond: number;
 }
 
 export interface BenchmarkLanguage {
   code: string;
   label: string;
+  /**
+   * The PostgreSQL text-search configuration the KEYWORD leg of hybrid
+   * retrieval ran under for THIS block (#1114).
+   *
+   * It used to be one global field, which was honest while every run behind
+   * the table was `simple` — nothing in the eval rig wrote
+   * `admin_settings.fts_language` until `--fts-language` existed. The German
+   * re-measurement on 2026-08-16 ended that: German is `german`, English is
+   * still `simple`, and a single label would now certify one block against a
+   * configuration it was never measured under. Per-language is the only shape
+   * that can state the truth for both.
+   */
+  ftsLanguage: string;
   rows: BenchmarkRow[];
 }
 
@@ -61,45 +93,102 @@ export const BENCHMARK_PROVENANCE = {
   corpusPages: 275,
   queries: 197,
   /**
-   * The PostgreSQL text-search configuration the KEYWORD leg of hybrid
-   * retrieval ran under (#1114). Every run behind this table used `simple`:
-   * nothing in the eval rig wrote `admin_settings.fts_language` until
-   * `--fts-language` existed, so the German rows are a German corpus scored
-   * through a language-neutral stemmer. Both models read the same lexical leg,
-   * so the comparison stays like-for-like — but RRF fuses the two legs as
-   * `Σ 1/(k + rank)`, which is nonlinear, so a stronger German keyword leg can
-   * compress or amplify the gap between them. Re-measure the German arms with
-   * `--lang de --fts-language german` (docs/runbooks/retrieval-eval.md) and
-   * move this field in the same edit.
+   * The headline text-search configuration: the one the GERMAN arms ran
+   * under, because those are the rows a cutover decision leans on. The
+   * authoritative per-block value is `BenchmarkLanguage.ftsLanguage`, which is
+   * what the table renders; this field must not drift from the German block's,
+   * and `EmbeddingModelBenchmarks.test.tsx` fails if it does.
    */
-  ftsLanguage: 'simple',
+  ftsLanguage: 'german',
   note: 'Not your content. Both models read identical text, so differences between models transfer better than the scores themselves.',
+} as const;
+
+/**
+ * What the stemmer re-measurement found, rendered so a reader cannot take the
+ * `german` label above as evidence that choosing a language buys recall.
+ *
+ * Both arms were re-run on the same 275-page German corpus with
+ * `--fts-language german` (#1114, 2026-08-16). Recall@10 came back
+ * bit-identical query-for-query on BOTH models — 197 ties, zero movement — so
+ * the stemmer never changed which pages reached the top ten, only their order
+ * inside it. The only nominally significant cell was a small Qwen3 Recall@1
+ * regression (1W/8L, p = 0.039) that rests on nine discordant queries, dies
+ * under a Bonferroni correction and has no partner on the other model.
+ */
+export const STEMMER_COMPARISON = {
+  /** The configuration the German rows above were previously measured under. */
+  previousFtsLanguage: 'simple',
+  /**
+   * bge-m3 Recall@1 under `simple` — RENDERED in the panel's stemmer note, not
+   * held here for reference. "Within noise" is a claim about two numbers, and
+   * a reader who can see only one of them has to take it on trust; worse, an
+   * operator who remembers 0.6904 from the issue and now reads 0.6548 cannot
+   * tell a re-measurement from a regression. Quoted at four decimal places,
+   * as the issue comments, ADR-012 and the runbook quote them, so the note is
+   * checkable against the published record rather than merely internally
+   * consistent — which is also why these are not the table's percentages.
+   */
+  previousBaselineRecallAt1: 0.6091,
+  /** Qwen3-Embedding-4B Recall@1 under `simple`. Rendered beside the one above. */
+  previousCandidateRecallAt1: 0.6904,
+  /**
+   * McNemar exact p for the ONE cell that moved detectably between the two
+   * configurations — Qwen3's top result, 1W/8L over nine discordant queries,
+   * bootstrap CI [-0.066, -0.010].
+   *
+   * Rendered, because the note demonstrates "within noise" using precisely this
+   * pair: a reader who subtracts 0.6548 from 0.6904 finds 3.6 points and has
+   * nothing on screen reconciling that with the sentence above it. Quoting the
+   * p-value and why it does not stand — Bonferroni ×4 over the four correlated
+   * recall cells puts it at 0.156, bge-m3 shows the same drift at 3W/6L
+   * p = 0.51, and one query flipping takes it to 0.18 — is what makes the claim
+   * checkable rather than asserted over its own counter-evidence.
+   */
+  candidateRecallAt1PValue: 0.039,
 } as const;
 
 export const EMBEDDING_BENCHMARKS: BenchmarkLanguage[] = [
   {
     code: 'de',
     label: 'German',
+    // Re-measured 2026-08-16 with `--lang de --fts-language german` on the
+    // same 275-page corpus (corpusManifestSha 9ee0892c95a7…, 197 queries,
+    // identical queryId set). The `simple` figures these replace are kept in
+    // STEMMER_COMPARISON above, because the *difference* between the two runs
+    // is itself a published result: there isn't one worth acting on.
+    ftsLanguage: 'german',
     rows: [
       {
         model: 'bge-m3',
         dimensions: 1024,
         baseline: true,
-        recallAt1: { value: 0.6091, established: null },
-        recallAt5: { value: 0.8528, established: null },
-        mrr: { value: 0.7119, established: null },
+        recallAt1: { value: 0.5939, established: null },
+        recallAt5: { value: 0.8477, established: null },
+        mrr: { value: 0.7052, established: null },
         chunksPerSecond: 10.4,
       },
       {
         model: 'Qwen3-Embedding-4B',
         dimensions: 2560,
         baseline: false,
-        // p = 0.0259, 95% CI [+0.015, +0.147]
-        recallAt1: { value: 0.6904, established: true },
-        // p = 0.1221, 95% CI [-0.005, +0.096] — positive but not established.
-        recallAt5: { value: 0.8985, established: false },
-        // 95% CI [+0.030, +0.122]
-        mrr: { value: 0.7878, established: true },
+        // +0.061, 27W/15L, p = 0.0884, 95% CI [-0.005, +0.127]. Nominally
+        // significant under `simple` (p = 0.026) and not under `german`; the
+        // point estimate barely moved (+0.081 → +0.061), so read this as
+        // "top-1 was always the noisiest cell", not as the stemmer eroding
+        // the model gap. Neither value survived a ×4 multiplicity correction.
+        recallAt1: { value: 0.6548, established: false },
+        // +0.056, 19W/8L, p = 0.0522, 95% CI [+0.005, +0.102] — positive, and
+        // just the wrong side of the line.
+        recallAt5: { value: 0.9036, established: false },
+        // +0.065, 95% CI [+0.021, +0.110] (graded, so bootstrap rather than
+        // McNemar). The one cell in this block that clears on its own terms.
+        mrr: { value: 0.7702, established: true },
+        // Unchanged by the re-run: the two arms of the `german` re-seed took
+        // 4m21s (bge-m3) and 40m55s (Qwen3), reproducing the ~10x ingest gap
+        // these figures were derived from. Those wall clocks include each
+        // arm's 197 eval queries and are measured over a corpus later counted
+        // at 2,377 chunks, so they are not a second rate — see the field's
+        // own comment above.
         chunksPerSecond: 1.0,
       },
     ],
@@ -107,6 +196,10 @@ export const EMBEDDING_BENCHMARKS: BenchmarkLanguage[] = [
   {
     code: 'en',
     label: 'English',
+    // Unchanged, and deliberately: every English baseline — CI's included —
+    // was measured under `simple`, and re-deriving the configuration from the
+    // corpus language would silently re-measure all of them.
+    ftsLanguage: 'simple',
     rows: [
       {
         model: 'bge-m3',

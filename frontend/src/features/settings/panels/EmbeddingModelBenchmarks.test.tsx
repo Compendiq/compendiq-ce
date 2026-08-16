@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { EmbeddingModelBenchmarks } from './EmbeddingModelBenchmarks';
-import { EMBEDDING_BENCHMARKS, BENCHMARK_PROVENANCE, findBenchmarkRow } from './embedding-benchmarks';
+import {
+  EMBEDDING_BENCHMARKS,
+  BENCHMARK_PROVENANCE,
+  STEMMER_COMPARISON,
+  findBenchmarkRow,
+} from './embedding-benchmarks';
 
 /**
  * The risk this panel carries is not that it renders wrongly — it is that it
@@ -35,48 +40,109 @@ describe('EmbeddingModelBenchmarks (#1114)', () => {
     expect(body).toHaveTextContent(/197 labelled questions/i);
   });
 
-  it('names the text-search configuration the keyword leg ran under (#1114)', () => {
+  it('names the text-search configuration EACH language block ran under (#1114)', () => {
     // The rule this issue established is "every report SAYS which FTS
     // configuration it used" — and this table is the only surface where these
-    // numbers reach a human. Nothing in the eval rig wrote
-    // admin_settings.fts_language until --fts-language existed, so every run
-    // behind this table scored its keyword leg with a language-neutral
-    // stemmer. Enforcing that on the JSON report and not here would leave the
-    // correction living in a runbook.
+    // numbers reach a human. The two blocks no longer share one answer: the
+    // German arms were re-measured under `german` on 2026-08-16, the English
+    // ones are still `simple`. A single global label would now be wrong for
+    // one of the two blocks, which is the same omission one layer along.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    expect(screen.getByTestId('embedding-benchmarks-fts-de')).toHaveTextContent(/german/);
+    expect(screen.getByTestId('embedding-benchmarks-fts-en')).toHaveTextContent(/simple/);
+    expect(screen.getByTestId('embedding-benchmarks-body')).toHaveTextContent(
+      /text-search configuration/i,
+    );
+  });
+
+  it('reports the German re-measurement as done, not pending', () => {
+    // The re-run under `--fts-language german` happened (2026-08-16). A note
+    // still calling those rows "pending re-measurement" would be describing a
+    // state that ended, on the one surface where these numbers reach a human.
     render(<EmbeddingModelBenchmarks />);
     fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
     const body = screen.getByTestId('embedding-benchmarks-body');
+    expect(body).toHaveTextContent(/German rows/);
+    expect(body).not.toHaveTextContent(/pending/i);
+  });
+
+  it('states the measured stemmer result, so `german` does not read as a recall upgrade', () => {
+    // What the re-run found: the stemmer moved a handful of queries either
+    // way and Recall@10 was bit-identical query-for-query on both models. A
+    // panel that quietly swaps `simple` for `german` in its provenance line
+    // and says nothing else invites the opposite conclusion — that the
+    // earlier numbers were understating German retrieval and that picking a
+    // language buys recall. Neither is true, and this is the surface an
+    // operator reads before touching the keyword-index control.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    const body = screen.getByTestId('embedding-benchmarks-body');
+    expect(body).toHaveTextContent(/within noise/i);
     expect(body).toHaveTextContent(/simple/);
-    expect(body).toHaveTextContent(/text-search configuration/i);
   });
 
-  it('says the German rows are pending re-measurement, since german is the stemmer they should have used', () => {
-    // A German deployment reads the German block as its own case. Those rows
-    // are a German corpus scored through `simple`; RRF fuses the two legs
-    // nonlinearly, so a stronger keyword leg can compress or amplify the gap
-    // the swap decision leans on.
-    render(<EmbeddingModelBenchmarks />);
-    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
-    expect(screen.getByTestId('embedding-benchmarks-body')).toHaveTextContent(/German rows/);
-  });
-
-  it('does not tell the operator the German comparison survives that re-measurement', () => {
-    // Review r3. The rendered note said the absolute scores were pending "but
-    // the comparison between them still holds" — the exact claim the runbook
-    // and embedding-benchmarks.ts retract two paragraphs apart. Both arms did
-    // read the same lexical leg, so the run was like-for-like; that is not the
-    // same as the DELTA surviving, because RRF fuses a per-model vector leg
-    // with the shared keyword leg as Σ 1/(k + rank), which is nonlinear. The
-    // German Recall@1 delta is the one `established: true` number a swap
-    // decision leans on, and this panel is the only place it reaches a human.
+  it('shows the `simple` Recall@1 figures the German rows replaced, so "within noise" is checkable', () => {
+    // "Within noise" is an assertion about two numbers, and the reader could
+    // see neither: the table now carries only the `german` run and the
+    // `simple` figures lived in an exported constant nothing rendered. An
+    // operator who remembers "Qwen3 scored 0.69 on the top result" and now
+    // reads 0.6548 has no way to tell a re-measurement from a regression
+    // unless the note prints what it is comparing against. Rendering them
+    // also puts the constants under test, which is what stops them drifting
+    // away from the analysis they were copied from.
     render(<EmbeddingModelBenchmarks />);
     fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
     const body = screen.getByTestId('embedding-benchmarks-body');
-    expect(body).not.toHaveTextContent(/comparison between them still holds/i);
-    // The caveat has to name the deltas, not only the absolute scores…
-    expect(body).toHaveTextContent(/differences between the two models/i);
-    // …and say why, or it reads as an unexplained hedge.
-    expect(body).toHaveTextContent(/nonlinear/i);
+    expect(body).toHaveTextContent(/0\.6091/);
+    expect(body).toHaveTextContent(/0\.6904/);
+  });
+
+  it('admits the one cell that did move, so "within noise" is not asserted over the evidence against it', () => {
+    // The note demonstrates "within noise" with the single pair whose paired
+    // test was nominally significant: Qwen3's top result went 0.6904 → 0.6548,
+    // 1W/8L, McNemar exact p = 0.039, bootstrap CI clear of zero. A reader who
+    // does that subtraction finds 3.6 points and nothing on screen reconciling
+    // it with the sentence above. The clause is what makes the claim honest —
+    // the cell moved, and it dies under a correction for the four correlated
+    // recall tests — and the reason it stays "within noise" rather than
+    // becoming a finding.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    const body = screen.getByTestId('embedding-benchmarks-body');
+    expect(body).toHaveTextContent(/p = 0\.039/);
+    expect(body).toHaveTextContent(/nine discordant queries/i);
+  });
+
+  it('says which metrics carry the German model gap, since the table omits them', () => {
+    // The table has three columns; the two cells that clear significance
+    // under a Bonferroni correction (Recall@3 p = 0.0037, Recall@10
+    // p = 0.0075) are not among them. Under `german` the Top result and Top 5
+    // columns both read "not established", so the block on screen understates
+    // a comparison the runbook calls the sturdiest thing in the data. Naming
+    // the missing metrics costs one sentence.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    const body = screen.getByTestId('embedding-benchmarks-body');
+    expect(body).toHaveTextContent(/Recall@3/);
+    expect(body).toHaveTextContent(/Recall@10/);
+  });
+
+  it('names the German corpus as translated, so the stemmer verdict carries its provenance', () => {
+    // "Choosing a keyword language is not a way to buy recall" is stated here
+    // as a general conclusion, and the corpus it rests on is technical German
+    // TRANSLATED FROM English OSS documentation — the translation pass is what
+    // holds content constant across the two language arms, and it is also why
+    // the corpus is thinner in the compounding and inflection a German stemmer
+    // folds than natively-authored pages would be. The provenance strengthens
+    // the offered explanation (identifier-dense prose that `simple` already
+    // matches exactly) and bounds how far the null result travels. This panel
+    // is what an operator reads before touching the keyword-language control,
+    // so the caveat has to be here and not only in the runbook.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    const body = screen.getByTestId('embedding-benchmarks-body');
+    expect(body).toHaveTextContent(/translated from English/i);
   });
 
   it('marks a higher-but-unproven number as "not established"', () => {
@@ -92,8 +158,13 @@ describe('EmbeddingModelBenchmarks (#1114)', () => {
   it('splits by language at the top level, because the ranking differs by language', () => {
     render(<EmbeddingModelBenchmarks />);
     fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
-    expect(screen.getByRole('heading', { name: /german/i })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /english/i })).toBeInTheDocument();
+    // EXACT names. The provenance chip used to sit inside the heading with no
+    // separating text node, so the accessible name came out as
+    // "Germankeyword leg: german" — two words run together, announced that way,
+    // while a `/german/i` match stayed green because the substring survived.
+    // The chip is a sibling now; the heading names the language and nothing else.
+    expect(screen.getByRole('heading', { name: 'German' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'English' })).toBeInTheDocument();
   });
 
   it('shows indexing speed beside quality, so the table is not one-sided', () => {
@@ -137,21 +208,73 @@ describe('embedding-benchmarks data (#1114)', () => {
     }
   });
 
-  it('records that Recall@1 is established in German and NOT in English', () => {
-    // The finding that changed the decision. Pinned so a future data edit
-    // cannot quietly flatten it back into "Qwen3 wins everywhere".
+  it('records that Recall@1 is established in NEITHER language once German is scored under `german`', () => {
+    // This flag moved, and the movement is the point. Under `simple` the
+    // German Recall@1 delta was nominally significant (31W/15L, p = 0.026) and
+    // was the one `established: true` top-1 number a swap decision leaned on.
+    // Re-measured under `german` it is 27W/15L, p = 0.088 — the point estimate
+    // barely moved (+0.081 → +0.061) but it no longer clears the line, and it
+    // never survived a multiplicity correction in either configuration. So the
+    // honest table says top-1 is unestablished in both languages. Pinned so a
+    // later edit cannot quietly restore "Qwen3 wins the top result".
     const de = EMBEDDING_BENCHMARKS.find((l) => l.code === 'de')!.rows.find((r) => !r.baseline)!;
     const en = EMBEDDING_BENCHMARKS.find((l) => l.code === 'en')!.rows.find((r) => !r.baseline)!;
-    expect(de.recallAt1.established).toBe(true);
+    expect(de.recallAt1.established).toBe(false);
     expect(en.recallAt1.established).toBe(false);
+    // MRR is what survives on both sides — bootstrap CI clear of zero in each.
+    expect(de.mrr.established).toBe(true);
+    expect(en.mrr.established).toBe(true);
+    // Recall@5 is the cell most likely to be rounded up, and it was the one
+    // `established` flag in the corrected block that no test held: German is
+    // p = 0.0522 (19W/8L) — positive and just the wrong side of the line —
+    // against English at p = 0.0015. Unpinned, "just under 0.05" becomes
+    // "basically significant" in one edit, with the suite still green.
+    expect(de.recallAt5.established).toBe(false);
+    expect(en.recallAt5.established).toBe(true);
   });
 
-  it('carries the FTS configuration in its provenance, beside the date (#1114)', () => {
+  it('carries the German scores measured under `german`, not the `simple` ones', () => {
+    // The exact means from the 2026-08-16 re-run. Pinned as values because a
+    // partial edit — new provenance label, old numbers — is the failure this
+    // whole correction exists to undo.
+    const de = EMBEDDING_BENCHMARKS.find((l) => l.code === 'de')!;
+    const base = de.rows.find((r) => r.baseline)!;
+    const qwen = de.rows.find((r) => !r.baseline)!;
+    expect(base.recallAt1.value).toBeCloseTo(0.5939, 4);
+    expect(base.recallAt5.value).toBeCloseTo(0.8477, 4);
+    expect(base.mrr.value).toBeCloseTo(0.7052, 4);
+    expect(qwen.recallAt1.value).toBeCloseTo(0.6548, 4);
+    expect(qwen.recallAt5.value).toBeCloseTo(0.9036, 4);
+    expect(qwen.mrr.value).toBeCloseTo(0.7702, 4);
+  });
+
+  it('keeps the `simple` Recall@1 figures the note quotes tied to the published run', () => {
+    // These two are rendered, so the panel makes a checkable claim with them —
+    // which is only worth anything if they still match what was published on
+    // #1114 and in ADR-012. Pinned as literals rather than derived, because a
+    // test that reads the constant it is meant to guard passes on any drift.
+    expect(STEMMER_COMPARISON.previousFtsLanguage).toBe('simple');
+    expect(STEMMER_COMPARISON.previousBaselineRecallAt1).toBeCloseTo(0.6091, 4);
+    expect(STEMMER_COMPARISON.previousCandidateRecallAt1).toBeCloseTo(0.6904, 4);
+    // The p-value of the one discordant cell travels with the two means it
+    // qualifies, or the note can quote them and drop the caveat in one edit.
+    expect(STEMMER_COMPARISON.candidateRecallAt1PValue).toBeCloseTo(0.039, 3);
+  });
+
+  it('carries the FTS configuration per language, because the two blocks differ (#1114)', () => {
     // "Rendered verbatim — a number without it is a rumour" is this file's own
-    // standard, and the lexical configuration was missing from it. Pinned as a
-    // field rather than as prose so a re-measurement under `german` has to
-    // move the data, not only the sentence.
-    expect(BENCHMARK_PROVENANCE.ftsLanguage).toBe('simple');
+    // standard. It used to be one global field, which was true while every run
+    // behind the table was `simple`. The German re-measurement ended that: a
+    // single label would now certify the English rows against a configuration
+    // they were never measured under.
+    const de = EMBEDDING_BENCHMARKS.find((l) => l.code === 'de')!;
+    const en = EMBEDDING_BENCHMARKS.find((l) => l.code === 'en')!;
+    expect(de.ftsLanguage).toBe('german');
+    expect(en.ftsLanguage).toBe('simple');
+    // The headline provenance names the German configuration — those are the
+    // rows a swap decision leans on — and must not drift from the block.
+    expect(BENCHMARK_PROVENANCE.ftsLanguage).toBe('german');
+    expect(BENCHMARK_PROVENANCE.ftsLanguage).toBe(de.ftsLanguage);
   });
 
   it('matches a configured model across provider naming conventions', () => {

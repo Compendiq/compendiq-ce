@@ -196,6 +196,41 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     expect(screen.queryByRole('button', { name: /^swap/i })).not.toBeInTheDocument();
   });
 
+  it('does not claim search is unaffected — the backfill shares the provider (#1114)', async () => {
+    // This card is the surface an operator watches WHILE the backfill runs, and
+    // it used to say "Search is unaffected". Correctness is unaffected: the live
+    // column serves every query and nothing is deleted before the swap.
+    // Availability is not. `runShadowBackfillJob` embeds through the same
+    // process-wide LLM queue as a user's question and holds one of
+    // `LLM_CONCURRENCY`'s slots for the whole run, so query-embedding latency
+    // rises throughout, and at `LLM_MAX_QUEUE_DEPTH` a query embed is rejected
+    // into `degraded_reason: 'embedding_failed'` — keyword-only `/api/search`
+    // and a refused `/llm/ask` turn. `docs/runbooks/shadow-reembed.md` says all
+    // of that; a card contradicting the runbook it belongs to is the worse of
+    // the two, because it is the one on screen while it is happening.
+    mockApi({
+      active: true,
+      migration: { phase: 'backfilling', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 10, stragglerPages: 30, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
+    });
+    renderCard(null);
+
+    const card = await screen.findByTestId('shadow-migration-card');
+    expect(card).not.toHaveTextContent(/unaffected/i);
+    // Both halves, or the qualifier reads as "your results are wrong now".
+    expect(card).toHaveTextContent(/keeps serving/i);
+    expect(card).toHaveTextContent(/slower/i);
+    // And it names the QUEUE, not the provider. The queue is one module-level
+    // `pLimit` in the API process, so slot contention holds in every
+    // configuration. Provider identity does not: the migration takes its own
+    // `providerId` in the start body and the SWAP is what rewrites
+    // `llm_usecase_assignments`, so during the backfill live query embeds can
+    // resolve a different provider row entirely — on those instances a card
+    // blaming the provider names a coupling that is not there, while the real
+    // one goes unmentioned. The user-visible conclusion is the same either way.
+    expect(card).toHaveTextContent(/shares the embedding queue with this backfill/i);
+    expect(card).not.toHaveTextContent(/shares the provider/i);
+  });
+
   it('enables the swap only when ready', async () => {
     const calls: Array<{ url: string; method: string }> = [];
     mockApi(

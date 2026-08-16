@@ -150,13 +150,88 @@ under `simple`, and deriving the configuration from the corpus language would
 silently re-measure all of them and report the difference as a retrieval
 change. Choosing `german` is an explicit act.
 
-**Every German number published on #1114 before this change was `fts=simple`.**
+**Every German number published on #1114 before the 2026-08-16 re-run — the
+*German result* comment of that morning included — was `fts=simple`.**
 Nothing in the eval ever wrote `admin_settings.fts_language`, so the row sat at
 migration 049's seeded `simple` for every run, and a `--lang de` run scored a
-German corpus through a language-neutral stemmer. Re-run the German arms with
-`--fts-language german` before quoting them, and **state the configuration in
-any report**: the console header and the report JSON's `ftsLanguage` field both
-carry it now.
+German corpus through a language-neutral stemmer. **The German arms have since
+been re-run under `german` (2026-08-16) — the result is below.** The standing
+rule is unchanged: **state the configuration in any report**, which the console
+header and the report JSON's `ftsLanguage` field both do now.
+
+### The German re-run under `german` (measured 2026-08-16)
+
+Both arms re-seeded on the same 275-page German corpus (`corpusManifestSha
+9ee0892c95a7…`, 197 queries, identical `queryId` set), scored and tested with
+the repo's own `metrics.ts` — McNemar exact over the discordant pairs, plus the
+seed-1102 paired bootstrap for effect size. Page ids differ per seeding, so
+everything is paired on per-query hit@K.
+
+**Absolute scores under each configuration:**
+
+| | bge-m3 `simple` | bge-m3 `german` | Qwen3-4B `simple` | Qwen3-4B `german` |
+| --- | ---: | ---: | ---: | ---: |
+| R@1 | 0.6091 | 0.5939 | 0.6904 | 0.6548 |
+| R@3 | 0.7817 | 0.7919 | 0.8680 | 0.8731 |
+| R@5 | 0.8528 | 0.8477 | 0.8985 | 0.9036 |
+| R@10 | 0.8883 | 0.8883 | 0.9492 | 0.9492 |
+| MRR | 0.7119 | 0.7052 | 0.7878 | 0.7702 |
+
+**What the stemmer did — `simple` → `german`, same model, same vectors:**
+
+| | R@1 | R@3 | R@5 | R@10 | MRR |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| bge-m3 | −0.015 (3W/6L, p = 0.51) | +0.010 (2W/0L, p = 0.50) | −0.005 (0W/1L, p = 1.0) | ±0.000 (0W/0L) | −0.007 |
+| Qwen3-4B | −0.036 (1W/8L, **p = 0.039**) | +0.005 (2W/1L, p = 1.0) | +0.005 (1W/0L, p = 1.0) | ±0.000 (0W/0L) | −0.018 |
+
+**R@10 is bit-identical on both models** — 197 ties, zero movement. The stemmer
+never changed *which* pages reached the top ten on any query, only their order
+within it. The one nominally significant cell is Qwen3's R@1 regression at
+p = 0.039, and it should not be leaned on: four correlated tests per pair
+(Bonferroni ×4 → 0.156), it rests on **nine** discordant queries out of 197
+(one flip takes it to p = 0.18), and the same change on bge-m3 gives 3W/6L,
+p = 0.51. Call it **"no detectable effect, possibly a small cost at rank 1"**,
+not "German FTS is worse". Post-hoc reading, untested by these runs: this is
+technical German **translated from English OSS documentation** (the vendored
+MIT docs run through a translation pass, which is what holds content constant
+across the two languages), so much of what discriminates is identifiers,
+loanwords and code tokens that Snowball German either passes through or
+over-truncates, and the lexical leg is mostly doing exact-token work `simple`
+already does. **Carry that provenance with the conclusion.** It strengthens the
+reading above — translated technical prose is identifier-dense — and it bounds
+it: a translation holds systematically less of the compounding and inflection a
+German stemmer exists to fold than pages a German speaker wrote, so this is
+evidence that `german` is not an assumable recall upgrade, not evidence that it
+does nothing on a natively-authored German corpus.
+
+**The model gap is unaffected by the stemmer** — bge-m3 → Qwen3-4B under
+`german`:
+
+| | before | after | delta | W/L/T | McNemar exact p | 95% CI |
+| --- | ---: | ---: | ---: | :---: | ---: | :---: |
+| R@1 | 0.5939 | 0.6548 | +0.0609 | 27/15/155 | 0.0884 | [−0.005, +0.127] |
+| R@3 | 0.7919 | 0.8731 | +0.0812 | 22/6/169 | **0.0037** | [+0.031, +0.132] |
+| R@5 | 0.8477 | 0.9036 | +0.0558 | 19/8/170 | 0.0522 | [+0.005, +0.102] |
+| R@10 | 0.8883 | 0.9492 | +0.0609 | 15/3/179 | **0.0075** | [+0.020, +0.102] |
+| MRR | 0.7052 | 0.7702 | +0.0651 | 48/26/123 | — (graded) | [+0.021, +0.110] |
+
+Positive at every K, with R@3 and R@10 clearing Bonferroni ×4 (0.015 and
+0.030); under `simple` those two cells were p = 0.0023 and p = 0.0075, so the
+comparison reproduces. **One correction in the other direction:** R@1 is no
+longer nominally significant under `german` (27W/15L, p = 0.088) where under
+`simple` it was (31W/15L, p = 0.026). The point estimate barely moved
+(+0.081 → +0.061), so this is not the stemmer eroding the gap — R@1 was always
+the weakest of the four, and neither value survives multiplicity correction.
+
+Wall clock, from `run.log`: **4 m 21 s** for the bge-m3 arm and **40 m 55 s**
+for the Qwen3 arm (~9.4×), each a full re-seed of the 275-page corpus plus its
+197 queries.
+
+**The bottom line for an operator:** `german` is not the missing ingredient for
+German retrieval on this corpus, and changing the keyword-index language is not
+a way to buy recall. Choose it because it describes your content; budget the
+corpus-wide rebuild it costs. That is the wording the Retrieval panel's hint
+carries, and it must keep agreeing with this section.
 
 `--baseline` refuses a pair whose configurations differ, in the same style as
 its cross-model and cross-language refusals. A baseline that carries no
@@ -408,20 +483,28 @@ drift** — if you re-measure, update that file in the same PR, including its
 
 Four things in that file are load-bearing and must survive an edit:
 
-- **`ftsLanguage` in `BENCHMARK_PROVENANCE`.** The rule this issue establishes
-  is that a retrieval number states the text-search configuration it was
-  measured under, and this table is the only surface where these numbers reach
-  a human. It is `simple` today, rendered in the provenance sentence and again
-  in the closing scope note, and it moves in the same edit as the scores.
+- **`ftsLanguage`, now PER LANGUAGE.** The rule this issue establishes is that
+  a retrieval number states the text-search configuration it was measured
+  under, and this table is the only surface where these numbers reach a human.
+  It was one global field while every run behind the table was `simple`; the
+  German re-measurement ended that, so `BenchmarkLanguage.ftsLanguage` carries
+  it per block (`german` for German, `simple` for English) and the table renders
+  each beside its heading. `BENCHMARK_PROVENANCE.ftsLanguage` survives as the
+  headline value — the German one, since those are the rows a cutover decision
+  leans on — and a test fails if it drifts from the German block's. It moves in
+  the same edit as the scores.
 
 - **`established` per metric.** A mean without its significance is what made
   the English Recall@1 delta look like the headline result; it moves +0.051 and
   does not survive a paired test (p = 0.174). The UI renders "not established"
   next to such a number, and a data edit that drops the flag turns an artifact
-  back into a claim.
+  back into a claim. **This flag has already moved once**: German Recall@1 was
+  `established: true` under `simple` (p = 0.026) and is `false` under `german`
+  (p = 0.088), which is the column doing its job on a re-measurement.
 - **Language is a top-level split.** The two models do not rank identically in
-  both: Qwen3's Recall@1 gain is established in German and is not in English.
-  A blended table hides the distinction most likely to change a decision.
+  both, and the blocks were not even measured under the same keyword
+  configuration. A blended table hides the distinctions most likely to change a
+  decision.
 - **Indexing speed sits beside quality.** Qwen3 embeds ~10x slower than bge-m3
   on the same corpus and hardware. A quality-only table recommends a model
   while hiding the dominant cost of switching to it.
@@ -429,23 +512,27 @@ Four things in that file are load-bearing and must survive an edit:
 Absence from that table means "not measured", never "measured badly", and the
 UI says so.
 
-**Its German rows were measured under `fts_language = simple`** — every eval run
-was, until `--fts-language` existed (see above). Both models were scored through
-the same lexical leg, so the comparison was like-for-like — but that is not a
-guarantee that the *deltas* survive re-measurement. RRF fuses a per-model vector
-leg with a shared keyword leg as `Σ 1/(k + rank)`, which is nonlinear: a
-stronger German keyword leg raises both arms and can compress or amplify the gap
-between them. So the absolute German scores are a `simple`-stemmer measurement,
-and the German deltas — the ones the swap decision leans on, since Qwen3's
-Recall@1 gain is established in German and not in English — should be re-run with
-`--lang de --fts-language german` before they are quoted again. Update
-`measuredOn` and `ftsLanguage` in the same edit. Until then the panel says so on
-screen: the provenance line names the `simple` configuration, and the closing
-note marks the German rows as pending re-measurement — **including the
-differences between the two models**, not only their absolute scores. That note
-and this paragraph have to agree; a rendered "the comparison still holds" beside
-a runbook saying otherwise is how the wrong half gets quoted, so
-`EmbeddingModelBenchmarks.test.tsx` fails on that sentence returning.
+**Its German rows are now measured under `fts_language = german`** (2026-08-16
+— see *The German re-run under `german`* above). The re-measurement was owed
+because RRF fuses a per-model vector leg with a shared keyword leg as
+`Σ 1/(k + rank)`, which is nonlinear: a stronger German keyword leg raises both
+arms and could have compressed or amplified the gap between them. It did
+neither. The absolute scores landed within noise of the `simple` ones, R@10 came
+back bit-identical query-for-query on both models, and the model comparison
+reproduced — R@3 and R@10 clear a Bonferroni ×4 correction under both
+configurations. The one flag that moved is German Recall@1, from
+`established: true` (p = 0.026) to `false` (p = 0.088).
+
+Two things follow for anyone editing that file. **Move `measuredOn` and the
+block's `ftsLanguage` in the same edit as the scores** — and note that a
+`german` label on its own now invites the opposite error from the one this
+paragraph used to guard against: a reader who sees the configuration corrected
+and nothing else will assume the earlier numbers were understating German. The
+panel's closing note therefore states the finding — that `simple` measured
+within noise, and that choosing a keyword language is not a way to buy recall —
+and `EmbeddingModelBenchmarks.test.tsx` fails if it stops doing so or if it
+reverts to calling the rows pending. **The English rows stay `simple`**, and
+deliberately: every English baseline, CI's included, was measured under it.
 
 ## Changing the corpus or the fixture
 

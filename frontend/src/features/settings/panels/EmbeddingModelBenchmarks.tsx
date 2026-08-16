@@ -3,6 +3,7 @@ import { ChevronRight } from 'lucide-react';
 import {
   EMBEDDING_BENCHMARKS,
   BENCHMARK_PROVENANCE,
+  STEMMER_COMPARISON,
   type BenchmarkMetric,
 } from './embedding-benchmarks';
 
@@ -14,23 +15,36 @@ import {
  * measurements being misread:
  *
  * - **Language is the top-level split, not a footnote.** The two models do not
- *   rank the same way in both: Qwen3's Recall@1 gain is established in German
- *   and is NOT established in English. A single blended table would have hidden
- *   the one distinction most likely to change an operator's decision.
+ *   rank the same way in both, and the languages were not even measured under
+ *   the same keyword configuration. A single blended table would have hidden
+ *   the distinctions most likely to change an operator's decision.
  * - **Significance is shown per metric**, because the mean alone points the
  *   wrong way. English Recall@1 moves +0.051 and does not survive a paired
  *   test; presenting it as a win is the mistake this column exists to prevent.
+ *   German Recall@1 joined it once the German arms were scored with the German
+ *   stemmer (+0.061, p = 0.088), which is a flag flipping to `false` on a
+ *   re-measurement — exactly the movement this column exists to carry.
  * - **Ingest speed sits in the same table as quality.** Qwen3 is ~10x slower
  *   to embed. A quality-only comparison recommends a model while hiding the
  *   bill, and on a large corpus that cost is the dominant fact about switching.
  * - **Provenance is rendered, not buried in a tooltip.** These are vendored
  *   OSS docs, not the operator's pages, so the deltas transfer and the absolute
  *   scores do not. That includes the **text-search configuration** the keyword
- *   leg ran under: every run behind this table used `simple`, so the German
- *   rows are a German corpus scored through a language-neutral stemmer, and
- *   this is the only surface where those numbers reach a human. #1114 makes
- *   the eval report state its configuration; a table that quotes the report
- *   and stays silent moves the omission one layer up rather than fixing it.
+ *   leg ran under, which is now **per language** rather than global: the German
+ *   arms were re-run under `german` on 2026-08-16, the English ones remain
+ *   `simple`, and one shared label would certify a block against a
+ *   configuration it never saw. #1114 makes the eval report state its
+ *   configuration; a table that quotes the report and stays silent moves the
+ *   omission one layer up rather than fixing it.
+ * - **The stemmer result is stated, not implied by the label.** Swapping
+ *   `simple` for `german` in the provenance line and saying nothing else reads
+ *   as "the earlier numbers understated German". They did not: the re-run
+ *   landed within noise of them, with Recall@10 bit-identical query-for-query
+ *   on both models. An operator one tab away can rebuild the whole keyword
+ *   index from this panel's sibling, so the panel owes them that finding — and
+ *   it owes them the one cell that DID move, named with its p-value, because
+ *   the note demonstrates "within noise" with exactly that pair and a reader
+ *   who subtracts the two figures is otherwise left distrusting the sentence.
  *
  * Presentation follows ADR-010's rule for a MEASUREMENT rather than a state:
  * neutral throughout, no status hues. `status-connected` green for "best" would
@@ -59,6 +73,17 @@ function Metric({ metric }: { metric: BenchmarkMetric }) {
     </span>
   );
 }
+
+/**
+ * The two models the stemmer note compares, read off the German block rather
+ * than spelled again. `STEMMER_COMPARISON` holds the two `simple` Recall@1
+ * figures the German rows replaced, and a figure needs the model it belongs
+ * to — but a second hand-written copy of the model names is one rename away
+ * from attributing a number to the wrong encoder.
+ */
+const GERMAN_ROWS = EMBEDDING_BENCHMARKS.find((l) => l.code === 'de')?.rows ?? [];
+const previousBaselineModel = GERMAN_ROWS.find((r) => r.baseline)?.model;
+const previousCandidateModel = GERMAN_ROWS.find((r) => !r.baseline)?.model;
 
 export function EmbeddingModelBenchmarks() {
   const [open, setOpen] = useState(false);
@@ -93,17 +118,38 @@ export function EmbeddingModelBenchmarks() {
           <p className="text-sm text-muted-foreground">
             Measured on {BENCHMARK_PROVENANCE.corpusPages} pages of{' '}
             {BENCHMARK_PROVENANCE.corpus.toLowerCase()} with{' '}
-            {BENCHMARK_PROVENANCE.queries} labelled questions, keyword search running
-            under the <code className="font-mono">{BENCHMARK_PROVENANCE.ftsLanguage}</code> text-search
-            configuration.{' '}
+            {BENCHMARK_PROVENANCE.queries} labelled questions. Each language block names the
+            text-search configuration its keyword leg ran under.{' '}
             <strong className="font-medium text-foreground">{BENCHMARK_PROVENANCE.note}</strong>
           </p>
 
           {EMBEDDING_BENCHMARKS.map((lang) => (
             <div key={lang.code} className="space-y-1.5">
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {lang.label}
-              </h4>
+              {/*
+                The configuration sits on the block, not in the shared line
+                above it: the two blocks genuinely differ now, and a global
+                label would state something false about one of them.
+
+                It is a SIBLING of the heading, not a child of it. Inside the
+                `<h4>` there was no separating text node — JSX drops the
+                whitespace-only line between an expression and an element — so
+                the accessible name came out as "Germankeyword leg: german",
+                announced exactly like that, while `ml-2` spaced it visually and
+                a `/german/i` query stayed green on the substring. The row keeps
+                the same one-line look; the heading names the language and the
+                provenance keeps its own testid.
+              */}
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {lang.label}
+                </h4>
+                <span
+                  className="text-[11px] text-muted-foreground"
+                  data-testid={`embedding-benchmarks-fts-${lang.code}`}
+                >
+                  keyword leg: <code className="font-mono">{lang.ftsLanguage}</code>
+                </span>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[34rem] border-collapse text-sm">
                   <thead>
@@ -151,12 +197,56 @@ export function EmbeddingModelBenchmarks() {
             counted as a win. Indexing speed is measured on the same corpus and hardware:
             a slower model makes the initial re-embed proportionally longer. A model absent
             from this table has not been measured, which is not the same as measuring badly.
-            The German rows were scored with the same{' '}
-            <code className="font-mono">{BENCHMARK_PROVENANCE.ftsLanguage}</code> keyword configuration rather than{' '}
-            <code className="font-mono">german</code>, so those scores are pending re-measurement. Both models
-            read the identical keyword leg, so the run was like-for-like — but the two legs are fused
-            nonlinearly, and a stronger German keyword leg can compress or amplify the gap, so the differences
-            between the two models are pending that re-measurement as well.
+          </p>
+
+          {/*
+            The stemmer finding, on the surface where it can still change a
+            decision: the keyword-index language lives one sub-tab away, and
+            an operator who reads `german` here and infers an upgrade would
+            rebuild their whole corpus for a ranking change that was measured
+            and is not there.
+
+            It carries the corpus's provenance because the conclusion is stated
+            generally and the evidence is not general: the German arm is the
+            #1102 fixture's vendored English OSS docs run through a translation
+            pass. That is the reason the two language arms are comparable at all
+            (content held constant), and the reason the null result is a ceiling
+            on the assumable gain rather than proof the stemmer does nothing —
+            a translation is thinner in exactly the compounding and inflection
+            Snowball German exists to fold. It also strengthens the explanation
+            the runbook offers, translated technical prose being identifier-dense.
+          */}
+          <p className="text-xs text-muted-foreground">
+            The German rows were re-measured under the{' '}
+            <code className="font-mono">{BENCHMARK_PROVENANCE.ftsLanguage}</code> keyword configuration on{' '}
+            {BENCHMARK_PROVENANCE.measuredOn}. The same corpus scored under{' '}
+            <code className="font-mono">{STEMMER_COMPARISON.previousFtsLanguage}</code> landed within noise of
+            these numbers: the top-result means it replaced were{' '}
+            <span className="font-mono tabular-nums">
+              {STEMMER_COMPARISON.previousBaselineRecallAt1.toFixed(4)}
+            </span>{' '}
+            ({previousBaselineModel}) and{' '}
+            <span className="font-mono tabular-nums">
+              {STEMMER_COMPARISON.previousCandidateRecallAt1.toFixed(4)}
+            </span>{' '}
+            ({previousCandidateModel}), and Recall@10 was identical query for query on both models. The
+            only cell that moved detectably was the top result on {previousCandidateModel} (p ={' '}
+            <span className="font-mono tabular-nums">
+              {STEMMER_COMPARISON.candidateRecallAt1PValue.toFixed(3)}
+            </span>
+            ), and it rests on nine discordant queries out of {BENCHMARK_PROVENANCE.queries}, dies
+            under a &times;4 multiplicity correction, and has no counterpart on {previousBaselineModel}.
+            So choosing a keyword language is not a way to buy recall, and the earlier{' '}
+            <code className="font-mono">{STEMMER_COMPARISON.previousFtsLanguage}</code> figures were not
+            understating German. Read that with its corpus: this is technical German translated from
+            English OSS documentation, which is what held the content constant across the two
+            language arms and is also why it carries less of the compounding and inflection a German
+            stemmer folds than natively-authored pages would — so it bounds the gain you may assume,
+            not the gain that exists everywhere. This table shows three metrics; under{' '}
+            <code className="font-mono">{BENCHMARK_PROVENANCE.ftsLanguage}</code> the two it omits, Recall@3
+            and Recall@10, are the ones whose model difference holds up after correcting for the four
+            correlated tests, so read the two &ldquo;not established&rdquo; cells as the noisiest part of the
+            comparison rather than as its verdict.
           </p>
         </div>
       )}

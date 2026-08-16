@@ -658,13 +658,44 @@ export function RetrievalTab() {
             {values.ftsLanguage === 'simple' && (
               // Muted, never amber: on a default install this is permanent,
               // and ADR-010 spends amber on states that clear.
+              //
+              // The copy names what `simple` does and stops short of promising
+              // what a language would buy. It used to end "pick the language
+              // most of your content is written in", which reads as a
+              // recommendation with an upside behind it — and the upside was
+              // then measured (#1114, 2026-08-16): on a 275-page technical
+              // German corpus, `german` against `simple` moved a handful of
+              // queries either way, Recall@10 came back identical query for
+              // query on both embedding models, and the only nominally
+              // significant cell was a small regression that dies under
+              // multiplicity correction. So this control costs a corpus-wide
+              // rebuild and, on the one corpus anyone has measured, buys no
+              // detectable ranking. Saying otherwise here sends operators to
+              // spend a maintenance window on a number that will not move.
+              //
+              // That corpus is named as TRANSLATED, and the word is doing work:
+              // it is the #1102 fixture's vendored English OSS docs run through
+              // a translation pass, which is what held content constant across
+              // the two language arms. A translation holds less of the
+              // compounding and inflection a Snowball German stemmer exists to
+              // fold than pages a German speaker wrote, so the measurement
+              // bounds the upside an admin may ASSUME rather than proving the
+              // stemmer inert on their own content — and this hint is read as
+              // advice about their own content. It also strengthens the
+              // post-hoc reading in the runbook, since translated technical
+              // prose is identifier-dense and `simple` already matches those
+              // exactly. Full argument: *On the stemmer null result* in
+              // docs/runbooks/shadow-reembed.md.
               <p
                 id="ftsLanguage-simple-hint"
                 className="text-xs text-muted-foreground"
                 data-testid="retrieval-fts-simple-hint"
               >
-                <code className="font-mono">simple</code> does no stemming — pick the language most
-                of your content is written in.
+                <code className="font-mono">simple</code> does no stemming or stop-word removal. On a
+                275-page corpus of technical German translated from English OSS docs,{' '}
+                <code className="font-mono">german</code> against <code className="font-mono">simple</code>{' '}
+                measured within noise — choose by the language your content is written in, and expect
+                the keyword-index rebuild rather than a jump in result quality.
               </p>
             )}
           </div>
