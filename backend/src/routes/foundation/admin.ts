@@ -6,7 +6,7 @@ import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { assertNoShadowMigration } from '../../domains/llm/services/embedding-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { UpdateAdminSettingsSchema } from '@compendiq/contracts';
+import { UpdateAdminSettingsSchema, FtsLanguageEnum, FTS_LANGUAGES } from '@compendiq/contracts';
 import {
   getEmbeddingDimensions,
   getAdminAccessDeniedRetentionDays,
@@ -38,7 +38,6 @@ import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRu
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { getStreamCap, invalidateStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
-import { ALLOWED_FTS_LANGUAGES } from '../../core/services/fts-language.js';
 import { getSmtpConfig, updateSmtpConfig, sendTestEmail, stripMaskedSmtpPass } from '../../core/services/email-service.js';
 
 const AuditLogQuerySchema = z.object({
@@ -361,7 +360,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     return {
       embeddingDimensions,
-      ftsLanguage: map['fts_language'] ?? process.env.FTS_LANGUAGE ?? 'simple',
+      // #1114 — the row, or the seeded default. No `process.env.FTS_LANGUAGE`
+      // arm: migration 049 seeds the row on every instance, so the env var was
+      // unreachable here and only ever contradicted what the panel showed.
+      ftsLanguage: map['fts_language'] ?? 'simple',
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
@@ -454,10 +456,18 @@ export async function adminRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Validate FTS language before persisting (invalid values would break the tsvector trigger)
-    if (body.ftsLanguage !== undefined && !ALLOWED_FTS_LANGUAGES.has(body.ftsLanguage)) {
+    // #1114 — re-validate the FTS language against the SAME contracts enum
+    // `UpdateAdminSettingsSchema` used, rather than a second hand-rolled list.
+    //
+    // This check is redundant on the parse path above and stays deliberately:
+    // the stored value is later INTERPOLATED into SQL as a `regconfig` (there
+    // is no bind-parameter form for one), so the allow-list is a security
+    // boundary and gets a belt-and-braces check on the way in as well as in
+    // `getFtsLanguage` on the way out. An invalid value would also break the
+    // tsvector rebuild below.
+    if (body.ftsLanguage !== undefined && !FtsLanguageEnum.safeParse(body.ftsLanguage).success) {
       throw fastify.httpErrors.badRequest(
-        `Invalid FTS language: "${body.ftsLanguage}". Allowed: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}`,
+        `Invalid FTS language: "${body.ftsLanguage}". Allowed: ${FTS_LANGUAGES.join(', ')}`,
       );
     }
 

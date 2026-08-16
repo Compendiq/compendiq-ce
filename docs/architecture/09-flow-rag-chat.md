@@ -1095,9 +1095,21 @@ states the condition where an operator will meet it.
 - **Vector search** uses pgvector's `<=>` cosine distance against an HNSW
   index on `page_embeddings.embedding`. `ef_search` is set per request for
   a recall/latency trade-off.
-- **Keyword search** uses the PostgreSQL text-search configuration from
-  `FTS_LANGUAGE` (default `simple`; set `german`, `english`, etc. for
-  language-aware stemming). The parser is **chosen per query** (#1110,
+- **Keyword search** uses the PostgreSQL text-search configuration stored in
+  `admin_settings.fts_language` (default `simple`; set `german`, `english`,
+  etc. for language-aware stemming), edited in
+  Settings → AI Models → Retrieval. There is no environment variable: the
+  `FTS_LANGUAGE` fallback was retired in #1114 because migration 049 seeds
+  that row on every instance before the first request, so it could never be
+  reached — a deployment that "set the language" in its environment was in
+  fact still indexing with `simple`, which is the worst possible failure for
+  a non-English corpus because it is silent and looks like a working search.
+  A set `FTS_LANGUAGE` is now reported as ignored at startup. Saving the
+  setting rebuilds every page's `tsv` in the same request; the allow-list
+  (`FTS_LANGUAGES` in `packages/contracts`) is shared by the select, the
+  route and `getFtsLanguage`, and is closed because the chosen name is
+  interpolated into SQL — PostgreSQL has no bind-parameter form for a
+  `regconfig`. The parser is **chosen per query** (#1110,
   `core/utils/lexical-query.ts`) — normally `websearch_to_tsquery`, so users
   get `"quoted phrases"` as real phrase matches and `-term` as a genuine
   exclusion — the latter was previously **inverted**, because

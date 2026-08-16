@@ -5,6 +5,8 @@ import {
   EmbeddingLockSnapshotSchema,
   AdminEmbeddingLocksResponseSchema,
   ForceReleaseLockResponseSchema,
+  FTS_LANGUAGES,
+  FtsLanguageEnum,
 } from './admin.js';
 
 const validReadPayload = {
@@ -60,6 +62,52 @@ describe('AdminSettingsSchema (read)', () => {
       aiGuardrailNoFabrication: 'x'.repeat(5000),
     });
     expect(parsed.aiGuardrailNoFabrication).toHaveLength(5000);
+  });
+});
+
+// ─── #1114 — the keyword-index language is a closed allow-list ────────────
+//
+// `fts_language` is the ONE admin setting whose value reaches SQL as an
+// identifier rather than a bind parameter: PostgreSQL has no parameterized
+// `regconfig`, so `rag-service.ts` interpolates it into
+// `websearch_to_tsquery('<lang>', $2)`. The allow-list is therefore a
+// security boundary, and it lives here so the panel, the route and the
+// reader cannot each carry their own copy of it.
+describe('ftsLanguage — closed enum shared by panel, route and reader (#1114)', () => {
+  it('exports the configurations as a list and an enum built from that same list', () => {
+    expect(FTS_LANGUAGES.length).toBeGreaterThan(1);
+    expect(FTS_LANGUAGES).toContain('simple');
+    // German is the production content language this consolidation exists for.
+    expect(FTS_LANGUAGES).toContain('german');
+    expect([...FtsLanguageEnum.options]).toEqual([...FTS_LANGUAGES]);
+  });
+
+  it('accepts every listed configuration on read AND on update', () => {
+    for (const lang of FTS_LANGUAGES) {
+      expect(
+        AdminSettingsSchema.parse({ ...validReadPayload, ftsLanguage: lang }).ftsLanguage,
+      ).toBe(lang);
+      expect(UpdateAdminSettingsSchema.parse({ ftsLanguage: lang }).ftsLanguage).toBe(lang);
+    }
+  });
+
+  it('rejects anything outside the list on both schemas', () => {
+    // `SIMPLE` is included deliberately: regconfig names are lower-case, and a
+    // case-insensitive allow-list would be a wider surface than the SQL needs.
+    for (const bad of ['', 'klingon', 'SIMPLE', "simple'); DROP TABLE pages; --"]) {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, ftsLanguage: bad }),
+        `read schema accepted "${bad}"`,
+      ).toThrow();
+      expect(
+        () => UpdateAdminSettingsSchema.parse({ ftsLanguage: bad }),
+        `update schema accepted "${bad}"`,
+      ).toThrow();
+    }
+  });
+
+  it('treats an omitted ftsLanguage as leave-unchanged on update', () => {
+    expect(UpdateAdminSettingsSchema.parse({}).ftsLanguage).toBeUndefined();
   });
 });
 

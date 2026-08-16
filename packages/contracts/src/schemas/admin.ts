@@ -40,6 +40,46 @@ export const RetrievalBenchmarkRequestSchema = z.object({
 export type RetrievalBenchmarkQuery = z.infer<typeof RetrievalBenchmarkQuerySchema>;
 export type RetrievalBenchmarkRequest = z.infer<typeof RetrievalBenchmarkRequestSchema>;
 
+// ─── #1114 — the keyword-index language ──────────────────────────────────
+//
+// PostgreSQL text-search configurations the keyword leg of search may use,
+// persisted in `admin_settings.fts_language` and edited in
+// Settings → AI Models → Retrieval.
+//
+// **This list is a security boundary, not a convenience.** PostgreSQL has no
+// bind-parameter form for a `regconfig`, so the chosen name is INTERPOLATED
+// into SQL (`websearch_to_tsquery('<lang>', $2)` in `rag-service.ts`,
+// `search.ts` and `pages-crud.ts`). The list must therefore stay closed, and
+// the reader keeps its own runtime membership check on the value it loads
+// from the database — the schema guards the write path, the reader guards a
+// row written any other way (psql, a restored dump, a future migration).
+//
+// It lives in contracts so the panel, the route and the reader all read one
+// list: three copies is how the select offers a language the reader would
+// silently discard.
+export const FTS_LANGUAGES = [
+  'simple',
+  'english',
+  'german',
+  'french',
+  'spanish',
+  'italian',
+  'portuguese',
+  'dutch',
+  'swedish',
+  'norwegian',
+  'danish',
+  'finnish',
+  'hungarian',
+  'turkish',
+  'russian',
+  'arabic',
+  'romanian',
+] as const;
+
+export const FtsLanguageEnum = z.enum(FTS_LANGUAGES);
+export type FtsLanguage = z.infer<typeof FtsLanguageEnum>;
+
 // ─── #1118 — retrieval knobs (epic #1100) ────────────────────────────────
 //
 // Nine `admin_settings` rows the retrieval pipeline reads through 60-second
@@ -91,7 +131,7 @@ const RagRankingPriorWeightSchema = z.number().min(0).max(0.05);
 // reembeds when the active provider's dimension changes).
 export const AdminSettingsSchema = z.object({
   embeddingDimensions: z.number().int().min(128).max(4096),
-  ftsLanguage: z.string().min(1),
+  ftsLanguage: FtsLanguageEnum,
   embeddingChunkSize: z.number().int().min(128).max(2048),
   embeddingChunkOverlap: z.number().int().min(0).max(512),
   /**
@@ -185,7 +225,7 @@ export const AdminSettingsSchema = z.object({
 });
 
 export const UpdateAdminSettingsSchema = z.object({
-  ftsLanguage: z.string().min(1).optional(),
+  ftsLanguage: FtsLanguageEnum.optional(),
   embeddingChunkSize: z.number().int().min(128).max(2048).optional(),
   embeddingChunkOverlap: z.number().int().min(0).max(512).optional(),
   /**

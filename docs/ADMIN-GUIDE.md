@@ -375,12 +375,13 @@ Tier-downgrade (license change to a non-enterprise tier) disables the flag. Exis
 
 ### Retrieval settings panel (`Settings → AI Models → Retrieval`)
 
-All nine retrieval knobs below are edited from one admin panel (#1118). They
-were DB-only until it shipped, and raw SQL still works — the panel writes the
-same `admin_settings` rows.
+Every retrieval setting below is edited from one admin panel (#1118, extended
+by #1114). They were DB-only until it shipped, and raw SQL still works — the
+panel writes the same `admin_settings` rows.
 
 | Setting | Key | Default | Range |
 | --- | --- | --- | --- |
+| Keyword index language | `fts_language` | `simple` | see allow-list below |
 | Fetch width | `rag_fetch_width` | 10 | 10–200 |
 | Rerank candidate pool | `rag_rerank_candidates` | 30 | 10–100 |
 | Confidence gate, similarity basis | `rag_confidence_threshold` | 0 (off) | 0 – <1 |
@@ -430,6 +431,31 @@ ground-truth labels by default, the production report does not claim Recall or
 MRR. An explicitly labelled custom suite can be submitted to
 POST /api/admin/retrieval-benchmark when the team has expected page IDs; only
 those labels produce Recall/MRR.
+
+### Keyword index language (`fts_language`)
+
+The PostgreSQL text-search configuration the keyword leg of hybrid search is
+built and queried with — that is, its stemming and stop-word rules.
+`admin_settings` key `fts_language`; **default `simple`**, which does no
+stemming at all. Allowed values: `simple`, `english`, `german`, `french`,
+`spanish`, `italian`, `portuguese`, `dutch`, `swedish`, `norwegian`, `danish`,
+`finnish`, `hungarian`, `turkish`, `russian`, `arabic`, `romanian`.
+
+Two things separate it from the knobs below. **Saving it re-indexes the whole
+corpus inside the request** — every page's `tsv` is rebuilt with the new
+configuration — rather than taking effect on the next cached read. And the
+value is not a range but a closed allow-list, because PostgreSQL has no
+bind-parameter form for a `regconfig`, so the name is interpolated into the
+search SQL.
+
+> **`FTS_LANGUAGE` is removed (#1114).** It was documented as the way to set
+> this and never worked on a migrated instance: migration 049 seeds the
+> `fts_language` row before the first request, so the code path that read the
+> environment variable was unreachable. If your content is not English and you
+> "set the language" that way, your keyword leg is still running `simple` —
+> open **Settings → AI Models → Retrieval** and set it there. A leftover
+> `FTS_LANGUAGE` in the environment is reported as ignored in the startup log
+> and can be deleted.
 
 ### Retrieval fetch width (`rag_fetch_width`)
 

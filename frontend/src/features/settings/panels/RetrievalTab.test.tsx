@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+import { FTS_LANGUAGES } from '@compendiq/contracts';
 import { RetrievalTab } from './RetrievalTab';
 
 const authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
@@ -16,6 +17,7 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /** GET /admin/settings answering with every knob at its reader default. */
 const defaultSettings = {
+  ftsLanguage: 'simple',
   ragFetchWidth: 10,
   ragRerankCandidates: 30,
   ragConfidenceThreshold: 0,
@@ -255,6 +257,100 @@ describe('RetrievalTab — the nine knobs', () => {
     expect(input('ragRankingPriorWeight').max).toBe('0.05');
     expect(input('ragContextCharsPerPage').max).toBe('24000');
     expect(input('ragMmrLambda').max).toBe('1');
+  });
+});
+
+/**
+ * #1114 — the keyword-index language.
+ *
+ * It has been an `admin_settings` row since migration 049 with no control
+ * anywhere: the documented way to change it was `FTS_LANGUAGE`, which that
+ * same migration made inert. So a German deployment that "set the language"
+ * has been running the keyword leg on `simple` — no stemming, no stop words —
+ * ever since. This panel is now the only place it is set.
+ */
+describe('RetrievalTab — keyword index language (#1114)', () => {
+  const select = () => screen.getByTestId('retrieval-ftsLanguage') as HTMLSelectElement;
+
+  it('shows the stored language and offers exactly the contracts allow-list', async () => {
+    mockApi({ settings: { ...defaultSettings, ftsLanguage: 'german' } });
+    renderTab();
+    await ready();
+
+    await waitFor(() => expect(select().value).toBe('german'));
+    // The reader discards anything outside this list, so the control must not
+    // offer a language that would silently read back as `simple`.
+    expect([...select().options].map((option) => option.value)).toEqual([...FTS_LANGUAGES]);
+  });
+
+  it('sends only the language when nothing else changed', async () => {
+    const puts = mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ftsLanguage: 'german' });
+  });
+
+  it('names the cost of saving: every page is re-indexed', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    // Unlike the nine numeric knobs, this one does corpus-wide work inside the
+    // request that saves it. A control that does not say so is a trap.
+    expect(screen.getByTestId('retrieval-fts-language')).toHaveTextContent(
+      /rebuilds the keyword index for every page/i,
+    );
+  });
+
+  it('warns that simple does no stemming — and only while simple is selected', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    const hint = screen.getByTestId('retrieval-fts-simple-hint');
+    expect(hint).toHaveTextContent(/does no stemming/i);
+    // ADR-010: this is a permanent condition on a default install, not an
+    // attention state. Amber would be spent on something that never clears.
+    expect(hint.className).toContain('text-muted-foreground');
+    expect(hint.className).not.toMatch(/warning|status-syncing/);
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    expect(screen.queryByTestId('retrieval-fts-simple-hint')).not.toBeInTheDocument();
+  });
+
+  it('keeps Save disabled until the language actually differs', async () => {
+    mockApi({ settings: { ...defaultSettings, ftsLanguage: 'german' } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('german'));
+
+    expect(screen.getByTestId('retrieval-save-btn')).toBeDisabled();
+    fireEvent.change(select(), { target: { value: 'french' } });
+    expect(screen.getByTestId('retrieval-save-btn')).toBeEnabled();
+    fireEvent.change(select(), { target: { value: 'german' } });
+    expect(screen.getByTestId('retrieval-save-btn')).toBeDisabled();
+  });
+
+  it('re-reads the server after a save instead of trusting its own state (#1118)', async () => {
+    const puts = mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(select().value).toBe('simple'));
+
+    fireEvent.change(select(), { target: { value: 'german' } });
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+    await waitFor(() => expect(puts).toHaveLength(1));
+
+    // The mocked GET still answers `simple`, so a panel that re-hydrates from
+    // the invalidated query lands back on it. One that kept its optimistic
+    // value would show `german` for a save the server never applied.
+    await waitFor(() => expect(select().value).toBe('simple'));
   });
 });
 

@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import type { UsecaseAssignments } from '@compendiq/contracts';
+import type { FtsLanguage, UsecaseAssignments } from '@compendiq/contracts';
+import { FTS_LANGUAGES } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { SETTINGS_PANELS } from '../settings-nav';
 
@@ -37,6 +38,14 @@ import { SETTINGS_PANELS } from '../settings-nav';
 
 /** Mirrors the reader defaults in `backend/src/core/services/admin-settings-service.ts`. */
 interface RetrievalValues {
+  /**
+   * #1114 — `admin_settings.fts_language`, read by
+   * `core/services/fts-language.ts`. It sits with the retrieval knobs because
+   * it configures one of the two retrieval legs, but it is not one of the
+   * nine: saving it rebuilds every page's tsvector inside the request, and
+   * `FTS_LANGUAGES` is a closed allow-list rather than a range.
+   */
+  ftsLanguage: FtsLanguage;
   ragFetchWidth: number;
   ragRerankCandidates: number;
   ragConfidenceThreshold: number;
@@ -86,6 +95,7 @@ interface BenchmarkRun {
 }
 
 const DEFAULTS: RetrievalValues = {
+  ftsLanguage: 'simple',
   ragFetchWidth: 10,
   ragRerankCandidates: 30,
   ragConfidenceThreshold: 0,
@@ -171,6 +181,21 @@ const FIELDS: Record<NumericKey, NumericField> = {
     decimals: 3,
   },
 };
+
+/**
+ * Display names for the PostgreSQL text-search configurations. Only `simple`
+ * needs one: it is the odd entry in a list of languages, and an operator
+ * scanning the dropdown should be able to see that before selecting it rather
+ * than after. Everything else is its own regconfig name, capitalised, so the
+ * value in `admin_settings` stays recognisable from the UI.
+ */
+const FTS_LANGUAGE_LABELS: Partial<Record<FtsLanguage, string>> = {
+  simple: 'Simple (no stemming)',
+};
+
+function ftsLanguageLabel(language: FtsLanguage): string {
+  return FTS_LANGUAGE_LABELS[language] ?? language.charAt(0).toUpperCase() + language.slice(1);
+}
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 const LLM_PROVIDERS_PATH = `${SETTINGS_PANELS.models.path}?sub=llm`;
@@ -296,6 +321,55 @@ export function RetrievalTab() {
         values apply within a minute — immediately on the server that handled the save, and on
         every other server once its 60-second read cache expires.
       </p>
+
+      {/* ── Keyword index ───────────────────────────────────────────────── */}
+      {/*
+        #1114. Unlike the nine knobs below, this one is not a pool size or a
+        threshold: it decides how the keyword leg's tsvector is BUILT, so
+        saving it re-indexes the corpus inside the request rather than taking
+        effect on the next read. The copy carries that cost; the control is
+        deliberately in this panel and nowhere else, because the environment
+        variable that used to claim to set it never did.
+      */}
+      <Section
+        title="Keyword index"
+        description="The PostgreSQL text-search configuration the keyword leg of hybrid search is built and queried with."
+      >
+        <div className="space-y-1.5" data-testid="retrieval-fts-language">
+          <div className="flex items-start justify-between gap-4">
+            <label htmlFor="ftsLanguage" className="pt-1.5 text-sm font-medium">
+              Keyword index language
+            </label>
+            <select
+              id="ftsLanguage"
+              className="nm-select-md shrink-0"
+              value={values.ftsLanguage}
+              onChange={(event) => set('ftsLanguage', event.target.value as FtsLanguage)}
+              data-testid="retrieval-ftsLanguage"
+            >
+              {FTS_LANGUAGES.map((language) => (
+                <option key={language} value={language}>
+                  {ftsLanguageLabel(language)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5 text-xs text-muted-foreground">
+            <p>
+              Stemming and stop words for the keyword leg of search. Saving rebuilds the keyword
+              index for every page.
+            </p>
+            {values.ftsLanguage === 'simple' && (
+              // Muted, never amber: on a default install this is permanent,
+              // and ADR-010 spends amber on states that clear.
+              <p className="text-xs text-muted-foreground" data-testid="retrieval-fts-simple-hint">
+                <code className="font-mono">simple</code> does no stemming — pick the language most
+                of your content is written in.
+              </p>
+            )}
+          </div>
+        </div>
+      </Section>
 
       {/* ── Candidate pools ─────────────────────────────────────────────── */}
       <Section

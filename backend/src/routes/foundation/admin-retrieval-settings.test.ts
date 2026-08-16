@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
@@ -93,6 +93,14 @@ beforeEach(() => {
   mockQuery.mockReset();
   mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
     if (/^\s*INSERT INTO admin_settings/i.test(sql)) {
+      // Two upsert shapes reach this table: the batch one binds `($1, $2)`,
+      // while `fts_language` names its key as a literal and binds only the
+      // value (it is written on its own, ahead of the tsvector rebuild).
+      const literalKey = sql.match(/VALUES\s*\('([a-z_]+)'/);
+      if (literalKey) {
+        rows[literalKey[1]!] = String((params as unknown[])[0]);
+        return { rows: [], rowCount: 1 };
+      }
       const [key, value] = params as [string, string];
       rows[key] = value;
       return { rows: [], rowCount: 1 };
@@ -367,5 +375,61 @@ describe('PUT /api/admin/settings — booleans round-trip in both states (#1118 
     expect([stored('rag_pin_identifiers'), stored('rag_mmr_enabled')]).toEqual(['true', 'true']);
     await put({ ragPinIdentifiers: false, ragMmrEnabled: false });
     expect([stored('rag_pin_identifiers'), stored('rag_mmr_enabled')]).toEqual(['false', 'false']);
+  });
+});
+
+/**
+ * #1114 — the keyword-index language, now that Settings is its only source.
+ *
+ * `getFtsLanguage` and this handler both used to end in
+ * `?? process.env.FTS_LANGUAGE ?? 'simple'`. Migration 049 seeds the row on
+ * every instance before the first request, so that arm was unreachable in
+ * practice — `FTS_LANGUAGE=german` did nothing, and the panel could not have
+ * shown it if it had. The env var is retired; the row is the answer.
+ */
+describe('admin settings — the keyword-index language comes from the row alone (#1114)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('GET answers simple when no row exists, even with FTS_LANGUAGE set in the environment', async () => {
+    vi.stubEnv('FTS_LANGUAGE', 'german');
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ftsLanguage: 'simple' });
+  });
+
+  it('GET answers the stored row', async () => {
+    expect((await put({ ftsLanguage: 'german' })).statusCode).toBe(200);
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(res.json()).toMatchObject({ ftsLanguage: 'german' });
+  });
+
+  it('PUT persists the language and rebuilds every page tsvector with it', async () => {
+    const res = await put({ ftsLanguage: 'german' });
+    expect(res.statusCode).toBe(200);
+    expect(stored('fts_language')).toBe('german');
+
+    const rebuild = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE pages SET tsv = to_tsvector/i.test(String(sql)),
+    );
+    expect(rebuild, 'saving the language must rebuild the keyword index').toBeDefined();
+    // Bound, not interpolated, on this one statement — the reader's
+    // interpolation is what the allow-list exists for.
+    expect(rebuild![1]).toEqual(['german']);
+  });
+
+  it('refuses a configuration outside the contracts allow-list, writing nothing', async () => {
+    // The value reaches SQL as a regconfig identifier in the read path, so an
+    // unknown name must never be stored in the first place.
+    for (const bad of ['klingon', 'SIMPLE', "english'); DROP TABLE pages; --"]) {
+      const res = await put({ ftsLanguage: bad });
+      expect(res.statusCode, bad).toBe(400);
+    }
+    expect(rows).toEqual({});
+    expect(
+      mockQuery.mock.calls.some(([sql]) => /UPDATE pages SET tsv/i.test(String(sql))),
+      'a rejected language must not trigger a corpus-wide rebuild',
+    ).toBe(false);
   });
 });
