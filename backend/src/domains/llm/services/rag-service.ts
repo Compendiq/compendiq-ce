@@ -33,6 +33,7 @@ import {
 import { withSpan, recordHistogram } from '../../../telemetry.js';
 import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
 import { RAG_EF_SEARCH, efSearchFor } from './hnsw-ef-search.js';
+import { formatQueryForEmbedding } from './query-instruction.js';
 
 /**
  * Latency histogram for retrieval pipeline stages (#1117). `stage` is the one
@@ -1369,7 +1370,20 @@ async function hybridSearchInner(
     // Resolve the `embedding` use-case to the provider+model that generated
     // the stored embeddings, so query-time embedding stays compatible.
     const { config, model } = await resolveUsecase('embedding');
-    const embeddings = await generateEmbedding(config, model, question);
+    // #1114: instruction-aware models (Qwen3) want a preamble on the QUERY and
+    // nothing on the document. This is the app's only query-side embedding
+    // call, so it is the only place the asymmetry can be applied — and it is a
+    // no-op for every model that is not instruction-aware, so it runs
+    // unconditionally rather than behind a second flag that could drift out of
+    // step with the resolved model.
+    //
+    // Keyed off the RESOLVED model, so it turns on exactly when a swap makes
+    // Qwen3 live and back off on a rollback, with no separate setting to
+    // remember. Documents are embedded bare under every model, so the stored
+    // corpus is identical either way and flipping this needs no re-embed.
+    const embeddings = await generateEmbedding(
+      config, model, formatQueryForEmbedding(model, question),
+    );
     const questionEmbedding = embeddings[0]!;
     vectorResults = await vectorSearch(userId, questionEmbedding, await stageLimitPromise);
   } catch (err) {
