@@ -79,3 +79,7 @@ perf/*.html
 # licence alive; not part of the shipped docker/ compose set.
 docker/confluence-faketime.Dockerfile
 docker/docker-compose.confluence.faketime.yml
+
+# #1114: translator caches — resume state, not source.
+backend/src/domains/llm/eval/corpus-*/.titles.json
+backend/src/domains/llm/eval/corpus-*/.queries.json

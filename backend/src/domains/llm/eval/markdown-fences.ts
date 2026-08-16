@@ -49,3 +49,29 @@ export function splitFences(md: string): Array<{ code: boolean; text: string }> 
   flush(inFence);
   return out;
 }
+
+/**
+ * Reject a translation that came back empty for non-empty input (#1114).
+ *
+ * This is the corpus translator's most dangerous failure and the reason it is
+ * a named, tested function rather than an inline `if`. A REASONING model
+ * (qwen3.5, for one) spends its token budget in `reasoning_content` and
+ * returns `content: ""`. An empty string is still a string, so it satisfies
+ * every type check downstream: the run completes, reports success, and writes
+ * a corpus of blank documents. Every retrieval number measured against it
+ * would then be real arithmetic over nothing.
+ *
+ * Whitespace-only counts as empty for the same reason. Empty input is
+ * legitimately empty output — a document can contain consecutive fences with
+ * nothing between them.
+ */
+export function assertUsableTranslation(input: string, output: string): void {
+  if (!input.trim()) return;
+  if (!output.trim()) {
+    throw new Error(
+      'translate: model returned EMPTY content for non-empty input — if this model emits ' +
+      '`reasoning_content`, it is a reasoning model; use an instruct model (TRANSLATE_MODEL) ' +
+      'or raise max_tokens',
+    );
+  }
+}

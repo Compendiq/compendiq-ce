@@ -49,14 +49,19 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { splitFences } from '../src/domains/llm/eval/markdown-fences.js';
+import { splitFences, assertUsableTranslation } from '../src/domains/llm/eval/markdown-fences.js';
 import { computeCorpusManifestSha } from '../src/domains/llm/eval/fixture.js';
 
 const EVAL_DIR = join(import.meta.dirname, '..', 'src', 'domains', 'llm', 'eval');
 const SOURCE_DIRS = [join(EVAL_DIR, 'corpus'), join(EVAL_DIR, 'corpus-synthetic')];
 
 const BASE_URL = process.env.TRANSLATE_BASE_URL ?? 'http://localhost:1234/v1';
-const MODEL = process.env.TRANSLATE_MODEL ?? 'qwen/qwen3.5-9b';
+// An INSTRUCT model, deliberately. A reasoning model (qwen3.5 here) spends the
+// token budget in `reasoning_content` and returns `content: ""` — which is a
+// string, so it passes every type check and writes an EMPTY document. 275 blank
+// files that still look like a clean run is the worst failure this script has,
+// so the model default avoids it and `chat` refuses an empty result outright.
+const MODEL = process.env.TRANSLATE_MODEL ?? 'gemma-4-e4b-it-mlx';
 const LANG = (process.argv.find((a) => a.startsWith('--lang='))?.split('=')[1]
   ?? (process.argv.includes('--lang') ? process.argv[process.argv.indexOf('--lang') + 1] : undefined)
   ?? 'de');
@@ -105,27 +110,54 @@ async function translate(text: string): Promise<string> {
   return chat(SYSTEM_PROMPT, text);
 }
 
+/**
+ * One chat completion, with a generous timeout and bounded retries.
+ *
+ * Both are load-bearing for a job this long. The FIRST request to a cold
+ * server pays the model load — tens of seconds for a 9B — and Node's default
+ * socket read timeout is shorter than that, so without an explicit signal the
+ * run dies on file 1 with `ETIMEDOUT` and nothing translated. And a single
+ * transient failure anywhere in ~1400 requests would otherwise discard hours
+ * of completed work, since the corpus is only resumable at file granularity.
+ */
+const REQUEST_TIMEOUT_MS = Number(process.env.TRANSLATE_TIMEOUT_MS ?? 600_000);
+const MAX_ATTEMPTS = Number(process.env.TRANSLATE_MAX_ATTEMPTS ?? 5);
+
 async function chat(system: string, text: string): Promise<string> {
   if (!text.trim()) return text;
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: text },
-      ],
-      temperature: 0.2,
-      max_tokens: 8192,
-    }),
-  });
-  if (!res.ok) throw new Error(`translate HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  const out = body.choices?.[0]?.message?.content;
-  if (typeof out !== 'string') throw new Error('translate: no content in response');
-  // Some models wrap the whole answer in a fence despite the instruction.
-  return out.replace(/^\s*```(?:markdown|md)?\n([\s\S]*)\n```\s*$/, '$1');
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const res = await fetch(`${BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: text },
+          ],
+          temperature: 0.2,
+          max_tokens: 8192,
+        }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      if (!res.ok) throw new Error(`translate HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      const body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      const out = body.choices?.[0]?.message?.content;
+      if (typeof out !== 'string') throw new Error('translate: no content in response');
+      assertUsableTranslation(text, out);
+      // Some models wrap the whole answer in a fence despite the instruction.
+      return out.replace(/^\s*```(?:markdown|md)?\n([\s\S]*)\n```\s*$/, '$1');
+    } catch (err) {
+      lastErr = err;
+      if (attempt === MAX_ATTEMPTS) break;
+      const backoffMs = 2000 * attempt;
+      console.warn(`    attempt ${attempt}/${MAX_ATTEMPTS} failed (${err instanceof Error ? err.message : String(err)}); retrying in ${backoffMs}ms`);
+      await new Promise((r) => setTimeout(r, backoffMs));
+    }
+  }
+  throw lastErr;
 }
 
 /** Translate one document, leaving every fenced code block untouched. */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { splitFences } from './markdown-fences.js';
+import { splitFences, assertUsableTranslation } from './markdown-fences.js';
 
 /**
  * `splitFences` decides what the translator is allowed to see. Everything it
@@ -58,5 +58,31 @@ describe('splitFences (#1114 German eval slice)', () => {
   it('leaves a document with no fences entirely translatable', () => {
     const parts = splitFences('Just prose.\n\nMore prose.');
     expect(parts.every((p) => !p.code)).toBe(true);
+  });
+});
+
+describe('assertUsableTranslation (#1114)', () => {
+  it('rejects empty output for non-empty input', () => {
+    expect(() => assertUsableTranslation('Some prose.', '')).toThrow(/EMPTY content/);
+  });
+
+  it('rejects whitespace-only output, which is empty in every way that matters', () => {
+    expect(() => assertUsableTranslation('Some prose.', '   \n  ')).toThrow(/EMPTY content/);
+  });
+
+  it('names the reasoning-model cause, because that is what actually happens', () => {
+    // The failure arrives as a clean 200 with content:"" — nothing in the
+    // response says "reasoning model", so the error message has to.
+    expect(() => assertUsableTranslation('x', '')).toThrow(/reasoning model/);
+  });
+
+  it('allows empty output for empty input', () => {
+    // Consecutive fences leave genuinely empty prose segments between them.
+    expect(() => assertUsableTranslation('', '')).not.toThrow();
+    expect(() => assertUsableTranslation('  \n ', '')).not.toThrow();
+  });
+
+  it('allows a normal translation', () => {
+    expect(() => assertUsableTranslation('The plugin registers a hook.', 'Das Plugin registriert einen Hook.')).not.toThrow();
   });
 });
