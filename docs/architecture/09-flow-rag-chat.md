@@ -806,6 +806,39 @@ logged when it engages), which is why the thresholds are operator knobs
 with no universal constant and why `tieredMinScoreForCorpus`'s hardcoded
 tiers were deliberately not ported.
 
+**A threshold remembers the model it was tuned on (#1114).** The paragraph
+above ends at "operator knobs with no universal constant", and that is exactly
+what leaves them exposed: the constant is deployment-specific because the
+MODEL sets it, so a model change reinterprets a number nobody edited. A #1116
+shadow swap rewrites the `embedding` assignment (and a rollback rewrites it
+back), and a plain `PUT /admin/llm-usecases` rewrites either assignment
+outright — none of them touched `rag_confidence_threshold` or
+`rag_confidence_threshold_rerank`, so an instance tuned to 0.35 against
+`bge-m3` kept 0.35 on `Qwen3-Embedding-4B`'s scale and silently refused too
+much or too little. **The ruling is warn, don't mutate**: a swap must never
+rewrite refusal policy, because an operator who set a gate deliberately would
+find it moved by an action about embeddings, and a silently *relaxed* gate is
+worse than a silently strict one. So the evidence is kept instead. Writing a
+threshold through `PUT /admin/settings` records the pair it was written
+against beside it — `rag_confidence_threshold_calibration` and
+`rag_confidence_threshold_rerank_calibration`, `{providerId, model, setAt}`,
+resolved through `resolveConfidenceBasisPair` so inheritance, the EE override
+and ADR-021's "unassigned rerank = stage disabled" all count. Only for a
+threshold that PUT actually carried (re-dating an untouched one would certify
+it against a model nobody tuned it on), re-recorded on a re-save of the same
+number (that is the panel's own remedy), and cleared when the threshold goes
+back to 0 (gate off = nothing calibrated). `GET /admin/settings` compares the
+record with the live pair and answers `ragConfidenceCalibration`, provider id
+and model name only. `warnThresholdOutlivedItsModel` logs the change at the
+swap, the post-swap rollback and the direct assignment change — never on an
+abort, which rewrote no assignment, and never when the threshold is 0, which
+is every instance that left the gate off. `RetrievalTab` renders a stale
+record as an amber `role="status"` strip above that control naming the old
+model, the live one and the scale between them, and arms Save so "keep it and
+record it" is a control rather than a trick; a threshold with no record at all
+(everything set before this shipped) gets a muted line instead, because
+absence of evidence is not evidence of a change.
+
 **The refusal as a UI state (#1119).** `Message.isRefusal` is set from that
 final frame in `runStream`, and from the stored `refused` marker in
 `loadConversation` — without the second, reopening a thread downgrades the

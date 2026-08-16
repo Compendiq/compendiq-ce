@@ -3,7 +3,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import type { FtsLanguage, UsecaseAssignments } from '@compendiq/contracts';
+import type {
+  ConfidenceCalibration,
+  FtsLanguage,
+  RagConfidenceCalibration,
+  UsecaseAssignments,
+} from '@compendiq/contracts';
 import { FTS_LANGUAGES } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ErrorState } from '../../../shared/components/feedback/ErrorState';
@@ -234,6 +239,21 @@ const FTS_LANGUAGE_OPTIONS: readonly FtsLanguage[] = [
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 const LLM_PROVIDERS_PATH = `${SETTINGS_PANELS.models.path}?sub=llm`;
 
+/**
+ * #1114 — the wording each confidence basis needs.
+ *
+ * `basisNoun` is the use case whose model sets the scale, `scaleNoun` the
+ * thing that moves when it changes. They are not interchangeable: the
+ * embedder decides a SIMILARITY distribution, the reranker a RELEVANCE one,
+ * and that distinction is the entire reason #1105 shipped two knobs instead
+ * of one. A single generic "the model changed" would leave the operator
+ * unable to judge whether their number is now too strict or too loose.
+ */
+const CONFIDENCE_BASIS_COPY = {
+  ragConfidenceThreshold: { basisNoun: 'embedding', scaleNoun: 'similarity' },
+  ragConfidenceThresholdRerank: { basisNoun: 'rerank', scaleNoun: 'relevance' },
+} as const;
+
 /** Strips floating-point noise from a stepped input without changing the value. */
 function round(value: number, decimals: number | undefined): number {
   if (decimals === undefined) return value;
@@ -253,7 +273,7 @@ export function RetrievalTab() {
     isError: settingsError,
     error: settingsErrorObj,
     refetch: refetchSettings,
-  } = useQuery<Partial<RetrievalValues>>({
+  } = useQuery<Partial<RetrievalValues> & { ragConfidenceCalibration?: RagConfidenceCalibration }>({
     queryKey: ['admin-settings'],
     queryFn: () => apiFetch('/admin/settings'),
   });
@@ -321,8 +341,35 @@ export function RetrievalTab() {
     },
   });
 
+  /**
+   * #1114 — a stale calibration is itself an unsaved change.
+   *
+   * Save diffs values, and the remedy the amber strip offers — "save it again
+   * to keep it" — changes no value at all: the number is right, the record
+   * beside it is out of date. Diffing alone left Save dead on exactly the
+   * screen that tells the operator to press it, so keeping a threshold was
+   * only reachable by nudging the input off its value and back, which is a
+   * trick, not a control.
+   *
+   * Deliberately only the STALE case. An unrecorded calibration (every
+   * threshold set before this shipped) takes the muted note instead: nothing
+   * is known to have changed there, so leaving Save armed on every upgraded
+   * instance would be a permanent nag for a model swap that may never have
+   * happened.
+   */
+  const staleCalibrationKeys = (
+    [
+      ['ragConfidenceThreshold', settings?.ragConfidenceCalibration?.similarity],
+      ['ragConfidenceThresholdRerank', settings?.ragConfidenceCalibration?.rerank],
+    ] as const
+  )
+    .filter(([key, calibration]) => saved[key] > 0 && calibration?.stale === true)
+    .map(([key]) => key);
+
   const changed = (Object.keys(DEFAULTS) as (keyof RetrievalValues)[]).filter(
-    (key) => values[key] !== saved[key],
+    (key) =>
+      values[key] !== saved[key] ||
+      (staleCalibrationKeys as readonly string[]).includes(key),
   );
 
   function handleSave() {
@@ -644,6 +691,18 @@ export function RetrievalTab() {
         title="Confidence refuse gate"
         description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces."
       >
+        {/*
+          #1114 — above the control, and keyed off `saved`, not `values`: the
+          calibration describes the number the SERVER is holding, so reading a
+          draft the admin is still typing would let the strip disappear before
+          anything was saved.
+        */}
+        <CalibrationNotice
+          fieldKey="ragConfidenceThreshold"
+          label={FIELDS.ragConfidenceThreshold.label}
+          value={saved.ragConfidenceThreshold}
+          calibration={settings?.ragConfidenceCalibration?.similarity ?? null}
+        />
         <NumberRow
           field={FIELDS.ragConfidenceThreshold}
           value={values.ragConfidenceThreshold}
@@ -658,6 +717,12 @@ export function RetrievalTab() {
           </p>
         </NumberRow>
 
+        <CalibrationNotice
+          fieldKey="ragConfidenceThresholdRerank"
+          label={FIELDS.ragConfidenceThresholdRerank.label}
+          value={saved.ragConfidenceThresholdRerank}
+          calibration={settings?.ragConfidenceCalibration?.rerank ?? null}
+        />
         <NumberRow
           field={FIELDS.ragConfidenceThresholdRerank}
           value={values.ragConfidenceThresholdRerank}
@@ -959,6 +1024,90 @@ function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+/**
+ * #1114 — what a confidence threshold was tuned against, when that no longer
+ * matches what is running.
+ *
+ * Three states, and getting the third one wrong is the trap:
+ *
+ *  - **value 0 → nothing.** The gate does not run, so its calibration cannot
+ *    be wrong about anything. Warning here would put amber on the panel of
+ *    every instance that ever tried a threshold and turned it back off.
+ *  - **stale → amber `role="status"`**, the same recipe (and the same 16px
+ *    `AlertTriangle`) as the failed-save strip above. It matches ADR-010's
+ *    `usePageTree` precedent exactly: red is failure, amber is degraded, and
+ *    the value below is intact but no longer means what it meant. It clears
+ *    the moment the threshold is saved again — the server re-records the pair
+ *    on every write of it, including a re-save of the same number.
+ *  - **no record → a MUTED line, never amber.** Every threshold set before
+ *    this shipped lands here, so an amber strip would appear on upgrade for a
+ *    model change that may never have happened. Absence of evidence is not
+ *    evidence of a change, and a permanent amber banner is how the panel's
+ *    own no-amber-at-rest rule gets hollowed out.
+ *
+ * The copy names the OLD model, the LIVE one and the scale between them,
+ * because "stale" alone leaves an operator no way to judge whether their
+ * number is now too strict or too loose — and it names both remedies, since
+ * keeping the number is a legitimate choice that simply needs recording.
+ */
+function CalibrationNotice({
+  fieldKey,
+  label,
+  value,
+  calibration,
+}: {
+  fieldKey: keyof typeof CONFIDENCE_BASIS_COPY;
+  label: string;
+  value: number;
+  calibration: ConfidenceCalibration | null;
+}) {
+  if (value <= 0) return null;
+
+  if (!calibration) {
+    return (
+      <p
+        className="text-xs text-muted-foreground"
+        data-testid={`retrieval-${fieldKey}-calibration-unknown`}
+      >
+        Calibration unknown — set before models were recorded; save to record it against the live
+        model.
+      </p>
+    );
+  }
+
+  if (!calibration.stale) return null;
+
+  const { basisNoun, scaleNoun } = CONFIDENCE_BASIS_COPY[fieldKey];
+  return (
+    <div
+      role="status"
+      className="flex items-start gap-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
+      data-testid={`retrieval-${fieldKey}-calibration-stale`}
+    >
+      <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+      <span>
+        {label} {value} was set while{' '}
+        <strong className="font-medium">{calibration.model}</strong> was the {basisNoun} model.{' '}
+        {calibration.liveModel ? (
+          <>
+            The live model is <strong className="font-medium">{calibration.liveModel}</strong>, whose{' '}
+            {scaleNoun} scale differs — re-tune it, or save it again to keep it and record it
+            against the live model.
+          </>
+        ) : (
+          // ADR-021: an unassigned rerank means the stage is disabled, so the
+          // threshold is measured against nothing. "The live model is null"
+          // would be worse than saying so.
+          <>
+            No {basisNoun} model is assigned now, so the threshold gates nothing it was tuned on —
+            re-tune it, or save it again to record the current state.
+          </>
+        )}
+      </span>
+    </div>
   );
 }
 

@@ -123,6 +123,53 @@ const RagMmrLambdaSchema = z.number().min(0).max(1);
  */
 const RagRankingPriorWeightSchema = z.number().min(0).max(0.05);
 
+/**
+ * #1114 — which model a confidence threshold was calibrated against, and
+ * whether that model is still the live one.
+ *
+ * The two thresholds sit on scales the MODELS decide: cosine similarity is
+ * whatever the embedder's geometry makes it, rerank relevance whatever the
+ * reranker's normalisation makes it (the argument for splitting them into
+ * two knobs in the first place — see `RagConfidenceThresholdSchema`). So an
+ * embedding swap or a rerank re-assignment silently reinterprets a number
+ * nobody touched: 0.35 tuned on bge-m3 is a different gate on Qwen3.
+ *
+ * The ruling is **warn, don't mutate** — a model change never rewrites
+ * refusal policy behind the operator's back. The server records the pair
+ * beside the threshold when it is written, compares it with the live
+ * assignment on read, and the panel says so until the threshold is saved
+ * again.
+ *
+ * `liveProviderId` / `liveModel` are nullable because "no rerank model is
+ * assigned" is a real state (ADR-021: unassigned rerank = stage disabled),
+ * and it is a STALE one when a pair was recorded — the threshold now gates
+ * against nothing it was tuned on.
+ *
+ * **Provider id and model name only.** This rides the same `GET
+ * /api/admin/settings` payload as everything else on this schema; base URLs
+ * and API keys stay on `/api/admin/llm-providers`, which redacts them.
+ */
+export const ConfidenceCalibrationSchema = z.object({
+  providerId: z.string().min(1),
+  model: z.string().min(1),
+  /** ISO instant the threshold was last written with this pair recorded. */
+  setAt: z.string().datetime(),
+  liveProviderId: z.string().min(1).nullable(),
+  liveModel: z.string().min(1).nullable(),
+  stale: z.boolean(),
+});
+
+/**
+ * Both bases' calibration, `null` where none was ever recorded — a threshold
+ * set before #1114, or one at 0 (nothing to calibrate). Null is deliberately
+ * NOT rendered as a warning by the panel: an absent record is the absence of
+ * evidence, not evidence of a change.
+ */
+export const RagConfidenceCalibrationSchema = z.object({
+  similarity: ConfidenceCalibrationSchema.nullable(),
+  rerank: ConfidenceCalibrationSchema.nullable(),
+});
+
 // AdminSettings is now scoped to non-LLM configuration only.
 // LLM provider configuration lives in the `llm_providers` table and is
 // managed through `/api/admin/llm-providers` + `/api/admin/llm-usecases`.
@@ -222,6 +269,13 @@ export const AdminSettingsSchema = z.object({
   ragMmrEnabled: RagMmrEnabledSchema,
   ragMmrLambda: RagMmrLambdaSchema,
   ragRankingPriorWeight: RagRankingPriorWeightSchema,
+  /**
+   * #1114 — read-only, and deliberately absent from the update schema below.
+   * The server resolves the pair itself when it writes a threshold; a client
+   * that could assert this could also assert "still calibrated" for a
+   * threshold tuned against a model that is long gone.
+   */
+  ragConfidenceCalibration: RagConfidenceCalibrationSchema,
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -287,6 +341,10 @@ export const UpdateAdminSettingsSchema = z.object({
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;
+/** #1114 — one basis' calibration record plus the live comparison. */
+export type ConfidenceCalibration = z.infer<typeof ConfidenceCalibrationSchema>;
+/** #1114 — both bases, as `GET /api/admin/settings` reports them. */
+export type RagConfidenceCalibration = z.infer<typeof RagConfidenceCalibrationSchema>;
 export type UpdateAdminSettingsInput = z.infer<typeof UpdateAdminSettingsSchema>;
 
 // ─── Issue #257 — admin embedding-lock visibility + force-release ────────

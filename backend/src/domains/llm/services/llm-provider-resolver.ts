@@ -3,6 +3,11 @@ import { decryptPat } from '../../../core/utils/crypto.js';
 import { invalidateDispatcher, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
 import { getProviderCacheVersion, onProviderCacheBump, onProviderDeleted } from './cache-bus.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
+import { logger } from '../../../core/utils/logger.js';
+import type {
+  CalibrationPair,
+  ConfidenceBasis,
+} from '../../../core/services/confidence-calibration.js';
 import type { LlmUsecase } from '@compendiq/contracts';
 
 interface ResolveRow {
@@ -230,4 +235,38 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   const cfg = loadProviderFromRow(row);
   const model = row.usecase_model ?? cfg.defaultModel ?? '';
   return { config: cfg, model };
+}
+
+/**
+ * #1114 — the provider+model behind a confidence basis, right now.
+ *
+ * The refuse gate's two thresholds sit on scales their models decide, so
+ * "which model is this threshold gating against?" is a question with exactly
+ * one correct source: the resolvers above. Not `llm_usecase_assignments` —
+ * that row does not carry inheritance from the default provider, the EE
+ * org-policy override, or ADR-021's "unassigned rerank means the stage is
+ * disabled" (which is why rerank answers null here rather than falling back
+ * to the default provider, whose `/v1/rerank` does not exist). A raw row read
+ * would name a pair the pipeline is not using, which is the exact class of
+ * mismatch the calibration record exists to report.
+ *
+ * Never throws. A deployment with no provider configured is a real state and
+ * must not take the settings page down with it; it reads as "no live pair",
+ * which makes any existing calibration stale — correctly, since the threshold
+ * is no longer gating against anything it was tuned on.
+ */
+export async function resolveConfidenceBasisPair(
+  basis: ConfidenceBasis,
+): Promise<CalibrationPair | null> {
+  try {
+    if (basis === 'rerank') {
+      const resolved = await resolveRerankUsecase();
+      return resolved ? { providerId: resolved.config.providerId, model: resolved.model } : null;
+    }
+    const resolved = await resolveUsecase('embedding');
+    return resolved.model ? { providerId: resolved.config.providerId, model: resolved.model } : null;
+  } catch (err) {
+    logger.warn({ err, basis }, 'Could not resolve the model behind a confidence threshold');
+    return null;
+  }
 }

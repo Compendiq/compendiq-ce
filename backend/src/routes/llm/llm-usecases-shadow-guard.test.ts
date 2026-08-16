@@ -19,6 +19,12 @@ vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
   resolveUsecase: vi.fn(async () => {
     throw new Error('not configured');
   }),
+  resolveRerankUsecase: vi.fn(async () => null),
+  // #1114 — the route reads the pair behind each confidence basis before and
+  // after the save. Nothing is configured in this file, so it answers null,
+  // which is also what makes the calibration warning stay silent here (the
+  // pair did not move).
+  resolveConfidenceBasisPair: vi.fn(async () => null),
 }));
 vi.mock('../../domains/llm/services/cache-bus.js', () => ({
   bumpProviderCacheVersion: vi.fn(async () => {}),

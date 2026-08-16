@@ -5,6 +5,7 @@ import { getProviderById } from './llm-provider-service.js';
 import { bumpProviderCacheVersion } from './cache-bus.js';
 import { enqueueJob, getJobStatus } from '../../../core/services/queue-service.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
+import { warnThresholdOutlivedItsModel } from '../../../core/services/confidence-calibration.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import { invalidateGraphCache } from '../../../core/services/redis-cache.js';
@@ -829,6 +830,18 @@ export async function performShadowSwap(opts?: {
   await bumpProviderCacheVersion();
   startSimilarityEdgeRefresh('swap');
   logger.info('Shadow migration swapped — new model is live; run cleanup once validated, or rollback to revert');
+  // #1114 — the cosine scale just moved and `rag_confidence_threshold` did
+  // not. READ-ONLY by owner ruling: an operator who set a refuse gate
+  // deliberately must not find it rewritten by an action about embeddings,
+  // and a silently *relaxed* gate is worse than a silently strict one. The
+  // Retrieval panel carries the same notice for operators who do not read
+  // logs. After the transaction, because a swap that renamed the columns
+  // successfully must not fail on a diagnostic.
+  await warnThresholdOutlivedItsModel({
+    basis: 'similarity',
+    previousModel: prev.model,
+    newModel: status.model,
+  });
 }
 
 export async function rollbackShadowMigration(opts?: {
@@ -901,6 +914,14 @@ export async function rollbackShadowMigration(opts?: {
   }
 
   // status === 'swapped': reverse the renames and restore the assignment.
+  //
+  // #1114 — captured INSIDE the transaction, off the state this revert
+  // verified under the lock (review r5's discipline, for the same reason):
+  // the pre-lock snapshot and the verified one differ exactly when another
+  // lifecycle step won the lock race, and a warning naming the wrong pair of
+  // models is worse than none.
+  let revertedFrom: string | null = null;
+  let revertedTo: string | null = null;
   await withLockRetry(
     { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
     async (client) => {
@@ -916,6 +937,8 @@ export async function rollbackShadowMigration(opts?: {
       if (!revState || revState.status !== 'swapped') {
         throw new Error(`Migration state changed mid-rollback (now ${revState?.status ?? 'absent'}) — rollback refused`);
       }
+      revertedFrom = revState.model;
+      revertedTo = revState.prev?.model ?? null;
       await client.query(`ALTER TABLE page_embeddings RENAME COLUMN embedding TO embedding_next`);
       await client.query(`ALTER TABLE page_embeddings RENAME COLUMN embedding_prev TO embedding`);
       await client.query(`ALTER TABLE pages RENAME COLUMN page_avg_embedding TO page_avg_embedding_next`);
@@ -986,6 +1009,16 @@ export async function rollbackShadowMigration(opts?: {
   // old-model vectors.
   startSimilarityEdgeRefresh('rollback');
   logger.info('Shadow migration reverted — old model is live again; state back to active');
+  // #1114 — a revert moves the cosine scale back, which is still a move: an
+  // operator who re-tuned the threshold after the swap is now on the OLD
+  // model's scale with the NEW model's number. Symmetric with the swap, and
+  // deliberately only on this branch — an abort never rewrote the live
+  // assignment, so there is nothing to report.
+  await warnThresholdOutlivedItsModel({
+    basis: 'similarity',
+    previousModel: revertedFrom,
+    newModel: revertedTo,
+  });
   return 'reverted';
 }
 

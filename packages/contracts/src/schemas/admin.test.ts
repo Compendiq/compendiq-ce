@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   UpdateAdminSettingsSchema,
   AdminSettingsSchema,
+  ConfidenceCalibrationSchema,
   EmbeddingLockSnapshotSchema,
   AdminEmbeddingLocksResponseSchema,
   ForceReleaseLockResponseSchema,
@@ -33,6 +34,9 @@ const validReadPayload = {
   ragMmrEnabled: false,
   ragMmrLambda: 0.7,
   ragRankingPriorWeight: 0,
+  // #1114 — required on read; both bases null on an instance that has never
+  // set a threshold (the 0/0 default).
+  ragConfidenceCalibration: { similarity: null, rerank: null },
 } as const;
 
 describe('AdminSettingsSchema (read)', () => {
@@ -642,5 +646,78 @@ describe('ForceReleaseLockResponseSchema (issue #257)', () => {
 
   it('rejects non-boolean released', () => {
     expect(() => ForceReleaseLockResponseSchema.parse({ released: 'yes', userId: 'alice' })).toThrow();
+  });
+});
+
+// ─── #1114 — a threshold remembers the model it was tuned on ─────────────
+//
+// The scales the two confidence thresholds sit on are set by the models
+// behind them (cosine by the embedder, relevance by the reranker), so a model
+// swap silently reinterprets a number nobody touched. The server records the
+// pair each threshold was saved against and reports whether it still matches
+// the live one. Read-only: the calibration is the SERVER's record of what it
+// resolved at write time, never something a client asserts.
+describe('rag confidence calibration (#1114)', () => {
+  const record = {
+    providerId: '11111111-2222-3333-4444-555555555555',
+    model: 'bge-m3',
+    setAt: '2026-08-16T10:00:00.000Z',
+    liveProviderId: '11111111-2222-3333-4444-555555555555',
+    liveModel: 'bge-m3',
+    stale: false,
+  };
+
+  it('is required on read, with both bases nullable', () => {
+    const { ragConfidenceCalibration: _dropped, ...without } = validReadPayload;
+    expect(() => AdminSettingsSchema.parse(without)).toThrow();
+    expect(
+      AdminSettingsSchema.parse({
+        ...validReadPayload,
+        ragConfidenceCalibration: { similarity: null, rerank: null },
+      }).ragConfidenceCalibration,
+    ).toEqual({ similarity: null, rerank: null });
+  });
+
+  it('carries the recorded pair, the live pair and the verdict', () => {
+    expect(ConfidenceCalibrationSchema.parse(record)).toEqual(record);
+  });
+
+  it('accepts a null live pair — "unassigned now" is a real state, and a stale one', () => {
+    const parsed = ConfidenceCalibrationSchema.parse({
+      ...record,
+      liveProviderId: null,
+      liveModel: null,
+      stale: true,
+    });
+    expect(parsed.liveModel).toBeNull();
+    expect(parsed.stale).toBe(true);
+  });
+
+  it('puts nothing provider-secret on the wire — id and model name only', () => {
+    const parsed = ConfidenceCalibrationSchema.parse({
+      ...record,
+      apiKey: 'sk-live-do-not-ship-me',
+      baseUrl: 'https://internal.embeddings.example/v1',
+    } as Record<string, unknown>);
+    expect(parsed).not.toHaveProperty('apiKey');
+    expect(parsed).not.toHaveProperty('baseUrl');
+    expect(Object.keys(parsed).sort()).toEqual(
+      ['liveModel', 'liveProviderId', 'model', 'providerId', 'setAt', 'stale'].sort(),
+    );
+  });
+
+  it('rejects a setAt that is not an instant', () => {
+    expect(() => ConfidenceCalibrationSchema.parse({ ...record, setAt: 'yesterday' })).toThrow();
+  });
+
+  it('is not settable through the update schema', () => {
+    // A client that could assert the calibration could also assert "still
+    // calibrated" for a threshold tuned against a model that is long gone.
+    expect(
+      UpdateAdminSettingsSchema.parse({
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: { similarity: record, rerank: null },
+      } as Record<string, unknown>),
+    ).toEqual({ ragConfidenceThreshold: 0.35 });
   });
 });

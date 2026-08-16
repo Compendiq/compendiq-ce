@@ -600,6 +600,25 @@ setting_value) VALUES ('rag_confidence_threshold', '0.35') ON CONFLICT
 (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value;`
 (60-second read cache — takes effect within a minute).
 
+**A threshold is tied to the model it was tuned on (#1114).** Because the
+scales belong to the models, changing a model reinterprets a number you did
+not touch: 0.35 tuned on `bge-m3` is a different gate on
+`Qwen3-Embedding-4B`. Saving a threshold through the Retrieval panel records
+the resolved provider + model beside it
+(`rag_confidence_threshold_calibration` /
+`rag_confidence_threshold_rerank_calibration`); the panel then compares that
+record against the live assignment and shows an amber notice on that control
+once they diverge, naming the old model, the live one and which scale moved.
+**Nothing rewrites the threshold** — a shadow swap, its rollback and a direct
+use-case re-assignment all log a warning naming both models and leave the
+number exactly as you set it. Clear the notice by re-tuning the threshold
+from your own logged `rag.confidence` values on the new model, or by saving
+the same number again (which records it against the live model). A threshold
+set before this shipped has no record and shows a muted "calibration unknown"
+line instead — an absent record is not evidence that anything changed. If you
+write the row with SQL, the calibration is **not** recorded; save it once
+through the panel if you want the check.
+
 Never auto-refused, whatever the thresholds: questions with other grounding
 that actually **materialised** (an assembled sub-page tree, successfully
 fetched URLs, web results that came back, a prior substantive assistant

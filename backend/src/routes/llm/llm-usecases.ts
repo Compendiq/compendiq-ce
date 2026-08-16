@@ -8,7 +8,16 @@ import {
   type LlmUsecase,
 } from '@compendiq/contracts';
 import { query, getPool } from '../../core/db/postgres.js';
-import { resolveUsecase, resolveRerankUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import {
+  resolveUsecase,
+  resolveRerankUsecase,
+  resolveConfidenceBasisPair,
+} from '../../domains/llm/services/llm-provider-resolver.js';
+import {
+  warnThresholdOutlivedItsModel,
+  type CalibrationPair,
+  type ConfidenceBasis,
+} from '../../core/services/confidence-calibration.js';
 import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
 import { emitLlmAudit } from '../../domains/llm/services/llm-audit-hook.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
@@ -29,6 +38,21 @@ const USECASES: readonly LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag
 /** #1184 — shared by the capability read and the manual re-probe. */
 const NO_CHAT_PROVIDER =
   'No provider resolved for use case "chat". Configure one in Settings → AI Models.';
+
+/**
+ * #1114 — the two use cases whose model sets the scale a confidence threshold
+ * is measured on. `chat`, `summary`, `quality` and `auto_tag` do not appear:
+ * none of them produces a score the refuse gate compares against.
+ */
+const CONFIDENCE_BASIS_BY_USECASE: ReadonlyArray<readonly [LlmUsecase, ConfidenceBasis]> = [
+  ['embedding', 'similarity'],
+  ['rerank', 'rerank'],
+] as const;
+
+function samePair(a: CalibrationPair | null, b: CalibrationPair | null): boolean {
+  if (!a || !b) return a === b;
+  return a.providerId === b.providerId && a.model === b.model;
+}
 
 /**
  * The provider+model that `chat` currently resolves to, or null when nothing
@@ -146,6 +170,17 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       // #1154: whether this save actually moved the `chat` assignment. Saving
       // only, say, `embedding` must not fire a vision probe.
       let chatAssignmentChanged = false;
+
+      // #1114 — the pair each confidence basis resolved to BEFORE the save.
+      // Read through the resolver, not the raw row, because inheritance and
+      // the EE override decide what the pipeline actually scores with — and
+      // captured before the transaction, because after it the old answer is
+      // gone. Only for a basis this body touches: a `summary` re-point must
+      // cost nothing here.
+      const basisBefore = new Map<ConfidenceBasis, CalibrationPair | null>();
+      for (const [usecase, basis] of CONFIDENCE_BASIS_BY_USECASE) {
+        if (updates[usecase]) basisBefore.set(basis, await resolveConfidenceBasisPair(basis));
+      }
       const client = await getPool().connect();
       try {
         await client.query('BEGIN');
@@ -185,6 +220,28 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
         client.release();
       }
       await bumpProviderCacheVersion();
+
+      // #1114 — the quiet counterpart of the shadow swap's warning: no
+      // migration, no runbook, just an admin picking a different model in a
+      // dropdown, after which a threshold tuned on the old one silently
+      // refuses a different set of questions. Gated on the pair actually
+      // MOVING, so re-saving the same assignment is silent — and, per the
+      // owner ruling, read-only: the threshold is left exactly as it was and
+      // the Retrieval panel carries the same notice for whoever set it.
+      // After `bumpProviderCacheVersion`, or the "after" read could still be
+      // answered from the pre-save provider cache.
+      for (const [, basis] of CONFIDENCE_BASIS_BY_USECASE) {
+        if (!basisBefore.has(basis)) continue;
+        const before = basisBefore.get(basis) ?? null;
+        const after = await resolveConfidenceBasisPair(basis);
+        if (samePair(before, after)) continue;
+        await warnThresholdOutlivedItsModel({
+          basis,
+          previousModel: before?.model ?? null,
+          newModel: after?.model ?? null,
+        });
+      }
+
       // #1154: refresh the capability verdict for the newly assigned
       // provider+model so Settings shows it immediately. Fire-and-forget —
       // the admin's save must not wait on an LLM round-trip, and the read
