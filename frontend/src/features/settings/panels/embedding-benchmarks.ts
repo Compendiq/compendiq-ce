@@ -60,6 +60,19 @@ export const BENCHMARK_PROVENANCE = {
   corpus: 'Vendored open-source documentation (Fastify, Vitest, Vite) plus synthetic pages',
   corpusPages: 275,
   queries: 197,
+  /**
+   * The PostgreSQL text-search configuration the KEYWORD leg of hybrid
+   * retrieval ran under (#1114). Every run behind this table used `simple`:
+   * nothing in the eval rig wrote `admin_settings.fts_language` until
+   * `--fts-language` existed, so the German rows are a German corpus scored
+   * through a language-neutral stemmer. Both models read the same lexical leg,
+   * so the comparison stays like-for-like — but RRF fuses the two legs as
+   * `Σ 1/(k + rank)`, which is nonlinear, so a stronger German keyword leg can
+   * compress or amplify the gap between them. Re-measure the German arms with
+   * `--lang de --fts-language german` (docs/runbooks/retrieval-eval.md) and
+   * move this field in the same edit.
+   */
+  ftsLanguage: 'simple',
   note: 'Not your content. Both models read identical text, so differences between models transfer better than the scores themselves.',
 } as const;
 
