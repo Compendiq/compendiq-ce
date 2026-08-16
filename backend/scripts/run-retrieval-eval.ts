@@ -12,6 +12,16 @@
  * table, never a fixed threshold — Recall@K over N queries moves in 1/N steps,
  * so a "regressions > 0.01 fail" rule cannot represent what it claims to.
  *
+ * Flags that change WHAT is measured, and so must match across a comparison:
+ *   --lang en|de              which corpus and fixture (default en)
+ *   --fts-language <cfg>      the Postgres text-search configuration BOTH legs
+ *                             of the lexical half run under (default 'simple'
+ *                             for every language — see fts-config.ts)
+ *
+ * `--help` prints the full list (EVAL_USAGE in eval/cli-flags.ts), and an
+ * unrecognised flag is refused rather than ignored — a typo'd --fts-langauge
+ * used to cost an hour of embedding under the default configuration.
+ *
  * Environment:
  *   EVAL_EMBEDDING_BASE_URL   OpenAI-compatible endpoint (Ollama's /v1 shim works)
  *   EVAL_EMBEDDING_MODEL      model name to embed with
@@ -22,13 +32,15 @@ import { markdownToHtml, htmlToText } from '../src/core/services/content-convert
 import { query, closePool, closeVectorPool, runMigrations } from '../src/core/db/postgres.js';
 import { generateEmbedding } from '../src/domains/llm/services/openai-compatible-client.js';
 import { loadCorpus, loadFixture, assertFixturePower, corpusDirsForLanguage } from '../src/domains/llm/eval/fixture.js';
-import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk } from '../src/domains/llm/eval/seed.js';
+import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk, configureFtsLanguage, assertSeededFtsLanguage, recordCorpusLanguage, EVAL_USER_ID } from '../src/domains/llm/eval/seed.js';
+import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
+import { assertKnownFlags, flagValue, wantsHelp, EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS } from '../src/domains/llm/eval/cli-flags.js';
+import { parseFtsLanguageArg, assertComparableFtsLanguage } from '../src/domains/llm/eval/fts-config.js';
 import { runEval } from '../src/domains/llm/eval/runner.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
 import { recallAtK, meanReciprocalRank, pairedBootstrapCi, pairedSignificance, winLoss, type QueryRun } from '../src/domains/llm/eval/metrics.js';
 
 const TOP_K = [1, 3, 5, 10] as const;
-const EVAL_USER = 'aaaaaaaa-1102-4000-8000-000000001102';
 
 interface Report {
   model: string;
@@ -38,6 +50,15 @@ interface Report {
    * corpusManifestSha guard; this makes the refusal readable.
    */
   language: string;
+  /**
+   * #1114: the PostgreSQL text-search configuration the LEXICAL leg ran under
+   * — both the seed-time `pages.tsv` build and the query-time
+   * `keyword_search`. Independent of `language`: it defaults to 'simple' for
+   * every corpus, because that is what every recorded baseline (CI included)
+   * was measured under. A report without this field predates the flag and was
+   * 'simple'.
+   */
+  ftsLanguage: string;
   corpusManifestSha: string;
   redundantSlots?: number;
   returnedSlots?: number;
@@ -66,67 +87,57 @@ interface Report {
   runs: QueryRun[];
 }
 
-function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`);
-  return i === -1 ? undefined : process.argv[i + 1];
-}
+// Both spellings, and a flag given with no value is refused rather than
+// answered as "unset" — see flagValue in eval/cli-flags.ts. This used to be
+// index arithmetic over `--${name}`, which could not see `--out=/tmp/x.json`
+// at all while assertKnownFlags happily admitted it (review r3).
+const arg = (name: string): string | undefined => flagValue(process.argv, name);
 
-/**
- * This script is DESTRUCTIVE: it truncates pages, page_embeddings,
- * page_relationships and search_analytics, retypes the vector columns and
- * rewrites admin_settings — against whatever POSTGRES_URL names. Prose in a
- * runbook is not a safeguard (review r3), so the database has to opt in by
- * name or by an explicit override.
- *
- * The allow-list is on the DATABASE name rather than the host: a colleague's
- * laptop, a staging box and production all differ in host but the fatal
- * mistake is pointing this at a database that holds real pages.
- */
-// Substring, not token-delimited (review r4): the refusal tells the operator to
-// use a name containing "eval" or "test", and the first version then refused
-// `test`, `testdb` and `eval-db` with that very message — a loop whose only
-// exit was the blanket override, which is the wrong habit to teach for a
-// destructive script. Widening admits `production_eval`, so the production
-// words are refused outright and win over the allow-list.
-const DISPOSABLE_DB_PATTERN = /eval|test|scratch|sandbox/i;
-const NEVER_DISPOSABLE_PATTERN = /prod|live|main|staging/i;
-
-function assertDisposableDatabase(url: string): void {
-  if (process.env.EVAL_ALLOW_DESTRUCTIVE === 'yes-wipe-this-database') return;
-
-  let dbName: string;
-  try {
-    dbName = decodeURIComponent(new URL(url).pathname.replace(/^\//, ''));
-  } catch {
-    throw new Error('POSTGRES_URL is not a valid URL — refusing to run a destructive eval against it');
-  }
-
-  if (!DISPOSABLE_DB_PATTERN.test(dbName) || NEVER_DISPOSABLE_PATTERN.test(dbName)) {
-    throw new Error(
-      `Refusing to run: this script TRUNCATES pages, page_embeddings, page_relationships and ` +
-        `search_analytics and RETYPES the vector columns, and "${dbName}" does not look disposable. ` +
-        `Its name must contain "eval", "test", "scratch" or "sandbox", and must not contain ` +
-        `"prod", "live", "main" or "staging". Point POSTGRES_URL at a throwaway database, or set ` +
-        `EVAL_ALLOW_DESTRUCTIVE=yes-wipe-this-database if you genuinely mean this one.`,
-    );
-  }
-}
+// The destructive-database guard now lives in
+// src/domains/llm/eval/disposable-db.ts. It was private to this file, below
+// the top-level main() call, so nothing could import it without running a
+// destructive eval as a side effect — and #1114's latency benchmark needs the
+// same protection against the same database.
 
 async function main(): Promise<void> {
+  if (wantsHelp(process.argv.slice(2))) {
+    console.log(EVAL_USAGE);
+    return;
+  }
+  // FIRST, before the endpoint check and long before anything is embedded: an
+  // unrecognised flag used to be ignored here, so `--fts-langauge german` ran
+  // the whole hour under 'simple' (review r2). The benchmark already refused
+  // one; two entrypoints disagreeing about that is drift, not a policy.
+  // EVAL_VALUELESS_FLAGS is the other half of the same guarantee: the switches
+  // are read with `process.argv.includes`, so `--rerank=true` would otherwise
+  // pass the name-half check and measure plain retrieval under a report that
+  // says reranked.
+  assertKnownFlags(process.argv.slice(2), EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS);
+
   const baseUrl = process.env.EVAL_EMBEDDING_BASE_URL;
   const model = process.env.EVAL_EMBEDDING_MODEL;
   if (!baseUrl || !model) {
     throw new Error('EVAL_EMBEDDING_BASE_URL and EVAL_EMBEDDING_MODEL are required — the eval never mocks the embedder');
   }
   const outPath = arg('out') ?? 'retrieval-eval.json';
+  // Parsed before anything touches the database, so a typo costs nothing.
+  // Default 'simple' for EVERY language — never derived from --lang; see
+  // fts-config.ts for why the two are separate choices.
+  const ftsLanguage = parseFtsLanguageArg(process.argv);
 
   assertDisposableDatabase(process.env.POSTGRES_URL ?? '');
 
   await runMigrations();
+  // Before the seed, not after: migration 049 builds pages.tsv from a BEFORE
+  // INSERT trigger that reads this row per row, so a value written later would
+  // leave the corpus indexed under one configuration while keywordSearch
+  // queried under another. Gated behind assertDisposableDatabase above — this
+  // is an admin_settings write against whatever POSTGRES_URL names.
+  await configureFtsLanguage(ftsLanguage);
   await query(
     `INSERT INTO users (id, username, email, role, password_hash)
      VALUES ($1::uuid, 'eval-runner', 'eval@local', 'admin', 'x') ON CONFLICT (id) DO NOTHING`,
-    [EVAL_USER],
+    [EVAL_USER_ID],
   );
 
   const providerConfig = { baseUrl, model, name: 'eval-embedding' };
@@ -149,12 +160,12 @@ async function main(): Promise<void> {
   // #1114: --lang de measures the translated corpus instead of the English
   // one. It is a separate measurement with its own fixture, never a variant
   // of the English gate — see corpusDirsForLanguage.
-  const langArg = process.argv.find((a) => a.startsWith('--lang='))?.split('=')[1]
-    ?? (process.argv.includes('--lang') ? process.argv[process.argv.indexOf('--lang') + 1] : undefined);
+  const langArg = arg('lang');
   const language = langArg && langArg !== 'en' ? langArg : 'en';
   const corpusDirs = corpusDirsForLanguage(language);
   const fixtureFile = language === 'en' ? 'fixture.json' : `fixture-${language}.json`;
   if (language !== 'en') console.log(`language: ${language} (corpus ${corpusDirs.join(', ')}, fixture ${fixtureFile})`);
+  console.log(`fts configuration: ${ftsLanguage}`);
 
   const corpus = loadCorpus(corpusDirs);
 
@@ -176,7 +187,7 @@ async function main(): Promise<void> {
   await resetEvalCorpus();
 
   console.log(`seeding ${corpus.length} pages…`);
-  const seeded = await seedCorpus(EVAL_USER, {
+  const seeded = await seedCorpus(EVAL_USER_ID, {
     corpus,
     onProgress: (done, total) => {
       if (done % 25 === 0 || done === total) console.log(`  embedded ${done}/${total}`);
@@ -185,10 +196,17 @@ async function main(): Promise<void> {
   if (seeded.skipped.length > 0) {
     throw new Error(`${seeded.skipped.length} corpus pages produced no chunks: ${seeded.skipped.slice(0, 5).join(', ')}`);
   }
+  // The trigger is what actually built pages.tsv, and it is not this script's
+  // code. Certify the result rather than trusting that an INSERT ordering held.
+  await assertSeededFtsLanguage(ftsLanguage);
+  // AFTER the seed, because the row states what is in the database. Nothing
+  // about the seeded rows says which corpus they are, and #1114's latency
+  // benchmark needs to refuse a German question set aimed at an English one.
+  await recordCorpusLanguage(language);
 
   console.log(`running ${fixture.labels.length} queries…`);
   const { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, pinParticipatingQueries, expansionParticipatingQueries, expansionSkippedQueries, redundantSlots, returnedSlots, meanPairwiseSimilarity } = await runEval(fixture, {
-    userId: EVAL_USER,
+    userId: EVAL_USER_ID,
     pageIdByFile: seeded.pageIdByFile,
     topK: Math.max(...TOP_K),
     // --rerank requests the #1104 stage; it runs only when this eval DB
@@ -217,6 +235,7 @@ async function main(): Promise<void> {
   const report: Report = {
     model,
     language,
+    ftsLanguage,
     corpusManifestSha: fixture.corpusManifestSha,
     redundantSlots,
     returnedSlots,
@@ -240,6 +259,10 @@ async function main(): Promise<void> {
   writeFileSync(outPath, `${JSON.stringify(report, null, 2)}\n`);
 
   console.log('\n--- retrieval eval ---');
+  // Named on the results header, not only at startup: this line is what gets
+  // pasted into an issue, and a German score under a 'simple' stemmer is
+  // exactly the number #1114 had to go back and re-measure.
+  console.log(`corpus ${report.language} · fts ${report.ftsLanguage} · model ${report.model}`);
   for (const k of TOP_K) console.log(`Recall@${k}: ${report.recallAtK[`@${k}`]!.toFixed(4)}`);
   console.log(`MRR:       ${report.mrr.toFixed(4)}`);
   console.log(
@@ -272,6 +295,11 @@ async function main(): Promise<void> {
         'these are separate measurements, not a before/after. Compare each language against its own baseline.',
       );
     }
+    // #1114: beside the language check and for the same reason. The corpus sha
+    // does NOT catch this one — two runs over the same corpus can differ only
+    // in their text-search configuration, which changes the lexical index the
+    // keyword leg scores against and nothing else. Absent means 'simple'.
+    assertComparableFtsLanguage(baseline.ftsLanguage, report.ftsLanguage);
     if (baseline.corpusManifestSha !== report.corpusManifestSha) {
       throw new Error('Baseline was measured against a different corpus — the comparison would be meaningless');
     }

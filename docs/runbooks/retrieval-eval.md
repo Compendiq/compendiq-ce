@@ -111,7 +111,76 @@ corpus before seeding. It has to — without that, a second run leaves two
 identical copies of every page, retrieval splits between the twins, and recall
 roughly halves, which the comparison reports as a credible regression caused
 by whatever you were testing. That is not hypothetical; it is how the bug was
-found.
+found. Clearing the corpus also drops the recorded corpus language, so a run
+that dies mid-seed leaves *no* claim rather than the previous run's — the
+latency benchmark then warns ("seeded before this was recorded") instead of
+accepting an English arm over a half-written German corpus.
+
+`--help` prints every flag with its default, and an unrecognised flag is
+**refused** rather than ignored: `--fts-langauge german` used to parse cleanly
+and spend an hour embedding under the default configuration.
+
+Both spellings work for every value flag — `--out report.json` and
+`--out=report.json` — and both scripts read them through the same function.
+They did not always: the unknown-flag guard checked the name half of
+`--out=…`, while the eval read its values by looking for the exact token
+`--out`, so `--baseline=prev.json` was admitted and then dropped, and the run
+printed absolute numbers with no comparison at all. The switches
+(`--rerank`, `--deep-search`, `--no-assemble`, `--no-pin`, `--mmr`) carry **no**
+value and refuse one, because they are read as bare flags: `--rerank=true`
+would otherwise have measured plain retrieval under a report saying reranked. A
+value flag given without a value is refused too, rather than falling back to a
+default nobody typed.
+
+## Which FTS configuration a run measured (#1114)
+
+Retrieval has two legs, and `--fts-language` names the lexical one: the
+PostgreSQL text-search configuration that both builds `pages.tsv` at seed time
+(migration 049's `BEFORE INSERT` trigger reads `admin_settings.fts_language`
+per row) and parses the query at search time (`getFtsLanguage()` in
+`keywordSearch`).
+
+```bash
+npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out /tmp/de-german.json
+```
+
+**The default is `simple` for every language, and is deliberately NOT derived
+from `--lang`.** Every baseline ever recorded — CI's included — was measured
+under `simple`, and deriving the configuration from the corpus language would
+silently re-measure all of them and report the difference as a retrieval
+change. Choosing `german` is an explicit act.
+
+**Every German number published on #1114 before this change was `fts=simple`.**
+Nothing in the eval ever wrote `admin_settings.fts_language`, so the row sat at
+migration 049's seeded `simple` for every run, and a `--lang de` run scored a
+German corpus through a language-neutral stemmer. Re-run the German arms with
+`--fts-language german` before quoting them, and **state the configuration in
+any report**: the console header and the report JSON's `ftsLanguage` field both
+carry it now.
+
+`--baseline` refuses a pair whose configurations differ, in the same style as
+its cross-model and cross-language refusals. A baseline that carries no
+`ftsLanguage` predates the field and is read as `simple`, because that is what
+it was; the refusal message says so rather than reading like a missing-field
+bug. The corpus-sha guard does **not** catch this one — two runs over the same
+corpus can differ only in their text-search configuration.
+
+The value is validated against the product's own allow-list before anything is
+written, because `getFtsLanguage()` answers `simple` for anything Postgres would
+not accept: an unchecked flag would produce a run labelled `german` whose
+keyword leg was `simple`. After seeding, the run re-derives every page's
+tsvector under the requested configuration and refuses if any row disagrees —
+the trigger is what actually builds them, and trusting an INSERT ordering is
+what produced the bug in the first place.
+
+A successful seed also records **which corpus it wrote**, in
+`admin_settings.eval_corpus_language`. Nothing about the seeded rows says what
+language they are — the vector width identifies the model, not the text — and
+the latency benchmark's `--lang` picks only the question set, so without that
+row German questions could be timed against an English corpus and published as
+a German measurement. It is written after the seed, never before: it states
+what the database holds, so a run that dies halfway must not leave a claim
+behind it.
 
 ## Reading the verdict
 
@@ -160,6 +229,147 @@ pass — this catches retrieval getting worse, it does not demand every PR make
 it better. Read the win/loss table either way: a change that wins 14 and loses
 9 has moved 23 queries while the mean barely twitched.
 
+## Query-time latency under concurrency (#1114)
+
+`backend/scripts/benchmark-query-latency.ts` answers a question this harness
+cannot: what a 2560-dimensional embedding model costs at **query** time when
+several people ask at once. The quality eval has no timing field at all,
+`runner.ts` is strictly sequential by design (its participation floors assume
+exactly one hit per query, which is why the benchmark lives outside `eval/`
+rather than growing a concurrency flag there), and `rag-service.ts` puts no
+timer around the embedding call.
+
+Two halves, selected with `--mode`:
+
+- **`embedding`** — `POST {base-url}/embeddings`, one request per query, at
+  each concurrency level. Note the missing `/v1`: `--base-url` is spelled
+  **exactly** as the provider row is (`http://localhost:1234/v1` for LM Studio),
+  because `generateEmbedding` appends `/embeddings` to it verbatim and nothing
+  guesses a `/v1` for you. The query text is formatted exactly as production
+  formats it (`formatQueryForEmbedding`), so Qwen3 pays for its `Instruct`
+  preamble. It bypasses `openai-compatible-client.ts` on purpose: that client's
+  shared queue and per-provider circuit breaker are the serialisation this
+  measurement is trying to look underneath. Touches no database.
+- **`search`** — `hybridSearch()` end to end, called the way `runner.ts` calls
+  it (rerank off, sibling assembly on, identifier pinning on), timed per call.
+  Its vector leg goes **through** that same shared queue, whose width is
+  `LLM_CONCURRENCY` (default 4) — so a search rung above 4 measures the
+  product's own serialisation rather than N-way parallelism, and the vector leg
+  additionally takes a connection from a pool capped at `PG_VECTOR_POOL_MAX`
+  (default 5). Both ceilings are recorded in the report's metadata, because
+  without them two boxes' numbers are not comparable. It also means the two
+  halves of one row at `--concurrency 8` are **not** under the same in-flight
+  load: the embedding half really runs 8 wide, the search half does not.
+
+The run is **non-destructive**: it never seeds, and every search runs with
+`recordAnalytics: false`, so no replayed fixture query is filed as a question
+somebody asked. Warm-up calls are issued and discarded — the first request into
+a cold model server carries load time, which is not what a per-query p95 means.
+
+**`--models` selects the model for the embedding half only.** `hybridSearch`
+takes no model and no endpoint: `rag-service` resolves both from the database's
+`embedding` use-case assignment — the provider row `run-retrieval-eval.ts` wrote
+when it last seeded. So a `search` or `both` arm takes **exactly one** model and
+is refused unless that model and `--base-url` are what the assignment resolves
+to; the resolved pair goes into the report as `searchModel` / `searchBaseUrl`.
+Without that, two 1024-dim models would produce two differently-labelled rows
+measuring the same thing, and the width probe cannot tell them apart.
+
+The search half needs the database **already seeded for that model and that
+corpus**, so run one arm per seeding. `--lang` on the benchmark chooses the
+**question set** only — the corpus is whatever was seeded — so seed with
+`--lang de` before timing German questions; the seeding records which corpus it
+wrote and a mismatched `--lang` is refused (a database seeded before that was
+recorded warns instead):
+
+```bash
+cd backend
+export POSTGRES_URL=postgresql://kb_user:pw@localhost:5433/kb_eval
+export EVAL_EMBEDDING_BASE_URL=http://localhost:1234/v1   # LM Studio
+
+# bge-m3 arm — immediately after seeding bge-m3
+EVAL_EMBEDDING_MODEL=text-embedding-bge-m3 \
+  npx tsx scripts/run-retrieval-eval.ts --out /tmp/bge.json
+npx tsx scripts/benchmark-query-latency.ts \
+  --models text-embedding-bge-m3 --concurrency 1,4,8 --out /tmp/lat-bge.json
+
+# Qwen3 arm — after re-seeding with Qwen3 (this re-embeds the whole corpus)
+EVAL_EMBEDDING_MODEL=text-embedding-qwen3-embedding-4b \
+  npx tsx scripts/run-retrieval-eval.ts --out /tmp/qwen.json
+npx tsx scripts/benchmark-query-latency.ts \
+  --models text-embedding-qwen3-embedding-4b --concurrency 1,4,8 --out /tmp/lat-qwen.json
+
+# German arm — the corpus has to be German too, not only the questions
+EVAL_EMBEDDING_MODEL=text-embedding-bge-m3 \
+  npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out /tmp/bge-de.json
+npx tsx scripts/benchmark-query-latency.ts \
+  --models text-embedding-bge-m3 --lang de --concurrency 1,4,8 --out /tmp/lat-bge-de.json
+
+# A pure embedding sweep needs no database, and is the one mode that takes
+# several models — nothing is resident that a second load can spoil.
+npx tsx scripts/benchmark-query-latency.ts --mode embedding --out /tmp/lat-sweep.json
+```
+
+**Do not touch LM Studio during a run.** Loading a second model evicts the one
+being measured, and every number after that point is a cold start. That is the
+other reason a `search`/`both` arm names one model.
+
+Flags (`--help` prints the same list):
+
+| flag | default | note |
+| --- | --- | --- |
+| `--base-url` | `$EVAL_EMBEDDING_BASE_URL` | no built-in default; the point is to measure the server you serve from. Spelled **exactly** as the provider row is (`http://localhost:1234/v1` for LM Studio): the request goes to `<base-url>/embeddings`, which is what `generateEmbedding` does — nothing guesses a `/v1` for you, and a search arm whose `--base-url` differs from the assignment's is refused |
+| `--models a,b` | `text-embedding-bge-m3,text-embedding-qwen3-embedding-4b` | embedding half only; a `search`/`both` arm takes exactly one |
+| `--concurrency` | `1,4,8` | sorted and de-duplicated |
+| `--queries N` | `40` | sampled deterministically and evenly across the fixture — it is grouped by style, so a head slice would benchmark one query shape |
+| `--lang en\|de` | `en` | which **fixture** the questions come from; never the corpus |
+| `--mode` | `both` | `embedding` \| `search` \| `both` |
+| `--out` | `query-latency.json` | |
+
+The two defaults do not combine: `--mode both` with the two-model `--models`
+default is refused, because the search half times the seeded database's model.
+That is deliberate — the refusal names the flag to pass — and an unrecognised
+flag is refused too rather than silently running the defaults under it.
+
+The report is self-describing on purpose. Its metadata carries the endpoint, the
+question language, **the corpus language the seeding recorded**, **the
+`fts_language` the database is actually set to**, the live `page_embeddings`
+column type and width, the query count, the **model and endpoint the search half
+resolved from the database** (`searchModel` / `searchBaseUrl`), and the
+`llmConcurrency` / `vectorPoolMax` ceilings it ran under; each row is keyed by
+`{model, concurrency}` and carries `embedding` and/or `search` with
+`{n, meanMs, p50Ms, p95Ms}`.
+
+Refusals that matter:
+
+- **Mislabelled search arm.** `--models` / `--base-url` that disagree with the
+  database's `embedding` assignment stop the run, because the row would
+  attribute one model's latency to another and the width probe below cannot see
+  it (two 1024-dim models pass it).
+- **Corpus/question-set mismatch.** `--lang de` against an English seeding is
+  refused. The dead-vector-leg guard cannot catch it — that fires only at
+  exactly zero participation, and a mismatched corpus still returns hits.
+- **Uncertified FTS configuration.** The benchmark reports the `fts_language`
+  the database is *set* to, so it also certifies the seeded tsvectors were
+  *built* under it (`assertSeededFtsLanguage`, one recomputing `SELECT` — the
+  run stays read-only). The eval writes that row **before** it truncates the
+  corpus, so a failure in between leaves the previous corpus standing under a
+  changed configuration; without this the benchmark would report `fts simple`
+  over German-built tsvectors, and the keyword leg would genuinely run
+  mismatched, so the timing would be wrong too and not only the label. Re-seed
+  with `run-retrieval-eval.ts --fts-language <cfg>` to clear it.
+
+- **Dimension mismatch.** Before timing anything, the script embeds one probe
+  with the model and compares it against `page_embeddings.embedding`'s width
+  from the catalog. If they differ it stops. It has to: seeding is an hour of
+  embedding, and `hybridSearch` degrades to keyword-only on an embedding failure
+  rather than erroring — so a mismatched arm would happily publish Postgres FTS
+  latency as retrieval latency.
+- **Dead vector leg.** Each search arm records how many of its queries returned
+  at least one vector-scored result. Zero sets a non-zero exit code after the
+  report is written — the timing-side form of the silent lie `runner.ts`'s
+  participation guard exists for.
+
 ## The model must read a whole chunk
 
 The corpus chunks out at up to `CHUNK_HARD_LIMIT` (6000 characters), so the CI
@@ -196,7 +406,13 @@ hand-maintained copy of results produced by this script, so **the two can
 drift** — if you re-measure, update that file in the same PR, including its
 `measuredOn` date.
 
-Three things in that file are load-bearing and must survive an edit:
+Four things in that file are load-bearing and must survive an edit:
+
+- **`ftsLanguage` in `BENCHMARK_PROVENANCE`.** The rule this issue establishes
+  is that a retrieval number states the text-search configuration it was
+  measured under, and this table is the only surface where these numbers reach
+  a human. It is `simple` today, rendered in the provenance sentence and again
+  in the closing scope note, and it moves in the same edit as the scores.
 
 - **`established` per metric.** A mean without its significance is what made
   the English Recall@1 delta look like the headline result; it moves +0.051 and
@@ -212,6 +428,24 @@ Three things in that file are load-bearing and must survive an edit:
 
 Absence from that table means "not measured", never "measured badly", and the
 UI says so.
+
+**Its German rows were measured under `fts_language = simple`** — every eval run
+was, until `--fts-language` existed (see above). Both models were scored through
+the same lexical leg, so the comparison was like-for-like — but that is not a
+guarantee that the *deltas* survive re-measurement. RRF fuses a per-model vector
+leg with a shared keyword leg as `Σ 1/(k + rank)`, which is nonlinear: a
+stronger German keyword leg raises both arms and can compress or amplify the gap
+between them. So the absolute German scores are a `simple`-stemmer measurement,
+and the German deltas — the ones the swap decision leans on, since Qwen3's
+Recall@1 gain is established in German and not in English — should be re-run with
+`--lang de --fts-language german` before they are quoted again. Update
+`measuredOn` and `ftsLanguage` in the same edit. Until then the panel says so on
+screen: the provenance line names the `simple` configuration, and the closing
+note marks the German rows as pending re-measurement — **including the
+differences between the two models**, not only their absolute scores. That note
+and this paragraph have to agree; a rendered "the comparison still holds" beside
+a runbook saying otherwise is how the wrong half gets quoted, so
+`EmbeddingModelBenchmarks.test.tsx` fails on that sentence returning.
 
 ## Changing the corpus or the fixture
 

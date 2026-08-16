@@ -14,7 +14,15 @@ import { embedPage, CHUNK_HARD_LIMIT } from '../services/embedding-service.js';
 import { generateEmbedding } from '../services/openai-compatible-client.js';
 import type { ProviderConfig } from '../services/openai-compatible-client.js';
 import { logger } from '../../../core/utils/logger.js';
+import { ALLOWED_FTS_LANGUAGES } from '../../../core/services/fts-language.js';
 import { loadCorpus, type CorpusPage } from './fixture.js';
+
+/**
+ * The user every eval-rig page is seeded under. Shared so a second tool
+ * (#1114's latency benchmark) can query the seeded corpus through the product's
+ * own ACL predicates instead of inventing a user the pages are invisible to.
+ */
+export const EVAL_USER_ID = 'aaaaaaaa-1102-4000-8000-000000001102';
 
 export interface SeedResult {
   pageIdByFile: Map<string, number>;
@@ -82,6 +90,111 @@ export async function ensureVectorDimensions(dims: number): Promise<void> {
      ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
     [String(dims)],
   );
+}
+
+/**
+ * Pin the text-search configuration this run measures (#1114).
+ *
+ * Must be called BEFORE `seedCorpus`, because `pages.tsv` is built by migration
+ * 049's BEFORE INSERT trigger, which reads this row per row inserted — a value
+ * written afterwards would leave the corpus indexed under whatever was there
+ * during the seed while `keywordSearch` queried under the new one. Both halves
+ * of the lexical leg read the same row, so writing it once ahead of the seed is
+ * what makes them agree.
+ *
+ * Validated against the product's own allow-list: `getFtsLanguage()` answers
+ * 'simple' for anything else, so an unchecked value would silently produce a
+ * run that reports a configuration it never used.
+ */
+export async function configureFtsLanguage(language: string): Promise<void> {
+  if (!ALLOWED_FTS_LANGUAGES.has(language)) {
+    throw new Error(
+      `Unknown FTS configuration "${language}" — allowed: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}`,
+    );
+  }
+  await query(
+    `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+     VALUES ('fts_language', $1, NOW())
+     ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+    [language],
+  );
+}
+
+/**
+ * Certify, after seeding, that the tsvectors really were built under
+ * `language` — the trigger is the only thing that builds them and it is not
+ * this module's code, so the alternative is trusting that an INSERT ordering
+ * held.
+ *
+ * Recomputes `to_tsvector(language, title || ' ' || body_text)` per page and
+ * counts the rows whose stored vector differs. On a German corpus indexed under
+ * 'simple' every row differs; the failure this catches is precisely the one
+ * that produced #1114's published German numbers.
+ */
+export async function assertSeededFtsLanguage(language: string): Promise<void> {
+  if (!ALLOWED_FTS_LANGUAGES.has(language)) {
+    throw new Error(
+      `Unknown FTS configuration "${language}" — allowed: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}`,
+    );
+  }
+  // The configuration name is interpolated because Postgres does not accept a
+  // parameterised regconfig; the allow-list check above is what makes that safe
+  // and is the same guard `getFtsLanguage()` applies.
+  const r = await query<{ total: number; mismatched: number }>(
+    `SELECT COUNT(*)::int AS total,
+            COUNT(*) FILTER (
+              WHERE tsv IS DISTINCT FROM
+                    to_tsvector('${language}', coalesce(title, '') || ' ' || coalesce(body_text, ''))
+            )::int AS mismatched
+     FROM pages WHERE deleted_at IS NULL`,
+  );
+  const { total, mismatched } = r.rows[0]!;
+  if (total === 0) {
+    throw new Error('No pages are seeded, so the FTS configuration of the corpus cannot be certified');
+  }
+  if (mismatched > 0) {
+    throw new Error(
+      `${mismatched}/${total} seeded pages carry a tsvector that was NOT built with the "${language}" ` +
+        'configuration — the keyword leg would be scored against one index while the report named another. ' +
+        'admin_settings.fts_language must be written BEFORE the corpus is seeded (migration 049 builds ' +
+        'pages.tsv from a BEFORE INSERT trigger that reads it per row).',
+    );
+  }
+}
+
+/**
+ * The `admin_settings` row recording WHICH corpus is currently seeded (#1114).
+ *
+ * Nothing about a seeded corpus says what language it is: the tables hold
+ * pages, and `page_embeddings`' width identifies the model, not the text. The
+ * latency benchmark's `--lang` chooses the QUESTION SET only, so without this
+ * row a German arm run against an English seeding produces a perfectly
+ * plausible report of a retrieval path that mostly missed — and the
+ * dead-vector-leg guard cannot see it, because it fires only at exactly zero
+ * participation.
+ */
+export const EVAL_CORPUS_LANGUAGE_KEY = 'eval_corpus_language';
+
+/**
+ * Called AFTER the corpus is seeded, never before: the row describes what is
+ * in the database, so a run that dies mid-seed must not leave a claim behind it.
+ */
+export async function recordCorpusLanguage(language: string): Promise<void> {
+  await query(
+    `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW()`,
+    [EVAL_CORPUS_LANGUAGE_KEY, language],
+  );
+}
+
+/** `null` for a database seeded before the row existed — that is not 'en'. */
+export async function readCorpusLanguage(): Promise<string | null> {
+  const r = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+    [EVAL_CORPUS_LANGUAGE_KEY],
+  );
+  return r.rows[0]?.setting_value ?? null;
 }
 
 export class TruncatingModelError extends Error {}
@@ -159,8 +272,22 @@ export const EVAL_SPACE_KEY = 'EVAL';
  * CASCADE reaches page_embeddings and page_relationships; search_analytics is
  * cleared separately because it references users rather than pages and would
  * otherwise accumulate a run's worth of rows each time.
+ *
+ * It also drops the `eval_corpus_language` claim, because that row describes a
+ * corpus that no longer exists (#1114 review r2). Without this the claim
+ * outlives the thing it names: a successful `--lang en` run writes 'en', a
+ * later `--lang de` run truncates and then dies mid-seed or at
+ * `assertSeededFtsLanguage`, and the database is left holding German pages
+ * under a row still saying English. `checkCorpusLanguage` then ACCEPTS an
+ * English arm — the unsafe direction of the guard it was added for, and
+ * `assertSeededCorpus` cannot see it either, since it only checks for
+ * non-emptiness. Absent routes to the warning path instead, which is the
+ * correct verdict for "unknown". `fts_language` is deliberately NOT cleared:
+ * it is written BEFORE the seed, because migration 049's trigger reads it per
+ * inserted row.
  */
 export async function resetEvalCorpus(): Promise<void> {
+  await query(`DELETE FROM admin_settings WHERE setting_key = $1`, [EVAL_CORPUS_LANGUAGE_KEY]);
   await query(`TRUNCATE pages CASCADE`);
   await query(`TRUNCATE search_analytics`);
 }

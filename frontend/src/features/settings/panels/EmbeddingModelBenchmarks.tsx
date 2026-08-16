@@ -25,7 +25,12 @@ import {
  *   bill, and on a large corpus that cost is the dominant fact about switching.
  * - **Provenance is rendered, not buried in a tooltip.** These are vendored
  *   OSS docs, not the operator's pages, so the deltas transfer and the absolute
- *   scores do not.
+ *   scores do not. That includes the **text-search configuration** the keyword
+ *   leg ran under: every run behind this table used `simple`, so the German
+ *   rows are a German corpus scored through a language-neutral stemmer, and
+ *   this is the only surface where those numbers reach a human. #1114 makes
+ *   the eval report state its configuration; a table that quotes the report
+ *   and stays silent moves the omission one layer up rather than fixing it.
  *
  * Presentation follows ADR-010's rule for a MEASUREMENT rather than a state:
  * neutral throughout, no status hues. `status-connected` green for "best" would
@@ -88,7 +93,9 @@ export function EmbeddingModelBenchmarks() {
           <p className="text-sm text-muted-foreground">
             Measured on {BENCHMARK_PROVENANCE.corpusPages} pages of{' '}
             {BENCHMARK_PROVENANCE.corpus.toLowerCase()} with{' '}
-            {BENCHMARK_PROVENANCE.queries} labelled questions.{' '}
+            {BENCHMARK_PROVENANCE.queries} labelled questions, keyword search running
+            under the <code className="font-mono">{BENCHMARK_PROVENANCE.ftsLanguage}</code> text-search
+            configuration.{' '}
             <strong className="font-medium text-foreground">{BENCHMARK_PROVENANCE.note}</strong>
           </p>
 
@@ -144,6 +151,12 @@ export function EmbeddingModelBenchmarks() {
             counted as a win. Indexing speed is measured on the same corpus and hardware:
             a slower model makes the initial re-embed proportionally longer. A model absent
             from this table has not been measured, which is not the same as measuring badly.
+            The German rows were scored with the same{' '}
+            <code className="font-mono">{BENCHMARK_PROVENANCE.ftsLanguage}</code> keyword configuration rather than{' '}
+            <code className="font-mono">german</code>, so those scores are pending re-measurement. Both models
+            read the identical keyword leg, so the run was like-for-like — but the two legs are fused
+            nonlinearly, and a stronger German keyword leg can compress or amplify the gap, so the differences
+            between the two models are pending that re-measurement as well.
           </p>
         </div>
       )}

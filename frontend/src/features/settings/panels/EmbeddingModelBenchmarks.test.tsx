@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { EmbeddingModelBenchmarks } from './EmbeddingModelBenchmarks';
-import { EMBEDDING_BENCHMARKS, findBenchmarkRow } from './embedding-benchmarks';
+import { EMBEDDING_BENCHMARKS, BENCHMARK_PROVENANCE, findBenchmarkRow } from './embedding-benchmarks';
 
 /**
  * The risk this panel carries is not that it renders wrongly — it is that it
@@ -33,6 +33,50 @@ describe('EmbeddingModelBenchmarks (#1114)', () => {
     const body = screen.getByTestId('embedding-benchmarks-body');
     expect(body).toHaveTextContent(/not your content/i);
     expect(body).toHaveTextContent(/197 labelled questions/i);
+  });
+
+  it('names the text-search configuration the keyword leg ran under (#1114)', () => {
+    // The rule this issue established is "every report SAYS which FTS
+    // configuration it used" — and this table is the only surface where these
+    // numbers reach a human. Nothing in the eval rig wrote
+    // admin_settings.fts_language until --fts-language existed, so every run
+    // behind this table scored its keyword leg with a language-neutral
+    // stemmer. Enforcing that on the JSON report and not here would leave the
+    // correction living in a runbook.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    const body = screen.getByTestId('embedding-benchmarks-body');
+    expect(body).toHaveTextContent(/simple/);
+    expect(body).toHaveTextContent(/text-search configuration/i);
+  });
+
+  it('says the German rows are pending re-measurement, since german is the stemmer they should have used', () => {
+    // A German deployment reads the German block as its own case. Those rows
+    // are a German corpus scored through `simple`; RRF fuses the two legs
+    // nonlinearly, so a stronger keyword leg can compress or amplify the gap
+    // the swap decision leans on.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    expect(screen.getByTestId('embedding-benchmarks-body')).toHaveTextContent(/German rows/);
+  });
+
+  it('does not tell the operator the German comparison survives that re-measurement', () => {
+    // Review r3. The rendered note said the absolute scores were pending "but
+    // the comparison between them still holds" — the exact claim the runbook
+    // and embedding-benchmarks.ts retract two paragraphs apart. Both arms did
+    // read the same lexical leg, so the run was like-for-like; that is not the
+    // same as the DELTA surviving, because RRF fuses a per-model vector leg
+    // with the shared keyword leg as Σ 1/(k + rank), which is nonlinear. The
+    // German Recall@1 delta is the one `established: true` number a swap
+    // decision leans on, and this panel is the only place it reaches a human.
+    render(<EmbeddingModelBenchmarks />);
+    fireEvent.click(screen.getByTestId('embedding-benchmarks-toggle'));
+    const body = screen.getByTestId('embedding-benchmarks-body');
+    expect(body).not.toHaveTextContent(/comparison between them still holds/i);
+    // The caveat has to name the deltas, not only the absolute scores…
+    expect(body).toHaveTextContent(/differences between the two models/i);
+    // …and say why, or it reads as an unexplained hedge.
+    expect(body).toHaveTextContent(/nonlinear/i);
   });
 
   it('marks a higher-but-unproven number as "not established"', () => {
@@ -100,6 +144,14 @@ describe('embedding-benchmarks data (#1114)', () => {
     const en = EMBEDDING_BENCHMARKS.find((l) => l.code === 'en')!.rows.find((r) => !r.baseline)!;
     expect(de.recallAt1.established).toBe(true);
     expect(en.recallAt1.established).toBe(false);
+  });
+
+  it('carries the FTS configuration in its provenance, beside the date (#1114)', () => {
+    // "Rendered verbatim — a number without it is a rumour" is this file's own
+    // standard, and the lexical configuration was missing from it. Pinned as a
+    // field rather than as prose so a re-measurement under `german` has to
+    // move the data, not only the sentence.
+    expect(BENCHMARK_PROVENANCE.ftsLanguage).toBe('simple');
   });
 
   it('matches a configured model across provider naming conventions', () => {

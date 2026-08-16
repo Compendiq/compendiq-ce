@@ -89,6 +89,74 @@ those comparisons need the real candidates, run locally through the same script
 (`docs/runbooks/retrieval-eval.md`), or scored on the real corpus via #1260.
 There is no separate model-comparison harness — #1113 was closed without one.
 
+**A run states which FTS configuration it measured, and the default is
+`simple` for every language (#1114).** Hybrid retrieval has a lexical leg, and
+`pages.tsv` is built by migration 049's trigger from
+`admin_settings.fts_language` while `keywordSearch` re-reads the same row per
+query. The eval never wrote that row, so every run — `--lang de` included —
+scored its keyword leg through a language-neutral stemmer, and **every German
+number published on #1114 before this is `fts=simple`**. `--fts-language` pins
+it, the report carries `ftsLanguage`, and `--baseline` refuses a mismatched
+pair (absent means `simple`, because that is what it was). The default is
+deliberately NOT derived from `--lang`: every recorded baseline, CI's included,
+was measured under `simple`, and deriving it would silently re-measure all of
+them and report the difference as a retrieval change. **The rule reaches the
+one surface those numbers are shown on**: Settings → AI Models' benchmark table
+carries `ftsLanguage` in `BENCHMARK_PROVENANCE`, renders it, and marks its
+German rows as pending re-measurement — enforcing it on the JSON report alone
+would move the omission one layer up rather than fix it. **Pending includes the
+model-to-model differences, not only the absolute scores**, and the rendered
+note must say so: both arms did read the same lexical leg, but RRF fuses a
+per-model vector leg with the shared keyword one as `Σ 1/(k + rank)`, which is
+nonlinear, so a stronger German keyword leg can compress or amplify the gap —
+and the German Recall@1 delta is the one `established: true` number a swap
+decision leans on. Both eval entrypoints
+now **refuse an unrecognised flag** (`assertKnownFlags`, `eval/cli-flags.ts`)
+and print a usage list: `--fts-langauge german` parsed cleanly and spent an
+hour embedding under the default. They also share **one flag reader**
+(`flagValue`): `--out x` and `--out=x` both work, a value flag given without a
+value is refused rather than defaulted, and a switch refuses a value — the
+guard admitted `--baseline=prev.json` on its name half while the eval's own
+`indexOf('--baseline')` could not see it, so the comparison silently never ran.
+And `resetEvalCorpus` drops the
+`eval_corpus_language` claim it invalidates, so a seed that dies halfway leaves
+*no* claim rather than the previous run's — absent routes the benchmark to its
+warning, which is the safe verdict for "unknown".
+
+**Query-time latency is measured OUTSIDE `eval/`**, by
+`backend/scripts/benchmark-query-latency.ts` — `runner.ts`'s participation
+floors assume exactly one sequential hit per query, so a concurrency flag does
+not belong there. It is non-destructive (never seeds, `recordAnalytics: false`)
+and refuses a search arm whose model width does not match the live
+`page_embeddings` column, because `hybridSearch` degrades to keyword-only on an
+embedding failure and would otherwise publish FTS latency as retrieval latency.
+**It reports no configuration it has not certified**, so it runs
+`assertSeededFtsLanguage` over the row it publishes as `ftsLanguage`: the eval
+writes that row *before* it truncates the corpus and `resetEvalCorpus`
+deliberately never clears it (migration 049's trigger reads it per inserted
+row), so a seed that dies in between leaves the previous corpus standing under a
+changed configuration — and the keyword leg then genuinely runs mismatched, so
+the timing is wrong too and not only the label. The certification is one
+recomputing `SELECT`, which is what keeps the script read-only.
+**Its two halves do not take their model from the same place**, and the report
+would lie by default if that were left implicit: `hybridSearch` accepts no model
+and no endpoint, so `rag-service` resolves both from the DB's `embedding`
+assignment while `--models`/`--base-url` describe only the direct-POST embedding
+half. So a `search`/`both` arm takes exactly ONE model, is refused unless it
+names what the assignment resolves to (the width probe cannot separate two
+1024-dim models), and the report records the resolved pair. That endpoint
+comparison is **exact**: `--base-url` is spelled as the provider row is, because
+`generateEmbedding` posts `${base_url}/embeddings` verbatim — guessing a `/v1`
+onto a bare host both timed a URL the product never calls and let a `/v1` arm
+pass against an assignment resolving somewhere else. `--lang` selects the
+question set, never the corpus — `run-retrieval-eval.ts` records the seeded
+corpus in `admin_settings.eval_corpus_language` and a mismatched `--lang` is
+refused, because the dead-vector-leg guard only fires at *zero* participation.
+The metadata also carries `llmConcurrency` and `vectorPoolMax`: the search half
+runs through the shared LLM queue (default 4) and the vector pool (default 5),
+so a rung above those measures the product's serialisation, while the embedding
+half bypasses the queue and really does run N wide.
+
 - DB tests → real Postgres, never mocked.
 - Backend route tests → mock external HTTP and auth via `vi.spyOn()` passthroughs; nothing else.
 - Frontend tests → mock fetch/MSW at the network boundary, not internal components.

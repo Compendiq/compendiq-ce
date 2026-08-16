@@ -15,6 +15,10 @@ import {
   type SearchResult,
 } from '../services/rag-service.js';
 import { multiQuerySearch, type ExpansionOutcome } from '../services/multi-query-search.js';
+// One definition, shared with the #1114 latency benchmark: two byte-identical
+// copies of a percentile rule is how two "p95" figures in one repo stop
+// meaning the same thing (review r2).
+import { percentile, round } from './latency-stats.js';
 
 export type ProductionBenchmarkStatus = 'queued' | 'running' | 'completed' | 'failed';
 
@@ -418,16 +422,6 @@ function meanReciprocalRank(runs: Array<{ retrieved: number[]; expected: number[
 
 function average(values: number[]): number {
   return values.length === 0 ? 0 : round(values.reduce((sum, value) => sum + value, 0) / values.length);
-}
-
-function percentile(values: number[], fraction: number): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)]!;
-}
-
-function round(value: number): number {
-  return Math.round(value * 100) / 100;
 }
 
 function roundMs(value: number): number {
