@@ -21,7 +21,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { markdownToHtml, htmlToText } from '../src/core/services/content-converter.js';
 import { query, closePool, closeVectorPool, runMigrations } from '../src/core/db/postgres.js';
 import { generateEmbedding } from '../src/domains/llm/services/openai-compatible-client.js';
-import { loadCorpus, loadFixture, assertFixturePower } from '../src/domains/llm/eval/fixture.js';
+import { loadCorpus, loadFixture, assertFixturePower, corpusDirsForLanguage } from '../src/domains/llm/eval/fixture.js';
 import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk } from '../src/domains/llm/eval/seed.js';
 import { runEval } from '../src/domains/llm/eval/runner.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
@@ -32,6 +32,12 @@ const EVAL_USER = 'aaaaaaaa-1102-4000-8000-000000001102';
 
 interface Report {
   model: string;
+  /**
+   * #1114: which language corpus this run measured. Absent/'en' is the
+   * English gate. A cross-language comparison is already refused by the
+   * corpusManifestSha guard; this makes the refusal readable.
+   */
+  language: string;
   corpusManifestSha: string;
   redundantSlots?: number;
   returnedSlots?: number;
@@ -140,7 +146,17 @@ async function main(): Promise<void> {
   const dims = probe[0]?.length ?? 0;
   console.log(`model ${model} → ${dims} dimensions`);
 
-  const corpus = loadCorpus();
+  // #1114: --lang de measures the translated corpus instead of the English
+  // one. It is a separate measurement with its own fixture, never a variant
+  // of the English gate — see corpusDirsForLanguage.
+  const langArg = process.argv.find((a) => a.startsWith('--lang='))?.split('=')[1]
+    ?? (process.argv.includes('--lang') ? process.argv[process.argv.indexOf('--lang') + 1] : undefined);
+  const language = langArg && langArg !== 'en' ? langArg : 'en';
+  const corpusDirs = corpusDirsForLanguage(language);
+  const fixtureFile = language === 'en' ? 'fixture.json' : `fixture-${language}.json`;
+  if (language !== 'en') console.log(`language: ${language} (corpus ${corpusDirs.join(', ')}, fixture ${fixtureFile})`);
+
+  const corpus = loadCorpus(corpusDirs);
 
   // Before anything is embedded: a model that truncates would produce a
   // confident score describing the prefix it happened to read. Probed with the
@@ -149,7 +165,10 @@ async function main(): Promise<void> {
   await assertModelReadsFullChunk(evalProviderConfig, model, htmlToText(await markdownToHtml(longestPage.markdown)));
 
   await ensureVectorDimensions(dims);
-  const fixture = loadFixture(JSON.parse(readFileSync(new URL('../src/domains/llm/eval/fixture.json', import.meta.url), 'utf8')), corpus);
+  const fixture = loadFixture(
+    JSON.parse(readFileSync(new URL(`../src/domains/llm/eval/${fixtureFile}`, import.meta.url), 'utf8')),
+    corpus,
+  );
   assertFixturePower(fixture);
 
   // Before seeding, not after: a leftover corpus from a previous run would
@@ -197,6 +216,7 @@ async function main(): Promise<void> {
   const deepRequested = process.argv.includes('--deep-search');
   const report: Report = {
     model,
+    language,
     corpusManifestSha: fixture.corpusManifestSha,
     redundantSlots,
     returnedSlots,
@@ -241,6 +261,17 @@ async function main(): Promise<void> {
   const baselinePath = arg('baseline');
   if (baselinePath) {
     const baseline = JSON.parse(readFileSync(baselinePath, 'utf8')) as Report;
+    // #1114: checked BEFORE the corpus sha. A cross-language pair always fails
+    // that check too (different manifests), but "different corpus" is a
+    // confusing way to be told you compared a German run against an English
+    // one — the reader goes looking for a corpus edit that never happened.
+    // Old baselines predate the field; absent means English.
+    if ((baseline.language ?? 'en') !== report.language) {
+      throw new Error(
+        `Baseline measured the ${baseline.language ?? 'en'} corpus, this run measured ${report.language} — ` +
+        'these are separate measurements, not a before/after. Compare each language against its own baseline.',
+      );
+    }
     if (baseline.corpusManifestSha !== report.corpusManifestSha) {
       throw new Error('Baseline was measured against a different corpus — the comparison would be meaningless');
     }

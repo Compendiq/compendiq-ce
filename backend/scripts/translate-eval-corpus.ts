@@ -50,6 +50,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { splitFences } from '../src/domains/llm/eval/markdown-fences.js';
+import { computeCorpusManifestSha } from '../src/domains/llm/eval/fixture.js';
 
 const EVAL_DIR = join(import.meta.dirname, '..', 'src', 'domains', 'llm', 'eval');
 const SOURCE_DIRS = [join(EVAL_DIR, 'corpus'), join(EVAL_DIR, 'corpus-synthetic')];
@@ -88,7 +89,23 @@ const SYSTEM_PROMPT =
   '- Preserve YAML front-matter keys verbatim; translate only their human-readable values.\n' +
   '- Keep the text length broadly similar. Do not summarise, expand, or add notes.';
 
+const QUERY_PROMPT =
+  `Translate this search query from English into ${LANGUAGE_NAME}.\n\n` +
+  'HARD RULES:\n' +
+  '- Output ONLY the translated query. No quotes, no explanation, no trailing punctuation that was not there.\n' +
+  '- It is a SEARCH QUERY, often an ungrammatical fragment. Keep it a fragment; do not turn it into a sentence.\n' +
+  '- NEVER translate identifiers, function names, flags, package names or file paths — keep them exactly as written.\n' +
+  '- Keep the technical loanwords a real user of this language would type.';
+
+async function translateQuery(text: string): Promise<string> {
+  return chat(QUERY_PROMPT, text);
+}
+
 async function translate(text: string): Promise<string> {
+  return chat(SYSTEM_PROMPT, text);
+}
+
+async function chat(system: string, text: string): Promise<string> {
   if (!text.trim()) return text;
   const res = await fetch(`${BASE_URL}/chat/completions`, {
     method: 'POST',
@@ -96,7 +113,7 @@ async function translate(text: string): Promise<string> {
     body: JSON.stringify({
       model: MODEL,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: system },
         { role: 'user', content: text },
       ],
       temperature: 0.2,
@@ -195,6 +212,72 @@ async function main() {
   );
 
   console.log(`\ndone: ${done} pages -> ${OUT_DIR}`);
+
+  // ── the fixture ────────────────────────────────────────────────────────────
+  //
+  // The labels are the experiment. `expectedFiles`, `id` and `style` are
+  // carried across UNCHANGED — only the human-readable query text is
+  // translated — so the German run scores the same 197 relevance judgements
+  // against the same documents, and any difference is the language rather
+  // than a re-labelling. `corpusManifestSha` is recomputed from the German
+  // manifest, which is what stops this fixture being run against the English
+  // corpus (and vice versa).
+  const fixtureSrc = JSON.parse(
+    readFileSync(join(EVAL_DIR, 'fixture.json'), 'utf8'),
+  ) as { labels: Array<{ id: string; query: string; [k: string]: unknown }>; [k: string]: unknown };
+
+  const outFixture = join(EVAL_DIR, `fixture-${LANG}.json`);
+  const cachePath = join(OUT_DIR, '.queries.json');
+  const cache: Record<string, string> = existsSync(cachePath)
+    ? JSON.parse(readFileSync(cachePath, 'utf8'))
+    : {};
+
+  console.log(`\ntranslating ${fixtureSrc.labels.length} queries…`);
+  const labels: Array<Record<string, unknown>> = [];
+  for (const [i, label] of fixtureSrc.labels.entries()) {
+    if (!cache[label.id]) {
+      // Queries are short and fragment-like ("fastify decorateRequest this
+      // arrow function"). Translating them with the document prompt produces
+      // sentences; they must stay the way a user types them.
+      cache[label.id] = (await translateQuery(label.query)).trim();
+      writeFileSync(cachePath, JSON.stringify(cache, null, 2), 'utf8');
+      if ((i + 1) % 20 === 0) console.log(`  [${i + 1}/${fixtureSrc.labels.length}]`);
+    }
+    labels.push({ ...label, query: cache[label.id]!, queryEn: label.query });
+  }
+
+  // Duplicate detection is the fixture loader's job, but a translator can
+  // collapse two distinct English queries onto one German string, and that
+  // failure arrives as a confusing loader error much later.
+  const seen = new Map<string, string>();
+  const collisions: string[] = [];
+  for (const l of labels) {
+    const key = String(l.query).trim().toLowerCase().replace(/\s+/g, ' ');
+    const prev = seen.get(key);
+    if (prev) collisions.push(`${prev} + ${l.id} -> "${l.query}"`);
+    else seen.set(key, String(l.id));
+  }
+  if (collisions.length) {
+    throw new Error(
+      `Translation collapsed distinct queries onto the same text; edit ${cachePath} and re-run:\n  ` +
+      collisions.join('\n  '),
+    );
+  }
+
+  writeFileSync(
+    outFixture,
+    JSON.stringify(
+      {
+        corpusManifestSha: computeCorpusManifestSha([OUT_DIR]),
+        labeledBy: `${fixtureSrc.labeledBy ?? 'unknown'} + machine translation (${MODEL}) into ${LANGUAGE_NAME}`,
+        labels,
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+  console.log(`fixture -> ${outFixture}`);
 }
 
 // Importable for tests without running the translation.

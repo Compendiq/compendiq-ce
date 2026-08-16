@@ -94,6 +94,33 @@ export const SYNTHETIC_CORPUS_DIR = join(import.meta.dirname, 'corpus-synthetic'
 /** Both corpus directories, in the order pages are seeded. */
 export const CORPUS_DIRS = [CORPUS_DIR, SYNTHETIC_CORPUS_DIR] as const;
 
+/**
+ * Translated corpora (#1114), produced by `scripts/translate-eval-corpus.ts`.
+ *
+ * A translated run is a SEPARATE measurement, never a variant of the English
+ * one. It gets its own directory and its own fixture file, so:
+ *
+ * - the English gate keeps its `corpusManifestSha`, and every baseline already
+ *   recorded against it stays comparable. Merging translated pages into
+ *   `CORPUS_DIRS` would have invalidated all of them at once, which is exactly
+ *   the failure the sha exists to make loud;
+ * - a translated report cannot be `--baseline`d against an English one. The
+ *   manifests differ so the sha differs, and the existing corpus guard already
+ *   refuses the comparison; carrying the language on the report only makes
+ *   that refusal legible instead of arriving as an unexplained hash mismatch.
+ *
+ * The directory does not exist until someone runs the translator, so nothing
+ * resolves it at module load.
+ */
+export function translatedCorpusDirs(lang: string): readonly string[] {
+  return [join(import.meta.dirname, `corpus-${lang}`)];
+}
+
+/** Corpus directories for a run: English by default, one translated dir otherwise. */
+export function corpusDirsForLanguage(lang: string | undefined): readonly string[] {
+  return !lang || lang === 'en' ? CORPUS_DIRS : translatedCorpusDirs(lang);
+}
+
 function loadCorpusDir(dir: string): CorpusPage[] {
   const manifest = JSON.parse(readFileSync(join(dir, 'MANIFEST.json'), 'utf8')) as { pages: ManifestEntry[] };
   return manifest.pages.map((entry) => ({
