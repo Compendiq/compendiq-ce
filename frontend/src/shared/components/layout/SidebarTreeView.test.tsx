@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
 import type { TreeNode, SidebarTreeNodeProps } from './SidebarTreeView';
 import { useUiStore } from '../../../stores/ui-store';
+import { ApiError } from '../../lib/api';
 
 vi.mock('framer-motion', async () => {
   const actual = await vi.importActual('framer-motion');
@@ -47,7 +48,22 @@ const defaultTreeData = {
   total: 4,
 };
 
-let mockTreeData = { ...defaultTreeData };
+let mockTreeData: typeof defaultTreeData | undefined = { ...defaultTreeData };
+
+// Query/mutation state the error tests drive. Kept as mutable objects rather
+// than per-test vi.mock factories so a test only has to state the one field it
+// cares about; `resetQueryState()` in beforeEach puts them back.
+const mockRefetchTree = vi.fn();
+const mockCreatePageReset = vi.fn();
+let mockTreeQueryState = { isLoading: false, isError: false, error: undefined as unknown, isFetching: false };
+let mockCreatePageState = { isPending: false, isError: false, error: undefined as unknown };
+
+function resetQueryState() {
+  mockTreeQueryState = { isLoading: false, isError: false, error: undefined, isFetching: false };
+  mockCreatePageState = { isPending: false, isError: false, error: undefined };
+  mockRefetchTree.mockClear();
+  mockCreatePageReset.mockClear();
+}
 let mockPinnedData = { items: [] as Array<{
   id: string;
   spaceKey: string;
@@ -71,8 +87,16 @@ let mockLocalSpaces = [...defaultLocalSpaces];
 
 const mockCreatePageMutateAsync = vi.fn();
 vi.mock('../../hooks/use-pages', () => ({
-  usePageTree: () => ({ data: mockTreeData, isLoading: false }),
-  useCreatePage: () => ({ mutateAsync: mockCreatePageMutateAsync, isPending: false }),
+  usePageTree: () => ({
+    data: mockTreeData,
+    refetch: mockRefetchTree,
+    ...mockTreeQueryState,
+  }),
+  useCreatePage: () => ({
+    mutateAsync: mockCreatePageMutateAsync,
+    reset: mockCreatePageReset,
+    ...mockCreatePageState,
+  }),
   usePinnedPages: () => ({ data: mockPinnedData }),
 }));
 
@@ -106,6 +130,7 @@ describe('SidebarTreeView', () => {
     mockTreeData = { ...defaultTreeData };
     mockPinnedData = { items: [], total: 0 };
     mockLocalSpaces = [...defaultLocalSpaces];
+    resetQueryState();
     useUiStore.setState({
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: undefined,
@@ -1030,6 +1055,131 @@ describe('SidebarTreeNode memoization', () => {
     );
 
     expect(screen.getByText('Memoized Page')).toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------
+  // Failure paths.
+  //
+  // The tree consumed only { data, isLoading }. A failed request therefore
+  // left data undefined, the tree empty, and the EMPTY state on screen — "No
+  // pages synced yet / Sync a Confluence space to get started", with a button
+  // into Settings. The panel diagnosed a network failure as an unconfigured
+  // integration and pointed the user at the most expensive wrong action it had.
+  // Nothing exercised the path, which is why it survived.
+  // ---------------------------------------------------------------------
+  describe('failure paths', () => {
+    beforeEach(() => {
+      mockNavigate.mockClear();
+      mockTreeData = { ...defaultTreeData };
+      mockPinnedData = { items: [], total: 0 };
+      mockCreatePageMutateAsync.mockClear();
+      resetQueryState();
+      useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined, treeSidebarWidth: 280 });
+    });
+
+  it('reports a failed load as a failure, not as an empty knowledge base', () => {
+    mockTreeData = undefined;
+    mockTreeQueryState = { isLoading: false, isError: true, error: new ApiError(500, 'Internal Server Error (HTTP 500)'), isFetching: false };
+
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('tree-error')).toBeInTheDocument();
+    expect(screen.getByText(/Couldn.t load pages/)).toBeInTheDocument();
+    // The curated ApiError message is the only place the user learns why.
+    expect(screen.getByText('Internal Server Error (HTTP 500)')).toBeInTheDocument();
+
+    // The wrong diagnosis must be absent — this is the actual regression guard.
+    expect(screen.queryByText('No pages synced yet')).not.toBeInTheDocument();
+    expect(screen.queryByText('Sync a Confluence space to get started.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Sync a Space/ })).not.toBeInTheDocument();
+  });
+
+  it('offers a retry that refetches, and says it is retrying', () => {
+    mockTreeData = undefined;
+    mockTreeQueryState = { isLoading: false, isError: true, error: new ApiError(503, 'Service Unavailable (HTTP 503)'), isFetching: false };
+
+    const { rerender } = render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByRole('button', { name: /Try again/ }));
+    expect(mockRefetchTree).toHaveBeenCalledTimes(1);
+
+    mockTreeQueryState = { ...mockTreeQueryState, isFetching: true };
+    rerender(<SidebarTreeView />);
+    const retrying = screen.getByRole('button', { name: /Retrying/ });
+    expect(retrying).toBeDisabled();
+  });
+
+  it('falls back to generic copy when the failure is not an ApiError', () => {
+    mockTreeData = undefined;
+    mockTreeQueryState = { isLoading: false, isError: true, error: new TypeError('Failed to fetch'), isFetching: false };
+
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    // A raw TypeError is not user-facing prose, so it is not shown.
+    expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument();
+    expect(screen.getByText(/Your pages are still there/)).toBeInTheDocument();
+  });
+
+  it('keeps a cached tree usable when a refresh fails, and flags it', () => {
+    // The common case: a background refetch failed but the last good tree is
+    // still in hand. Replacing working navigation with an error screen would
+    // take away what the user is mid-task in to report a cost not yet incurred.
+    mockTreeQueryState = { isLoading: false, isError: true, error: new ApiError(504, 'Gateway Timeout (HTTP 504)'), isFetching: false };
+
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('Getting Started')).toBeInTheDocument();
+    expect(screen.queryByTestId('tree-error')).not.toBeInTheDocument();
+
+    const notice = screen.getByTestId('tree-stale-notice');
+    expect(notice).toHaveTextContent('Showing the last loaded pages');
+    fireEvent.click(within(notice).getByRole('button', { name: 'Retry' }));
+    expect(mockRefetchTree).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows no failure treatment when the tree is genuinely empty', () => {
+    mockTreeData = { items: [], total: 0 };
+
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('No pages synced yet')).toBeInTheDocument();
+    expect(screen.queryByTestId('tree-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tree-stale-notice')).not.toBeInTheDocument();
+  });
+
+  it('surfaces a failed page creation and keeps the typed title', () => {
+    // useCreatePage has no onError, and the catch here used to be commented
+    // "error handled by mutation" — which was true of nothing. A failed create
+    // closed nothing and said nothing.
+    mockCreatePageState = { isPending: false, isError: true, error: new ApiError(409, 'A page with that title already exists (HTTP 409)') };
+
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
+
+    const input = screen.getByLabelText('Title of the new page');
+    fireEvent.change(input, { target: { value: 'Runbooks' } });
+
+    const error = screen.getByTestId('new-page-error');
+    expect(error).toHaveTextContent('A page with that title already exists (HTTP 409)');
+    // Wired to the field, so it is announced with it rather than floating.
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAttribute('aria-describedby', error.id);
+    // And the work is not thrown away — retrying is a keystroke, not a retype.
+    expect(input).toHaveValue('Runbooks');
+  });
+
+  it('clears a create failure when the title is edited or the field abandoned', () => {
+    mockCreatePageState = { isPending: false, isError: true, error: new ApiError(409, 'Conflict (HTTP 409)') };
+
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
+
+    fireEvent.change(screen.getByLabelText('Title of the new page'), { target: { value: 'Runbooks v2' } });
+    expect(mockCreatePageReset).toHaveBeenCalled();
+
+    mockCreatePageReset.mockClear();
+    fireEvent.keyDown(screen.getByLabelText('Title of the new page'), { key: 'Escape' });
+    expect(mockCreatePageReset).toHaveBeenCalled();
+  });
   });
 
   it('has a New page button in the tree toolbar', () => {

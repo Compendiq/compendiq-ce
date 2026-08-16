@@ -12,7 +12,10 @@ import {
   Globe,
   Pin,
   Settings,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
+import { ApiError } from '../../lib/api';
 import { getSpaceIcon } from '../spaces/space-icons';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
@@ -337,9 +340,25 @@ export function SidebarTreeView({
   const { data: confluenceSpaces } = useSpaces();
   const { data: localSpacesData } = useLocalSpaces();
   const { data: pinnedData } = usePinnedPages();
-  const { data: treeData, isLoading } = usePageTree({
+  const {
+    data: treeData,
+    isLoading,
+    isError: treeIsError,
+    error: treeError,
+    refetch: refetchTree,
+    isFetching: isFetchingTree,
+  } = usePageTree({
     spaceKey: treeSidebarSpaceKey,
   });
+
+  // Two different failures, two different treatments. With nothing cached the
+  // panel has no pages to offer and the error IS the content. With a cached
+  // tree still in hand — a background refetch that failed, the common case —
+  // replacing a working tree with an error screen would take away the
+  // navigation the user is mid-task in, to report a problem that has not yet
+  // cost them anything. That one gets a strip above the tree instead.
+  const treeFailedWithNothingToShow = treeIsError && !treeData;
+  const treeIsStale = treeIsError && !!treeData;
   const reorderPage = useReorderPage();
 
   // Merge confluence + local spaces for the selector
@@ -419,9 +438,23 @@ export function SidebarTreeView({
       setNewPageTitle('');
       setShowNewPageInput(false);
     } catch {
-      // error handled by mutation
+      // Deliberately swallowed HERE and reported from `createPage.error`
+      // below. The comment this replaces said "error handled by mutation" and
+      // that was not true of anything: useCreatePage has no onError, so a
+      // failed create closed nothing, said nothing, and left the user staring
+      // at their own typed title wondering whether it had worked.
+      //
+      // The input stays open and the title stays in it, so retrying is one
+      // keystroke rather than a retype.
     }
   }, [newPageTitle, treeSidebarSpaceKey, createPage]);
+
+  // Clear a previous failure the moment the user edits the title or reopens
+  // the field, so a stale message can't sit under a fresh attempt.
+  const handleNewPageTitleChange = useCallback((value: string) => {
+    setNewPageTitle(value);
+    if (createPage.isError) createPage.reset();
+  }, [createPage]);
 
   useEffect(() => {
     if (showNewPageInput) {
@@ -919,19 +952,25 @@ export function SidebarTreeView({
             <input
               ref={newPageTitleRef}
               value={newPageTitle}
-              onChange={(e) => setNewPageTitle(e.target.value)}
+              onChange={(e) => handleNewPageTitleChange(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleCreatePage();
                 if (e.key === 'Escape') {
                   setShowNewPageInput(false);
                   setNewPageTitle('');
+                  createPage.reset();
                 }
               }}
               // Placeholder is an example, not the label — the accessible name
               // below is what names the field.
               placeholder="Page title"
-              className="flex-1 rounded-md bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 ring-primary/30 focus:ring-ring transition-colors"
+              className={cn(
+                'flex-1 rounded-md bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 focus:ring-ring transition-colors',
+                createPage.isError ? 'ring-destructive' : 'ring-primary/30',
+              )}
               aria-label="Title of the new page"
+              aria-invalid={createPage.isError || undefined}
+              aria-describedby={createPage.isError ? 'new-page-error' : undefined}
             />
             {/* "Create", not "Add": it names the action, and "Add" alongside a
                 title field reads as adding the title to something. The pending
@@ -945,6 +984,43 @@ export function SidebarTreeView({
               {createPage.isPending ? 'Creating' : 'Create'}
             </button>
           </div>
+          {/* Sits under the field it describes, wired by aria-describedby, and
+              in a live region so it is announced rather than only drawn. The
+              typed title is still in the input above it. */}
+          {createPage.isError && (
+            <p
+              id="new-page-error"
+              role="alert"
+              data-testid="new-page-error"
+              className="mt-1.5 break-words line-clamp-3 pl-[22px] text-[11px] text-destructive"
+            >
+              {createPage.error instanceof ApiError
+                ? createPage.error.message
+                : 'The page could not be created. Try again.'}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* A refresh failed but the cached tree is still usable. Say so without
+          taking it away — the pages below are real, just possibly behind. */}
+      {treeIsStale && (
+        <div
+          role="status"
+          data-testid="tree-stale-notice"
+          className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5"
+        >
+          <AlertTriangle size={12} className="shrink-0 text-warning" aria-hidden="true" />
+          <span className="min-w-0 flex-1 text-[11px] text-muted-foreground">
+            Showing the last loaded pages
+          </span>
+          <button
+            onClick={() => refetchTree()}
+            disabled={isFetchingTree}
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-action transition-colors hover:bg-[var(--glass-pill-hover)] disabled:opacity-40"
+          >
+            {isFetchingTree ? 'Retrying' : 'Retry'}
+          </button>
         </div>
       )}
 
@@ -965,6 +1041,44 @@ export function SidebarTreeView({
                 style={{ width: `${60 + Math.random() * 30}%`, marginLeft: `${(i % 3) * 16}px` }}
               />
             ))}
+          </div>
+        ) : treeFailedWithNothingToShow ? (
+          // The tree used to consume only { data, isLoading }, so a failed
+          // request left `treeData` undefined, `tree` empty, and the EMPTY
+          // state on screen: "No pages synced yet — Sync a Confluence space to
+          // get started", with a button into Settings. The panel diagnosed a
+          // network failure as an unconfigured integration and pointed the user
+          // at the most expensive wrong action available to them.
+          //
+          // role="alert" because this replaces content the user is waiting on
+          // and it arrives after their navigation, not before it.
+          <div className="flex flex-col items-center px-3 py-8 text-center" role="alert" data-testid="tree-error">
+            {/* Destructive, not warning. ADR-010 reserves amber for
+                warning/attention and red (status-disconnected) for failure, and
+                this request FAILED — the same call `Message.isError` makes. The
+                amber one is the stale strip above the tree, where the pages are
+                real and only possibly behind: that is attention, not failure. */}
+            <div className="mb-3 rounded-full bg-muted p-2.5">
+              <AlertTriangle size={20} className="text-destructive" aria-hidden="true" />
+            </div>
+            <p className="text-xs font-medium text-foreground/70">Couldn&rsquo;t load pages</p>
+            {/* ApiError's message is already curated prose carrying the status
+                code (see api.ts failureMessage) — not a raw server body — so it
+                is safe to show and it is the only place the user learns WHY.
+                Clamped because this pane is 280px and a gateway message is not. */}
+            <p className="mt-1 break-words line-clamp-3 text-[11px] text-muted-foreground">
+              {treeError instanceof ApiError
+                ? treeError.message
+                : 'The request did not complete. Your pages are still there.'}
+            </p>
+            <button
+              onClick={() => refetchTree()}
+              disabled={isFetchingTree}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:opacity-40"
+            >
+              <RefreshCw size={12} className={cn(isFetchingTree && 'animate-spin')} aria-hidden="true" />
+              {isFetchingTree ? 'Retrying' : 'Try again'}
+            </button>
           </div>
         ) : tree.length === 0 ? (
           <div className="flex flex-col items-center px-3 py-8 text-center">
