@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { splitFences, assertUsableTranslation } from './markdown-fences.js';
+import { splitFences, assertUsableTranslation, chunkProse } from './markdown-fences.js';
 
 /**
  * `splitFences` decides what the translator is allowed to see. Everything it
@@ -84,5 +84,96 @@ describe('assertUsableTranslation (#1114)', () => {
 
   it('allows a normal translation', () => {
     expect(() => assertUsableTranslation('The plugin registers a hook.', 'Das Plugin registriert einen Hook.')).not.toThrow();
+  });
+});
+
+describe('chunkProse (#1114)', () => {
+  it('reconstructs the input exactly', () => {
+    // The property everything else rests on: chunking must not be able to
+    // alter a document that survives translation unchanged.
+    const text = Array.from({ length: 40 }, (_, i) => `Paragraph ${i} with some words in it.`).join('\n\n');
+    expect(chunkProse(text, 200).join('\n')).toBe(text);
+  });
+
+  it('returns a short run untouched, as a single chunk', () => {
+    expect(chunkProse('Short.', 1000)).toEqual(['Short.']);
+  });
+
+  it('actually splits a run that exceeds the budget', () => {
+    const text = Array.from({ length: 30 }, (_, i) => `Para ${i}.`).join('\n\n');
+    const chunks = chunkProse(text, 50);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.join('\n')).toBe(text);
+  });
+
+  it('splits at blank lines, never mid-paragraph', () => {
+    // A cut mid-sentence hands the translator half a thought; the output is
+    // visibly worse and there is no way to detect it afterwards.
+    const text = 'Aaa aaa aaa.\n\nBbb bbb bbb.\n\nCcc ccc ccc.';
+    for (const chunk of chunkProse(text, 20)) {
+      expect(chunk.startsWith(' ')).toBe(false);
+      // Every chunk is whole paragraphs, so it never ends mid-sentence.
+      expect(chunk.trim().endsWith('.')).toBe(true);
+    }
+  });
+
+  it('emits an over-long single paragraph whole rather than cutting it', () => {
+    // A too-large request that gets a real error beats silently mangled prose.
+    const huge = 'x'.repeat(5000);
+    expect(chunkProse(huge, 100)).toEqual([huge]);
+  });
+
+  it('handles the 47KB shape that hung the first run', () => {
+    const text = Array.from({ length: 800 }, (_, i) => `Line ${i} of a very long ecosystem listing.`).join('\n\n');
+    const chunks = chunkProse(text, 4000);
+    expect(chunks.every((c) => c.length <= 4200)).toBe(true);
+    expect(chunks.join('\n')).toBe(text);
+  });
+});
+
+describe('chunkProse — list-aware splitting (#1114)', () => {
+  it('splits a long unbroken bulleted list, which paragraph rules cannot', () => {
+    // The real case: a 47KB plugin catalogue with no blank lines anywhere.
+    // Under paragraph-only splitting this stayed one chunk, and an 8KB chunk
+    // is the size that makes a translator summarise instead of translate.
+    const list = Array.from({ length: 400 }, (_, i) => `- [plugin-${i}](https://example.com/${i}) does a thing.`).join('\n');
+    const chunks = chunkProse(list, 2500);
+    expect(chunks.length).toBeGreaterThan(5);
+    expect(chunks.join('\n')).toBe(list);
+    expect(chunks.every((c) => c.length <= 2600)).toBe(true);
+  });
+
+  it('still refuses to cut a long PROSE paragraph mid-sentence', () => {
+    // Hard-wrapped prose has no safe line boundary, so the old rule stands.
+    const prose = Array.from({ length: 200 }, () => 'some continuing prose text here').join('\n');
+    expect(chunkProse(prose, 500)).toEqual([prose]);
+  });
+
+  it('handles numbered lists too', () => {
+    const list = Array.from({ length: 200 }, (_, i) => `${i + 1}. Step number ${i} with description.`).join('\n');
+    const chunks = chunkProse(list, 1000);
+    expect(chunks.length).toBeGreaterThan(3);
+    expect(chunks.join('\n')).toBe(list);
+  });
+});
+
+describe('chunkProse — hard-wrapped list items (#1114)', () => {
+  it('splits a list whose items wrap over several lines', () => {
+    // The shape that defeated the first attempt: items are hard-wrapped, so
+    // most lines carry NO marker (297 of 745 in the real file). A
+    // marker-density heuristic misses it; splitting per line would cut the
+    // wrapped descriptions in half. The boundary has to be the item.
+    const items = Array.from({ length: 200 }, (_, i) =>
+      `- [plugin-${i}](https://example.com/${i}) does something useful\n  and the description wraps\n  onto further lines.`);
+    const list = items.join('\n');
+    const chunks = chunkProse(list, 2500);
+    // ~22KB of items at a 2500 budget: roughly ten chunks. The point is that
+    // it splits at all — under the paragraph rule this was ONE chunk.
+    expect(chunks.length).toBeGreaterThanOrEqual(8);
+    expect(chunks.join('\n')).toBe(list);
+    expect(chunks.every((c) => c.length <= 2700)).toBe(true);
+    // No chunk may begin with a continuation line — that would mean an item
+    // was cut away from its own marker.
+    for (const c of chunks) expect(/^\s{2,}\S/.test(c.split('\n')[0]!)).toBe(false);
   });
 });

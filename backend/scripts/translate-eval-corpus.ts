@@ -49,7 +49,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { splitFences, assertUsableTranslation } from '../src/domains/llm/eval/markdown-fences.js';
+import { splitFences, assertUsableTranslation, chunkProse } from '../src/domains/llm/eval/markdown-fences.js';
 import { computeCorpusManifestSha } from '../src/domains/llm/eval/fixture.js';
 
 const EVAL_DIR = join(import.meta.dirname, '..', 'src', 'domains', 'llm', 'eval');
@@ -120,7 +120,7 @@ async function translate(text: string): Promise<string> {
  * transient failure anywhere in ~1400 requests would otherwise discard hours
  * of completed work, since the corpus is only resumable at file granularity.
  */
-const REQUEST_TIMEOUT_MS = Number(process.env.TRANSLATE_TIMEOUT_MS ?? 600_000);
+const REQUEST_TIMEOUT_MS = Number(process.env.TRANSLATE_TIMEOUT_MS ?? 900_000);
 const MAX_ATTEMPTS = Number(process.env.TRANSLATE_MAX_ATTEMPTS ?? 5);
 
 async function chat(system: string, text: string): Promise<string> {
@@ -160,12 +160,30 @@ async function chat(system: string, text: string): Promise<string> {
   throw lastErr;
 }
 
+/**
+ * Largest prose run sent in one request.
+ *
+ * The corpus contains 47KB documents, and a whole-document request exceeds
+ * the model's context — which does NOT return an error. The server simply
+ * never answers, so the run sits at 0% CPU on a socket while the server is
+ * idle, looking like slowness and actually hung. 4000 characters is roughly
+ * 1200 tokens, comfortably inside any context this script would be pointed at.
+ */
+const MAX_PROSE_CHARS = Number(process.env.TRANSLATE_MAX_PROSE_CHARS ?? 4000);
+
 /** Translate one document, leaving every fenced code block untouched. */
 async function translateDoc(md: string): Promise<string> {
   const parts = splitFences(md);
   const out: string[] = [];
   for (const part of parts) {
-    out.push(part.code ? part.text : await translate(part.text));
+    if (part.code) {
+      out.push(part.text);
+      continue;
+    }
+    const chunks = chunkProse(part.text, MAX_PROSE_CHARS);
+    const translated: string[] = [];
+    for (const chunk of chunks) translated.push(await translate(chunk));
+    out.push(translated.join('\n'));
   }
   return out.join('\n');
 }
