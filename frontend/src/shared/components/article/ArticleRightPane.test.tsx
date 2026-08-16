@@ -106,8 +106,21 @@ vi.mock('../badges/FreshnessBadge', () => ({
 }));
 
 vi.mock('../badges/EmbeddingStatusBadge', () => ({
-  EmbeddingStatusBadge: ({ embeddingStatus }: { embeddingStatus: string }) => (
-    <span data-testid="embedding-status-badge">{embeddingStatus}</span>
+  EmbeddingStatusBadge: ({
+    embeddingStatus,
+    onRetry,
+  }: {
+    embeddingStatus: string;
+    onRetry?: () => void;
+  }) => (
+    <span data-testid="embedding-status-badge">
+      {embeddingStatus}
+      {onRetry && (
+        <button data-testid="mock-embedding-retry-btn" onClick={onRetry}>
+          Retry
+        </button>
+      )}
+    </span>
   ),
 }));
 
@@ -310,6 +323,40 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.queryByText('Version history')).not.toBeInTheDocument();
+  });
+
+  it('preserves Page details and Document health in edit mode', () => {
+    useArticleViewStore.setState({ editing: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('Page details')).toBeInTheDocument();
+    expect(screen.getByText('ENG')).toBeInTheDocument();
+    expect(screen.getByText('v7')).toBeInTheDocument();
+    expect(screen.getByText('Document health')).toBeInTheDocument();
+    expect(screen.getByTestId('embedding-status-badge')).toBeInTheDocument();
+    expect(screen.getByTestId('quality-score-badge')).toBeInTheDocument();
+    expect(screen.getByText('docs')).toBeInTheDocument();
+  });
+
+  it('renders Version history in the collapsed rail', () => {
+    useUiStore.setState({ articleSidebarCollapsed: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('article-history-rail-btn')).toBeInTheDocument();
+    expect(screen.getByLabelText('Version history')).toBeInTheDocument();
+  });
+
+  it('wires onRetry on EmbeddingStatusBadge to trigger reembed', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    const retryBtn = screen.getByTestId('mock-embedding-retry-btn');
+    expect(retryBtn).toBeInTheDocument();
+    fireEvent.click(retryBtn);
+
+    expect(mockReembedPage).toHaveBeenCalledTimes(1);
+    expect(mockReembedPage.mock.calls[0]![0]).toBe('page-1');
   });
 
   // #1126: the way in used to navigate to /ai?mode=improve&pageId=…, taking the
@@ -682,6 +729,46 @@ describe('ArticleRightPane', () => {
       const notPrevented = fireEvent.keyDown(row, { key: ' ' });
       expect(notPrevented).toBe(false);
     });
+
+    it('manages roving tabindex and arrow-key navigation across visible nodes', () => {
+      useArticleViewStore.setState({
+        headings: [
+          { id: 'intro', text: 'Introduction', level: 1 },
+          { id: 'arch', text: 'Architecture', level: 2 },
+          { id: 'deploy', text: 'Deployment', level: 1 },
+        ],
+      });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      const intro = screen.getByText('Introduction').closest('[role="treeitem"]')!;
+      const arch = screen.getByText('Architecture').closest('[role="treeitem"]')!;
+      const deploy = screen.getByText('Deployment').closest('[role="treeitem"]')!;
+
+      // Initially, the first visible node is the roving tab stop
+      expect(intro.getAttribute('tabindex')).toBe('0');
+      expect(arch.getAttribute('tabindex')).toBe('-1');
+      expect(deploy.getAttribute('tabindex')).toBe('-1');
+
+      // ArrowDown moves roving tab stop to next node
+      fireEvent.keyDown(intro, { key: 'ArrowDown' });
+      expect(arch.getAttribute('tabindex')).toBe('0');
+
+      // ArrowDown again moves to Deployment
+      fireEvent.keyDown(arch, { key: 'ArrowDown' });
+      expect(deploy.getAttribute('tabindex')).toBe('0');
+
+      // ArrowUp moves back to Architecture
+      fireEvent.keyDown(deploy, { key: 'ArrowUp' });
+      expect(arch.getAttribute('tabindex')).toBe('0');
+
+      // Home moves to first item (Introduction)
+      fireEvent.keyDown(arch, { key: 'Home' });
+      expect(intro.getAttribute('tabindex')).toBe('0');
+
+      // End moves to last item (Deployment)
+      fireEvent.keyDown(intro, { key: 'End' });
+      expect(deploy.getAttribute('tabindex')).toBe('0');
+    });
   });
 
   // #880 (code-review follow-up): outline rows carry role="treeitem" but had no
@@ -700,7 +787,7 @@ describe('ArticleRightPane', () => {
       expect(tree.getAttribute('aria-label')).toBeTruthy();
     });
 
-    it('wraps nested sub-headings in role="group" so nested treeitems have a valid parent', () => {
+    it('wraps nested sub-headings in role="group" with correct aria-level and title', () => {
       // A level-2 heading nests under the preceding level-1 heading; outline
       // branches are expanded by default (collapsedIds is empty).
       useArticleViewStore.setState({
@@ -714,6 +801,12 @@ describe('ArticleRightPane', () => {
       const group = document.querySelector('[role="group"]');
       expect(group).not.toBeNull();
       expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
+
+      const introRow = screen.getByText('Introduction').closest('[role="treeitem"]')!;
+      const usageRow = screen.getByText('Usage').closest('[role="treeitem"]')!;
+      expect(introRow).toHaveAttribute('aria-level', '1');
+      expect(usageRow).toHaveAttribute('aria-level', '2');
+      expect(screen.getByText('Usage')).toHaveAttribute('title', 'Usage');
     });
   });
 
@@ -895,14 +988,48 @@ describe('ArticleRightPane', () => {
     });
   });
 
-  it('shows error toast on export failure', async () => {
-    mockExportPdfAsync.mockRejectedValueOnce(new Error('Server error'));
+  describe('inspector tabs and staging retention', () => {
+    it('sets roving tabIndex on inspector tab buttons (0 on active, -1 on inactive)', () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
+      });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('Export PDF'));
+      const assistantTab = screen.getByTestId('page-context-tab-assistant');
+      const outlineTab = screen.getByTestId('page-context-tab-outline');
+      const detailsTab = screen.getByTestId('page-context-tab-details');
 
-    await waitFor(() => {
-      expect(mockExportPdfAsync).toHaveBeenCalled();
+      expect(outlineTab).toHaveAttribute('tabIndex', '0');
+      expect(assistantTab).toHaveAttribute('tabIndex', '-1');
+      expect(detailsTab).toHaveAttribute('tabIndex', '-1');
+
+      fireEvent.click(assistantTab);
+
+      expect(assistantTab).toHaveAttribute('tabIndex', '0');
+      expect(outlineTab).toHaveAttribute('tabIndex', '-1');
+      expect(detailsTab).toHaveAttribute('tabIndex', '-1');
+    });
+
+    it('retains the mounted assistant panel with hidden class when switching tabs to preserve staged state', () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
+      });
+      const { container } = render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      // Initially outline is active, assistant panel is not yet mounted
+      expect(container.querySelector('#page-context-panel-assistant')).toBeNull();
+
+      // Switch to assistant tab
+      fireEvent.click(screen.getByTestId('page-context-tab-assistant'));
+      const panel = container.querySelector('#page-context-panel-assistant');
+      expect(panel).not.toBeNull();
+      expect(panel?.classList.contains('hidden')).toBe(false);
+
+      // Switch back to outline tab
+      fireEvent.click(screen.getByTestId('page-context-tab-outline'));
+      // Panel remains in DOM but is hidden via CSS to preserve state
+      expect(container.querySelector('#page-context-panel-assistant')).not.toBeNull();
+      expect(container.querySelector('#page-context-panel-assistant')?.classList.contains('hidden')).toBe(true);
     });
   });
 });

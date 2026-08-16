@@ -106,7 +106,7 @@ export function AutoTagger({ pageId, currentLabels, model, className }: AutoTagg
       <Dialog.Root open={showDialog} onOpenChange={(next) => { if (!next) setShowDialog(false); }}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
-          <Dialog.Content className="nm-card fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-hidden p-0 outline-none">
+          <Dialog.Content className="nm-card-elevated fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-hidden p-0 outline-none">
               {/* Dialog header */}
               <div className="flex items-center justify-between border-b border-border px-5 py-4">
                 <div className="flex items-center gap-2">
@@ -165,14 +165,14 @@ export function AutoTagger({ pageId, currentLabels, model, className }: AutoTagg
               <div className="flex items-center justify-end gap-3 border-t border-border px-5 py-3">
                 <button
                   onClick={() => setShowDialog(false)}
-                  className="rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground hover:bg-foreground/5"
+                  className="nm-button-ghost"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleApply}
                   disabled={selectedTags.size === 0 || applyTagsMutation.isPending}
-                  className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  className="nm-button-primary flex items-center gap-1.5 disabled:opacity-50"
                 >
                   {applyTagsMutation.isPending ? (
                     <Loader2 size={14} className="animate-spin" />

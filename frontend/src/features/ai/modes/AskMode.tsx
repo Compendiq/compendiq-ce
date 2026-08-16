@@ -279,6 +279,7 @@ function AskModeInputContent() {
         disabled={isStreaming}
         testId="ask-deep-search"
         className="mb-2"
+        variant="inline"
       />
 
       {/* Main input row */}

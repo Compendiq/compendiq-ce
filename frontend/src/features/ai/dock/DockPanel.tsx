@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Loader2, PanelRightClose, Paperclip, Send, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, PanelRightClose, Paperclip, Send, Sparkles, Square, X } from 'lucide-react';
 import { SUPPORTED_DOCUMENT_FORMATS, SUPPORTED_IMAGE_FORMATS } from '@compendiq/contracts';
 import { useAiContext, type Message } from '../AiContext';
 import { StreamingMessage } from '../StreamingMessage';
@@ -17,6 +17,7 @@ import { RefusalMark, RefusalSourcesLabel, REFUSAL_ANNOUNCEMENT } from '../refus
 import { DockDiffCard } from './DockDiffCard';
 import { useDockActions } from './use-dock-actions';
 import { AssistantActionSelect, resolveAssistantAction } from '../AssistantActionSelect';
+import { cn } from '../../../shared/lib/cn';
 
 // This filter helps native file pickers offer the full attachment surface. It
 // does not decide what is accepted: `useAttachments` routes and validates the
@@ -57,7 +58,7 @@ function DockAttachmentPicker({
         disabled={disabled}
         aria-label="Attach a document or image"
         title="Attach a document or image"
-        className="flex shrink-0 items-center rounded-md border border-transparent px-2 py-2 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+        className="flex shrink-0 items-center rounded-md border border-transparent px-2 py-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
         data-testid="ai-dock-attach-button"
       >
         <Paperclip size={16} aria-hidden />
@@ -92,7 +93,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
-    chatVisionModel, mode, setMode, improvementType,
+    chatVisionModel, mode, setMode, improvementType, abortRef,
   } = useAiContext();
   const selectedAction = resolveAssistantAction(mode === 'generate' ? 'ask' : mode, improvementType);
 
@@ -258,7 +259,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
         </span>
         <button
           onClick={onClose}
-          className="shrink-0 rounded-lg p-1 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="shrink-0 rounded-lg p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="Close AI assistant"
           title="Close assistant (Esc)"
           data-testid="ai-dock-close"
@@ -274,7 +275,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
 
       {/* Streaming indicator: a violet hairline under the header, visible even
           when the thread is scrolled away from the in-flight answer. */}
-      <div className="h-px shrink-0 bg-[var(--glass-sidebar-divider)]">
+      <div className="h-px shrink-0 bg-border">
         {isStreaming && (
           <div className="h-px w-full animate-pulse bg-status-ai" role="status" aria-label="Assistant is responding" data-testid="ai-dock-streaming" />
         )}
@@ -328,7 +329,6 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                 streamingContent={i === messages.length - 1 ? streamingContent : undefined}
               />
             ))}
-            <div ref={messagesEndRef} />
             {/* Artifacts belong to the assistant's turn, so they line up with
                 its prose rather than the column edge: ml-7 is the avatar's
                 20px plus the 8px gap. */}
@@ -336,6 +336,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
               <DockDiffCard onRerun={runChip} />
               <DiagramPreview />
             </div>
+            <div ref={messagesEndRef} />
           </div>
         )}
       </div>
@@ -363,6 +364,8 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             the cards it describes. */}
         {selectedAction !== 'diagram' && references.length > 0 && image && (
           <p
+            id="dock-attachment-context-warning"
+            role="status"
             className="mb-2 flex items-center gap-1.5 text-xs text-warning"
             data-testid="ai-dock-attachment-context-warning"
           >
@@ -445,6 +448,11 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             maxLength={PROMPT_MAX_LENGTH}
             rows={1}
             disabled={isStreaming}
+            aria-describedby={
+              selectedAction !== 'diagram' && references.length > 0 && image
+                ? 'dock-attachment-context-warning'
+                : undefined
+            }
             aria-label={selectedAction === 'ask'
               ? 'Ask the assistant'
               : selectedAction === 'diagram'
@@ -455,21 +463,34 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             className="min-w-0 grow basis-40 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
             data-testid="ai-dock-input"
           />
-          <button
-            onClick={() => void sendSelectedAction()}
-            disabled={
-              isStreaming
-              || !model
-              || (selectedAction === 'ask' && !input.trim())
-              || (selectedAction !== 'ask' && !page)
-              || (selectedAction !== 'diagram' && isBusy)
-            }
-            aria-label={isStreaming ? 'Sending…' : `Send with ${selectedAction}`}
-            className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            data-testid="ai-dock-send"
-          >
-            {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-          </button>
+          {isStreaming ? (
+            <button
+              type="button"
+              onClick={() => abortRef.current?.abort()}
+              aria-label="Stop response"
+              title="Stop response"
+              className="flex shrink-0 self-end items-center rounded-md border border-destructive/70 bg-destructive/10 px-2.5 py-1.5 text-sm font-medium text-destructive transition-all hover:bg-destructive/20 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-testid="ai-dock-stop"
+            >
+              <Square size={13} className="fill-current" aria-hidden />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void sendSelectedAction()}
+              disabled={
+                !model
+                || (selectedAction === 'ask' && !input.trim())
+                || (selectedAction !== 'ask' && !page)
+                || (selectedAction !== 'diagram' && isBusy)
+              }
+              aria-label={`Send with ${selectedAction}`}
+              className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-all hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              data-testid="ai-dock-send"
+            >
+              <Send size={14} aria-hidden />
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -482,7 +503,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
 
 function DockEmptyState({ pageTitle }: { pageTitle: string | undefined }) {
   return (
-    <div className="flex h-full flex-col items-center justify-center px-2 text-center" data-testid="ai-dock-empty">
+    <div className="flex h-full flex-col items-center justify-center px-2 text-center" role="region" aria-label="Assistant empty state" data-testid="ai-dock-empty">
       {/* A plain glyph, not a glowing disc. This was a 56px blurred halo behind
           a ringed circle behind the icon — three stacked decorations to say
           "AI", in the one panel whose job is to get out of the way until it has
@@ -518,6 +539,36 @@ interface DockMessageProps {
   streamingContent?: string;
 }
 
+function DockUserMessage({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = content.length > 200 || content.split('\n').length > 3;
+
+  return (
+    <div className="flex justify-end">
+      <div className="max-w-[88%] break-words rounded-xl rounded-br-sm bg-primary/12 px-3 py-2 text-sm text-foreground">
+        <div
+          className={cn(
+            'whitespace-pre-wrap',
+            isLong && !expanded && 'line-clamp-3',
+          )}
+        >
+          {content}
+        </div>
+        {isLong && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="mt-1 block text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            data-testid="dock-user-message-expand"
+          >
+            {expanded ? 'Show less' : 'Show more'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /**
  * A single turn, sized for a 420px column.
  *
@@ -529,13 +580,7 @@ interface DockMessageProps {
  */
 function DockMessage({ msg, isLast, isStreaming, isThinking, thinkingElapsed, streamingContent }: DockMessageProps) {
   if (msg.role === 'user') {
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[88%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-primary/12 px-3 py-2 text-sm text-foreground">
-          {msg.content}
-        </div>
-      </div>
-    );
+    return <DockUserMessage content={msg.content} />;
   }
 
   const isLastAssistant = isLast;

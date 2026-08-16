@@ -1,5 +1,6 @@
-import { useId } from 'react';
-import { ScanSearch } from 'lucide-react';
+import { useId, useState } from 'react';
+import * as Popover from '@radix-ui/react-popover';
+import { Info, ScanSearch } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 
 /**
@@ -48,6 +49,12 @@ interface DeepSearchToggleProps {
   /** Distinguishes the two composers' controls in tests and in the DOM. */
   testId?: string;
   className?: string;
+  /**
+   * Layout presentation:
+   * - 'popover' (default): compact chip + info icon trigger with Radix popover for caveat. Saves vertical space in docked sidebars.
+   * - 'inline': displays the caveat as an inline text node next to the toggle.
+   */
+  variant?: 'popover' | 'inline';
 }
 
 /**
@@ -85,14 +92,22 @@ export const DEEP_SEARCH_CAVEAT =
   + 'About 2.4 seconds slower; this question only.';
 
 export function DeepSearchToggle({
-  checked, onChange, disabled = false, testId = 'deep-search-toggle', className,
+  checked,
+  onChange,
+  disabled = false,
+  testId = 'deep-search-toggle',
+  className,
+  variant = 'popover',
 }: DeepSearchToggleProps) {
+  const [infoOpen, setInfoOpen] = useState(false);
+
   // The caveat is the control's accessible description, so it needs a stable id
   // rather than a testid — `aria-describedby` is the only thing that carries
   // visible text to a screen reader without also renaming the control.
   const caveatId = useId();
+
   return (
-    <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1', className)}>
+    <div className={cn('flex items-center gap-1.5', className)}>
       <label
         className={cn(
           // h-7 matches the chip rows either composer sits under. Border and
@@ -132,17 +147,53 @@ export function DeepSearchToggle({
         <ScanSearch size={12} aria-hidden />
         <span>Deep search</span>
       </label>
-      {/* Unconditional, and that is the point: the moment this text is useful
-          is *before* the toggle is switched on. Muted rather than amber — a
-          permanent banner in amber teaches users to ignore amber (ADR-010), and
-          this is a caveat on an opt-in, not a warning about a state. */}
-      <span
-        id={caveatId}
-        className="text-xs text-muted-foreground"
-        data-testid={`${testId}-caveat`}
-      >
-        {DEEP_SEARCH_CAVEAT}
-      </span>
+
+      {variant === 'popover' ? (
+        <>
+          <Popover.Root open={infoOpen} onOpenChange={setInfoOpen}>
+            <Popover.Trigger asChild>
+              <button
+                type="button"
+                disabled={disabled}
+                aria-label="Deep search details and caveats"
+                title="Deep search information"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                data-testid={`${testId}-info-trigger`}
+              >
+                <Info size={13} aria-hidden />
+              </button>
+            </Popover.Trigger>
+            <Popover.Portal>
+              <Popover.Content
+                align="start"
+                side="top"
+                sideOffset={6}
+                collisionPadding={8}
+                className="nm-card-elevated z-50 max-w-[280px] p-2.5 text-xs leading-relaxed text-muted-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95"
+                data-testid={`${testId}-popover-content`}
+              >
+                <p className="mb-1 font-medium text-foreground">Deep search (multi-query expansion)</p>
+                <p>{DEEP_SEARCH_CAVEAT}</p>
+              </Popover.Content>
+            </Popover.Portal>
+          </Popover.Root>
+          <span
+            id={caveatId}
+            className="sr-only"
+            data-testid={`${testId}-caveat`}
+          >
+            {DEEP_SEARCH_CAVEAT}
+          </span>
+        </>
+      ) : (
+        <span
+          id={caveatId}
+          className="text-xs text-muted-foreground"
+          data-testid={`${testId}-caveat`}
+        >
+          {DEEP_SEARCH_CAVEAT}
+        </span>
+      )}
     </div>
   );
 }
