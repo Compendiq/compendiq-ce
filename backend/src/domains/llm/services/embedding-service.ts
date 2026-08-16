@@ -23,34 +23,9 @@ import {
   shadowEpochFromClient,
 } from './shadow-migration-service.js';
 import { listRelationshipProducers } from './embedding-relationship-hooks.js';
-import { toUserFacingEmbeddingError } from './embedding-error-message.js';
+import { toUserFacingEmbeddingError, EmbeddingDimensionMismatchError } from './embedding-error-message.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import pgvector from 'pgvector';
-
-/**
- * The `embedding` use case resolved to a model whose vectors do not fit the
- * live column (#1114).
- *
- * Its own type, rather than a bare `Error`, because the message is the whole
- * point: it reaches the operator through `pages.embedding_error` and the
- * embedding status UI, and it must name the model and both widths. The
- * previous behaviour surfaced this as a pgvector cast failure naming neither.
- */
-export class EmbeddingDimensionMismatchError extends Error {
-  constructor(
-    readonly model: string,
-    readonly expected: number,
-    readonly received: number,
-  ) {
-    super(
-      `Embedding model "${model}" returned ${received}-dimensional vectors but the ` +
-      `page_embeddings.embedding column holds ${expected}. Nothing was written. ` +
-      `Change the embedding assignment back, or run a zero-downtime re-embed ` +
-      `(Settings → AI Models → Start zero-downtime re-embed) to move the corpus to ${received}.`,
-    );
-    this.name = 'EmbeddingDimensionMismatchError';
-  }
-}
 
 /**
  * The dimension the live `embedding` column accepts, or `null` when it cannot

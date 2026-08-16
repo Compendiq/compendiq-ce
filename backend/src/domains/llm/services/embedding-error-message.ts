@@ -12,6 +12,34 @@
 import { LlmHttpError } from './llm-http-error.js';
 
 /**
+ * The `embedding` use case resolved to a model whose vectors do not fit the
+ * live `page_embeddings.embedding` column (#1114).
+ *
+ * Its own type because the two audiences need different text. The `message`
+ * here is the OPERATOR/log form and names the model and both widths; the
+ * user-facing string comes from `toUserFacingEmbeddingError` below, which — as
+ * this module's header says — never lets raw text through.
+ *
+ * It lives in this module rather than in `embedding-service.ts` so the mapper
+ * can recognise it by type instead of by string sniffing: `embedding-service`
+ * already imports this file, so the reverse import would close a cycle, and
+ * matching on `err.name` would silently stop working under a rename.
+ */
+export class EmbeddingDimensionMismatchError extends Error {
+  constructor(
+    readonly model: string,
+    readonly expected: number,
+    readonly received: number,
+  ) {
+    super(
+      `Embedding model "${model}" returned ${received}-dimensional vectors but the ` +
+      `page_embeddings.embedding column holds ${expected}. Nothing was written.`,
+    );
+    this.name = 'EmbeddingDimensionMismatchError';
+  }
+}
+
+/**
  * Convert any thrown embedding error into a short, safe, user-facing message.
  * Never returns the raw upstream text — every branch, including the fallback,
  * yields a fixed constant string.
@@ -28,6 +56,20 @@ import { LlmHttpError } from './llm-http-error.js';
  * response) still only has `.message`, so that fallback stays.
  */
 export function toUserFacingEmbeddingError(err: unknown): string {
+  // #1114 — checked FIRST, and by type. This is the one embedding failure that
+  // is not the provider's fault: the provider answered perfectly well, with a
+  // vector the configured column cannot store. It matches none of the needles
+  // below, so without this branch it fell to the generic tail and told the
+  // operator "provider error, see server logs" — wrong about the cause and
+  // pointing away from the fix, which is in Settings, not the provider.
+  //
+  // Fixed constant, like every other branch: the widths and the model name
+  // stay in the log-side `message`.
+  if (err instanceof EmbeddingDimensionMismatchError) {
+    return 'The embedding model produces vectors of a different size than the stored index. '
+      + 'Change the model back, or run a zero-downtime re-embed from Settings → AI Models.';
+  }
+
   const raw = err instanceof LlmHttpError
     ? `${err.message} ${err.detail}`
     : err instanceof Error ? err.message : String(err);

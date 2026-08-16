@@ -1508,10 +1508,13 @@ describe('embedPage', () => {
     const err = await embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>').catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).name).toBe('EmbeddingDimensionMismatchError');
-    // Reaches the operator via pages.embedding_error — it has to say which
-    // model, and what to do about it.
+    // This is the LOG-side message, so it may name the model and both widths.
+    // The user-facing string is a fixed constant produced by
+    // toUserFacingEmbeddingError — pinned in embedding-error-message.test.ts,
+    // because this column is written through that sanitizer, not from here.
     expect((err as Error).message).toContain('bge-m3');
-    expect((err as Error).message).toContain('zero-downtime re-embed');
+    expect((err as Error).message).toContain('2560');
+    expect((err as Error).message).toContain('1024');
   });
 
   it('#1114: a matching width embeds normally', async () => {

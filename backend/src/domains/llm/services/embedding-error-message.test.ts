@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toUserFacingEmbeddingError } from './embedding-error-message.js';
+import { toUserFacingEmbeddingError, EmbeddingDimensionMismatchError } from './embedding-error-message.js';
 import { LlmHttpError } from './llm-http-error.js';
 
 describe('toUserFacingEmbeddingError', () => {
@@ -90,6 +90,40 @@ describe('toUserFacingEmbeddingError', () => {
       );
       expect(result).toBe('Embedding failed due to a provider error. See server logs for details.');
       expect(result).not.toContain(secretish);
+    });
+  });
+
+  // ── #1114 dimension mismatch ────────────────────────────
+  describe('EmbeddingDimensionMismatchError', () => {
+    it('does not fall through to the generic provider-error tail', () => {
+      const result = toUserFacingEmbeddingError(
+        new EmbeddingDimensionMismatchError('qwen3-embedding-4b', 1024, 2560),
+      );
+      // The whole point: this is NOT a provider error. The provider answered
+      // correctly; the configured column cannot store what it returned, and the
+      // remedy is in Settings rather than anything about the provider.
+      expect(result).not.toBe('Embedding failed due to a provider error. See server logs for details.');
+      expect(result).toContain('different size than the stored index');
+      expect(result).toContain('Settings');
+    });
+
+    it('keeps the model name and both widths out of the user-facing string', () => {
+      const result = toUserFacingEmbeddingError(
+        new EmbeddingDimensionMismatchError('qwen3-embedding-4b', 1024, 2560),
+      );
+      // Same rule every other branch follows — a fixed constant. The specifics
+      // live on the error's own `message`, which goes to the log.
+      expect(result).not.toContain('qwen3-embedding-4b');
+      expect(result).not.toContain('2560');
+    });
+
+    it('still carries the diagnostic detail on the error itself', () => {
+      const err = new EmbeddingDimensionMismatchError('qwen3-embedding-4b', 1024, 2560);
+      expect(err.message).toContain('qwen3-embedding-4b');
+      expect(err.message).toContain('2560');
+      expect(err.message).toContain('1024');
+      expect(err.expected).toBe(1024);
+      expect(err.received).toBe(2560);
     });
   });
 });
