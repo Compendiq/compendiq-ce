@@ -23,6 +23,7 @@ import { getRagFetchWidth } from '../../core/services/admin-settings-service.js'
 import { markdownToSnippetText } from '../../core/services/content-converter.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
+import { formatQueryForEmbedding } from '../../domains/llm/services/query-instruction.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import { toUserFacingEmbeddingError } from '../../domains/llm/services/embedding-error-message.js';
 
@@ -57,7 +58,11 @@ const SuggestionsQuerySchema = z.object({
 });
 
 /**
- * Generate a query embedding for semantic/hybrid search modes.
+ * Generate a query embedding for `mode=semantic`.
+ *
+ * Only that mode: `mode=hybrid` delegates to `hybridSearch`, which resolves the
+ * provider and embeds the question itself. That split is why the #1114
+ * instruction prefix has to be applied in both places — see the call below.
  *
  * Errors are handled separately by where they originate, because they carry
  * very different disclosure risk:
@@ -96,7 +101,24 @@ async function generateSearchEmbedding(
   }
 
   try {
-    const embeddings = await generateEmbedding(resolved.config, resolved.model, q);
+    // #1114: instruction-aware models (Qwen3) want a preamble on the QUERY and
+    // nothing on the document. This route is the app's SECOND query-side
+    // embedding call — `rag-service.ts`'s vector leg is the other, and it is
+    // the one `mode=hybrid` reaches. `mode=semantic` embeds here instead, so it
+    // needs the asymmetry applied independently or a user picking Semantic on
+    // the Pages search bar silently gets the un-prefixed, lower-recall query.
+    //
+    // Keyed off the RESOLVED model exactly as the vector leg is, so it turns on
+    // at a swap and off at a rollback with no separate setting; a no-op for
+    // every model that is not instruction-aware, which is why it runs
+    // unconditionally rather than behind a second flag that could drift.
+    // `query-instruction.test.ts` enumerates both query sites and every
+    // document site, and asserts on the CALL's arguments rather than on the
+    // file, so neither half can be added or dropped unnoticed — and dropping
+    // the wrapper here while leaving the import behind is red, not green.
+    const embeddings = await generateEmbedding(
+      resolved.config, resolved.model, formatQueryForEmbedding(resolved.model, q),
+    );
     const embedding = embeddings[0];
     // `!embedding` alone would miss a zero-length inner vector ([[]]) — an
     // empty array is truthy in JS — so check length explicitly too.

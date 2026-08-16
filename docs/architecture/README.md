@@ -38,7 +38,7 @@ Quick reference for what to update when:
 | A migration that adds/drops/renames a core table or FK | `06-data-model.md` |
 | Auth routes, JWT/refresh logic, or OIDC wiring | `07-flow-auth.md` |
 | `sync-service.ts`, sync scheduler, attachment handler | `08-flow-sync.md` |
-| `rag-service.ts`, `multi-query-search.ts`, `llm-ask.ts`, prompt-building, caching | `09-flow-rag-chat.md` |
+| `rag-service.ts`, `multi-query-search.ts`, `llm-ask.ts`, `routes/knowledge/search.ts`, prompt-building, caching | `09-flow-rag-chat.md` |
 | Enterprise loader, license route, license persistence | `10-flow-enterprise-license.md` |
 | `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, XHTML/HTML/Markdown conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |
 

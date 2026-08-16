@@ -31,8 +31,7 @@ const { loadCorpus } = await import(`${REPO}/src/domains/llm/eval/fixture.js`) a
 const { markdownToHtml, htmlToText } = await import(`${REPO}/src/core/services/content-converter.js`) as typeof import('../src/core/services/content-converter.js');
 const { chunkText } = await import(`${REPO}/src/domains/llm/services/embedding-service.js`) as typeof import('../src/domains/llm/services/embedding-service.js');
 const { recallAtK, meanReciprocalRank, pairedSignificance } = await import(`${REPO}/src/domains/llm/eval/metrics.js`) as typeof import('../src/domains/llm/eval/metrics.js');
-
-const QWEN_PREFIX = 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:';
+const { formatQueryForEmbedding, wantsInstructionPrefix } = await import(`${REPO}/src/domains/llm/services/query-instruction.js`) as typeof import('../src/domains/llm/services/query-instruction.js');
 
 interface Variant { id: string; label: string; titlePrefix: boolean; chunkTokens: number }
 const VARIANTS: Variant[] = [
@@ -105,7 +104,20 @@ const results: Record<string, { runs: Array<{ queryId: string; retrieved: number
 
 for (const m of MODELS) {
   console.log(`\n═══ ${m.label}`);
-  const queries = fixture.labels.map((l) => (m.prefix ? `${QWEN_PREFIX}${l.query}` : l.query));
+  // The prefixed arm goes through the SHIPPING formatter (#1114), not a copy of
+  // its template. This script used to hardcode Qwen's stock web-search task,
+  // which is not the wording `query-instruction.ts` sends — so its prefix-on/off
+  // delta measured a preamble the app never uses. (The figures already quoted on
+  // #1108 and in 06-data-model.md were produced with that older string; re-runs
+  // measure what ships and may differ slightly.)
+  //
+  // `m.prefix` stays the on/off axis rather than being inferred, and the check
+  // below is what stops the "on" arm silently collapsing into the "off" one if a
+  // model is added whose name the matcher does not recognise.
+  if (m.prefix && !wantsInstructionPrefix(m.model)) {
+    throw new Error(`${m.id}: prefix:true but query-instruction.ts would not prefix "${m.model}"`);
+  }
+  const queries = fixture.labels.map((l) => (m.prefix ? formatQueryForEmbedding(m.model, l.query) : l.query));
   const queryVecs = await embedAll(m.model, queries, m.dimensions, 'queries (shared)');
 
   for (const v of VARIANTS) {

@@ -1040,13 +1040,50 @@ states the condition where an operator will meet it.
   asymmetrically: a QUERY carries an instruction preamble, a DOCUMENT is
   embedded bare. `query-instruction.ts` applies
   `Instruct: {task}\nQuery:{query}` — **no space after `Query:`**; the epic
-  body has one and the model's own template does not — at the vector leg's
-  `generateEmbedding` call, which is the app's **only** query-side embedding
-  call. The three document-side calls (`embedPage`, the shadow dual-write and
-  the shadow backfill) must never reach it, and a structural test in
-  `query-instruction.test.ts` fails if any of them starts to — a wrongly
-  prefixed document still returns a plausible vector, so no behavioural test
-  would go red while retrieval quietly degraded.
+  body has one and the model's own template does not.
+  There are **two** query-side embedding calls and both apply it: the vector
+  leg's `generateEmbedding` in `rag-service.ts` (`/llm/ask`, and
+  `/api/search?mode=hybrid` through `hybridSearch`), and
+  `routes/knowledge/search.ts`, which embeds the query itself for
+  `/api/search?mode=semantic` rather than delegating. The semantic mode is not
+  an internal corner — it is one of the three buttons on the Pages search bar —
+  and it shipped unprefixed, because the first guard scanned only
+  `domains/llm/{services,eval}` and so could not see a caller in `routes/`.
+  Everything else that embeds must stay bare: `embedPage` and its shadow
+  dual-write, the shadow backfill and its dimension probe, the eval seeder,
+  `POST /admin/embedding/probe`'s vector-width probe, and the retrieval-eval
+  harness's own width probe in `backend/scripts/run-retrieval-eval.ts`. A
+  structural test in `query-instruction.test.ts` walks **`backend/src` and
+  `backend/scripts`** — both directories `npm run lint -w backend` covers — and
+  fails when a query site stops prefixing, when a query site gains a second
+  unprefixed embed, and when a caller appears that is in neither list. It
+  asserts on each `generateEmbedding(…)` **call's arguments**, not on whether
+  the file mentions the module: the first cut of that check was a whole-file
+  `includes`, which the bare `import` line satisfied on its own, so dropping the
+  wrapper from the call left the guard green. It also resolves each caller's
+  **local binding** instead of assuming it is the exported name — the cut before
+  this one matched `import { generateEmbedding }` + `generateEmbedding(` and
+  nothing else, so an aliased import (`app.ts` writes `close as closeCacheBus`),
+  a namespace import (`core/plugins/auth.ts` writes `import * as jose`) and a
+  `scripts/*.mts` dynamic import (how every script reaches `src`, because
+  scripts run against `dist`) each passed green, verified by mutation. A wrongly
+  prefixed document, or a wrongly bare query, still returns a plausible vector,
+  so no behavioural test would go red while retrieval quietly degraded.
+  `compare-embedding-variants.mts` is the one query-side embed the walk cannot
+  see — it embeds the fixture queries over its own `fetch`, so it never calls
+  `generateEmbedding` at all — and it therefore carries its own assertion, read
+  by path: it builds its prefix from the exported `RETRIEVAL_TASK` rather than
+  from a copy (it used to hardcode Qwen's stock *web search* task, so its
+  prefix-on/off delta measured a preamble the app never sends), and refuses to
+  run a `prefix: true` arm for a model the shipping matcher would not prefix.
+  That first assertion pins the **argument count**, not just the callee:
+  `formatQueryForEmbedding(model, query, task)` takes an optional third
+  argument, so calling the shipping wrapper and still sending the stock web
+  search task is one argument away — and the task string carries no literal
+  `Instruct: ` for the no-hardcoded-preamble check to catch. The same
+  two-argument rule is asserted for `rag-service.ts` and
+  `routes/knowledge/search.ts`, because a per-site task is a divergence in the
+  app for the same reason it is one in the harness.
   Two consequences are worth stating. It is keyed off the **resolved** model,
   so it turns on exactly when a swap makes Qwen3 live and off again on a
   rollback, with no second setting to keep in step. And because documents are
