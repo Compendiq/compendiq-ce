@@ -177,9 +177,32 @@ describe('backend facts the #1114 docs assert (#1114 review)', () => {
     expect(
       readers,
       'Something reads `process.env.EMBEDDING_MODEL` again. The docs say it has no ' +
-        'effect since migration 054 (ADR-012 `#1114` amendment, and 06-data-model.md ' +
-        '→ "Which model, in practice") — update them, or drop the read.',
+        'effect since migration 054 (ADR-012 `#1114` amendment, 06-data-model.md ' +
+        '→ "Which model, in practice", and CLAUDE.md\'s legacy-env paragraph) — ' +
+        'update them, or drop the read.',
     ).toEqual([]);
+  });
+
+  it('CLAUDE.md does not offer EMBEDDING_MODEL as a tunable default', () => {
+    // Same fact, stated where an agent actually reads it. CLAUDE.md listed
+    // `EMBEDDING_MODEL=bge-m3` under "Tunable defaults (override only with
+    // reason)" — i.e. it told every reader to set a variable nothing reads,
+    // three sections below its own tech-stack line saying the model is
+    // DB-resolved. It now sits in the legacy-env paragraph instead.
+    const claudeMd = readFileSync(resolve(__dirname, '../../CLAUDE.md'), 'utf-8');
+    const tunable = /^Tunable defaults[^\n]*$/m.exec(claudeMd);
+
+    // Non-vacuity: without this, renaming the heading would make the assertion
+    // below pass over `null`, and the width var proves the list is the real one.
+    expect(tunable, 'no "Tunable defaults" line in CLAUDE.md — retarget this guard').not.toBeNull();
+    expect(tunable![0]).toContain('EMBEDDING_DIMENSIONS');
+
+    expect(
+      tunable![0],
+      'CLAUDE.md lists EMBEDDING_MODEL as a tunable default. Nothing reads it (see the ' +
+        'assertion above); it belongs in the legacy-env paragraph, not in a list that ' +
+        'tells a reader overriding it does something.',
+    ).not.toContain('EMBEDDING_MODEL');
   });
 
   it('EMBEDDING_DIMENSIONS is still the width fallback (non-vacuity)', () => {
@@ -202,8 +225,8 @@ describe('backend facts the #1114 docs assert (#1114 review)', () => {
     // `domains/llm/eval`, so a route file is outside them entirely.
     //
     // This failing is GOOD NEWS — it means #1339 was fixed. Delete the "open
-    // gap" paragraphs in both docs, the comments in `routes/knowledge/search.ts`
-    // and `rag-service.ts`, and then this assertion.
+    // gap" paragraphs in both docs, the comments in `routes/knowledge/search.ts`,
+    // `rag-service.ts` and `query-instruction.ts`, and then this assertion.
     const search = readFileSync(resolve(backendSrc, 'routes/knowledge/search.ts'), 'utf-8');
     // Comments stripped: the file *names* `formatQueryForEmbedding` in the
     // comment that records this gap, and a naive substring match would read
@@ -216,15 +239,28 @@ describe('backend facts the #1114 docs assert (#1114 review)', () => {
       /formatQueryForEmbedding/.test(code),
       'routes/knowledge/search.ts now applies the query prefix — #1339 is closed. ' +
         'Remove the open-gap notes from 08-flow-sync.md, 09-flow-rag-chat.md, ' +
-        'rag-service.ts and search.ts, then delete this assertion.',
+        'rag-service.ts, search.ts and query-instruction.ts, then delete this assertion.',
     ).toBe(false);
 
-    // Non-vacuity in the other direction: the docs must actually carry the
-    // caveat while the gap is open, in both files that make the claim.
-    for (const file of ['08-flow-sync.md', '09-flow-rag-chat.md']) {
+    // Non-vacuity in the other direction: every place that states the
+    // query-prefix asymmetry must carry the caveat while the gap is open, or
+    // the corrected copies drift apart again — which is exactly what happened
+    // once. `query-instruction.ts`'s module header is in the list because it is
+    // the canonical statement of the doctrine: it is where "this is query-only"
+    // is argued, and it justified the narrow scan in `query-instruction.test.ts`
+    // with a call-site count that was already wrong.
+    const claimSites: Array<[string, string]> = [
+      ['08-flow-sync.md', resolve(architectureDir, '08-flow-sync.md')],
+      ['09-flow-rag-chat.md', resolve(architectureDir, '09-flow-rag-chat.md')],
+      [
+        'domains/llm/services/query-instruction.ts',
+        resolve(backendSrc, 'domains/llm/services/query-instruction.ts'),
+      ],
+    ];
+    for (const [label, path] of claimSites) {
       expect(
-        readFileSync(resolve(architectureDir, file), 'utf-8'),
-        `${file} states the query-prefix asymmetry but no longer names the /api/search gap`,
+        readFileSync(path, 'utf-8'),
+        `${label} states the query-prefix asymmetry but no longer names the /api/search gap`,
       ).toContain('#1339');
     }
   });

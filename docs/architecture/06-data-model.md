@@ -334,7 +334,10 @@ together, which matters most for #1114's query-side prefix.
 - **User ownership is pervasive.** Almost every table carries `user_id`
   (UUID, FK → `users.id`) — Compendiq is multi-tenant at the user level.
 - **pgvector — the column type is dimension-driven, not one model's shape.**
-  `page_embeddings.embedding` has no fixed width in the schema. The embedding
+  `page_embeddings.embedding` always carries a *declared* width — 006 shipped
+  `vector(768)`, 048 re-typed it to `vector(1024)` — but the schema does not
+  *fix* one: that declaration is where the migrations leave a fresh install, and
+  a model swap re-types the column. The embedding
   pair is resolved from `llm_usecase_assignments` (the `embedding` use case,
   ADR-021) and the width is **probed from the model**, not typed by an
   operator: the shadow migration embeds the literal text `probe` and takes
