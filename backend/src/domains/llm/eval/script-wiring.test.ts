@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { EVAL_KNOWN_FLAGS } from './cli-flags.js';
+import { EVAL_KNOWN_FLAGS, EVAL_VALUELESS_FLAGS } from './cli-flags.js';
 
 /**
  * #1114 review r1 — the eval entrypoints are the one place no other test can
@@ -107,8 +107,14 @@ describe('run-retrieval-eval.ts wiring (#1114)', () => {
   // in cli-flags.test.ts, is the fix — and this is the assertion that the
   // script is actually on it.
   it('reads its values through the shared reader, in both spellings', () => {
-    expect(flat).toContain('const arg = (name: string): string | undefined => flagValue(process.argv, name)');
-    // No hand-rolled index arithmetic left anywhere — that is the whole bug.
+    // Matched on the DELEGATION, not on one spelling of the declaration: an
+    // arrow and a `function arg(name) { return flagValue(…) }` are equally
+    // correct, and pinning the exact text failed a reformat that changed
+    // nothing (review r4). `[^;]` keeps the gap inside one statement, so a
+    // stray `arg` elsewhere cannot pair with a `flagValue` call further down.
+    expect(flat).toMatch(/\barg\b[^;]{0,80}flagValue\(process\.argv, name\)/);
+    // No hand-rolled index arithmetic left anywhere — that is the whole bug,
+    // and this is the assertion that actually catches it coming back.
     expect(code('run-retrieval-eval.ts')).not.toMatch(/process\.argv\.indexOf\(/);
   });
 
@@ -132,10 +138,48 @@ describe('run-retrieval-eval.ts wiring (#1114)', () => {
     const unknown = [...inSource].filter((f) => !(EVAL_KNOWN_FLAGS as readonly string[]).includes(f));
     expect(unknown).toEqual([]);
   });
+
+  // The mirror of the scan above, for the OTHER half of the guard (review r4).
+  // `EVAL_KNOWN_FLAGS` being complete stops a typo; `EVAL_VALUELESS_FLAGS`
+  // being complete is what stops `--rerank=true` measuring plain retrieval
+  // under a report that says reranked. Nothing tied the second list to the
+  // script, so dropping a switch from it re-opened exactly that hole with the
+  // whole suite green — verified by removing 'rerank' from the list, which
+  // fails this test and nothing else.
+  it('knows every SWITCH it reads — the valueless list cannot drift either', () => {
+    // A switch is a flag read as a bare token: no `=` spelling can satisfy
+    // `includes`, which is the entire reason those flags must refuse a value.
+    const body = code('run-retrieval-eval.ts');
+    const switches = [...body.matchAll(/process\.argv\.includes\('--([a-z][a-z0-9-]*)'\)/g)].map((m) => m[1]!);
+    // The scan has to find something, or a broken regex passes silently.
+    expect(new Set(switches).size).toBeGreaterThanOrEqual(5);
+    const unlisted = [...new Set(switches)].filter(
+      (f) => !(EVAL_VALUELESS_FLAGS as readonly string[]).includes(f),
+    );
+    expect(unlisted).toEqual([]);
+  });
 });
 
 describe('benchmark-query-latency.ts wiring (#1114)', () => {
+  const raw = source('benchmark-query-latency.ts');
   const flat = collapsed('benchmark-query-latency.ts');
+
+  // #1114 review r4 — the eval CERTIFIES the configuration it seeded under
+  // (`assertSeededFtsLanguage` above); this script published the live
+  // `admin_settings` row as `metadata.ftsLanguage` while certifying nothing.
+  // The eval writes that row before it truncates the corpus, so a failure in
+  // between leaves the previous corpus standing under a changed
+  // configuration — and the search half's keyword leg then genuinely runs
+  // mismatched, so the timing is wrong too, not only the label.
+  it('certifies the seeded corpus was built under the configuration it reports', () => {
+    const read = raw.indexOf('await getFtsLanguage()');
+    const certify = raw.indexOf('await assertSeededFtsLanguage(ftsLanguage)');
+    expect(read).toBeGreaterThan(-1);
+    expect(certify).toBeGreaterThan(read);
+    // Ahead of every timed call, or the refusal arrives after the run it was
+    // supposed to prevent.
+    expect(raw.indexOf('timeConcurrently(')).toBeGreaterThan(certify);
+  });
 
   it('resolves the search half\'s model from the database and refuses a mislabelled arm', () => {
     // hybridSearch takes no model: rag-service resolves one from the

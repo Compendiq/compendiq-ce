@@ -130,6 +130,14 @@ not belong there. It is non-destructive (never seeds, `recordAnalytics: false`)
 and refuses a search arm whose model width does not match the live
 `page_embeddings` column, because `hybridSearch` degrades to keyword-only on an
 embedding failure and would otherwise publish FTS latency as retrieval latency.
+**It reports no configuration it has not certified**, so it runs
+`assertSeededFtsLanguage` over the row it publishes as `ftsLanguage`: the eval
+writes that row *before* it truncates the corpus and `resetEvalCorpus`
+deliberately never clears it (migration 049's trigger reads it per inserted
+row), so a seed that dies in between leaves the previous corpus standing under a
+changed configuration — and the keyword leg then genuinely runs mismatched, so
+the timing is wrong too and not only the label. The certification is one
+recomputing `SELECT`, which is what keeps the script read-only.
 **Its two halves do not take their model from the same place**, and the report
 would lie by default if that were left implicit: `hybridSearch` accepts no model
 and no endpoint, so `rag-service` resolves both from the DB's `embedding`

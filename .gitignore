@@ -83,3 +83,10 @@ docker/docker-compose.confluence.faketime.yml
 # #1114: translator caches — resume state, not source.
 backend/src/domains/llm/eval/corpus-*/.titles.json
 backend/src/domains/llm/eval/corpus-*/.queries.json
+
+# #1114: the two eval scripts' default report names. Both default relative to
+# the cwd the runbook tells you to use (`cd backend`), so a bare run drops a
+# measurement into the tree — a result, not source. CI writes the first of
+# these by name (pr-check.yml). Pass --out for a report worth keeping.
+backend/retrieval-eval.json
+backend/query-latency.json

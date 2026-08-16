@@ -22,6 +22,7 @@
  *    verdict about a flag rather than about the checkout.
  */
 import { ALLOWED_FTS_LANGUAGES } from '../../../core/services/fts-language.js';
+import { flagValue } from './cli-flags.js';
 
 /**
  * The configuration every recorded baseline was measured under, and therefore
@@ -37,22 +38,33 @@ export const DEFAULT_EVAL_FTS_LANGUAGE = 'simple';
  * Validation is not optional politeness: `getFtsLanguage()` answers 'simple'
  * for any value Postgres would not accept, so an unvalidated flag produces a
  * run labelled `klingon` whose lexical leg is plain 'simple'.
+ *
+ * The READING is `flagValue`'s, not this function's (review r4). It used to
+ * hand-roll the two spellings — the same shape, agreeing by coincidence — and
+ * "one reader, not two policies" is worth nothing if the rig keeps a second
+ * copy: a change to `flagValue` (last-wins on a repeated flag, say) would
+ * simply not have reached `--fts-language`. What stays here is the part that
+ * is genuinely this flag's own: the allow-list, and a missing-value message
+ * naming the configurations and the default, which is more use than the
+ * generic "needs a value" the shared reader can offer.
  */
 export function parseFtsLanguageArg(argv: readonly string[]): string {
-  const inline = argv.find((a) => a.startsWith('--fts-language='));
-  const flagIndex = argv.indexOf('--fts-language');
-  if (inline === undefined && flagIndex === -1) return DEFAULT_EVAL_FTS_LANGUAGE;
-
-  const raw = inline !== undefined ? inline.slice('--fts-language='.length) : argv[flagIndex + 1];
-  // `--fts-language --rerank` must not read the next flag as a value: that
-  // would fail the allow-list with a confusing message about "--rerank".
-  if (!raw || raw.startsWith('--')) {
+  let raw: string | undefined;
+  try {
+    // Throws on `--fts-language` with no value, on `--fts-language=` and on
+    // `--fts-language --rerank`, which must never read the next flag as a
+    // value: that would fail the allow-list below with a confusing message
+    // about "--rerank".
+    raw = flagValue(argv, 'fts-language');
+  } catch {
     throw new Error(
       `--fts-language needs a value, one of: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}. ` +
         `Omit the flag entirely to measure under "${DEFAULT_EVAL_FTS_LANGUAGE}", which is what every ` +
         'recorded baseline used.',
     );
   }
+  if (raw === undefined) return DEFAULT_EVAL_FTS_LANGUAGE;
+
   if (!ALLOWED_FTS_LANGUAGES.has(raw)) {
     throw new Error(
       `Unknown FTS configuration "${raw}". Allowed: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}. ` +

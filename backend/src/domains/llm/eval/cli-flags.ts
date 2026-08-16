@@ -98,8 +98,14 @@ export const EVAL_KNOWN_FLAGS = [
 /**
  * The subset of `EVAL_KNOWN_FLAGS` the script reads with
  * `process.argv.includes('--flag')`. Nothing reads a value from these, so
- * `--rerank=true` must be refused rather than accepted-and-dropped —
- * `cli-flags.test.ts` ties this list back to `EVAL_KNOWN_FLAGS`.
+ * `--rerank=true` must be refused rather than accepted-and-dropped.
+ *
+ * Tied down in both directions, because one direction was not enough (review
+ * r4): `cli-flags.test.ts` asserts this list is a subset of `EVAL_KNOWN_FLAGS`,
+ * and `script-wiring.test.ts` scans the script for `process.argv.includes`
+ * literals and fails on any that is missing here. Without the second, dropping
+ * a switch from this list re-opened the silent `--rerank=true` drop with the
+ * whole suite green.
  */
 export const EVAL_VALUELESS_FLAGS = [
   'rerank', 'deep-search', 'no-assemble', 'no-pin', 'mmr', 'help',

@@ -241,8 +241,11 @@ timer around the embedding call.
 
 Two halves, selected with `--mode`:
 
-- **`embedding`** — `POST {base-url}/v1/embeddings`, one request per query, at
-  each concurrency level. The query text is formatted exactly as production
+- **`embedding`** — `POST {base-url}/embeddings`, one request per query, at
+  each concurrency level. Note the missing `/v1`: `--base-url` is spelled
+  **exactly** as the provider row is (`http://localhost:1234/v1` for LM Studio),
+  because `generateEmbedding` appends `/embeddings` to it verbatim and nothing
+  guesses a `/v1` for you. The query text is formatted exactly as production
   formats it (`formatQueryForEmbedding`), so Qwen3 pays for its `Instruct`
   preamble. It bypasses `openai-compatible-client.ts` on purpose: that client's
   shared queue and per-provider circuit breaker are the serialisation this
@@ -346,6 +349,15 @@ Refusals that matter:
 - **Corpus/question-set mismatch.** `--lang de` against an English seeding is
   refused. The dead-vector-leg guard cannot catch it — that fires only at
   exactly zero participation, and a mismatched corpus still returns hits.
+- **Uncertified FTS configuration.** The benchmark reports the `fts_language`
+  the database is *set* to, so it also certifies the seeded tsvectors were
+  *built* under it (`assertSeededFtsLanguage`, one recomputing `SELECT` — the
+  run stays read-only). The eval writes that row **before** it truncates the
+  corpus, so a failure in between leaves the previous corpus standing under a
+  changed configuration; without this the benchmark would report `fts simple`
+  over German-built tsvectors, and the keyword leg would genuinely run
+  mismatched, so the timing would be wrong too and not only the label. Re-seed
+  with `run-retrieval-eval.ts --fts-language <cfg>` to clear it.
 
 - **Dimension mismatch.** Before timing anything, the script embeds one probe
   with the model and compares it against `page_embeddings.embedding`'s width

@@ -11,10 +11,13 @@
  *
  * Two halves, either or both:
  *
- *   --mode embedding   POST {base-url}/v1/embeddings per query, at each
- *                      concurrency level. The query text is formatted exactly
- *                      as production formats it, so Qwen3 pays for its Instruct
- *                      preamble. Touches no database.
+ *   --mode embedding   POST {base-url}/embeddings per query, at each
+ *                      concurrency level. No /v1 is guessed: --base-url is
+ *                      spelled exactly as the provider row is (e.g.
+ *                      http://localhost:1234/v1), because generateEmbedding
+ *                      appends /embeddings to it verbatim. The query text is
+ *                      formatted exactly as production formats it, so Qwen3
+ *                      pays for its Instruct preamble. Touches no database.
  *   --mode search      hybridSearch() end to end, the way runner.ts calls it
  *                      (rerank off, sibling assembly on, identifier pinning
  *                      on), timed per call. NEVER writes: no reseed, no
@@ -55,7 +58,7 @@ import { getFtsLanguage } from '../src/core/services/fts-language.js';
 import { getMetrics } from '../src/domains/llm/services/llm-queue.js';
 import { resolveUsecase } from '../src/domains/llm/services/llm-provider-resolver.js';
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
-import { EVAL_USER_ID, readCorpusLanguage } from '../src/domains/llm/eval/seed.js';
+import { EVAL_USER_ID, readCorpusLanguage, assertSeededFtsLanguage } from '../src/domains/llm/eval/seed.js';
 import { FixtureSchema } from '../src/domains/llm/eval/fixture.js';
 import {
   parseBenchmarkArgs,
@@ -160,6 +163,20 @@ async function main(): Promise<void> {
     const pages = await assertSeededCorpus();
     column = await readEmbeddingColumn();
     ftsLanguage = await getFtsLanguage();
+    // The row says what the database is SET to; it does not say what the
+    // seeded tsvectors were BUILT with, and this script publishes the value as
+    // if it did — #1114's own failure class, arriving through the benchmark's
+    // door. The window is real: run-retrieval-eval.ts writes the row before it
+    // truncates the corpus, so a failure in between (the provider probe, the
+    // full-chunk check, the width check) leaves the PREVIOUS corpus standing
+    // under a CHANGED configuration. `resetEvalCorpus` deliberately does not
+    // clear that row, because migration 049's trigger has to read it per
+    // inserted row. Certifying it is a single SELECT that recomputes
+    // to_tsvector — a read, so this stays the non-destructive script it says
+    // it is — and it refuses rather than reports, because the search half's
+    // keyword leg genuinely runs against the mismatched index and the timing
+    // is affected too, not only the label.
+    await assertSeededFtsLanguage(ftsLanguage);
 
     // hybridSearch takes no model and no endpoint: rag-service resolves both
     // from the `embedding` assignment this database carries. Read it through
