@@ -116,9 +116,10 @@ async function main(): Promise<void> {
     + `over ${queries.length} ${config.lang} queries · mode ${config.mode}`,
   );
 
+  // An embedding-only run reads no database, and says so rather than printing
+  // a plausible-looking default it never checked.
   let ftsLanguage = 'n/a (no database read)';
   let column: ColumnShape = { columnType: 'n/a (no database read)', dims: 0 };
-  const probedDims = new Map<string, number>();
 
   if (needsDb) {
     assertDisposableDatabase(process.env.POSTGRES_URL ?? '');
@@ -133,9 +134,8 @@ async function main(): Promise<void> {
     // Fail fast, before an hour of embedding: every model has to match the one
     // index this database carries.
     for (const model of config.models) {
-      const dims = await probeEmbeddingDimensions({ baseUrl: config.baseUrl, model });
-      probedDims.set(model, dims);
-      assertProbeMatchesColumn({ model, probeDims: dims, columnDims: column.dims, columnType: column.columnType });
+      const probeDims = await probeEmbeddingDimensions({ baseUrl: config.baseUrl, model });
+      assertProbeMatchesColumn({ model, probeDims, columnDims: column.dims, columnType: column.columnType });
     }
   }
 
@@ -192,7 +192,7 @@ async function main(): Promise<void> {
       lang: config.lang,
       ftsLanguage,
       columnType: column.columnType,
-      dims: column.dims || (probedDims.get(config.models[0]!) ?? 0),
+      dims: column.dims,
       queries: queries.length,
       mode: config.mode,
       generatedAt: new Date().toISOString(),
