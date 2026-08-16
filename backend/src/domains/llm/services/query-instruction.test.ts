@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   wantsInstructionPrefix,
@@ -97,22 +97,45 @@ describe('query-instruction (#1114)', () => {
   // retrieval quietly degraded. What actually guards it is that the DOCUMENT
   // embedding call sites never reach this module, so that is what is checked.
   describe('documents are never prefixed', () => {
-    const DOC_SIDE = [
-      'embedding-service.ts',       // live embed + shadow dual-write
-      'shadow-migration-service.ts', // backfill + dimension probe
-    ];
+    // Discovered, not enumerated. A hardcoded list of document-side files
+    // cannot fail for a path that does not exist yet, which is precisely the
+    // regression worth catching — `eval/seed.ts` was already a third document
+    // embedder missing from the first version of this list.
+    function filesCalling(needle: string): string[] {
+      const roots = [join(__dirname), join(__dirname, '..', 'eval')];
+      const hits: string[] = [];
+      for (const root of roots) {
+        for (const f of readdirSync(root)) {
+          if (!f.endsWith('.ts') || f.endsWith('.test.ts')) continue;
+          const src = readFileSync(join(root, f), 'utf8');
+          // `await generateEmbedding(` etc — a CALL, not the declaration.
+          if (new RegExp(`[^.\\w]${needle}\\s*\\(`).test(src.replace(/export async function generateEmbedding/g, ''))) {
+            hits.push(join(root, f));
+          }
+        }
+      }
+      return hits;
+    }
 
-    it.each(DOC_SIDE)('%s does not use the query formatter', (file) => {
-      const src = readFileSync(join(__dirname, file), 'utf8');
-      expect(src).not.toContain('formatQueryForEmbedding');
-      expect(src).not.toContain('query-instruction');
+    it('exactly one embedding call site applies the query prefix', () => {
+      const callers = filesCalling('generateEmbedding');
+      // Sanity: the discovery found the paths we know about, so a passing
+      // assertion below cannot be an artifact of matching nothing.
+      expect(callers.length).toBeGreaterThanOrEqual(4);
+
+      const prefixing = callers.filter((f) =>
+        readFileSync(f, 'utf8').includes('formatQueryForEmbedding'));
+
+      expect(prefixing.map((f) => f.split('/').pop())).toEqual(['rag-service.ts']);
     });
 
-    it('rag-service is the only importer', () => {
-      // If a second query-side embedding call ever appears, this fails and the
-      // author has to decide deliberately whether it is a query or a document.
-      const rag = readFileSync(join(__dirname, 'rag-service.ts'), 'utf8');
-      expect(rag).toContain('formatQueryForEmbedding');
+    it('the eval seeder embeds documents bare', () => {
+      // Called out by name because a prefixed corpus would not fail anything —
+      // it would just quietly make every eval number wrong, which is worse
+      // than a crash and is how a model comparison gets silently invalidated.
+      const seed = readFileSync(join(__dirname, '..', 'eval', 'seed.ts'), 'utf8');
+      expect(seed).toContain('generateEmbedding');
+      expect(seed).not.toContain('formatQueryForEmbedding');
     });
   });
 });
