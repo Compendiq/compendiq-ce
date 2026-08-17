@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vl-embedding-shim"
+version = "0.1.0"
+description = "Dev-only serving shim exposing vLLM's chat-template embeddings shape for Qwen3-VL-Embedding (#1115)"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.32",
+  "httpx>=0.27",
+  "pillow>=10",
+]
+
+[project.optional-dependencies]
+# The in-process MLX backend. Heavy (mlx + mlx-vlm + transformers); the llama
+# backend needs none of it, which is why this is an extra rather than a
+# dependency. See README "Which backend".
+mlx = [
+  "mlx-embeddings>=0.1.0",
+  "huggingface-hub>=0.25.1",
+]
+dev = [
+  "pytest>=8",
+]
+
+[tool.setuptools]
+packages = ["vl_embedding_shim", "vl_embedding_shim.backends"]
+
+[tool.pytest.ini_options]
+# The package is used from the checkout, not installed — `pythonpath` is what
+# lets `pytest` inside tools/vl-embedding-shim/ import `vl_embedding_shim`.
+pythonpath = ["."]
+testpaths = ["tests"]
