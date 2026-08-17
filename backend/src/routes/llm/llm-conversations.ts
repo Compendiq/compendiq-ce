@@ -5,6 +5,7 @@ import {
   ApplyImprovementRequestSchema,
   ConversationIdParamSchema,
   ConversationListQuerySchema,
+  type ConversationDetail,
   type ConversationSummary,
   type StoredChatMessage,
   type TitleSource,
@@ -154,7 +155,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       // The reopen-time half of decision 10: the same walk the ask route runs,
       // so a long conversation says so the moment it opens.
       historyTruncated: selectReplayableHistory(row.messages).truncated,
-    };
+    } satisfies ConversationDetail;
   });
 
   // PATCH /api/llm/conversations/:id — rename (#1361). Sets title_source =

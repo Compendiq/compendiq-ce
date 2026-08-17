@@ -191,6 +191,8 @@ describe('llm-conversations routes - CRUD', () => {
     expect(sql).toContain('LEFT JOIN pages p ON p.id = c.page_ref AND p.deleted_at IS NULL');
     expect(sql).toContain("COALESCE(NULLIF(trim(c.title), ''), 'Untitled conversation')");
     expect(sql).toContain('ORDER BY c.updated_at DESC, c.id DESC');
+    expect(sql).toContain('(c.updated_at, c.id) < ($2::timestamptz, $3::uuid)');
+    expect(sql).toContain('LIMIT $4');
     expect(params).toEqual(['test-user-123', null, null, 51]);
   });
 
@@ -265,6 +267,8 @@ describe('llm-conversations routes - CRUD', () => {
     expect(detailParams).toEqual([CONV_1, 'test-user-123']);
     const [visSql, visParams] = mockQuery.mock.calls[1] as [string, unknown[]];
     expect(visSql).toContain('deleted_at IS NULL');
+    expect(visSql).toContain('cp.space_key = ANY($1::text[])');
+    expect(visSql).toContain('cp.created_by_user_id = $2');
     expect(visParams).toEqual([['ENG'], 'test-user-123', [7]]);
   });
 

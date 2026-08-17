@@ -161,6 +161,7 @@ describe('conversation schemas (#1361)', () => {
       messages: [
         { role: 'user', content: 'how do we rotate the PAT?' },
         { role: 'assistant', content: 'Under Settings → Confluence.', sources: [KB_SOURCE] },
+        { role: 'assistant', content: 'I am not answering.', refused: true },
       ],
       historyTruncated: false,
     };

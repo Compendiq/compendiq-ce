@@ -16,5 +16,6 @@ export function initialTitleFromQuestion(question: string): string {
   const lastSpace = cut.lastIndexOf(' ');
   if (lastSpace >= MIN_WORD_BOUNDARY) cut = cut.slice(0, lastSpace);
   cut = cut.replace(/[\s,;:.!?…-]+$/u, '');
+  if (cut === '') return '';
   return `${cut}…`;
 }

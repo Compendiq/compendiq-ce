@@ -27,4 +27,8 @@ describe('initialTitleFromQuestion', () => {
   it('returns an empty string for a whitespace-only question (the read side COALESCEs it)', () => {
     expect(initialTitleFromQuestion('   \n ')).toBe('');
   });
+
+  it('returns an empty string when the cut is only punctuation (the read side COALESCEs it)', () => {
+    expect(initialTitleFromQuestion('?'.repeat(100))).toBe('');
+  });
 });

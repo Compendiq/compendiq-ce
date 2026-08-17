@@ -1038,7 +1038,7 @@ describe('POST /api/llm/ask', () => {
     });
 
     it('persists KB sources on the streamed turn without the deprecated score, and omits pageId for an external doc', async () => {
-      mockMcpIsEnabled.mockResolvedValue(true);
+      mockMcpIsEnabled.mockResolvedValueOnce(true);
       mockMcpFetchDocumentation.mockResolvedValue({ url: 'https://example.com/doc', title: 'Doc', markdown: 'body' });
       mockHybridSearch.mockResolvedValue([{
         pageId: 42, pageTitle: 'Runbook', spaceKey: 'ENG', confluenceId: '123', sectionTitle: 'Rotation',
@@ -1062,7 +1062,6 @@ describe('POST /api/llm/ask', () => {
       const ext = assistant.sources!.find((s) => s.url === 'https://example.com/doc')!;
       expect(ext).not.toHaveProperty('pageId');
       expect(messages.find((m) => m.role === 'user')).not.toHaveProperty('sources');
-      mockMcpIsEnabled.mockResolvedValue(false);
     });
 
     it('persists sources on a cache-hit turn too', async () => {
