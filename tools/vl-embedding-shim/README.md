@@ -158,12 +158,15 @@ image part becomes an *empty* one, and an image-only body then embeds the
 literal string `NULL` and answers 200 — a vector measured **cos 0.169** from
 the one the same body produces now.
 
-`image_url.url` takes a `data:` URI, or an `http(s)` URL **only when the shim
-was started with `--allow-remote-images`** — off by default, because a server
-that fetches an arbitrary URL on request issues GETs on behalf of anything that
-can reach it. Redirects are never followed even when it is on, and a fetched
-image is bounded by `--max-body-bytes`, the same ceiling as an inbound body: a
-request that names a URL reaches the same allocation through a second door.
+`image_url.url` takes a `data:` URI (in any capitalisation — scheme names are
+case-insensitive), or an `http(s)` URL **only when the shim was started with
+`--allow-remote-images`** — off by default, because a server that fetches an
+arbitrary URL on request issues GETs on behalf of anything that can reach it.
+Redirects are never followed even when it is on, and the images one request
+fetches are bounded **in total** by `--max-body-bytes`: the ceiling is a
+per-request budget the fetches spend, not a limit re-applied to each URL, so a
+request that names twenty of them reaches the same allocation as one carrying
+them inline — through a second door, but not twenty times over.
 
 ### `{model, input}` — the plain shape
 
@@ -284,8 +287,8 @@ body vLLM would not render as a continuation is a 400 rather than a vector (see
 so is a body whose content parts would render differently there — a text part
 before an image, or a part whose kind the shim would have to guess at. An
 `http(s)` `image_url` needs `--allow-remote-images`, never follows a redirect,
-and is read against `--max-body-bytes`; a body over that ceiling (32 MiB) is a
-413 before it is parsed.
+and is read against what is left of the request's `--max-body-bytes` budget; a
+body over that ceiling (32 MiB) is a 413 before it is parsed.
 
 ### Throughput is not a goal
 
@@ -310,7 +313,7 @@ answerable while an embed is in flight.
 | `--model-id` | `VL_SHIM_MODEL_ID` | the backend's own answer |
 | `--max-pixels` | `VL_SHIM_MAX_PIXELS` | unset (no guard) |
 | `--allow-remote-images` | `VL_SHIM_ALLOW_REMOTE_IMAGES` | **off** — `data:` URIs only |
-| `--max-body-bytes` | `VL_SHIM_MAX_BODY_BYTES` | `33554432` (32 MiB) — also bounds a fetched image |
+| `--max-body-bytes` | `VL_SHIM_MAX_BODY_BYTES` | `33554432` (32 MiB) — also the per-request budget for fetched images |
 | `--no-instruct-conversion` | – | conversion on |
 | `--request-timeout` | – | `300` s |
 
@@ -324,6 +327,14 @@ the process builds**. Asserting it through an injected test client proved
 nothing — httpx's own default is already `False`, so the real one could be
 flipped to `True` with the suite still green (review r2), and a followed
 redirect answers 200 with the metadata body and no redirect left to catch.
+
+**Both ceilings refuse `0` at startup rather than reinterpreting it.** Zero used
+to mean two different things, neither of them what was typed: on
+`--max-body-bytes` it resolved to the 32 MiB default (so the ceiling went *up*),
+and on `--max-pixels` it survived as a live ceiling of zero, refusing every
+image as "over the `--max-pixels` ceiling of 0". Anything below 1 — via the flag
+or via the env var — is now an argparse error naming the flag. Leaving
+`--max-pixels` **unset** is still how you turn the pixel guard off.
 
 `run-llama-server.sh` reads `QWEN3_VL_GGUF`, `QWEN3_VL_MMPROJ`, and optionally
 `LLAMA_SERVER`, `LLAMA_PORT` (8090), `LLAMA_HOST`, `LLAMA_CTX` (8192),
@@ -394,11 +405,17 @@ shifts sit between here and there:
 So: never mix vectors from two of these paths in one index, and never quote a
 retrieval metric measured here as if it were a production number.
 
-**And five things about the request shape are not identical to vLLM's**, which
-matters for a client developed against this server rather than for the vectors.
-The first three are refusals; the last two are the shim silently *normalising*
-something vLLM renders verbatim, so they are the ones a client author has to
-handle in their own code:
+**And the request shape is not identical to vLLM's either**, which matters for a
+client developed against this server rather than for the vectors. The entries
+below are deliberately uncounted and ungrouped — this lead-in shipped claiming
+"five things" of which "the first three are refusals", and the first is an
+acceptance; the same slip has been corrected twice in `CLAUDE.md`, which is why
+that paragraph carries no numeral either. Each entry states its own behaviour
+instead, and there are three kinds of behaviour. A field **accepted and
+ignored** is one this server cannot check for you; a **refusal** is this tool
+being stricter than vLLM, in the safe direction; and a **normalisation** is the
+shim quietly doing something vLLM renders verbatim, which is the kind a client
+author has to reproduce in their own code:
 
 * `add_special_tokens` is accepted and **ignored** (the shim does not tokenize),
   so conformance to that one field is the thing this server cannot check for

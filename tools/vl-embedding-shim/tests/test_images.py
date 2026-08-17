@@ -37,6 +37,16 @@ class TestDataUri:
         uri = 'data:image/png;base64,' + payload[:8] + '\n' + payload[8:]
         assert resolve_image(ImageRef(uri)) == PNG_1PX
 
+    @pytest.mark.parametrize('scheme', ['data', 'DATA', 'Data'])
+    def test_the_scheme_is_case_insensitive(self, scheme):
+        # RFC 3986 scheme names are case-insensitive, and the http(s) branch
+        # below already lowercases before matching. The `data:` branch used to
+        # test `url.startswith('data:')` on the raw string, so `DATA:` fell
+        # through to a refusal whose message named `data` as both the rejected
+        # scheme and the expected one (review r3).
+        uri = scheme + ':image/png;base64,' + base64.b64encode(PNG_1PX).decode()
+        assert resolve_image(ImageRef(uri)) == PNG_1PX
+
     def test_refuses_a_data_uri_that_is_not_base64(self):
         with pytest.raises(ImageError, match='base64'):
             resolve_image(ImageRef('data:image/png,%89PNG'))

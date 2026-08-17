@@ -306,6 +306,58 @@ class TestImages:
         assert '2048' in res.json()['error']['message']
         assert backend.seen == [], 'an over-size chunked fetch reached the backend'
 
+    def test_the_ceiling_bounds_the_REQUEST_not_each_image_separately(self):
+        # The two cases above bound ONE fetch, which is not what the README
+        # promises ("a request that names a URL reaches the same allocation
+        # through a second door"). Measured on the final r3 code: a 2048-byte
+        # ceiling against a body naming 20 URLs each serving 2000 bytes
+        # answered 200 with 40,000 bytes retained — 19.5x the ceiling, because
+        # the limit was re-applied per image instead of spent from one budget.
+        # Four 1000-byte images are enough to show it: the third exhausts a
+        # 2048-byte request budget.
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'\x89PNG' + b'x' * 996)
+
+        fetcher = httpx.Client(transport=httpx.MockTransport(handler))
+        c, backend = client(
+            allow_remote_images=True, image_client=fetcher, max_body_bytes=2048,
+        )
+        res = c.post('/v1/embeddings', json=chat(
+            {'role': 'user', 'content': [
+                {'type': 'image_url', 'image_url': {'url': f'https://example.invalid/{i}.png'}}
+                for i in range(4)
+            ]},
+        ))
+        assert res.status_code == 400
+        # The ceiling is named even though the fetch that failed had less than
+        # that left, so the message points at the flag the operator can move.
+        assert '2048' in res.json()['error']['message']
+        assert backend.seen == [], 'four 1000-byte images passed a 2048-byte ceiling'
+
+    def test_several_small_remote_images_that_fit_the_budget_are_served(self):
+        # The other half of the budget: it must not refuse a request whose
+        # images genuinely sum under the ceiling, or the bound above would be
+        # indistinguishable from "only one remote image per request".
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'\x89PNG' + b'x' * 96)
+
+        fetcher = httpx.Client(transport=httpx.MockTransport(handler))
+        c, backend = client(
+            allow_remote_images=True, image_client=fetcher, max_body_bytes=2048,
+        )
+        res = c.post('/v1/embeddings', json=chat(
+            {'role': 'user', 'content': [
+                {'type': 'image_url', 'image_url': {'url': f'https://example.invalid/{i}.png'}}
+                for i in range(4)
+            ]},
+        ))
+        assert res.status_code == 200
+        assert len(backend.seen[0][0].images) == 4
+
     def test_a_remote_image_under_the_ceiling_is_served(self):
         import httpx
 

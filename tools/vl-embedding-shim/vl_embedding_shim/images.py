@@ -75,10 +75,16 @@ def resolve_image(ref: ImageRef, *, fetcher: Fetcher | None = None) -> bytes:
     sees exactly what the caller sent.
     """
     url = ref.url
-    if url.startswith('data:'):
+    # Lowercased once, for every branch. Scheme names are case-insensitive
+    # (RFC 3986 §3.1, and RFC 2397 for `data:` specifically), so a raw
+    # `url.startswith('data:')` refused `DATA:image/png;base64,…` with a
+    # message naming `data` as both the rejected scheme and the expected one —
+    # while the http(s) branch below had always lowercased (review r3). The
+    # decode still reads the ORIGINAL string: only the scheme is case-folded.
+    scheme = urlsplit(url).scheme.lower()
+    if scheme == 'data':
         return _decode_data_uri(url)
 
-    scheme = urlsplit(url).scheme.lower()
     if scheme in ('http', 'https'):
         if fetcher is None:
             raise ImageError(

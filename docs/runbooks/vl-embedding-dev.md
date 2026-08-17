@@ -227,7 +227,7 @@ image leg is measured on the prod stack (design §8).
 | 400 `needs continue_final_message: true` / `must end at <\|im_start\|>assistant` | the body would pool a different position on vLLM — add the flag beside the trailing empty `assistant` turn |
 | 400 `remote image URLs are refused by default` | send a `data:` URI, or start the shim with `--allow-remote-images` |
 | 400 `answered a redirect` | remote fetching does not follow redirects; pass the final URL |
-| 400 `served … more than the --max-body-bytes ceiling` | a fetched image is bounded by the same ceiling as an inbound body |
+| 400 `served … more than the … left of this request's --max-body-bytes budget` | the images one request fetches are bounded **in total** by the same ceiling as an inbound body — a body naming many URLs cannot pull in more than one carrying them |
 | 400 `a text content part may not precede an image part` | put the image parts first — vLLM emits the marker where you put it, and the interleaved prompt embeds differently (cos 0.59 on the 8B) |
 | 400 `content part needs a \`type\`` | spell it `{"type": "image_url", "image_url": {"url": …}}`; only a type-less `image_url` is read as an image, and nothing is read as text by default |
 | 413 `exceeds the --max-body-bytes ceiling` | a data: URI is base64, so the body is ~4/3 of the image; send fewer/smaller images or raise `--max-body-bytes` |

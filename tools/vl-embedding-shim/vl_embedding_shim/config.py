@@ -103,7 +103,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         '--max-body-bytes', type=int,
-        default=_env_int('VL_SHIM_MAX_BODY_BYTES') or DEFAULT_MAX_BODY_BYTES,
+        # `_env_int(...) or DEFAULT` would read `VL_SHIM_MAX_BODY_BYTES=0` as
+        # "unset" and resolve it to 32 MiB — the opposite of what was typed,
+        # and silently. The fallback is passed in so `0` survives to the
+        # validation below and fails loudly (review r3).
+        default=_env_int('VL_SHIM_MAX_BODY_BYTES', DEFAULT_MAX_BODY_BYTES),
         help=f'413 a request body larger than this (default {DEFAULT_MAX_BODY_BYTES})',
     )
     parser.add_argument(
@@ -117,9 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _env_int(name: str) -> int | None:
+def _env_int(name: str, fallback: int | None = None) -> int | None:
     raw = os.environ.get(name)
-    return int(raw) if raw else None
+    if raw is None or not raw.strip():
+        return fallback
+    return int(raw)
 
 
 def _env_flag(name: str) -> bool:
@@ -127,7 +133,26 @@ def _env_flag(name: str) -> bool:
 
 
 def settings_from_args(argv: list[str] | None = None) -> Settings:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    # A ceiling of zero is not a ceiling, and it used to mean two different
+    # things — neither of them what was typed. `--max-body-bytes 0` resolved to
+    # the 32 MiB default (see the `default=` above), so the ceiling went UP;
+    # `--max-pixels 0` survived as a live ceiling of zero and `guard_pixels`
+    # only short-circuits on `None`, so every image was refused as "over the
+    # --max-pixels ceiling of 0". Both fail at startup instead. `None` on
+    # `--max-pixels` is untouched: it is the documented off position.
+    if args.max_body_bytes < 1:
+        parser.error(
+            f'--max-body-bytes must be at least 1 byte (got {args.max_body_bytes}); '
+            'it is the ceiling on one request body and on the images that request '
+            'fetches, so there is no "off"'
+        )
+    if args.max_pixels is not None and args.max_pixels < 1:
+        parser.error(
+            f'--max-pixels must be at least 1 pixel (got {args.max_pixels}); '
+            'leave it unset for no pixel guard at all — zero would refuse every image'
+        )
     return Settings(
         backend=args.backend,
         host=args.host,

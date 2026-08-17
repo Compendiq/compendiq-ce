@@ -18,12 +18,35 @@ from .request import ParsedRequest, ShimRequestError, parse_embeddings_request
 log = logging.getLogger('vl_embedding_shim')
 
 
-def _too_big(url: str, limit: int, seen: int | None = None) -> str:
+def _too_big(url: str, remaining: int, ceiling: int, seen: int | None = None) -> str:
     size = f'{seen} bytes' if seen is not None else 'more'
     return (
-        f'{url} served {size} than the --max-body-bytes ceiling of {limit}; a fetched '
-        'image is bounded by the same ceiling as an inbound body'
+        f'{url} served {size} than the {remaining} bytes left of this request\'s '
+        f'--max-body-bytes budget of {ceiling}; every image a request fetches is '
+        'counted against the same ceiling as an inbound body, so a body naming '
+        'many URLs cannot pull in more than one carrying them'
     )
+
+
+class _FetchBudget:
+    """What one request may still pull in through `image_url` fetches.
+
+    Per REQUEST, not per image (review r3). Re-applying `--max-body-bytes` to
+    each fetch bounded nothing a caller cares about: measured on the previous
+    code, a 2 KiB ceiling against a body naming 20 URLs each serving 2000 bytes
+    answered 200 with 40,000 bytes retained — 19.5x the ceiling, reached
+    through the second door the ceiling exists to close. One budget, spent.
+
+    It is created per `_resolve` call rather than held on the service: requests
+    run in a threadpool, and a shared counter would have two of them spending
+    each other's budget (and would never refill).
+    """
+
+    __slots__ = ('ceiling', 'remaining')
+
+    def __init__(self, ceiling: int) -> None:
+        self.ceiling = ceiling
+        self.remaining = ceiling
 
 
 class EmbeddingService:
@@ -67,12 +90,10 @@ class EmbeddingService:
 
     # -- image fetching ----------------------------------------------------
 
-    def _fetcher(self):
+    def _fetcher(self, budget: _FetchBudget):
         client = self._image_client
         if client is None:
             return None
-
-        limit = self.settings.max_body_bytes
 
         def fetch(url: str) -> bytes:
             # Streamed and counted, not `client.get(url).content`. The inbound
@@ -83,6 +104,9 @@ class EmbeddingService:
             # this bound existed (review r2). The ceiling is `--max-body-bytes`
             # rather than a knob of its own: it is the same question (how many
             # bytes may one request pull into memory) reached by a second door.
+            # `budget.remaining`, not the ceiling: what is left after this
+            # request's earlier fetches is what this one may still spend.
+            limit = budget.remaining
             try:
                 with client.stream('GET', url) as res:
                     if res.is_redirect:
@@ -94,7 +118,9 @@ class EmbeddingService:
                     res.raise_for_status()
                     declared = res.headers.get('content-length')
                     if declared is not None and declared.isdigit() and int(declared) > limit:
-                        raise ImageError(_too_big(url, limit, int(declared)))
+                        raise ImageError(
+                            _too_big(url, limit, budget.ceiling, int(declared))
+                        )
                     chunks: list[bytes] = []
                     total = 0
                     for chunk in res.iter_bytes():
@@ -103,16 +129,24 @@ class EmbeddingService:
                             # A chunked response declares nothing, so the bytes
                             # are counted as they arrive — the same belt-and-
                             # braces `read_body` uses on the inbound side.
-                            raise ImageError(_too_big(url, limit))
+                            raise ImageError(_too_big(url, limit, budget.ceiling))
                         chunks.append(chunk)
             except httpx.HTTPError as exc:
                 raise ImageError(f'could not fetch {url}: {exc}') from exc
-            return b''.join(chunks)
+            data = b''.join(chunks)
+            # Charged only once the bytes are in hand: a fetch that raised
+            # aborts the whole request anyway, and this keeps the counter
+            # equal to what is actually being held.
+            budget.remaining -= len(data)
+            return data
 
         return fetch
 
     def _resolve(self, parsed: ParsedRequest) -> list[ResolvedItem]:
-        fetcher = self._fetcher()
+        # One budget for the whole request, spanning every item and every image
+        # in it — the `messages` shape parses to a single item today, but the
+        # bound is on the request either way.
+        fetcher = self._fetcher(_FetchBudget(self.settings.max_body_bytes))
         resolved: list[ResolvedItem] = []
         for item in parsed.items:
             images = []
