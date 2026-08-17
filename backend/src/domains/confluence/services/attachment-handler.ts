@@ -26,6 +26,7 @@ import {
   safeAttachmentPath,
   validateFilename,
 } from '../../../core/services/attachment-store.js';
+import { markPageImagesDirtyByAttachmentKey } from '../../../core/services/image-embedding-dirty.js';
 
 /**
  * The path-resolution and READ half of this module lives in
@@ -221,6 +222,14 @@ export async function syncDrawioAttachments(
     }
   }
 
+  // #1115 P2 — closes half of the "attachment changed under an unchanged page
+  // version" hole (`sync-service.ts`'s version-unchanged branch calls this
+  // exact function when a cached file is missing). Only a real DOWNLOAD counts:
+  // this function is idempotent and skips files already on disk, so raising the
+  // flag unconditionally would re-dirty every page carrying a diagram on every
+  // sync — a scan of the whole corpus every `SYNC_INTERVAL_MIN`, for nothing.
+  if (downloaded > 0) await markPageImagesDirtyByAttachmentKey(pageId);
+
   logger.debug(
     { pageId, found: diagramNames.length, skipped, downloaded },
     'syncDrawioAttachments complete',
@@ -306,6 +315,13 @@ export async function syncImageAttachments(
       );
     }
   }
+
+  // #1115 P2 — the other half of the version-unchanged hole. Same rule as
+  // `syncDrawioAttachments` above: a download, not a skip. Note the writes here
+  // reach the cache through `cacheAttachment`/`cacheExternalImage` rather than
+  // `writeAttachmentCache`, which is why the flag is raised here rather than
+  // being inherited from that one call site.
+  if (downloaded > 0) await markPageImagesDirtyByAttachmentKey(pageId);
 
   logger.debug(
     { pageId, found: refs.length, skipped, downloaded },
@@ -577,6 +593,13 @@ export async function writeAttachmentCache(
   await fs.mkdir(dir, { recursive: true });
   const filePath = safeAttachmentPath(pageId, filename);
   await fs.writeFile(filePath, data);
+  // #1115 P2 — the bytes behind a key this page's `body_html` may reference
+  // just changed. Every caller of this function is a write (a pasted image, an
+  // imported external image, an edited draw.io PNG), so the flag is raised
+  // unconditionally rather than by diffing: the page's own reconcile pass is
+  // what decides whether anything is actually re-embedded, and an unchanged
+  // file reuses its row by sha256 for the cost of one file read.
+  await markPageImagesDirtyByAttachmentKey(pageId);
   logger.debug({ userId, pageId, filename, size: data.length }, 'Wrote attachment to local cache');
   return filePath;
 }
@@ -645,6 +668,12 @@ export async function cleanPageAttachments(_userId: string, pageId: string): Pro
   }
   // Clear Redis failure counters — after a sync the failures are stale
   await clearAttachmentFailures(getRedisClient(), pageId);
+  // #1115 P2 — the files are gone, so the index rows describing them are now
+  // unresolvable. Re-scanning is what deletes them: `embedPageImages`
+  // reconciles against the page's CURRENT references, and this is the trigger
+  // that makes it run. Without it the rows survive as entries pointing at
+  // bytes that no longer exist, which retrieval cannot tell from valid ones.
+  await markPageImagesDirtyByAttachmentKey(pageId);
 }
 
 /**

@@ -97,6 +97,9 @@ import {
   invalidateRagPinIdentifiersCache,
   invalidateRagMmrCache,
   invalidateRagRankingPriorCache,
+  getRagImagesPerPageMax,
+  getRagImageIndexExternal,
+  invalidateRagImageIntakeCache,
 } from '../../core/services/admin-settings-service.js';
 
 /**
@@ -211,6 +214,7 @@ beforeEach(() => {
   invalidateRagPinIdentifiersCache();
   invalidateRagMmrCache();
   invalidateRagRankingPriorCache();
+  invalidateRagImageIntakeCache();
 });
 
 let app: ReturnType<typeof Fastify>;
@@ -730,5 +734,48 @@ describe('admin settings — the keyword-index language comes from the row alone
       mockQuery.mock.calls.some(([sql]) => /UPDATE pages SET tsv/i.test(String(sql))),
       'a rejected language must not trigger a corpus-wide rebuild',
     ).toBe(false);
+  });
+});
+
+describe('PUT /api/admin/settings — image-index intake knobs (#1115 P2)', () => {
+  it('writes both knobs under their documented admin_settings keys', async () => {
+    const res = await put({ ragImagesPerPageMax: 5, ragImageIndexExternal: false });
+
+    expect(res.statusCode).toBe(200);
+    expect(rows).toEqual({
+      rag_images_per_page_max: '5',
+      // `'true'`/`'false'` is the one boolean spelling the reader's OFF-list
+      // parses. `'no'` or `''` would read as "leave the default".
+      rag_image_index_external: 'false',
+    });
+  });
+
+  it('makes the next read see the new cap — the cache is invalidated by the write', async () => {
+    await put({ ragImagesPerPageMax: 3 });
+    await expect(getRagImagesPerPageMax()).resolves.toBe(3);
+    await put({ ragImagesPerPageMax: 40 });
+    await expect(getRagImagesPerPageMax()).resolves.toBe(40);
+  });
+
+  it('makes the next read see the external-image switch', async () => {
+    await put({ ragImageIndexExternal: false });
+    await expect(getRagImageIndexExternal()).resolves.toBe(false);
+    await put({ ragImageIndexExternal: true });
+    await expect(getRagImageIndexExternal()).resolves.toBe(true);
+  });
+
+  it('rejects a cap the reader would throw away, rather than saving a lie', async () => {
+    // 0 is not "unlimited": the leg is switched off by unassigning the use
+    // case, and a zero cap would reconcile every row away on the next scan.
+    for (const body of [
+      { ragImagesPerPageMax: 0 },
+      { ragImagesPerPageMax: 201 },
+      { ragImagesPerPageMax: 20.5 },
+      { ragImageIndexExternal: 'off' },
+    ]) {
+      const res = await put(body);
+      expect(res.statusCode, JSON.stringify(body)).toBe(400);
+    }
+    expect(rows).toEqual({});
   });
 });

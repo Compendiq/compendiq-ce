@@ -428,6 +428,63 @@ export async function releaseWorkerLock(name: string, token: string): Promise<vo
   }
 }
 
+/**
+ * Refresh Lua — bump the worker lock's TTL, but only while the caller still
+ * owns it, and return the CURRENT holder either way. The generic twin of
+ * `REFRESH_LOCK_SCRIPT` above (#1115 P2).
+ *
+ *   KEYS[1] = worker:lock:<name>
+ *   ARGV[1] = ownership token
+ *   ARGV[2] = TTL in seconds (stringified)
+ */
+const WORKER_REFRESH_LOCK_SCRIPT = `local cur = redis.call("get", KEYS[1]) if cur == ARGV[1] then redis.call("expire", KEYS[1], ARGV[2]) end return cur`;
+
+/**
+ * Renew a long-running worker lock, and report who holds it (#1115 P2).
+ *
+ * `acquireWorkerLock`'s TTL is a safety bound, not a duration estimate: a
+ * corpus-wide image scan can legitimately outlive it, at which point the key
+ * expires mid-run, another pod acquires it, and two scans walk the same
+ * backlog. Calling this on the guard cadence slides the TTL forward while —
+ * and only while — the caller still owns it, and the returned holder is what
+ * lets the loop abort cleanly when it no longer does. Same contract as
+ * `refreshEmbeddingLock`, including propagating errors so the caller's guard
+ * decides whether to continue.
+ *
+ * Returns the caller's own token when Redis is absent: that is the same
+ * single-node fallback `acquireWorkerLock` already makes, and answering `null`
+ * would abort every run on a Redis-less deployment.
+ */
+export async function refreshWorkerLock(
+  name: string,
+  token: string,
+  ttlSeconds = 300,
+): Promise<string | null> {
+  if (!_redisClient) return token;
+  const result = await _redisClient.eval(WORKER_REFRESH_LOCK_SCRIPT, {
+    keys: [`worker:lock:${name}`],
+    arguments: [token, String(ttlSeconds)],
+  });
+  return typeof result === 'string' ? result : null;
+}
+
+/**
+ * Whether a named worker lock is currently held (#1115 P2).
+ *
+ * Read-only and advisory — it is what lets an admin surface say "a scan is
+ * running" and poll, never a gate. Answers `false` without Redis, matching
+ * `acquireWorkerLock`'s single-node fallback, where no lock exists to hold.
+ */
+export async function isWorkerLocked(name: string): Promise<boolean> {
+  if (!_redisClient) return false;
+  try {
+    return (await _redisClient.get(`worker:lock:${name}`)) !== null;
+  } catch (err) {
+    logger.error({ err, name }, 'Failed to read worker lock state');
+    return false;
+  }
+}
+
 // ── Attachment download-failure tracking (persisted in Redis) ──────────────
 // Tracks per-attachment download failures so we can skip Confluence calls
 // for attachments that have persistently failed, even across container restarts.

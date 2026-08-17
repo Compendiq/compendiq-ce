@@ -20,6 +20,9 @@ sequenceDiagram
     participant DB as Postgres (pages)
     participant ES as embedding-service
     participant OL as Ollama (/embed)
+    participant IW as image-embedding-service
+    participant AS as attachment-store
+    participant VL as VL endpoint (vLLM)
 
     T->>S: syncSpace(userId, spaceKey)
     S->>R: SETEX NX sync:worker:lock (TTL 600s)
@@ -45,7 +48,8 @@ sequenceDiagram
             S->>AH: downloadAttachments(page)
             AH->>CF: GET attachments
             AH->>AH: write to ATTACHMENTS_DIR
-            S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true
+            AH->>DB: on a real DOWNLOAD only:<br/>SET image_embedding_dirty = true (#35;1115)
+            S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_embedding_dirty = true
             S->>R: HSET sync:status:{user} progress
         end
 
@@ -84,6 +88,25 @@ sequenceDiagram
         ES->>DB: INSERT page_embeddings
         ES->>DB: UPDATE pages SET embedding_dirty = false
     end
+
+    Note over IW,VL: Image index worker (#35;1115 P2) — kicked beside the text pass,<br/>own worker lock, no-op when image_embedding is unassigned
+    IW->>DB: SELECT pages WHERE image_embedding_dirty = true LIMIT N
+    loop per page
+        IW->>IW: enumerate body_html img src<br/>store follows the URL PREFIX
+        IW->>AS: resolveAttachmentBytes(page, source, key)
+        AS-->>IW: bytes + sniffed format (or null)
+        alt unsupported / too large / oversized / missing
+            IW->>IW: skip and COUNT — never resize (D10)
+        else sha256 unchanged
+            IW->>IW: reuse the existing row, no request
+        else
+            IW->>VL: POST /v1/embeddings (chat-embeddings shape)
+            VL-->>IW: image vector
+            IW->>DB: UPSERT page_image_embeddings
+        end
+    end
+    IW->>DB: DELETE rows the body no longer references
+    IW->>DB: UPDATE pages SET image_embedding_dirty = false<br/>only when nothing FAILED
 ```
 
 ## Triggers
@@ -616,6 +639,39 @@ equality: the files applying `formatQueryForEmbedding` must be exactly
 `generateEmbedding` caller must appear in a commented allow-list of non-query
 embeds. A new embedding path can no longer inherit a policy by omission.
 
+## The image index rides this cadence (#1115 P2)
+
+The image worker has **no repeatable job of its own**. It is kicked
+fire-and-forget from `syncSpace`'s tail, beside `processDirtyPages` and not
+after it — the two share no lock, no table and no provider, and chaining them
+would make an image scan wait out a text re-embed of the corpus. That mirrors
+how the text embedder is scheduled: `queue-service.ts` schedules the SYNC, and
+the embedding pass runs off its tail.
+
+Three properties keep that cheap and safe on the instances that will never use
+it:
+
+- **A no-op fast path before the lock.** `resolveImageEmbeddingUsecase()` is
+  consulted first, so an unassigned leg — the default, and ADR-021's "the leg is
+  off" state — costs one query per sync and takes no Redis lock. The "idle"
+  notice is logged **once per process**, not once per tick, or it would be pure
+  noise at whatever `SYNC_INTERVAL_MIN` is set to.
+- **Its own lock key.** `worker:lock:image-embedding-index`, never the per-user
+  `embedding:lock:*`: `processDirtyPages` backs off when it finds another holder
+  of that key, so borrowing it would have silently blocked every text embed on
+  the instance for the duration of an image scan.
+- **The dirty flag is the queue AND the retry queue.** It clears only for a page
+  whose scan had no failure, so an endpoint outage leaves exactly the affected
+  pages queued for the next cadence. An unassigned leg clears nothing at all.
+
+The attachment writers close what P0 called the fact-base hole: sync's
+**version-unchanged** branch re-downloads missing attachments without touching
+the page row, so the page's images can change while `embedding_dirty` correctly
+stays put. `syncImageAttachments` / `syncDrawioAttachments` raise
+`image_embedding_dirty` there — but only on a real DOWNLOAD, because both
+functions skip files already on disk and an unconditional flag would re-scan
+every page carrying a diagram on every sync.
+
 ## Content pipeline hand-off
 
 The `confluenceToHtml()` call produces `body_html` and `body_text`. The
@@ -629,6 +685,9 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/domains/confluence/services/attachment-handler.ts`
 - `backend/src/domains/confluence/services/sync-overview-service.ts`
 - `backend/src/domains/llm/services/embedding-service.ts`
+- `backend/src/domains/llm/services/image-embedding-service.ts` — `embedPageImages`, `processDirtyPageImages` (#1115 P2)
+- `backend/src/core/services/image-embedding-dirty.ts` — the one writer of `pages.image_embedding_dirty`
+- `backend/src/routes/llm/llm-image-index.ts` — status, re-scan, process (all `requireAdmin`)
 - `backend/src/routes/confluence/sync.ts`
 - `backend/src/routes/confluence/spaces.ts` — `DELETE /api/spaces/:key` (unsync)
 - `backend/src/routes/knowledge/pages-relocate.ts` — `POST /api/pages/:id/relocate` + preview

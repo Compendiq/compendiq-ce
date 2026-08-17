@@ -90,6 +90,49 @@ function identityOf(pair: ImageIndexPair): string {
 }
 
 /**
+ * The identity the live index was built for, read through an arbitrary client
+ * (#1115 P2 — `shadowEpochFromClient`'s shape, and its job).
+ *
+ * P2's embedder snapshots this before it embeds and re-reads it INSIDE its
+ * write transaction: a rebuild that lands in between has TRUNCATEd the table
+ * for a different vector space, and committing vectors produced for the old
+ * one would refill a freshly-emptied index with values nothing can compare.
+ * The client parameter is what lets the recheck run on the transaction's own
+ * connection — a pooled `query()` would read outside it and see a state the
+ * transaction cannot rely on.
+ *
+ * `null` means no rebuild has ever recorded one (a fresh install, before any
+ * probe). It compares equal to itself, so an un-probed instance is not treated
+ * as perpetually racing.
+ */
+export async function imageIndexIdentityFromClient(client: {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<{ setting_value?: string }> }>;
+}): Promise<string | null> {
+  const r = await client.query(
+    `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+    [IMAGE_EMBEDDING_INDEX_MODEL_KEY],
+  );
+  return r.rows[0]?.setting_value ?? null;
+}
+
+/** {@link imageIndexIdentityFromClient} on a pooled connection. */
+export async function readImageIndexIdentity(): Promise<string | null> {
+  return imageIndexIdentityFromClient({ query: (sql, params) => query(sql, params) });
+}
+
+/** The width the image column is typed to, as the last rebuild recorded it. */
+export async function readImageIndexDimensions(): Promise<number | null> {
+  const r = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+    [IMAGE_EMBEDDING_DIMENSIONS_KEY],
+  );
+  const raw = r.rows[0]?.setting_value;
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
  * NOTE: the live width, the live type and the recorded pair are ALL read inside
  * the locked transaction below, never before it. An unlocked pre-check would be
  * stale by the time the lock is granted — another admin can land the same

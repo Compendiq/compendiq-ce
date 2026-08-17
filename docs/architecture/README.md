@@ -41,6 +41,7 @@ Quick reference for what to update when:
 | `core/services/attachment-store.ts` (the shared attachment reader) or which store/ACL a caller reaches it through | `03-backend-domains.md` |
 | `rag-service.ts`, `multi-query-search.ts`, `llm-ask.ts`, `routes/knowledge/search.ts`, prompt-building, caching | `09-flow-rag-chat.md` |
 | `vl-embedding-client.ts`, `image-embedding-probe.ts`, `image-embedding-index.ts`, or the `image_embedding` assignment/probe routes | `03-backend-domains.md`, `06-data-model.md`, `09-flow-rag-chat.md` |
+| `image-embedding-service.ts`, `image-embedding-dirty.ts`, the `image_embedding_dirty` writers, or the image-index admin routes | `03-backend-domains.md`, `06-data-model.md`, `08-flow-sync.md` |
 | `core/db/vector-column-tier.ts` (the pgvector index tiers) or `core/db/with-lock-retry.ts` | `03-backend-domains.md`, `06-data-model.md` |
 | Enterprise loader, license route, license persistence | `10-flow-enterprise-license.md` |
 | `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, XHTML/HTML/Markdown conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |

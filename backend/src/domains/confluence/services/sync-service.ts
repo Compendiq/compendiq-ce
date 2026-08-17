@@ -12,6 +12,7 @@ import { confluenceToHtml, htmlToText } from '../../../core/services/content-con
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
+import { processDirtyPageImages } from '../../llm/services/image-embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
@@ -343,6 +344,20 @@ export async function syncUser(userId: string): Promise<void> {
       userId,
       status: 'embedding',
       lastSynced: new Date(),
+    });
+
+    // #1115 P2 — the image index's only scheduled trigger.
+    //
+    // It rides the sync cadence rather than getting a repeatable BullMQ job of
+    // its own, because that is exactly how `processDirtyPages` is driven:
+    // `queue-service.ts` schedules the SYNC, and the text embedder runs off
+    // its tail. Mirroring that keeps one cadence to reason about, and the
+    // image worker's own no-op fast path means an unassigned leg costs one
+    // resolver read per sync. Fire-and-forget beside the text pass rather than
+    // after it: the two share no lock, no table and no provider, and chaining
+    // them would make an image scan wait on a text re-embed of the corpus.
+    void processDirtyPageImages().catch((err) => {
+      logger.error({ err, userId }, 'Post-sync image indexing failed');
     });
 
     // Trigger embedding for dirty pages; update status when complete
@@ -765,11 +780,19 @@ async function syncPage(
   // (e.g. page was restored from Confluence trash)
   const wasFreshCreate = existing.rows.length === 0;
   await query(
+    // #1115 P2 — `image_embedding_dirty` rides along with `embedding_dirty`
+    // here and ONLY here in this statement: a new page version can move,
+    // remove or add an `<img>`, and the reconcile pass is what makes the index
+    // agree with the body again. The two flags stay separate columns
+    // (migration 093) because the reverse is not true — an attachment changing
+    // under an unchanged version must re-embed the images and not the text,
+    // which is what the `syncImageAttachments` / `syncDrawioAttachments`
+    // writers handle.
     `INSERT INTO pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
         version, parent_id, labels, author, last_modified_at, embedding_dirty,
-        summary_status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, 'pending')
+        image_embedding_dirty, summary_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, TRUE, 'pending')
      ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
        title = EXCLUDED.title,
        body_storage = EXCLUDED.body_storage,
@@ -782,6 +805,7 @@ async function syncPage(
        last_modified_at = EXCLUDED.last_modified_at,
        last_synced = NOW(),
        embedding_dirty = TRUE,
+       image_embedding_dirty = TRUE,
        summary_status = 'pending',
        -- Clear local-edit markers (#305) — see matching note in the
        -- version-mismatch branch above.
@@ -1015,6 +1039,14 @@ async function applyConflictPolicyForExistingPage(
              WHEN body_text IS DISTINCT FROM $5
                OR body_html IS DISTINCT FROM $4 THEN TRUE
              ELSE embedding_dirty
+           END,
+           -- #1115 P2 — gated on the HTML alone, because that is where the
+           -- img src attributes live. A body_text-only change (whitespace the
+           -- flattener treats differently) cannot move an image, and dirtying
+           -- on it would re-scan pages whose pictures are provably identical.
+           image_embedding_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+             ELSE image_embedding_dirty
            END,
            summary_status = CASE
              WHEN body_text IS DISTINCT FROM $5

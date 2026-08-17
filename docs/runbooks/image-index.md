@@ -1,13 +1,15 @@
 # Runbook — the image index (#1115)
 
 Operating the `image_embedding` leg: which server can serve it, how to start
-one, how to assign and probe it, and what changing the model costs.
+one, how to assign and probe it, what fills the index, and what changing the
+model costs.
 
-**Scope as of P1.** The leg is *configurable* and *provable*, and it does
-nothing else yet. Assigning it types the `page_image_embeddings` column and
-builds its index; **no page image is embedded (P2) and no query touches the
-index (P3)**. Everything below is preparation you can do — and verify — before
-either lands.
+**Scope as of P2.** The leg is *configurable*, *provable* and now *fills*:
+assigning it types the `page_image_embeddings` column, builds its index and
+queues every page, and a worker embeds each page's images into it (§5).
+**No query touches the index yet (P3)** — nothing you can search for will find
+an image, and the Embeddings-tab card says so on screen. Everything below is
+preparation you can do, verify and monitor before that lands.
 
 Design of record: ADR-025 in `docs/ARCHITECTURE-DECISIONS.md` and
 `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`.
@@ -72,7 +74,7 @@ The second half is Compendiq's, in **Settings → AI Models → the Image embedd
 row → "Truncate to N dimensions (MRL)"**
 (`admin_settings.image_embedding_target_dimensions`). When it is set, that
 number is sent as `dimensions` on **every** image-side call: the assignment
-probe, Re-check, and — from P2 — the image embedder and the query side. Leave it
+probe, Re-check, the image embedder (§5), and — from P3 — the query side. Leave it
 empty to use the model's native width.
 
 Two consequences worth knowing before you set it:
@@ -84,7 +86,7 @@ Two consequences worth knowing before you set it:
   `shape_rejected`, and the refusal names the override.
 - **Changing it is a rebuild.** It is part of the recorded identity
   (`provider:model@baseUrl#dims`), so saving a new width empties the image index
-  and re-dirties every page — see §5.
+  and re-dirties every page — see §6.
 - **The width is saved even when the probe that follows it fails.** It has to
   be: the probe sends it, so it is written first. A refusal therefore leaves the
   new width stored, the assignment and the column exactly as they were, and the
@@ -116,7 +118,7 @@ reported as `vllm#33954`. A corpus embedded on one version and queried on
 another is silently degraded, and nothing in Compendiq can detect it.
 
 So: pin the served version, and when you change it, treat it exactly like
-changing the model — see §5.
+changing the model — see §6.
 
 What Compendiq can see for you, and what it cannot:
 
@@ -126,7 +128,11 @@ What Compendiq can see for you, and what it cannot:
   a different vLLM version at a new address.
 - **Upgrading in place**, same URL, is invisible to every signal the app has.
   After such an upgrade, run **Re-check** (it re-confirms the width) and then
-  force a rescan once P2 exists. Nothing will warn you.
+  press **Re-scan all** on the Embeddings tab (§5). Nothing will warn you, and
+  the re-scan is not free here: the bytes are unchanged, so every image reuses
+  its row by content hash and the vectors from the *old* server survive. If you
+  need them regenerated, change something in the identity — the truncation
+  width, or the provider row's URL — so the rebuild truncates first.
 
 ## 3. Local development
 
@@ -197,7 +203,7 @@ different width. A *failed* re-check leaves the column alone and is reported as
 an error, not a success.
 
 **Re-check is not read-only.** If the width or the endpoint changed, re-applying
-the column type is the destructive rebuild in §5: the image index is emptied and
+the column type is the destructive rebuild in §6: the image index is emptied and
 every non-folder page is queued for a re-scan. The toast says so, naming the
 page count, when that is what happened.
 
@@ -220,7 +226,102 @@ grows. Prefer MRL truncation to 4000 or below — which means setting **Truncate
 to N dimensions (MRL)** on the row *and* serving with the override (§2), because
 the tier follows the width the model actually answers with.
 
-## 5. Changing the model (or the provider)
+## 5. Intake — what gets embedded, and what does not
+
+Assigning the leg (§4) makes the index *possible*; this section is what fills
+it. The unit of work is a page: `embedPageImages(pageId)` enumerates the images
+that page's stored body references, embeds the ones it can, and deletes the rows
+for the ones it no longer references. `processDirtyPageImages()` runs that over
+the backlog.
+
+### What schedules a page
+
+`pages.image_embedding_dirty` is the queue. It is raised by:
+
+| Event | Where |
+|---|---|
+| A page is created or updated by sync | the sync upsert, beside `embedding_dirty` |
+| A page's body changes on a conflict-policy update | gated on `body_html` alone — `body_text` cannot move an `<img>` |
+| A new or changed attachment is downloaded under an **unchanged** page version | `syncImageAttachments` / `syncDrawioAttachments`, on a real download only |
+| An image is pasted, or imported from an external URL | `writeAttachmentCache` |
+| A draw.io diagram is saved on a local page | `putLocalAttachment` |
+| A page is relocated between Confluence and local | both directions — the move rewrites every `<img src>` |
+| A page's cached attachments are cleared (a new version, an unsync) | `cleanPageAttachments` — the rows are now unresolvable and reconcile deletes them |
+| **Re-scan all** | the Embeddings-tab action, and the model-change rebuild in §6 |
+
+The worker runs **off the sync cadence** — fire-and-forget beside
+`processDirtyPages`, which is how the text embedder is scheduled too — plus the
+two admin actions below. There is no separate repeatable job.
+
+### What is embedded
+
+Everything the page's `body_html` points at with one of the two attachment
+prefixes, deduped by `(source, key)`:
+
+- `<img src="/api/attachments/<key>/<file>">` → the Confluence cache tree
+- `<img src="/api/local-attachments/<page id>/<file>">` → the local store
+
+**The store follows the URL prefix, never `confluence_id IS NULL`.** A relocated
+page has no `confluence_id` and its bytes in the *local* store, and a page
+pasted into after that move carries both prefixes at once.
+
+An image whose bytes are unchanged since its last embed — same sha256, same
+model — **keeps its row and costs no request at all**. That is what makes
+Re-scan cheap, and it is why the model-change rebuild in §6 is affordable.
+
+### What is skipped, and why
+
+Skipping is not failing: the page still clears its flag, and the reason is
+counted and shown on the card.
+
+| Reason | Meaning | Is it a problem? |
+|---|---|---|
+| `unsupported` | The bytes sniff as no raster format — SVG, or Confluence's draw.io export, which is `<mxfile>` XML behind a `.png` name | No. Working as designed (ADR-025 D10) |
+| `missing` | The body references a file that is not in the store | Usually a failed attachment download; check the sync log |
+| `tooLarge` | Over `MAX_IMAGE_BYTES` (5 MB) | No — **nothing is resized**. The backend has no pixel decoder, deliberately |
+| `oversized` | Declared dimensions over `MAX_IMAGE_DIMENSION` (4096) on either edge | Same |
+| `capped` | Past `rag_images_per_page_max` on this page | Raise the knob if a page legitimately carries more |
+| `external` | Fetched from an external URL (`external-<hash>` in the cache) with `rag_image_index_external` off | Only if you did not mean to turn it off |
+
+A **failure** is different: the endpoint refused or never answered. The page
+stays `image_embedding_dirty`, the counter is `failed`, and the card renders it
+in amber. Retrying is automatic on the next scan.
+
+### The two knobs
+
+Both live in `admin_settings` and are settable through `PUT /api/admin/settings`
+(their Retrieval-tab controls arrive with the retrieval leg):
+
+| Key | Default | What it does |
+|---|---|---|
+| `rag_images_per_page_max` | `20` | Images embedded per page. A cost bound: each one is a request through the shared LLM queue. **`0` is not a value** — the leg is switched off by unassigning the use case |
+| `rag_image_index_external` | on | Whether images a body pulled from an external URL are indexed |
+
+### Re-scan vs Process now
+
+Both are on **Settings → AI Models → Embeddings**, on the *Image index* card,
+and both return immediately — the scan runs detached, and the card polls.
+
+- **Process now** works through the pages that are *already* queued. It is what
+  you press after fixing a provider outage.
+- **Re-scan all** marks **every** live non-folder page first. It is what you
+  press after upgrading the model server in place (§6 — no signal in the app can
+  see that), or when you suspect the index has drifted from the corpus. It is
+  affordable because unchanged bytes reuse their rows by content hash: a re-scan
+  of a settled corpus costs one file read per image and no requests.
+
+### Reading the card
+
+- **Images embedded** — rows in `page_image_embeddings`. Expect it to be *lower*
+  than the number of pictures in the corpus; the skip table above is why.
+- **Pages pending** — `image_embedding_dirty` over live non-folder pages. On a
+  settled instance this is 0. If it is not falling, either the leg is unassigned
+  (the card says so) or the last run failed.
+- **Last run** — pages visited, embedded, reused, removed, and skipped by
+  reason. `removed` counts rows reconciled away, which is the expected outcome
+  of a page that lost an image.
+
+## 6. Changing the model (or the provider)
 
 **It empties the image index and re-scans. There is no shadow swap here, and
 that is deliberate**: the image leg is simply *off* while its index is empty, so
@@ -255,7 +356,7 @@ separate columns.
 **Unassigning** the use case turns the leg off and destroys nothing: the column
 type and the index survive, so re-assigning the same pair costs nothing.
 
-## 6. Verifying by hand
+## 7. Verifying by hand
 
 ```bash
 curl -s "$BASE_URL/embeddings" -H 'Content-Type: application/json' -d '{

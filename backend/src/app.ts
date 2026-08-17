@@ -43,6 +43,7 @@ import { llmUsecaseRoutes } from './routes/llm/llm-usecases.js';
 import { llmEmbeddingReembedRoutes } from './routes/llm/llm-embedding-reembed.js';
 import { llmEmbeddingProbeRoutes } from './routes/llm/llm-embedding-probe.js';
 import { llmEmbeddingShadowRoutes } from './routes/llm/llm-embedding-shadow.js';
+import { llmImageIndexRoutes } from './routes/llm/llm-image-index.js';
 import { extractDocumentRoutes } from './routes/llm/extract-document.js';
 import { prepareImageRoutes } from './routes/llm/prepare-image.js';
 // Knowledge routes
@@ -471,6 +472,7 @@ export async function buildApp() {
   await app.register(llmEmbeddingReembedRoutes, { prefix: '/api' });
   await app.register(llmEmbeddingProbeRoutes, { prefix: '/api' });
   await app.register(llmEmbeddingShadowRoutes, { prefix: '/api' });
+  await app.register(llmImageIndexRoutes, { prefix: '/api' });
   await app.register(extractDocumentRoutes, { prefix: '/api' });
   await app.register(prepareImageRoutes, { prefix: '/api' });
 

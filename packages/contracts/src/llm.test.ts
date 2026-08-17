@@ -6,6 +6,7 @@ import {
   UsecaseDefaultSchema,
   VisionCapabilityDetailSchema,
   ImageEmbeddingProbeSchema,
+  ImageIndexStatusSchema,
 } from './llm.js';
 import {
   AskRequestSchema,
@@ -266,5 +267,88 @@ describe('VisionCapabilityDetailSchema (#1184)', () => {
   it('rejects probeError being absent', () => {
     const { probeError: _omitted, ...withoutError } = base;
     expect(() => VisionCapabilityDetailSchema.parse({ ...withoutError, vision: false })).toThrow();
+  });
+});
+
+/**
+ * #1115 P2 — what `GET /api/admin/embedding/image-index` answers.
+ *
+ * The shape carries three separate facts that read alike and are not: whether
+ * the leg is ASSIGNED, what the column's identity IS, and what the last run
+ * DID. An instance can be assigned with an empty index (nothing scanned yet),
+ * unassigned with a full one (the leg was turned off and the rows survive —
+ * unassigning destroys nothing, ADR-025 D7), or assigned with a last run that
+ * failed. Each is nullable in its own right so the card cannot infer one from
+ * another.
+ */
+describe('ImageIndexStatusSchema (#1115 P2)', () => {
+  const base = {
+    assigned: true,
+    identity: {
+      providerId: '00000000-0000-4000-8000-000000000001',
+      model: 'Qwen/Qwen3-VL-Embedding-2B',
+      dimensions: 2048,
+      tier: 'halfvec' as const,
+    },
+    rows: 42,
+    pagesDirty: 3,
+    pagesTotal: 120,
+    running: false,
+    lastRun: {
+      at: '2026-08-17T12:00:00.000Z',
+      pages: 12,
+      embedded: 20,
+      reused: 5,
+      removed: 1,
+      failed: 0,
+      skipped: { missing: 1, unsupported: 2, oversized: 0, tooLarge: 0, capped: 3, external: 0 },
+    },
+  };
+
+  it('accepts the fully-populated shape', () => {
+    expect(() => ImageIndexStatusSchema.parse(base)).not.toThrow();
+  });
+
+  it('accepts an unassigned instance whose index still holds rows', () => {
+    // Unassigning is not destructive: the leg goes off and the index survives.
+    const parsed = ImageIndexStatusSchema.parse({
+      ...base,
+      assigned: false,
+      identity: null,
+      lastRun: null,
+    });
+    expect(parsed.identity).toBeNull();
+    expect(parsed.rows).toBe(42);
+  });
+
+  it('rejects a missing lastRun key — null and absent must not read alike', () => {
+    const { lastRun: _dropped, ...without } = base;
+    expect(() => ImageIndexStatusSchema.parse(without)).toThrow();
+  });
+
+  it('requires every skip reason on a run, so a dropped counter cannot read as zero', () => {
+    for (const reason of ['missing', 'unsupported', 'oversized', 'tooLarge', 'capped', 'external'] as const) {
+      const { [reason]: _dropped, ...skipped } = base.lastRun.skipped;
+      expect(
+        () => ImageIndexStatusSchema.parse({ ...base, lastRun: { ...base.lastRun, skipped } }),
+        `${reason} must be required`,
+      ).toThrow();
+    }
+  });
+
+  it('rejects negative counters and an unknown tier', () => {
+    expect(() => ImageIndexStatusSchema.parse({ ...base, rows: -1 })).toThrow();
+    expect(() =>
+      ImageIndexStatusSchema.parse({ ...base, identity: { ...base.identity, tier: 'ivfflat' } }),
+    ).toThrow();
+  });
+
+  it('carries no provider base URL or key — this is the index document, not the provider one', () => {
+    const parsed = ImageIndexStatusSchema.parse({
+      ...base,
+      identity: { ...base.identity, baseUrl: 'http://vllm:8000/v1', apiKey: 'sk-secret' },
+    });
+    expect(parsed.identity).not.toHaveProperty('baseUrl');
+    expect(parsed.identity).not.toHaveProperty('apiKey');
   });
 });

@@ -567,6 +567,12 @@ async function relocateToConfluence(opts: {
            version = $7,
            last_synced = NOW(),
            embedding_dirty = TRUE,
+           -- #1115 P2 — a relocate REKEYS every image: the body persisted here
+           -- has its img src attributes rewritten onto the other store's
+           -- prefix, so every (source, attachment_key) in the index now names
+           -- a row this page no longer references. Only a re-scan can
+           -- reconcile that, and the flag is what schedules it.
+           image_embedding_dirty = TRUE,
            embedding_status = 'not_embedded',
            embedded_at = NULL
          WHERE id = $1`,
@@ -744,6 +750,11 @@ async function relocateToLocal(opts: {
          -- standalone visibility model the only one in force (decision 4).
          inherit_perms = TRUE,
          embedding_dirty = TRUE,
+         -- #1115 P2 — see the matching note in relocateToConfluence. This is
+         -- the direction the P0 record singles out, because the rewritten body
+         -- moves every image onto /api/local-attachments/ while the index
+         -- still keys them under source = 'confluence'.
+         image_embedding_dirty = TRUE,
          embedding_status = 'not_embedded',
          embedded_at = NULL,
          local_modified_at = NOW(),

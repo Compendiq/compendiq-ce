@@ -208,7 +208,8 @@ Markdown stays exactly as specified above, with the same libraries and the same
 macro mapping. An `<img>` still converts to `<img>`, and its *text* contribution
 to embedding input is still whatever alt text it carries.
 
-What changes (ADR-025, landing in **P2**) is that the attachment's **bytes**
+What changes (ADR-025; the intake shipped in **P2**, retrieval lands in **P3**)
+is that the attachment's **bytes**
 become a second, parallel index — `page_image_embeddings`, embedded by a
 vision-language model, fused as a third retrieval leg. Five consequences are
 worth stating here, where a reader of the pipeline will look for them:
@@ -1813,8 +1814,9 @@ writer; `max_score` keeps the fusion unit.
 
 ADR-021 gains a **seventh** use case, `image_embedding` (ADR-025). Migration
 `093` widened the `llm_usecase_assignments` CHECK in **P0**; the resolver, the
-client, the probe and the settings row shipped in **P1**. Nothing embeds a page
-image yet — that is P2.
+client, the probe and the settings row shipped in **P1**; **P2 gave it a
+consumer** — `image-embedding-service.ts` embeds every referenced page image
+through it. Nothing retrieves one yet — that is P3.
 
 **It is the `rerank` rule, one rung stronger.** `resolveImageEmbeddingUsecase()`
 returns `null` when unassigned and the image leg is simply off; `resolveUsecase('image_embedding')`
@@ -2079,16 +2081,20 @@ Multi-replica deployments sit behind a load balancer. `trustProxy` MUST be set t
 
 **Date:** 2026-08-17
 **Status:** Accepted (owner interview, 2026-08-17). **Partially implemented:**
-P0 and P1 have shipped. P0: this ADR, migration `093` (the
+P0, P1 and P2 have shipped. P0: this ADR, migration `093` (the
 `page_image_embeddings` table, `pages.image_embedding_dirty`, the widened
 use-case CHECK) and the core `attachment-store` hoist. P1: the
 `image_embedding` use case end to end — `vl-embedding-client.ts`,
 `resolveImageEmbeddingUsecase`, `image-embedding-probe.ts`, the probe-time
 runtime DDL `ensureImageEmbeddingColumn`, the probe-gated assignment routes and
-the Settings row. The page-embedding worker, the retrieval leg and the answer
-path land in **P2–P4**, and every paragraph below that describes unshipped
-behaviour says which PR owns it. **Nothing embeds or retrieves an image yet**:
-P1 makes the leg configurable and provable, not live.
+the Settings row. **P2: the index fills** — `image-embedding-service.ts`
+(`embedPageImages` + `processDirtyPageImages`), the `image_embedding_dirty`
+writers at every place an image can change under a page, the two intake knobs,
+the admin status/re-scan/process routes and the Embeddings-tab card. The
+retrieval leg and the answer path land in **P3–P4**, and every paragraph below
+that describes unshipped behaviour says which PR owns it. **Nothing RETRIEVES
+an image yet**: after P2 the index is populated and read by nothing, which the
+Embeddings-tab card states on screen.
 **Design of record:** `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`
 (issue #1115, epic #1100 Phase 2).
 
@@ -2203,7 +2209,7 @@ than by everyone remembering a `WHERE`. It is also the only shape that can hold
 two different widths from two different models at once.
 
 **D7 — Changing the image model truncates the index and re-scans. No shadow
-swap (P1 shipped the truncate; P2 does the re-scan).** #1116's shadow path
+swap (P1 shipped the truncate; P2 shipped the re-scan).** #1116's shadow path
 exists because a text re-embed degrades live search for hours; here the leg is
 simply *disabled* while the index is empty, so text retrieval is untouched.
 Images are far cheaper to redo: only referenced files, content-addressed by
@@ -2251,7 +2257,7 @@ it had to be in `core`: `domains/llm` may import `core` and nothing else
 retrieved attachment already has a stable path on disk. The function applies
 **no ACL**; a test walks `src/routes` and fails if any route file names it.
 
-**D10 — No server-side pixel processing in v1 (P2).** SVG and draw.io
+**D10 — No server-side pixel processing in v1 (P2, shipped).** SVG and draw.io
 XML-in-`.png` are excluded because `sniffImageFormat` refuses them; images over
 `MAX_IMAGE_BYTES` (5 MB) or `MAX_IMAGE_DIMENSION` (4096) are **skipped and
 counted**, never resized. The backend has deliberately no `sharp` and no
@@ -2288,6 +2294,37 @@ on another is silently degraded. D7 makes honouring this cheap — but only
 identity and rebuilds at the next probe, while an in-place upgrade behind the
 same base URL is invisible to every signal this code has, and stays an operator
 step (`docs/runbooks/image-index.md` §2).
+
+### Intake, in one paragraph (P2, shipped)
+
+`image-embedding-service.ts` owns it. `embedPageImages(pageId)` enumerates the
+page's stored `body_html` for the two attachment prefixes — **the store follows
+the URL prefix, never `confluence_id IS NULL`** (D9's reader, and the reason
+`source` is part of the unique key) — dedupes by `(source, key)`, drops
+`external-<hash>` names when `rag_image_index_external` is off, caps at
+`rag_images_per_page_max` (default 20) and, for each survivor, reads the bytes
+through `resolveAttachmentBytes`. Anything that sniffs as no raster format, or
+exceeds either ceiling, is **skipped and counted by reason** (D10) — the page
+still clears. An image whose sha256 and model match its existing row is
+**reused with no request at all**, which is what makes a re-scan cheap enough
+for D7's truncate-and-rescan to be the right trade. The writes go in one
+transaction that re-reads `admin_settings.image_embedding_index_model` after
+its DELETE and rolls back on a change, mirroring `embedPage`'s shadow-epoch
+recheck for the same reason: vectors produced for one space must never land in
+a column another rebuild has just emptied. `image_embedding_dirty` clears only
+when nothing FAILED — a skip is a fact about the file, a failure is a fact about
+the endpoint, and only the second has to be retried. **Unassigned is not a
+failure and not a success**: the worker returns without clearing the flag, so
+the backlog survives until the leg is assigned. The flag itself is raised by
+`core/services/image-embedding-dirty.ts` from every layer that can move an
+image — the sync upsert, the two sync attachment writers (which closes the
+"attachment changed under an unchanged page version" hole), `writeAttachmentCache`,
+`putLocalAttachment`, both relocate directions and `cleanPageAttachments` — and
+by the Embeddings-tab **Re-scan all**. The worker runs off the sync cadence
+(fire-and-forget beside `processDirtyPages`, which is how the text embedder is
+scheduled) plus the two admin routes, under its own `worker:lock:` key rather
+than the per-user embedding lock, whose holders `processDirtyPages` backs off
+from.
 
 ### Retrieval, in one paragraph (P3)
 
