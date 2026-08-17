@@ -57,32 +57,13 @@ function identityOf(pair: ImageIndexPair): string {
   return `${pair.providerId}:${pair.model}`;
 }
 
-/** The width the live column is declared at, from the catalogue rather than a setting. */
-async function liveDimensions(): Promise<number | null> {
-  const r = await query<{ atttypmod: number }>(
-    `SELECT atttypmod FROM pg_attribute
-      WHERE attrelid = 'page_image_embeddings'::regclass AND attname = 'embedding'`,
-  );
-  const mod = r.rows[0]?.atttypmod;
-  return mod === undefined || mod < 0 ? null : mod;
-}
-
-async function liveTypeName(): Promise<string | null> {
-  const r = await query<{ type: string }>(
-    `SELECT format_type(atttypid, atttypmod) AS type FROM pg_attribute
-      WHERE attrelid = 'page_image_embeddings'::regclass AND attname = 'embedding'`,
-  );
-  return r.rows[0]?.type ?? null;
-}
-
-async function recordedIndexModel(): Promise<string | null> {
-  const r = await query<{ setting_value: string }>(
-    `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
-    [IMAGE_EMBEDDING_INDEX_MODEL_KEY],
-  );
-  return r.rows[0]?.setting_value ?? null;
-}
-
+/**
+ * NOTE: the live width, the live type and the recorded pair are ALL read inside
+ * the locked transaction below, never before it. An unlocked pre-check would be
+ * stale by the time the lock is granted — another admin can land the same
+ * rebuild in that window — and acting on it would truncate a freshly-built
+ * index and re-dirty the whole corpus a second time.
+ */
 async function hnswIndexExists(): Promise<boolean> {
   const r = await query(
     `SELECT 1 FROM pg_indexes WHERE tablename = 'page_image_embeddings' AND indexname = $1`,
@@ -120,12 +101,6 @@ export async function ensureImageEmbeddingColumn(
   const { columnType, opclass, tier } = columnTypeFor(dimensions);
   const identity = identityOf(pair);
 
-  const currentDims = await liveDimensions();
-  const currentType = await liveTypeName();
-  const currentIdentity = await recordedIndexModel();
-  const rebuild =
-    currentDims !== dimensions || currentType !== columnType || currentIdentity !== identity;
-
   if (!opclass) {
     logger.warn(
       { dimensions, model: pair.model },
@@ -134,14 +109,21 @@ export async function ensureImageEmbeddingColumn(
   }
 
   let dirtiedPages = 0;
+  // Set INSIDE the transaction, from the re-verified reads — never from a
+  // pre-transaction check. A second admin can land the same rebuild in the
+  // window between the two, and reporting "rebuilt" for a transaction that did
+  // nothing but confirm an index would put a truncate-and-rescan into the audit
+  // trail that never happened.
+  let action: EnsureImageIndexResult['action'] = 'index_only';
 
   await withLockRetry(
     { lockTimeoutMs: 5000, maxAttempts: 5, operation: 'the image index rebuild' },
     async (client) => {
-      // Lock first, re-verify second — the same discipline every DDL path here
-      // uses. Between the reads above and this transaction another admin could
-      // have run the same rebuild; without the re-read this one would truncate
-      // a freshly-built index and re-dirty the whole corpus a second time.
+      // Lock first, read second — the same discipline every DDL path here
+      // uses, and the reason there is no pre-transaction check to compare
+      // against: another admin can land the same rebuild in the window before
+      // this lock, and an unlocked read would truncate a freshly-built index
+      // and re-dirty the whole corpus a second time.
       await client.query(`LOCK TABLE page_image_embeddings IN ACCESS EXCLUSIVE MODE`);
       const verify = await client.query(
         `SELECT atttypmod AS dims, format_type(atttypid, atttypmod) AS type
@@ -156,10 +138,11 @@ export async function ensureImageEmbeddingColumn(
       );
       const verifiedIdentity =
         (verifiedIdentityRows.rows[0] as { setting_value?: string } | undefined)?.setting_value ?? null;
-      const stillNeedsRebuild =
+      const needsRebuild =
         verifiedDims !== dimensions || verifiedType !== columnType || verifiedIdentity !== identity;
+      action = needsRebuild ? 'rebuilt' : 'index_only';
 
-      if (!stillNeedsRebuild) {
+      if (!needsRebuild) {
         // Index-only: create it if it is absent, and touch nothing else.
         if (opclass) {
           await client.query(
@@ -216,7 +199,7 @@ export async function ensureImageEmbeddingColumn(
   );
 
   const result: EnsureImageIndexResult = {
-    action: rebuild ? 'rebuilt' : 'index_only',
+    action,
     dimensions,
     tier,
     indexed: opclass !== null && (await hnswIndexExists()),
