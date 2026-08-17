@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { HeaderHost, APP_HEADER_SLOT_ID } from './header-slot';
+import { HeaderHost } from './header-slot';
+import { APP_HEADER_SLOT_ID } from './header-slot-utils';
 
 describe('HeaderHost', () => {
   it('renders in place when the app header slot is missing', () => {

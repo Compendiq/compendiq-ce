@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { routeHeaderTitle } from './header-slot';
+import { routeHeaderTitle } from './header-slot-utils';
 
 describe('routeHeaderTitle', () => {
   it('names the tool routes', () => {

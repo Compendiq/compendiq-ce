@@ -39,7 +39,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const setArticleSidebarCollapsed = useUiStore((s) => s.setArticleSidebarCollapsed);
   const singleKeyShortcutsEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
   const dockOpen = useAiDockStore((s) => s.open);
-  const openDock = useAiDockStore((s) => s.openDock);
   const closeDock = useAiDockStore((s) => s.closeDock);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [inspectorViewRequest, setInspectorViewRequest] = useState<InspectorViewRequest | null>(null);

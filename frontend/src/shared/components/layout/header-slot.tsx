@@ -6,23 +6,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation } from 'react-router-dom';
-
-export const APP_HEADER_SLOT_ID = 'app-header-slot';
-
-/**
- * Route wayfinding for the app header when a page has not claimed the slot.
- * Article and New Page own their titles in the document, so they stay null.
- */
-export function routeHeaderTitle(pathname: string): string | null {
-  if (pathname === '/' || pathname === '/pages') return 'Pages';
-  if (pathname.startsWith('/ai')) return 'AI';
-  if (pathname.startsWith('/graph')) return 'Graph';
-  if (pathname.startsWith('/settings')) return 'Settings';
-  if (pathname.startsWith('/trash')) return 'Trash';
-  if (pathname === '/spaces/new') return 'New Space';
-  if (pathname.startsWith('/admin/analytics')) return 'Analytics';
-  return null;
-}
+import { APP_HEADER_SLOT_ID, routeHeaderTitle } from './header-slot-utils';
 
 /**
  * Renders into the app header when AppLayout is mounted; otherwise in place
