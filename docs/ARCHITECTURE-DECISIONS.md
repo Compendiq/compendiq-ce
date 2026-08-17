@@ -2347,9 +2347,10 @@ The worker runs off the sync cadence (fire-and-forget beside
 `processDirtyPages`, which is how the text embedder is scheduled) plus the two
 admin routes, under its own `worker:lock:` key rather than the per-user
 embedding lock, whose holders `processDirtyPages` backs off from — with the
-holder-epoch guard renewing on a **time** cadence, since one page may spend
-`rag_images_per_page_max × IMAGE_EMBED_TIMEOUT_MS` and a page-count cadence
-would let the lock lapse mid-run.
+holder-epoch guard renewing from a **timer armed for the lifetime of the run**,
+since one page may spend `rag_images_per_page_max × IMAGE_EMBED_TIMEOUT_MS` and
+neither a page-count cadence nor a time cadence evaluated at a page BOUNDARY can
+renew during the one page slow enough to need it.
 
 ### Retrieval, in one paragraph (P3)
 

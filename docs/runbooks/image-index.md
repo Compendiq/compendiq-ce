@@ -251,7 +251,7 @@ the backlog.
 | An image is pasted, or imported from an external URL | `writeAttachmentCache` |
 | A draw.io diagram is saved on a local page | `putLocalAttachment` |
 | A page is relocated between Confluence and local | both directions, unconditionally — the move rewrites every `<img src>` |
-| A page's cached attachments are cleared (a new version, an unsync) | `cleanPageAttachments` — the rows are now unresolvable and reconcile deletes them |
+| A page's cached attachments are cleared (a new version, an unsync) | `cleanPageAttachments` — this re-queues the page so the next scan **re-reads** it; it does not shrink the index (see below) |
 | **Re-scan all** | the Embeddings-tab action, and the model-change rebuild in §6 |
 
 The worker runs **off the sync cadence** — fire-and-forget beside
@@ -279,6 +279,24 @@ An image whose bytes are unchanged since its last embed — same sha256, same
 model — **keeps its row and costs no request at all**. That is what makes
 Re-scan cheap, and it is why the model-change rebuild in §6 is affordable.
 
+### What removes a row
+
+Reconcile deletes the rows of this page whose `(source, key)` the page's
+**stored body no longer references**. That is the only rule, and it has one
+consequence that surprises people: **a file that has gone missing keeps its
+row.** The reconcile set comes from `body_html`, not from what the scan managed
+to read, and `resolveAttachmentBytes` answers the same `null` for "the file is
+gone" and for "the read failed" — so deleting on a miss would let one bad disk
+moment empty a page's entries. A missing file is counted as a `missing` skip
+and its row is left alone; a stale row is recoverable (the next sync
+re-downloads the file), a deleted one costs a full re-embed.
+
+So an unsync, or any other clearing of cached attachment files, does **not**
+shrink the index. Rows go away when the body stops pointing at the image,
+when the knobs below exclude it, or when the `pages` row itself is purged
+(`ON DELETE CASCADE`) — and the whole table is emptied by the model-change
+rebuild in §6.
+
 ### What is skipped, and why
 
 Skipping is not failing: the page still clears its flag, and the reason is
@@ -293,20 +311,29 @@ counted and shown on the card.
 | `capped` | Past `rag_images_per_page_max` on this page | Raise the knob if a page legitimately carries more |
 | `external` | Fetched from an external URL (`external-<hash>` in the cache) with `rag_image_index_external` off | Only if you did not mean to turn it off |
 
-A **failure** is different: the endpoint refused or never answered. The page
-stays `image_embedding_dirty`, the counter is `failed`, and the card renders it
-in amber. Retrying is automatic on the next scan.
+A **failure** is different, and it has two causes:
+
+- The endpoint **refused or never answered** — a provider outage, an open
+  breaker, a timeout. Retrying is automatic: the page keeps its
+  `image_embedding_dirty` flag and the next scan tries it again.
+- The model answered at a **width the column is not typed for**. This is the
+  guarded-DDL state §6 describes — the assignment saved and the `ALTER` did
+  not — and the check happens *before* the INSERT, so it lands here rather than
+  taking the page's write down with it. The automatic retry will keep failing
+  until you press **Re-check** on the Image embedding row, which re-applies the
+  column type. The card says so directly when it can: if the recorded index
+  identity is not the pair assigned now, it renders an amber line naming
+  Re-check above the counters.
+
+Either way the counter is `failed`, the page stays queued, and the card renders
+it in amber.
 
 A **page failure** is a third thing, counted separately (`pagesFailed`, its own
-amber line). The scan reached the database and the write did not land — the page
-embedded nothing at all, because its transaction rolled back. The reachable
-cause is a column typed to a width the assigned model no longer answers with,
-which is the guarded-DDL state §6 describes: the assignment saved, the `ALTER`
-did not, and the remedy is **Re-check** on the Image embedding row, not anything
-to do with the provider. The card also says so directly when it can — if the
-recorded index identity is not the pair assigned now, it renders an amber line
-naming Re-check above the counters. A page failure never aborts the scan; the
-run continues, and the page stays queued.
+amber line). It means `embedPageImages` itself threw — a **database** error, so
+the transaction rolled back and the page embedded nothing at all even if some of
+its images had answered. It is not a fact about the provider; look in the
+backend log for the SQL error. A page failure never aborts the scan; the run
+continues, and the page stays queued.
 
 ### The two knobs
 

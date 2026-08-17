@@ -263,12 +263,14 @@ export function ImageIndexCard() {
             </p>
           )}
           {/*
-            The amber pair. A failed run means the endpoint refused, the pages
-            stayed queued, and somebody has to look — which is exactly what
+            The amber pair. A failed IMAGE means the endpoint refused, never
+            answered, or answered at a width the column is not typed for (the
+            guarded-DDL case the strip above names Re-check for) — the pages
+            stayed queued, and somebody has to look, which is exactly what
             ADR-010 reserves amber for. A page that THREW is reported
-            separately because it is a different outage: the scan never reached
-            the provider, so "the model refused" would send the operator to the
-            wrong place.
+            separately because it is a different outage: that is a DATABASE
+            error, the page's whole transaction rolled back, and "the model
+            refused" would send the operator to the wrong place.
           */}
           {data.lastRun.failed > 0 && (
             <p className="text-warning inline-flex items-center gap-1.5" data-testid="image-index-last-run-failed">

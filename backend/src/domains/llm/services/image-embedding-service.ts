@@ -111,16 +111,24 @@ export const IMAGE_INDEX_WORKER_LOCK = 'image-embedding-index';
 const IMAGE_INDEX_LOCK_TTL_SECONDS = 600;
 
 /**
- * How often the holder-epoch guard runs — in TIME, not in pages (review r1).
+ * How often the holder-epoch guard runs — on a TIMER armed for the whole run,
+ * not at page boundaries (review r3).
  *
  * The lock's TTL is a wall-clock expiry, so its renewal has to be paced by the
- * same clock. A page-count cadence cannot be: a page may legitimately issue up
- * to `rag_images_per_page_max` (default 20) sequential VL requests at
+ * same clock *and* has to be reachable while the run is busy. A page-count
+ * cadence cannot be either: a page may legitimately issue up to
+ * `rag_images_per_page_max` (default 20) sequential VL requests at
  * `IMAGE_EMBED_TIMEOUT_MS` each, so ONE slow page can outlive a 600 s TTL
  * before a 20-page counter has ticked once — the key expires mid-run, the next
  * sync tick or `Process now` acquires the free lock, and two scans walk the
- * same backlog, which is the single thing the lock exists to prevent. A third
- * of the TTL leaves two whole intervals of slack for a transient Redis blip.
+ * same backlog, which is the single thing the lock exists to prevent.
+ *
+ * Re-paced in *time* but still evaluated between pages, the hole is identical:
+ * the one page that can outlive the TTL is precisely the one during which no
+ * page boundary occurs. So the guard is a `setInterval` living for the
+ * lifetime of the run, cleared in the same `finally` that releases the lock,
+ * and the loop's own check reads the flag that timer sets. A third of the TTL
+ * leaves two whole intervals of slack for a transient Redis blip.
  */
 const LOCK_GUARD_INTERVAL_MS = (IMAGE_INDEX_LOCK_TTL_SECONDS * 1000) / 3;
 
@@ -500,7 +508,9 @@ export interface ProcessDirtyPageImagesOptions {
   batchSize?: number;
   /**
    * Test seam — milliseconds between holder-epoch lock checks, defaulting to
-   * {@link LOCK_GUARD_INTERVAL_MS}. `0` checks before every page.
+   * {@link LOCK_GUARD_INTERVAL_MS}. It paces both halves of the guard: the
+   * timer that renews *during* a page, and the check the page loop makes
+   * before each page. `0` checks before every page.
    */
   lockGuardIntervalMs?: number;
 }
@@ -567,9 +577,55 @@ export async function processDirtyPageImages(
   }
 
   let consecutiveFailures = 0;
-  let lastGuardCheckAt = Date.now();
   let offset = 0;
   let aborted = false;
+
+  // ── The holder-epoch guard ──────────────────────────────────────────────
+  //
+  // It renews the TTL and detects a force-release or an expiry-and-re-acquire,
+  // and two scans walking the same backlog is the duplicated-work case the
+  // lock exists for. It runs on a TIMER (review r3), because the failure it
+  // prevents is a lock expiring while a slow page is in flight — and a page
+  // slow enough to reach that is, by definition, one no page boundary occurs
+  // during. The loop's own check below is what turns a lost lock into a clean
+  // stand-down; the timer is what stops the lock being lost in the first place.
+  let lockLost = false;
+  let guardInFlight = false;
+  let lastGuardAt = Date.now();
+  const runGuard = async (): Promise<void> => {
+    // One in flight at a time: the interval keeps firing while a slow Redis
+    // reply is outstanding, and a queue of renewals is not a renewal.
+    if (guardInFlight || lockLost) return;
+    guardInFlight = true;
+    lastGuardAt = Date.now();
+    try {
+      const holder = await refreshWorkerLock(
+        IMAGE_INDEX_WORKER_LOCK,
+        token,
+        IMAGE_INDEX_LOCK_TTL_SECONDS,
+      );
+      if (holder !== token) {
+        lockLost = true;
+        logger.warn(
+          { expected: token, actual: holder },
+          'Image index worker lock was force-released or re-acquired — aborting the scan',
+        );
+      }
+    } catch (err) {
+      // A failed READ is not evidence the lock moved — `processDirtyPages`'
+      // guard logs and continues rather than aborting, and so does this.
+      logger.error({ err }, 'Image index holder-epoch guard failed — continuing');
+    } finally {
+      guardInFlight = false;
+    }
+  };
+  // `0` is the test seam's "check before every page", which as an interval
+  // period means "as often as the timer allows".
+  const guardTimer = setInterval(() => void runGuard(), Math.max(1, guardIntervalMs));
+  // Unref'd: the timer must never be the reason a process stays alive. It
+  // still fires for as long as this run is awaiting anything, which is the
+  // whole window it has to cover.
+  guardTimer.unref();
 
   try {
     for (;;) {
@@ -591,34 +647,13 @@ export async function processDirtyPageImages(
           aborted = true;
           break;
         }
-        // Holder-epoch guard, on a TIME cadence: it both renews the TTL and
-        // detects a force-release or an expiry-and-re-acquire, and two scans
-        // walking the same backlog is the duplicated-work case the lock exists
-        // for. Checked BEFORE the page — the failure it prevents is a lock
-        // expiring while a slow page is in flight, so a check that only ran
-        // after N pages could not renew in time to matter.
-        if (Date.now() - lastGuardCheckAt >= guardIntervalMs) {
-          lastGuardCheckAt = Date.now();
-          // A failed READ is not evidence the lock moved — `processDirtyPages`'
-          // guard logs and continues rather than aborting, and so does this.
-          let holder: string | null = token;
-          try {
-            holder = await refreshWorkerLock(
-              IMAGE_INDEX_WORKER_LOCK,
-              token,
-              IMAGE_INDEX_LOCK_TTL_SECONDS,
-            );
-          } catch (err) {
-            logger.error({ err }, 'Image index holder-epoch guard failed — continuing');
-          }
-          if (holder !== token) {
-            logger.warn(
-              { expected: token, actual: holder },
-              'Image index worker lock was force-released or re-acquired — aborting the scan',
-            );
-            aborted = true;
-            break;
-          }
+        // The page-boundary half: an awaited check when the timer has not run
+        // inside the cadence, so a stolen lock is noticed deterministically
+        // here rather than whenever a timer callback happens to land.
+        if (Date.now() - lastGuardAt >= guardIntervalMs) await runGuard();
+        if (lockLost) {
+          aborted = true;
+          break;
         }
 
         // Per-page try/catch, exactly as `processDirtyPages` wraps `embedPage`
@@ -690,6 +725,7 @@ export async function processDirtyPageImages(
       if (batch.rows.length < batchSize) break;
     }
   } finally {
+    clearInterval(guardTimer);
     await releaseWorkerLock(IMAGE_INDEX_WORKER_LOCK, token);
   }
 

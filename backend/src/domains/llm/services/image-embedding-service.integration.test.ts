@@ -364,6 +364,38 @@ describe.skipIf(!dbAvailable)('embedPageImages (#1115 P2)', () => {
     expect(off.removed).toBe(1);
   });
 
+  it('spends the cap on the page OWN images — the external filter runs first', async () => {
+    // Review r3. Both stages are covered above, but never together, and the
+    // order between them is only observable when the knob is off AND the page
+    // exceeds the cap: slice-then-filter lets the excluded `external-…` images
+    // eat the budget, so the page's own pictures fall past the cap, are
+    // counted as `capped`, and their rows are reconciled away — under-indexing
+    // exactly the crowded pages the cap exists for.
+    await assignImageEmbedding();
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('rag_images_per_page_max', '2'),
+                                                                     ('rag_image_index_external', '0')`,
+    );
+    invalidateRagImageIntakeCache();
+    const files = [
+      'external-0123456789ab.png',
+      'external-ba9876543210.png',
+      'own1.png',
+      'own2.png',
+    ];
+    const pageId = await seedPage({
+      bodyHtml: files.map((f) => `<img src="/api/attachments/1/${f}">`).join(''),
+    });
+    for (const f of files) await writeConfluenceAttachment(String(pageId), f, png(4, 4));
+
+    const outcome = await embedPageImages(pageId);
+
+    expect(outcome.embedded).toBe(2);
+    expect(outcome.skipped.external).toBe(2);
+    expect(outcome.skipped.capped).toBe(0);
+    expect((await rowsFor(pageId)).map((r) => r.attachment_key)).toEqual(['own1.png', 'own2.png']);
+  });
+
   it('reconciles: a row whose image the body no longer references is deleted', async () => {
     await assignImageEmbedding();
     const pageId = await seedPage({

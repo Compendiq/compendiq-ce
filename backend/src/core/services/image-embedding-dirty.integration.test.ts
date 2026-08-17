@@ -347,9 +347,15 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
       });
     });
 
-    it('cleanPageAttachments raises the flag, so reconcile removes the orphaned rows', async () => {
-      // The files are gone; the rows describing them must not survive as
-      // silently-unresolvable index entries.
+    it('cleanPageAttachments re-queues the page so the next scan RE-READS it', async () => {
+      // Not "so reconcile deletes the rows" (review r3): reconcile keeps its
+      // keep-set from the page's BODY, and dropping the cached files does not
+      // touch `body_html`. So the images come back as `missing` skips and
+      // their rows are KEPT — deliberately, because `resolveAttachmentBytes`
+      // answers the same null for "gone" and for "the read failed". What the
+      // raise buys is the re-read: on the sync path the bytes are about to be
+      // re-downloaded, possibly changed, and a page nobody re-visits would
+      // keep describing the old ones.
       const pageId = await seed({ title: 'Clean', source: 'confluence', confluenceId: '4242' });
       await writeAttachmentCache('u1', '4242', 'a.png', PNG);
       await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1`, [pageId]);
@@ -401,6 +407,34 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
 
       await run('sync-upd');
 
+      expect(await flags(pageId)).toEqual({ image: true, text: true });
+    });
+
+    it('marks a page RESTORED from Confluence trash — the clause no other writer covers', async () => {
+      // Review r3. The case above is carried by `cleanPageAttachments`, which
+      // `syncPage` calls on every existing-page-with-a-new-version path: strike
+      // the `image_embedding_dirty = TRUE` out of the `DO UPDATE` arm and it
+      // still passes. This one cannot be, and the difference is one predicate:
+      // `markPageImagesDirtyByAttachmentKey` filters `deleted_at IS NULL`,
+      // while the arm itself is what sets `deleted_at = NULL`. So for a page
+      // coming back out of the trash the upsert clause is the ONLY writer —
+      // and a restored page is exactly one whose pictures the index has been
+      // out of touch with for as long as it was gone.
+      const pageId = await seed({
+        title: 'Trashed',
+        source: 'confluence',
+        confluenceId: 'sync-restored',
+        deleted: true,
+      });
+      await query(`UPDATE pages SET version = 1 WHERE id = $1`, [pageId]);
+
+      await run('sync-restored');
+
+      const restored = await query<{ deleted_at: Date | null }>(
+        `SELECT deleted_at FROM pages WHERE id = $1`,
+        [pageId],
+      );
+      expect(restored.rows[0]!.deleted_at).toBeNull();
       expect(await flags(pageId)).toEqual({ image: true, text: true });
     });
   });

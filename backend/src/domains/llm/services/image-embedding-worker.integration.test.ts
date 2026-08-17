@@ -91,6 +91,24 @@ async function seedPageWithImage(name: string, modifiedAt: string): Promise<numb
   return pageId;
 }
 
+/** One page carrying SEVERAL images — the shape a single slow page takes. */
+async function seedPageWithImages(
+  name: string,
+  files: string[],
+  modifiedAt: string,
+): Promise<number> {
+  const r = await query<{ id: number }>(
+    `INSERT INTO pages (title, space_key, body_html, page_type, source, last_modified_at, image_embedding_dirty)
+     VALUES ($1, 'DEV', $2, 'page', 'standalone', $3, TRUE) RETURNING id`,
+    [name, files.map((f) => `<img src="/api/attachments/x/${f}">`).join(''), modifiedAt],
+  );
+  const pageId = r.rows[0]!.id;
+  const dir = path.join(attachmentsDir, String(pageId));
+  await fs.mkdir(dir, { recursive: true });
+  for (const f of files) await fs.writeFile(path.join(dir, f), png(4, 4));
+  return pageId;
+}
+
 async function assign(): Promise<void> {
   const prov = await query<{ id: string }>(
     `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, default_model)
@@ -344,6 +362,44 @@ describe.skipIf(!dbAvailable)('processDirtyPageImages (#1115 P2)', () => {
       await redis!.del(lockKey);
     }
   });
+
+  it.skipIf(!redis)('renews the lock WHILE one slow page is still in flight', async () => {
+    // Review r3. The guard's whole justification is that ONE page can outlive
+    // the lock TTL — up to `rag_images_per_page_max` sequential requests at
+    // `IMAGE_EMBED_TIMEOUT_MS` each — so a renewal that can only reach a page
+    // BOUNDARY has the identical hole the page-count cadence had: the key
+    // expires mid-page, the next sync tick or `Process now` acquires the free
+    // lock, and two scans walk the same backlog.
+    //
+    // Read from inside the page: the first image shortens the key's TTL to
+    // 800 ms and then holds the response for two seconds, and the second image
+    // reports whether the key is still there. Between-pages renewal alone
+    // cannot answer 1 — nothing runs between those two requests.
+    await assign();
+    await seedPageWithImages('slow', ['a.png', 'b.png'], '2026-07-01T00:00:00Z');
+    const lockKey = `worker:lock:${IMAGE_INDEX_WORKER_LOCK}`;
+    let seen = 0;
+    let aliveAtSecondImage: number | null = null;
+    respond = (res) => {
+      void (async () => {
+        seen++;
+        if (seen === 1) {
+          await redis!.pExpire(lockKey, 800);
+          await new Promise((r) => setTimeout(r, 2000));
+        } else if (seen === 2) {
+          aliveAtSecondImage = await redis!.exists(lockKey);
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ embedding: [1, 0, 0, 0] }] }));
+      })();
+    };
+
+    const result = await processDirtyPageImages({ lockGuardIntervalMs: 200 });
+
+    expect(seen).toBe(2);
+    expect(aliveAtSecondImage).toBe(1);
+    expect(result.embedded).toBe(2);
+  }, 30_000);
 
   it('counts a page whose WRITE fails, keeps going, and still records the run', async () => {
     // Reachable and permanent, not transient: `ensureImageEmbeddingColumn`

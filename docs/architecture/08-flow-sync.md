@@ -666,11 +666,16 @@ list grew and a reader who trusts it stops at the wrong bullet:
   pages queued for the next cadence. An unassigned leg clears nothing at all. A
   page whose write THROWS is counted (`pagesFailed`), left dirty and stepped
   past — a corpus scan must not be abortable by one page.
-- **The lock renews on a clock, not a page counter.** A page may legitimately
-  issue `rag_images_per_page_max` sequential VL requests, so a count-based
-  cadence lets a 600 s TTL lapse mid-run and a second scan start on the same
-  backlog. The holder-epoch guard runs on a third of the TTL and both renews
-  and re-reads the holder.
+- **The lock renews on a timer, not at a page boundary.** A page may
+  legitimately issue `rag_images_per_page_max` sequential VL requests — 20 × 120
+  s against a 600 s TTL on the shipped defaults — so a count-based cadence lets
+  the key lapse mid-run and a second scan start on the same backlog. Re-paced in
+  *time* but still evaluated between pages, the hole is identical: the one page
+  that can outlive the TTL is the one during which no page boundary occurs. So
+  the holder-epoch guard is a `setInterval` at a third of the TTL, armed for the
+  lifetime of the run and cleared in the same `finally` that releases the lock;
+  it both renews and re-reads the holder, and the loop's between-pages check
+  reads the flag it sets so a lost lock becomes a clean stand-down.
 - **The sync kick is the only automatic trigger.** `syncUser` fire-and-forgets
   `processDirtyPageImages()` beside `processDirtyPages`; there is no repeatable
   job. On an instance with **no Confluence credentials** `runScheduledSync`

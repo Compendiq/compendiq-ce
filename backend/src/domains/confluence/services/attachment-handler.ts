@@ -687,11 +687,15 @@ export async function cleanPageAttachments(_userId: string, pageId: string): Pro
   }
   // Clear Redis failure counters — after a sync the failures are stale
   await clearAttachmentFailures(getRedisClient(), pageId);
-  // #1115 P2 — the files are gone, so the index rows describing them are now
-  // unresolvable. Re-scanning is what deletes them: `embedPageImages`
-  // reconciles against the page's CURRENT references, and this is the trigger
-  // that makes it run. Without it the rows survive as entries pointing at
-  // bytes that no longer exist, which retrieval cannot tell from valid ones.
+  // #1115 P2 — re-queue the page so the next scan RE-READS its images. It does
+  // not delete their index rows, and saying so was wrong (review r3):
+  // `embedPageImages` reconciles against the page's BODY, which this function
+  // never touches, so every image comes back as a `missing` skip whose row is
+  // deliberately kept — a stale row is recoverable, a deleted one costs a
+  // re-embed, and `resolveAttachmentBytes` cannot tell "gone" from "the read
+  // failed". The re-read is the point: on the sync path these bytes are about
+  // to be downloaded again and may differ, and on a delete path the page row
+  // (and its rows, by CASCADE) is going anyway.
   await markPageImagesDirtyByAttachmentKey(pageId);
 }
 
