@@ -131,9 +131,11 @@ erDiagram
     llm_conversations {
         uuid id PK
         uuid user_id FK
+        int page_ref FK "ON DELETE SET NULL — page a dock conversation started from (#1361)"
         text model
         text title
-        jsonb messages
+        text title_source "question | generated | user (#1361)"
+        jsonb messages "[{role, content, refused?, sources?}]"
         timestamptz created_at
         timestamptz updated_at
     }
@@ -290,6 +292,9 @@ erDiagram
         timestamptz created_at
     }
 ```
+
+`llm_conversations` carries `llm_conversations_user_updated_idx (user_id,
+updated_at DESC, id DESC)` for the keyset-paged list (migration 094).
 
 **`chunk_text` is what gets embedded, verbatim (#1108).** Prefixing the page
 title and section into the embedded text was tried, measured, and **not
