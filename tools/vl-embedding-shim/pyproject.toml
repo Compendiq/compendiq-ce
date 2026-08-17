@@ -15,12 +15,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The in-process MLX backend. Heavy (mlx + mlx-vlm + transformers); the llama
-# backend needs none of it, which is why this is an extra rather than a
-# dependency. See README "Which backend".
+# The in-process MLX backend. Heavy (mlx + mlx-vlm + transformers + torch); the
+# llama backend needs none of it, which is why this is an extra rather than a
+# dependency.
 mlx = [
   "mlx-embeddings>=0.1.0",
   "huggingface-hub>=0.25.1",
+  # NOT transitively pulled, and the failure is a 502 on the first request
+  # rather than an install error: `mlx-embeddings`' processor loads the SLOW
+  # image processor (`AutoImageProcessor.from_pretrained(..., use_fast=False)`),
+  # and transformers 5 refuses to build that without torchvision —
+  # "AutoImageProcessor requires the Torchvision library but it was not found in
+  # your environment". The library does not declare it, so this extra does.
+  "torchvision>=0.20",
 ]
 dev = [
   "pytest>=8",
