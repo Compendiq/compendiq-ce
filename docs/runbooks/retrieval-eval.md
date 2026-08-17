@@ -27,6 +27,10 @@ rather than measured.
   pages.
 - **Does not** claim your knowledge base scores this well. The corpus is
   vendored MIT documentation (Fastify, Vitest, Vite), not your pages.
+- **Has a second axis.** Everything above describes the text gate. `--images`
+  (#1115 P5b) measures a different thing on a different corpus with a different
+  fixture — what the image retrieval leg adds, paired leg-off against leg-on —
+  and the two are never compared with each other. See "Image axis" below.
 
 ## Running a comparison on production data
 
@@ -130,7 +134,8 @@ printed absolute numbers with no comparison at all. The switches
 value and refuse one, because they are read as bare flags: `--rerank=true`
 would otherwise have measured plain retrieval under a report saying reranked. A
 value flag given without a value is refused too, rather than falling back to a
-default nobody typed.
+default nobody typed. `--images` (#1115 P5b) is one of those switches and
+selects a **different axis** entirely — see "Image axis" below.
 
 ## Which FTS configuration a run measured (#1114)
 
@@ -600,14 +605,16 @@ being *usable* without either digest moving), and the total image budget. In
 every case the bytes are still written, so the diff is inspectable — the run
 simply stops claiming to have reproduced the corpus.
 
-**Nothing here consumes it yet, and that is deliberate.** It is absent from
-`CORPUS_DIRS` and from `corpusDirsForLanguage`, so no run this runbook describes
-touches it and every recorded baseline stays comparable —
-`computeCorpusManifestSha` covers every directory in that list, so wiring it in
-invalidates all of them at once. **P5b** adds the `--images` axis and does that
-on purpose; **P5c** writes the labels, by an independent vision-capable agent on
-a different model from the implementer. `corpus-de-images.test.ts` fails if the
-wiring happens by accident first, and is also what keeps the corpus honest:
+**Only `--images` reaches it, and it is still absent from `CORPUS_DIRS` and
+from `corpusDirsForLanguage`.** That is the point rather than an oversight:
+`computeCorpusManifestSha` covers every directory in that list, so joining it
+would invalidate every recorded baseline above at once. The `--images` axis
+(P5b, "Image axis" below) loads the directory through
+`loadImageCorpusManifest` instead, so no run described above this section
+touches it and the English gate's sha is unmoved. The labels are P5c's, by
+independent vision-capable agents on a different model from the implementer.
+`corpus-de-images.test.ts` fails if the `CORPUS_DIRS` wiring ever happens, and
+is also what keeps the corpus honest:
 page bodies carry `![](images/…)` with an **empty alt and no caption**, because
 a page that captions its own figures is answerable from text alone and would
 score the image leg a win it did not earn. The captions live in the manifest,
@@ -709,9 +716,196 @@ picture. All of it is invisible to a schema: the label validates, the page and
 image exist and belong together, and the leg is simply scored a miss for
 returning the defensible answer.
 
-**Nothing consumes it yet.** P5b adds the `--images` axis; until then the
-fixture is committed data with a guard over it and no runner path, for the same
-reason the corpus is absent from `CORPUS_DIRS`.
+`--images` is what consumes it, through `loadImageFixture` and never through
+`loadFixture` — the two are separate loaders over separate schemas, and the
+axis below is where its labels turn into numbers.
+
+## Image axis (`--images`, #1115 P5b)
+
+A different question from everything above. The gate asks "did this checkout
+retrieve better"; this axis asks **"what does the image leg add"** — so it is
+not a flag on the gate, it is its own corpus, its own fixture, its own seeder
+and its own runner, with its own report family. `--baseline` refuses a pair
+that crosses the two.
+
+**It is not in CI**, and cannot be: the `retrieval-eval` job's model is
+`nomic-embed-text`, which is text-only, and no vision-language model is
+runnable there. CI keeps testing this axis's *plumbing* against a stub
+endpoint (`eval/vl-stub-server.ts`); the numbers come from a run you start.
+
+### What it does
+
+1. **Seeds `eval/corpus-de-images/` through the REAL intake.** Each page's
+   markdown goes through `markdownToHtml` and `embedPage` exactly as the text
+   corpus does; its images are written into a per-run temp `ATTACHMENTS_DIR`
+   under the layout `attachment-store.ts` resolves, its stored `body_html` is
+   rewritten to point at them with `buildPageImageUrl` (the exact inverse of
+   the enumerator), and then `embedPageImages` fills
+   `page_image_embeddings` — the same sha-reuse, the same reconcile, the same
+   write transaction the worker runs. Nothing inserts a vector directly, so a
+   wrong directory key or a mis-encoded filename fails the run instead of
+   quietly measuring an empty index.
+2. **Runs every fixture query TWICE, in one process, on that one database** —
+   `imageLeg: false`, then `imageLeg: true`, interleaved per query. Both arms
+   are the same rows, the same vectors, the same fused text legs, which is the
+   precondition the paired test needs. Interleaved rather than one arm then the
+   other, because the rig warms up (TTL caches, the vector pool, Postgres's
+   buffer cache) and a block design hands that entire cost to whichever arm
+   goes first and then publishes it as the leg's latency.
+3. **Scores the pair**: page Recall@{1,3,5,10} and MRR for both arms, the
+   paired delta with a bootstrap interval and **McNemar exact** — the harness's
+   own gate — overall, per `style` and per label language, plus `imageHit@K`,
+   `imageNegativeLeak@K`, embed throughput and each arm's query cost.
+
+The image leg is forced per REQUEST, never through
+`admin_settings.rag_image_leg_enabled`: flipping the global setting would
+change what every other request on the instance retrieves for the duration of
+the run.
+
+### Prerequisites
+
+* A **vision-language endpoint** speaking vLLM's chat-embeddings shape. Locally
+  that is `tools/vl-embedding-shim/` on port 8011 — see
+  `docs/runbooks/vl-embedding-dev.md` for both backends. In production it is
+  vLLM ≥ 0.14 `--runner pooling`; see `docs/runbooks/image-index.md` §2.
+* A **text** embedding endpoint as usual: the axis measures what the image leg
+  adds *to* hybrid retrieval, so the text half runs exactly as it always does.
+* A disposable `POSTGRES_URL` — this axis truncates and retypes
+  `page_image_embeddings` as well.
+
+Its environment variables are its own, and are **refused when missing** before
+anything connects to the database:
+
+| variable | |
+|---|---|
+| `EVAL_IMAGE_EMBEDDING_BASE_URL` | required; spell the `/v1`, exactly as a provider row does |
+| `EVAL_IMAGE_EMBEDDING_MODEL` | required; read it from `/v1/models` |
+| `EVAL_IMAGE_EMBEDDING_DIMENSIONS` | optional MRL truncation width; unset = the model's native width |
+| `EVAL_IMAGE_EMBEDDING_BACKEND` | optional free-text provenance label recorded in the report (`llama` \| `mlx` \| `vllm`) |
+
+They are deliberately **not** `EVAL_EMBEDDING_*`. That endpoint would answer an
+image-embedding request — through the plain `{model, input}` shape, pooling a
+different position — with a perfectly well-formed vector from a different
+space, and an index built from those is indistinguishable from bad retrieval.
+That is ADR-021's non-inheriting rule, and the axis enforces it by refusing to
+fall back rather than by documentation.
+
+`--lang` is implied `de` and any other value is refused: the corpus is 65
+German Wikipedia articles, and the cross-lingual English slice lives in the
+fixture's own per-label `lang`. `--fts-language` still applies to the lexical
+leg and still defaults to `simple`; the German runs recorded above used both,
+and whichever you pick is recorded in the report as `ftsLanguage`.
+
+### Running it, locally, through the shim
+
+Start the shim first (`vl-embedding-dev.md`), then:
+
+```bash
+cd backend
+export POSTGRES_URL=postgresql://kb_user:pw@localhost:5433/kb_eval
+export EVAL_EMBEDDING_BASE_URL=http://localhost:11434/v1
+export EVAL_EMBEDDING_MODEL=nomic-embed-text
+export EVAL_IMAGE_EMBEDDING_BASE_URL=http://127.0.0.1:8011/v1
+export EVAL_IMAGE_EMBEDDING_MODEL=$(curl -s localhost:8011/v1/models | jq -r '.data[0].id')
+```
+
+**2B, MLX backend, native 2048 dimensions** (the recommended default — no
+truncation, and 2048 is on pgvector's indexed `vector` tier):
+
+```bash
+# shim: ./.venv/bin/python -m vl_embedding_shim --backend mlx
+EVAL_IMAGE_EMBEDDING_BACKEND=mlx \
+npx tsx scripts/run-retrieval-eval.ts --images --out /tmp/images-2b.json
+```
+
+**8B, llama-server backend, MRL-truncated to 2048** — the 8B answers 4096
+natively, which is *above* pgvector's HNSW ceiling for `halfvec` (4000), so
+`ensureImageEmbeddingColumn` builds no index and the leg runs a sequential
+scan. Ask for less:
+
+```bash
+# shim: ./scripts/run-llama-server.sh && ./.venv/bin/python -m vl_embedding_shim --backend llama
+EVAL_IMAGE_EMBEDDING_BACKEND=llama \
+EVAL_IMAGE_EMBEDDING_DIMENSIONS=2048 \
+npx tsx scripts/run-retrieval-eval.ts --images --out /tmp/images-8b.json
+```
+
+The truncation width is a **request** parameter, so it is also part of the
+index identity: changing it truncates and re-fills the index, and the report
+records the width the endpoint actually answered with (`imageDims`), never the
+one that was asked for. A run whose column ends up unindexed says so on the
+console (`SEQUENTIAL SCAN (no index at this width)`) rather than leaving it to
+be inferred from the latency.
+
+Every other flag applies to **both arms**: `--rerank`, `--deep-search`,
+`--mmr`, `--no-assemble`, `--no-pin`. That is the point — they are held
+constant so the only difference between the arms is the leg.
+
+### Reading the report
+
+`--out` writes the usual report plus `axis: "images"` and an `images` block:
+
+| field | |
+|---|---|
+| `imageModel` / `imageDims` / `imageEndpointBackend` | what answered, at what width, on which serving stack |
+| `imageIndexIdentity` / `imageIndexed` | `provider:model@baseUrl#dims`, and whether an HNSW index exists at that width |
+| `imagesEmbedded` / `imagesReused` / `throughputImagesPerSec` | the intake, timed over the sequential image phase alone — one page at a time, which is what a `processDirtyPageImages` backfill would see |
+| `legOff` / `legOn` | Recall@{1,3,5,10} and MRR per arm |
+| `delta.recallAtK` | the paired verdict per K: `observedDelta`, the bootstrap interval, `wins`/`losses`, `pValue`, `significant`, `direction` |
+| `delta.perStyle` / `delta.perLang` | the same verdict at Recall@5 over each slice, each carrying its own `n` |
+| `imageHitAtK` | did the leg return the *right picture* |
+| `imageNegativeLeakAtK` | did it drag a wrong page in |
+| `queryCostMs` | p50/p95 per arm; the difference is the leg's cost |
+| `runsOff` / `runsOn` | both arms' per-query results, so a same-axis `--baseline` compares each |
+
+The top-level `recallAtK` / `mrr` / `runs` carry the **leg-on** arm, because
+that is the shipped configuration (`rag_image_leg_enabled` defaults true).
+
+**`imageHit@K` and the paired page delta answer different questions, and the
+interesting runs are the ones where they disagree.** The page delta is what
+the feature is *for* — did the picture make the page retrievable — and it is
+what the McNemar verdict is computed on. `imageHit@K` asks whether the leg
+picked the right *picture* on that page, which is what P4's answer path will
+put in front of a reader. A high `imageHit@K` with a flat page delta means the
+leg is finding the right image on pages the text legs already had: correct, and
+worth nothing to ranking. A page delta with a low `imageHit@K` means pages are
+moving for image evidence that is not the evidence the labeller named — read
+the win/loss table before believing it. And read both against
+`imageNegativeLeak@K`: the `image-negative` labels are pages whose *text* is
+about the subject while none of their pictures show it, so a leg that improves
+the headline and leaks there is buying recall with precision.
+
+`delta.perStyle` is where that shows up as one table: `image` is the class the
+leg exists for, `image-negative` the class it must not help. A headline
+improvement that is really a leak shows up as those two rows disagreeing. Every
+slice prints its own `n` — the English slice is 58 labels and the negatives 22,
+so a p value there is not the same evidence as one over all 307.
+
+**Correct for multiplicity before quoting a slice.** The console prints four Ks
+plus four slice rows, which is eight chances to find a p below 0.05 in one run,
+and the report's per-K and per-slice p values are each uncorrected. The whole-
+fixture Recall@5 row is the one pre-registered comparison — that is the K the
+text gate decides on and the K the slices are computed at — so treat it as the
+verdict and everything else as description, or apply a Bonferroni factor and
+say which one you used. This is the same discipline #1114's German re-run
+applied when its one nominally significant cell died under a ×4 correction.
+
+A run leaves its per-run `ATTACHMENTS_DIR` behind on purpose (the path is
+printed at the top). It is ~6 MB and holds the exact bytes the intake read,
+which is the first thing to look at if a run reports a missing or skipped
+image. Delete it yourself.
+
+### What a local number is worth
+
+**Plumbing and ranked-list eyeballing. Nothing that decides anything** (design
+D11). Quantisation, MLX/llama.cpp-vs-CUDA numerics and vLLM's own ~0.92-cosine
+preprocessing divergence from the reference implementation each move the
+vector space, so a recall figure measured through the shim is a figure about
+the shim. Use a local run to confirm the rig works end to end, to compare
+ranked lists by eye, and to catch a wiring mistake before it costs GPU time.
+**The numbers that decide 2B-vs-8B, the MRL width and the default are measured
+on the production stack**, and belong on #1115 as a comment by the operator who
+ran them.
 
 ## The `vocabulary-gap` slice (#1112)
 

@@ -92,7 +92,7 @@ export function assertKnownFlags(
  */
 export const EVAL_KNOWN_FLAGS = [
   'out', 'baseline', 'lang', 'fts-language', 'rerank', 'deep-search',
-  'no-assemble', 'no-pin', 'mmr', 'mmr-lambda', 'help',
+  'no-assemble', 'no-pin', 'mmr', 'mmr-lambda', 'images', 'help',
 ] as const;
 
 /**
@@ -108,7 +108,7 @@ export const EVAL_KNOWN_FLAGS = [
  * whole suite green.
  */
 export const EVAL_VALUELESS_FLAGS = [
-  'rerank', 'deep-search', 'no-assemble', 'no-pin', 'mmr', 'help',
+  'rerank', 'deep-search', 'no-assemble', 'no-pin', 'mmr', 'images', 'help',
 ] as const;
 
 /**
@@ -132,12 +132,24 @@ export const EVAL_USAGE = [
   '  --no-pin              turn #1107 identifier pinning off (default: on)',
   '  --mmr                 turn #1109 MMR diversification on (default: off)',
   '  --mmr-lambda <n>      MMR relevance/diversity trade-off (default: 0.5)',
+  '  --images              #1115 P5b: measure the IMAGE axis instead of the text gate — seed the',
+  '                        German image corpus through the real intake and run every fixture query',
+  '                        twice, image leg off then on, paired. Implies --lang de and refuses any',
+  '                        other; --fts-language still applies to the lexical leg. Needs the VL',
+  '                        endpoint (see Environment). A --baseline from the other axis is refused.',
   '  --help                this text',
   '',
   'A value flag takes either spelling — "--out report.json" or "--out=report.json" — and is refused',
-  'if given without a value. The switches (--rerank, --deep-search, --no-assemble, --no-pin, --mmr)',
-  'take none and refuse one: they are read as bare flags, so "--rerank=true" would be ignored.',
+  'if given without a value. The switches (--rerank, --deep-search, --no-assemble, --no-pin, --mmr,',
+  '--images) take none and refuse one: they are read as bare flags, so "--rerank=true" would be',
+  'ignored.',
   '',
   'Environment: EVAL_EMBEDDING_BASE_URL and EVAL_EMBEDDING_MODEL (the eval never mocks the',
   'embedder), and POSTGRES_URL — a database this script may TRUNCATE and RETYPE.',
+  '',
+  'With --images, additionally: EVAL_IMAGE_EMBEDDING_BASE_URL and EVAL_IMAGE_EMBEDDING_MODEL (the',
+  'vision-language endpoint — required, and deliberately NOT the text pair, which speaks a different',
+  'request shape into a different vector space), optional EVAL_IMAGE_EMBEDDING_DIMENSIONS (MRL',
+  'truncation width; unset = the model\'s native width) and optional EVAL_IMAGE_EMBEDDING_BACKEND (a',
+  'free-text provenance label recorded in the report, e.g. llama | mlx | vllm).',
 ].join('\n');
