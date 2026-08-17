@@ -97,7 +97,7 @@ cd backend && npx vitest run src/path/file.test.ts
 npm run test:e2e
 ```
 
-Backend tests use a real PostgreSQL database (port 5433, configured via `POSTGRES_TEST_URL`). Only external API calls (Confluence, Ollama) should be mocked in tests -- never mock the database or pure utility functions.
+Backend tests use a real PostgreSQL database (port 5433, configured via `POSTGRES_TEST_URL`). Only external API calls (Confluence, Ollama) should be mocked in tests -- never mock the database or pure utility functions. PR Check runs backend tests without coverage; `coverage.yml` on push to `dev`/`main` holds the floors.
 
 ### Type Checking
 
