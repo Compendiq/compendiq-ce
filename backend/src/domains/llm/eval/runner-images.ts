@@ -32,7 +32,13 @@
  *    `admin_settings.rag_image_leg_enabled`. Writing the global setting per
  *    query would change what every other request on the instance retrieves for
  *    the duration of the run — which is the reason P3 put the request-level
- *    override there in the first place.
+ *    override there in the first place. BOTH directions are pinned (review r2):
+ *    the off arm by the refusal in decision 4, and the on arm by a case that
+ *    disables the setting and expects image hits anyway. An on arm that merely
+ *    omitted the flag and inherited the knob would run leg-off against leg-off
+ *    on any database whose knob is false — a restored dump, or a knob an
+ *    operator flipped while debugging P3 — and that is the identical-arms state
+ *    every refusal here exists to prevent.
  * 3. **`recordAnalytics: false` on both arms.** Each question is asked twice
  *    and only one of the two is a question anybody asked; recording both would
  *    double every image-axis query in `search_analytics` and file a leg-off
@@ -68,6 +74,20 @@ export interface ImageEvalOptions {
   rerank?: boolean;
   assembleContext?: boolean;
   pinIdentifiers?: boolean;
+  /**
+   * REFUSED BY THE ENTRYPOINT on this axis (`assertImageAxisStagesPairable`,
+   * review r2), and the option survives only because the refusal is about a
+   * missing seam rather than about deep search itself.
+   *
+   * Every other flag here names a stage that runs identically in both arms.
+   * This one does not: `multiQuerySearch` calls `reformulateQuery` per REQUEST,
+   * uncached and unseeded, so each arm is paraphrased separately and two of its
+   * three fused legs become different questions — a difference `pairedDelta`
+   * then attributes to the image leg. The day `MultiQuerySearchOptions` grows a
+   * `paraphrases` seam, `runImageEval` reformulates once per label, hands both
+   * arms the same list and this becomes true again; until then the counters
+   * below stay per-arm because that is what they will be counting.
+   */
   deepSearch?: boolean;
   mmr?: { enabled: boolean; lambda?: number };
   /**

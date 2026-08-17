@@ -203,6 +203,32 @@ describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
     expect(db).toBeGreaterThan(lang);
   });
 
+  it('refuses --deep-search on this axis, before the database is touched (review r2)', () => {
+    // Every other stage flag is held constant across the two arms. Deep search
+    // cannot be: each arm reformulates for itself, so two of each arm's three
+    // fused legs are different questions and the paired verdict attributes that
+    // to the leg. Beside the other flag parsing, so it costs a message rather
+    // than a connection and a migration run.
+    expect(flat).toContain('assertImageAxisStagesPairable(process.argv)');
+    const stages = raw.indexOf('assertImageAxisStagesPairable(process.argv)');
+    expect(stages).toBeGreaterThan(-1);
+    expect(raw.indexOf('assertDisposableDatabase(')).toBeGreaterThan(stages);
+    expect(raw.indexOf('await runMigrations()')).toBeGreaterThan(stages);
+  });
+
+  it('refuses a same-axis baseline measured through a different VL model (review r2)', () => {
+    // `baseline.model` is the TEXT embedder and is identical on both axes, so
+    // without this guard two runs of different checkpoints passed every check
+    // the harness makes and their difference was printed as a verdict about
+    // retrieval logic — the exact comparison the text-model guard refuses.
+    expect(flat).toContain('assertComparableImageModel(baseline.images, report.images)');
+    const axisGuard = raw.indexOf('assertComparableAxis(');
+    const modelGuard = raw.indexOf('assertComparableImageModel(');
+    const shaGuard = raw.indexOf('if (baseline.corpusManifestSha !== report.corpusManifestSha)');
+    expect(modelGuard).toBeGreaterThan(axisGuard);
+    expect(shaGuard).toBeGreaterThan(modelGuard);
+  });
+
   it('stages the attachments directory before the seeder writes a byte', () => {
     // `attachment-store` resolves its root at call time, so this call is what
     // decides where the seeder writes AND where the intake reads. After the

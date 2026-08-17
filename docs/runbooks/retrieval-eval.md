@@ -30,7 +30,11 @@ rather than measured.
 - **Has a second axis.** Everything above describes the text gate. `--images`
   (#1115 P5b) measures a different thing on a different corpus with a different
   fixture — what the image retrieval leg adds, paired leg-off against leg-on —
-  and the two are never compared with each other. See "Image axis" below.
+  and the two are never compared with each other. The model rule above holds
+  there in the axis's own terms: `--baseline` refuses a pair whose **VL** model,
+  width or index endpoint differs, because `model` is the text embedder and
+  reads the same on two runs made with different checkpoints. See "Image axis"
+  below.
 
 ## Running a comparison on production data
 
@@ -829,7 +833,8 @@ truncation, and 2048 is indexable: it is on pgvector's `halfvec` HNSW tier,
 since plain `vector` caps at 2000 — ADR-025 D5):
 
 ```bash
-# shim: ./.venv/bin/python -m vl_embedding_shim --backend mlx
+# shim, in another terminal, from tools/vl-embedding-shim (it blocks):
+#   ./.venv/bin/python -m vl_embedding_shim --backend mlx    # :8011
 export EVAL_IMAGE_EMBEDDING_MODEL=$(curl -s localhost:8011/v1/models | jq -r '.data[0].id')
 EVAL_IMAGE_EMBEDDING_BACKEND=mlx \
 npx tsx scripts/run-retrieval-eval.ts --images --out /tmp/images-2b.json
@@ -841,7 +846,9 @@ natively, which is *above* pgvector's HNSW ceiling for `halfvec` (4000), so
 scan. Ask for less:
 
 ```bash
-# shim: ./scripts/run-llama-server.sh && ./.venv/bin/python -m vl_embedding_shim --backend llama
+# shim, in TWO other terminals, from tools/vl-embedding-shim (both block):
+#   ./scripts/run-llama-server.sh                            # :8090
+#   ./.venv/bin/python -m vl_embedding_shim --backend llama  # :8011
 export EVAL_IMAGE_EMBEDDING_MODEL=$(curl -s localhost:8011/v1/models | jq -r '.data[0].id')
 EVAL_IMAGE_EMBEDDING_BACKEND=llama \
 EVAL_IMAGE_EMBEDDING_DIMENSIONS=2048 \
@@ -855,9 +862,31 @@ one that was asked for. A run whose column ends up unindexed says so on the
 console (`SEQUENTIAL SCAN (no index at this width)`) rather than leaving it to
 be inferred from the latency.
 
-Every other flag applies to **both arms**: `--rerank`, `--deep-search`,
-`--mmr`, `--no-assemble`, `--no-pin`. That is the point — they are held
-constant so the only difference between the arms is the leg.
+**Read those two reports side by side. Never through `--baseline`.** They were
+measured with different VL checkpoints, which is the model comparison this
+harness does not make — and the guard says so: `--baseline` refuses a pair whose
+`imageModel`, `imageDims` or index endpoint differs, exactly as it refuses a
+pair whose text model differs. (It has to be its own check. The text-model
+guard reads `model`, which is `EVAL_EMBEDDING_MODEL` and identical on both of
+these runs, and both would otherwise pass every other guard: same axis, same
+language, same FTS configuration, same committed corpus sha.) The two are
+comparable on their own terms — each one's *paired* delta is a statement about
+the leg under that checkpoint, and those deltas are what a 2B-vs-8B decision
+reads.
+
+The stage flags apply to **both arms**: `--rerank`, `--mmr`, `--no-assemble`,
+`--no-pin`. That is the point — they are held constant so the only difference
+between the arms is the leg.
+
+**`--deep-search` is refused on this axis**, and it is the one flag that cannot
+be held constant. Expansion asks the chat model for two paraphrases *per
+request* (`reformulateQuery`, uncached and unseeded), so each arm would be
+paraphrased separately: two of every arm's three fused legs would be different
+questions, the fused order would move for reasons that have nothing to do with
+the image leg, and McNemar would count those moves as the leg's. The refusal
+lands before anything connects to the database. Making the pair honest needs a
+seam that reformulates once per query and hands both arms the same list; the
+axis does not have one.
 
 ### Reading the report
 
@@ -868,6 +897,8 @@ constant so the only difference between the arms is the leg.
 | `imageModel` / `imageDims` / `imageEndpointBackend` | what answered, at what width, on which serving stack |
 | `imageIndexIdentity` / `imageIndexed` | `provider:model@baseUrl#dims`, and whether an HNSW index exists at that width |
 | `imagesEmbedded` / `imagesReused` / `throughputImagesPerSec` | the intake, timed over the sequential image phase alone — one page at a time, which is what a `processDirtyPageImages` backfill would see |
+| `imageEmbedWallClockMs` | that phase's wall clock — the denominator `throughputImagesPerSec` was computed from |
+| `imageLegParticipatingQueries` | queries whose leg-on arm came back with at least one image hit. The run is **refused** below 50% of the fixture, and the console prints the count — read the caveat below this table before quoting a delta |
 | `legOff` / `legOn` | Recall@{1,3,5,10} and MRR per arm |
 | `delta.recallAtK` | the paired verdict per K: `observedDelta`, the bootstrap interval, `wins`/`losses`, `pValue`, `significant`, `direction` |
 | `delta.perStyle` / `delta.perLang` | the same verdict at Recall@5 over each slice, each carrying its own `n` |
@@ -884,9 +915,22 @@ do the top-level participation counters — `vectorParticipatingQueries`,
 `expansionSkippedQueries`. Every one of them is **measured on this axis too**
 (both stages really run on both arms) and every one is denominated by
 `queries`, which is the label count: one label, one query, the leg-on arm's
-count. The leg-off arm's own counters are not published — a run in which either
-arm's vector leg, rerank stage or assembly stage went quiet is refused rather
-than reported, per arm.
+count. The two expansion counters are the exception in one direction only: they
+read 0 on every image-axis run, because `--deep-search` is refused here. The
+leg-off arm's own counters are not published — a run in which either arm's
+vector leg, rerank stage or assembly stage went quiet is refused rather than
+reported, per arm.
+
+**`imageLegParticipatingQueries` cannot tell you WHY the other queries have no
+image hit, and the report has no field that can.** Two states produce the same
+number: the leg ran and its pages lost the fusion (ordinary, and the reason the
+floor is 50% rather than "> 0"), or the leg bypassed itself — a VL timeout, an
+open breaker, a `lock_timeout` on the index. `searchImageLeg` records that as
+`degraded_reason = 'image_leg_unavailable'` in `search_analytics`, and this
+runner deliberately writes no analytics rows, so the only trace a run leaves is
+its **warn lines**. Before quoting a delta, grep the run's log for
+`image_leg_unavailable`: a run with a substantial bypass rate clears the floor,
+publishes two arms that were partly the same arm, and understates the leg.
 
 **`imageHit@K` and the paired page delta answer different questions, and the
 interesting runs are the ones where they disagree.** The page delta is what
@@ -897,7 +941,18 @@ put in front of a reader. A high `imageHit@K` with a flat page delta means the
 leg is finding the right image on pages the text legs already had: correct, and
 worth nothing to ranking. A page delta with a low `imageHit@K` means pages are
 moving for image evidence that is not the evidence the labeller named — read
-the win/loss table before believing it. And read both against
+the win/loss table before believing it.
+
+**Read a low `imageHit@K` against `legOn.recallAtK["@10"]` first, though**, and
+know its denominator: it is scored over the **285 labels that name an image**
+(the 22 `image-negative`s are excluded — their correct image answer is "none",
+and they are measured by `imageNegativeLeak@K` instead), and only over the image
+hits riding on the **top-10 pages the on arm returned**. An expected image
+always belongs to one of its own label's expected pages (`loadImageFixture`
+enforces that), so the metric is bounded above by page recall@10 by
+construction: if the page never came back, its picture could not be seen
+whatever the leg did. The commonest cause of a low value is therefore a page the
+run never retrieved, not a picture the leg got wrong. And read both against
 `imageNegativeLeak@K`: the `image-negative` labels are pages whose *text* is
 about the subject while none of their pictures show it, so a leg that improves
 the headline and leaks there is buying recall with precision.

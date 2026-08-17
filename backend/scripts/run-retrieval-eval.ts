@@ -34,8 +34,11 @@
  * query TWICE in one process — `imageLeg: false`, then `imageLeg: true` —
  * pairing the two arms per query. The verdict is the harness's own: McNemar
  * exact over the discordant pairs, overall and per `style` and per label
- * language. A `--baseline` from the other axis is refused, and a same-axis one
- * compares leg-off against leg-off AND leg-on against leg-on.
+ * language. A `--baseline` from the other axis is refused — as is a same-axis
+ * one measured through a different VL model, width or endpoint — and an
+ * accepted pair compares leg-off against leg-off AND leg-on against leg-on.
+ * `--deep-search` is refused on this axis: it reformulates per request, so the
+ * two arms would be paraphrased separately and would not be a pair.
  *
  * Environment:
  *   EVAL_EMBEDDING_BASE_URL   OpenAI-compatible endpoint (Ollama's /v1 shim works)
@@ -61,7 +64,7 @@ import { seedImageCorpus, prepareImageIndex, stageEvalAttachmentsDir } from '../
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
 import { assertKnownFlags, flagValue, wantsHelp, EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS } from '../src/domains/llm/eval/cli-flags.js';
 import { parseFtsLanguageArg, assertComparableFtsLanguage } from '../src/domains/llm/eval/fts-config.js';
-import { IMAGE_AXIS, IMAGE_AXIS_CORPUS_CLAIM, TEXT_AXIS, assertComparableAxis, parseImageAxisLanguage, readImageAxisEnv, wantsImageAxis, type EvalAxis, type ImageAxisEnv } from '../src/domains/llm/eval/images-axis.js';
+import { IMAGE_AXIS, IMAGE_AXIS_CORPUS_CLAIM, TEXT_AXIS, assertComparableAxis, assertComparableImageModel, assertImageAxisStagesPairable, parseImageAxisLanguage, readImageAxisEnv, wantsImageAxis, type EvalAxis, type ImageAxisEnv } from '../src/domains/llm/eval/images-axis.js';
 import { runEval } from '../src/domains/llm/eval/runner.js';
 import { runImageEval } from '../src/domains/llm/eval/runner-images.js';
 import { armRuns } from '../src/domains/llm/eval/images-metrics.js';
@@ -162,6 +165,12 @@ async function main(): Promise<void> {
   // because everything it decides has to be decided before the database is
   // touched.
   const imageAxis = wantsImageAxis(process.argv);
+  // Here too, and for the same reason: `--deep-search` reformulates per REQUEST,
+  // so the two arms of a pair would be asked different questions and the paired
+  // verdict would attribute the difference to the image leg (review r2). Refused
+  // before the environment is read, before a connection is opened and long
+  // before anything is embedded.
+  if (imageAxis) assertImageAxisStagesPairable(process.argv);
 
   const baseUrl = process.env.EVAL_EMBEDDING_BASE_URL;
   const model = process.env.EVAL_EMBEDDING_MODEL;
@@ -273,6 +282,16 @@ async function main(): Promise<void> {
     // the reader looking for a corpus edit that never happened rather than at
     // the flag they forgot. Absent means the text gate.
     assertComparableAxis(baseline.axis, report.axis ?? TEXT_AXIS);
+    // …and, on that axis, the VL model itself (review r2). `baseline.model`
+    // below is the TEXT embedder and reads the same on both axes, so two runs
+    // made with different checkpoints — the runbook's own 2B and 8B recipes,
+    // both at 2048 dimensions — passed every check this block makes and had
+    // their difference printed as `VERDICT: credible improvement` about
+    // retrieval logic. Checked here, beside the axis, because it is the same
+    // class of mistake: the pair is not a before/after at all.
+    if ((report.axis ?? TEXT_AXIS) === IMAGE_AXIS) {
+      assertComparableImageModel(baseline.images, report.images);
+    }
     // #1114: checked BEFORE the corpus sha. A cross-language pair always fails
     // that check too (different manifests), but "different corpus" is a
     // confusing way to be told you compared a German run against an English

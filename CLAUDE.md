@@ -279,7 +279,17 @@ checkout retrieves better — so it seeds a different corpus against a different
 fixture with a different runner and its own report family (`axis: 'images'`),
 and `--baseline` refuses a cross-axis pair *before* the corpus-sha check,
 because "measured against a different corpus" sends the reader looking for a
-corpus edit that never happened. It is **not in CI and cannot be**: the
+corpus edit that never happened. It refuses a same-axis pair measured through a
+different **VL** model, width or index endpoint too, and that one needs its own
+check: the gate's model guard reads `report.model`, which is the TEXT embedder
+and reads identically on two runs made with different checkpoints, so a 2B run
+against an 8B one — the runbook's own two recipes, both at 2048 dimensions —
+otherwise passed every guard the harness makes and had its difference printed
+as `VERDICT: credible improvement` about retrieval logic. The comparison is by
+model, width and the *endpoint half* of `imageIndexIdentity`, never the whole
+string: its head is the provider row's uuid, which the seeder re-creates every
+run, so an identity check would refuse every legitimate re-run and teach
+operators to delete the guard. It is **not in CI and cannot be**: the
 `retrieval-eval` job runs `nomic-embed-text`, which is text-only, and no VL
 model is runnable there — so CI keeps testing this axis's plumbing against a
 stub HTTP endpoint (`eval/vl-stub-server.ts`, a real `node:http` server so
@@ -315,7 +325,16 @@ the report publishes per query — vector, rerank, assembly, pin and expansion
 participation — is the **leg-on arm's** count, never a sum over both arms,
 which is a count of arm-queries and prints above 100% against N labels; and
 none of them is hardcoded, because a zero in the assembly field is a state the
-text gate REFUSES to publish. The seed's `eval_corpus_language` claim is
+text gate REFUSES to publish. Every stage flag applies to both arms and
+**`--deep-search` is therefore refused on this axis**: expansion reformulates
+per REQUEST (`reformulateQuery`, uncached and unseeded, with no seam for a
+precomputed list), so each arm would be paraphrased separately, two of every
+arm's three fused legs would be different questions, and McNemar would count
+that difference as the leg's. Forcing `imageLeg` is pinned in **both**
+directions — the off arm by the dirty-arm refusal, the on arm by a case that
+disables `rag_image_leg_enabled` and still expects image hits, since an on arm
+that merely inherited the knob would run leg-off against leg-off on any database
+whose knob is false. The seed's `eval_corpus_language` claim is
 `de-images`, **not** `de`: that row exists so `benchmark-query-latency.ts` can
 refuse a question set aimed at the wrong corpus, and 65 image pages are not the
 German text corpus its `--lang de` questions are written against — recorded as
@@ -333,9 +352,16 @@ intake that skipped an image (the corpus is curated, so a skip is a rig fault),
 a leg contributing hits to under half the queries, or a leg-off arm that came
 back carrying image hits. Each otherwise yields a delta of exactly zero, which
 reads as "the leg does not help" rather than "the leg never ran". `imageHit@K`
-is denominated over the labels that NAME an image and `imageNegativeLeak@K`
+is denominated over the 285 labels that NAME an image and `imageNegativeLeak@K`
 over the `image-negative` slice alone, because precision and recall folded into
-one number leave neither readable. Recipe, report fields and how to read
+one number leave neither readable; the first is also bounded above by page
+recall@10 by construction — an expected image belongs to one of its own label's
+expected pages, so a low value is most often a page the run never retrieved
+rather than a picture the leg got wrong. What the harness cannot separate is
+the leg that ran and lost the fusion from the leg that bypassed itself:
+`image_leg_unavailable` reaches `search_analytics` and both arms run
+`recordAnalytics: false`, so the run's warn lines are the only trace and the
+runbook says to read them before quoting a delta. Recipe, report fields and how to read
 `imageHit@K` against the paired page delta:
 `docs/runbooks/retrieval-eval.md`, "Image axis". **The harness is shipped; the
 measurement is a follow-up on #1115** — local shim numbers are plumbing-grade

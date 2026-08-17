@@ -57,6 +57,7 @@ const { seedImageCorpus, prepareImageIndex, stageEvalAttachmentsDir, imageAttach
 const { ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus } = await import('./seed.js');
 const { loadImageCorpusManifest, IMAGE_CORPUS_DIR } = await import('./corpus-images.js');
 const { runImageEval, ImageLegSilentError } = await import('./runner-images.js');
+const { invalidateRagImageLegCache } = await import('../../../core/services/admin-settings-service.js');
 const { flushSearchAnalytics } = await import('../services/rag-service.js');
 const { imageHitAtK } = await import('./images-metrics.js');
 type ImageFixture = import('./fixture.js').ImageFixture;
@@ -120,6 +121,10 @@ describe.skipIf(!dbAvailable)('paired image runner (#1115 P5b)', () => {
 
   beforeEach(async () => {
     await truncateAllTables();
+    // The knob below is cached for 60s, and TRUNCATE does not reach a cache: a
+    // `false` written by one case would otherwise stand for the rest of the file
+    // and silently disable the leg in every test after it.
+    invalidateRagImageLegCache();
     await query(
       `INSERT INTO users (id, username, email, role, password_hash)
        VALUES ($1::uuid, $1::text, $1::text || '@t', 'admin', 'x') ON CONFLICT (id) DO NOTHING`,
@@ -258,6 +263,31 @@ describe.skipIf(!dbAvailable)('paired image runner (#1115 P5b)', () => {
     // End to end: corpus file → seeded attachment key → leg → runner → metric.
     expect(imageHitAtK(result.pairs, 1)).toBe(1);
     expect(result.imageLegParticipatingQueries).toBe(1);
+  }, 120_000);
+
+  it('FORCES the leg in both directions, past whatever admin_settings says (review r2)', async () => {
+    // Decision 2 has two halves and only the off one was pinned. The on arm
+    // passing `imageLeg: true` — rather than leaving the flag off and inheriting
+    // the global setting — is what makes the run reproducible on a database
+    // whose `rag_image_leg_enabled` is false: a restored dump, or a knob an
+    // operator flipped while debugging P3. Inheriting it there would run leg-off
+    // against leg-off, which is the identical-arms state every other refusal in
+    // this file exists to prevent.
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+       VALUES ('rag_image_leg_enabled', 'false', NOW())
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = 'false', updated_at = NOW()`,
+    );
+    invalidateRagImageLegCache();
+
+    const fixture = fixtureOf([label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] })]);
+
+    const result = await runImageEval(fixture, { userId: USER, pageIdByFile, topK: 10 });
+
+    expect(result.pairs[0]!.on.imageHits.length).toBeGreaterThan(0);
+    expect(result.pairs[0]!.off.imageHits).toEqual([]);
+    // …and exactly one VL query embed, from the on arm alone.
+    expect(vl.textRequests()).toHaveLength(1);
   }, 120_000);
 
   it('REFUSES a run in which the image leg never participated, instead of publishing a paired zero', async () => {

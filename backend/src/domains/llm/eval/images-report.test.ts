@@ -25,21 +25,40 @@ function pair(over: Partial<ImageQueryPair> & { queryId: string }): ImageQueryPa
     lang: 'de',
     expected: [1],
     expectedImageKeys: ['a__1.png'],
+    // The runner alternates this on the label index; the default is what index 0
+    // gets. Spelled rather than omitted (review r2) — a fixture that does not
+    // satisfy `ImageQueryPair` cannot guard the shape of anything built from it.
+    offFirst: true,
     off: { retrieved: [9], ms: 100, imageHits: [] },
     on: { retrieved: [1], ms: 340, imageHits: [{ pageId: 1, source: 'confluence', key: 'a__1.png', similarity: 0.6 }] },
     ...over,
   };
 }
 
+/**
+ * A real `ImageEvalResult`, field for field.
+ *
+ * It has to be, and `tsc` will not say so: `backend/tsconfig.json` excludes
+ * `**\/*.test.ts`, so this annotation is checked by nothing at all. Review r1
+ * widened four of these counters to per-arm objects and added `offFirst`, and
+ * this fixture kept compiling with `expansionParticipatingQueries: 0` and two
+ * fields missing — passing only because `buildImageAxisReport` happens to read
+ * `pairs` and `imageLegParticipatingQueries` alone. The moment it publishes one
+ * of the others, the file whose stated job is that the builder and the contract
+ * cannot drift would have fed it `undefined` and stayed green (review r2).
+ */
 function runOf(pairs: ImageQueryPair[]): ImageEvalResult {
+  const both = { off: pairs.length, on: pairs.length };
   return {
     pairs,
     totalQueries: pairs.length,
     imageLegParticipatingQueries: pairs.filter((p) => p.on.imageHits.length > 0).length,
-    vectorParticipatingQueries: { off: pairs.length, on: pairs.length },
+    vectorParticipatingQueries: both,
     rerankParticipatingQueries: { off: 0, on: 0 },
-    expansionParticipatingQueries: 0,
-    expansionSkippedQueries: 0,
+    assemblyParticipatingQueries: both,
+    pinParticipatingQueries: { off: 0, on: 0 },
+    expansionParticipatingQueries: { off: 0, on: 0 },
+    expansionSkippedQueries: { off: 0, on: 0 },
   };
 }
 

@@ -4,6 +4,8 @@ import {
   IMAGE_AXIS_LANGUAGE,
   TEXT_AXIS,
   assertComparableAxis,
+  assertComparableImageModel,
+  assertImageAxisStagesPairable,
   parseImageAxisLanguage,
   readImageAxisEnv,
   wantsImageAxis,
@@ -111,6 +113,82 @@ describe('readImageAxisEnv', () => {
   it('records the serving backend as a free-text label when one is given', () => {
     expect(readImageAxisEnv({ ...BASE, EVAL_IMAGE_EMBEDDING_BACKEND: 'llama' }).backend).toBe('llama');
     expect(readImageAxisEnv(BASE).backend).toBeUndefined();
+  });
+});
+
+describe('assertImageAxisStagesPairable', () => {
+  it('admits the stage flags that really are held constant across both arms', () => {
+    expect(() => assertImageAxisStagesPairable(['--images', '--rerank', '--mmr', '--no-pin', '--no-assemble']))
+      .not.toThrow();
+  });
+
+  it('refuses --deep-search, whose paraphrases are drawn afresh on every call', () => {
+    // Each arm calls `multiQuerySearch`, which calls `reformulateQuery` — one
+    // unseeded, uncached chat completion with no seam for a precomputed list.
+    // So the arms get DIFFERENT paraphrases, two of each arm's three fused legs
+    // differ for a reason that is not the image leg, and the pairing McNemar
+    // needs is gone while the report still claims it.
+    const boom = () => assertImageAxisStagesPairable(['--images', '--deep-search']);
+    expect(boom).toThrow(/--deep-search/);
+    expect(boom).toThrow(/paraphrase/i);
+  });
+});
+
+describe('assertComparableImageModel', () => {
+  const RUN = {
+    imageModel: 'Qwen3-VL-Embedding-2B',
+    imageDims: 2048,
+    imageIndexIdentity: '11111111-1111-4111-8111-111111111111:Qwen3-VL-Embedding-2B@http://127.0.0.1:8011/v1#native',
+    imageEndpointBackend: 'mlx',
+  };
+  // Same endpoint, same model, same width — and a DIFFERENT provider row, which
+  // is what every re-run produces: the seeder deletes and re-inserts the row, so
+  // the uuid at the head of the identity is new every time.
+  const RERUN = {
+    ...RUN,
+    imageIndexIdentity: '22222222-2222-4222-8222-222222222222:Qwen3-VL-Embedding-2B@http://127.0.0.1:8011/v1#native',
+  };
+
+  it('accepts a re-run of the same checkpoint, whose provider id is necessarily new', () => {
+    expect(() => assertComparableImageModel(RUN, RERUN)).not.toThrow();
+  });
+
+  it('refuses a different VL checkpoint — the comparison the text-model guard exists to refuse', () => {
+    // The runbook's own recipe writes exactly this pair: 2B/mlx native and
+    // 8B/llama truncated to 2048. Every other guard passes (same axis, same
+    // language, same fts, same corpus sha, same TEXT model), so without this one
+    // the console prints "credible improvement" about two different models.
+    const boom = () => assertComparableImageModel(RUN, { ...RERUN, imageModel: 'Qwen3-VL-Embedding-8B' });
+    expect(boom).toThrow(/Qwen3-VL-Embedding-2B/);
+    expect(boom).toThrow(/Qwen3-VL-Embedding-8B/);
+  });
+
+  it('refuses a different width, which is a different vector space at the same checkpoint', () => {
+    expect(() => assertComparableImageModel(RUN, { ...RERUN, imageDims: 4096 })).toThrow(/2048/);
+  });
+
+  it('refuses a different endpoint or truncation request, which the index identity carries', () => {
+    expect(() => assertComparableImageModel(RUN, {
+      ...RERUN,
+      imageIndexIdentity: '33333333-3333-4333-8333-333333333333:Qwen3-VL-Embedding-2B@http://gpu-host:8000/v1#native',
+    })).toThrow(/gpu-host/);
+    expect(() => assertComparableImageModel(RUN, {
+      ...RERUN,
+      imageIndexIdentity: '44444444-4444-4444-8444-444444444444:Qwen3-VL-Embedding-2B@http://127.0.0.1:8011/v1#2048',
+    })).toThrow(/#2048/);
+  });
+
+  it('refuses two DECLARED backends that disagree, and ignores an undeclared one', () => {
+    // The label is free text the operator supplies, so an absent one is no
+    // evidence either way — refusing on it would refuse the ordinary case.
+    expect(() => assertComparableImageModel(RUN, { ...RERUN, imageEndpointBackend: 'llama' })).toThrow(/llama/);
+    expect(() => assertComparableImageModel(RUN, { ...RERUN, imageEndpointBackend: undefined }))
+      .not.toThrow();
+  });
+
+  it('refuses an image-axis pair whose report block is missing, rather than comparing blind', () => {
+    expect(() => assertComparableImageModel(undefined, RUN)).toThrow(/images/i);
+    expect(() => assertComparableImageModel(RUN, undefined)).toThrow(/images/i);
   });
 });
 

@@ -327,8 +327,16 @@ async function writePageAttachments(page: ImageCorpusPage, pageId: number, corpu
  * a rebuild landed mid-run, and `skipped` means the page is not one this index
  * covers. Each leaves images out of the index, and the run would still print a
  * paired verdict computed against a corpus whose pictures are partly absent.
+ *
+ * EVERY skip reason lands here, including `unsupported`, and that is why there
+ * is no warn path beside this refusal (review r2). `embedded + reused` is
+ * `allRefs` minus the failures and minus every skip, so the count check below
+ * fires on any non-zero counter — a `logger.warn` for `unsupported` was
+ * unreachable by construction. The message names the page's own image keys
+ * rather than the counters alone, because "1 of 3" plus a bag of reasons still
+ * leaves the operator grepping the corpus for which picture went missing.
  */
-function assertCleanIntake(page: ImageCorpusPage, outcome: ImageEmbedOutcome, expectedImages: number): void {
+function assertCleanIntake(page: ImageCorpusPage, outcome: ImageEmbedOutcome, referenced: readonly string[]): void {
   if (outcome.status !== 'ok') {
     throw new ImageIntakeError(
       `Image intake for ${page.file} answered "${outcome.status}"` +
@@ -338,11 +346,12 @@ function assertCleanIntake(page: ImageCorpusPage, outcome: ImageEmbedOutcome, ex
     );
   }
   const written = outcome.embedded + outcome.reused;
-  if (written !== expectedImages) {
+  if (written !== referenced.length) {
     throw new ImageIntakeError(
-      `Image intake for ${page.file} indexed ${written} of ${expectedImages} images ` +
-        `(skips: ${JSON.stringify(outcome.skipped)}). Every vendored image is a raster inside both ` +
-        'ceilings, so a skip here means the seeder and the reader disagree about where the bytes are.',
+      `Image intake for ${page.file} indexed ${written} of ${referenced.length} images ` +
+        `(skips: ${JSON.stringify(outcome.skipped)}; referenced: ${referenced.join(', ')}). Every ` +
+        'vendored image is a raster inside both ceilings, so a skip here means the seeder and the ' +
+        'reader disagree about where the bytes are, or about what they are.',
     );
   }
 }
@@ -365,12 +374,13 @@ export async function seedImageCorpus(
   const pages = opts.maxPages === undefined ? manifest.pages : manifest.pages.slice(0, opts.maxPages);
 
   const pageIdByFile = new Map<string, number>();
-  // How many DISTINCT images the stored body ends up referencing — read off
+  // WHICH distinct images the stored body ends up referencing — read off
   // `body_html` with the intake's own enumerator rather than off the manifest,
-  // because that is the number `embedPageImages` can possibly write (it dedupes
-  // by `(source, key)` and is bounded by `rag_images_per_page_max`). Counted
-  // here so the page bodies do not have to be held for the second phase.
-  const referencedByFile = new Map<string, number>();
+  // because that is the set `embedPageImages` can possibly write (it dedupes
+  // by `(source, key)` and is bounded by `rag_images_per_page_max`). The keys
+  // rather than their count, so a refusal can name the pictures (review r2);
+  // kept here so the page bodies do not have to be held for the second phase.
+  const referencedByFile = new Map<string, string[]>();
   const textSkipped: string[] = [];
   let completed = 0;
 
@@ -403,7 +413,7 @@ export async function seedImageCorpus(
     if (chunks === 0) textSkipped.push(page.file);
 
     pageIdByFile.set(page.file, pageId);
-    referencedByFile.set(page.file, extractImageReferencesFromHtml(bodyHtml).length);
+    referencedByFile.set(page.file, extractImageReferencesFromHtml(bodyHtml).map((ref) => ref.key));
     completed++;
     opts.onProgress?.(completed, pages.length);
   })));
@@ -443,10 +453,6 @@ export async function seedImageCorpus(
         'never enumerated, never resolved and never counted as a skip. Re-run the corpus builder, or ' +
         'check markdownToHtml against the manifest srcs.',
     );
-  }
-
-  if (skipped.unsupported > 0) {
-    logger.warn({ skipped }, 'Image intake reported unsupported files — the corpus should contain none');
   }
 
   return {

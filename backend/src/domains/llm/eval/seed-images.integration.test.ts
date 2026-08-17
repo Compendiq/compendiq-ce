@@ -256,6 +256,41 @@ describe.skipIf(!dbAvailable)('image corpus seeder (#1115 P5b)', () => {
     }
   }, 120_000);
 
+  it('REFUSES a page whose intake could not READ one of its pictures, naming the pictures', async () => {
+    // The reason no `skipped.unsupported` warning exists (review r2): every
+    // skip reason lands in the per-page count check, because `embedded + reused`
+    // is the reference count minus the failures minus every skip. A warn beside
+    // the refusal was unreachable by construction — this is the state it
+    // claimed to cover, and it is a refusal.
+    const page = seededPages.find((p) => p.images.length >= 2)!;
+    const unreadable = page.images[0]!;
+    const dir = await mkdtemp(join(tmpdir(), 'compendiq-eval-corpus-'));
+    try {
+      await mkdir(join(dir, 'images'), { recursive: true });
+      for (const image of page.images) {
+        await writeFile(join(dir, image.file), readFileSync(join(IMAGE_CORPUS_DIR, image.file)));
+      }
+      // A vector image behind a raster name — the ADR-025 D10 skip, and the one
+      // a corpus rebuild is most likely to reintroduce. The bytes are there and
+      // the key is right; the sniff is what refuses them.
+      await writeFile(join(dir, unreadable.file), '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+      await writeFile(join(dir, page.file), readFileSync(join(IMAGE_CORPUS_DIR, page.file), 'utf8'));
+      await writeFile(
+        join(dir, 'MANIFEST.json'),
+        JSON.stringify({ generatedBy: 'test', purpose: 'test', pages: [page] }),
+      );
+
+      const boom = seedImageCorpus(USER, { corpusDir: dir });
+      await expect(boom).rejects.toBeInstanceOf(ImageIntakeError);
+      await expect(boom).rejects.toThrow(/"unsupported":1/);
+      // The counters alone leave the operator grepping the corpus for which
+      // picture went missing, so the refusal names the page's own image keys.
+      await expect(boom).rejects.toThrow(new RegExp(`referenced:[^)]*${imageAttachmentKey(unreadable.file)}`));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('REFUSES the run when the image use case is unassigned, rather than seeding an empty index', async () => {
     // `embedPageImages` answers `unassigned` and KEEPS the flag by design — the
     // queue is the flag. For the eval that is not a queue, it is a leg-on arm

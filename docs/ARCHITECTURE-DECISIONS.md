@@ -2511,7 +2511,13 @@ non-inheriting rule enforced by refusal rather than by prose. And the run is
 same configuration: an intake that skipped an image, a leg that contributed
 hits to fewer than half the queries, or a leg-off arm that came back carrying
 image hits — all of which otherwise produce a delta of exactly zero that reads
-as "the leg does not help". Recipe and report fields:
+as "the leg does not help". Two further refusals follow from the same premise
+(review r2): **`--deep-search` is refused on this axis**, because expansion
+reformulates per request, so the arms would be paraphrased separately and two of
+each arm's three fused legs would be different questions; and **`--baseline`
+refuses a pair whose VL model, width or index endpoint differs**, which the
+existing model guard cannot see — `report.model` is the TEXT embedder and reads
+the same on a 2B run and an 8B one. Recipe and report fields:
 `docs/runbooks/retrieval-eval.md`, "Image axis (`--images`)". **The numbers
 themselves are a follow-up**, measured on the production stack per D11 and
 recorded on #1115 by the operator who runs them; nothing in this ADR should be
