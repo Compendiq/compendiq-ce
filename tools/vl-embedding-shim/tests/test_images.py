@@ -41,6 +41,16 @@ class TestDataUri:
         with pytest.raises(ImageError, match='base64'):
             resolve_image(ImageRef('data:image/png,%89PNG'))
 
+    def test_refuses_a_percent_encoded_payload_that_happens_to_decode_as_base64(self):
+        # The case above is ALSO invalid base64, so deleting the `;base64`
+        # header check left it green for the wrong reason (review r2). A
+        # payload inside the base64 alphabet would then be decoded as base64
+        # into garbage bytes and forwarded — measured live as a confusing 502
+        # ("Failed to load image or audio file") from llama-server, rather than
+        # the 400 this refusal exists to give.
+        with pytest.raises(ImageError, match='percent-encoded'):
+            resolve_image(ImageRef('data:image/png,aGVsbG8='))
+
     def test_refuses_undecodable_base64(self):
         with pytest.raises(ImageError, match='base64'):
             resolve_image(ImageRef('data:image/png;base64,!!!!not base64!!!!'))

@@ -122,18 +122,45 @@ are ordinary text in that string rather than tokenizer-added specials. Pass
 `true`, as vLLM's example does. It is the one field of this shape whose
 handling the shim does not verify for you.
 
-#### Content-part order is normalised
+#### Content parts: image first, and a part's kind is decided rather than assumed
 
-Images first, then text — the reference builder's order, whatever order the
-caller interleaved them in. **vLLM does not do this**: `chat_template.jinja`
-iterates `message.content` in order and emits the vision markers where the
-caller put them, so `[text "a", image, text "b"]` renders as `a<image>b` there
-and `<image>ab` here. Send image parts first (as D4 does) and the two agree.
+The prompt is built images-then-text, the reference builder's order. **vLLM does
+not do this**: `chat_template.jinja` iterates `message.content` in order and
+emits the vision markers where the caller put them, so `[text "a", image,
+text "b"]` renders as `a<image>b` there and `<image>ab` here — measured at
+**cos 0.588 and 0.657** on the 8B (two different images), a *larger* divergence
+either way than the missing-continuation body above, which measures 0.953/0.957
+on the same pairs. Silently normalising it is the same mistake as silently
+accepting that body, so **a text part before an image part is a 400**: put the
+image parts first, as D4 does, and the two agree byte-for-byte. An *empty* text
+part before an image is fine — it renders nothing either way, and vLLM's own
+image-only example sends exactly that.
+
+A part's kind is read the way this checkpoint reads it. `chat_template.jinja`
+calls a part an image when `content.type == 'image' or 'image' in content or
+'image_url' in content`, and vLLM accepts a **type-less** `{"image_url": …}` as
+its documented simple image form while refusing every other type-less part with
+`Missing 'type' field in multimodal part`. So:
+
+| part | here |
+|---|---|
+| `{"type": "image_url", "image_url": {"url": …}}` | image (the D4 spelling) |
+| `{"image_url": …}`, no `type` | image (vLLM's simple form) |
+| `{"image": …}` or any other type-less part | **400** — it is an image to the jinja and not a part at all to vLLM |
+| `{"type": "image", …}` | **400** — `image` is not a vLLM part type |
+| an image part in `system` or the trailing `assistant` | **400** — the jinja renders no marker there, so vLLM would carry one image against zero placeholders |
+
+The type-less rows matter because the alternative is silence: read as text, an
+image part becomes an *empty* one, and an image-only body then embeds the
+literal string `NULL` and answers 200 — a vector measured **cos 0.169** from
+the one the same body produces now.
 
 `image_url.url` takes a `data:` URI, or an `http(s)` URL **only when the shim
 was started with `--allow-remote-images`** — off by default, because a server
 that fetches an arbitrary URL on request issues GETs on behalf of anything that
-can reach it. Redirects are never followed even when it is on.
+can reach it. Redirects are never followed even when it is on, and a fetched
+image is bounded by `--max-body-bytes`, the same ceiling as an inbound body: a
+request that names a URL reaches the same allocation through a second door.
 
 ### `{model, input}` — the plain shape
 
@@ -236,10 +263,12 @@ cannot read reaches the model server on `llama` and is a **502** on `mlx`.
 
 **(7) The `messages` contract is enforced, and remote fetching is opt-in.** A
 body vLLM would not render as a continuation is a 400 rather than a vector (see
-[The continuation is enforced](#the-continuation-is-enforced-not-assumed)); an
-`http(s)` `image_url` needs `--allow-remote-images` and never follows a
-redirect; and a body over `--max-body-bytes` (32 MiB) is a 413 before it is
-parsed.
+[The continuation is enforced](#the-continuation-is-enforced-not-assumed)), and
+so is a body whose content parts would render differently there — a text part
+before an image, or a part whose kind the shim would have to guess at. An
+`http(s)` `image_url` needs `--allow-remote-images`, never follows a redirect,
+and is read against `--max-body-bytes`; a body over that ceiling (32 MiB) is a
+413 before it is parsed.
 
 ### Throughput is not a goal
 
@@ -264,7 +293,7 @@ answerable while an embed is in flight.
 | `--model-id` | `VL_SHIM_MODEL_ID` | the backend's own answer |
 | `--max-pixels` | `VL_SHIM_MAX_PIXELS` | unset (no guard) |
 | `--allow-remote-images` | `VL_SHIM_ALLOW_REMOTE_IMAGES` | **off** — `data:` URIs only |
-| `--max-body-bytes` | `VL_SHIM_MAX_BODY_BYTES` | `33554432` (32 MiB) |
+| `--max-body-bytes` | `VL_SHIM_MAX_BODY_BYTES` | `33554432` (32 MiB) — also bounds a fetched image |
 | `--no-instruct-conversion` | – | conversion on |
 | `--request-timeout` | – | `300` s |
 
@@ -272,7 +301,12 @@ Three of those defaults are security decisions rather than ergonomics — the
 shim binds **loopback**, refuses **remote image URLs**, and **caps the body** —
 and all three are pinned by tests (`test_config.py`), on the CLI parser as well
 as the settings object, because a default nobody asserts is one edit away from
-being the unsafe one.
+being the unsafe one. The fourth is not a flag at all: the fetching client is
+built with `follow_redirects=False`, and that is asserted against **the client
+the process builds**. Asserting it through an injected test client proved
+nothing — httpx's own default is already `False`, so the real one could be
+flipped to `True` with the suite still green (review r2), and a followed
+redirect answers 200 with the metadata body and no redirect left to catch.
 
 `run-llama-server.sh` reads `QWEN3_VL_GGUF`, `QWEN3_VL_MMPROJ`, and optionally
 `LLAMA_SERVER`, `LLAMA_PORT` (8090), `LLAMA_HOST`, `LLAMA_CTX` (8192),
@@ -336,16 +370,21 @@ shifts sit between here and there:
 So: never mix vectors from two of these paths in one index, and never quote a
 retrieval metric measured here as if it were a production number.
 
-**And two things about the request shape are not identical to vLLM's**, which
+**And three things about the request shape are not identical to vLLM's**, which
 matters for a client developed against this server rather than for the vectors:
 
 * `add_special_tokens` is accepted and **ignored** (the shim does not tokenize),
   so conformance to that one field is the thing this server cannot check for
   you. Everything else about the D4 body it checks strictly — see
   [The continuation is enforced](#the-continuation-is-enforced-not-assumed).
-* Content parts are **reordered** to images-then-text; vLLM preserves the
-  caller's interleaving. Identical for an image-first body, which is what D4
-  sends.
+* `encoding_format` must be `float` or absent; **vLLM also accepts `base64`**
+  (and the `openai` Python SDK asks for base64 by default when numpy is
+  installed). The shim emits float and 400s the rest rather than answer a
+  format it did not encode.
+* Content parts are refused where vLLM would merely render them differently:
+  **a text part before an image part** is a 400 here and an interleaved prompt
+  there. Every body the shim accepts renders identically in both places, which
+  is the direction this tool is stricter in.
 
 ### Known upstream problems this shim works around or refuses
 

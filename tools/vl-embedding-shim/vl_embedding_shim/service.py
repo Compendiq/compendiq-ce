@@ -18,6 +18,14 @@ from .request import ParsedRequest, ShimRequestError, parse_embeddings_request
 log = logging.getLogger('vl_embedding_shim')
 
 
+def _too_big(url: str, limit: int, seen: int | None = None) -> str:
+    size = f'{seen} bytes' if seen is not None else 'more'
+    return (
+        f'{url} served {size} than the --max-body-bytes ceiling of {limit}; a fetched '
+        'image is bounded by the same ceiling as an inbound body'
+    )
+
+
 class EmbeddingService:
     def __init__(
         self,
@@ -39,6 +47,12 @@ class EmbeddingService:
             # `follow_redirects=False` on purpose: a permitted host that 302s is
             # how a fetch reaches 169.254.169.254 or a loopback service, and an
             # operator who opted into one URL did not opt into wherever it points.
+            # Pinned against THIS client rather than an injected one — httpx's
+            # own default is already `False`, so a test that builds its own
+            # client passes whatever this line says (review r2: flipping it to
+            # `True` left all 176 tests green, and `is_redirect` below is not a
+            # backstop — a followed redirect answers 200 with the metadata body
+            # and no redirect left to see).
             self._image_client = image_client or httpx.Client(
                 timeout=30.0, follow_redirects=False,
             )
@@ -58,21 +72,42 @@ class EmbeddingService:
         if client is None:
             return None
 
+        limit = self.settings.max_body_bytes
+
         def fetch(url: str) -> bytes:
+            # Streamed and counted, not `client.get(url).content`. The inbound
+            # body is capped because "a single POST would otherwise decide how
+            # much of a 24 GB machine it gets" (app.read_body) — and a POST that
+            # names a URL decides the same thing through the fetch instead: a
+            # 2 KiB body against a host serving 200 MB allocated 200 MB before
+            # this bound existed (review r2). The ceiling is `--max-body-bytes`
+            # rather than a knob of its own: it is the same question (how many
+            # bytes may one request pull into memory) reached by a second door.
             try:
-                res = client.get(url)
+                with client.stream('GET', url) as res:
+                    if res.is_redirect:
+                        raise ImageError(
+                            f'{url} answered a redirect to {res.headers.get("location")!r}; '
+                            'remote image fetching does not follow redirects — pass the '
+                            'final URL'
+                        )
+                    res.raise_for_status()
+                    declared = res.headers.get('content-length')
+                    if declared is not None and declared.isdigit() and int(declared) > limit:
+                        raise ImageError(_too_big(url, limit, int(declared)))
+                    chunks: list[bytes] = []
+                    total = 0
+                    for chunk in res.iter_bytes():
+                        total += len(chunk)
+                        if total > limit:
+                            # A chunked response declares nothing, so the bytes
+                            # are counted as they arrive — the same belt-and-
+                            # braces `read_body` uses on the inbound side.
+                            raise ImageError(_too_big(url, limit))
+                        chunks.append(chunk)
             except httpx.HTTPError as exc:
                 raise ImageError(f'could not fetch {url}: {exc}') from exc
-            if res.is_redirect:
-                raise ImageError(
-                    f'{url} answered a redirect to {res.headers.get("location")!r}; '
-                    'remote image fetching does not follow redirects — pass the final URL'
-                )
-            try:
-                res.raise_for_status()
-            except httpx.HTTPError as exc:
-                raise ImageError(f'could not fetch {url}: {exc}') from exc
-            return res.content
+            return b''.join(chunks)
 
         return fetch
 

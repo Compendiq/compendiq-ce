@@ -241,6 +241,58 @@ class TestImages:
         assert res.status_code == 400
         assert 'redirect' in res.json()['error']['message']
 
+    def test_the_client_the_process_builds_does_not_follow_redirects(self):
+        # The test above injects its own client, which httpx constructs with
+        # `follow_redirects=False` by DEFAULT — so it passed either way, and
+        # flipping the real client to True left the whole suite green (review
+        # r2). The `is_redirect` check is not a second line of defence: a
+        # followed redirect answers 200 with the metadata body and no redirect
+        # to see. So this asserts the client the shim itself builds.
+        service = EmbeddingService(FakeBackend(), Settings(allow_remote_images=True))
+        assert service._image_client is not None
+        assert service._image_client.follow_redirects is False
+
+    def test_a_remote_image_is_bounded_by_the_body_ceiling(self):
+        # The inbound body is capped so one POST cannot decide how much of a
+        # 24 GB machine it gets — and a POST naming a URL reaches the same
+        # allocation through the fetch. Measured before this bound: a 2 KiB
+        # body ceiling admitted a 200 MB image (review r2).
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'\x89PNG' + b'x' * 8192)
+
+        fetcher = httpx.Client(transport=httpx.MockTransport(handler))
+        c, backend = client(
+            allow_remote_images=True, image_client=fetcher, max_body_bytes=2048,
+        )
+        res = c.post('/v1/embeddings', json=chat(
+            {'role': 'user', 'content': [
+                {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/big.png'}},
+            ]},
+        ))
+        assert res.status_code == 400
+        assert '2048' in res.json()['error']['message']
+        assert backend.seen == [], 'an over-size fetch reached the backend'
+
+    def test_a_remote_image_under_the_ceiling_is_served(self):
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'\x89PNG-small')
+
+        fetcher = httpx.Client(transport=httpx.MockTransport(handler))
+        c, backend = client(
+            allow_remote_images=True, image_client=fetcher, max_body_bytes=2048,
+        )
+        res = c.post('/v1/embeddings', json=chat(
+            {'role': 'user', 'content': [
+                {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/a.png'}},
+            ]},
+        ))
+        assert res.status_code == 200
+        assert backend.seen[0][0].images == (b'\x89PNG-small',)
+
     def test_the_pixel_guard_refuses_an_oversized_image_when_a_ceiling_is_set(self):
         c, _ = client(max_pixels=64)
         res = c.post('/v1/embeddings', json=chat(
@@ -268,6 +320,19 @@ class TestErrors:
         assert res.status_code == 400
         assert res.json()['error']['type'] == 'invalid_request_error'
         assert 'exactly one' in res.json()['error']['message']
+
+    def test_a_short_answer_from_the_backend_is_a_502_naming_both_counts(self):
+        # The service counts rows for EVERY backend — the mlx backend has its
+        # own equivalent guard, the llama path had none, and this one was
+        # unreachable by the suite (review r2). Without it a short answer is a
+        # 200 with fewer `data` rows than inputs, and `generateEmbedding` reads
+        # `data[i].embedding` positionally: vectors would land on the wrong
+        # strings rather than the request failing.
+        c, _ = client(FakeBackend(rows=[[1.0, 0.0]]))
+        res = c.post('/v1/embeddings', json={'model': 'm', 'input': ['a', 'b']})
+        assert res.status_code == 502
+        message = res.json()['error']['message']
+        assert '1 vectors' in message and '2 inputs' in message
 
     def test_a_backend_failure_is_a_502(self):
         c, _ = client(FakeBackend(fail='llama-server said no'))

@@ -206,6 +206,31 @@ class TestImages:
         ))
         assert norm(vec) == pytest.approx(1.0, abs=1e-3)
 
+    def test_the_type_less_image_part_reaches_the_model(self, client):
+        # vLLM's simple image form — `{"image_url": …}` with no `type` — used to
+        # be read as an empty TEXT part here, so an image-only body embedded the
+        # literal string `NULL` and answered 200 with the image never sent
+        # (review r2). The unit tests pin the parse; this pins the end of the
+        # wire, because "the image reached the model" is not visible in a 200.
+        image = stripes_png()
+        [typed] = embed(client, messages_body(image_data_uri=image))
+        body = messages_body(image_data_uri=image)
+        body['messages'][-2]['content'][0] = {'image_url': {'url': image}}
+        [type_less] = embed(client, body)
+        [null_vector] = embed(client, {'model': 'qwen3-vl-embedding', 'input': ['']})
+        assert cosine(typed, type_less) > 0.999
+        assert cosine(type_less, null_vector) < 0.9
+
+    def test_an_interleaved_content_array_is_refused(self, client):
+        # Text before an image renders `a<image>b` on vLLM and `<image>ab` here
+        # — cos 0.59-0.66 apart on the 8B — so it is a 400 rather than a
+        # silently different vector.
+        body = messages_body(image_data_uri=stripes_png())
+        body['messages'][-2]['content'].insert(0, {'type': 'text', 'text': 'davor'})
+        res = client.post('/v1/embeddings', json=body)
+        assert res.status_code == 400
+        assert 'precede an image part' in res.json()['error']['message']
+
     def test_an_image_is_not_identical_to_its_caption(self, client):
         # Cheap guard against a backend that silently drops the image and
         # embeds the text alone — which is exactly what a missing media marker

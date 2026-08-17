@@ -80,13 +80,14 @@ class TestMessagesShape:
         ]
         assert item.text == 'zwei Bilder'
 
-    def test_text_parts_are_concatenated_in_order_and_images_still_lead(self):
-        # The reference builder appends every image, then every text — the
-        # user's interleaving is not preserved, matching qwen3_vl_embedding.py.
+    def test_text_parts_are_concatenated_in_order_behind_the_images(self):
+        # The reference builder appends every image, then every text
+        # (qwen3_vl_embedding.py), and `chat_template.jinja` renders adjacent
+        # text parts with no separator between them.
         parsed = parse_embeddings_request(messages_body(messages=continued(
             {'role': 'user', 'content': [
-                {'type': 'text', 'text': 'a'},
                 {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/b.jpg'}},
+                {'type': 'text', 'text': 'a'},
                 {'type': 'text', 'text': 'b'},
             ]},
         )))
@@ -117,18 +118,23 @@ class TestMessagesShape:
                 {'role': 'user', 'content': 'hi'},
             ]))
 
+    # Both of these are built with `continued(...)` and matched on the guard's
+    # OWN wording. Spelled the other way — a raw list, `match='user'` — they
+    # passed on `_check_continuation`'s "would pool the end of the user turn"
+    # instead, and survived deleting the guard each one names (review r2). A
+    # two-user body would then have embedded only the LAST user message.
     def test_two_user_messages_are_refused(self):
-        with pytest.raises(ShimRequestError, match='user'):
-            parse_embeddings_request(messages_body(messages=[
+        with pytest.raises(ShimRequestError, match='exactly one user message is accepted'):
+            parse_embeddings_request(messages_body(messages=continued(
                 {'role': 'user', 'content': 'a'},
                 {'role': 'user', 'content': 'b'},
-            ]))
+            )))
 
     def test_no_user_message_is_refused(self):
-        with pytest.raises(ShimRequestError, match='user'):
-            parse_embeddings_request(messages_body(messages=[
+        with pytest.raises(ShimRequestError, match='exactly one user message is required'):
+            parse_embeddings_request(messages_body(messages=continued(
                 {'role': 'system', 'content': 'x'},
-            ]))
+            )))
 
     def test_a_system_message_that_is_not_first_is_refused(self):
         with pytest.raises(ShimRequestError, match='system'):
@@ -148,6 +154,128 @@ class TestMessagesShape:
             parse_embeddings_request(messages_body(messages=[
                 {'role': 'tool', 'content': 'x'},
             ]))
+
+
+class TestContentPartKind:
+    """A part's kind is decided the way the checkpoint decides it.
+
+    `chat_template.jinja:50` calls a part an image when ``content.type ==
+    'image' or 'image' in content or 'image_url' in content``, and vLLM reads a
+    type-less part with `image_url` as its documented simple image form
+    (`CustomChatCompletionContentSimpleImageParam`), refusing the rest with
+    "Missing 'type' field in multimodal part".
+
+    The parser used to default a missing `type` to text, so `{"image_url": …}`
+    became an EMPTY TEXT part: a 200 carrying the literal-`NULL` vector with the
+    image never sent (review r2 measured cos 1.000000 against the `input: [""]`
+    vector on the 8B; that `NULL` vector measures cos 0.169 from the image's own
+    here). An explicitly wrong `type` was refused all along, so the hole was
+    exactly the silent half.
+    """
+
+    def test_a_type_less_image_url_part_is_an_image(self):
+        # vLLM's simple form takes a plain string url, not a nested object.
+        parsed = parse_embeddings_request(messages_body(messages=continued(
+            {'role': 'user', 'content': [{'image_url': 'https://example.invalid/a.jpg'}]},
+        )))
+        assert [ref.url for ref in parsed.items[0].images] == ['https://example.invalid/a.jpg']
+        assert parsed.items[0].text == ''
+
+    def test_a_type_less_nested_image_url_part_is_an_image(self):
+        parsed = parse_embeddings_request(messages_body(messages=continued(
+            {'role': 'user', 'content': [
+                {'image_url': {'url': f'data:image/png;base64,{PNG_1PX_B64}'}},
+            ]},
+        )))
+        assert len(parsed.items[0].images) == 1
+
+    def test_the_jinjas_other_image_spelling_is_refused_rather_than_read_as_text(self):
+        # `{"image": …}` IS an image to chat_template.jinja and is NOT one to
+        # vLLM's parser, so there is no reading of it that both agree on. What
+        # it must not be is empty text.
+        with pytest.raises(ShimRequestError, match='needs a `type`'):
+            parse_embeddings_request(messages_body(messages=continued(
+                {'role': 'user', 'content': [{'image': f'data:image/png;base64,{PNG_1PX_B64}'}]},
+            )))
+
+    def test_a_type_less_text_part_is_refused(self):
+        with pytest.raises(ShimRequestError, match='needs a `type`'):
+            parse_embeddings_request(messages_body(messages=continued(
+                {'role': 'user', 'content': [{'text': 'hallo'}]},
+            )))
+
+    def test_type_image_is_still_refused_by_name(self):
+        with pytest.raises(ShimRequestError, match="unsupported content part type 'image'"):
+            parse_embeddings_request(messages_body(messages=continued(
+                {'role': 'user', 'content': [{'type': 'image', 'image': 'data:image/png;base64,x'}]},
+            )))
+
+    def test_an_image_in_the_system_message_is_refused(self):
+        # The jinja renders no vision marker for a system part, so the image
+        # would be dropped here — and vLLM would collect it as multimodal input
+        # the prompt has no placeholder for and fail the request.
+        with pytest.raises(ShimRequestError, match='system message may only carry text'):
+            parse_embeddings_request(messages_body(messages=continued(
+                {'role': 'system', 'content': [
+                    {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,x'}},
+                    {'type': 'text', 'text': 'inst'},
+                ]},
+                {'role': 'user', 'content': 'hallo'},
+            )))
+
+    def test_an_image_in_the_trailing_assistant_message_is_refused(self):
+        with pytest.raises(ShimRequestError, match='assistant message may only carry text'):
+            parse_embeddings_request(messages_body(messages=[
+                {'role': 'user', 'content': 'hallo'},
+                {'role': 'assistant', 'content': [
+                    {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,x'}},
+                ]},
+            ]))
+
+
+class TestInterleavedContentIsRefused:
+    """Text-before-image is refused, not silently reordered.
+
+    The shim builds images-then-text after the reference embedder; vLLM emits
+    the marker where the caller put it. Posting both prompts to llama-server on
+    the 8B measured the pair for `[text "a", image, text "b"]` at **cos 0.588**
+    (review r2) and **0.657** (this fix, a different image) — a larger
+    divergence either way than the missing-continuation body this module already
+    400s over, which measures 0.953/0.957 on the same pairs. D4 traffic is
+    image-first, so nothing legitimate is lost.
+    """
+
+    def test_a_text_part_before_an_image_part_is_refused(self):
+        with pytest.raises(ShimRequestError, match='may not precede an image part'):
+            parse_embeddings_request(messages_body(messages=continued(
+                {'role': 'user', 'content': [
+                    {'type': 'text', 'text': 'a'},
+                    {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/b.jpg'}},
+                ]},
+            )))
+
+    def test_a_text_part_between_two_images_is_refused(self):
+        with pytest.raises(ShimRequestError, match='may not precede an image part'):
+            parse_embeddings_request(messages_body(messages=continued(
+                {'role': 'user', 'content': [
+                    {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/a.jpg'}},
+                    {'type': 'text', 'text': 'a'},
+                    {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/b.jpg'}},
+                ]},
+            )))
+
+    def test_an_empty_text_part_before_an_image_is_not_interleaving(self):
+        # vLLM's own image-only example sends `{"type": "text", "text": ""}`
+        # beside the image part (research §2.3), and an empty text part renders
+        # nothing in either place — so this body is byte-identical both ways.
+        parsed = parse_embeddings_request(messages_body(messages=continued(
+            {'role': 'user', 'content': [
+                {'type': 'text', 'text': ''},
+                {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/b.jpg'}},
+            ]},
+        )))
+        assert parsed.items[0].text == ''
+        assert len(parsed.items[0].images) == 1
 
 
 class TestTheContinuationContract:

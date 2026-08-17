@@ -20,9 +20,13 @@ shape" is what the tool advertises:
 * **The continuation is enforced, not assumed.** See `_check_continuation` —
   the shim refuses a body vLLM would render without the trailing
   ``<|im_start|>assistant\\n``, which is stricter than vLLM on purpose.
-* **Content-part order is normalised to images-then-text**, after the reference
-  embedder. vLLM instead preserves the caller's interleaving, so send image
-  parts first (as design D4 does) if you care about the two matching.
+* **A text part may not precede an image part.** The shim builds
+  images-then-text after the reference embedder while vLLM emits the marker
+  where the caller put it, so an interleaved body embeds differently in the two
+  places — measurably more differently than the continuation mistake above. It
+  is refused rather than silently normalised; see `_parse_messages`.
+* **A content part's kind is decided the way the checkpoint decides it**, never
+  by defaulting a type-less part to text — see `_part_kind`.
 
 **Shape B — the plain `{model, input}` shape.** Accepted so the app's own
 `generateEmbedding` (which posts exactly that, and reads `data[i].embedding`)
@@ -125,6 +129,68 @@ def _content_parts(content: Any, *, where: str) -> list[Mapping[str, Any]]:
     raise ShimRequestError(f'{where} content must be a string or a list of content parts')
 
 
+def _part_kind(part: Mapping[str, Any], *, where: str) -> Literal['text', 'image']:
+    """What kind of content part this is — decided, never assumed.
+
+    Two sources agree and neither of them defaults to text. This checkpoint's
+    `chat_template.jinja` calls a part an image when ``content.type == 'image'
+    or 'image' in content or 'image_url' in content``; vLLM's
+    `_parse_chat_message_content_mm_part` reads a part carrying **no** `type` as
+    `CustomChatCompletionContentSimpleImageParam` when it has `image_url`, and
+    refuses every other type-less part with ``Missing 'type' field in
+    multimodal part``.
+
+    Defaulting a type-less part to text — which this function replaced — meant
+    ``{"image_url": {"url": …}}`` became an *empty text part*: the shim answered
+    200 with the literal-`NULL` vector and the image never reached the model
+    (review r2 measured cos 1.000000 against the ``input: [""]`` vector on the
+    8B; measured here, that `NULL` vector sits at cos **0.169** from the image's
+    own). An explicitly wrong `type` was already a 400, so the guard refused the
+    legible mistake and swallowed the silent one — which is the failure class
+    this whole module exists to refuse.
+    """
+    part_type = part.get('type')
+    if part_type is None:
+        if 'image_url' in part:
+            return 'image'
+        raise ShimRequestError(
+            f'a {where} content part needs a `type` ({" or ".join(_PART_TYPES)}); the only '
+            'type-less form vLLM accepts is `{"image_url": …}` and it refuses the rest with '
+            '"Missing \'type\' field in multimodal part". Refused rather than read as empty '
+            'text, which would drop an image this model\'s own chat template renders a '
+            'vision marker for'
+        )
+    if part_type == 'text':
+        return 'text'
+    if part_type == 'image_url':
+        return 'image'
+    raise ShimRequestError(
+        f'unsupported content part type {part_type!r}; this model takes '
+        f'{" and ".join(_PART_TYPES)}'
+    )
+
+
+def _text_only_parts(content: Any, *, where: str) -> list[Mapping[str, Any]]:
+    """`content`'s parts, refusing any that is not text.
+
+    `chat_template.jinja` renders only `'text' in content` for the `system` and
+    `assistant` roles — no vision marker — so an image part there is dropped on
+    the way to the model. vLLM does not drop it: it collects the image as
+    multimodal input the rendered prompt has no placeholder for, and fails the
+    request. Either way the caller's body is wrong, so it is refused here rather
+    than quietly embedded without the image.
+    """
+    parts = _content_parts(content, where=where)
+    for part in parts:
+        if _part_kind(part, where=where) != 'text':
+            raise ShimRequestError(
+                f'a {where} message may only carry text parts — this model\'s chat '
+                f'template renders no vision marker for a {where} image, so it would be '
+                'dropped here and would leave vLLM one image against zero placeholders'
+            )
+    return parts
+
+
 def _image_url(part: Mapping[str, Any]) -> str:
     raw = part.get('image_url')
     if isinstance(raw, str):
@@ -172,8 +238,7 @@ def _parse_messages(messages: Any) -> tuple[EmbedItem, bool]:
                 )
             instruction = ''.join(
                 str(part.get('text', ''))
-                for part in _content_parts(message.get('content'), where='system')
-                if part.get('type', 'text') == 'text'
+                for part in _text_only_parts(message.get('content'), where='system')
             )
         elif role == 'user':
             if user is not None:
@@ -186,7 +251,7 @@ def _parse_messages(messages: Any) -> tuple[EmbedItem, bool]:
                 raise ShimRequestError('an assistant message may only be the final message')
             filled = ''.join(
                 str(part.get('text', ''))
-                for part in _content_parts(message.get('content'), where='assistant')
+                for part in _text_only_parts(message.get('content'), where='assistant')
             )
             if filled:
                 raise ShimRequestError(
@@ -202,24 +267,30 @@ def _parse_messages(messages: Any) -> tuple[EmbedItem, bool]:
     images: list[ImageRef] = []
     texts: list[str] = []
     for part in _content_parts(user.get('content'), where='user'):
-        part_type = part.get('type', 'text')
-        if part_type == 'text':
+        if _part_kind(part, where='user') == 'text':
             texts.append(str(part.get('text', '')))
-        elif part_type == 'image_url':
-            images.append(ImageRef(_image_url(part)))
-        else:
+            continue
+        # Image parts first, then text — the reference builder's order
+        # (research §1.4). `chat_template.jinja` instead iterates
+        # `message.content` and emits the marker where the CALLER put it, so
+        # `[text "a", image, text "b"]` renders `a<image>b` on vLLM and
+        # `<image>ab` here. Measured on the 8B by posting both prompts to
+        # llama-server: cos 0.588 (review r2) and 0.657 (this fix, a different
+        # image) — a bigger divergence either way than the missing continuation
+        # this module already 400s over, which measures 0.953/0.957 on the same
+        # pairs. Normalising it silently would be the same mistake in the
+        # opposite direction, so an interleaved body is refused and every
+        # accepted one is image-first already, which makes the "reorder" below a
+        # no-op rather than a rewrite.
+        if any(texts):
             raise ShimRequestError(
-                f'unsupported content part type {part_type!r}; this model takes '
-                f'{" and ".join(_PART_TYPES)}'
+                'a text content part may not precede an image part: vLLM emits the '
+                'vision marker where you put it while this shim always builds '
+                'images-then-text, and the two prompts embed differently (cos 0.59-0.66 '
+                'measured on the 8B). Put the image parts first, as design D4 does'
             )
+        images.append(ImageRef(_image_url(part)))
 
-    # Image parts first, then text — the reference builder's order, regardless
-    # of how the caller interleaved them (research §1.4). NOTE this is a real
-    # divergence from vLLM for an interleaved body: `chat_template.jinja`
-    # iterates `message.content` in order and emits the vision markers where
-    # the caller put them, so `[text, image, text]` renders as `a<image>b`
-    # there and `<image>ab` here. Harmless for D4 traffic, which is always
-    # image-first, and documented in the README's "The request shape".
     item = EmbedItem(text=''.join(texts), instruction=instruction, images=tuple(images))
     return item, ends_with_assistant
 

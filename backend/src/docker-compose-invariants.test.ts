@@ -451,6 +451,19 @@ describe('.dockerignore excludes nested env secrets from build contexts', () => 
     expect(patterns).toContain('**/.env');
     expect(patterns).toContain('**/.env.*');
   });
+
+  it('ignores the Python tool venv and bytecode .gitignore also excludes (#1115)', () => {
+    // `tools/vl-embedding-shim/` is a Python tool, so its README has every
+    // developer create a venv holding mlx/torch wheels measured in gigabytes
+    // INSIDE the checkout. Every service above builds with `context: ..`, so
+    // without these the wheels are tarred up and streamed to the daemon on
+    // every local build. .gitignore carries the same block, and a repo can
+    // easily carry one half and not the other — this is the other half.
+    const patterns = dockerignore.split('\n').map((line) => line.trim());
+    for (const pattern of ['**/.venv', '**/__pycache__', '**/.pytest_cache', '**/*.egg-info']) {
+      expect(patterns).toContain(pattern);
+    }
+  });
 });
 
 describe('.env.example stays authoritative for env vars the backend reads', () => {
