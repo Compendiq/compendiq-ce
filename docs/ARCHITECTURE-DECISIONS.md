@@ -208,7 +208,8 @@ Markdown stays exactly as specified above, with the same libraries and the same
 macro mapping. An `<img>` still converts to `<img>`, and its *text* contribution
 to embedding input is still whatever alt text it carries.
 
-What changes (ADR-025; the intake shipped in **P2**, retrieval in **P3**)
+What changes (ADR-025; the intake shipped in **P2**, retrieval in **P3**, the
+answer path in **P4**)
 is that the attachment's **bytes**
 become a second, parallel index — `page_image_embeddings`, embedded by a
 vision-language model, fused as a third retrieval leg. Five consequences are
@@ -1785,6 +1786,8 @@ Three decisions inside that are not obvious. **It fails open, so the bound is co
 
 **Prompt injection rendered as pixels is unmitigated, and accepted.** `core/utils/sanitize-llm-input.ts` operates on text; instructions drawn into an image reach the model untouched, and there is no mitigation short of an OCR pass — which this design rejects outright as the fallback path. This is a stated limitation, not an oversight: the residual risk is accepted in exchange for not degrading screenshots and diagrams (the feature's core use case) to OCR fragments.
 
+**#1115 P4 widens who can reach that risk, on the same terms.** Retrieved knowledge-base images now ride this exact gate — the same `(provider_id, model)` verdict, read with the same `getVisionCapability`, refused on anything but `true` — so **an image already in the corpus is model input**, and the unmitigated-pixels paragraph above applies to it unchanged. The threat model moves rather than grows: the KB text on those same pages is first-party content that the ASKING user did not author and that `sanitizeLlmInput` already scans (`/llm/ask` audits detections with `contentOrigin: 'first_party_kb'`), so the new exposure is the part of that content nothing can scan. Whoever can attach a picture to a page can put instructions in front of the chat model of anyone whose question retrieves it. Accepted for the same reason and with the same remedy as above: no OCR, no pixel inspection, and the ceilings (`MAX_IMAGE_BYTES`, `MAX_IMAGE_DIMENSION`, `rag_answer_max_images`, the byte budget) bound the volume, never the content.
+
 ---
 
 ### #1104 — the `rerank` use case
@@ -1847,8 +1850,10 @@ client, the probe and the settings row shipped in **P1**; **P2 gave it a
 consumer** — `image-embedding-service.ts` embeds every referenced page image
 through it; **P3 gave it a second** — `image-leg-search.ts` embeds the QUERY
 through the same resolved pair (once per request, `VL_QUERY_INSTRUCTION`, 3s)
-and searches the index it filled. The chat model still receives no retrieved
-image; that is P4.
+and searches the index it filled. **P4 made the results model input** — up to
+`rag_answer_max_images` of the matched pictures are attached to the chat
+request when the resolved `chat` pair has probed vision-capable, gated on the
+#1154 verdict and text-only (unqualified) otherwise.
 
 **It is the `rerank` rule, one rung stronger.** `resolveImageEmbeddingUsecase()`
 returns `null` when unassigned and the image leg is simply off; `resolveUsecase('image_embedding')`
@@ -2126,10 +2131,13 @@ the admin status/re-scan/process routes and the Embeddings-tab card. **P3: the
 index is read** — `image-leg-search.ts`, the third RRF leg in `hybridSearch`,
 `rag_image_leg_enabled`, `degraded_reason = 'image_leg_unavailable'`, the
 `kind: 'image'` source entries and their thumbnails, and the Retrieval tab's
-Image retrieval group. The answer path lands in **P4**, and every paragraph
-below that describes unshipped behaviour says which PR owns it. **The chat
-model still receives no retrieved image**: after P3 a picture can find a page
-and can appear as a source, and the answer is written from text alone.
+Image retrieval group. **P4: the model sees them** — `retrieved-images.ts`
+(`pickRetrievedImages`, round-robin across pages, `validateImage` unforked, the
+6 MB base64 budget), the vision-gated image parts on the user turn,
+`rag_answer_max_images` and its Retrieval-tab control, the
+`image_only_context` refusal, the two optional audit fields and the
+attached-image component of the answer cache key. Every paragraph below that
+describes unshipped behaviour says which PR owns it.
 **Design of record:** `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`
 (issue #1115, epic #1100 Phase 2).
 
@@ -2275,13 +2283,68 @@ reports `rebuilt` and `dirtiedPages` back to the panel — "Re-check" reads as
 diagnostic and on a width change is not.
 
 **D8 — The answer path degrades to text-only when the chat model's vision
-verdict is not `true`, and retrieved images never count as grounding (P4).**
-`resolveImagePart` (#1154) *throws* on `false`/`null`, which is right for a user
-who explicitly attached an image and wrong for retrieval that merely found one —
-so P4 needs a sibling that returns `null`. And the refusal gate (#1105) must not
-count a retrieved image as "other grounding": doing so would stop honest
-refusals on every weak retrieval that happens to touch a page with a picture on
-it. (Owner ruling, 2026-08-10.)
+verdict is not `true`, and retrieved images never count as grounding (P4,
+shipped).** `resolveImagePart` (#1154) *throws* on `false`/`null`, which is
+right for a user who explicitly attached an image and wrong for retrieval that
+merely found one — so P4 reads the stored verdict directly through
+`getVisionCapability` and treats anything but `true` as a gate that quietly
+shuts. And the refusal gate (#1105) must not count a retrieved image as "other
+grounding": doing so would stop honest refusals on every weak retrieval that
+happens to touch a page with a picture on it. (Owner ruling, 2026-08-10.)
+
+As shipped, "degrades" means **unqualified**: no sentence in the prompt, no
+caveat on the answer, no badge and no change to the announcement — the pictures
+simply stay in `sources[]` where the reader can open them. A per-answer "the
+assistant could not see the diagram" would recur on every answer on such a
+deployment, which is how a notice stops being read; the fact is stated once,
+beside the knob in Settings → Retrieval, which is the only place it appears.
+The gate's non-grounding half is enforced structurally rather than by
+inspection: the pick step runs *after* the refusal decision, so at the moment
+`otherGrounding` is computed there is nothing to count and a refused turn has
+read no image bytes.
+
+Two mechanisms fell out of implementing it. The pick lives in a
+`domains/llm` **service** (`retrieved-images.ts`) rather than in the route,
+because D9's reader is ACL-free and the P0 guard forbids any file under
+`src/routes` from naming it — the read is safe only because retrieval already
+applied the visibility predicate, and the service boundary is where that
+argument is written down. And selection across pages is **round-robin**: a page
+carrying several near-identical screenshots would otherwise take every slot at
+the default cap of 2 and hide the second page, which is image count beating
+image breadth — the same head dilution `MAX_IMAGE_HITS_PER_PAGE` bounds inside
+a page.
+
+**D8a — An all-image-only context with nothing attached REFUSES
+(`image_only_context`; P4, shipped — supersedes P3's interim ruling).** P3
+ruled that an image-only hit set never refuses, and justified it as thin
+evidence rather than absent evidence *because P4 was about to show the model
+the picture*. Where P4 does, the turn answers exactly as P3 said. Where it
+cannot — no vision-capable chat model, `rag_answer_max_images` at 0, or every
+candidate skipped — and **every** returned row is a page whose only context is
+a synthesised title, the prompt is a list of titles and a question, which is
+absent evidence wearing a source list. That case now refuses with its own
+reason, runs no completion, and carries the pictures beneath it as the closest
+matches.
+
+`every`, never `any`: one real text row is grounding, and widening it would
+refuse ordinary answers whose fifth source happens to be a picture. It stands
+down on `otherGrounding` like the other reasons, and it is its own reason
+rather than one of the three because neither fits — `weak_match` is a measured
+verdict about relevance and nothing here was measured (the pages may match
+perfectly), and `no_context` is false on its face, since retrieval did find
+pages. It is decided after the pick step, because it needs the attached count,
+and still before any completion.
+
+**D8b — `rag_answer_max_images` is a COUNT and the byte ceiling is a CONSTANT
+(P4, shipped).** The admin knob (default 2, range 0–8, and **0 is a legal
+value** — the honest off switch, since a zero answer cap subtracts nothing
+durable) bounds a thing an operator can reason about. `RETRIEVED_IMAGES_BYTE_BUDGET`
+(6 MB of base64) is not exposed, because a byte ceiling depends on what the
+corpus happens to hold and its failure mode is a provider timing out on a
+request whose size nobody can see. It exists because this path bypasses the LLM
+queue's sizing by design — the queue counts requests, not bytes — so the cap
+alone would admit ~55 MB of base64 into a single prompt at
+`MAX_IMAGE_BYTES` × 8, four concurrent at `LLM_CONCURRENCY=4`.
 
 **D9 — Bytes come from disk, never Redis staging (P0, shipped).**
 `core/services/attachment-store.ts` is the hoisted path-resolution + read half
@@ -2429,13 +2492,16 @@ empty-corpus `score: 0` a threshold would refuse. **The one arm of #1105 the
 leg does move is `no_context`** (review r3): it fires on an EMPTY result set,
 so a page the leg made retrievable stands it down and a question that used to
 refuse honestly now answers. That follows from the ruling above rather than
-contradicting it, and the cost is named rather than hidden — until P4 the model
-receives that page's chunk-0 text or its synthesised title and never the
-picture, so on the sub-`MIN_EMBEDDABLE_TEXT_CHARS` page the leg exists for, the
-grounding is a title. Thin evidence is not absent evidence, which is the
-distinction that arm draws; the `kind: 'image'` source is what puts the
-evidence the model could not read in front of the reader, and an operator who
-disagrees turns the leg off. Rerank, the ranking prior,
+contradicting it, and `no_context` is never the reason for such a set. **What
+happens NEXT is P4's, and D8a supersedes P3's "an image-only hit set never
+refuses"**: where the picture is attached the turn answers as P3 said, and
+where it cannot be — and every row is a title-synthesised one — the request
+refuses with `image_only_context` instead. P3's own justification is what
+carries the supersession: thin-evidence-not-absent-evidence held *because* the
+model was about to be shown the picture, and a prompt of nothing but titles is
+absent evidence. The `kind: 'image'` source still puts that evidence in front
+of the reader either way, and an operator who disagrees turns the leg off.
+Rerank, the ranking prior,
 MMR, sibling assembly and the #1107 pin need no image-specific branch, because
 a `page_image_embeddings` row never becomes a `SearchResult`: an image-reached
 page enters them as its `chunk_index 0` row, or (with no chunk at all) as a

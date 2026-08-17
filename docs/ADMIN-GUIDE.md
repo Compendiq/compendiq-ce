@@ -394,15 +394,28 @@ panel writes the same `admin_settings` rows.
 | Image leg (#1115 P3) | `rag_image_leg_enabled` | on | on / off |
 | Images per page (#1115 P2) | `rag_images_per_page_max` | 20 | 1–200 |
 | Index external images (#1115 P2) | `rag_image_index_external` | on | on / off |
+| Images shown to the model (#1115 P4) | `rag_answer_max_images` | 2 | 0–8 |
 
-The three image knobs are two halves of one feature. `rag_image_leg_enabled` is
-the QUERY side: it decides whether retrieval fuses a third, image-based leg,
-which costs **one extra embedding call per question**. The other two bound what
-the intake worker takes off a page. Turning the leg off leaves the index being
-built; unassigning the `image_embedding` use case (Settings → AI Models → LLM
-providers) turns off both halves. None of them makes the leg run when no
-vision-language model is assigned or the index is empty. Operations:
-`docs/runbooks/image-index.md`.
+The four image knobs are three parts of one feature.
+`rag_images_per_page_max` and `rag_image_index_external` bound what the intake
+worker takes off a page. `rag_image_leg_enabled` is the QUERY side: it decides
+whether retrieval fuses a third, image-based leg, which costs **one extra
+embedding call per question**. `rag_answer_max_images` is the ANSWER side: how
+many of the matched pictures are attached to the chat request. Turning the leg
+off leaves the index being built; unassigning the `image_embedding` use case
+(Settings → AI Models → LLM providers) turns off both retrieval halves. None of
+them makes the leg run when no vision-language model is assigned or the index
+is empty. Operations: `docs/runbooks/image-index.md`.
+
+Two things about the answer knob specifically. **0 is a legal value here** —
+unlike `rag_images_per_page_max`, whose floor is 1 because a zero intake cap
+would reconcile the index away — and it is the honest off switch: the index
+still fills, the leg still ranks pages, and the pictures still appear as
+sources with their thumbnails. And **a chat model that has not probed
+vision-capable never receives images whatever this says**; the answer is then
+text-only with nothing on it saying so, which is why the panel states that
+beside the control. Fix a wrong verdict with **Re-check** on the chat row in
+Settings → AI Models, not with this number.
 
 Three things worth knowing before you use it.
 
@@ -416,7 +429,7 @@ request, which is exactly what made the removed `FTS_LANGUAGE` environment
 variable unreachable (see below).
 
 **A save of a numeric or on/off knob takes effect within a minute.** Each of
-the nine is read through a 60-second in-process cache. The server that handled
+them is read through a 60-second in-process cache. The server that handled
 your save drops its cache immediately; every other server in the deployment
 converges as its own TTL expires. (Before #1118 the cache was never dropped at
 all, so a saved value could take a full minute even on the server that wrote
@@ -485,7 +498,7 @@ a lock timeout, retry when editing has quietened. If the same request also
 carried other retrieval knobs, those were written before the rebuild started
 and are kept — the error message says so.
 It is not touched by **Reset all to defaults** in the panel — a
-bulk reset of nine cheap knobs must not quietly re-index your corpus back to
+bulk reset of the cheap knobs must not quietly re-index your corpus back to
 `simple`. Change it from its own control.
 
 **One failure mode is not a rollback.** The rebuild is unbounded on the
