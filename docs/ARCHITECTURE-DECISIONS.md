@@ -216,11 +216,24 @@ worth stating here, where a reader of the pipeline will look for them:
 - **Images never join the pipeline above.** They stay bytes from disk to model,
   exactly as #1154's uploaded images do. There is no image → Markdown step, no
   OCR, and no new conversion rule.
-- **The enumeration key is the pipeline's own output.** The converter writes
-  `<img src="/api/attachments/<id>/<file>">` into `body_html`; that basename is
-  the `attachment_key`, and the id is `confluence_id` — or the numeric page id
-  for pasted images on standalone pages, which is a quirk of the render-time
-  `/api/local-attachments` rewrite rather than of storage.
+- **The enumeration key is the pipeline's own output, URL-DECODED.** The
+  converter writes `<img src="/api/attachments/<id>/<file>">` into `body_html`
+  with `<file>` percent-encoded (`content-converter.ts:366`, `:386`, `:410`;
+  the paste/import routes do the same at `pages-crud.ts:2730` and `:2945`),
+  while the file on disk carries the DECODED name — `cacheAttachment` and
+  `writeAttachmentCache` are handed the raw filename. So the `attachment_key`
+  is `decodeURIComponent(basename(src))`. Take the basename literally and
+  every filename containing a space or a non-ASCII character is keyed in a
+  form `resolveAttachmentBytes` can never resolve, and the miss is silent —
+  an absent file and a mis-encoded key both answer `null`. (The attachment
+  route never trips over this because Fastify decodes its `:filename` param
+  for it; an enumerator walking HTML has no such decoder in front of it.)
+  The id is `confluence_id`, or the numeric page id for pasted images on
+  standalone pages — a **storage** fact, not a display one: the upload route
+  writes those bytes into the same Confluence-style tree under the numeric PK
+  (`pages-crud.ts:2723-2728`). The `/api/local-attachments` prefix a reader
+  sees in the browser is a separate, render-time rewrite that never appears in
+  `body_html`.
 - **draw.io PNGs are indexed only where they are really rasters.** Confluence's
   export is sometimes `<mxfile>` XML behind a `.png` name (ADR-013); magic-byte
   sniffing refuses it and the file is skipped and counted, never guessed at from
@@ -2065,10 +2078,12 @@ that index only. Two citations decide it:
 - On **MMTEB Retrieval** (text-only), the VL models *lose* to the text models:
   Qwen3-Embedding-8B **70.88**, Qwen3-Embedding-4B **69.60**,
   Qwen3-VL-Embedding-8B **69.41**, Qwen3-VL-Embedding-2B **67.12**, `bge-m3`
-  **54.60** (published model-card table, matching Table 1 of
-  `arXiv:2601.04720v2`). The 8B multimodal model is beaten on text retrieval by
-  the *4B* text model. A shared space is therefore a measured regression on the
-  path almost every query takes.
+  **54.60** (published model-card table; the same comparison is **Table 4** of
+  `arXiv:2601.04720v2`, "Performance on MTEB Multilingual", which prints one
+  decimal — 70.9 / 69.6 / 69.4 / 67.1 / 54.6. Table 1 of that paper is the
+  checkpoint-spec table, not a results table). The 8B multimodal model is
+  beaten on text retrieval by the *4B* text model. A shared space is therefore
+  a measured regression on the path almost every query takes.
 - A shared space also forces **every** text embed through the VL chat-template
   request shape (D4), which only vLLM — or a self-written shim — serves. That
   ends Ollama, LM Studio and plain-OpenAI text embedding for every CE

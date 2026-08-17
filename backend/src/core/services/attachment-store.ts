@@ -18,8 +18,11 @@
  *
  *   <ATTACHMENTS_DIR>/<confluence_id | numeric page id>/<filename>
  *       The Confluence cache. Keyed by `pages.confluence_id`, EXCEPT for
- *       standalone pages, where pasted images land under the numeric PK
- *       because that is what the content converter writes into `body_html`.
+ *       standalone pages, where the paste/import routes write pasted images
+ *       under the numeric PK (`pages-crud.ts:2723-2728`) and hand the editor
+ *       that URL. A storage fact, not a rendering one: the
+ *       `/api/local-attachments` prefix the browser shows for a standalone
+ *       page is a render-time rewrite and never appears in `body_html`.
  *
  *   <ATTACHMENTS_DIR>/local/<page_id>/<filename>
  *       The local store (#302 Gap 4), whose metadata rows live in
@@ -289,7 +292,16 @@ export interface ResolveAttachmentBytesInput {
   /** `pages.confluence_id`, or null/undefined for a standalone page. */
   confluenceId?: string | null;
   source: AttachmentStoreSource;
-  /** Filename inside that store: the basename of the `<img src>` in `body_html`. */
+  /**
+   * Filename inside that store, as it is ON DISK: the basename of the
+   * `<img src>` in `body_html`, **URL-decoded**. The converter and the paste
+   * route both percent-encode the filename into the `src`
+   * (`content-converter.ts:366`, `pages-crud.ts:2730`) while the bytes are
+   * written under the raw name, so an enumerator must call
+   * `decodeURIComponent` on the basename. A raw `Screen%20shot.png` resolves
+   * to nothing against an existing `Screen shot.png`, and this function
+   * answers `null` either way — the miss is silent.
+   */
   key: string;
 }
 
@@ -340,6 +352,12 @@ function isDirectChildKey(key: string): boolean {
  * named the file, so a miss here means the file genuinely is not cached — and
  * for an index, skipping (and counting) is the right answer, where for a route
  * serving a page the fallback is worth the extra `readdir`.
+ *
+ * "Exact" includes the encoding: this does NOT `decodeURIComponent` the key,
+ * and must not start to. The key is the on-disk name (see
+ * {@link ResolveAttachmentBytesInput.key}) and a file may legitimately be
+ * named `a%20b.png`; decoding here would read a different file for it. The
+ * decode belongs in the enumerator that lifts the name out of an `<img src>`.
  */
 export async function resolveAttachmentBytes(
   input: ResolveAttachmentBytesInput,
@@ -354,9 +372,9 @@ export async function resolveAttachmentBytes(
   try {
     const bytes = source === 'local'
       ? await readLocalStoreFile(pageId, key)
-      // Standalone pages have no `confluence_id`; their pasted images live in
-      // the same tree under the numeric PK, which is what the converter wrote
-      // into `body_html`.
+      // Standalone pages have no `confluence_id`; the paste/import routes
+      // write their images into the same tree under the numeric PK, and that
+      // is the URL the editor persists into `body_html`.
       : await readCachedAttachmentFile(String(confluenceId ?? pageId), key);
 
     if (bytes === null) return null;

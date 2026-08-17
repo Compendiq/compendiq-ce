@@ -42,8 +42,12 @@ CREATE TABLE IF NOT EXISTS page_image_embeddings (
   -- numeric page id for pasted images on standalone pages), 'local' =
   -- `local_attachments` under `<ATTACHMENTS_DIR>/local/<page_id>/`.
   source         TEXT        NOT NULL CHECK (source IN ('confluence', 'local')),
-  -- Filename inside that store — the basename of the `<img src>` the content
-  -- converter wrote into `body_html`, which is how the enumerator finds it.
+  -- Filename inside that store, as it is ON DISK — the basename of the
+  -- `<img src>` in `body_html`, URL-DECODED. The converter and the paste route
+  -- percent-encode the name into the `src` while the bytes are written under
+  -- the raw name, so P2's enumerator must `decodeURIComponent` the basename;
+  -- storing `Screen%20shot.png` for a file called `Screen shot.png` is a key
+  -- `resolveAttachmentBytes` can never resolve, and it fails silently.
   attachment_key TEXT        NOT NULL,
   -- Content address of the bytes that were embedded. P2 skips re-embedding an
   -- unchanged file by comparing this, which is what makes a re-scan cheap.

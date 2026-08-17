@@ -81,9 +81,11 @@ describe('resolveAttachmentBytes (#1115)', () => {
 
   it('falls back to the numeric page id for a standalone page', async () => {
     // Pasted images on standalone pages live in the Confluence-style tree keyed
-    // by the numeric PK — `confluence_id` is NULL there, and the converter
-    // writes `/api/attachments/<numeric id>/<file>` into `body_html`. Getting
-    // this branch wrong makes every pasted image invisible to the index.
+    // by the numeric PK — `confluence_id` is NULL there, and the paste/import
+    // routes write the bytes under that PK and hand the editor
+    // `/api/attachments/<numeric id>/<file>` (`pages-crud.ts:2723-2730`), which
+    // is what lands in `body_html`. Getting this branch wrong makes every
+    // pasted image invisible to the index.
     await writeFileAt(path.join('12', 'pasted-1.png'), pngBytes());
 
     const found = await store.resolveAttachmentBytes({
@@ -94,6 +96,33 @@ describe('resolveAttachmentBytes (#1115)', () => {
     });
 
     expect(found!.sniffedFormat).toBe('png');
+  });
+
+  it('reads the key EXACTLY: a percent-encoded name resolves nothing, and a literal one still does', async () => {
+    // The trap P2's enumerator walks into. Every `<img src>` carries
+    // `encodeURIComponent(filename)` (`content-converter.ts:366`, `:386`,
+    // `:410`; `pages-crud.ts:2730`) while the bytes are written under the RAW
+    // name, so `attachment_key` is `decodeURIComponent(basename(src))`. Take
+    // the basename literally and every filename with a space or a non-ASCII
+    // character misses — and misses SILENTLY, answering the same `null` as an
+    // absent file, which is why this is pinned rather than commented.
+    await writeFileAt(path.join('44556677', 'Screen shot.png'), pngBytes());
+    // A `%` is a legal filename character (`isStorableAttachmentFilename`
+    // rejects only NUL, dotfiles and path separators), so a file really can be
+    // named `a%20b.png`. That is why the decode belongs in the enumerator and
+    // NOT in this function: decoding here would serve `a b.png`'s bytes under
+    // this file's key.
+    await writeFileAt(path.join('44556677', 'a%20b.png'), webpBytes());
+
+    const identity = { pageId: 12, confluenceId: '44556677', source: 'confluence' as const };
+
+    expect(await store.resolveAttachmentBytes({ ...identity, key: 'Screen%20shot.png' })).toBeNull();
+
+    const decoded = await store.resolveAttachmentBytes({ ...identity, key: 'Screen shot.png' });
+    expect(decoded!.sniffedFormat).toBe('png');
+
+    const literal = await store.resolveAttachmentBytes({ ...identity, key: 'a%20b.png' });
+    expect(literal!.sniffedFormat).toBe('webp');
   });
 
   it('reads the local store at local/<page_id>/<filename>', async () => {

@@ -234,14 +234,16 @@ bare query rather than a garbled one.
   in a different absolute band than text↔text ones (0.46–0.72 vs 0.75–0.81 in
   the model card's own tables). Any fixed similarity cutoff tuned on text
   misbehaves on images — which is why the image leg fuses by **rank** and why
-  it never feeds `retrieval-confidence.ts`.
+  an image similarity never reaches `retrieval-confidence.ts` (§5: that is
+  narrower than "the leg never feeds the number").
 
 ## 9. Documentation & diagrams (CLAUDE.md rule 6)
 
 New ADR **ADR-025 "Multimodal image retrieval — dual space"** in
 `docs/ARCHITECTURE-DECISIONS.md`, with dated amendments to ADR-003 (images stop
 being invisible to *retrieval*; the text pipeline is unchanged), ADR-012 (a
-third RRF leg that never feeds the confidence number) and ADR-021 (the
+third RRF leg whose image *similarity* never feeds the confidence number — see
+§5 for why that is narrower than "the leg never feeds it") and ADR-021 (the
 `image_embedding` use case + the non-support list). Diagrams: `03-backend-domains`
 (core `attachment-store`) and `06-data-model` (new table + flag) in P0;
 `08-flow-sync` (dirty flag on attachment writes) in P2; `09-flow-rag-chat`
