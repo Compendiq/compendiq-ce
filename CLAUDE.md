@@ -171,9 +171,20 @@ each exist. `fixture-de-images.test.ts` pins the sha, N ≥ 100, ≥ 20 English
 distractors with EMPTY `expectedImages` (without them a leg that answers with a
 picture every time scores like one that answers correctly), no content shape
 below 15%, every image accounted for by a label or a `notUsable` reason, and
-**no query that restates a manifest caption verbatim** — the caption-strip rule
-guarded from the other side, since a query copied off the manifest hands the leg
-the match the empty alt text exists to deny it. And it is the **first vendored content whose own
+**no query that restates a manifest caption** — the caption-strip rule guarded
+from the other side, since a query copied off the manifest hands the leg the
+match the empty alt text exists to deny it. Two of those are narrower than they
+read and were widened in review. The caption rule compares under its **own**
+normaliser, which folds punctuation as well as case and whitespace: an exact
+match passes `Rollout Januar 2005` against the caption `Rollout, Januar 2005`,
+and a labeller pasting a caption is exactly who drops the comma. It is
+deliberately *not* `normalizeQuery`, which also backs `loadFixture`'s
+duplicate-query rule for the shipped text fixture — a different gate, on a
+different corpus. And `notUsable` is **capped at a tenth of the corpus**,
+because "accounted for" is an unbounded excuse: retiring 60 of the 187 images
+with a reason and deleting their 103 labels leaves every other assertion in that
+file green while the set actually measured shrinks by a third. Today it is
+empty, so the cap ships with full slack. And it is the **first vendored content whose own
 licence is not MIT** (the English corpus is MIT documentation; this repository
 itself is **AGPL-3.0**): page text is CC BY-SA 4.0 (adapted) and images are
 filtered to CC0 / public domain / CC BY x / CC BY-SA x with a **named** author

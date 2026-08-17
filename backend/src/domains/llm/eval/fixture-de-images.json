@@ -265,7 +265,7 @@
     },
     {
       "id": "img-00-021",
-      "query": "Petri-Netz Diagramm mit vier Kreisen und Rechtecken für die Jahreszeiten",
+      "query": "Petri-Netz, das ausschließlich aus vier Kreisen und vier Rechtecken für die Jahreszeiten besteht und sonst nichts enthält",
       "lang": "de",
       "expectedFiles": [
         "petri-netz.md"
@@ -274,11 +274,11 @@
         "images/petri-netz__1.png"
       ],
       "style": "image",
-      "rationale": "Simple net with four circular places (Frühling, Sommer, Herbst, Winter) linked by boxed transitions a-d, matching the introductory four-seasons example."
+      "rationale": "Simple net with four circular places (Frühling, Sommer, Herbst, Winter) linked by boxed transitions a-d, and nothing else. petri-netz__3.png repeats this exact net verbatim above a second, independent sub-net, so 'four circles and rectangles for the seasons' alone did not separate them (Review r1)."
     },
     {
       "id": "img-00-022",
-      "query": "Wie sieht ein einfaches Petri-Netz-Beispiel mit den vier Jahreszeiten aus?",
+      "query": "Wie sieht der Vier-Jahreszeiten-Zyklus als Petri-Netz für sich allein aus, ohne das darunter angehängte zweite Teilnetz?",
       "lang": "de",
       "expectedFiles": [
         "petri-netz.md"
@@ -287,7 +287,7 @@
         "images/petri-netz__1.png"
       ],
       "style": "image",
-      "rationale": "Same base four-seasons net illustrates the mathematical quintuple definition example referenced right before it in the text."
+      "rationale": "Same base four-seasons net, illustrating the mathematical quintuple definition referenced right before it in the text — and stated as the net on its own, because petri-netz__3.png carries the identical cycle plus the 'Sack Reis' sub-net below it (Review r1)."
     },
     {
       "id": "img-00-023",
@@ -460,7 +460,7 @@
     },
     {
       "id": "img-00-036",
-      "query": "vollständiges Periodensystem der Elemente mit Ordnungszahl Atommasse und Elektronegativität pro Kästchen",
+      "query": "Periodensystem, in dem die Elemente nach zehn Serien von den Alkalimetallen bis zu den Edelgasen eingefärbt sind und künstliche Elemente schraffiert erscheinen",
       "lang": "de",
       "expectedFiles": [
         "periodensystem.md"
@@ -469,11 +469,11 @@
         "images/periodensystem__1.png"
       ],
       "style": "image",
-      "rationale": "Densely annotated table with a legend box explaining colour-coded categories and multiple numeric values per cell matches the caption's detailed data listing."
+      "rationale": "Nur diese Tafel führt in ihrer Legende zehn Elementserien (Alkalimetalle, Erdalkalimetalle, Übergangsmetalle, Lanthanoide, Actinoide, Metalle, Halbmetalle, Nichtmetalle, Halogene, Edelgase) und kennzeichnet künstliche Elemente durch Schraffur; periodensystem__2.png unterscheidet nur Metalle, Halbmetalle und Nichtmetalle. Die frühere Fassung nannte Ordnungszahl/Atommasse/Elektronegativität pro Kästchen — die BEIDE Tafeln laut ihrer Legende führen (Review r1)."
     },
     {
       "id": "img-00-037",
-      "query": "Welche Periodensystem-Grafik zeigt für jedes Element Symbol, Dichte und Atommasse?",
+      "query": "Welche Periodensystem-Grafik lässt die Gruppe-3-Felder der Perioden 6 und 7 leer und verweist dort mit 'siehe unten' auf die Blöcke darunter?",
       "lang": "de",
       "expectedFiles": [
         "periodensystem.md"
@@ -482,11 +482,11 @@
         "images/periodensystem__1.png"
       ],
       "style": "image",
-      "rationale": "Same fully-annotated table is the version with per-element density/mass/electronegativity data called out in the caption."
+      "rationale": "In dieser Tafel steht in den Gruppe-3-Feldern der Perioden 6 und 7 der Platzhalter 'siehe unten' mit einem Pfeil nach unten; in periodensystem__2.png bleiben Lanthan und Actinium im Hauptsystem und sind durch Klammerlinien mit den Blöcken darunter verbunden. Die frühere Fassung nannte Symbol/Dichte/Atommasse pro Element, die beide Tafeln führen (Review r1)."
     },
     {
       "id": "img-00-038",
-      "query": "Periodensystem in der gebräuchlichen mittellangen Form mit Lanthanoiden und Actinoiden unten angeordnet",
+      "query": "Periodensystem mit römisch nummerierten Perioden, in dem Lanthan und Actinium im Hauptsystem stehen und Klammern von dort auf die Blöcke darunter zeigen",
       "lang": "de",
       "expectedFiles": [
         "periodensystem.md"
@@ -495,11 +495,11 @@
         "images/periodensystem__2.png"
       ],
       "style": "image",
-      "rationale": "Simpler colour-block table without the dense per-cell data matches the caption describing the space-saving mittellange Form layout."
+      "rationale": "Diese Tafel beschriftet die Perioden mit römischen Ziffern I bis VII und behält La und Ac im Hauptsystem, von wo aus Klammerlinien auf die Lanthanoiden- und Actinoiden-Blöcke verweisen; periodensystem__1.png nummeriert die Perioden arabisch und setzt dort 'siehe unten'. Die frühere Fassung nannte nur die mittellange Form mit Lanthanoiden und Actinoiden unten, was auf BEIDE Tafeln zutrifft (Review r1)."
     },
     {
       "id": "img-00-039",
-      "query": "Standard medium-long form periodic table image with elements grouped by colour",
+      "query": "periodic table whose legend distinguishes only metals, semimetals and non-metals, plus a separate key for the state of matter at 20 °C",
       "lang": "en",
       "expectedFiles": [
         "periodensystem.md"
@@ -508,7 +508,7 @@
         "images/periodensystem__2.png"
       ],
       "style": "image",
-      "rationale": "Cross-lingual match for the plainer colour-coded periodic table variant."
+      "rationale": "Cross-lingual match for the plainer table: its legend carries only Metalle / Halbmetalle / Nichtmetalle / unbekannte Metalle plus an Aggregatzustand key, where periodensystem__1.png colours ten element series. The earlier wording ('medium-long form ... grouped by colour') was true of both tables (Review r1)."
     },
     {
       "id": "img-00-040",
@@ -681,7 +681,7 @@
     },
     {
       "id": "img-00-053",
-      "query": "Schema eines Zweitakt-Dieselmotors mit gesteuertem Auslassventil und Längsspülung",
+      "query": "Schema der Spülung eines Zweitaktmotors mit Spülkanälen im Zylinder und gesteuertem Auslassventil oben",
       "lang": "de",
       "expectedFiles": [
         "turbolader.md"
@@ -690,11 +690,11 @@
         "images/turbolader__2.png"
       ],
       "style": "image",
-      "rationale": "Cylinder cross-section with cyan arrows showing intake ports and an exhaust valve at top matches the two-stroke uniflow-scavenging caption."
+      "rationale": "Cylinder cross-section with cyan arrows entering through ports low in the bore and leaving through a single valve at the top. The earlier wording said 'Zweitakt-Dieselmotor', which names the corpus page dieselmotor.md by title while the image lives on turbolader.md — and the picture shows no injector, so 'Diesel' came from the caption rather than the pixels. 'Spülkanäle' and 'Auslassventil' are turbolader.md's own words, in its 'Aufladung beim Zweitakt-Motor' section (Review r1)."
     },
     {
       "id": "img-00-054",
-      "query": "Diagram of a two-stroke diesel engine with controlled exhaust valve scavenging airflow",
+      "query": "Diagram of two-stroke engine scavenging, with air entering through cylinder ports and leaving through a controlled exhaust valve",
       "lang": "en",
       "expectedFiles": [
         "turbolader.md"
@@ -703,7 +703,7 @@
         "images/turbolader__2.png"
       ],
       "style": "image",
-      "rationale": "Cross-lingual match for the same uniflow-scavenging cylinder diagram with airflow arrows."
+      "rationale": "Cross-lingual match for the same scavenging cylinder diagram with airflow arrows; 'diesel' dropped for the reason given on img-00-053 (Review r1)."
     },
     {
       "id": "img-00-055",
@@ -1338,7 +1338,7 @@
     },
     {
       "id": "img-01-046",
-      "query": "Schnittzeichnung eines Viertaktmotors mit farbig markierten Bauteilen",
+      "query": "Schnittzeichnung eines Viertaktmotors ohne eingezeichnete Ansaug- und Auspuffleitung, mit orange und blau eingefärbten Kanälen im Zylinderkopf",
       "lang": "de",
       "expectedFiles": [
         "viertaktmotor.md"
@@ -1347,7 +1347,7 @@
         "images/viertaktmotor__2.png"
       ],
       "style": "image",
-      "rationale": "A smaller companion cross-section, marked '4' and showing an exhaust path, colour-codes the piston, valves and crankshaft in the same rendered engine style."
+      "rationale": "The narrow companion frame: the same rendered engine, cropped to the cylinder, with the head's two ports tinted orange and blue and no plumbing outside the block. viertaktmotor__1.png is the wide frame that draws the whole gas path — a yellow intake duct on the left and a grey exhaust duct into a silencer on the right — so 'cross-section with colour-coded parts' alone described both (Review r1)."
     },
     {
       "id": "img-01-047",
@@ -2082,7 +2082,7 @@
     },
     {
       "id": "img-02-053",
-      "query": "3D-Explosionszeichnung eines Rillenkugellagers mit Innenring, Käfig und Wälzkörpern",
+      "query": "Schnittdarstellung eines zusammengebauten Rillenkugellagers mit herausgeschnittenem Keil, der Wälzkörper, Käfig und Dichtscheibe im Inneren freilegt",
       "lang": "de",
       "expectedFiles": [
         "waelzlager.md"
@@ -2091,7 +2091,7 @@
         "images/waelzlager__1.png"
       ],
       "style": "image",
-      "rationale": "Gerenderte Explosionsansicht eines Rillenkugellagers mit nummerierten Teilen (Innenring, Käfig, Dichtscheibe, Wälzkörper, Außenring)."
+      "rationale": "Gerendertes, ZUSAMMENGEBAUTES Rillenkugellager mit herausgeschnittenem Keil; die Ziffern 1-5 zeigen in den Schnitt hinein. Bewusst keine Explosionsansicht: das ist waelzlager__2.jpg, auf das img-02-055/056 zeigen — die ursprüngliche Fassung dieser Frage war von der Bildunterschrift statt vom Bild abgeschrieben (Review r1)."
     },
     {
       "id": "img-02-054",
@@ -3574,7 +3574,7 @@
     },
     {
       "id": "img-05-021",
-      "query": "map of the Berlin U-Bahn subway network lines",
+      "query": "current schematic route map of the Berlin U-Bahn lines, straight-line diagram rather than a city map",
       "lang": "en",
       "expectedFiles": [
         "u-bahn-berlin.md"
@@ -3583,7 +3583,7 @@
         "images/u-bahn-berlin__2.png"
       ],
       "style": "image",
-      "rationale": "Cross-lingual match for the same color-coded schematic line map."
+      "rationale": "Cross-lingual match for the same colour-coded schematic line map. The earlier wording ('map of the Berlin U-Bahn subway network lines') was equally true of u-bahn-berlin__1.jpg, a geographic city map carrying every line coloured by opening period — the German pair img-05-019/020 does separate them, so the English label had lost its slice's own distinction (Review r1)."
     },
     {
       "id": "img-05-022",

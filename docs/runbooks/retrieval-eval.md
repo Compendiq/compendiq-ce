@@ -652,10 +652,27 @@ individually exist.
 `fixture.json` has: a corpus refresh moves the captions these labels were
 written from), the N ≥ 100 floor, ≥ 20 English, 8–20 negatives, no content shape
 below 15%, every image accounted for by a label or by a `notUsable` entry
-carrying the labeller's reason, and no query that restates a manifest caption
-verbatim. That last one is the corpus's caption-strip rule guarded from the
-other side: a query copied off the manifest hands the leg the match the empty
-alt text was there to deny it.
+carrying the labeller's reason (capped at a **tenth** of the corpus, so an image
+can be dropped on the record but the *measured* set cannot quietly shrink), and
+no query that restates a manifest caption. That last one is the corpus's
+caption-strip rule guarded from the other side: a query copied off the manifest
+hands the leg the match the empty alt text was there to deny it. It compares
+under the test's own normaliser, which folds **punctuation** as well as case and
+whitespace — an exact match passes `Rollout Januar 2005` against the caption
+`Rollout, Januar 2005`, and someone pasting a caption is exactly who drops the
+comma. That normaliser is deliberately not `normalizeQuery`, which also backs
+`loadFixture`'s duplicate-query rule for the shipped **text** fixture.
+
+Two label-quality rules the guard cannot enforce, and which review r1 had to fix
+by hand: a query must describe **the pixels**, not the caption's word list
+(`img-02-053` asked for an "Explosionszeichnung" of a bearing rendered as a
+cutaway, while the page's real exploded view is the sibling two other labels
+already claim), and where a page carries two images that answer the same
+sentence, the query must name what separates them (`periodensystem__1` vs `__2`,
+`viertaktmotor__1` vs `__2`, `petri-netz__1` vs `__3`, `u-bahn-berlin__1` vs
+`__2`). Both are invisible to a schema: the label validates, the page and image
+exist and belong together, and the leg is simply scored a miss for returning the
+defensible answer.
 
 **Nothing consumes it yet.** P5b adds the `--images` axis; until then the
 fixture is committed data with a guard over it and no runner path, for the same
