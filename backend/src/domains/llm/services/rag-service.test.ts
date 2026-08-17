@@ -670,6 +670,62 @@ describe('RAG Service', () => {
       const analyticsParams = analyticsCalls[0][1] as unknown[];
       expect(analyticsParams[4]).toBe('hybrid');
     });
+
+    // ── #1351: HybridSearchOptions.spaceKey threads to BOTH legs ──────────
+    it('scopes both the vector and keyword legs when opts.spaceKey is set', async () => {
+      const fakeEmbedding = new Array(1024).fill(0.1);
+      mocks.mockGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+      mocks.mockClientQuery.mockResolvedValueOnce({ rows: [] }); // vector SELECT empty
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+      mocks.mockQuery.mockResolvedValue({ rows: [] }); // keyword SELECT + analytics
+
+      await hybridSearch('user-1', 'test query', 5, undefined, { spaceKey: 'DEV' });
+
+      const vectorSelectCall = mocks.mockClientQuery.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('page_embeddings'),
+      );
+      expect(vectorSelectCall![0]).toContain('AND cp.space_key = $5');
+      expect(vectorSelectCall![1]).toContain('DEV');
+
+      const keywordSelectCall = mocks.mockQuery.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('ts_rank'),
+      );
+      expect(keywordSelectCall![0]).toContain('AND cp.space_key = $5');
+      expect(keywordSelectCall![1]).toContain('DEV');
+    });
+
+    it('leaves both legs unscoped when opts is omitted (no-op default for existing callers)', async () => {
+      const fakeEmbedding = new Array(1024).fill(0.1);
+      mocks.mockGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+      mocks.mockClientQuery.mockResolvedValueOnce({ rows: [] }); // vector SELECT empty
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+      mocks.mockQuery.mockResolvedValue({ rows: [] }); // keyword SELECT + analytics
+
+      // Exactly what RAG chat / deep search / the eval harness call today —
+      // no 5th arg at all.
+      await hybridSearch('user-1', 'test query');
+
+      const vectorSelectCall = mocks.mockClientQuery.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('page_embeddings'),
+      );
+      expect(vectorSelectCall![0]).not.toContain('cp.space_key = $');
+
+      const keywordSelectCall = mocks.mockQuery.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('ts_rank'),
+      );
+      // The SELECT list always names `cp.space_key` as a returned column
+      // (used to populate `SearchResult.spaceKey`); it is the scoping
+      // PREDICATE that must be absent.
+      expect(keywordSelectCall![0]).not.toContain('cp.space_key = $');
+    });
   });
 
   describe('fetch width decoupled from topK (#1103)', () => {
@@ -1784,6 +1840,29 @@ describe('RAG Service', () => {
       expect(results[0].keywordRank).toBe(0.75);
       expect(results[0].vectorScore).toBeNull();
     });
+
+    // ── #1351: spaceKey narrows the keyword leg ───────────────────────────
+    it('applies an additional cp.space_key predicate when opts.spaceKey is set', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mocks.mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      await keywordSearch('user-1', 'redis caching', 5, { spaceKey: 'DEV' });
+
+      const [sql, params] = mocks.mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(sql).toContain('AND cp.space_key = $5');
+      expect(params[4]).toBe('DEV');
+    });
+
+    it('omits the space_key predicate when opts.spaceKey is undefined (no-op default)', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mocks.mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      await keywordSearch('user-1', 'redis caching', 5);
+
+      const [sql, params] = mocks.mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(sql).not.toContain('cp.space_key = $');
+      expect(params).toHaveLength(4);
+    });
   });
 
   describe('vectorSearch (exported)', () => {
@@ -1870,6 +1949,40 @@ describe('RAG Service', () => {
 
       await expect(vectorSearch('user-1', new Array(1024).fill(0.1))).rejects.toThrow('DB exploded');
       expect(mocks.mockClient.release).toHaveBeenCalledTimes(1);
+    });
+
+    // ── #1351: spaceKey narrows the vector leg ────────────────────────────
+    it('applies an additional cp.space_key predicate when opts.spaceKey is set', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+      mocks.mockClientQuery.mockResolvedValueOnce({ rows: [] }); // SELECT
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+
+      await vectorSearch('user-1', new Array(1024).fill(0.1), 5, { spaceKey: 'DEV' });
+
+      const [sql, params] = mocks.mockClientQuery.mock.calls[2] as [string, unknown[]];
+      expect(sql).toContain('AND cp.space_key = $5');
+      // visiblePagesPredicate ($1/$4) stays in place — the scope is an
+      // additional narrowing condition, not a replacement for ACL.
+      expect(sql).toContain('space_key = ANY($1::text[])');
+      expect(params[4]).toBe('DEV');
+    });
+
+    it('omits the space_key predicate when opts.spaceKey is undefined (no-op default)', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+      mocks.mockClientQuery.mockResolvedValueOnce({ rows: [] }); // SELECT
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+
+      // Every existing caller (RAG chat, deep search, eval harness) omits
+      // opts entirely — this pins that call shape stays byte-identical.
+      await vectorSearch('user-1', new Array(1024).fill(0.1), 5);
+
+      const [sql, params] = mocks.mockClientQuery.mock.calls[2] as [string, unknown[]];
+      expect(sql).not.toContain('cp.space_key = $');
+      expect(params).toHaveLength(4);
     });
   });
 
@@ -2397,6 +2510,33 @@ describe('exact-identifier pin stage (#1107)', () => {
     routePinQueries({ page_id: 42, confluence_id: 'x', title: 'X', space_key: 'DEV', excerpt: 'x' });
     const out = await hybridSearch('user-1', 'what is INC-2203 about', 5);
     expect(out[0]!.pinned).toBeUndefined();
+  });
+
+  // #1351: the pin stage's SQL has no space_key predicate of its own (see
+  // the `inScope` note at its call site) — opts.spaceKey is enforced as a
+  // post-filter on the verified candidate, the same way the ACL check
+  // already is.
+  it('opts.spaceKey refuses to pin a VERIFIED identifier from a different space', async () => {
+    routePinQueries({ page_id: 42, confluence_id: 'inc-page', title: 'INC-2203 postmortem', space_key: 'OPS', excerpt: 'incident details' });
+    const out = await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, {
+      pinIdentifiers: true,
+      spaceKey: 'DEV',
+    });
+    // The out-of-scope match must not surface at all — not pinned, and not
+    // silently admitted into the fused order either (it was never a fused
+    // candidate; vectorSearch/keywordSearch already scoped those legs).
+    expect(out.some((r) => r.pageId === 42)).toBe(false);
+    expect(out.map((r) => r.pageId)).toEqual([1, 2]);
+  });
+
+  it('opts.spaceKey still pins a VERIFIED identifier that IS in the scoped space', async () => {
+    routePinQueries({ page_id: 42, confluence_id: 'inc-page', title: 'INC-2203 postmortem', space_key: 'DEV', excerpt: 'incident details' });
+    const out = await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, {
+      pinIdentifiers: true,
+      spaceKey: 'DEV',
+    });
+    expect(out[0]!.pageId).toBe(42);
+    expect(out[0]!.pinned).toBe(true);
   });
 
   it('the operator kill switch disables the stage — no detection, no lookup (#1273 M11)', async () => {

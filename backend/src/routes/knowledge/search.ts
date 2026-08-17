@@ -229,7 +229,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
       // above previous results — an accuracy improvement, not the RRF
       // dilution the hybrid path guards against.)
       const stageLimit = resolveStageLimit(limit, await getRagFetchWidth(), false);
-      const vectorResults = await vectorSearch(userId, questionEmbedding, stageLimit);
+      // #1351: the Space filter now actually narrows semantic results — see
+      // the matching note on vectorSearch. Previously this call ignored
+      // `spaceKey` entirely, so a user scoping semantic search to one space
+      // silently got answers from the whole accessible corpus.
+      const vectorResults = await vectorSearch(userId, questionEmbedding, stageLimit, { spaceKey });
 
       // Deduplicate by pageId (take best chunk per page), then honour the
       // caller's return width — the wider fetch is ranking headroom, not a
@@ -295,7 +299,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // Hand over this request's coverage reading (null = probe failed) so
         // hybridSearch skips its own probe — one COUNT per request, and the
         // wire and analytics describe the same measurement.
-        deduped = await hybridSearch(userId, q, limit, cov);
+        // #1351: spaceKey narrows both legs — see HybridSearchOptions.spaceKey.
+        deduped = await hybridSearch(userId, q, limit, cov, { spaceKey });
       } catch (err) {
         if (err instanceof CircuitBreakerOpenError) {
           reply.status(503).send({

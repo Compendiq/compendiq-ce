@@ -278,6 +278,66 @@ describe.skipIf(!dbAvailable)('rag-service integration — space permission enfo
     expect(ownerKeywordHits.length).toBeGreaterThan(0);
     expect(ownerHybrid.length).toBeGreaterThan(0);
   });
+
+  // #1351: semantic/hybrid search silently ignored the Space filter — a user
+  // scoping to one space got answers from their whole accessible corpus. The
+  // same fixture (postgres in two accessible spaces) reproduces the issue's
+  // live repro against real vectorSearch/keywordSearch/hybridSearch SQL.
+  describe('#1351 — spaceKey scoping (real SQL, both accessible spaces)', () => {
+    const user = 'ffffffff-1351-4000-8000-000000000001';
+
+    beforeEach(async () => {
+      await seedSpaceWithPage({
+        userId: user,
+        spaceKey: 'DEV',
+        pageTitle: 'Postgres tuning',
+        bodyText: 'postgres connection pooling notes',
+        vec: fakeVec(21),
+      });
+      await seedSpaceWithPage({
+        userId: user,
+        spaceKey: 'OPS',
+        pageTitle: 'Postgres runbook',
+        bodyText: 'postgres backup and restore steps',
+        vec: fakeVec(21.05), // close enough to rank alongside the DEV page
+      });
+    });
+
+    it('vectorSearch(spaceKey) returns only the scoped space', async () => {
+      const unscoped = await vectorSearch(user, fakeVec(21), 10);
+      expect(unscoped.length).toBe(2);
+
+      const scoped = await vectorSearch(user, fakeVec(21), 10, { spaceKey: 'DEV' });
+      expect(scoped.length).toBe(1);
+      expect(scoped[0]!.spaceKey).toBe('DEV');
+    });
+
+    it('keywordSearch(spaceKey) returns only the scoped space', async () => {
+      const unscoped = await keywordSearch(user, 'postgres', 10);
+      expect(unscoped.length).toBe(2);
+
+      const scoped = await keywordSearch(user, 'postgres', 10, { spaceKey: 'DEV' });
+      expect(scoped.length).toBe(1);
+      expect(scoped[0]!.spaceKey).toBe('DEV');
+    });
+
+    it('hybridSearch(opts.spaceKey) returns only the scoped space', async () => {
+      const unscoped = await hybridSearch(user, 'postgres');
+      expect(unscoped.length).toBe(2);
+
+      const scoped = await hybridSearch(user, 'postgres', 5, undefined, { spaceKey: 'DEV' });
+      expect(scoped.length).toBe(1);
+      expect(scoped[0]!.spaceKey).toBe('DEV');
+    });
+
+    it('a space outside the accessible set yields zero results, not the whole corpus', async () => {
+      // Reproduces the issue's `spaceKey=ZZZZ` case: a nonexistent (and
+      // therefore inaccessible) space must narrow to nothing, never fall
+      // back to ignoring the filter.
+      const scoped = await hybridSearch(user, 'postgres', 5, undefined, { spaceKey: 'ZZZZ' });
+      expect(scoped).toHaveLength(0);
+    });
+  });
 });
 
 // ─── Phase D: per-page ACL post-filter + overfetch compensation (issue #112) ─

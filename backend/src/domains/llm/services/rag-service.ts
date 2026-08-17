@@ -289,12 +289,26 @@ export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[],
  *
  * Tradeoff: higher ef_search = better recall but slower query.
  * Default PostgreSQL ef_search is 40; the floor here is 100.
+ *
+ * `opts.spaceKey` (#1351) narrows the scan to one Confluence space, applied
+ * as an additional predicate ALONGSIDE `visiblePagesPredicate` — it can only
+ * ever shrink the ACL-visible set, never widen it. Standalone pages carry no
+ * `space_key` (NULL), so scoping excludes them, matching the keyword-mode
+ * filter `routes/knowledge/search.ts` has always applied. Optional and
+ * defaults to undefined/no-op, so every unscoped caller (RAG chat, deep
+ * search, the eval/benchmark harness) is byte-identical.
  */
-export async function vectorSearch(userId: string, questionEmbedding: number[], limit = RAG_FETCH_WIDTH_DEFAULT): Promise<SearchResult[]> {
+export async function vectorSearch(
+  userId: string,
+  questionEmbedding: number[],
+  limit = RAG_FETCH_WIDTH_DEFAULT,
+  opts?: { spaceKey?: string },
+): Promise<SearchResult[]> {
   return withSpan(
     'rag.vector_search',
     async (span) => {
       const started = performance.now();
+      const spaceKey = opts?.spaceKey;
       const vecSpaces = await getUserAccessibleSpaces(userId);
       // Use the dedicated vector pool so long-running similarity queries
       // do not starve the main pool used by CRUD routes.
@@ -339,10 +353,12 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
            FROM page_embeddings pe
            JOIN pages cp ON pe.page_id = cp.id
            WHERE ${visiblePagesPredicate(1, 4)}
-           AND cp.deleted_at IS NULL
+           AND cp.deleted_at IS NULL${spaceKey ? ' AND cp.space_key = $5' : ''}
            ORDER BY pe.embedding <=> $2
            LIMIT $3`,
-          [vecSpaces, pgvector.toSql(questionEmbedding), rawLimit, userId],
+          spaceKey
+            ? [vecSpaces, pgvector.toSql(questionEmbedding), rawLimit, userId, spaceKey]
+            : [vecSpaces, pgvector.toSql(questionEmbedding), rawLimit, userId],
         );
 
         await client.query('COMMIT');
@@ -393,8 +409,16 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
  * Keyword search: PostgreSQL full-text search on pages.
  * Scoped to: Confluence pages in user's selected spaces + standalone articles
  * the user can access (shared, or private and owned by the user).
+ *
+ * `opts.spaceKey` (#1351): see the matching note on `vectorSearch` — same
+ * narrow-only semantics, same standalone-page exclusion, same no-op default.
  */
-export async function keywordSearch(userId: string, questionText: string, limit = RAG_FETCH_WIDTH_DEFAULT): Promise<SearchResult[]> {
+export async function keywordSearch(
+  userId: string,
+  questionText: string,
+  limit = RAG_FETCH_WIDTH_DEFAULT,
+  opts?: { spaceKey?: string },
+): Promise<SearchResult[]> {
   // The lexical parser is CHOSEN per query (#1110, see lexical-query.ts).
   // Normally websearch_to_tsquery, so users get "quoted phrases" as real
   // phrase matches and `-term` as a genuine exclusion — the latter was
@@ -428,6 +452,7 @@ export async function keywordSearch(userId: string, questionText: string, limit 
       // rewritten — plainto keeps hyphens, so identifiers survive.
       const parser = chooseLexicalParser(trimmed);
       const ftsLang = await getFtsLanguage();
+      const spaceKey = opts?.spaceKey;
 
       const kwSpaces = await getUserAccessibleSpaces(userId);
       const result = await query<{
@@ -444,10 +469,10 @@ export async function keywordSearch(userId: string, questionText: string, limit 
          FROM pages cp
          WHERE cp.tsv @@ ${parser}('${ftsLang}', $2)
            AND ${visiblePagesPredicate(1, 4)}
-           AND cp.deleted_at IS NULL
+           AND cp.deleted_at IS NULL${spaceKey ? ' AND cp.space_key = $5' : ''}
          ORDER BY rank DESC
          LIMIT $3`,
-        [kwSpaces, trimmed, limit, userId],
+        spaceKey ? [kwSpaces, trimmed, limit, userId, spaceKey] : [kwSpaces, trimmed, limit, userId],
       );
 
       const mapped = result.rows.map((row) => ({
@@ -986,6 +1011,18 @@ export interface HybridSearchOptions {
    * the merged set instead.
    */
   recordAnalytics?: boolean;
+  /**
+   * #1351 — scope retrieval to one Confluence space: both fused legs
+   * (vector + keyword, threaded straight through to
+   * `vectorSearch`/`keywordSearch` — see their matching notes for the
+   * narrow-only, standalone-excluding semantics) AND the exact-identifier
+   * pin stage below (post-filtered there rather than in SQL — see its own
+   * `inScope` note). Optional and undefined by default, so RAG chat, deep
+   * search (`multi-query-search.ts`) and the eval/benchmark harness — none
+   * of which pass it — see byte-identical behaviour. `/api/search`'s hybrid
+   * branch is the only caller today.
+   */
+  spaceKey?: string;
 }
 
 export async function hybridSearch(
@@ -1345,7 +1382,7 @@ async function hybridSearchInner(
   // Start keyword search outside the try block so DB errors in keyword
   // search are not silently caught as "embedding failures".
   const keywordPromise = stageLimitPromise.then((stageLimit) =>
-    keywordSearch(userId, question, stageLimit),
+    keywordSearch(userId, question, stageLimit, { spaceKey: opts?.spaceKey }),
   );
   // Observe the promise so a rejection can never go unhandled if the embedding
   // path short-circuits (e.g. rethrowing CircuitBreakerOpenError) before the
@@ -1390,7 +1427,7 @@ async function hybridSearchInner(
       config, model, formatQueryForEmbedding(model, question),
     );
     const questionEmbedding = embeddings[0]!;
-    vectorResults = await vectorSearch(userId, questionEmbedding, await stageLimitPromise);
+    vectorResults = await vectorSearch(userId, questionEmbedding, await stageLimitPromise, { spaceKey: opts?.spaceKey });
   } catch (err) {
     // Let circuit breaker errors propagate for proper 503 handling
     if (err instanceof CircuitBreakerOpenError) {
@@ -1772,6 +1809,18 @@ async function hybridSearchInner(
   // At most two pins; the tail shrinks via the same topK slice; the fused
   // order below the pins is never re-sorted. Space-key detections verify
   // nothing here by design — a space is not a page (design of record).
+  //
+  // #1351: `lookupIdentifier`'s SQL is NOT space-scoped — unlike the vector
+  // and keyword legs, it has no `opts.spaceKey` predicate, because its
+  // candidate list already carries `spaceKey` on every row and the ACL
+  // post-filter below is the established pattern for narrowing that list
+  // after the query runs, not inside it. `inScope` applies the same
+  // narrowing the same way. No caller combines `pinIdentifiers` with
+  // `spaceKey` today (`/api/search` never requests pins; `/llm/ask` and deep
+  // search never scope by space), so this is a latent guarantee, not yet an
+  // observable behavior — kept true anyway so a future caller (deep search
+  // already spreads `...opts` into `hybridSearch`) can't silently resurface
+  // an out-of-scope page through this leg while the other two are honored.
   if (opts?.pinIdentifiers && (await getRagPinIdentifiersEnabled())) {
     try {
       const detected = detectIdentifiers(question).filter((d) => d.kind !== 'spaceKey');
@@ -1799,6 +1848,10 @@ async function hybridSearchInner(
             isAccessible = (pageId) => accessible.has(pageId);
           }
         }
+        // #1351: same narrow-only contract as the two legs — a candidate
+        // outside the requested space is never a valid pin, whether or not
+        // it is otherwise accessible.
+        const inScope = (r: SearchResult): boolean => !opts.spaceKey || r.spaceKey === opts.spaceKey;
         // Each detection contributes AT MOST ONE pin, and never a
         // substitute. Sliding past an already-pinned page to the next
         // candidate looks like de-duplication and is not: the second row
@@ -1806,12 +1859,12 @@ async function hybridSearchInner(
         // sharing the title, or another page whose title carries the key —
         // so one user gesture producing two detections of the same page
         // would pin an unrelated one beneath it, labelled a verified exact
-        // match, ahead of every fused result. Take the best accessible
-        // candidate; if it is already pinned, this detection has nothing
-        // left to say.
+        // match, ahead of every fused result. Take the best accessible,
+        // in-scope candidate; if it is already pinned, this detection has
+        // nothing left to say.
         const verified: SearchResult[] = [];
         for (const candidateRows of lookedUp) {
-          const pick = candidateRows.find((c) => isAccessible(c.pageId));
+          const pick = candidateRows.find((c) => isAccessible(c.pageId) && inScope(c));
           if (pick && !verified.some((v) => v.pageId === pick.pageId)) verified.push(pick);
         }
         if (verified.length > 0) {

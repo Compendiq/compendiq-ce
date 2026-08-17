@@ -475,6 +475,28 @@ describe('Search Routes', () => {
       expect(body.items[0].title).toBe('Vector Result');
     });
 
+    // #1351: semantic search silently ignored spaceKey — vectorSearch never
+    // saw it, so a user scoping to one space got answers from the whole
+    // accessible corpus. This pins the route now forwards it.
+    it('#1351: semantic mode forwards spaceKey to vectorSearch', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockProviderGenerateEmbedding.mockResolvedValue([[...new Array(768).fill(0.1)]]);
+      mockVectorSearch.mockResolvedValue([]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic&spaceKey=DEV',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockVectorSearch).toHaveBeenCalledWith(
+        'test-user-id',
+        expect.any(Array),
+        expect.any(Number),
+        { spaceKey: 'DEV' },
+      );
+    });
+
     // ── #1114 query-instruction prefix ───────────────────────────────────────
     //
     // `mode=semantic` embeds the query HERE rather than delegating to
@@ -668,17 +690,41 @@ describe('Search Routes', () => {
 
       expect(response.statusCode).toBe(200);
       // 4th arg: the route's own coverage reading, handed over so hybridSearch
-      // does not probe a second time (review r1).
+      // does not probe a second time (review r1). 5th arg: #1351's spaceKey
+      // scoping option — undefined here since the request carries none.
       expect(mockHybridSearch).toHaveBeenCalledWith(
         'test-user-id',
         'test',
         10,
         { embeddedPages: 3, totalPages: 3, coverage: 1 },
+        { spaceKey: undefined },
       );
       const body = response.json();
       expect(body.mode).toBe('hybrid');
       expect(body.hasEmbeddings).toBe(true);
       expect(body.items).toHaveLength(2);
+    });
+
+    // #1351: hybrid search silently ignored spaceKey the same way semantic
+    // did — this pins the route now forwards it to hybridSearch, which
+    // threads it to both the vector and keyword legs (see rag-service.test.ts).
+    it('#1351: hybrid mode forwards spaceKey to hybridSearch', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockHybridSearch.mockResolvedValue([]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=hybrid&spaceKey=DEV',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockHybridSearch).toHaveBeenCalledWith(
+        'test-user-id',
+        'test',
+        10,
+        { embeddedPages: 3, totalPages: 3, coverage: 1 },
+        { spaceKey: 'DEV' },
+      );
     });
 
     // ── Degraded-retrieval signal on the wire (#1117 stage 2) ────────────
@@ -826,6 +872,7 @@ describe('Search Routes', () => {
         'test',
         10,
         { embeddedPages: 3, totalPages: 3, coverage: 1 },
+        { spaceKey: undefined },
       );
     });
 

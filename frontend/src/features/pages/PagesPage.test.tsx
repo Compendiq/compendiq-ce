@@ -1133,8 +1133,15 @@ describe('PagesPage', () => {
   // "inactive" pill treatment (opacity-50 + aria-disabled on live, clickable
   // buttons) failed contrast and lied to assistive tech, since the buttons
   // were never actually disabled.
+  //
+  // #1351 later made the BACKEND actually honor spaceKey in semantic/hybrid
+  // mode (backend/src/domains/llm/services/rag-service.ts). The tests below
+  // were updated in the same change: Space still gets a pill and is still
+  // counted (it is still a real filter), but it is no longer named in the
+  // #945 notice, and its pill no longer points at that notice — naming it
+  // now would be the honesty bug in the opposite direction.
   describe('#945 harden pass — Space filter honesty, disclosure ARIA, and non-fake-disabled pills', () => {
-    it('the Space filter gets a pill, is counted, and is named in the notice once semantic search runs', async () => {
+    it('the Space filter gets a pill and is counted, but is NOT named in the notice — semantic search now honors it (#1351)', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
 
       await waitFor(() => expect(screen.getByRole('option', { name: 'Development' })).toBeInTheDocument());
@@ -1151,10 +1158,36 @@ describe('PagesPage', () => {
       fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
         target: { value: 'kubernetes' },
       });
+      await waitFor(() => expect(screen.getByPlaceholderText('Search pages...')).toHaveValue('kubernetes'));
+
+      // Space is the ONLY active filter, and the backend now applies it in
+      // semantic/hybrid mode too — no filter is genuinely ignored, so the
+      // notice must not appear at all.
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+      expect(pill).not.toHaveAttribute('aria-describedby');
+    });
+
+    it('Space stays out of the notice even when another, genuinely-ignored filter triggers it', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => expect(screen.getByRole('option', { name: 'Development' })).toBeInTheDocument());
+      fireEvent.change(screen.getByRole('combobox', { name: /filter by space/i }), { target: { value: 'DEV' } });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
 
       const notice = await screen.findByTestId('filters-ignored-notice');
-      expect(notice).toHaveTextContent('Space: Development');
-      expect(notice).toHaveTextContent('Semantic and hybrid search ignore your active filters');
+      expect(notice).toHaveTextContent('Freshness: Stale (>90 days)');
+      expect(notice).not.toHaveTextContent('Space: Development');
+
+      // The Space pill still doesn't point at a notice that isn't about it;
+      // the Freshness pill does.
+      expect(screen.getByTestId('filter-pill-space')).not.toHaveAttribute('aria-describedby');
+      expect(screen.getByTestId('filter-pill-freshness')).toHaveAttribute('aria-describedby', 'filters-ignored-notice');
     });
 
     it('removing the Space pill clears the space filter, and it resets the select', async () => {
@@ -1239,7 +1272,7 @@ describe('PagesPage', () => {
       expect(liveRegion).toHaveTextContent(/ignore your active filters/);
     });
 
-    it('summarizes more than 3 active filters in the notice instead of listing every label', async () => {
+    it('summarizes more than 3 genuinely-ignored filters, but never counts Space toward the truncation (#1351)', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       await waitFor(() => expect(screen.getByRole('option', { name: 'Development' })).toBeInTheDocument());
@@ -1247,6 +1280,7 @@ describe('PagesPage', () => {
       fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
       fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
       fireEvent.change(screen.getByTestId('filter-quality'), { target: { value: 'poor' } });
+      fireEvent.change(screen.getByTestId('filter-author'), { target: { value: 'Alice' } });
       expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
 
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
@@ -1254,8 +1288,13 @@ describe('PagesPage', () => {
         target: { value: 'kubernetes' },
       });
 
+      // Space is the 5th active filter overall, but it is honored — so the
+      // notice must summarize the 4 genuinely-ignored ones (freshness,
+      // embedding, quality, author) and truncate THOSE, never mentioning
+      // Space at all.
       const notice = await screen.findByTestId('filters-ignored-notice');
       expect(notice).toHaveTextContent('and 1 more');
+      expect(notice).not.toHaveTextContent('Space:');
     });
   });
 
