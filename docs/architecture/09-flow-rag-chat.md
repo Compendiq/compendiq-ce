@@ -1179,13 +1179,18 @@ resolve the pair the assignment WOULD produce
   (assignment model, else provider.default_model, else refuse)
   |
   v
-probeImageEmbedding(cfg, model)          <- BLOCKING, before the row is written
-  |  embedImagesVl(...)  the known 3-colour-band PNG
+read admin_settings.image_embedding_target_dimensions  (MRL width, or null)
+  |
+  v
+probeImageEmbedding(cfg, model, targetDimensions)  <- BLOCKING, before the row
+  |  embedImagesVl(...)  the known 3-colour-band PNG   is written
   |  embedTextsVl(...)   one text, VL_QUERY_INSTRUCTION
-  |  require: both widths equal, 1..16000
+  |  both carry `dimensions: targetDimensions` when one is configured
+  |  require: both widths equal, 1..16000, and == targetDimensions when set
   |
   +-- failure --> answer 422 with the CATEGORY, as prose AND as `reason`
-  |               (shape_rejected | unreachable | width_mismatch | unusable_width)
+  |               (shape_rejected | provider_error | unreachable |
+  |                width_mismatch | dimensions_ignored | unusable_width)
   |               write NO assignment row
   |               overwrite the stored probe ONLY when the refused pair IS the
   |                 live pair (else a refused CHANGE would replace a working
@@ -1193,17 +1198,18 @@ probeImageEmbedding(cfg, model)          <- BLOCKING, before the row is written
   |
   +-- success --> persist the probe
                   write the assignment row, with the RESOLVED model pinned
-                  ensureImageEmbeddingColumn(dims, { providerId, model, baseUrl })
-                    width or provider:model@baseUrl changed?
+                  ensureImageEmbeddingColumn(dims,
+                      { providerId, model, baseUrl, targetDimensions })
+                    width or provider:model@baseUrl#dims changed?
                       yes -> DROP INDEX; TRUNCATE; ALTER TYPE; CREATE INDEX;
-                             record dims + provider:model@baseUrl;
+                             record dims + provider:model@baseUrl#dims;
                              mark every non-folder page image_embedding_dirty
                       no  -> ensure the index exists, touch nothing else
                     it throws? -> 200 + imageIndexWarning naming Re-check
                                   (the row committed; a bare 500 would deny it)
 ```
 
-Seven things are load-bearing.
+Eight things are load-bearing.
 
 1. **`image_embedding` never inherits** (`resolveImageEmbeddingUsecase`;
    `resolveUsecase('image_embedding')` throws, exactly as it does for
@@ -1231,7 +1237,7 @@ Seven things are load-bearing.
    restarted the model server at a different width. A failed re-probe leaves the
    column alone: an unreachable endpoint is not evidence that the existing index
    is wrong.
-6. **The identity is `provider:model@baseUrl`, and the model is PINNED at
+6. **The identity is `provider:model@baseUrl#dims`, and the model is PINNED at
    assignment.** An assignment of `{provider, model: null}` re-resolves
    `provider.default_model` on every read, so leaving it unpinned let a
    `PATCH /admin/llm-providers/:id` repoint the live image model with no probe
@@ -1245,6 +1251,24 @@ Seven things are load-bearing.
    the panel's toast names the emptied index. A probe that established no width
    is announced as an error, not in the success treatment: it is a refusal or an
    outage, and ADR-010 reserves green for succeeded.
+8. **MRL truncation is a REQUEST parameter, so the app has to send it.**
+   `--hf-overrides '{"is_matryoshka": true}'` only makes vLLM *accept*
+   `dimensions`; there is no serve-time flag that changes the default output
+   width, so an 8B answers 4096 — pgvector's unindexed tier — until a client
+   asks for less. The number lives in
+   `admin_settings.image_embedding_target_dimensions` (Settings → AI Models →
+   Image embedding), and **one reader**
+   (`getImageEmbeddingTargetDimensions`) serves the probe, the column type,
+   the rebuild identity and — from P2 — the image embedder and the query side.
+   The probe both sends it and requires it back: a server that ignores the
+   parameter answers 200 at its native width, and recording that would type
+   the column for a space nothing else writes into (`dimensions_ignored`).
+   The category split also matters here: `shape_rejected` is the four statuses
+   that prove the server is reachable and refusing the request
+   (400/404/405/422, `VL_SHAPE_REFUSAL_STATUSES`), while 401/403/429 and 5xx
+   are `provider_error` — a vLLM still loading a model answers 503, and
+   telling that operator their server is the wrong kind is the opposite of the
+   remedy.
 
 ## Retrieval details
 

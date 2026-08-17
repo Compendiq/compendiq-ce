@@ -59,6 +59,8 @@ function renderSection() {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={() => {}}
       />
     </QueryClientProvider>,

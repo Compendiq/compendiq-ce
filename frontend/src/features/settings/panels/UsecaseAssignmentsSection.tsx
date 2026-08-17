@@ -41,6 +41,15 @@ interface Props {
   savedAssignments: UsecaseAssignments;
   providers: LlmProvider[];
   onChange: (next: UsecaseAssignments) => void;
+  /**
+   * #1115 — the image leg's MRL truncation width
+   * (`admin_settings.image_embedding_target_dimensions`). It is not a use-case
+   * assignment, so it rides through this section rather than living in it: the
+   * control belongs beside the row it changes, and the value belongs with the
+   * panel's Save, which writes it before re-probing the assignment.
+   */
+  imageTargetDimensions: number | null;
+  onImageTargetDimensionsChange: (next: number | null) => void;
 }
 
 export function UsecaseAssignmentsSection({
@@ -48,6 +57,8 @@ export function UsecaseAssignmentsSection({
   savedAssignments,
   providers,
   onChange,
+  imageTargetDimensions,
+  onImageTargetDimensionsChange,
 }: Props) {
   function update(u: LlmUsecase, patch: Partial<UsecaseAssignments[LlmUsecase]>) {
     onChange({ ...assignments, [u]: { ...assignments[u], ...patch } });
@@ -162,6 +173,8 @@ export function UsecaseAssignmentsSection({
             {u === 'image_embedding' && (
               <ImageEmbeddingCapability
                 assigned={savedAssignments[u]?.providerId != null}
+                targetDimensions={imageTargetDimensions}
+                onTargetDimensionsChange={onImageTargetDimensionsChange}
               />
             )}
           </div>

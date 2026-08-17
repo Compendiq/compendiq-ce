@@ -20,6 +20,13 @@
  *  - **The width**, because it picks the column type and the HNSW opclass
  *    (`ensureImageEmbeddingColumn`). The same probe-then-DDL pattern the text
  *    column already uses; nothing client-supplied is trusted.
+ *  - **The width the deployment ASKED for**, when
+ *    `admin_settings.image_embedding_target_dimensions` is set. MRL truncation
+ *    is a per-request parameter, so the probe sends it and requires the answer
+ *    to come back at exactly it: a server without
+ *    `--hf-overrides '{"is_matryoshka": true}'` either refuses the parameter or
+ *    ignores it, and an ignored one would type the column to the native width
+ *    while P2's embedder keeps asking for the truncated one.
  *
  * The probe image is the three-colour-band PNG `vision-probe.ts` already ships.
  * Its *content* does not matter here — no answer is being interpreted — but
@@ -31,7 +38,12 @@ import type { VectorColumnTier } from '../../../core/db/vector-column-tier.js';
 import { PROBE_IMAGE_BASE64 } from './vision-probe.js';
 import { PROBE_ERROR_MAX_CHARS } from './model-capabilities.js';
 import { LlmHttpError } from './llm-http-error.js';
-import { embedImagesVl, embedTextsVl, VL_QUERY_INSTRUCTION } from './vl-embedding-client.js';
+import {
+  embedImagesVl,
+  embedTextsVl,
+  VL_QUERY_INSTRUCTION,
+  VL_SHAPE_REFUSAL_STATUSES,
+} from './vl-embedding-client.js';
 import type { ProviderConfig } from './openai-compatible-client.js';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -44,13 +56,38 @@ export const IMAGE_EMBEDDING_PROBE_KEY = 'image_embedding_probe';
  * admin surfaces ever see (#1184's rule).
  */
 export type ImageProbeFailureReason =
-  /** The provider answered with an error status — wrong shape, wrong model, or a sick server. */
+  /**
+   * The provider answered with a status that proves it is reachable and simply
+   * does not accept this request: 400/404/405/422 — a plain text-embedding
+   * server's pydantic refusal of the `messages` body, or a chat-only server
+   * with no `/v1/embeddings` at all. **The wrong-kind-of-server verdict.**
+   */
   | 'shape_rejected'
-  /** No HTTP answer at all: unreachable host, open breaker, abort. */
+  /**
+   * The provider answered with an error that is NOT about the request's shape:
+   * 401/403 (credentials), 429 (rate limit), 5xx (a vLLM still loading the
+   * model, or the intermittent multimodal-cache crash `vllm#33865`).
+   *
+   * Split out in review round 2, and the distinction is the operator's next
+   * action: `shape_rejected` says "this server cannot serve the image leg —
+   * use another"; this one says "the server you have had a problem — look at
+   * it and try again". Folding a 503 into the first told an admin running
+   * exactly the right vLLM to abandon it.
+   */
+  | 'provider_error'
+  /** No HTTP answer at all: unreachable host, open breaker, abort, timeout. */
   | 'unreachable'
   /** Image and text came back at different widths — two spaces in one column. */
   | 'width_mismatch'
-  /** A width pgvector cannot hold. */
+  /**
+   * The endpoint ignored the requested MRL truncation and answered at a
+   * different width. Almost always a server started without
+   * `--hf-overrides '{"is_matryoshka": true}'`, which makes vLLM drop or refuse
+   * `dimensions` — and it must refuse, because the column would be typed to the
+   * width this probe measured while every later writer asks for another.
+   */
+  | 'dimensions_ignored'
+  /** A width pgvector cannot STORE (its columns hold at most 16000). */
   | 'unusable_width';
 
 export interface ImageEmbeddingProbeResult {
@@ -84,11 +121,30 @@ function truncate(error: string): string {
   return `${error.slice(0, PROBE_ERROR_MAX_CHARS - 1)}…`;
 }
 
+/**
+ * How long one probe call may take, queue wait included.
+ *
+ * An admin is watching a spinner, and the PUT that gates the assignment makes
+ * two of these sequentially — so the whole gate is bounded by twice this, not
+ * by `LLM_STREAM_TIMEOUT_MS` (300s) twice. Generous enough for a cold vLLM
+ * with a busy queue, because an image prompt is 10–25x a short text one.
+ */
+export const IMAGE_PROBE_TIMEOUT_MS = 60_000;
+
+/**
+ * Classify a thrown failure.
+ *
+ * The status split is the shared `VL_SHAPE_REFUSAL_STATUSES` set, not a second
+ * hand-written list: those four are exactly the statuses the client treats as
+ * proof that the provider is reachable and refusing the *request*, and the
+ * copy an admin reads must not describe a different boundary from the one the
+ * breaker uses.
+ */
 function describeFailure(err: unknown): { error: string; reason: ImageProbeFailureReason } {
   if (err instanceof LlmHttpError) {
     return {
       error: truncate(err.detail ? `${err.message}: ${err.detail}` : err.message),
-      reason: 'shape_rejected',
+      reason: VL_SHAPE_REFUSAL_STATUSES.has(err.status) ? 'shape_rejected' : 'provider_error',
     };
   }
   return {
@@ -104,14 +160,26 @@ function describeFailure(err: unknown): { error: string; reason: ImageProbeFailu
 export async function probeImageEmbedding(
   cfg: ProviderConfig,
   model: string,
+  targetDimensions: number | null = null,
 ): Promise<ImageEmbeddingProbeResult> {
+  // The truncation width is sent on BOTH calls, and the probe then insists the
+  // answers come back at it. That is the point of plumbing it here rather than
+  // only documenting it: the column is typed to what this probe measured, and
+  // P2's embedder and P3's query embed send the same
+  // `getImageEmbeddingTargetDimensions()` value — so a server that quietly
+  // ignores the parameter must be caught HERE, not discovered later as an
+  // insert against a column of the wrong width.
+  const opts = {
+    ...(targetDimensions !== null ? { dimensions: targetDimensions } : {}),
+    timeoutMs: IMAGE_PROBE_TIMEOUT_MS,
+  };
   let imageWidth: number;
   let textWidth: number;
   try {
     const [imageVector] = await embedImagesVl(cfg, model, [
       { bytes: Buffer.from(PROBE_IMAGE_BASE64, 'base64'), format: 'png' },
-    ]);
-    const [textVector] = await embedTextsVl(cfg, model, [PROBE_TEXT], VL_QUERY_INSTRUCTION);
+    ], opts);
+    const [textVector] = await embedTextsVl(cfg, model, [PROBE_TEXT], VL_QUERY_INSTRUCTION, opts);
     imageWidth = imageVector?.length ?? 0;
     textWidth = textVector?.length ?? 0;
   } catch (err) {
@@ -139,6 +207,19 @@ export async function probeImageEmbedding(
       tier: null,
       reason: 'unusable_width',
       error: `The endpoint returned ${imageWidth} dimensions; pgvector holds 1..${VECTOR_MAX_DIMS}.`,
+    };
+  }
+  // Asked for a truncation width and got something else: the server is
+  // ignoring `dimensions`. Refuse rather than record the width it happened to
+  // answer with — every later writer will keep asking for the configured one.
+  if (targetDimensions !== null && imageWidth !== targetDimensions) {
+    return {
+      dimensions: null,
+      tier: null,
+      reason: 'dimensions_ignored',
+      error:
+        `The endpoint was asked for ${targetDimensions} dimensions and returned ${imageWidth}. ` +
+        'It is not applying the `dimensions` (MRL) parameter.',
     };
   }
 

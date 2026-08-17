@@ -118,6 +118,10 @@ function mockRoutes(options?: {
   imageUnassigned?: boolean;
   /** #1115 — what `POST …/reprobe` answers with. */
   reprobeResult?: Record<string, unknown>;
+  /** #1115 — what `PUT /admin/llm-usecases` answers with on success. */
+  putResult?: Record<string, unknown>;
+  /** #1115 — the stored MRL truncation width in the settings document. */
+  imageTargetDimensions?: number | null;
 }) {
   lastImageProbe = null;
   const cap = options?.concurrentStreamsCap ?? 3;
@@ -127,6 +131,8 @@ function mockRoutes(options?: {
     embeddingChunkOverlap: 50,
     drawioEmbedUrl: null,
     llmMaxConcurrentStreamsPerUser: cap,
+    // #1115 — null on every instance that has not asked for MRL truncation.
+    imageEmbeddingTargetDimensions: options?.imageTargetDimensions ?? null,
   };
   if (options?.embeddingDimensions !== null) {
     settingsBody.embeddingDimensions = options?.embeddingDimensions ?? 1024;
@@ -164,7 +170,7 @@ function mockRoutes(options?: {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify(servedAssignments), {
+      return new Response(JSON.stringify(options?.putResult ?? servedAssignments), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -1100,6 +1106,206 @@ describe('LlmTab', () => {
     expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
       expect.stringContaining('12 pages were queued'),
     );
+  });
+
+  /**
+   * Review round 2 — the ONE surface that tells an admin the assignment saved
+   * but the image column was not retyped. Deleting the branch left the whole
+   * suite green, so the server's honest sentence was discarded and the admin
+   * saw the green "Use-case assignments saved" for a leg whose column is still
+   * at the previous width: exactly the misreport a bare 500 was rejected for.
+   */
+  it('warns instead of celebrating when the server could not retype the index', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      putResult: {
+        ok: true,
+        imageIndexWarning:
+          'The assignment was saved, but the image index could not be retyped — it is still at its previous width. Use Re-check on the Image embedding row to retry.',
+      },
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    vi.mocked(toast.success).mockClear();
+    vi.mocked(toast.warning).mockClear();
+    fireEvent.change(screen.getByTestId('usecase-image_embedding-provider'), {
+      target: { value: providerA.id },
+    });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(expect.stringMatching(/Re-check/i));
+    });
+    expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('previous width'),
+    );
+    // The green "saved" must not run beside it: the row landed and the leg is
+    // misconfigured behind it.
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+  });
+
+  // ── #1115 review round 2: the MRL truncation width ──────────────────────
+  //
+  // `dimensions` is a per-REQUEST parameter — the vLLM override only makes the
+  // server accept it — so the remedy the unindexed note names is only real if
+  // there is somewhere to put the number and something that sends it.
+
+  it('renders the truncation field, empty, with its caveat visible at rest', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    const field = (await screen.findByTestId(
+      'image-embedding-target-dimensions',
+    )) as HTMLInputElement;
+    expect(field.value).toBe('');
+    // Not a `title` (#1119's rule): the contract of the field is on screen.
+    const help = document.getElementById('image-embedding-target-dimensions-help');
+    expect(help?.textContent).toMatch(/native width/i);
+    expect(field.getAttribute('aria-describedby')).toBe('image-embedding-target-dimensions-help');
+  });
+
+  it('hydrates the truncation field from the stored setting', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({ imageTargetDimensions: 2048 });
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = (await screen.findByTestId(
+      'image-embedding-target-dimensions',
+    )) as HTMLInputElement;
+    await waitFor(() => expect(field.value).toBe('2048'));
+  });
+
+  /**
+   * The order is load-bearing: the width has to be stored BEFORE the
+   * assignment PUT, because that PUT re-probes and the probe sends this
+   * number. And the assignment has to be re-sent at all — otherwise the width
+   * lands in `admin_settings`, nothing re-probes, and the column keeps a type
+   * that no later writer will match.
+   */
+  it('saves the width first, then re-probes the saved assignment with it', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-target-dimensions');
+
+    fireEvent.change(screen.getByTestId('image-embedding-target-dimensions'), {
+      target: { value: '2048' },
+    });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      const puts = spy.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(puts).toHaveLength(2);
+    });
+    const puts = spy.mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PUT',
+    );
+    const urlOf = (c: unknown[]) =>
+      typeof c[0] === 'string' ? (c[0] as string) : (c[0] as URL).toString();
+    expect(urlOf(puts[0]!)).toMatch(/\/admin\/settings$/);
+    expect(JSON.parse((puts[0]![1] as RequestInit).body as string)).toEqual({
+      imageEmbeddingTargetDimensions: 2048,
+    });
+    expect(urlOf(puts[1]!)).toMatch(/\/admin\/llm-usecases$/);
+    // The saved provider, re-sent: a changed width IS a change to the leg, and
+    // the probe + column DDL hang off the assignment PUT.
+    expect(JSON.parse((puts[1]![1] as RequestInit).body as string)).toEqual({
+      image_embedding: { providerId: providerB.id },
+    });
+  });
+
+  it('clears the width with an explicit null when the field is emptied', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({ imageTargetDimensions: 2048 });
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = (await screen.findByTestId(
+      'image-embedding-target-dimensions',
+    )) as HTMLInputElement;
+    await waitFor(() => expect(field.value).toBe('2048'));
+
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      const settingsPut = spy.mock.calls.find(
+        ([input, init]) =>
+          (typeof input === 'string' ? input : (input as URL).toString()).endsWith(
+            '/admin/settings',
+          ) && (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(settingsPut).toBeTruthy();
+      expect(JSON.parse((settingsPut![1] as RequestInit).body as string)).toEqual({
+        imageEmbeddingTargetDimensions: null,
+      });
+    });
+  });
+
+  it('does not touch the settings route when the width was not edited', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({ imageTargetDimensions: 2048 });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-target-dimensions');
+
+    fireEvent.change(screen.getByTestId('usecase-summary-provider'), {
+      target: { value: providerB.id },
+    });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      expect(
+        spy.mock.calls.filter(
+          ([input, init]) =>
+            (typeof input === 'string' ? input : (input as URL).toString()).endsWith(
+              '/admin/llm-usecases',
+            ) && (init as RequestInit | undefined)?.method === 'PUT',
+        ),
+      ).toHaveLength(1);
+    });
+    expect(
+      spy.mock.calls.filter(
+        ([input, init]) =>
+          (typeof input === 'string' ? input : (input as URL).toString()).endsWith(
+            '/admin/settings',
+          ) && (init as RequestInit | undefined)?.method === 'PUT',
+      ),
+    ).toHaveLength(0);
+  });
+
+  /**
+   * Review round 2 — P1 types the column, builds the index and dirties every
+   * page, and then nothing happens until P2's worker exists. The description
+   * beside it says "for image search" and a successful Re-check says
+   * "confirmed"; both read as "assigned ⇒ it works". #1119's rule: the caveat
+   * is on screen, at rest.
+   */
+  it('says on screen that nothing is indexed yet in this release', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const row = await screen.findByTestId('usecase-row-image_embedding');
+    const note = within(row).getByTestId('image-embedding-inert-note');
+    expect(note.textContent).toMatch(/not indexed yet/i);
+    expect(note.textContent).toMatch(/later release/i);
+  });
+
+  /**
+   * The chip renders the PROBE, not the column — they diverge on the
+   * guarded-DDL branch above, where the assignment saves and the column keeps
+   * its previous width. Labelling it "Image index" made it assert a width the
+   * column does not have.
+   */
+  it('labels the probe chip as the last probe, not as the index', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const row = await screen.findByTestId('usecase-row-image_embedding');
+    await screen.findByTestId('image-embedding-probe-status');
+    expect(within(row).getByText('Last probe')).toBeTruthy();
+    expect(within(row).queryByText('Image index')).toBeNull();
   });
 
   it('surfaces the refusal reason when the probe blocks the assignment', async () => {

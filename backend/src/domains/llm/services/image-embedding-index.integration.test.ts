@@ -23,8 +23,10 @@ const PAIR = {
   providerId: '22222222-2222-4222-8222-222222222222',
   model: 'Qwen/Qwen3-VL-Embedding-2B',
   baseUrl: 'http://vllm-a:8000/v1',
+  /** No MRL truncation: the leg takes whatever the checkpoint answers with. */
+  targetDimensions: null,
 };
-const IDENTITY = `${PAIR.providerId}:${PAIR.model}@${PAIR.baseUrl}`;
+const IDENTITY = `${PAIR.providerId}:${PAIR.model}@${PAIR.baseUrl}#native`;
 
 async function liveColumn(): Promise<{ type: string; dims: number }> {
   const r = await query<{ type: string; dims: number }>(
@@ -149,7 +151,7 @@ describe.skipIf(!dbAvailable)('ensureImageEmbeddingColumn (#1115)', () => {
       expect(result.action).toBe('rebuilt');
       expect((await query(`SELECT 1 FROM page_image_embeddings`)).rows).toHaveLength(0);
       expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(
-        `${PAIR.providerId}:other-vl-model@${PAIR.baseUrl}`,
+        `${PAIR.providerId}:other-vl-model@${PAIR.baseUrl}#native`,
       );
       expect(result.dirtiedPages).toBe(1);
     });
@@ -182,6 +184,56 @@ describe.skipIf(!dbAvailable)('ensureImageEmbeddingColumn (#1115)', () => {
       expect(result.action).toBe('rebuilt');
       expect((await query(`SELECT 1 FROM page_image_embeddings`)).rows).toHaveLength(0);
       expect(result.dirtiedPages).toBe(1);
+    });
+  });
+
+  /**
+   * The MRL truncation width is the fourth part of the identity (#1115, review
+   * round 2). It is what every image-side call REQUESTS, so it describes the
+   * space even where the returned width alone would also have caught the move.
+   */
+  describe('the requested truncation width', () => {
+    it('types the column to the truncated width an 8B was asked for', async () => {
+      // The 8B's native answer is 4096 — pgvector's unindexed tier. With
+      // `image_embedding_target_dimensions = 2048` the probe asks for 2048,
+      // requires 2048 back, and the column follows THAT.
+      const result = await ensureImageEmbeddingColumn(2048, {
+        ...PAIR,
+        model: 'Qwen/Qwen3-VL-Embedding-8B',
+        targetDimensions: 2048,
+      });
+
+      expect(result).toMatchObject({ action: 'rebuilt', dimensions: 2048, tier: 'halfvec', indexed: true });
+      expect((await liveColumn()).type).toBe('halfvec(2048)');
+      expect(await hnswIndexDef()).toContain('halfvec_cosine_ops');
+      expect(await setting(IMAGE_EMBEDDING_DIMENSIONS_KEY)).toBe('2048');
+      expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(
+        `${PAIR.providerId}:Qwen/Qwen3-VL-Embedding-8B@${PAIR.baseUrl}#2048`,
+      );
+    });
+
+    it('rebuilds when only the requested width changed, at the same returned width', async () => {
+      const { pageId } = await seedPages();
+      await ensureImageEmbeddingColumn(2048, PAIR);
+      await insertVector(pageId, 2048);
+      await query(`UPDATE pages SET image_embedding_dirty = FALSE`);
+
+      // Same provider, same model, same URL, same returned width — but the
+      // deployment now truncates explicitly. A column type cannot tell the two
+      // apart, which is exactly why the request parameter is in the identity.
+      const result = await ensureImageEmbeddingColumn(2048, { ...PAIR, targetDimensions: 2048 });
+
+      expect(result.action).toBe('rebuilt');
+      expect((await query(`SELECT 1 FROM page_image_embeddings`)).rows).toHaveLength(0);
+      expect(result.dirtiedPages).toBe(1);
+      expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(`${IDENTITY.replace('#native', '#2048')}`);
+    });
+
+    it('re-saving the same truncation width costs nothing', async () => {
+      const pinned = { ...PAIR, targetDimensions: 2048 };
+      await ensureImageEmbeddingColumn(2048, pinned);
+      const result = await ensureImageEmbeddingColumn(2048, pinned);
+      expect(result).toMatchObject({ action: 'index_only', dirtiedPages: 0 });
     });
   });
 

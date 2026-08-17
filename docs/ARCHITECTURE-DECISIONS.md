@@ -1864,8 +1864,9 @@ optional composer control. Here the probe is **blocking** and a failure is a
 **422 that refuses the assignment**: a leg that cannot embed must not be
 assignable, and the failure it prevents is silent — the default text provider
 *answers* the request in the plain shape with a well-formed vector. The 422
-carries the failure **category** (`shape_rejected`, `unreachable`,
-`width_mismatch`, `unusable_width`), never the provider's body, which stays on
+carries the failure **category** (`shape_rejected`, `provider_error`,
+`unreachable`, `width_mismatch`, `dimensions_ignored`, `unusable_width`), never
+the provider's body, which stays on
 `GET /admin/llm-usecases/image_embedding/probe` beside
 `POST …/reprobe` — both `requireAdmin`, both mirroring the #1184 pair, and
 `UsecaseDefaultSchema` must never gain either. Clearing the assignment is not
@@ -2176,10 +2177,17 @@ model card's own guidance.
 **D5 — Default recommendation: Qwen3-VL-Embedding-2B at its native 2048, on the
 `halfvec` HNSW tier.** The 8B is allowed only with MRL truncation to
 `dimensions ≤ 4000`, because its native 4096 lands in pgvector's **unindexed**
-tier (HNSW caps at 2000 for `vector` and 4000 for `halfvec`) — and MRL on vLLM
-additionally needs `--hf-overrides '{"is_matryoshka": true}'`, since neither
-checkpoint declares the flag, plus client-side re-normalisation after
-truncation. Weights are 4.26 GB (2B) and 16.29 GB (8B) in bf16; production is an
+tier (HNSW caps at 2000 for `vector` and 4000 for `halfvec`). **That truncation
+is a request parameter, so P1 ships the knob that sends it** (review round 2):
+`--hf-overrides '{"is_matryoshka": true}'` only makes vLLM *accept*
+`dimensions` — neither checkpoint declares the flag, and no serve-time flag
+changes the default output width — so the width lives in
+`admin_settings.image_embedding_target_dimensions` (Settings → AI Models →
+Image embedding), is sent on **every** image-side call, and is verified by the
+probe, which refuses (`dimensions_ignored`) when the answer comes back at a
+different width. It is part of the rebuild identity for the same reason. The
+client re-normalises after truncation, because slicing a unit vector does not
+leave one and vLLM is not documented to re-normalise on every path. Weights are 4.26 GB (2B) and 16.29 GB (8B) in bf16; production is an
 **RTX 6000 96 GB Blackwell**, so **VRAM is not the constraint** and the choice
 is quality: the image eval measures both and the numbers decide. The truncation
 cost is small where it applies — the authors measure ~1.4% MRR@10 going from
@@ -2200,12 +2208,14 @@ exists because a text re-embed degrades live search for hours; here the leg is
 simply *disabled* while the index is empty, so text retrieval is untouched.
 Images are far cheaper to redo: only referenced files, content-addressed by
 sha256, and typically a handful per page. `ensureImageEmbeddingColumn(dims,
-{providerId, model, baseUrl})` is D7 in code: it rebuilds when the probed
-**width** differs from the live column **or** when the recorded
+{providerId, model, baseUrl, targetDimensions})` is D7 in code: it rebuilds when
+the probed **width** differs from the live column **or** when the recorded
 `admin_settings.image_embedding_index_model` differs from the newly assigned
-`provider:model@baseUrl` — the second half matters because two different models
-at the same width are two incompatible spaces that a column type cannot tell
-apart. The **base URL is part of that identity in its own right** (review round
+`provider:model@baseUrl#dims` — the second half matters because two different
+models at the same width are two incompatible spaces that a column type cannot
+tell apart. The `#dims` half is the **requested** MRL truncation width (D5): it
+is what every image-side call sends, so it belongs to the space's identity even
+in the cases where the returned width alone would also have caught the move. The **base URL is part of that identity in its own right** (review round
 1): `PATCH /admin/llm-providers/:id` moves a provider row's endpoint to a
 different container without changing its id, and one model NAME can mean two
 different checkpoints on two servers, so recording only `provider:model` kept

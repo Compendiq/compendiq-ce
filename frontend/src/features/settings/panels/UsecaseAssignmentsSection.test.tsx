@@ -79,6 +79,8 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -98,6 +100,8 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -116,6 +120,8 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -144,6 +150,8 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={onChange}
       />,
       { wrapper: Wrapper },
@@ -159,6 +167,8 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={updated}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={onChange}
       />,
       { wrapper: Wrapper },
@@ -178,6 +188,8 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },

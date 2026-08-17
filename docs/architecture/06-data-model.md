@@ -433,16 +433,19 @@ together, which matters most for #1114's query-side prefix.
     shadow path and the eval seeder), and **the migration ships no HNSW index at
     all** — the opclass is unknown until the probe answers. Assigning the
     `image_embedding` use case runs the probe and then
-    `ensureImageEmbeddingColumn(dims, {providerId, model})` (P1), which retypes
-    the column and creates `page_image_embeddings_embedding_hnsw_idx` under the
-    same bounded-lock DDL discipline as the shadow columns above. Above 4000
-    dimensions there is no index and the settings panel says so.
-    `admin_settings.image_embedding_dimensions` and
+    `ensureImageEmbeddingColumn(dims, {providerId, model, baseUrl,
+    targetDimensions})` (P1), which retypes the column and creates
+    `page_image_embeddings_embedding_hnsw_idx` under the same bounded-lock DDL
+    discipline as the shadow columns above. Above 4000 dimensions there is no
+    index and the settings panel says so — with the remedy beside it, since
+    `admin_settings.image_embedding_target_dimensions` is the MRL width the leg
+    *requests* (vLLM's `dimensions` is per-request, so nothing truncates unless
+    the client asks). `admin_settings.image_embedding_dimensions` and
     `…_index_model` record what the live index was built for.
   - **A model change here truncates and re-scans.** No shadow swap: the leg is
     disabled while the index is empty, so text retrieval is never degraded, and
     images are cheap to redo (content-addressed by `sha256`). The trigger is the
-    probed width **or** the recorded `provider:model@baseUrl` changing — two
+    probed width **or** the recorded `provider:model@baseUrl#dims` changing — two
     models at the same width are two incompatible spaces, and a column type
     cannot tell them apart; the base URL is there because a provider row's
     endpoint can move without its id changing, and the model is the *resolved*

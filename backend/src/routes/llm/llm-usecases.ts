@@ -25,6 +25,7 @@ import {
   type ImageProbeFailureReason,
 } from '../../domains/llm/services/image-embedding-probe.js';
 import { ensureImageEmbeddingColumn } from '../../domains/llm/services/image-embedding-index.js';
+import { getImageEmbeddingTargetDimensions } from '../../core/services/image-embedding-target-dimensions.js';
 import {
   warnThresholdOutlivedItsModel,
   type CalibrationPair,
@@ -84,13 +85,37 @@ const NO_IMAGE_EMBEDDING_PROVIDER =
 const PROBE_REFUSAL_MESSAGE: Record<ImageProbeFailureReason, string> = {
   shape_rejected:
     'This endpoint refused the request. Image embedding needs a server that accepts vLLM\'s chat-embeddings shape (a `messages` array) on /v1/embeddings — Ollama, LM Studio and TEI do not. The provider\'s own answer is in the backend log.',
+  // Review round 2: a 5xx from a correctly-served vLLM is a known transient
+  // event (`vllm#33865`, an intermittent multimodal-cache crash), and a model
+  // still loading answers 503. Reporting either as "this server does not speak
+  // the shape" told an admin running exactly the right endpoint to abandon it.
+  provider_error:
+    'The provider answered with an error rather than a vector. That is not a verdict about the request shape — check the credentials, the rate limit, and that the model has finished loading, then try again. The provider\'s own answer is in the backend log.',
   unreachable:
-    'The provider could not be reached for the probe. Check the base URL, the credentials and that the model server is running, then try again.',
+    'The provider could not be reached, or did not answer within the probe\'s time budget. Check the base URL, the credentials and that the model server is running, then try again.',
   width_mismatch:
     'This endpoint returned different vector widths for an image and for a text, so image and text vectors would not be comparable. It is likely applying the chat template to only one of the two.',
+  // Review round 2: this fires only above pgvector's COLUMN ceiling (16000).
+  // It used to name indexability and 4000 — a different limit, and one the
+  // product deliberately accepts: 4001..16000 is the unindexed tier, saved with
+  // a note on the row rather than refused.
   unusable_width:
-    'This endpoint returned a vector width Postgres cannot index. Serve the model at 4000 dimensions or fewer (its `dimensions` / MRL parameter).',
+    'This endpoint returned a vector width Postgres cannot store — a pgvector column holds at most 16000 dimensions.',
+  dimensions_ignored:
+    'This endpoint ignored the truncation width configured for image embedding and answered at a different one. Start vLLM with `--hf-overrides \'{"is_matryoshka": true}\'` so it applies the `dimensions` (MRL) parameter, or clear the truncation width to use the model\'s native size.',
 };
+
+/**
+ * Appended to `shape_rejected` when a truncation width is configured. vLLM
+ * *refuses* the `dimensions` parameter outright for a checkpoint it does not
+ * recognise as Matryoshka — and neither Qwen3-VL-Embedding config declares the
+ * flag — so "the server refused the request shape" and "the server refused the
+ * one extra field we added" are the same status from the same endpoint. The
+ * sentence is conditional because on a deployment with no truncation width it
+ * would send the operator hunting for a parameter nobody sent.
+ */
+const MRL_REFUSAL_HINT =
+  ' A truncation width is configured for image embedding, and vLLM refuses the `dimensions` parameter unless it was started with `--hf-overrides \'{"is_matryoshka": true}\'`.';
 
 /**
  * #1114 — the two use cases whose model sets the scale a confidence threshold
@@ -243,7 +268,13 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       // simply goes off (`resolveImageEmbeddingUsecase` answers null).
       const imagePatch = updates.image_embedding;
       let imageAssignment:
-        | { providerId: string; model: string; baseUrl: string; probe: ImageEmbeddingProbeResult }
+        | {
+            providerId: string;
+            model: string;
+            baseUrl: string;
+            targetDimensions: number | null;
+            probe: ImageEmbeddingProbeResult;
+          }
         | null = null;
       if (
         imagePatch
@@ -283,7 +314,12 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
               statusCode: 422,
             });
           }
-          const probe = await probeImageEmbedding(cfg, model);
+          // The MRL truncation width every image-side call sends. Read here so
+          // the probe MEASURES the same request P2's embedder and P3's query
+          // embed will make — a probe at the native width and a writer at a
+          // truncated one would fill a column typed for the wrong space.
+          const targetDimensions = await getImageEmbeddingTargetDimensions();
+          const probe = await probeImageEmbedding(cfg, model, targetDimensions);
           // A FAILED probe of a pair that is not the live one must not
           // overwrite the record — the assignment is being refused, so the live
           // leg is unchanged, and clobbering its stored verdict would replace a
@@ -302,12 +338,22 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
             // what a client needs to branch on. It is deliberately the only
             // machine-readable half of this answer.
             return reply.code(422).send({
-              error: PROBE_REFUSAL_MESSAGE[probe.reason],
+              error:
+                PROBE_REFUSAL_MESSAGE[probe.reason]
+                + (probe.reason === 'shape_rejected' && targetDimensions !== null
+                  ? MRL_REFUSAL_HINT
+                  : ''),
               reason: probe.reason,
               statusCode: 422,
             });
           }
-          imageAssignment = { providerId: nextProviderId, model, baseUrl: cfg.baseUrl, probe };
+          imageAssignment = {
+            providerId: nextProviderId,
+            model,
+            baseUrl: cfg.baseUrl,
+            targetDimensions,
+            probe,
+          };
         }
       }
 
@@ -392,6 +438,7 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
             providerId: imageAssignment.providerId,
             model: imageAssignment.model,
             baseUrl: imageAssignment.baseUrl,
+            targetDimensions: imageAssignment.targetDimensions,
           });
         } catch (err) {
           logger.error(
@@ -581,7 +628,11 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       const resolved = await resolveImageEmbeddingUsecase().catch(() => null);
       if (!resolved) return reply.code(404).send({ error: NO_IMAGE_EMBEDDING_PROVIDER });
 
-      const probe = await probeImageEmbedding(resolved.config, resolved.model);
+      // Same setting the assignment PUT reads, for the same reason: Re-check is
+      // the remedy after the truncation width changed, so it has to probe with
+      // the width the leg will actually send.
+      const targetDimensions = await getImageEmbeddingTargetDimensions();
+      const probe = await probeImageEmbedding(resolved.config, resolved.model, targetDimensions);
       await persistImageEmbeddingProbe(resolved.config.providerId, resolved.model, probe);
       // What the DDL actually did travels back to the caller (review round 1).
       // "Re-check" reads as diagnostic, and on a width or endpoint change it is
@@ -598,6 +649,7 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
           providerId: resolved.config.providerId,
           model: resolved.model,
           baseUrl: resolved.config.baseUrl,
+          targetDimensions,
         });
       }
       emitLlmAudit({

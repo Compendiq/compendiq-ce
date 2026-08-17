@@ -27,7 +27,18 @@ import { formatRelativeTime } from '../../../shared/lib/format-relative-time';
  *     *words* carry the warning.
  *  3. **The tier is stated as a measurement, not a status.** `2048-dim ·
  *     halfvec HNSW` is a fact about the column, in the same neutral treatment
- *     `QualityScoreBadge` and `FreshnessBadge` settled on.
+ *     `QualityScoreBadge` and `FreshnessBadge` settled on. It is labelled
+ *     **Last probe**, not "Image index" (review round 2): it is sourced from
+ *     `GET …/probe`, which answers what the MODEL returned. The two diverge on
+ *     the branch this feature deliberately has — a saved assignment whose
+ *     column DDL failed answers 200 with a warning and leaves the column at its
+ *     previous width — and a chip claiming to describe the index would then
+ *     state a width the column does not have.
+ *  4. **P1 indexes nothing, and says so.** Assigning the leg types the column,
+ *     builds the index and dirties every page — and then nothing happens, until
+ *     P2's worker exists. That sentence lived only in the PR body, ADR-025 and
+ *     the runbook; the panel an admin actually reads carries it too. Delete it
+ *     in P2/P3.
  */
 
 const PROBE_QUERY_KEY = ['llm-usecases', 'image_embedding', 'probe'] as const;
@@ -43,6 +54,19 @@ export const IMAGE_EMBEDDING_DESCRIPTION =
  */
 export const IMAGE_EMBEDDING_SUPPORT_NOTE =
   "Needs an endpoint that accepts vLLM's chat-template embeddings shape — Ollama, LM Studio and TEI do not.";
+
+/**
+ * What assigning the leg does *today*, in one sentence (review round 2).
+ *
+ * The description above reads "…for image search", and a successful Re-check
+ * says "confirmed at N dimensions" — both of which promise a working feature.
+ * In this release the assignment types the column, builds its index and marks
+ * every page for a re-scan that no worker consumes yet. #1119's rule: the
+ * caveat belongs on screen, at rest, not in a `title` and not only in a
+ * runbook.
+ */
+export const IMAGE_EMBEDDING_INERT_NOTE =
+  'Page images are not indexed yet in this release — assigning prepares the index and proves the endpoint; indexing and image search arrive in a later release.';
 
 const TIER_LABEL: Record<NonNullable<ImageEmbeddingProbe['tier']>, string> = {
   vector: 'vector HNSW',
@@ -71,7 +95,23 @@ const RESULT_MESSAGE = {
   failed: 'The endpoint refused the probe. See why this verdict below.',
 };
 
-export function ImageEmbeddingCapability({ assigned }: { assigned: boolean }) {
+export function ImageEmbeddingCapability({
+  assigned,
+  targetDimensions,
+  onTargetDimensionsChange,
+}: {
+  assigned: boolean;
+  /**
+   * `admin_settings.image_embedding_target_dimensions`, the MRL truncation
+   * width every image-side call requests — null for the model's native width.
+   *
+   * Owned by `LlmTab` rather than by this strip, because it is saved by the
+   * panel's one Save button: the width has to land BEFORE the assignment PUT
+   * re-probes, or the probe measures a request the leg will no longer make.
+   */
+  targetDimensions: number | null;
+  onTargetDimensionsChange: (next: number | null) => void;
+}) {
   const qc = useQueryClient();
 
   // Prefix-matched by LlmTab's post-save `invalidateQueries(['llm-usecases'])`,
@@ -115,10 +155,64 @@ export function ImageEmbeddingCapability({ assigned }: { assigned: boolean }) {
         <p className="text-muted-foreground text-xs" data-testid="image-embedding-support-note">
           {IMAGE_EMBEDDING_SUPPORT_NOTE}
         </p>
+        <p className="text-muted-foreground text-xs" data-testid="image-embedding-inert-note">
+          {IMAGE_EMBEDDING_INERT_NOTE}
+        </p>
+
+        {/*
+          The MRL truncation width. Always rendered, assigned or not: an 8B is
+          only assignable at all once this is set, so it cannot sit behind the
+          assignment it gates. Muted helper text, wired with `aria-describedby`
+          — the same rule as the Deep Search caveat (#1119), because "leave
+          empty to use the native width" is the whole contract of the field.
+        */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5">
+          <label htmlFor="image-embedding-target-dimensions" className="text-xs">
+            Truncate to N dimensions (MRL)
+          </label>
+          <input
+            id="image-embedding-target-dimensions"
+            data-testid="image-embedding-target-dimensions"
+            type="number"
+            inputMode="numeric"
+            min={64}
+            max={16000}
+            placeholder="native"
+            className="nm-input w-28 font-mono text-xs"
+            aria-describedby="image-embedding-target-dimensions-help"
+            value={targetDimensions ?? ''}
+            onChange={(e) => {
+              const raw = e.target.value.trim();
+              if (raw === '') {
+                onTargetDimensionsChange(null);
+                return;
+              }
+              const parsed = Number(raw);
+              onTargetDimensionsChange(Number.isFinite(parsed) ? Math.trunc(parsed) : null);
+            }}
+          />
+          <p
+            id="image-embedding-target-dimensions-help"
+            className="text-muted-foreground basis-full text-xs"
+          >
+            Sent as the <code>dimensions</code> parameter on every image-embedding request. Leave
+            empty to use the model&rsquo;s native width; the 8B needs 4000 or fewer to stay indexed.
+            The server must accept it (vLLM: <code>--hf-overrides</code>{' '}
+            <code>{'{"is_matryoshka": true}'}</code>), and changing it re-probes and rebuilds the
+            index on the next save.
+          </p>
+        </div>
 
         {assigned && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
-            <span className="text-muted-foreground">Image index</span>
+            {/*
+              "Last probe", not "Image index": this is what the MODEL answered,
+              not what `page_image_embeddings.embedding` is typed to. They
+              diverge on the guarded-DDL branch — a save whose ALTER failed
+              answers 200 with a warning and leaves the column at its previous
+              width — and the honest label is the one that names its source.
+            */}
+            <span className="text-muted-foreground">Last probe</span>
             <span
               data-testid="image-embedding-probe-status"
               className="border-border text-foreground rounded border px-1.5 py-0.5 font-mono"
@@ -171,8 +265,8 @@ export function ImageEmbeddingCapability({ assigned }: { assigned: boolean }) {
         {probe?.tier === 'unindexed' && (
           <p className="text-muted-foreground text-xs" data-testid="image-embedding-unindexed-note">
             Above 4000 dimensions pgvector cannot build an HNSW index, so image search reads the
-            whole table. Serve the model at 4000 dimensions or fewer — its <code>dimensions</code>{' '}
-            (MRL) parameter — to keep the index.
+            whole table. Set the truncation width above to 4000 or fewer, then save, to keep the
+            index — or pick a checkpoint whose native width is already there (the 2B at 2048).
           </p>
         )}
 

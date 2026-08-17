@@ -111,9 +111,44 @@ export interface VlEmbedOptions {
    * pass `--hf-overrides '{"is_matryoshka": true}'` (see
    * `docs/runbooks/image-index.md`). Omitted from the body entirely when unset,
    * so a server without the override is not refused by default.
+   *
+   * It is a **per-request** parameter, which is the whole reason
+   * `admin_settings.image_embedding_target_dimensions` exists: the override
+   * only makes the server *accept* it, so an 8B stays at its native 4096 until
+   * a caller asks for less. Every caller reads that one setting
+   * (`getImageEmbeddingTargetDimensions`) — the probe, P2's embedder and P3's
+   * query embed — or the column is typed to one width and filled from another.
    */
   dimensions?: number;
+  /**
+   * Hard latency budget covering QUEUE WAIT plus the request, exactly as
+   * `RerankOptions.timeoutMs` does and for the same reason (#1267 review B3).
+   * The signal starts at call time, so a backlogged queue spends the budget
+   * waiting and the request aborts on admission instead of running anyway.
+   *
+   * It matters more here than there: `probeImageEmbedding` is BLOCKING on the
+   * assignment PUT and makes two sequential calls, so without a deadline an
+   * endpoint that accepts the connection and never answers holds two global
+   * `LLM_CONCURRENCY` slots for the queue's own 300s timeout each while an
+   * admin watches a spinner. An abort also counts as a breaker failure, which
+   * is the feedback loop that turns a persistently dead endpoint off.
+   */
+  timeoutMs?: number;
 }
+
+/**
+ * Statuses that prove the provider is REACHABLE and merely refused this
+ * request's shape — so they must not count against the per-provider breaker
+ * (#867's rule, and `rerank-client.ts`'s set plus 422).
+ *
+ * Exported because `image-embedding-probe.ts` classifies its failure category
+ * on exactly this boundary: inside the set is "this server does not speak the
+ * chat-embeddings shape" (`shape_rejected`), outside it is "the server had a
+ * problem" (`provider_error`) — an auth failure, a rate limit, or a vLLM that
+ * is still loading the model. Two definitions of that boundary would let the
+ * copy an admin reads drift from the breaker behaviour it describes.
+ */
+export const VL_SHAPE_REFUSAL_STATUSES: ReadonlySet<number> = new Set([400, 404, 405, 422]);
 
 type ContentPart =
   | { type: 'text'; text: string }
@@ -206,6 +241,9 @@ async function embedOne(
   opts?: VlEmbedOptions,
 ): Promise<number[]> {
   const body = buildBody(model, instruction, userParts, opts);
+  // Created BEFORE `enqueue` so the budget covers queue wait, not only the
+  // request — the rerank client's rule (see `VlEmbedOptions.timeoutMs`).
+  const deadline = opts?.timeoutMs != null ? AbortSignal.timeout(opts.timeoutMs) : undefined;
   return withSpan(
     'llm.vl_embeddings',
     () =>
@@ -216,7 +254,7 @@ async function embedOne(
             headers: providerRequestInfra.headers(cfg),
             body: JSON.stringify(body),
             dispatcher: providerRequestInfra.dispatcherFor(cfg),
-            signal,
+            signal: deadline ? AbortSignal.any([signal, deadline]) : signal,
           });
           if (!res.ok) {
             // Same rule as `generateEmbedding` (#867) and `rerank-client.ts`
@@ -233,8 +271,7 @@ async function embedOne(
             // breaker — so counting them would let three fumbled probes against
             // the default provider open it and 503 every user's chat. Timeouts
             // and 5xx still count.
-            const deterministic =
-              res.status === 400 || res.status === 404 || res.status === 405 || res.status === 422;
+            const deterministic = VL_SHAPE_REFUSAL_STATUSES.has(res.status);
             throw new LlmHttpError(
               'vlEmbedding', res.status, await providerRequestInfra.errorDetail(res),
               deterministic,

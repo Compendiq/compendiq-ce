@@ -279,6 +279,53 @@ describe('MRL truncation and unit norm', () => {
   });
 });
 
+/**
+ * The deadline `rerank-client.ts` already carries, for the reason its own
+ * `RerankOptions.timeoutMs` doc gives — sharper here, because
+ * `probeImageEmbedding` BLOCKS an admin's assignment PUT and makes two of these
+ * calls in sequence. Without it, an endpoint that accepts the connection and
+ * never answers holds a global `LLM_CONCURRENCY` slot for the queue's own 300s
+ * timeout, twice, while the admin watches a spinner and no Fastify
+ * `requestTimeout` is configured to cut it short.
+ */
+describe('the per-call deadline', () => {
+  it('aborts a call against an endpoint that never answers', async () => {
+    // Its own server: this one is deliberately left hanging, and the shared
+    // one is reused by every case above.
+    const stalled = createServer(() => {
+      /* accepts the request and never writes a response */
+    });
+    await new Promise<void>((r) => stalled.listen(0, '127.0.0.1', r));
+    const { port } = stalled.address() as AddressInfo;
+    const startedAt = Date.now();
+    try {
+      await expect(
+        embedTextsVl(
+          { ...cfg(), baseUrl: `http://127.0.0.1:${port}/v1` },
+          'm',
+          ['q'],
+          VL_QUERY_INSTRUCTION,
+          { timeoutMs: 150 },
+        ),
+      ).rejects.toThrow();
+      // Without the option plumbed through, this call runs to the queue's own
+      // 300s timeout and the assertion above is never reached.
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+    } finally {
+      stalled.closeAllConnections();
+      await new Promise<void>((r) => stalled.close(() => r()));
+    }
+  }, 10_000);
+
+  it('sends no deadline when none is asked for', async () => {
+    // The budget is the caller's decision — a batch writer and an admin's
+    // blocking probe do not want the same one, and a default here would make
+    // the wrong one invisible.
+    await embedTextsVl(cfg(), 'm', ['q'], VL_QUERY_INSTRUCTION);
+    expect(bodies).toHaveLength(1);
+  });
+});
+
 describe('error mapping', () => {
   it('throws a typed LlmHttpError carrying the provider body', async () => {
     responder = (res) => {

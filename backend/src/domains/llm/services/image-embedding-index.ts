@@ -17,15 +17,20 @@
  * addressed skip by sha256, and only referenced images). Building a second
  * shadow apparatus for that would be cost without a benefit.
  *
- * **The identity that triggers a rebuild is `provider + model + base URL`, not
- * width.** Two different models at the same width produce two incompatible
- * vector spaces, and a column type cannot tell them apart. The base URL is in
- * it — spelled out rather than implied by the provider id — because ADR-025 D12
- * makes the served vLLM version a re-index event (upstream preprocessing
- * diverges by ~0.92 cosine between paths, `vllm#33204`), and because one model
- * NAME can mean two different checkpoints on two different servers. Recording
- * only `providerId:model` let an operator move a provider row's `base_url` to a
- * different container and keep the old index (review round 1).
+ * **The identity that triggers a rebuild is `provider + model + base URL +
+ * requested width`, not the returned width.** Two different models at the same
+ * width produce two incompatible vector spaces, and a column type cannot tell
+ * them apart. The base URL is in it — spelled out rather than implied by the
+ * provider id — because ADR-025 D12 makes the served vLLM version a re-index
+ * event (upstream preprocessing diverges by ~0.92 cosine between paths,
+ * `vllm#33204`), and because one model NAME can mean two different checkpoints
+ * on two different servers. Recording only `providerId:model` let an operator
+ * move a provider row's `base_url` to a different container and keep the old
+ * index (review round 1). The MRL truncation width
+ * (`admin_settings.image_embedding_target_dimensions`) is the fourth part
+ * (review round 2): it is what the leg REQUESTS on every call, so it belongs to
+ * the space's identity even in the cases where the returned width alone would
+ * have caught the change.
  *
  * `model` is likewise the RESOLVED model, and the assignment route pins it into
  * `llm_usecase_assignments.model` at probe time for the same reason: an
@@ -55,6 +60,15 @@ export interface ImageIndexPair {
   model: string;
   /** The provider's `base_url` as the leg will call it. Part of the identity. */
   baseUrl: string;
+  /**
+   * The MRL truncation width every image-side call requests
+   * (`admin_settings.image_embedding_target_dimensions`), or null for the
+   * model's native width. Part of the identity in its own right: the same
+   * checkpoint at the same URL truncated to 2048 and left at 4096 are two
+   * different spaces, and the request parameter — not only the width that came
+   * back — is what produced the vectors in the column.
+   */
+  targetDimensions: number | null;
 }
 
 export interface EnsureImageIndexResult {
@@ -68,7 +82,7 @@ export interface EnsureImageIndexResult {
 }
 
 function identityOf(pair: ImageIndexPair): string {
-  return `${pair.providerId}:${pair.model}@${pair.baseUrl}`;
+  return `${pair.providerId}:${pair.model}@${pair.baseUrl}#${pair.targetDimensions ?? 'native'}`;
 }
 
 /**
@@ -118,7 +132,7 @@ export async function ensureImageEmbeddingColumn(
   if (!opclass) {
     logger.warn(
       { dimensions, model: pair.model },
-      'Image embedding width exceeds pgvector\'s HNSW limit on halfvec (4000) — no index will be built, so image retrieval falls back to a sequential scan. Use the model\'s MRL `dimensions` parameter to stay at or below 4000.',
+      'Image embedding width exceeds pgvector\'s HNSW limit on halfvec (4000) — no index will be built, so image retrieval falls back to a sequential scan. Set admin_settings.image_embedding_target_dimensions to 4000 or less — the truncation field on the Image embedding row in Settings → AI Models — to have the leg request MRL truncation.',
     );
   }
 

@@ -37,6 +37,7 @@ import {
   IMAGE_EMBEDDING_INDEX_MODEL_KEY,
   IMAGE_EMBEDDING_HNSW_INDEX,
 } from '../../domains/llm/services/image-embedding-index.js';
+import { persistImageEmbeddingProbe } from '../../domains/llm/services/image-embedding-probe.js';
 import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
 
 /**
@@ -66,7 +67,16 @@ let goodUrl: string;
 /** Refuses `messages`, as a plain text-embedding server does. */
 let badServer: Server;
 let badUrl: string;
+/** Answers 503, as a vLLM still loading its model does. */
+let sickServer: Server;
+let sickUrl: string;
 let width = 1024;
+/**
+ * Whether `goodServer` applies the MRL `dimensions` parameter — i.e. whether it
+ * was started with `--hf-overrides '{"is_matryoshka": true}'`. False models the
+ * server that quietly answers at its native width instead.
+ */
+let honoursDimensions = true;
 
 beforeAll(async () => {
   if (!dbAvailable) return;
@@ -74,16 +84,29 @@ beforeAll(async () => {
     let raw = '';
     req.on('data', (c) => (raw += c));
     req.on('end', () => {
-      const body = JSON.parse(raw) as { messages?: unknown };
+      const body = JSON.parse(raw) as { messages?: unknown; dimensions?: number };
       if (!Array.isArray(body.messages)) {
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: 'expected messages' }));
         return;
       }
-      const v = new Array<number>(width).fill(0);
+      // MRL truncation is a per-REQUEST parameter, so a server that applies it
+      // answers at the requested width and one without the override answers at
+      // its native one. Both are 200s, which is why the probe has to compare.
+      const answered = honoursDimensions && body.dimensions !== undefined ? body.dimensions : width;
+      const v = new Array<number>(answered).fill(0);
       v[0] = 1;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ data: [{ embedding: v }] }));
+    });
+  });
+  sickServer = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      void raw;
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'the model is still loading' }));
     });
   });
   badServer = createServer((req, res) => {
@@ -96,8 +119,10 @@ beforeAll(async () => {
   });
   await new Promise<void>((r) => goodServer.listen(0, '127.0.0.1', r));
   await new Promise<void>((r) => badServer.listen(0, '127.0.0.1', r));
+  await new Promise<void>((r) => sickServer.listen(0, '127.0.0.1', r));
   goodUrl = `http://127.0.0.1:${(goodServer.address() as AddressInfo).port}/v1`;
   badUrl = `http://127.0.0.1:${(badServer.address() as AddressInfo).port}/v1`;
+  sickUrl = `http://127.0.0.1:${(sickServer.address() as AddressInfo).port}/v1`;
 
   await setupTestDb();
   app = await buildApp();
@@ -114,15 +139,29 @@ afterAll(async () => {
   await teardownTestDb();
   await new Promise<void>((r) => goodServer.close(() => r()));
   await new Promise<void>((r) => badServer.close(() => r()));
+  await new Promise<void>((r) => sickServer.close(() => r()));
 });
 
 beforeEach(async () => {
   if (!dbAvailable) return;
   width = 1024;
+  honoursDimensions = true;
   await truncateAllTables();
   await bumpProviderCacheVersion();
   await query(`DROP INDEX IF EXISTS ${IMAGE_EMBEDDING_HNSW_INDEX}`);
   await query(`ALTER TABLE page_image_embeddings ALTER COLUMN embedding TYPE vector(2048)`);
+
+  // `@fastify/rate-limit` buckets per route per IP, and `app.inject` is one
+  // IP — so the admin default of 20/minute is a budget shared by every case in
+  // this file that PUTs the assignment. It ran out as the suite grew (review
+  // round 2 added five more), which shows up as an unrelated-looking 429 in
+  // whichever test happens to be 21st. Raising it is a test-environment fact,
+  // not a production one: `getRateLimits` caches for 60s, and re-inserting the
+  // row on every case keeps it true across a refresh.
+  await query(
+    `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('rate_limit_admin_max', '10000')
+     ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value`,
+  );
 
   const admin = await query<{ id: string }>(
     `INSERT INTO users (username, password_hash, role) VALUES ('ie_admin','h','admin') RETURNING id`,
@@ -174,7 +213,7 @@ describe.skipIf(!dbAvailable)('PUT /api/admin/llm-usecases — image_embedding i
     expect(type.rows[0]!.type).toBe('vector(1024)');
     expect(await setting(IMAGE_EMBEDDING_DIMENSIONS_KEY)).toBe('1024');
     expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(
-      `${id}:Qwen/Qwen3-VL-Embedding-2B@${goodUrl}`,
+      `${id}:Qwen/Qwen3-VL-Embedding-2B@${goodUrl}#native`,
     );
 
     const idx = await query(
@@ -359,6 +398,39 @@ describe.skipIf(!dbAvailable)('PUT /api/admin/llm-usecases — image_embedding i
   });
 
   /**
+   * The other half of `if (!probe.reason || samePairAsLive)` (review round 2:
+   * only the not-same-pair branch was pinned — `samePairAsLive && false` kept
+   * the suite green).
+   *
+   * When the pair being refused IS the live one, the stored verdict MUST be
+   * overwritten: the endpoint the panel is describing has started failing, and
+   * leaving the old record there means the row keeps advertising a width that
+   * endpoint no longer answers with, with the disclosure showing nothing about
+   * why.
+   */
+  it('a failed re-save of the LIVE pair replaces its stored verdict', async () => {
+    const id = await seedProvider('vlbox-live-fail', goodUrl, 'vl-2b');
+    expect((await put({ image_embedding: { providerId: id } })).statusCode).toBe(200);
+
+    // The same provider row now points at a server that refuses the shape —
+    // the container was replaced, or the model server was swapped out.
+    await query(`UPDATE llm_providers SET base_url = $1 WHERE id = $2`, [badUrl, id]);
+    await bumpProviderCacheVersion();
+
+    const refused = await put({ image_embedding: { providerId: id } });
+    expect(refused.statusCode).toBe(422);
+
+    const r = await app.inject({
+      method: 'GET', url: '/api/admin/llm-usecases/image_embedding/probe',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.json()).toMatchObject({ providerId: id, model: 'vl-2b', dimensions: null, tier: null });
+    // …and the provider's own body is there, on the admin-only route, which is
+    // the disclosure the 422's prose deliberately does not point at.
+    expect((r.json() as { error: string }).error).toContain('Extra inputs are not permitted');
+  });
+
+  /**
    * Review round 1: the DDL runs AFTER the assignment transaction commits and
    * used to be unguarded, so a failed `ALTER` produced a bare HTTP 500 for a
    * request whose row really did save — the panel then showed the leg as
@@ -389,6 +461,78 @@ describe.skipIf(!dbAvailable)('PUT /api/admin/llm-usecases — image_embedding i
     } finally {
       await query(`DROP VIEW IF EXISTS image_embedding_blocker`);
     }
+  });
+
+  /**
+   * Review round 2 — a 5xx is not a verdict about the request's shape.
+   *
+   * `vllm#33865` is an open report of intermittent 5xx from exactly this
+   * endpoint, and a vLLM that has not finished loading answers 503. Because the
+   * probe GATES the assignment, reporting either as "this server does not speak
+   * the chat-embeddings shape — Ollama, LM Studio and TEI do not" told an admin
+   * running precisely the right server to go and find another one.
+   */
+  it('refuses a 5xx as a provider error, not as a wrong-shape verdict', async () => {
+    const id = await seedProvider('vlbox-sick', sickUrl, 'vl-2b');
+    const res = await put({ image_embedding: { providerId: id } });
+    expect(res.statusCode).toBe(422);
+    const body = res.json() as { error: string; reason: string };
+    expect(body.reason).toBe('provider_error');
+    expect(body.error).toMatch(/try again/i);
+    // The remedy must not be "your server is the wrong kind".
+    expect(body.error).not.toMatch(/Ollama, LM Studio and TEI/i);
+  });
+
+  // ── #1115 review round 2: the MRL truncation width ──────────────────────
+  //
+  // `dimensions` is a per-REQUEST parameter — `--hf-overrides
+  // '{"is_matryoshka": true}'` only makes vLLM accept it, and there is no
+  // serve-time flag that changes the default output width. So the remedy the
+  // settings row, the 422 and the runbook all name is only real if the app
+  // SENDS the parameter. It reads one setting, and the probe, the column type
+  // and (from P2) every writer use the same value.
+
+  it('sends the configured truncation width and types the column to it', async () => {
+    const id = await seedProvider('vlbox-mrl', goodUrl, 'Qwen/Qwen3-VL-Embedding-8B');
+    width = 4096; // the 8B's native answer — pgvector's unindexed tier
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('image_embedding_target_dimensions', '2048')`,
+    );
+
+    const res = await put({ image_embedding: { providerId: id } });
+    expect(res.statusCode).toBe(200);
+
+    const type = await query<{ type: string }>(
+      `SELECT format_type(atttypid, atttypmod) AS type FROM pg_attribute
+        WHERE attrelid = 'page_image_embeddings'::regclass AND attname = 'embedding'`,
+    );
+    // Not vector(4096): the leg asked for 2048 and the column follows the
+    // request, so it is indexable and it matches what P2 will write.
+    expect(type.rows[0]!.type).toBe('halfvec(2048)');
+    expect(await setting(IMAGE_EMBEDDING_DIMENSIONS_KEY)).toBe('2048');
+    expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(
+      `${id}:Qwen/Qwen3-VL-Embedding-8B@${goodUrl}#2048`,
+    );
+  });
+
+  it('refuses when the endpoint ignores the configured truncation width', async () => {
+    const id = await seedProvider('vlbox-nomrl', goodUrl, 'Qwen/Qwen3-VL-Embedding-8B');
+    width = 4096;
+    honoursDimensions = false; // started without `--hf-overrides`
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('image_embedding_target_dimensions', '2048')`,
+    );
+
+    const res = await put({ image_embedding: { providerId: id } });
+    expect(res.statusCode).toBe(422);
+    const body = res.json() as { error: string; reason: string };
+    expect(body.reason).toBe('dimensions_ignored');
+    expect(body.error).toMatch(/is_matryoshka/);
+    // The assignment is refused, so a 4096-wide space is never recorded as if
+    // it were the 2048 every later writer will ask for.
+    expect(
+      (await query(`SELECT 1 FROM llm_usecase_assignments WHERE usecase = 'image_embedding'`)).rows,
+    ).toHaveLength(0);
   });
 
   it('does not probe when the save touches only other use cases', async () => {
@@ -428,6 +572,43 @@ describe.skipIf(!dbAvailable)('the probe detail routes (#1184 shape)', () => {
     expect(r.statusCode).toBe(200);
     expect(r.json()).toMatchObject({
       providerId: id, model: 'vl-2b', dimensions: 1024, tier: 'vector', error: null,
+    });
+  });
+
+  /**
+   * The stale-pair gate (review round 2 — it had no test at all: replacing the
+   * `matches` comparison with `stored != null` left the whole suite green).
+   *
+   * `admin_settings.image_embedding_probe` is ONE row, overwritten — "what does
+   * the currently assigned leg look like", not a history. So a record left
+   * behind by a pair that is no longer assigned must read as "never probed" for
+   * the live pair, or the panel renders `2048-dim · halfvec HNSW` as a
+   * statement about an endpoint nobody is using.
+   */
+  it('GET answers nulls when the stored probe belongs to a different pair', async () => {
+    const id = await seedProvider('vlbox-stale', goodUrl, 'vl-2b');
+    expect((await put({ image_embedding: { providerId: id } })).statusCode).toBe(200);
+
+    // Somebody else's verdict lands in the single record — a pair that was
+    // assigned before, or a probe that raced this one.
+    await persistImageEmbeddingProbe('44444444-4444-4444-8444-444444444444', 'other-vl-model', {
+      dimensions: 2048, tier: 'halfvec', error: null, reason: null,
+    });
+
+    const r = await app.inject({
+      method: 'GET', url: '/api/admin/llm-usecases/image_embedding/probe',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.statusCode).toBe(200);
+    // The live pair is still named — only its verdict is withheld, which is
+    // what the row's Re-check exists to re-establish.
+    expect(r.json()).toMatchObject({
+      providerId: id,
+      model: 'vl-2b',
+      dimensions: null,
+      tier: null,
+      probedAt: null,
+      error: null,
     });
   });
 

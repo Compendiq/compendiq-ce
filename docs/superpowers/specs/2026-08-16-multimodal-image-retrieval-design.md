@@ -8,9 +8,12 @@ this spec, ADR-025, migration `093` and the core `attachment-store` hoist —
 has landed. **P1 has landed**: the `image_embedding` use case end to end —
 `vl-embedding-client.ts`, `resolveImageEmbeddingUsecase`,
 `image-embedding-probe.ts`, `ensureImageEmbeddingColumn`, the probe-gated
-assignment routes, the Settings row, and the `vl` exclusion in #1329's
-text-side matcher. Nothing embeds a page image or retrieves one yet.
-P2–P6 are not implemented.
+assignment routes, the Settings row, the MRL truncation-width setting every
+image-side call sends, and the `vl` exclusion in #1329's text-side matcher.
+Nothing embeds a page image or retrieves one yet. P2–P6 are not implemented,
+**except** two pieces of P5 that landed early because they block nothing and
+unblock local work: the dev shim (`tools/vl-embedding-shim/`, #1352) and the
+vendored German image corpus (`eval/corpus-de-images/`, #1353).
 
 Written against `dev @ 94a4ad41` and two verified fact-bases (codebase +
 external research). Every claim that drives a decision carries its source, and
@@ -80,8 +83,8 @@ CREATE INDEX pages_image_embedding_dirty_idx ON pages(id) WHERE image_embedding_
 -- widen the use-case CHECK (same shape as 090_rerank_usecase.sql) to admit 'image_embedding'
 ```
 
-- **Runtime DDL** `ensureImageEmbeddingColumn(dims, {providerId, model})`
-  (P1, shipped): same tiering the text column uses (≤2000 `vector` + HNSW,
+- **Runtime DDL** `ensureImageEmbeddingColumn(dims, {providerId, model,
+  baseUrl, targetDimensions})` (P1, shipped): same tiering the text column uses (≤2000 `vector` + HNSW,
   ≤4000 `halfvec` + HNSW, else unindexed with a WARN and a UI notice). That
   tiering existed in three places when this was written —
   `embedding-service.ts` (the live destructive path),
@@ -281,7 +284,7 @@ prod can prove).
 | P2 | `image-embedding-service.ts` + dirty-flag wiring (sync, uploads, local attachments) + worker + Embeddings-tab card + re-scan | P1 |
 | P3 | Retrieval leg + fusion + analytics + wire shape (`sources.kind`) + Retrieval-tab knobs + frontend source rendering | P1, P2 |
 | P4 | Answer path (retrieved parts, degrade rule, caps, audit) | P3 |
-| P5 | Eval: Wikipedia corpus fetch script + vendored corpus + independent labels + seeder + `--images` axis + shim + runbook; measurement report | P2 (corpus/labels can start earlier) |
+| P5 | Eval: ~~Wikipedia corpus fetch script + vendored corpus~~ (✅ #1353) + independent labels + seeder + `--images` axis + ~~shim~~ (✅ #1352, `tools/vl-embedding-shim/` + `docs/runbooks/vl-embedding-dev.md`) + runbook; measurement report | P2 (corpus/labels can start earlier) |
 | P6 | Diagram/ADR/CLAUDE.md sweep, #1100/#1115 close-out | all |
 
 **P0's scope fence, as ruled.** No contracts change in P0: the

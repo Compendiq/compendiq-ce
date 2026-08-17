@@ -48,10 +48,12 @@ vllm serve Qwen/Qwen3-VL-Embedding-2B \
 - `--max-model-len 8192` matches the reference implementation's operating
   context. 32K is the architectural ceiling; nothing was evaluated there.
 
-**MRL (`dimensions`) needs an override.** Neither checkpoint declares
-`is_matryoshka` in `config.json`, and vLLM refuses the `dimensions` parameter
-for models it does not recognise as Matryoshka. The 8B needs this, because its
-native 4096 lands in pgvector's **unindexed** tier:
+**MRL (`dimensions`) takes two steps: the server must ACCEPT it, and Compendiq
+must SEND it.** Neither is optional, and neither does the other's job.
+
+`--hf-overrides` is the first half. Neither checkpoint declares `is_matryoshka`
+in `config.json`, and vLLM refuses the `dimensions` parameter for models it does
+not recognise as Matryoshka:
 
 ```bash
 vllm serve Qwen/Qwen3-VL-Embedding-8B \
@@ -60,6 +62,33 @@ vllm serve Qwen/Qwen3-VL-Embedding-8B \
 # or pin the allowed set:
 #   --hf-overrides '{"matryoshka_dimensions":[4096,2048,1024,512]}'
 ```
+
+That flag **makes vLLM accept the request parameter — it does not change the
+served width**. `dimensions` is per-request, and there is no serve-time flag
+that sets a default one, so an 8B started exactly as above still answers 4096
+until a client asks for less.
+
+The second half is Compendiq's, in **Settings → AI Models → the Image embedding
+row → "Truncate to N dimensions (MRL)"**
+(`admin_settings.image_embedding_target_dimensions`). When it is set, that
+number is sent as `dimensions` on **every** image-side call: the assignment
+probe, Re-check, and — from P2 — the image embedder and the query side. Leave it
+empty to use the model's native width.
+
+Two consequences worth knowing before you set it:
+
+- **The probe verifies it.** It sends the width and requires the answer to come
+  back at exactly that width; a server that silently ignores the parameter is
+  refused as `dimensions_ignored` rather than recorded at the width it happened
+  to answer with. If the server *refuses* the parameter outright you get
+  `shape_rejected`, and the refusal names the override.
+- **Changing it is a rebuild.** It is part of the recorded identity
+  (`provider:model@baseUrl#dims`), so saving a new width empties the image index
+  and re-dirties every page — see §5.
+- **The width is saved even when the probe that follows it fails.** It has to
+  be: the probe sends it, so it is written first. A refusal therefore leaves the
+  new width stored, the assignment and the column exactly as they were, and the
+  refusal on the row. Fix the server, or clear the field, and save again.
 
 Compendiq re-normalises client-side whenever it sends `dimensions`, because
 truncating a unit vector does not leave a unit vector and vLLM is not documented
@@ -88,10 +117,12 @@ What Compendiq can see for you, and what it cannot:
 
 ## 3. Local development
 
-`mlx-embeddings` behind a ~30-line FastAPI shim exposing the §1 shape is the
-only local option that reproduces production semantics on **both** modalities
-(instruction as a system message, chat template on image *and* text). It ships
-with P5 under `tools/vl-embedding-shim/`.
+A FastAPI shim exposing the §1 shape is the only local option that reproduces
+production semantics on **both** modalities (instruction as a system message,
+chat template on image *and* text). It lives in `tools/vl-embedding-shim/` —
+one process over two interchangeable backends (`mlx` in-process, `llama`
+proxying a `llama-server` you started); see its README and
+`docs/runbooks/vl-embedding-dev.md`.
 
 **Local vectors never decide anything.** Quantisation, MLX-vs-CUDA numerics and
 vLLM's own preprocessing divergence each move the space. Local is for plumbing
@@ -103,10 +134,17 @@ on the production stack.
 Settings → AI Models → the **Image embedding** row.
 
 1. Pick a provider (and a model, or leave it to the provider's default model).
-2. Save. The save **blocks on a probe** and **refuses the assignment** if it
+2. If the checkpoint's native width is above 4000 — the 8B — set **Truncate to
+   N dimensions (MRL)** on the same row (§2). Leaving it empty is correct for
+   the 2B.
+3. Save. The save **blocks on a probe** and **refuses the assignment** if it
    fails — a leg that cannot embed must not be assignable, because the failure
    it prevents is silent: a plain text embedder *answers* the request with a
    well-formed vector from the wrong pooling position.
+
+The truncation width is written first, then the assignment is re-probed with it,
+so one Save does both. Changing only that number still re-probes and still
+rebuilds; there is no separate step to remember.
 
 On success the row is written with the **resolved model pinned into it**, even
 if you left the model on "Inherit provider's model": the probe verified exactly
@@ -120,7 +158,10 @@ The probe embeds a known image **and** a text, and requires:
 - the endpoint accepts the `messages` shape;
 - both come back at the **same width** (a server that templates one modality
   and not the other puts two vector spaces in one column);
-- the width is 1..16000.
+- the width is 1..16000;
+- the width equals the configured truncation width, when one is set — a server
+  that ignores `dimensions` answers 200 at its native width, and recording that
+  would type the column for a space nothing else writes into.
 
 **Refusal categories.** The toast carries the prose in the middle column; the
 slug is the `reason` field on the 422 body, which is what a log line or a
@@ -128,10 +169,12 @@ scripted client sees.
 
 | Category (`reason`) | What the toast says | Do |
 |---|---|---|
-| `shape_rejected` | "This endpoint refused the request. Image embedding needs a server that accepts vLLM's chat-embeddings shape…" | Usually the wrong kind of server (see §1) or the wrong model id. The provider's own body is in the **backend log** — it is deliberately *not* stored for a pair that was refused, so the row's disclosure will not show it. |
-| `unreachable` | "The provider could not be reached for the probe…" | Check the base URL, credentials, and that the server is up. The per-provider breaker may also be open from earlier failures. |
+| `shape_rejected` | "This endpoint refused the request. Image embedding needs a server that accepts vLLM's chat-embeddings shape…" | The endpoint answered 400/404/405/422 — it is reachable and refusing *this request*. Usually the wrong kind of server (see §1) or the wrong model id. If a truncation width is set, it may also be vLLM refusing `dimensions` for a checkpoint it does not consider Matryoshka (§2) — the message says so when that applies. The provider's own body is in the **backend log**: it is deliberately *not* stored for a pair that was refused, so the row's disclosure will not show it. |
+| `provider_error` | "The provider answered with an error rather than a vector…" | 401/403 (credentials), 429 (rate limit) or 5xx. **Not** a verdict about the server being the wrong kind: a vLLM still loading its model answers 503, and `vllm#33865` is an open report of intermittent 5xx from this endpoint. Check credentials and readiness, then press Save or Re-check again. |
+| `unreachable` | "The provider could not be reached, or did not answer within the probe's time budget…" | Check the base URL, credentials, and that the server is up. The per-provider breaker may also be open from earlier failures. Each probe call is bounded at 60s. |
 | `width_mismatch` | "This endpoint returned different vector widths for an image and for a text…" | The server is not applying the same formatting to both. Not usable. |
-| `unusable_width` | "This endpoint returned a vector width Postgres cannot index." | Serve at ≤ 4000 dimensions using the model's `dimensions` / MRL parameter (§2). |
+| `dimensions_ignored` | "This endpoint ignored the truncation width configured for image embedding…" | The server accepted the request but answered at another width — almost always started without `--hf-overrides '{"is_matryoshka": true}'` (§2). Restart it with the override, or clear the truncation width. |
+| `unusable_width` | "This endpoint returned a vector width Postgres cannot store — a pgvector column holds at most 16000 dimensions." | Only fires above pgvector's **column** ceiling. A width of 4001–16000 is *not* refused: it is stored and left unindexed (see Index tiers), which the row states. |
 
 On success the row shows `2048-dim · halfvec HNSW` (or `vector HNSW`, or
 `no index (sequential scan)`) and when it was last checked. **Re-check** re-runs
@@ -160,7 +203,9 @@ user can call.
 | > 4000 | `vector(n)` | **none** — sequential scan |
 
 The unindexed tier is legal and correct, and it will get slow as the corpus
-grows. Prefer MRL truncation to 4000 or below.
+grows. Prefer MRL truncation to 4000 or below — which means setting **Truncate
+to N dimensions (MRL)** on the row *and* serving with the override (§2), because
+the tier follows the width the model actually answers with.
 
 ## 5. Changing the model (or the provider)
 
@@ -169,10 +214,11 @@ that is deliberate**: the image leg is simply *off* while its index is empty, so
 text search is never degraded, and images are cheap to redo.
 
 A rebuild is triggered by the probed **width** changing **or** by the assigned
-`provider:model@baseUrl` changing — the second because two different models at
-the same width are two incompatible spaces that a column type cannot
-distinguish, and the base URL is in there because a provider row's endpoint can
-move without its id changing (§2).
+`provider:model@baseUrl#dims` changing — the second because two different models
+at the same width are two incompatible spaces that a column type cannot
+distinguish, the base URL is in there because a provider row's endpoint can move
+without its id changing (§2), and `#dims` is the requested MRL truncation width,
+which is what every image-side call sends.
 
 It is triggered by **saving** the assignment and by **Re-check** — those are the
 only two moments the app looks. Editing a provider row alone changes nothing
@@ -212,8 +258,13 @@ curl -s "$BASE_URL/embeddings" -H 'Content-Type: application/json' -d '{
 }' | jq '.data[0].embedding | length'
 ```
 
-A 400/422 here is the `shape_rejected` case. A number is the width the probe
-would record.
+A 400/422 here is the `shape_rejected` case; a 5xx is `provider_error`. A number
+is the width the probe would record.
+
+Add `"dimensions": 2048` to that body to reproduce what Compendiq sends when a
+truncation width is configured. The same number back means the override is in
+place; the native width back is the `dimensions_ignored` case; a 400 naming the
+parameter means the server was started without `--hf-overrides` (§2).
 
 If you drop the trailing `assistant` turn or `continue_final_message`, this call
 **still succeeds** and still returns a plausible vector — of a different, worse
