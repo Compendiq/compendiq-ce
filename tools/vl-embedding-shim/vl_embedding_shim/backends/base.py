@@ -35,8 +35,14 @@ class BackendInfo:
 
 @runtime_checkable
 class Backend(Protocol):
-    def info(self) -> BackendInfo:
-        """Identity and capability. Raises `BackendError` when unreachable."""
+    def info(self, *, refresh: bool = False) -> BackendInfo:
+        """Identity and capability. Raises `BackendError` when unreachable.
+
+        `refresh=True` discards whatever the backend cached and asks the thing
+        itself. `/healthz` and `/v1/models` pass it: they exist to describe the
+        live server, and llama-server's identity — its GGUF and its per-process
+        random media marker — changes under a restart the shim never sees.
+        """
 
     def embed(self, items: Sequence[ResolvedItem]) -> list[list[float]]:
         """One raw vector per item, in order. Normalisation/MRL happen above."""

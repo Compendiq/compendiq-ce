@@ -15,14 +15,18 @@ PNG_1PX = base64.b64decode(
 PNG_1PX_B64 = base64.b64encode(PNG_1PX).decode()
 
 
+def continued(*entries):
+    """`entries` plus the trailing empty `assistant` turn the contract requires."""
+    return [*entries, {'role': 'assistant', 'content': [{'type': 'text', 'text': ''}]}]
+
+
 def messages_body(**over):
     body = {
         'model': 'qwen3-vl-embedding',
-        'messages': [
+        'messages': continued(
             {'role': 'system', 'content': [{'type': 'text', 'text': QUERY_INSTRUCTION}]},
             {'role': 'user', 'content': [{'type': 'text', 'text': 'wie hoch ist der Turm?'}]},
-            {'role': 'assistant', 'content': [{'type': 'text', 'text': ''}]},
-        ],
+        ),
         'encoding_format': 'float',
         'continue_final_message': True,
         'add_special_tokens': True,
@@ -48,27 +52,27 @@ class TestMessagesShape:
     def test_absent_system_message_leaves_the_instruction_unset(self):
         # Unset, not "the default" — the template layer owns the fallback so
         # there is exactly one place the default is written down.
-        parsed = parse_embeddings_request(messages_body(messages=[
+        parsed = parse_embeddings_request(messages_body(messages=continued(
             {'role': 'user', 'content': [{'type': 'text', 'text': 'hi'}]},
-        ]))
+        )))
         assert parsed.items[0].instruction is None
 
     def test_string_content_is_accepted_for_both_roles(self):
-        parsed = parse_embeddings_request(messages_body(messages=[
+        parsed = parse_embeddings_request(messages_body(messages=continued(
             {'role': 'system', 'content': 'Represent the user\'s input'},
             {'role': 'user', 'content': 'hallo'},
-        ]))
+        )))
         assert parsed.items[0].instruction == "Represent the user's input"
         assert parsed.items[0].text == 'hallo'
 
     def test_image_url_parts_are_collected_in_order(self):
-        parsed = parse_embeddings_request(messages_body(messages=[
+        parsed = parse_embeddings_request(messages_body(messages=continued(
             {'role': 'user', 'content': [
                 {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{PNG_1PX_B64}'}},
                 {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/b.jpg'}},
                 {'type': 'text', 'text': 'zwei Bilder'},
             ]},
-        ]))
+        )))
         item = parsed.items[0]
         assert [ref.url for ref in item.images] == [
             f'data:image/png;base64,{PNG_1PX_B64}',
@@ -79,20 +83,20 @@ class TestMessagesShape:
     def test_text_parts_are_concatenated_in_order_and_images_still_lead(self):
         # The reference builder appends every image, then every text — the
         # user's interleaving is not preserved, matching qwen3_vl_embedding.py.
-        parsed = parse_embeddings_request(messages_body(messages=[
+        parsed = parse_embeddings_request(messages_body(messages=continued(
             {'role': 'user', 'content': [
                 {'type': 'text', 'text': 'a'},
                 {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/b.jpg'}},
                 {'type': 'text', 'text': 'b'},
             ]},
-        ]))
+        )))
         assert parsed.items[0].text == 'ab'
         assert len(parsed.items[0].images) == 1
 
     def test_empty_user_content_is_allowed_and_becomes_NULL_downstream(self):
-        parsed = parse_embeddings_request(messages_body(messages=[
+        parsed = parse_embeddings_request(messages_body(messages=continued(
             {'role': 'user', 'content': []},
-        ]))
+        )))
         assert parsed.items[0].text == ''
         assert parsed.items[0].images == ()
 
@@ -144,6 +148,99 @@ class TestMessagesShape:
             parse_embeddings_request(messages_body(messages=[
                 {'role': 'tool', 'content': 'x'},
             ]))
+
+
+class TestTheContinuationContract:
+    """The prompt has to end at `<|im_start|>assistant\\n`, and the body says so.
+
+    vLLM's `EmbeddingChatRequest` defaults **both** `continue_final_message` and
+    `add_generation_prompt` to false. With neither set, vLLM renders the user
+    turn closed by `<|im_end|>\\n` and pools that position instead — a different,
+    off-distribution vector, silently. Research §2.3 calls the trailing empty
+    `assistant` + `continue_final_message: true` pair "load-bearing and the
+    single easiest thing to get wrong", and a shim that accepts the wrong body
+    and answers the right vector is exactly how a future client ships that
+    mistake to production.
+
+    So the shim accepts precisely the two bodies vLLM renders the way the shim
+    builds its prompt, and refuses everything else — stricter than vLLM on
+    purpose, in the direction where a body that passes here also works there.
+    """
+
+    def test_the_d4_body_is_accepted(self):
+        parse_embeddings_request(messages_body())
+
+    def test_a_trailing_assistant_without_the_flag_is_refused(self):
+        with pytest.raises(ShimRequestError, match='continue_final_message'):
+            parse_embeddings_request(messages_body(continue_final_message=None))
+
+    def test_a_trailing_assistant_with_the_flag_false_is_refused(self):
+        with pytest.raises(ShimRequestError, match='continue_final_message'):
+            parse_embeddings_request(messages_body(continue_final_message=False))
+
+    def test_a_non_boolean_flag_is_not_true(self):
+        with pytest.raises(ShimRequestError, match='continue_final_message'):
+            parse_embeddings_request(messages_body(continue_final_message='banana'))
+
+    def test_no_trailing_assistant_and_no_generation_prompt_is_refused(self):
+        with pytest.raises(ShimRequestError, match='assistant'):
+            parse_embeddings_request(messages_body(
+                messages=[{'role': 'user', 'content': 'hallo'}],
+                continue_final_message=None,
+            ))
+
+    def test_add_generation_prompt_is_the_other_accepted_form(self):
+        # `apply_chat_template(add_generation_prompt=True)` is what the
+        # reference embedder calls, and vLLM accepts the same field. It renders
+        # byte-identically to the continued form, so the shim takes it.
+        parsed = parse_embeddings_request(messages_body(
+            messages=[{'role': 'user', 'content': 'hallo'}],
+            continue_final_message=None,
+            add_generation_prompt=True,
+        ))
+        assert parsed.items[0].text == 'hallo'
+
+    def test_asking_for_both_is_refused(self):
+        # transformers refuses this pair outright ("Cannot set both
+        # add_generation_prompt and continue_final_message to True"), so a body
+        # carrying both would 400 in production rather than embed.
+        with pytest.raises(ShimRequestError, match='both'):
+            parse_embeddings_request(messages_body(add_generation_prompt=True))
+
+    def test_the_plain_input_shape_is_unaffected(self):
+        # There is no assistant turn to continue: the shim templates each
+        # string itself and always ends the prompt at the generation point.
+        parse_embeddings_request({'model': 'm', 'input': 'hallo'})
+
+    def test_add_special_tokens_is_accepted_in_either_polarity(self):
+        # Accepted and ignored: the shim hands a prompt STRING to a backend
+        # that tokenizes it, so there is no tokenizer flag here to honour. The
+        # template's `<|im_start|>` markers are ordinary text in that string,
+        # not tokenizer-added specials. Documented in the README rather than
+        # enforced, because refusing a field the shim simply does not reach
+        # would teach a client contract that vLLM does not have.
+        for value in (True, False, None):
+            parse_embeddings_request(messages_body(add_special_tokens=value))
+
+
+class TestAnExplicitlyEmptySystemMessage:
+    def test_survives_as_an_empty_instruction_rather_than_the_default(self):
+        # `chat_template.jinja` takes its `messages[0].role == 'system'` branch
+        # for this body and emits `<|im_start|>system\n<|im_end|>\n` — an empty
+        # instruction. Collapsing it onto DEFAULT_INSTRUCTION would be the one
+        # case where the shim invents an instruction the caller declined,
+        # against its own rule (1).
+        parsed = parse_embeddings_request(messages_body(messages=continued(
+            {'role': 'system', 'content': [{'type': 'text', 'text': ''}]},
+            {'role': 'user', 'content': 'hallo'},
+        )))
+        assert parsed.items[0].instruction == ''
+
+    def test_an_absent_system_message_stays_None(self):
+        parsed = parse_embeddings_request(messages_body(messages=continued(
+            {'role': 'user', 'content': 'hallo'},
+        )))
+        assert parsed.items[0].instruction is None
 
 
 class TestPlainInputShape:
@@ -230,9 +327,9 @@ class TestFlatInstructConversion:
 
     def test_the_messages_shape_is_never_converted(self):
         # A caller who spells the flat form inside a user message meant it.
-        parsed = parse_embeddings_request(messages_body(messages=[
+        parsed = parse_embeddings_request(messages_body(messages=continued(
             {'role': 'user', 'content': self.FLAT},
-        ]))
+        )))
         assert parsed.items[0].converted_from_flat is False
         assert parsed.items[0].text == self.FLAT
 
@@ -270,7 +367,7 @@ class TestDefaultInstructionIsNotInvented:
     def test_parsing_never_fills_in_an_instruction(self):
         for body in (
             {'model': 'm', 'input': 'x'},
-            messages_body(messages=[{'role': 'user', 'content': 'x'}]),
+            messages_body(messages=continued({'role': 'user', 'content': 'x'})),
         ):
             assert parse_embeddings_request(body).items[0].instruction is None
 

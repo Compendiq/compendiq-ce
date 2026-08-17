@@ -20,6 +20,13 @@ from .images import TRAINED_MAX_PIXELS
 
 DEFAULT_PORT = 8011
 
+#: Ceiling on one request body, enforced before it is parsed. A `data:` URI is
+#: base64, so a request is ~4/3 of the bytes it carries: this holds several
+#: images at the app's own 5 MB `MAX_IMAGE_BYTES` and a corpus-sized batch of
+#: text, while still bounding what a single POST can allocate on a 24 GB
+#: machine. It is a memory guard, not an image policy — that is `--max-pixels`.
+DEFAULT_MAX_BODY_BYTES = 32 * 1024 * 1024
+
 
 @dataclass
 class Settings:
@@ -36,7 +43,13 @@ class Settings:
 
     #: Opt-in guard, not a resizer (see images.py). `None` decodes nothing.
     max_pixels: int | None = None
-    allow_remote_images: bool = True
+    #: OFF by default. A shim that fetches an arbitrary `image_url` on request
+    #: is an SSRF proxy for anything that can reach it, and every caller this
+    #: tool exists for — the app, the eval, the README's examples — sends
+    #: `data:` URIs. Opening it is a deliberate `--allow-remote-images`.
+    allow_remote_images: bool = False
+    #: Refused before parsing, in the same error envelope, as a 413.
+    max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     #: Rule (2): recover Qwen3-Embedding's flat `Instruct:` prefix into a
     #: system message. Off is for measuring what an unconverted run does.
     convert_flat_instruct: bool = True
@@ -80,8 +93,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        '--no-remote-images', action='store_true',
-        help='refuse http(s) image URLs; data: URIs only',
+        '--allow-remote-images', action='store_true',
+        default=_env_flag('VL_SHIM_ALLOW_REMOTE_IMAGES'),
+        help=(
+            'fetch http(s) image URLs. OFF by default: the shim would otherwise '
+            'issue arbitrary GETs on behalf of anything that can reach it. Redirects '
+            'are never followed even when this is on'
+        ),
+    )
+    parser.add_argument(
+        '--max-body-bytes', type=int,
+        default=_env_int('VL_SHIM_MAX_BODY_BYTES') or DEFAULT_MAX_BODY_BYTES,
+        help=f'413 a request body larger than this (default {DEFAULT_MAX_BODY_BYTES})',
     )
     parser.add_argument(
         '--no-instruct-conversion', action='store_true',
@@ -99,6 +122,10 @@ def _env_int(name: str) -> int | None:
     return int(raw) if raw else None
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 def settings_from_args(argv: list[str] | None = None) -> Settings:
     args = build_parser().parse_args(argv)
     return Settings(
@@ -109,7 +136,8 @@ def settings_from_args(argv: list[str] | None = None) -> Settings:
         mlx_model=args.mlx_model,
         served_model_id=args.model_id,
         max_pixels=args.max_pixels,
-        allow_remote_images=not args.no_remote_images,
+        allow_remote_images=args.allow_remote_images,
+        max_body_bytes=args.max_body_bytes,
         convert_flat_instruct=not args.no_instruct_conversion,
         request_timeout=args.request_timeout,
     )

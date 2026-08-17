@@ -31,7 +31,7 @@ Ports: the shim takes **8011**, llama-server **8090**. 1234 is LM Studio's and
 
 ---
 
-## Recipe A — the `llama` backend (a GGUF, e.g. the 8B)
+## The `llama` backend — a GGUF through llama-server (e.g. the 8B)
 
 ```bash
 cd tools/vl-embedding-shim
@@ -61,11 +61,23 @@ markers nothing will fill — which is llama.cpp issues #26201 / #25088,
 `mtmd_tokenize: error: number of media markers in text (0) does not match number
 of bitmaps (1)`.
 
+**You can restart llama-server under a running shim.** The marker is randomised
+per server process, so the shim's cached one dies with it — but `/healthz` and
+`/v1/models` always re-read `/props`, and a failed image request re-reads it and
+retries once when the marker changed, logging
+
+```
+WARNING vl_embedding_shim llama-server answered with a new media marker (… -> …) — it was restarted under this shim; retrying the request once with the new one
+```
+
+so you do not have to remember to restart both. (Text-only requests carry no
+marker and are unaffected.)
+
 The flags in `run-llama-server.sh` are not decoration: `--pooling last` matches
 the checkpoint's `1_Pooling` (`lasttoken`), `--embd-normalize 2` matches its
 `2_Normalize`, and `-b/-ub 2048` covers one image's ~1280 visual tokens.
 
-## Recipe B — the `mlx` backend (an MLX checkpoint, e.g. the 2B)
+## The `mlx` backend — an MLX checkpoint in-process (e.g. the 2B)
 
 **Stop llama-server first.** 24 GB does not hold both.
 
@@ -103,6 +115,13 @@ curl -s localhost:8011/v1/embeddings -H 'content-type: application/json' -d '{
     {"role":"assistant","content":[{"type":"text","text":""}]}],
   "continue_final_message":true, "add_special_tokens":true}' | jq '.data[0].embedding | length'
 ```
+
+`continue_final_message: true` beside that trailing empty `assistant` turn is
+not decoration, and the shim **400s without it**: vLLM defaults the field to
+false, which closes the turn with `<|im_end|>` and pools a different position.
+(`add_generation_prompt: true` with no trailing assistant is the other accepted
+spelling.) An image is a `data:` URI unless you started the shim with
+`--allow-remote-images`.
 
 Or run the shipped structural test against the running server:
 
@@ -193,3 +212,8 @@ image leg is measured on the prod stack (design §8).
 | 502 `Too many indices for array with 2 dimensions` | an `mlx-embeddings` newer than 0.1.0 that moved the `_position_ids` cache the shim resets — see the README's upstream-problems list |
 | 400 `dimensions … exceeds the model native width` | MRL can only shrink; 2B is 2048 native, 8B is 4096 |
 | 400 `only base64 data: URIs are supported` | send `data:image/png;base64,…`, not a percent-encoded payload |
+| 400 `needs continue_final_message: true` / `must end at <\|im_start\|>assistant` | the body would pool a different position on vLLM — add the flag beside the trailing empty `assistant` turn |
+| 400 `remote image URLs are refused by default` | send a `data:` URI, or start the shim with `--allow-remote-images` |
+| 400 `answered a redirect` | remote fetching does not follow redirects; pass the final URL |
+| 413 `exceeds the --max-body-bytes ceiling` | a data: URI is base64, so the body is ~4/3 of the image; send fewer/smaller images or raise `--max-body-bytes` |
+| 502 `number of media markers … does not match number of bitmaps` **twice in a row** | not a restart (that is retried automatically) — check `/healthz` for `vision` and the marker |

@@ -19,16 +19,29 @@ log = logging.getLogger('vl_embedding_shim')
 
 
 class EmbeddingService:
-    def __init__(self, backend: Backend, settings: Settings) -> None:
+    def __init__(
+        self,
+        backend: Backend,
+        settings: Settings,
+        *,
+        image_client: httpx.Client | None = None,
+    ) -> None:
         self.backend = backend
         self.settings = settings
         # Built up front rather than lazily: requests run in a threadpool, and
         # a lazy `if self._image_client is None` would race two of them into
-        # two clients. `httpx.Client` itself is thread-safe.
-        self._image_client = (
-            httpx.Client(timeout=30.0, follow_redirects=True)
-            if settings.allow_remote_images else None
-        )
+        # two clients. `httpx.Client` itself is thread-safe. An injected client
+        # is the HTTP boundary the tests mock at; the settings flag still
+        # decides whether remote fetching happens at all.
+        if not settings.allow_remote_images:
+            self._image_client = None
+        else:
+            # `follow_redirects=False` on purpose: a permitted host that 302s is
+            # how a fetch reaches 169.254.169.254 or a loopback service, and an
+            # operator who opted into one URL did not opt into wherever it points.
+            self._image_client = image_client or httpx.Client(
+                timeout=30.0, follow_redirects=False,
+            )
         # One request through the model at a time. Neither backend wants to be
         # re-entered: `mlx` runs the model in-process and has its
         # `language_model._position_ids` reset immediately before each
@@ -48,6 +61,14 @@ class EmbeddingService:
         def fetch(url: str) -> bytes:
             try:
                 res = client.get(url)
+            except httpx.HTTPError as exc:
+                raise ImageError(f'could not fetch {url}: {exc}') from exc
+            if res.is_redirect:
+                raise ImageError(
+                    f'{url} answered a redirect to {res.headers.get("location")!r}; '
+                    'remote image fetching does not follow redirects — pass the final URL'
+                )
+            try:
                 res.raise_for_status()
             except httpx.HTTPError as exc:
                 raise ImageError(f'could not fetch {url}: {exc}') from exc
@@ -119,7 +140,11 @@ class EmbeddingService:
         return self.settings.served_model_id or self.backend.info().model_id
 
     def models(self) -> dict[str, Any]:
-        info = self.backend.info()
+        # Refreshed, unlike `model_id()` above: this route is how the eval
+        # runbook labels a run (`EVAL_EMBEDDING_MODEL=$(curl … /v1/models)`),
+        # and after a llama-server restart onto a different GGUF a cached
+        # answer names a model that did not serve the run.
+        info = self.backend.info(refresh=True)
         return {
             'object': 'list',
             'data': [{
@@ -130,8 +155,11 @@ class EmbeddingService:
         }
 
     def health(self) -> tuple[int, dict[str, Any]]:
+        # Refreshed for the same reason: this is the diagnostic the runbook
+        # tells an operator to check, and reporting a dead media marker as
+        # `"status": "ok"` is worse than not reporting one.
         try:
-            info = self.backend.info()
+            info = self.backend.info(refresh=True)
         except BackendError as exc:
             return 503, {
                 'status': 'degraded',

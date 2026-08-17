@@ -29,6 +29,13 @@ def main(argv: list[str] | None = None) -> int:
         log.info('proxying llama-server at %s', settings.llama_base_url)
     else:
         log.info('loading %s in-process (first request pays the load)', settings.mlx_model)
+    if settings.allow_remote_images:
+        # Loud, because it is off by default and it turns this process into
+        # something that issues GETs on a caller's behalf.
+        log.warning(
+            'remote http(s) image URLs are ENABLED (--allow-remote-images); '
+            'redirects are still not followed',
+        )
 
     uvicorn.run(create_app(service), host=settings.host, port=settings.port, log_level='info')
     return 0

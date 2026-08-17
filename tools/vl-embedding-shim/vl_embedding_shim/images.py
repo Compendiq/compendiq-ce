@@ -11,8 +11,14 @@ resized one, not just slower.
 `--max-pixels` therefore exists as a **guard, not a resizer**: set it and an
 over-budget image is refused with both numbers named, so a caller finds out
 rather than silently paying for pixels the encoder throws away. Unset (the
-default) nothing is decoded at all, which also means a format Pillow cannot read
-still reaches the model server.
+default) this *guard* decodes nothing — which is not the same as "the shim
+decodes nothing": the `llama` backend forwards the bytes to llama-server
+untouched, while the `mlx` backend always opens them with Pillow and converts
+to RGB. So a format Pillow cannot read reaches the model server on `llama` and
+is a 502 on `mlx`.
+
+**Remote URLs are opt-in** (`--allow-remote-images`), and redirects are never
+followed even then — see `service.EmbeddingService`.
 """
 
 from __future__ import annotations
@@ -67,8 +73,9 @@ def resolve_image(ref: ImageRef, *, fetcher: Fetcher | None = None) -> bytes:
     if scheme in ('http', 'https'):
         if fetcher is None:
             raise ImageError(
-                'remote image URLs are disabled (--no-remote-images); '
-                'send a data: URI instead'
+                'remote image URLs are refused by default; send a data: URI, or '
+                'start the shim with --allow-remote-images if this server really '
+                'should issue GETs on a caller\'s behalf'
             )
         data = fetcher(url)
         if not data:

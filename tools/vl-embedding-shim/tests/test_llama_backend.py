@@ -80,12 +80,32 @@ class TestProps:
     def test_an_explicit_model_id_wins(self):
         assert backend(Recorder(), model_id='qwen3-vl-8b').info().model_id == 'qwen3-vl-8b'
 
-    def test_props_is_fetched_once_and_cached(self):
+    def test_props_is_cached_between_ordinary_reads(self):
         rec = Recorder()
         be = backend(rec)
         be.info()
         be.info()
         assert sum(1 for r in rec.requests if r.url.path == '/props') == 1
+
+    def test_the_props_read_has_its_own_short_timeout(self):
+        # `/healthz` now performs one on every call, and the embed timeout is
+        # 300 s (an 8B forward pass). A hung llama-server must not hang the
+        # diagnostic whose job is to report that.
+        rec = Recorder()
+        backend(rec, timeout=300.0).info()
+        props = next(r for r in rec.requests if r.url.path == '/props')
+        assert props.extensions['timeout']['read'] <= 10
+
+    def test_refresh_re_reads_it(self):
+        # `/healthz` and `/v1/models` pass `refresh=True`: they are the two
+        # diagnostics an operator consults after restarting llama-server, and
+        # a cached answer there reports the previous process's marker and the
+        # previous GGUF's name as if they were live.
+        rec = Recorder()
+        be = backend(rec)
+        be.info()
+        be.info(refresh=True)
+        assert sum(1 for r in rec.requests if r.url.path == '/props') == 2
 
 
 class TestTextEmbedding:
@@ -177,6 +197,71 @@ class TestImageEmbedding:
     def test_a_text_only_request_still_works_without_vision(self):
         rec = Recorder(props=dict(PROPS, modalities={'vision': False}))
         assert backend(rec).embed([ResolvedItem(text='x', instruction=None)]) == [[0.6, 0.8]]
+
+
+class TestARestartedLlamaServer:
+    """The marker is randomised per server PROCESS, so a restart invalidates it.
+
+    Restarting llama-server — onto a different GGUF, a bigger batch, an added
+    `--mmproj` — is the tool's main dev loop. A marker cached for the life of
+    the shim process turns every subsequent image request into llama.cpp's
+    `number of media markers in text (0) does not match number of bitmaps (1)`,
+    which the runbook's troubleshooting table would then misdiagnose as an old
+    build. One re-read and one retry is the whole fix: the marker is the only
+    thing that can have changed under an unchanged base URL.
+    """
+
+    class RestartingRecorder(Recorder):
+        """`/props` answers a new marker after the first `/embedding` failure."""
+
+        def __init__(self):
+            super().__init__()
+            self.marker = MARKER
+
+        def handler(self, request: httpx.Request) -> httpx.Response:
+            self.requests.append(request)
+            if request.url.path == '/props':
+                return httpx.Response(200, json=dict(PROPS, media_marker=self.marker))
+            body = json.loads(request.content)
+            prompt = body['content']['prompt_string']
+            if self.marker not in prompt:
+                return httpx.Response(500, text=(
+                    'mtmd_tokenize: error: number of media markers in text (0) '
+                    'does not match number of bitmaps (1)'
+                ))
+            return httpx.Response(200, json=[{'index': 0, 'embedding': [[0.6, 0.8]]}])
+
+    def test_a_stale_marker_is_re_read_and_the_request_retried(self):
+        rec = self.RestartingRecorder()
+        be = backend(rec)
+        be.embed([ResolvedItem(text='vorher', instruction=None, images=(b'\x01',))])
+        rec.marker = '<__media_SECONDSERVER__>'  # the restart happens here
+        rec.requests.clear()
+
+        assert be.embed([ResolvedItem(text='nachher', instruction=None, images=(b'\x01',))]) \
+            == [[0.6, 0.8]]
+        prompts = [b['content']['prompt_string'] for b in rec.embed_bodies()]
+        assert len(prompts) == 2, 'the failed call was not retried'
+        assert MARKER in prompts[0]
+        assert '<__media_SECONDSERVER__>' in prompts[1]
+
+    def test_a_failure_that_is_not_the_marker_is_not_retried(self):
+        # The marker came back unchanged, so nothing was learned and a second
+        # identical request would only double a real error (a batch too small
+        # for one image's ~1280 visual tokens, say).
+        rec = Recorder(status=500, body='batch size exceeded')
+        be = backend(rec)
+        with pytest.raises(BackendError, match='500'):
+            be.embed([ResolvedItem(text='x', instruction=None, images=(b'\x01',))])
+        assert len(rec.embed_bodies()) == 1
+
+    def test_a_text_only_request_is_never_retried(self):
+        # It carries no marker, so a re-read cannot change anything about it.
+        rec = Recorder(status=500, body='boom')
+        be = backend(rec)
+        with pytest.raises(BackendError, match='500'):
+            be.embed([ResolvedItem(text='x', instruction=None)])
+        assert len(rec.embed_bodies()) == 1
 
 
 class TestFailures:

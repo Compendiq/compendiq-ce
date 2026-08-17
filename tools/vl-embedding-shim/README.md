@@ -13,8 +13,9 @@ two interchangeable local backends:
 | `mlx` | in-process [`mlx-embeddings`](https://github.com/Blaizzy/mlx-embeddings) | Apple Silicon, `pip install -e '.[mlx]'`, an MLX checkpoint |
 | `llama` | proxy to a `llama-server` you started | `llama-server` with `--mmproj`, a GGUF + its vision projector |
 
-Both build the identical prompt, so a vector from one is comparable to a vector
-from the other **within one model** — not across models, and not against
+Both build the identical prompt (with one named exception — an explicitly empty
+system message, under rule 1 below), so a vector from one is comparable to a
+vector from the other **within one model** — not across models, and not against
 production (see [Fidelity](#fidelity-what-these-vectors-are-and-are-not)).
 
 ---
@@ -26,7 +27,7 @@ cd tools/vl-embedding-shim
 python3 -m venv .venv && ./.venv/bin/pip install -e '.[dev]'
 ```
 
-### Backend (b): `llama` — the 8B GGUF
+### The `llama` backend — a GGUF through llama-server
 
 ```bash
 export QWEN3_VL_GGUF=/path/to/Qwen3-VL-Embedding-8B-Q6_K.gguf
@@ -40,7 +41,7 @@ The paths are environment variables on purpose. A checkpoint lives wherever you
 put it — an LM Studio models folder, a downloads directory — and a hardcoded
 `$HOME/.lmstudio/...` in a committed script works on exactly one machine.
 
-### Backend (a): `mlx` — the 2B MLX build
+### The `mlx` backend — an MLX checkpoint in-process
 
 ```bash
 ./.venv/bin/pip install -e '.[mlx]'
@@ -88,10 +89,51 @@ curl -s localhost:8011/v1/embeddings -H 'content-type: application/json' -d '{
 A `messages` array is **one prompt**, so this shape always answers exactly one
 embedding — that is vLLM's semantics, not a shim limitation.
 
-`image_url.url` takes a `data:` URI or an `http(s)` URL. The trailing empty
-`assistant` message is accepted and required to be empty: with
-`continue_final_message: true` it is a continuation point, not a turn, and
-non-empty content there would be silently dropped, so it is refused instead.
+#### The continuation is enforced, not assumed
+
+The prompt has to end with `<|im_start|>assistant\n` and nothing after it,
+because that final newline is the position whose hidden state becomes the
+vector. vLLM's `EmbeddingChatRequest` defaults **both** `continue_final_message`
+and `add_generation_prompt` to `false`, so a body carrying neither renders the
+user turn closed by `<|im_end|>\n` and pools *that* — silently, with a
+plausible-looking vector.
+
+The shim always builds the continued prompt, so accepting such a body would
+answer the **right vector for the wrong request**, and a client developed green
+against this server would then ship off-distribution vectors to production.
+That is the exact mistake this tool exists to let a laptop catch, so it is a
+**400**. Two forms are accepted, because vLLM renders both to the same bytes:
+
+* a trailing **empty** `assistant` turn + `continue_final_message: true`
+  (vLLM's own example, design D4 — the shape above); or
+* **no** trailing assistant + `add_generation_prompt: true` (what the reference
+  embedder's `apply_chat_template` call does).
+
+Both at once is refused, because transformers refuses that pair outright. A
+trailing assistant with non-empty content is refused too — it is a continuation
+point, not a turn, and its content would be silently dropped. **The shim is
+deliberately stricter than vLLM here**, in the safe direction: every body it
+accepts renders identically on vLLM.
+
+`add_special_tokens` is **accepted in either polarity and ignored**: the shim
+hands a prompt *string* to a backend that tokenizes it, so there is no
+tokenizer-level flag here to honour, and the template's `<|im_start|>` markers
+are ordinary text in that string rather than tokenizer-added specials. Pass
+`true`, as vLLM's example does. It is the one field of this shape whose
+handling the shim does not verify for you.
+
+#### Content-part order is normalised
+
+Images first, then text — the reference builder's order, whatever order the
+caller interleaved them in. **vLLM does not do this**: `chat_template.jinja`
+iterates `message.content` in order and emits the vision markers where the
+caller put them, so `[text "a", image, text "b"]` renders as `a<image>b` there
+and `<image>ab` here. Send image parts first (as D4 does) and the two agree.
+
+`image_url.url` takes a `data:` URI, or an `http(s)` URL **only when the shim
+was started with `--allow-remote-images`** — off by default, because a server
+that fetches an arbitrary URL on request issues GETs on behalf of anything that
+can reach it. Redirects are never followed even when it is on.
 
 ### `{model, input}` — the plain shape
 
@@ -112,9 +154,13 @@ string pools a different position and lands off the training distribution.
   `n_ctx`. **503** when the backend cannot be reached.
 * `POST /embeddings` — alias of `/v1/embeddings`, for curl.
 
-Errors use OpenAI's `{"error": {...}}` envelope. A bad body is **400**, an
-unreachable or unhappy backend is **502** — the distinction matters to a caller
-with a circuit breaker.
+Both diagnostics re-read the backend rather than answer from cache: they are
+what you check after restarting llama-server, and that restart is exactly what
+invalidates the cached answer.
+
+Errors use OpenAI's `{"error": {...}}` envelope. A bad body is **400**, one over
+`--max-body-bytes` is **413**, an unreachable or unhappy backend is **502** —
+the distinction matters to a caller with a circuit breaker.
 
 `usage` is always `{"prompt_tokens": 0, "total_tokens": 0}`. The shim does not
 tokenize and llama-server's `/embedding` reports no counts; zero is the honest
@@ -136,7 +182,15 @@ wants it passes it as the system message. Applying it by default would put a
 query instruction on every document too, destroying the asymmetry the official
 examples exist to create. Instructions are written in **English even for a
 non-English corpus** (model-card guidance). An instruction that does not end in
-punctuation gets a period appended, matching the reference embedder.
+punctuation gets a period appended, matching the reference embedder. An
+**explicitly empty** system message is the one thing that is not the default: it
+is a system message the caller wrote, `chat_template.jinja` renders it as
+`<|im_start|>system\n<|im_end|>\n`, and filling the default in there would be
+the shim inventing an instruction the caller declined. (That single body is also
+the one place the two backends genuinely differ: `mlx-embeddings` builds its
+system turn as `instruction or <its default>`, so an empty instruction becomes
+the default there and there is no API to say otherwise. `llama` emits the empty
+system message.)
 
 **(2) The plain `{model, input}` shape is accepted, and a flat `Instruct:` form
 is converted.** The app prefixes instruction-aware embedding models with
@@ -173,9 +227,19 @@ confirms is what training saw). Bigger is not better past that point: the
 paper's granularity study reports a slight *regression* at the highest resource
 levels. `--max-pixels 1310720` turns the budget into a **guard** — an oversized
 image is refused with both numbers named — but there is still no resizer.
-Unset (the default) nothing is decoded at all.
+Unset (the default) that *guard* decodes nothing — which is not "the shim
+decodes nothing": `llama` forwards the bytes to llama-server untouched, while
+`mlx` always opens them with Pillow and converts to RGB, so a format Pillow
+cannot read reaches the model server on `llama` and is a **502** on `mlx`.
 
 **(6) One backend per process.** See [RAM](#ram-one-backend-per-process-one-process-at-a-time).
+
+**(7) The `messages` contract is enforced, and remote fetching is opt-in.** A
+body vLLM would not render as a continuation is a 400 rather than a vector (see
+[The continuation is enforced](#the-continuation-is-enforced-not-assumed)); an
+`http(s)` `image_url` needs `--allow-remote-images` and never follows a
+redirect; and a body over `--max-body-bytes` (32 MiB) is a 413 before it is
+parsed.
 
 ### Throughput is not a goal
 
@@ -199,9 +263,16 @@ answerable while an embed is in flight.
 | `--mlx-model` | `VL_SHIM_MLX_MODEL` | `mlx-community/Qwen3-VL-Embedding-2B-8bit` |
 | `--model-id` | `VL_SHIM_MODEL_ID` | the backend's own answer |
 | `--max-pixels` | `VL_SHIM_MAX_PIXELS` | unset (no guard) |
-| `--no-remote-images` | – | remote URLs allowed |
+| `--allow-remote-images` | `VL_SHIM_ALLOW_REMOTE_IMAGES` | **off** — `data:` URIs only |
+| `--max-body-bytes` | `VL_SHIM_MAX_BODY_BYTES` | `33554432` (32 MiB) |
 | `--no-instruct-conversion` | – | conversion on |
 | `--request-timeout` | – | `300` s |
+
+Three of those defaults are security decisions rather than ergonomics — the
+shim binds **loopback**, refuses **remote image URLs**, and **caps the body** —
+and all three are pinned by tests (`test_config.py`), on the CLI parser as well
+as the settings object, because a default nobody asserts is one edit away from
+being the unsafe one.
 
 `run-llama-server.sh` reads `QWEN3_VL_GGUF`, `QWEN3_VL_MMPROJ`, and optionally
 `LLAMA_SERVER`, `LLAMA_PORT` (8090), `LLAMA_HOST`, `LLAMA_CTX` (8192),
@@ -223,6 +294,15 @@ VL_SHIM_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_integration.py
 CLAUDE.md's "Vitest everywhere", which is about the TypeScript workspaces. A
 Python tool tested through a JS runner would be tested through a subprocess
 boundary that hides every assertion.
+
+The exception buys a gate rather than losing one: `pr-check.yml` carries a
+**`vl-embedding-shim` job** that installs `.[dev]` and runs this suite,
+scoped — like `retrieval-eval` — to PRs that touch `tools/vl-embedding-shim/`,
+so the fast path never waits on it. `tools/` is not an npm workspace, so
+`npm test` cannot reach the suite and that job is the only thing that runs it.
+The `[mlx]` extra is not installed there (mlx is Apple-Silicon only); the mlx
+backend's tests drive a fake encoder through the library's `load()` seam and
+run without it.
 
 Unit tests mock at the boundary, matching the repo's rule: the `llama` backend
 against `httpx.MockTransport` (HTTP), the `mlx` backend against a fake encoder
@@ -256,6 +336,17 @@ shifts sit between here and there:
 So: never mix vectors from two of these paths in one index, and never quote a
 retrieval metric measured here as if it were a production number.
 
+**And two things about the request shape are not identical to vLLM's**, which
+matters for a client developed against this server rather than for the vectors:
+
+* `add_special_tokens` is accepted and **ignored** (the shim does not tokenize),
+  so conformance to that one field is the thing this server cannot check for
+  you. Everything else about the D4 body it checks strictly — see
+  [The continuation is enforced](#the-continuation-is-enforced-not-assumed).
+* Content parts are **reordered** to images-then-text; vLLM preserves the
+  caller's interleaving. Identical for an image-first body, which is what D4
+  sends.
+
 ### Known upstream problems this shim works around or refuses
 
 * **llama.cpp's media marker is randomised per server process.** The literal
@@ -264,6 +355,13 @@ retrieval metric measured here as if it were a production number.
   markers in text (0) does not match number of bitmaps (1)`. The shim reads
   `/props`, substitutes one marker per image, and refuses to send an image at
   all when `/props` reports `modalities.vision != true` or carries no marker.
+  **Restarting llama-server under a running shim is handled**, because that is
+  the dev loop (a different GGUF, a bigger batch, an added `--mmproj`): a failed
+  *image* request re-reads `/props` once and retries when the marker changed,
+  logging that it did, and `/healthz` and `/v1/models` never answer from the
+  cache at all. A failure where the marker came back unchanged is not retried —
+  nothing was learned, and doubling a real error (a batch too small for one
+  image's ~1280 visual tokens, say) helps nobody.
 * **llama.cpp's `/v1/embeddings` is text-only.** The PR that would have added
   image+text input there is closed and unmerged. Hence `/embedding` and a
   hand-built template.

@@ -5,14 +5,23 @@
 both cases. `GET /v1/models` and `GET /healthz` exist so an operator can tell
 what is loaded without embedding anything.
 
-Errors use OpenAI's `{"error": {...}}` envelope: a bad body is 400, an
-unreachable or unhappy backend is 502. The distinction matters to a caller with
-a circuit breaker — the app's own `openai-compatible-client.ts` treats a
-deterministic 400 as proof the provider is reachable rather than as an outage.
+Errors use OpenAI's `{"error": {...}}` envelope: a bad body is 400, one over the
+size ceiling is 413, an unreachable or unhappy backend is 502. The distinction
+matters to a caller with a circuit breaker — the app's own
+`openai-compatible-client.ts` treats a deterministic 400 as proof the provider
+is reachable rather than as an outage.
+
+**The body is read against a ceiling before it is parsed.** Uvicorn imposes no
+limit of its own and `await request.json()` buffers whatever arrives, so a
+single POST would otherwise decide how much of a 24 GB machine it gets. The
+declared `content-length` is checked first (cheap, and it refuses before a byte
+is read) and the stream is then counted anyway, because a chunked body declares
+nothing.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -24,6 +33,39 @@ from .images import ImageError
 from .mrl import DimensionsError
 from .request import ShimRequestError
 from .service import EmbeddingService
+
+
+class BodyTooLarge(Exception):
+    """The request body is over `--max-body-bytes`. Maps to HTTP 413."""
+
+    def __init__(self, limit: int, seen: int | None = None) -> None:
+        super().__init__(limit)
+        self.limit = limit
+        self.seen = seen
+
+    def __str__(self) -> str:
+        seen = f'{self.seen} bytes' if self.seen is not None else 'the request body'
+        return (
+            f'{seen} exceeds the --max-body-bytes ceiling of {self.limit}. A data: URI '
+            'is base64, so a request is about 4/3 of the bytes it carries; raise the '
+            'ceiling deliberately or send fewer/smaller images'
+        )
+
+
+async def read_body(request: Request, limit: int) -> bytes:
+    """The whole body, or `BodyTooLarge` before it is all in memory."""
+    declared = request.headers.get('content-length')
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        raise BodyTooLarge(limit, int(declared))
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            raise BodyTooLarge(limit)
+        chunks.append(chunk)
+    return b''.join(chunks)
 
 
 def _error(status: int, message: str, kind: str) -> JSONResponse:
@@ -43,7 +85,11 @@ def create_app(service: EmbeddingService) -> FastAPI:
 
     async def embeddings(request: Request) -> Any:
         try:
-            body = await request.json()
+            raw = await read_body(request, service.settings.max_body_bytes)
+        except BodyTooLarge as exc:
+            return _error(413, str(exc), 'invalid_request_error')
+        try:
+            body = json.loads(raw)
         except Exception:
             return _error(400, 'the request body must be JSON', 'invalid_request_error')
         try:

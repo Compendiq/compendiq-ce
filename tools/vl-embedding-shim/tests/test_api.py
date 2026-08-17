@@ -33,8 +33,11 @@ class FakeBackend:
         self.fail = fail
         self.healthy = healthy
         self.seen: list[list[ResolvedItem]] = []
+        self.refreshes = 0
 
-    def info(self) -> BackendInfo:
+    def info(self, *, refresh: bool = False) -> BackendInfo:
+        if refresh:
+            self.refreshes += 1
         if not self.healthy:
             raise BackendError('llama-server is not answering /props')
         return BackendInfo(
@@ -51,10 +54,27 @@ class FakeBackend:
         return [[3.0, 4.0, 0.0, 0.0] for _ in items]
 
 
-def client(backend=None, **settings_over):
+def client(backend=None, image_client=None, **settings_over):
     backend = backend or FakeBackend()
     settings = Settings(backend='llama', **settings_over)
-    return TestClient(create_app(EmbeddingService(backend, settings))), backend
+    service = EmbeddingService(backend, settings, image_client=image_client)
+    return TestClient(create_app(service)), backend
+
+
+def chat(*entries, **over):
+    """A `messages` body that satisfies the continuation contract.
+
+    The trailing empty `assistant` turn plus `continue_final_message: true` is
+    the shape vLLM's own example sends and the shim now requires — see
+    `test_request.py::TestTheContinuationContract`.
+    """
+    body = {
+        'model': 'm',
+        'messages': [*entries, {'role': 'assistant', 'content': [{'type': 'text', 'text': ''}]}],
+        'continue_final_message': True,
+    }
+    body.update(over)
+    return body
 
 
 def norm(vec):
@@ -80,16 +100,11 @@ class TestResponseShape:
 
     def test_the_messages_shape_returns_exactly_one_datum(self):
         c, _ = client()
-        body = c.post('/v1/embeddings', json={
-            'model': 'm',
-            'messages': [
-                {'role': 'system', 'content': [{'type': 'text', 'text': 'Represent it.'}]},
-                {'role': 'user', 'content': [{'type': 'text', 'text': 'hallo'}]},
-                {'role': 'assistant', 'content': [{'type': 'text', 'text': ''}]},
-            ],
-            'continue_final_message': True,
-            'add_special_tokens': True,
-        }).json()
+        body = c.post('/v1/embeddings', json=chat(
+            {'role': 'system', 'content': [{'type': 'text', 'text': 'Represent it.'}]},
+            {'role': 'user', 'content': [{'type': 'text', 'text': 'hallo'}]},
+            add_special_tokens=True,
+        )).json()
         assert len(body['data']) == 1
 
     def test_output_is_always_l2_normalised(self):
@@ -143,10 +158,10 @@ class TestInstructionPlumbing:
 
     def test_the_system_message_reaches_the_backend_verbatim(self):
         c, backend = client()
-        c.post('/v1/embeddings', json={'model': 'm', 'messages': [
+        c.post('/v1/embeddings', json=chat(
             {'role': 'system', 'content': 'Retrieve images or text relevant to the user\'s query.'},
             {'role': 'user', 'content': 'hund am strand'},
-        ]})
+        ))
         assert backend.seen[0][0].instruction == \
             "Retrieve images or text relevant to the user's query."
 
@@ -154,12 +169,12 @@ class TestInstructionPlumbing:
 class TestImages:
     def test_a_data_uri_reaches_the_backend_as_bytes(self):
         c, backend = client()
-        res = c.post('/v1/embeddings', json={'model': 'm', 'messages': [
+        res = c.post('/v1/embeddings', json=chat(
             {'role': 'user', 'content': [
                 {'type': 'image_url', 'image_url': {'url': png_data_uri()}},
                 {'type': 'text', 'text': 'ein bild'},
             ]},
-        ]})
+        ))
         assert res.status_code == 200
         item = backend.seen[0][0]
         assert len(item.images) == 1
@@ -167,41 +182,82 @@ class TestImages:
 
     def test_a_broken_data_uri_is_a_400(self):
         c, _ = client()
-        res = c.post('/v1/embeddings', json={'model': 'm', 'messages': [
+        res = c.post('/v1/embeddings', json=chat(
             {'role': 'user', 'content': [
                 {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,####'}},
             ]},
-        ]})
+        ))
         assert res.status_code == 400
         assert 'base64' in res.json()['error']['message']
 
-    def test_remote_urls_are_refused_when_disabled(self):
-        c, _ = client(allow_remote_images=False)
-        res = c.post('/v1/embeddings', json={'model': 'm', 'messages': [
+    def test_remote_urls_are_refused_by_default(self):
+        # The polarity is the point: a shim that fetches arbitrary URLs on
+        # request is an SSRF proxy for anything that can reach it, and the
+        # traffic this tool exists for (the app, the eval, the README's own
+        # examples) sends `data:` URIs. Opening it is a deliberate flag.
+        c, _ = client()
+        res = c.post('/v1/embeddings', json=chat(
             {'role': 'user', 'content': [
                 {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/a.png'}},
             ]},
-        ]})
+        ))
         assert res.status_code == 400
         assert 'remote' in res.json()['error']['message']
+        assert '--allow-remote-images' in res.json()['error']['message']
+
+    def test_the_flag_opens_remote_fetching(self):
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'\x89PNG-remote-bytes')
+
+        fetcher = httpx.Client(transport=httpx.MockTransport(handler))
+        c, backend = client(allow_remote_images=True, image_client=fetcher)
+        res = c.post('/v1/embeddings', json=chat(
+            {'role': 'user', 'content': [
+                {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/a.png'}},
+            ]},
+        ))
+        assert res.status_code == 200
+        assert backend.seen[0][0].images == (b'\x89PNG-remote-bytes',)
+
+    def test_a_redirect_is_refused_rather_than_followed(self):
+        # A permitted host that 302s is how a fetch reaches 169.254.169.254 or
+        # a loopback service, so the fetcher does not follow one.
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                302, headers={'location': 'http://169.254.169.254/latest/meta-data/'},
+            )
+
+        fetcher = httpx.Client(transport=httpx.MockTransport(handler))
+        c, _ = client(allow_remote_images=True, image_client=fetcher)
+        res = c.post('/v1/embeddings', json=chat(
+            {'role': 'user', 'content': [
+                {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/a.png'}},
+            ]},
+        ))
+        assert res.status_code == 400
+        assert 'redirect' in res.json()['error']['message']
 
     def test_the_pixel_guard_refuses_an_oversized_image_when_a_ceiling_is_set(self):
         c, _ = client(max_pixels=64)
-        res = c.post('/v1/embeddings', json={'model': 'm', 'messages': [
+        res = c.post('/v1/embeddings', json=chat(
             {'role': 'user', 'content': [
                 {'type': 'image_url', 'image_url': {'url': png_data_uri(100, 100)}},
             ]},
-        ]})
+        ))
         assert res.status_code == 400
         assert 'max-pixels' in res.json()['error']['message']
 
     def test_no_ceiling_lets_a_large_image_through(self):
         c, _ = client()
-        res = c.post('/v1/embeddings', json={'model': 'm', 'messages': [
+        res = c.post('/v1/embeddings', json=chat(
             {'role': 'user', 'content': [
                 {'type': 'image_url', 'image_url': {'url': png_data_uri(1200, 1200)}},
             ]},
-        ]})
+        ))
         assert res.status_code == 200
 
 
@@ -322,3 +378,71 @@ class TestModelsAndHealth:
         assert res.status_code == 503
         assert res.json()['status'] == 'degraded'
         assert '/props' in res.json()['reason']
+
+    def test_both_diagnostics_read_the_backend_afresh(self):
+        # These two are what an operator checks after restarting llama-server,
+        # so serving them from a cache filled by the previous process reports a
+        # dead media marker and the previous GGUF's name as current. The embed
+        # path keeps the cache — it is per-request hot — and re-reads only when
+        # a request actually fails (test_llama_backend.py).
+        c, backend = client()
+        c.get('/healthz')
+        c.get('/v1/models')
+        assert backend.refreshes == 2
+
+
+class TestSafetyDefaults:
+    """The two defaults that are security decisions rather than ergonomics.
+
+    Both were mutated to the unsafe value against the rest of the suite and it
+    stayed green, which is what these pin.
+    """
+
+    def test_the_shim_binds_loopback(self):
+        assert Settings().host == '127.0.0.1'
+
+    def test_remote_image_fetching_is_off(self):
+        assert Settings().allow_remote_images is False
+
+    def test_a_body_ceiling_exists_and_is_sane(self):
+        assert 1 <= Settings().max_body_bytes <= 128 * 1024 * 1024
+
+
+class TestBodyLimit:
+    """`await request.json()` buffers whatever arrives; uvicorn caps nothing.
+
+    A `data:` URI is base64, so a request is ~4/3 of the bytes it carries, and
+    the app's own precedent is a ladder of explicit rungs (CLAUDE.md, #1178).
+    413 rather than 400: the body was well-formed, it was too big.
+    """
+
+    def test_a_body_over_the_ceiling_is_413(self):
+        c, backend = client(max_body_bytes=2048)
+        res = c.post('/v1/embeddings', json={'model': 'm', 'input': 'x' * 8192})
+        assert res.status_code == 413
+        assert '2048' in res.json()['error']['message']
+        assert backend.seen == [], 'an over-size body reached the backend'
+
+    def test_a_body_under_the_ceiling_is_served(self):
+        c, _ = client(max_body_bytes=8192)
+        res = c.post('/v1/embeddings', json={'model': 'm', 'input': 'x' * 128})
+        assert res.status_code == 200
+
+    def test_a_chunked_body_is_counted_as_it_streams(self):
+        # No `content-length` to check, so the header test alone would let this
+        # through: the limit has to be enforced against the bytes themselves.
+        import json as jsonlib
+
+        payload = jsonlib.dumps({'model': 'm', 'input': 'x' * 8192}).encode()
+
+        def chunks():
+            for i in range(0, len(payload), 512):
+                yield payload[i:i + 512]
+
+        c, backend = client(max_body_bytes=2048)
+        res = c.post(
+            '/v1/embeddings', content=chunks(),
+            headers={'content-type': 'application/json'},
+        )
+        assert res.status_code == 413
+        assert backend.seen == []

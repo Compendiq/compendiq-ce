@@ -20,6 +20,15 @@ prompt:
    the literal `NULL` only when the content list comes out *empty*, so
    `text=''` yields an empty text part instead. The key is therefore omitted
    rather than set to `''`.
+
+And one that **cannot** be compensated, so it is written down instead: an
+*explicitly empty* system message. `processor.py` builds the system turn as
+`item.get("instruction") or self.default_embedding_instruction`, so any falsy
+instruction becomes the default and the library's API has no way to express an
+empty one. The `llama` backend emits `<|im_start|>system\\n<|im_end|>\\n` for
+that body (which is what `chat_template.jinja` does); this one emits the
+default. Nothing else diverges, and no caller of the design's D4 shape sends an
+empty system message — the README says so beside rule (1).
 """
 
 from __future__ import annotations
@@ -70,7 +79,9 @@ class MlxBackend:
                 raise BackendError(f'could not load {self._model_path}: {exc}') from exc
         return self._loaded
 
-    def info(self) -> BackendInfo:
+    def info(self, *, refresh: bool = False) -> BackendInfo:
+        # `refresh` is accepted and ignored: the model is in-process, so there
+        # is no other process whose identity could have changed underneath.
         return BackendInfo(
             backend='mlx',
             model_id=self._model_id or self._model_path,

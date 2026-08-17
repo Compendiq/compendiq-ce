@@ -56,14 +56,22 @@ NULL_CONTENT = 'NULL'
 def normalise_instruction(instruction: str | None) -> str:
     """The system message as the model was trained to see it.
 
-    Falls back to :data:`DEFAULT_INSTRUCTION`, then appends a period unless the
-    last character is already punctuation — mirroring the reference embedder::
+    `None` — the caller sent no system message — falls back to
+    :data:`DEFAULT_INSTRUCTION`. An **empty string** does not: that is a system
+    message the caller wrote, and `chat_template.jinja` takes its
+    `messages[0].role == 'system'` branch for it and emits
+    ``<|im_start|>system\\n<|im_end|>\\n``. Collapsing the two would be the one
+    place the shim invents an instruction the caller explicitly declined.
+
+    Then a period is appended unless the last character is already punctuation
+    — mirroring the reference embedder, including its leading truthiness test,
+    which is what leaves an empty instruction empty::
 
         if instruction and not unicodedata.category(instruction[-1]).startswith('P'):
             instruction = instruction + '.'
     """
-    text = instruction or DEFAULT_INSTRUCTION
-    if not unicodedata.category(text[-1]).startswith('P'):
+    text = DEFAULT_INSTRUCTION if instruction is None else instruction
+    if text and not unicodedata.category(text[-1]).startswith('P'):
         text = text + '.'
     return text
 

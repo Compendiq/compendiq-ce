@@ -90,9 +90,21 @@ class TestInstruction:
             'Represent the user\'s input.'
         assert normalise_instruction('What is this?') == 'What is this?'
 
-    def test_empty_instruction_becomes_the_default(self):
-        assert normalise_instruction('') == DEFAULT_INSTRUCTION
+    def test_only_an_absent_instruction_becomes_the_default(self):
+        # `None` is "the caller sent no system message"; `''` is "the caller
+        # sent an empty one". `chat_template.jinja` renders the second as
+        # `<|im_start|>system\n<|im_end|>\n`, so collapsing the two would have
+        # the shim inventing an instruction the caller explicitly declined —
+        # the one exception rule (1) would otherwise have.
         assert normalise_instruction(None) == DEFAULT_INSTRUCTION
+        assert normalise_instruction('') == ''
+
+    def test_an_empty_instruction_renders_an_empty_system_message(self):
+        assert build_prompt(instruction='', text='x') == (
+            '<|im_start|>system\n<|im_end|>\n'
+            '<|im_start|>user\nx<|im_end|>\n'
+            '<|im_start|>assistant\n'
+        )
 
     def test_non_latin_instruction_still_gets_its_period(self):
         assert normalise_instruction('Beschreibe die Eingabe') == 'Beschreibe die Eingabe.'

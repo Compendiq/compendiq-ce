@@ -118,6 +118,19 @@ class TestInputBuilding:
         be.embed([ResolvedItem(text='hallo', instruction=None)])
         assert model.calls[0]['inputs'][0]['instruction'] == "Represent the user's input."
 
+    def test_an_explicitly_empty_instruction_is_passed_through_as_empty(self):
+        # And the library then substitutes its own default for it —
+        # `processor.py:256` is `item.get("instruction") or
+        # self.default_embedding_instruction`, so any falsy value is the
+        # default and there is no way to express "an empty system message"
+        # through its API. This backend therefore CANNOT match the `llama`
+        # one for that one body; the divergence is named in the module
+        # docstring and the README rather than papered over with a sentinel
+        # that would be a third prompt again.
+        be, model, _ = make()
+        be.embed([ResolvedItem(text='hallo', instruction='')])
+        assert model.calls[0]['inputs'][0]['instruction'] == ''
+
     def test_empty_text_is_omitted_so_the_library_emits_NULL(self):
         # Passing text='' would give the library a non-empty content list and
         # therefore an empty text part instead of the literal NULL.

@@ -146,6 +146,27 @@ class TestStructure:
         assert res.status_code == 400
         assert 'native' in res.json()['error']['message']
 
+    def test_a_body_without_the_continuation_flag_is_refused(self, client):
+        # The whole point of the tool: the request that would silently pool a
+        # different position on vLLM does not quietly succeed here either.
+        body = messages_body(text='x')
+        del body['continue_final_message']
+        res = client.post('/v1/embeddings', json=body)
+        assert res.status_code == 400
+        assert 'continue_final_message' in res.json()['error']['message']
+
+    def test_a_remote_image_url_is_refused_unless_the_flag_is_set(self, client):
+        # Skipped rather than failed when the operator started the shim with
+        # --allow-remote-images: that is a real configuration, just not the
+        # default this asserts.
+        res = client.post('/v1/embeddings', json=messages_body(
+            image_data_uri='https://example.invalid/a.png',
+        ))
+        if res.status_code == 200:
+            pytest.skip('this shim was started with --allow-remote-images')
+        assert res.status_code == 400
+        assert 'remote' in res.json()['error']['message']
+
 
 class TestOrdering:
     def test_near_paraphrases_beat_an_unrelated_pair(self, client):

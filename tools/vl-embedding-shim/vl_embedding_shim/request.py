@@ -14,6 +14,16 @@
 vLLM's own semantics ("a list of `messages` … will be treated as a single
 prompt to the model"), not a shim limitation.
 
+Two things about this shape are worth stating plainly, because "exactly vLLM's
+shape" is what the tool advertises:
+
+* **The continuation is enforced, not assumed.** See `_check_continuation` —
+  the shim refuses a body vLLM would render without the trailing
+  ``<|im_start|>assistant\\n``, which is stricter than vLLM on purpose.
+* **Content-part order is normalised to images-then-text**, after the reference
+  embedder. vLLM instead preserves the caller's interleaving, so send image
+  parts first (as design D4 does) if you care about the two matching.
+
 **Shape B — the plain `{model, input}` shape.** Accepted so the app's own
 `generateEmbedding` (which posts exactly that, and reads `data[i].embedding`)
 can drive text-parity runs and the retrieval eval against this server. Each
@@ -126,7 +136,14 @@ def _image_url(part: Mapping[str, Any]) -> str:
     raise ShimRequestError('an image_url part needs image_url.url')
 
 
-def _parse_messages(messages: Any) -> EmbedItem:
+def _parse_messages(messages: Any) -> tuple[EmbedItem, bool]:
+    """`(item, ends_with_an_assistant_turn)`.
+
+    The flag is returned rather than checked here because the two fields that
+    decide whether the prompt ends at the generation point —
+    `continue_final_message` and `add_generation_prompt` — are top-level body
+    fields, not messages. `_check_continuation` reads both together.
+    """
     if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
         raise ShimRequestError('messages must be a list')
     entries: list[Mapping[str, Any]] = []
@@ -142,6 +159,7 @@ def _parse_messages(messages: Any) -> EmbedItem:
 
     instruction: str | None = None
     user: Mapping[str, Any] | None = None
+    ends_with_assistant = False
 
     for index, message in enumerate(entries):
         role = message['role']
@@ -176,6 +194,7 @@ def _parse_messages(messages: Any) -> EmbedItem:
                     'continuation point (continue_final_message), not a turn; '
                     'its content would be silently dropped'
                 )
+            ends_with_assistant = True
 
     if user is None:
         raise ShimRequestError('exactly one user message is required')
@@ -195,8 +214,74 @@ def _parse_messages(messages: Any) -> EmbedItem:
             )
 
     # Image parts first, then text — the reference builder's order, regardless
-    # of how the caller interleaved them (research §1.4).
-    return EmbedItem(text=''.join(texts), instruction=instruction, images=tuple(images))
+    # of how the caller interleaved them (research §1.4). NOTE this is a real
+    # divergence from vLLM for an interleaved body: `chat_template.jinja`
+    # iterates `message.content` in order and emits the vision markers where
+    # the caller put them, so `[text, image, text]` renders as `a<image>b`
+    # there and `<image>ab` here. Harmless for D4 traffic, which is always
+    # image-first, and documented in the README's "The request shape".
+    item = EmbedItem(text=''.join(texts), instruction=instruction, images=tuple(images))
+    return item, ends_with_assistant
+
+
+def _check_continuation(body: Mapping[str, Any], *, ends_with_assistant: bool) -> None:
+    """Refuse a `messages` body vLLM would not render as a continuation.
+
+    The whole point of the trailing empty `assistant` turn is that the prompt
+    ends with ``<|im_start|>assistant\\n`` and nothing after it, because that
+    final newline is the token whose hidden state becomes the vector (research
+    §1.4, §2.3). vLLM's `EmbeddingChatRequest` defaults **both**
+    `continue_final_message` and `add_generation_prompt` to `false`, so a body
+    that carries neither renders the user turn closed by ``<|im_end|>\\n`` and
+    pools that position instead — silently, with a plausible-looking vector.
+
+    The shim always builds the continued prompt, so accepting such a body would
+    answer the RIGHT vector for the WRONG request: a client developed green
+    against this server would then ship off-distribution vectors to production.
+    That is precisely the mistake this tool exists to let a laptop catch, so it
+    is refused. The shim is deliberately stricter than vLLM here — in the safe
+    direction, since every body it accepts renders identically on vLLM.
+
+    Two forms are accepted, because vLLM renders both to the same bytes:
+
+    * a trailing empty `assistant` turn + ``continue_final_message: true``
+      (vLLM's own example, design D4); or
+    * no trailing assistant + ``add_generation_prompt: true`` (what the
+      reference embedder's `apply_chat_template` call does).
+
+    Both at once is refused because transformers itself refuses that pair.
+    `add_special_tokens` is accepted in either polarity and ignored: the shim
+    hands a prompt *string* to a backend that tokenizes it, so there is no
+    tokenizer-level flag here to honour.
+    """
+    continue_final = body.get('continue_final_message')
+    add_generation = body.get('add_generation_prompt')
+
+    if continue_final is True and add_generation is True:
+        raise ShimRequestError(
+            'continue_final_message and add_generation_prompt cannot both be true — '
+            'transformers refuses that pair outright, so this body would 400 in '
+            'production rather than embed'
+        )
+
+    if ends_with_assistant:
+        if continue_final is not True:
+            raise ShimRequestError(
+                'a trailing empty `assistant` message needs `continue_final_message: true`. '
+                'vLLM defaults it to false and would close the turn with `<|im_end|>`, '
+                'pooling that position instead of the `<|im_start|>assistant\\n` the model '
+                'was trained to be read at — a different, off-distribution vector. The shim '
+                'refuses the body rather than answer the right vector for the wrong request'
+            )
+        return
+
+    if add_generation is not True:
+        raise ShimRequestError(
+            'a `messages` body must end at `<|im_start|>assistant\\n`: append an empty '
+            '`assistant` message with `continue_final_message: true` (vLLM\'s own example, '
+            'design D4), or pass `add_generation_prompt: true`. vLLM defaults both to false '
+            'and would pool the end of the user turn instead'
+        )
 
 
 def _parse_input(raw: Any, *, convert_flat_instruct: bool) -> tuple[list[EmbedItem], list[int]]:
@@ -267,8 +352,10 @@ def parse_embeddings_request(
     dimensions = _parse_dimensions(body.get('dimensions'))
 
     if has_messages:
+        item, ends_with_assistant = _parse_messages(body['messages'])
+        _check_continuation(body, ends_with_assistant=ends_with_assistant)
         return ParsedRequest(
-            items=[_parse_messages(body['messages'])],
+            items=[item],
             model=model,
             dimensions=dimensions,
             shape='messages',
