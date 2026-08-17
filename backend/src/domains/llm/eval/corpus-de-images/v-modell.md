@@ -14,6 +14,8 @@ Das V-Modell ist nicht zu verwechseln mit dem Verfügbarkeitsmodell (auch abgek�
 
 Vorgeschlagen wurde dieses Vorgehen zuerst von dem US-amerikanischen Softwareingenieur Barry Boehm im Jahre 1979 und basiert auf dem Wasserfallmodell: Die Phasenergebnisse sind bindende Vorgaben für die nächsttiefere Projektphase. Der linke, nach unten führende Ast für die Spezifizierungsphasen schließt mit der Realisierungsphase ab. Eine Erweiterung gegenüber dem Wasserfallmodell sind die zeitlich nachfolgenden Testphasen, die im rechten, nach oben führenden Ast dargestellt werden. Den spezifizierenden Phasen stehen jeweils testende Phasen gegenüber, was in der Darstellung ein charakteristisches „V“ ergibt, das dem Modell auch den Namen gab. Diese Gegenüberstellung soll zu einer möglichst hohen Testabdeckung führen, weil die Spezifikationen der jeweiligen Entwicklungsstufen die Grundlage für die Tests (Testfälle) in den entsprechenden Teststufen sind.
 
+## Anwendungen
+
 ### IT-Entwicklungsprojekte
 
 Das allgemeine V-Modell ist die Grundlage von Entwicklungsstandards wie z. B. dem V-Modell (Entwicklungsstandard) der öffentlichen Hand in Deutschland.

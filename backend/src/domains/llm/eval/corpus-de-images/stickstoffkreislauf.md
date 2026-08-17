@@ -14,6 +14,8 @@ Dass der Stickstoffkreislauf trotz seiner Engpässe funktioniert, zeigen Stoffbi
 
 Die Moleküle des Elementes Stickstoff N2 bestehen aus je zwei kovalent über eine Dreifachbindung miteinander verbundenen Stickstoffatomen. Da die Dreifachbindung nur unter hohem Energieaufwand aufgebrochen werden kann, ist das Molekül N2 sehr reaktionsträge und kann weder von Pflanzen noch von Tieren direkt für die Biosynthese z. B. von Proteinen und den anderen essentiellen Produkten genutzt werden. Nur spezielle Bakterien, insbesondere Cyanobakterien, Knöllchenbakterien, und einige in Symbiose mit derartigen Bakterien an bzw. in ihren Wurzeln lebenden Pflanzen (Leguminosen, wie z. B. Erbsen, Bohnen, Linsen, Luzerne, Lupine) können den Luft-N2-Stickstoff nutzen (siehe Diazotrophie und Stickstofffixierung) und in komplexe stickstoffhaltige Verbindungen wie z. B. Aminosäuren und Proteine umwandeln. Andere Pflanzen sind auf die Zufuhr einfacher, wasserlöslicher Stickstoffverbindungen, wie z. B. Ammonium (NH4+), Nitrat (NO3−)-Ionen oder Harnstoff, als Stickstoffquelle angewiesen und müssen diese Verbindungen über Düngemittel oder Gülle zugeführt bekommen.
 
+## Schritte des Stickstoffkreislaufes
+
 ### Stickstofffixierung
 
 → *Hauptartikel: Stickstofffixierung*

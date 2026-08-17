@@ -30,6 +30,8 @@ Ganz in diesem Sinne war der ursprünglich für das Tor gewählte Name „Friede
 
 Sowohl von der baulichen Anlage der Flügelbauten als auch von der schmückenden Ausstattung her war das Tor nach innen gerichtet. Es sollte somit nicht dem Ankommenden, sondern dem in der Stadt Wohnenden die Herrschermacht verdeutlicht werden. Gleich einer Theaterkulisse diente das Tor dazu, dem König bei der Ankunft in Berlin schmückendes und erhöhendes Beiwerk zur Seite zu stellen.
 
+## Architektur
+
 ### Beschreibung
 
 Das Brandenburger Tor ist ein frühklassizistisches Bauensemble eines Triumphtores, bestehend aus dem eigentlichen Torbauwerk und zwei flankierenden Flügelbauten. Die Flügelbauten stellen nicht nur den Übergang zwischen dem Tor zur angrenzenden Bebauung her, sondern bilden durch ihre vorgezogene Position eine Art barocken Ehrenhof.
@@ -155,6 +157,8 @@ Neben der Repräsentation hatte das Tor auch eine rein funktionale Aufgabe. So w
 Die Durchfahrten des Tores waren, bis auf die mittlere Durchfahrt jeweils mit zwei Toren bestehend jeweils aus zwei Torflügeln verschließbar. Hierbei handelte es sich um jeweils ein Holztor und ein Gittertor. Die Holztore waren nur nachts verschlossen, um tagsüber die Sicht durch das Tor auf den Tiergarten nicht zu beeinträchtigen. Aus ebendiesem Grund hatten die Gittertore einen relativ großen Gitterabstand von 5 Zoll. Die mittlere Durchfahrt war nur mit einem Holztor ausgestattet. Diese Durchfahrt war im Regelfall den „Equipagen des Hofes“ vorbehalten und auf der Außenseite des Tores befand sich ein Wachstand, um die Durchfahrt zu sichern. In den gemauerten Wänden des Tores waren Nischen für die Tore ausgespart, sodass diese im geöffneten Zustand nicht vorstanden. Diese Nischen sind noch in den Tordurchfahrten vorhanden. In das große Holztor der mittleren Durchfahrt war eine kleinere Pforte eingeschnitten worden, um nachts nicht zwei Tore öffnen zu müssen. Die schweren Tore machten von Anfang an Schwierigkeiten. Bereits 1795 waren die Holztore reparaturbedürftig und das große Holztor der mittleren Durchfahrt war so windschief geworden, dass es nicht mehr verschlossen werden konnte. Die eisernen Torflügel wurden 1840 endgültig abgeschafft, nachdem sie zuvor schon einige Jahre nicht mehr genutzt worden waren. Die hölzernen Tore wurden mit der Stadterweiterung von 1861 überflüssig und abgebaut.
 
 Ab der Errichtung des Tores war dieses auch mit Gaslaternen ausgestattet.
+
+## Geschichte
 
 ### Die Quadriga in Paris
 

@@ -106,6 +106,8 @@ Je mehr Aktionspotentiale die Zelle pro Zeitspanne abfeuert, desto stärker ist 
 
 Voraussetzung für die Funktion des Neurons ist also seine Fähigkeit, einen elektrischen Impuls zu empfangen und weiterzuleiten. Dabei spielen wichtige Faktoren eine Rolle: die elektrische Erregbarkeit (den Impuls empfangen), das Ruhepotential (die Möglichkeit, ihn zu integrieren), das Aktionspotential (ihn weiterzuleiten und zu übertragen) und die Erregungsleitung (ihn zielgerichtet zu übertragen).
 
+## Unterscheidung der Nervenzellen in Bau und Funktion
+
 ### Morphologische Unterscheidung
 
 Die im Nervensystem anzutreffenden Neuronen können sich auf mehrere Weise in Aufbau und Funktion unterscheiden. Optisch lassen sie sich dabei gut durch die Art und Anzahl ihrer Fortsätze klassifizieren.
@@ -145,6 +147,8 @@ Eine weitere Möglichkeit der Unterscheidung bieten die einzelnen Funktionen der
 - Sensorische und sensible Neuronen, auch als afferente Nervenzellen bezeichnet, leiten über Nerven oder Nervenfasern Informationen von den Rezeptoren der Sinnesorgane oder aus verschiedenen Organen an Gehirn und Rückenmark bzw. zu den Nervenzentren des Darmes weiter. Die übermittelten Informationen dienen der Wahrnehmung und der motorischen Koordination.
 - Motorische Neuronen, auch als efferente Nervenzellen oder Motoneuronen bezeichnet, übermitteln die Impulse von Gehirn und Rückenmark zu den Muskeln oder Drüsen und lösen dort beispielsweise eine Kontraktion der Muskelzellen aus oder sorgen für die Absonderung von Sekreten bzw. die Ausschüttung von Hormonen.
 - Interneuronen bilden die größte Menge an Neuronen im Nervensystem und sind nicht spezifisch sensorisch oder motorisch. Sie verarbeiten Informationen in lokalen (örtlichen) Schaltkreisen, oder vermitteln Signale über weite Entfernungen zwischen verschiedenen Körperbereichen. Sie haben eine Vermittlerfunktion. Man unterscheidet hier zwischen lokalen, regionalen, segmentalen und intersegmentalen Interneuronen.
+
+## Pathologie der Nervenzelle
 
 ### Pigmentablagerungen
 

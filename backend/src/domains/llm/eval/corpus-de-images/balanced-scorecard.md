@@ -4,6 +4,8 @@
 
 **Balanced Scorecard** (**BSC**, englisch für *ausgewogener Berichtsbogen*) ist ein Konzept zur Messung, Dokumentation und Steuerung der Aktivitäten eines Unternehmens oder einer Organisation zu seiner Vision und Strategie.
 
+## Überblick
+
 ### Geschichte
 
 ![](images/balanced-scorecard__2.png)
@@ -29,6 +31,8 @@ So lassen sich sowohl die argumentativ-logischen Grundlagen des (Geschäfts-)Sys
 ### Ziel
 
 Der Begriff BSC wird irrtümlich für verschiedene Arten von kennzahlenbasierten Systemen verwendet. Die BSC, die eine Ursache-Wirkung-Analyse verlangt, ist aber eine originär andere Managementmethode als die deskriptive Prozesskostenrechnung oder das klassische monetäre Kennzahlensystem (siehe etwa Du-Pont-Schema). Aufgrund ihrer flexiblen und damit umfassenden Gestaltungsmöglichkeit ist die Balanced Scorecard ein Instrument zur Einrichtung eines integrierten Managementsystems. Über die Kennziffern zu den Funktionen und Attributen der betrachteten Objekte in der BSC wird es möglich, die Entwicklung der Geschäftsvision zu verfolgen. Auf diese Weise ermöglicht die BSC dem Management, nicht nur die finanziellen Aspekte zu betrachten, sondern auch strukturelle Frühindikatoren für den Geschäftserfolg zu steuern. Mit den Methoden der BSC soll also das Blickfeld des Managements von einer traditionellen, durch finanzielle Aspekte gekennzeichneten Unternehmenssicht auf alle relevanten Teile gelenkt werden und so zu einem ausgewogenen (englisch „balanced“) Bild führen. Die umfassendere Sicht ermöglicht dann konkretere Maßnahmen zur Ausrichtung der Organisation an den vorgegebenen Zielen.
+
+### Vorgehen
 
 #### Aufbau der BSC
 
@@ -146,6 +150,8 @@ Des Weiteren wird ein modifiziertes Modell, dass Balanced-Innovation-Card-Kennza
 ## Erkenntnismodell
 
 Da die Balanced Scorecard letztlich auf einem positiven Modell basiert, kann es erkenntnistheoretisch im Sinne einer Falsifizierung sinnvoll sein, die Scorecard statt auf Nutzen, Strategie, Chancen und richtiges Handeln im Gegenteil konsequent auf potenziellen Schaden, Hygiene, Risiken und Fehlervermeidung auszurichten. Dabei müsste entsprechend durchgängig auf die möglichen Fehler mit den größten Schadens-Risiken abgestellt und die BSC konsequent mit einer Fehler-Möglichkeiten- und Einfluss-Analyse (FMEA bzw. FMECA, FMEDA, Fehlerbaumanalyse) ergänzt bzw. integriert oder gleich durch diese ersetzt werden. In diesem Fall wäre die FMEA, der ebenfalls ein Ursache-Wirkungs-Modell zugrunde liegt, auf alle Perspektiven auszudehnen. Das Verhältnis von Regel (Objekt/Funktion) und Ausnahme (Maßnahme) würde dadurch indes umgekehrt und das regelmäßige Handeln grundsätzlich als Vermeidung und Beseitigung von Mängeln, Ausnahmen und Fehlern begriffen (Schadens- statt Nutzen-Orientierung). In der Praxis wird es allerdings wohl am ehesten auf eine Mischung beider Ansätze – QFD und FMEA über alle Perspektiven – hinauslaufen oder wie beim SWOT auf alle 4, nämlich Stärken/Chancen (Nutzenseite) und Schwächen/Risiken (Schadenseite).
+
+## Bewertung
 
 ### Chancen
 

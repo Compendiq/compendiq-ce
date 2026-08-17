@@ -1,7 +1,7 @@
 # German image-bearing eval corpus (#1115 P5a)
 
 66 German Wikipedia articles carrying 189 vendored images
-(6.23 MB), built by `tools/eval-corpus-images/build.py`.
+(6.21 MB), built by `tools/eval-corpus-images/build.py`.
 
 | Shape | Pages | What it is |
 |---|---|---|
@@ -40,10 +40,10 @@ thing it scores measures the tuning.
 
 ## Licensing
 
-Third-party content, licensed separately from this MIT repository, and a test
-fixture rather than product content. Page text is CC BY-SA 4.0 (adapted);
-images carry their own licences. Obligations, per page and per image, are in
-`LICENSE-ATTRIBUTION.md`.
+Third-party content, licensed separately from this repository's **AGPL-3.0**
+(root `LICENSE`), and a test fixture rather than product content. Page text is
+CC BY-SA 4.0 (adapted); images carry their own licences. Obligations, per page
+and per image, are in `LICENSE-ATTRIBUTION.md`.
 
 ## Rebuilding
 
@@ -54,21 +54,25 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python build.py --update   # moves to current revisions — obliges a re-label
 ```
 
-A plain run reads the `revid` of every page back out of `MANIFEST.json` before
-it wipes the directory, so it rebuilds the committed bytes rather than tracking
-whatever the articles say today. Nothing here may be hand-edited: the builder
-regenerates the whole directory, and `corpus-de-images.test.ts` fails on a
-manifest that has drifted from the files beside it.
+A plain run reads the `revid` of every page back out of `MANIFEST.json`, so it
+rebuilds the committed text rather than tracking whatever the articles say
+today. The images are pinned by a second mechanism, because Commons serves the
+current version of a file and an upstream re-draw would otherwise change a
+"pinned" rebuild silently: each image records the upstream `sha1`, and a run
+that finds one moved names the file and exits non-zero. Nothing here may be
+hand-edited — the builder regenerates the whole directory into a staging
+sibling and swaps it in only on success, and `corpus-de-images.test.ts` fails
+on a manifest that has drifted from the files beside it.
 
 ## What the licence filter rejected on this build
 
 The articles carry **1075** captioned figures between them. A page
-contributes at most 3, so the filter ran on **203**
-of them and refused **14**. The larger number is not the
+contributes at most 3, so the filter ran on **207**
+of them and refused **18**. The larger number is not the
 filter's denominator and is not quoted as one.
 
 | Reason | Figures |
 |---|---|
-| no named author | 7 |
+| no named author | 11 |
 | licence not permitted | 4 |
 | not hosted on Commons | 3 |

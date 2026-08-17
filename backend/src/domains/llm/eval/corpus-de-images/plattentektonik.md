@@ -6,6 +6,8 @@ Vorrangig bezeichnet der Begriff *Plattentektonik* heute jedoch nicht mehr die T
 
 Zu den mit der Plattentektonik verbundenen Prozessen und Erscheinungen zählen die Entstehung von Faltengebirgen (Orogenese) durch den Druck zusammenstoßender Kontinente sowie die häufigsten Formen von Vulkanismus und Erdbeben.
 
+## Überblick
+
 ### Die Lithosphärenplatten
 
 Grundlegend für die Plattentektonik ist die fragmentierte Struktur der Lithosphäre. Sie ist in sieben große **Lithosphärenplatten** gegliedert, die auch als **tektonische Platten** oder (vor allem von Nicht-Geologen) als **Kontinentalplatten** bzw. **Erdplatten** bezeichnet werden:
@@ -37,6 +39,8 @@ Darüber hinaus können zwei Platten auch horizontal aneinander vorbeigleiten (*
 Das Lager, auf dem die Lithosphärenplatten gleiten, befindet sich im Grenzbereich zwischen der starren Lithosphäre und der darunterliegenden, extrem zäh fließenden Asthenosphäre (engl.: *Lithosphere-Asthenosphere Boundary*, LAB). Die Ergebnisse seismischer Untersuchungen des Ozeanbodens im Westpazifik lassen darauf schließen, dass im Bereich der LAB zwischen 50 und 100 km Tiefe eine geringviskose Schicht existiert, die die mechanische Entkopplung der Lithosphäre von der Asthenosphäre erlaubt. Als Grund für die geringe Viskosität wird angenommen, dass der Mantel in diesem Bereich entweder teilweise aufgeschmolzen ist oder einen hohen Anteil flüchtiger Stoffe (hauptsächlich Wasser) enthält.
 
 Während früher die Reibung des konvektiven Mantels (engl.: *convective drag*) an der Basis der Lithosphärenplatten als die wichtigste Triebkraft der Plattentektonik betrachtet wurde, gelten heute eher die von den Platten selbst ausgehenden Kräfte als die entscheidenden. Der sogenannte *Ridge Push* („Rückendruck“) geht von der jungen, warmen, auf dem Mantel „aufschwimmenden“ und daher hoch aufragenden Kruste der Mittelozeanischen Rücken aus, die einen horizontal von den Spreizungszonen weg gerichteten Druck erzeugt. Der *Slab Pull* („Plattenzug“) ist der Zug, den alte, kalte Lithosphäre erzeugt, wenn sie an Subduktionszonen in den konvektiven Erdmantel eintaucht. Durch Gesteinsumwandlungen subduzierter ozeanischer Kruste in größerer Manteltiefe erhöht sich die Dichte des Krustengesteins und bleibt höher als die Dichte des sie umgebenden Mantelmaterials. Dadurch kann der Zug auf den noch nicht subduzierten Teil der entsprechenden Lithosphärenplatte aufrechterhalten werden.
+
+## Geschichte der Theorie der Plattentektonik
 
 ### Theorie der Kontinentaldrift
 

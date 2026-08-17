@@ -8,6 +8,8 @@ Sein Bau wurde 1248 im Auftrag von Konrad I. nach Entwurf von Meister Gerhard be
 
 Nach dem Zweiten Weltkrieg wurde der scheinbar unversehrte Dom inmitten der ausgebombten Stadt als „Wunder“ verstanden und zu einem emotionalen Symbol für den Lebenswillen. Der Dom zählt seit 1996 zum UNESCO-Weltkulturerbe und gehört zu den meistbesuchten Sehenswürdigkeiten Deutschlands.
 
+## Vorgängerbauten
+
 ### Römische und merowingische Bischofskirche
 
 Maternus, ein Vertrauter des Kaisers Konstantin I., war in den Jahren um 313 (dem Jahr der „konstantinischen Wende“) der erste urkundlich bezeugte Bischof Kölns. Die ursprünglich kleine frühchristliche Gemeinde, bis zum Toleranzedikt des Galerius im Jahre 311 noch „illegal“ und von den Behörden der Provinz Germania inferior phasenweise verfolgt und allenfalls toleriert, versammelte sich über Generationen – wohl schon seit Anfang oder Mitte des 3. Jahrhunderts – nicht in einer Kirche, sondern in privaten Wohnhäusern christlicher Familien. Ein solches lag vermutlich auf dem Domhügel unter dem heutigen Chor. Es befand sich nicht im Zentrum der Provinzhauptstadt Colonia Claudia Ara Agrippinensium, wo das Praetorium stand, sondern am nördlichen Siedlungsrand unweit des Rheinufers, wo etwa zur selben Zeit die römische Stadtmauer errichtet wurde, auf deren Innenseite das Haus in unmittelbarer Nähe lag. Auf seinem Grundstück wurde eine erste Taufkapelle gebaut, deren begehbares Taufbecken unter dem Domchor archäologisch ergraben wurde. Es wird vermutet, dass an der Stelle dieses Hauses eine erste Kirche entstand, die spätestens zur Zeit des Maternus († um 328) zur ersten Bischofskirche (Kathedrale) wurde. Der heutige Dom ist zwar ein gotischer Bau, doch die wahrscheinliche Platzkontinuität der Kathedrale entspricht in etwa der des Trierer Doms, in dem sogar noch bedeutende römische Bausubstanz steckt.
@@ -95,6 +97,8 @@ Nach dem Einmarsch französischer Revolutionstruppen in Köln im Oktober 1794 wu
 
 Napoleon Bonaparte richtete 1802 das Bistum Aachen ein, zu dem auch das linksrheinische Gebiet des Erzbistums Köln gehörte. Der Dom in Köln wurde 1803 zur Pfarrkirche der Dompfarre (*Pfarrgemeinde an der Hohen Domkirche St. Petrus*) herabgestuft. Nach Ende der französischen Herrschaft wurde das Bistum Aachen durch den Papst mit der Bulle *De salute animarum* am 16. Juli 1821 *de jure* aufgelöst, der Kölner Dom wurde wieder Kathedrale. Im Jahr 1821 übernahm der preußische Staat die Baulast für das Gebäude. Der Dom blieb bis zur Neuordnung der Pfarrseelsorge in der Kölner Innenstadt im Jahre 2009 gleichzeitig Pfarrkirche. Seit 2009 ist er als Kathedral- und Kapitelskirche von der Pfarrseelsorge exemt.
 
+## Baugeschichte im 19. Jahrhundert
+
 ### Vollendung als nationale Aufgabe
 
 Johann Wolfgang von Goethe begeisterte sich 1770 für das gotische Straßburger Münster und löste mit seiner Schrift *Von Deutscher Baukunst* eine romantisch fundierte Neuentdeckung des gotischen Baustils aus. Später feierten Publizisten – wie der Naturforscher und Reiseschriftsteller Georg Forster, der den Dom 1790 gemeinsam mit Alexander von Humboldt besuchte, und der Kulturphilosoph Friedrich von Schlegel (1804) – den Kölner Dom als Kunstwerk, das noch auf seine Vollendung warte. Der katholische Publizist Joseph Görres schließlich verschob die Argumentation, als er 1814 den Dom als nationales Heiligtum pries und ihn damit zu einem Symbol für den gewünschten deutschen Nationalstaat machte.
@@ -124,6 +128,8 @@ Für die Vollendung des Domes wurden zwischen 1823 und 1880 insgesamt 6,6 Millio
 Ab 1845 konnte der Verein allerdings seinen Anteil an der Finanzierung nur noch teilweise aufbringen, so dass ab 1848 nach dem 600-jährigen Jubiläum der Grundsteinlegung die Bautätigkeit deutlich verlangsamt werden musste. Als 1863 der Innenraum vollendet war, zeigten Hochrechnungen, dass bei gleichbleibendem Finanzfluss die Vollendung noch weitere 50 Jahre dauern würde. So entschied sich der Verein, 1864 zur Finanzierung eine Domlotterie einzurichten, die sich als ergiebige Geldquelle erwies. Mit den neuen Mitteln konnte der Dombaumeister in der Domhütte 500 Steinmetze beschäftigen und die Türme bis 1880 fertig bauen. Bis zum Ende der Bauzeit steuerte der Verein zu den Baukosten von rund 6,6 Millionen Taler insgesamt 59,4 % bei. 32,4 % bezahlte der Staat, 6,8 % wurde durch eine Kathedralsteuer und Kollekten finanziert.
 
 Der heutige Dom ist 144,58 Meter lang, 86,25 Meter breit und 69,95 Meter hoch. Seine Turmhöhe beträgt 157,22 Meter. Er bietet 800–1500 Sitzplätze.
+
+## Dom seit Vollendung
 
 ### Zwischenkriegszeit
 
@@ -194,6 +200,8 @@ Johannes Paul II. war 1980 der erste Papst, der den Dom besuchte. Um dieses Erei
 
 An den Besuch Papst Benedikt XVI. zum Weltjugendtag 2005 erinnert im Mittelschiff eine von dem Kölner Bildhauer Heribert Calleen gestaltete Bronzetafel. Die Gesichtszüge von Papst Franziskus sind an einer kleinen Steinfigur verewigt, die an einem Baldachin im Hauptportal sitzt.
 
+## Gotisches Bausystem
+
 ### Wahl der gotischen Form
 
 Der Kölner Dom ist ein Bauwerk der Gotik. Die Wahl des gotischen Baustils im Jahre 1248 war ein radikaler Bruch mit der bis dahin im Rheinland üblichen spätromanischen Bautradition. Ebenfalls ohne Beispiel war es, dass die Planer in Köln sich sowohl im Bausystem als auch in Einzelformen an einem konkreten Bauwerk – nämlich der Kathedrale von Amiens – orientierten. Schließlich löste sich der gotische Dom auch radikal von der liturgischen Ausrichtung des Alten Doms. Dieser war zweichörig gebaut und hatte den Hochaltar mit dem Petruspatrozinium im Westchor positioniert und einen diesem liturgisch untergeordneten Marienaltar im Ostchor. Der gotische Neubau dagegen steht in der Tradition der in Frankreich üblichen Form mit nur einem Chor im Osten, in welchem in Köln nun der neue Hauptaltar mit Marienpatrozinium errichtet wurde, der 1322 auch Funktionen erhielt, die bisher dem Petrusaltar vorbehalten waren. Der Dreikönigenschrein sollte in der Vierung aufgestellt werden, so dass das Domkapitel im Binnenchor zwischen Schrein und Marienaltar sitzen konnte. Mit diesem Konzept konnten die Domherren sinnbildlich Teil des epiphanischen Geschehens zwischen den als Reliquien anwesenden Heiligen Drei Königen und der im Hochaltar vergegenwärtigten Gottesmutter werden.
@@ -261,6 +269,8 @@ Demgegenüber hatte der zwischenzeitlich gegründete Zentral-Dombauverein in sei
 
 Zwirner gelang es, die mittelalterliche Planung zu vollenden, indem er direkt auf den Fassadenriss F aus dem Jahre 1370 zurückgriff und seine Entwürfe für die Querhausfassaden – für die keine mittelalterliche Planung überliefert ist – ohne wesentliche Modifikationen daraus isolierte. Auch die Strebepfeiler gestaltete er nach den Vorbildern aus gotischer Zeit. Seine neugotische Vollendung konnte gelingen, weil die Baumeister des Spätmittelalters sich in einer einheitlichen, hochgotischen Architektursprache bewegt hatten, die – obwohl sie keinem allgemeinen gotischen Plan folgte – einer homogenen Idee der idealen Kathedrale verpflichtet schien. „Hätte man um 1500 den Dom in einer Abweichung vom Plan irgendwie fertig gebaut, dann hätte es eine wirkliche Vollendung niemals gegeben.“
 
+## Beschreibung
+
 ### Chor
 
 Der Hochchor wurde 1322 geweiht; es ist der einzige Teil des Domes, der im Mittelalter vollständig fertiggestellt werden konnte. Heute gilt er als „der architektonisch glanzvollste Teil des Innenraumes.“ Der Chorbau besteht aus dem Binnenchor, dem Chorumgang mit den sieben Chorkapellen, den Chorseitenschiffen und der Sakramentskapelle. Alle Bauteile zeigen eine Perfektion der architektonischen Form, die Dombaumeister Arnold Wolff als „vollkommene Kathedrale“ bezeichnet hat.
@@ -320,6 +330,8 @@ Den Figurenschmuck der Nordquerhausfassade schuf der Bildhauer Peter Fuchs zwisc
 Charakteristisch für die Silhouette des Kölner Domes ist die Doppelturmfassade mit den beiden spitz aufragenden Turmhelmen. Sie wurden bei der Vollendung des Domes bis 1880 errichtet und sind daher eine Arbeit aus neugotischer Zeit. Die Realisierung folgte allerdings bis ins Detail der mittelalterlichen Planung, die in dem um 1370 von Michael von Savoyen entwickelten *Fassadenriß F* dargestellt ist. Meister Michael hatte einen achteckigen, vollkommen durchbrochenen Turmhelm aus Maßwerk entworfen, der von einer mehrstufigen Kreuzblume bekrönt wird. Offenkundig kannte er den von Erwin von Steinbach geplanten Turm des Freiburger Münsters und dessen Maßwerkhelm, entwickelte für Köln allerdings eine massigere Form, bei der das Oktogon sich nur schrittweise aus dem Viereck des Turmes herauszuentwickeln scheint. Die aus Maßwerk gestalteten Turmhelme waren offensichtlich von der Goldschmiedekunst inspiriert, die vergleichbare Formen für Reliquiare oder Ziborien gefunden hatte. Nach objektiven funktionalistischen Kriterien waren durchbrochene Turmhelme nicht sinnvoll, weil sie keinen Schutz vor Niederschlag boten und das Maßwerk ursprünglich keine statischen Aufgaben übernehmen konnte. Dennoch wollten die Architekten mit diesen Lösungen, die die Grenzen des technisch Möglichen ausloteten, unterstreichen, dass das Gebäude ein „ins Monumentale gesteigerte Reliquienschrein sein will“, der die Heiligen Drei Könige in seinem Inneren beherberge.
 
 Es wird angenommen, dass die um 1370 durchgeführte, für damalige Zeit sehr aufwendige und in großer Genauigkeit vollzogene Planung nicht vom Dombaumeister allein, sondern unter Beteiligung mehrerer Meister erarbeitet wurde. Denn zahlreiche Motive und Gestaltungselemente dieser Planung wurden an anderen Gebäuden dieser Zeit realisiert, obwohl dieser Teil des Kölner Doms im Mittelalter nicht vollendet werden konnte. Der Maßwerkhelm im Freiburger Münster blieb der einzige größere Maßwerkhelm, der im 14. Jahrhundert errichtet wurde. Weitere bedeutende Maßwerkhelme schufen in Köln geschulte Baumeister im 15. Jahrhundert auf dem Straßburger Münster und auf der Kathedrale von Burgos. Die anderen bekannten Turmhelme – wie in Ulm oder in Regensburg – sind Werke der Neugotik.
+
+### Dach und Vierungsturm
 
 #### Dach und Dachstuhl
 
@@ -425,6 +437,8 @@ In der Maternuskapelle befindet sich das Altarbild „Anbetung der Könige“, d
 ### Wandgemälde von Andrea Büttner
 
 2025 gewann Andrea Büttner (\* 1972) den „Internationalen Kunstwettbewerb Kölner Dom“ zum christlich-jüdischen Verhältnis. Sie wird ein Wandgemälde für die Marienkapelle über dem Altar der Stadtpatrone gestalten: Ein Steinfundament des Thoraschreins der ehemaligen mittelalterlichen Synagoge in Köln in Originalgröße.
+
+### Altäre
 
 #### Hochaltar
 
@@ -577,6 +591,8 @@ Einzige im Dom beigesetzte weltliche Fürsten sind
 - Gottfried IV. (1318–1368), letzter Graf von Arnsberg, der erbenlos seine Grafschaft an das Erzbistum verkauft hatte (siehe Grabmal des Grafen Gottfried IV. von Arnsberg).
 - Graf Emundus von Friesheim (um 829), der seinen Gau dem Kölner Erzstift vermachte.
 
+## Anbauten
+
 ### Eingangsbauwerk (Turmbesichtigung)
 
 Jährlich wird der Südturm von rund 500.000 Touristen besucht. Da der Aufstieg lange Zeit im Innenraum des Domes begann, störte dies häufig die Gottesdienste. Daher wurde 2009 ein separater Eingang durch ein neben dem Turm errichtetes Bauwerk eröffnet, mit dem der Kölner Architekt Kaspar Kraemer einen Weg durch die mittelalterlichen Fundamente des Turms zu einem 120 m2 großen Raum geschaffen hat. Hier befinden sich die Zugänge zur Besteigung und zu den umfangreichen Ausgrabungen unter dem Fußboden des Doms sowie ein Kiosk. Außerdem sind das Dom-Parkhaus und eine Toilettenanlage erreichbar.
@@ -628,6 +644,8 @@ Dass am Dom wieder Flechten wachsen, zeigt laut der ehemaligen Dombaumeisterin B
 Im Mittelalter war der Torso des Domes eng umbaut. Lediglich die Fassaden des Domes standen frei. Das Portal im Westen konnte ebenerdig betreten werden; zum Südportal gab es einige Stufen. Lediglich im Norden musste ein größerer Höhenunterschied mit einer Treppe von 28 Stufen überwunden werden, um zum Domportal zu gelangen. Im 19. Jahrhundert wurde der Dom als nationales Denkmal freigestellt. Rings um den Dom wurden axiale Plätze frei geräumt und als Grünanlagen gestaltet. Gleichzeitig wurde das Höhenrelief verändert und der Dom auf einen Hügel gestellt, so dass der Eindruck eines Denkmals entstand, das sich über der Stadt frei erhebt. Dies folgte dem Verständnis des Historismus von monumentaler Architektur. Mit zunehmendem Stadtverkehr wurde der Dom allerdings zu einer umbrandeten Verkehrsinsel.
 
 Nach dem Weltkrieg mühte sich der mit dem Wiederaufbau beauftragte Architekt Rudolf Schwarz, den Dom aus seiner räumlichen Isolation zu befreien. Allerdings konnte erst mit der von Fritz Schaller bis 1970 verwirklichten Domplatte „die Domumgebung vollkommen neu erfunden“ werden, indem die Stadt auf die Höhe des Domes angehoben wurde. Das mit Granitplatten gestaltete Plateau für Fußgänger band den Dom zwar an die Fußgängerzone an, schuf an ihren Kanten mit Tunneln, Passagen und dunklen Ecken allerdings sehr unbefriedigende Stadträume, die zunehmend kritisiert wurden. Erst durch eine umfassende Stadtreparatur, die 2006 mit dem Neubau einer großzügigen Treppenanlage zum Bahnhofvorplatz begann und noch andauert, konnte das Bild des Domhügels in moderner, zeitgemäßer Kontur wiedergewonnen werden.
+
+## Literarische Verarbeitung
 
 ### Domsage
 

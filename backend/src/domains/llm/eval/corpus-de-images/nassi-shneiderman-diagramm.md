@@ -36,6 +36,8 @@ Alternative Begriffe: Verzweigung, Alternative, Selektion.
 
 → *Hauptartikel: Schleife (Programmierung)*
 
+## Füllregeln
+
 ### Allgemeingültigkeit
 
 Struktogramme sollten keine programmiersprachenspezifische Befehlssyntax enthalten. Sie müssen so programmiersprachenunabhängig formuliert werden, dass die dargestellte Logik einfach zu verstehen und als Codiervorschrift in jede beliebige Programmiersprache umzusetzen ist.
@@ -63,6 +65,8 @@ In der Entwicklungsumgebung EasyCODE wird direkt anhand von Nassi-Shneiderman-Di
 Nassi-Shneiderman-Diagramme können auch in technischer Dokumentation eingesetzt werden.
 
 Die Programmiersprache Scratch stellt Programme visuell als Struktogramme dar.
+
+## Beispieldiagramme
 
 ### Einfaches Struktogramm
 

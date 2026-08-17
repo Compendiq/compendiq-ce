@@ -117,6 +117,8 @@ Abbildung 4 zeigt ein Petri-Netz-Modell des Keksautomaten, in dem die Marken fü
 Solche einfachen Marken sind intuitiv angemessen, wenn (verteilter) *Kontrollfluss* modelliert wird, wie beispielsweise im Schema des wechselseitigen Ausschlusses in Abb. 5: Jeder der beiden Prozesse  und  („links“ und „rechts“) durchläuft zyklisch die drei Zustände **lokal**, **wartend**, **kritisch**. Der Schlüssel sorgt dafür, dass niemals beide Prozesse zugleich **kritisch** sind.
 In diesem Beispiel trägt jeder Platz immer entweder *keine* oder *eine* Marke. Man kann jeden Platz daher als eine *Bedingung* auffassen, die gelegentlich *erfüllt* und gelegentlich *unerfüllt* ist. Solche Netze werden häufig als *Bedingungs-/Ereignisnetze* bezeichnet.
 
+## Analyse von Petri-Netzen
+
 ### Eigenschaften von Petri-Netz-Modellen
 
 Wichtige Eigenschaften eines Systems sollten sich in seinem Modell widerspiegeln. Ein Petri-Netz muss daher nicht nur Verhalten, sondern auch *Eigenschaften* eines Systems darstellen. Beispielsweise hat in den Netzen der Abbildungen 2, 3 und 4 jede erreichbare Markierung  die Eigenschaft
@@ -164,6 +166,8 @@ Obwohl die Erreichbarkeit ein geeignetes Werkzeug zur Erkennung fehlerhafter Zus
 
 Seit den 1980er-Jahren entstand eine Vielzahl unterschiedlicher Softwarewerkzeuge zur Erstellung und zur Analyse von Petri-Netzen. Als universelles Werkzeug für High-level-Netze hat sich insbesondere das Werkzeug *CPN Tools* durchgesetzt. Daneben gibt es eine Vielzahl spezifischer Werkzeuge für spezielle Netzvarianten, beispielsweise zur Analyse zeitbehafteter und stochastischer Netze oder für spezielle Anwendungsbereiche, beispielsweise service-orientierter Architekturen.
 
+## Verallgemeinerungen, Spezialfälle, Varianten
+
 ### Die allgemeinste Form von High-level-Netzen
 
 Das Modell des Keksautomaten in (Abb. 1 – Abb. 3) ist ein Beispiel eines *high-level Netzes*. Die volle Ausdrucksstärke solcher Netze erreicht man mit Hilfe von *Variablen* und *Funktionen* in den Inschriften der Pfeile. Als Beispiel modelliert Abb. 6 eine Variante des Keksautomaten mit 4 Münzen im Eingabeschlitz. Für die 4. Münze gibt es keine Schachtel im Speicher; die Münze soll also auf jeden Fall zurückgegeben werden. Dazu enthält Abb. 6 einen Zähler, deren Marke die Anzahl verfügbarer Schachteln angibt. Die Transition **a** wird aktiviert, indem die Variable **x** den aktuellen Wert dieser Marke annimmt. Zusätzlich ist **a** mit der Bedingung **x** > 0 beschriftet, die zum Eintritt von **a** erfüllt sein muss. Damit reduziert jeder Eintritt von **a** den Zählerwert um 1 und **a** ist beim Wert 0 nicht mehr aktiviert. Jede weitere Münze landet dann also über **c** in der Rückgabe.
@@ -205,6 +209,8 @@ Diese Formalismen entspringen einer objektorientierten Betrachtungsweise, bei de
 
 Einige der frühen Vertreter sind die Objekt-Petri-Netze von Lakos (heute angesichts intensiver Weiterentwicklung hauptsächlich von historischer Bedeutung) und Valk, der diese zusammen mit Jessen ursprünglich im Kontext von Auftragssystemen einführte.
 
+## Die historische Entwicklung
+
 ### Der Anfang
 
 Die Forschung zu Petri-Netzen begann mit der Dissertation von Carl Adam Petri im Jahr 1962. Diese Arbeit wurde zunächst kaum beachtet; die Theoretische Informatik hat damals andere Fragestellungen verfolgt und für die Praxis kamen Petris Vorschläge zu früh. Ein erster Durchbruch im Bereich der Theorie kam Ende der 1960er-Jahre mit der Verwendung von Petris Ideen im Project MAC des MIT. In den 1970er Jahren wurden Platz-/Transitionsnetze weltweit studiert, allerdings recht oft aus dem verengten Blickwinkel formaler Sprachen.
@@ -218,6 +224,8 @@ Mit zunehmendem Interesse an verteilten Systemen und verteilten Algorithmen wurd
 ### Aktuelle Themen
 
 Mit Petri-Netzen werden heutzutage Systeme modelliert, deren Verhalten aus diskreten, lokal begrenzten Schritten besteht. Das sind oft Systeme, die Rechner integrieren oder die mit Rechnern simuliert werden. Zu den derzeit besonders viel versprechenden Anwendungen von Petri-Netzen gehört die Modellierung von Prozessen der Systembiologie, der Geschäftsprozesswelt und der Service-orientierten Architekturen.
+
+## Anwendungen
 
 ### Fertigungsprozesse
 

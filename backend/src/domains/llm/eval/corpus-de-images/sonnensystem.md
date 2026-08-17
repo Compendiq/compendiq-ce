@@ -4,6 +4,8 @@ Das **Sonnensystem** ist das Planetensystem, in dem sich die Erde befindet. Es b
 
 Die Internationale Astronomische Union definiert den Pluto seit 2006 als Zwergplaneten und nicht mehr als den äußersten Planeten des Sonnensystems.
 
+## Aufbau
+
 ### Allgemeine Struktur
 
 Die Sonne ist der Zentralstern des Sonnensystems. Da sie 99,86 % der Gesamtmasse des Systems hat, ist sie sehr nahe dem Baryzentrum des Sonnensystems. In der Reihenfolge ihres Abstands von der Sonne folgen die terrestrischen Planeten Merkur, Venus, Erde und Mars, die den inneren Teil des Planetensystems ausmachen. Den äußeren Teil bilden die Gasplaneten Jupiter, Saturn, Uranus und Neptun. Weitere Begleiter der Sonne sind neben Zwergplaneten Millionen von Asteroiden (auch Planetoiden oder Kleinplaneten genannt) und Kometen, die vorwiegend in drei Kleinkörperzonen des Sonnensystems um die Sonne kreisen: dem Asteroidengürtel zwischen den inneren und den äußeren Planeten, dem Kuipergürtel jenseits der äußeren Planeten und der Oortschen Wolke ganz außen.
@@ -63,6 +65,8 @@ Es gibt keine allgemein anerkannte Definition, wie weit sich das Sonnensystem er
 Da astronomische Dimensionen für die meisten Menschen schwer vorstellbar sind, ist ein maßstabsgerecht verkleinertes Modell des Sonnensystems oder der Besuch eines Planetenweges hilfreich, um sich die Größenverhältnisse und Distanzen der Objekte zu veranschaulichen.
 
 Die umfassendste Auslegung des Sonnensystems beinhaltet nach den Planeten zusätzlich den Kuipergürtel sowie daran anschließend die innere, dann die äußere Oortsche Wolke, da deren Bestandteile wohl noch immer vorwiegend dem Gravitationsfeld der Sonne unterliegen. Damit hat das Sonnensystem einen Radius von etwa 1,5 bis 1,6 Lichtjahren. Die Gesamtmasse beträgt ca. 1,989 \* 1027 t, wovon 99,8552 % auf die Sonne entfallen; von den restlichen 0,1448 % entfallen knapp 2/3 auf Jupiter, knapp 1/5 auf Saturn.
+
+## Umgebung
 
 ### Lokale stellare Nachbarschaft
 

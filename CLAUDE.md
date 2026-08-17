@@ -143,19 +143,37 @@ for). Three rules are load-bearing. It is **absent from `CORPUS_DIRS` and
 `corpusDirsForLanguage`** until P5b adds the `--images` axis:
 `computeCorpusManifestSha` covers every directory in that list, so wiring it in
 invalidates every recorded baseline at once, and that is a cost to pay
-deliberately rather than in the PR that only vendors the bytes. Its page bodies
-carry `![](images/…)` with an **empty alt and no caption** — a page that
-captions its own figures is answerable from text alone, so an image leg measured
-on it scores a win it did not earn; the captions live in the manifest, for P5c's
-independent labeller. And it is the **first third-party content in this repo
-that is not MIT**: page text is CC BY-SA 4.0 (adapted) and images are filtered
-to CC0 / public domain / CC BY x / CC BY-SA x with a named author each, with the
-ShareAlike and attribution obligations stated per page and per image in that
-directory's `LICENSE-ATTRIBUTION.md`. `corpus-de-images.test.ts` fails on any of
-the three — the wiring, a caption leaking into a page, a licence outside the
-allow-list — and on a manifest hand-edited away from the files beside it. It
-does not reach the runtime image: the Dockerfile copies `backend/dist/`, and
-`tsc` emits no markdown.
+deliberately rather than in the PR that only vendors the bytes. It sits inside
+the `corpus-<lang>` namespace without being a language, so `translatedCorpusDirs`
+**throws** on a `lang` whose directory resolves onto it — `--lang de-images`
+otherwise handed the image corpus back as a translation and only died a step
+later on a missing `fixture-de-images.json`, which is luck, not a guard. Its
+page bodies carry `![](images/…)` with an **empty alt and no caption** — a page
+that captions its own figures is answerable from text alone, so an image leg
+measured on it scores a win it did not earn; the captions live in the manifest,
+for P5c's independent labeller. And it is the **first vendored content whose own
+licence is not MIT** (the English corpus is MIT documentation; this repository
+itself is **AGPL-3.0**): page text is CC BY-SA 4.0 (adapted) and images are
+filtered to CC0 / public domain / CC BY x / CC BY-SA x with a **named** author
+each, with the ShareAlike and attribution obligations stated per page and per
+image in that directory's `LICENSE-ATTRIBUTION.md`. "Named" is the half that is
+easy to fake and was: Commons' `Credit` is the *Source* field, not an author
+(reading it as one credited a photograph to "Eigenes Werk"), the unknown-author
+templates arrive **localised** from de.wikipedia ("Autor/-in unbekannt Unknown
+author"), so an equality test against `"unknown"` reads them as a name, and a
+flat character cap on a credit shipped `AxelScheithauer` as `AxelSch` with a
+third contributor missing — a credit past 400 chars is abbreviated on a word
+boundary and marked. `corpus-de-images.test.ts` fails on any of these — the
+wiring, a caption leaking into a page, a licence outside the allow-list, an
+unnamed or silently-cut author — and on a manifest hand-edited away from the
+files beside it. **The builder is the only writer, and it never half-writes**:
+it stages the whole corpus into a sibling directory and swaps it in only once
+every article has succeeded, `--only`/`--articles` are refused without
+`--probe` (both subset the list, and a subset written over the corpus deletes
+the other articles' revision pins), and each image records the upstream `sha1`
+because a revision id pins the text and nothing pinned the pictures. It does
+not reach the runtime image: the Dockerfile copies `backend/dist/`, and `tsc`
+emits no markdown.
 
 **Query-time latency is measured OUTSIDE `eval/`**, by
 `backend/scripts/benchmark-query-latency.ts` — `runner.ts`'s participation

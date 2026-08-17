@@ -28,6 +28,8 @@ Der arabische Arzt Ibn an-Nafīs (1213–1288) war der Erste, der das Herz anato
 
 Anatomisch bedeutende Darstellungen des Herzens publizierten unter anderem auch Berengario da Carpi, Leonardo da Vinci, Andreas Vesalius und Godefridus Bidloo. Zu den bekanntesten Abhandlungen über die Anatomie und Pathologie des Herzens im 18. Jahrhundert gehört die 1749 erschienene Schrift *Traité de la structure du coer, de son action et de ses maladies* von Jean-Baptiste Sénac, dem Leibarzt von Ludwig XV.
 
+## Herztypen und deren Verbreitung im Tierreich
+
 ### Röhrenherzen und Kammerherzen
 
 Die Herzen der verschiedenen Tiergruppen lassen sich bezüglich ihres Aufbaus in röhrenförmige und gekammerte Typen einteilen.
@@ -146,6 +148,8 @@ Eine Ausnahme in mehrerlei Hinsicht ist die Giraffe, die auf Grund des Höhenunt
 
 Auf Grund der Ähnlichkeit der Herzen der verschiedenen Säugetierarten kann das unten dargestellte menschliche Herz als Modell für alle Säugerherzen gelten.
 
+## Lage und Aufbau des menschlichen Herzens
+
 ### Lage
 
 Das Herz liegt innerhalb des Herzbeutels (Perikard) im Mediastinum:
@@ -216,6 +220,8 @@ Man unterscheidet am fetalen Herzen eine Einstrom- von einer Ausstrombahn. In de
 Wichtige Prozesse im Rahmen der Entwicklung sind die Bildung des Cor sigmoideum (vom Schlauch zur Schleife) und die Trennung in zwei getrennte Kreisläufe (Körper- und Lungenkreislauf). Weiter werden das Atrium primitivum in einen rechten und einen linken Vorhof (durch Auswachsen von Endokardkissen) und der Ventriculus primitivus in eine rechte und eine linke Herzkammer (durch Bildung des muskulösen und membranösen Septums) unterteilt.
 
 Die Segelklappen (zwischen Vorhöfen und Kammern) bilden sich ebenfalls aus auswachsenden Endokardkissen, die Taschenklappen durch Bildung von Endothelwülsten.
+
+## Funktionsweise des menschlichen Herzens
 
 ### Erregungsbildungs- und Erregungsleitungssystem
 

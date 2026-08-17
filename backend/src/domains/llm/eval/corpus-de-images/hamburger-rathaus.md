@@ -212,6 +212,8 @@ An der Decke des Treppenhauses zum Sitzungssaal der Bürgerschaft sind 11 Gemäl
 10. Wissenschaft und Lehre
 11. Alter und Tod
 
+## Erstes Obergeschoss
+
 ### Großer Festsaal
 
 Den *großen Festsaal*, in dem alljährlich die Matthiae-Mahlzeit, das älteste Festmahl der Welt stattfindet, schmücken Bilder des Künstlers Hugo Vogel, die erst 1909 vollendet wurden. Der große Festsaal ist über das Senatstreppenhaus zu erreichen.

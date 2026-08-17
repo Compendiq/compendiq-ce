@@ -35,12 +35,23 @@ Three rules do the real work.
    the repository, both because a VL encoder needs raster and because SVG
    carries script/XXE risk.
 
-Determinism: same `articles.yaml` + same revisions -> same bytes. Revisions are
-pinned in the corpus's own MANIFEST.json and read back on a plain re-run (read
-BEFORE the output directory is wiped — that is a scar from the English
-vendoring script, whose first cut read the manifest afterwards and found
-nothing). `--update` deliberately moves to current revisions, which obliges a
-re-label.
+Determinism has TWO halves, and only one of them is an article revision.
+Revisions are pinned in the corpus's own MANIFEST.json and read back on a plain
+re-run (read BEFORE the output directory is wiped — that is a scar from the
+English vendoring script, whose first cut read the manifest afterwards and
+found nothing). The other half is the FILES: Commons serves the current version
+of a file, and an SVG re-drawn or a photograph re-cropped upstream changes a
+rebuild with nothing in the manifest to notice it. So each image also records
+the upstream `sha1`, and a pinned run reports every file whose sha1 has moved
+and exits non-zero — the bytes are still written, so the diff is inspectable,
+but the run does not claim to have reproduced the corpus. `--update`
+deliberately moves to current revisions, which obliges a re-label.
+
+Nothing is written into the corpus directory until the whole run succeeds: the
+build stages into a sibling directory and swaps it in at the end. A run that
+loses three articles to a flaky network would otherwise leave a thinner corpus
+behind AND destroy the revision pins of every article it did not rebuild, which
+is the reproducibility property above, deleted by a transient 502.
 
 Usage:
     python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
@@ -55,6 +66,7 @@ import argparse
 import html
 import io
 import json
+import os
 import re
 import shutil
 import sys
@@ -73,8 +85,10 @@ from PIL import Image
 
 TOOL_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TOOL_DIR.parent.parent
-OUT_DIR = REPO_ROOT / "backend" / "src" / "domains" / "llm" / "eval" / "corpus-de-images"
-IMAGE_DIR = OUT_DIR / "images"
+CORPUS_DIR = REPO_ROOT / "backend" / "src" / "domains" / "llm" / "eval" / "corpus-de-images"
+# Built into, then swapped over `CORPUS_DIR`. A sibling rather than a temp dir
+# elsewhere so the swap is a rename on one filesystem and cannot half-happen.
+STAGING_DIR = CORPUS_DIR.with_name(CORPUS_DIR.name + ".staging")
 
 DE_API = "https://de.wikipedia.org/w/api.php"
 COMMONS_FILE_URL = "https://commons.wikimedia.org/wiki/"
@@ -102,6 +116,15 @@ MIN_PAGE_CHARS = 800
 TOTAL_BYTE_BUDGET = 10 * 1024 * 1024
 
 PAGE_LICENSE = "CC BY-SA 4.0"
+
+# Well past the longest credit Commons actually serves (the longest in this
+# corpus is 280 characters and names three contributors). A credit longer than
+# this is abbreviated ON A WORD BOUNDARY and marked, never cut mid-token: the
+# first cut capped at a flat 180 and shipped `AxelScheithauer` as `AxelSch`
+# with the third contributor missing entirely, on a CC BY-SA image whose whole
+# obligation is that credit.
+AUTHOR_MAX_CHARS = 400
+AUTHOR_ABBREVIATED_MARK = " […]"
 
 # ---------------------------------------------------------------------------
 # licence filter
@@ -260,6 +283,11 @@ def fetch_image_metadata(file_titles: list[str]) -> dict[str, dict[str, Any]]:
     Queried through de.wikipedia rather than Commons directly: MediaWiki
     resolves foreign-repo files transparently, so one endpoint covers both
     locally-hosted and Commons-hosted files without branching.
+
+    `sha1` is in the property list because the article revision is only half of
+    the pin. Commons serves the CURRENT version of a file; an SVG re-drawn or a
+    photograph re-cropped upstream changes what a "pinned" rebuild produces,
+    and without a recorded content address there is nothing to notice it with.
     """
     out: dict[str, dict[str, Any]] = {}
     for batch_start in range(0, len(file_titles), 20):
@@ -270,7 +298,7 @@ def fetch_image_metadata(file_titles: list[str]) -> dict[str, dict[str, Any]]:
                 "action": "query",
                 "titles": "|".join(batch),
                 "prop": "imageinfo",
-                "iiprop": "url|size|mime|extmetadata",
+                "iiprop": "url|size|mime|sha1|extmetadata",
                 "format": "json",
                 "formatversion": 2,
             },
@@ -620,20 +648,45 @@ def drop_empty_headings(md: str) -> str:
     and it puts a subject line into the index with no text to support it. An
     image placeholder counts as content — the replacement happens after this,
     so a section carrying only a figure keeps its heading.
+
+    "Nothing under them" means nothing before the next heading AT THE SAME OR A
+    SHALLOWER LEVEL. The first cut stopped at the next heading of any depth,
+    which is a different rule: a `##` whose subsections are all populated has
+    nothing between itself and its first `###`, so it was deleted along with
+    the genuinely bare ones. That cost a section title on 22 of 66 pages —
+    `Kölner Dom` ran `# Kölner Dom` straight into `### Römische und
+    merowingische Bischofskirche`, with the parent's subject line gone from the
+    page entirely. It is a heading over populated subsections, which is exactly
+    a section that has content.
+
+    Iterated to a fixpoint, because dropping a bare `###` can leave its `##`
+    parent bare in turn.
     """
-    heading = re.compile(r"^#{1,6} ")
-    lines = md.split("\n")
-    out: list[str] = []
-    for index, line in enumerate(lines):
-        if heading.match(line):
-            # Empty means "nothing before the NEXT heading", which also covers a
-            # trailing heading at the end of the document.
-            rest = lines[index + 1 :]
-            stop = next((i for i, other in enumerate(rest) if heading.match(other)), len(rest))
-            if not any(other.strip() for other in rest[:stop]):
-                continue
-        out.append(line)
-    return "\n".join(out)
+    heading = re.compile(r"^(#{1,6}) ")
+    for _ in range(8):
+        lines = md.split("\n")
+        out: list[str] = []
+        for index, line in enumerate(lines):
+            match = heading.match(line)
+            if match:
+                level = len(match.group(1))
+                stop = len(lines)
+                for offset, other in enumerate(lines[index + 1 :]):
+                    other_match = heading.match(other)
+                    if other_match and len(other_match.group(1)) <= level:
+                        stop = index + 1 + offset
+                        break
+                body = lines[index + 1 : stop]
+                # A deeper heading inside the span IS content: it is the
+                # subsection this heading introduces.
+                if not any(other.strip() for other in body):
+                    continue
+            out.append(line)
+        collapsed = "\n".join(out)
+        if collapsed == md:
+            return md
+        md = collapsed
+    return md
 
 
 def slugify(title: str) -> str:
@@ -646,20 +699,75 @@ def slugify(title: str) -> str:
     return re.sub(r"-{2,}", "-", slug)
 
 
-def plain_author(extmeta: dict[str, Any]) -> str:
-    """A readable author from `Artist`, then `Attribution`, then `Credit`.
+# The unknown-author templates, as de.wikipedia RENDERS them — which is the
+# only form this script ever sees. `extmetadata` is localised, so the German
+# projects answer "Autor/-in unbekannt Unknown author" and "Anonym Unknown
+# author" where an equality test against `"unknown"` sees a name. Four images
+# reached the notices file through that gap on the first build, one of them
+# credited to Commons' *Source* field, "Eigenes Werk".
+#
+# Anchored, never a substring search: "No machine-readable author provided.
+# Marcelo Reis assumed…" is Commons' wording for a file that DOES name someone,
+# and "Eigenes Werk von Max Mustermann" is a name too.
+_UNKNOWN_AUTHOR = re.compile(
+    r"^(?:"
+    r"(?:autor(?:/-?in)?\s+)?unbekannt(?:er\s+autor)?"
+    r"|urheber\s+unbekannt"
+    r"|nicht\s+bekannt"
+    r"|unknown(?:\s+author)?"
+    r"|anonym(?:ous)?"
+    r"|eigenes\s+werk"
+    r"|own\s+work"
+    r"|self[-\s]?made"
+    r"|selbst\s+erstellt"
+    r"|n/?a"
+    r"|[-–—?.]"
+    r")"
+    # de.wikipedia renders the localised template with the English original
+    # glued on behind it, so every spelling above may carry that tail.
+    r"(?:\s+unknown\s+author)?$",
+    re.IGNORECASE,
+)
 
-    All three are HTML on Commons — usually a link to the uploader's user page.
-    An image with none of them is dropped: the attribution obligation is not
-    satisfiable without a name, and writing "unknown" into the notices file
-    would be a claim rather than a record.
+
+def abbreviate_author(text: str) -> str:
+    """Cap a credit at a WORD boundary, and say so when it was cut.
+
+    A silent mid-token cut is worse than a long line: `AxelSch` is not a person
+    anyone can look up, and nothing in the notices file said the name was
+    partial. The mark is what sends a reader to `sourceUrl` for the rest.
     """
-    for key in ("Artist", "Attribution", "Credit"):
+    if len(text) <= AUTHOR_MAX_CHARS:
+        return text
+    budget = AUTHOR_MAX_CHARS - len(AUTHOR_ABBREVIATED_MARK)
+    head = text[:budget]
+    cut = max(head.rfind(" "), head.rfind(";"), head.rfind(":"), head.rfind(","))
+    if cut > budget // 2:
+        head = head[:cut]
+    return head.rstrip(" ;:,") + AUTHOR_ABBREVIATED_MARK
+
+
+def plain_author(extmeta: dict[str, Any]) -> str:
+    """A readable author from `Artist`, then `Attribution`.
+
+    Both are HTML on Commons — usually a link to the uploader's user page.
+
+    `Credit` is NOT consulted, and that is the point of the two-key chain:
+    Commons' `Credit` is the *Source* field, not an author. Reading it as one
+    put "Eigenes Werk" ("own work") into the notices file as the name of a
+    photographer, and "Translation of Image:… .svg" would have been next.
+
+    An image with neither key, or with one of the unknown-author templates, is
+    dropped: the attribution obligation is not satisfiable without a name, and
+    writing "unknown" into the notices file would be a claim rather than a
+    record.
+    """
+    for key in ("Artist", "Attribution"):
         raw = (extmeta.get(key) or {}).get("value") or ""
         text = BeautifulSoup(raw, "html.parser").get_text(" ", strip=True)
         text = re.sub(r"\s+", " ", text).strip()
-        if text and text.lower() not in {"unknown", "unbekannt", "n/a", "-"}:
-            return text[:180]
+        if text and not _UNKNOWN_AUTHOR.match(text):
+            return abbreviate_author(text)
     return ""
 
 
@@ -723,6 +831,10 @@ class BuildStats:
     examined: int = 0
     accepted: int = 0
     rejections: list[Rejection] = field(default_factory=list)
+    #: Commons files whose upstream sha1 has moved since the recorded one. Not
+    #: a rejection — the image is still vendored — but a pinned run that hits
+    #: one has not reproduced the corpus, and says so.
+    drifted: list[str] = field(default_factory=list)
 
     def reject(self, file_title: str, reason: str) -> None:
         self.rejections.append(Rejection(file_title, reason))
@@ -743,17 +855,34 @@ def load_articles(path: Path) -> list[tuple[str, str]]:
     return out
 
 
-def read_pins() -> dict[str, int]:
-    """Recorded revisions, read BEFORE the output directory is wiped.
+def read_manifest() -> dict[str, Any]:
+    """The committed manifest, read BEFORE anything is written.
 
     The English vendoring script shipped this the other way round once and the
-    checkout was dead code while three documents claimed reproducibility.
+    checkout was dead code while three documents claimed reproducibility. The
+    build now stages into a sibling directory, so the committed manifest is
+    still standing either way — but reading it first keeps the ordering
+    obvious rather than incidental.
     """
-    manifest_path = OUT_DIR / "MANIFEST.json"
+    manifest_path = CORPUS_DIR / "MANIFEST.json"
     if not manifest_path.exists():
-        return {}
-    data = json.loads(manifest_path.read_text(encoding="utf8"))
-    return {page["title"]: int(page["revid"]) for page in data.get("pages", [])}
+        return {"pages": []}
+    return json.loads(manifest_path.read_text(encoding="utf8"))
+
+
+def read_pins(manifest: dict[str, Any]) -> dict[str, int]:
+    """Recorded revision per RESOLVED article title."""
+    return {page["title"]: int(page["revid"]) for page in manifest.get("pages", [])}
+
+
+def read_image_sha1s(manifest: dict[str, Any]) -> dict[str, str]:
+    """Recorded upstream sha1 per Commons file title."""
+    return {
+        image["sourceTitle"]: image["sha1"]
+        for page in manifest.get("pages", [])
+        for image in page.get("images", [])
+        if image.get("sha1")
+    }
 
 
 def build_page(
@@ -762,6 +891,8 @@ def build_page(
     revid: int,
     stats: BuildStats,
     probe: bool,
+    out_dir: Path,
+    pinned_sha1: dict[str, str],
 ) -> dict[str, Any] | None:
     soup = BeautifulSoup(fetch_parsed_html(revid), "html.parser")
     root = soup.select_one(".mw-parser-output") or soup
@@ -822,9 +953,15 @@ def build_page(
             figure.node.decompose()
             continue
 
+        source_title = commons_file_title(info["title"])
+        sha1 = str(info.get("sha1") or "")
+        recorded = pinned_sha1.get(source_title)
+        if recorded and sha1 and recorded != sha1:
+            stats.drifted.append(f"{source_title}: {recorded} -> {sha1}")
         attribution = {
-            "sourceTitle": commons_file_title(info["title"]),
-            "sourceUrl": COMMONS_FILE_URL + commons_file_title(info["title"]).replace(" ", "_"),
+            "sourceTitle": source_title,
+            "sourceUrl": COMMONS_FILE_URL + source_title.replace(" ", "_"),
+            "sha1": sha1,
             "author": author,
             "license": label,
             "licenseUrl": license_url(label),
@@ -870,7 +1007,7 @@ def build_page(
     for index, (_, attribution, figure, encoded) in enumerate(sorted(selected, key=lambda s: s[0]), start=1):
         assert encoded is not None
         name = f"{slug}__{index}.{encoded.ext}"
-        (IMAGE_DIR / name).write_bytes(encoded.data)
+        (out_dir / "images" / name).write_bytes(encoded.data)
         accepted.append(
             {
                 "file": f"images/{name}",
@@ -909,10 +1046,10 @@ def build_page(
 
     if len(body) < MIN_PAGE_CHARS:
         for entry in accepted:
-            (OUT_DIR / entry["file"]).unlink(missing_ok=True)
+            (out_dir / entry["file"]).unlink(missing_ok=True)
         return None
 
-    (OUT_DIR / f"{slug}.md").write_text(markdown, encoding="utf8")
+    (out_dir / f"{slug}.md").write_text(markdown, encoding="utf8")
     return {
         "file": f"{slug}.md",
         "title": title,
@@ -934,13 +1071,13 @@ MANIFEST_PURPOSE = (
 )
 
 
-def write_attribution(pages: list[dict[str, Any]]) -> None:
+def write_attribution(pages: list[dict[str, Any]], out_dir: Path) -> None:
     lines = [
         "# Image eval corpus — licences and attribution",
         "",
         "Everything in this directory is **third-party content**, vendored as a test fixture for",
-        "#1115's image retrieval eval. It is **not** covered by this repository's MIT licence, and",
-        "nothing here ships in the product.",
+        "#1115's image retrieval eval. It is **not** covered by this repository's AGPL-3.0 licence",
+        "(see the root `LICENSE`), and nothing here ships in the product.",
         "",
         "## What you must do if you redistribute this directory",
         "",
@@ -957,9 +1094,18 @@ def write_attribution(pages: list[dict[str, Any]]) -> None:
         "  modification, and is stated here rather than left to be inferred.",
         "",
         "Only CC0, public domain, CC BY x and CC BY-SA x were vendored. GFDL-only, NonCommercial,",
-        "NoDerivatives, fair-use and unattributed files were rejected by the builder.",
+        "NoDerivatives, fair-use and unattributed files were rejected by the builder. Every credit",
+        "below is a name Commons records: a file whose author is one of the unknown-author templates",
+        "(`Autor/-in unbekannt`, `Anonym`, `Eigenes Werk`) was dropped rather than credited to a",
+        "phrase, and Commons' `Credit` field is never read as an author because it is the *Source*.",
         "",
     ]
+    if any(image["author"].endswith(AUTHOR_ABBREVIATED_MARK) for page in pages for image in page["images"]):
+        lines += [
+            f"A credit ending in `{AUTHOR_ABBREVIATED_MARK.strip()}` is abbreviated — the full list of",
+            "contributors is on the linked Commons file page.",
+            "",
+        ]
     for page in pages:
         lines.append(f"## {page['title']}")
         lines.append("")
@@ -978,10 +1124,12 @@ def write_attribution(pages: list[dict[str, Any]]) -> None:
                 f"| `{image['file']}` | [{source}]({image['sourceUrl']}) | {author} | {licence} |"
             )
         lines.append("")
-    (OUT_DIR / "LICENSE-ATTRIBUTION.md").write_text("\n".join(lines), encoding="utf8")
+    (out_dir / "LICENSE-ATTRIBUTION.md").write_text("\n".join(lines), encoding="utf8")
 
 
-def write_readme(pages: list[dict[str, Any]], stats: BuildStats, total_bytes: int) -> None:
+def write_readme(
+    pages: list[dict[str, Any]], stats: BuildStats, total_bytes: int, out_dir: Path
+) -> None:
     per_category: dict[str, int] = {}
     for page in pages:
         per_category[page["category"]] = per_category.get(page["category"], 0) + 1
@@ -989,7 +1137,7 @@ def write_readme(pages: list[dict[str, Any]], stats: BuildStats, total_bytes: in
     rejections = stats.by_reason()
     reject_rows = "\n".join(f"| {reason} | {count} |" for reason, count in rejections.items())
 
-    (OUT_DIR / "README.md").write_text(
+    (out_dir / "README.md").write_text(
         f"""# German image-bearing eval corpus (#1115 P5a)
 
 {len(pages)} German Wikipedia articles carrying {image_count} vendored images
@@ -1032,10 +1180,10 @@ thing it scores measures the tuning.
 
 ## Licensing
 
-Third-party content, licensed separately from this MIT repository, and a test
-fixture rather than product content. Page text is CC BY-SA 4.0 (adapted);
-images carry their own licences. Obligations, per page and per image, are in
-`LICENSE-ATTRIBUTION.md`.
+Third-party content, licensed separately from this repository's **AGPL-3.0**
+(root `LICENSE`), and a test fixture rather than product content. Page text is
+CC BY-SA 4.0 (adapted); images carry their own licences. Obligations, per page
+and per image, are in `LICENSE-ATTRIBUTION.md`.
 
 ## Rebuilding
 
@@ -1046,11 +1194,15 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python build.py --update   # moves to current revisions — obliges a re-label
 ```
 
-A plain run reads the `revid` of every page back out of `MANIFEST.json` before
-it wipes the directory, so it rebuilds the committed bytes rather than tracking
-whatever the articles say today. Nothing here may be hand-edited: the builder
-regenerates the whole directory, and `corpus-de-images.test.ts` fails on a
-manifest that has drifted from the files beside it.
+A plain run reads the `revid` of every page back out of `MANIFEST.json`, so it
+rebuilds the committed text rather than tracking whatever the articles say
+today. The images are pinned by a second mechanism, because Commons serves the
+current version of a file and an upstream re-draw would otherwise change a
+"pinned" rebuild silently: each image records the upstream `sha1`, and a run
+that finds one moved names the file and exits non-zero. Nothing here may be
+hand-edited — the builder regenerates the whole directory into a staging
+sibling and swaps it in only on success, and `corpus-de-images.test.ts` fails
+on a manifest that has drifted from the files beside it.
 
 ## What the licence filter rejected on this build
 
@@ -1079,21 +1231,36 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Both flags subset the article list, and a subset written over the whole
+    # corpus is a corpus of one page — with the other 65 articles' revision
+    # pins deleted, so the next plain run silently re-pins them at CURRENT
+    # revisions and every label written against them goes stale. They are
+    # documented as probing tools; this is what makes them so.
+    if (args.only or args.articles) and not args.probe:
+        parser.error(
+            "--only and --articles subset the article list, so they only make sense with --probe. "
+            "Without it the run would replace the whole vendored corpus with the subset."
+        )
+
     articles = load_articles(Path(args.articles) if args.articles else TOOL_DIR / "articles.yaml")
     if args.only:
         wanted = {name.strip() for name in args.only.split(",")}
         articles = [entry for entry in articles if entry[0] in wanted]
 
-    pins = {} if args.update else read_pins()
+    manifest = read_manifest()
+    pins = {} if args.update else read_pins(manifest)
+    pinned_sha1 = {} if args.update else read_image_sha1s(manifest)
     stats = BuildStats()
 
+    out_dir = STAGING_DIR
     if not args.probe:
-        if OUT_DIR.exists():
-            shutil.rmtree(OUT_DIR)
-        IMAGE_DIR.mkdir(parents=True)
+        if STAGING_DIR.exists():
+            shutil.rmtree(STAGING_DIR)
+        (STAGING_DIR / "images").mkdir(parents=True)
 
     pages: list[dict[str, Any]] = []
     thin: list[str] = []
+    failed: list[str] = []
     # Two articles slugging to the same name would silently overwrite each
     # other's images, and only the page collision would surface downstream.
     seen_slugs: dict[str, str] = {}
@@ -1106,9 +1273,23 @@ def main() -> int:
                 raise RuntimeError(f"slug collision: {resolved!r} and {seen_slugs[slug]!r} both give {slug!r}")
             seen_slugs[slug] = resolved
             revid = pins.get(resolved, current)
-            result = build_page(resolved, category, revid, stats, args.probe)
-        except Exception as error:  # noqa: BLE001 - one bad article must not lose the run
+            if not args.update and resolved not in pins and pins:
+                # Absent from the pins and the manifest was not empty: either a
+                # genuinely new article, or one whose title moved upstream (a
+                # rename, a re-pointed redirect) — indistinguishable here, and
+                # both mean this page is being built at the CURRENT revision
+                # while the run advertises itself as reproducing the pinned
+                # ones. Silence was the bug.
+                print(
+                    f"  ! {title}: no pinned revision for {resolved!r}; building at the current "
+                    f"revision {current}. New article, or renamed upstream — check before "
+                    f"committing, because its labels were written against the old text.",
+                    file=sys.stderr,
+                )
+            result = build_page(resolved, category, revid, stats, args.probe, out_dir, pinned_sha1)
+        except Exception as error:  # noqa: BLE001 - report every bad article, then refuse to swap
             print(f"  ! {title}: {error}", file=sys.stderr)
+            failed.append(f"{category}/{title}: {error}")
             continue
         if args.probe:
             usable = result["usable"] if result else 0
@@ -1125,10 +1306,25 @@ def main() -> int:
     if args.probe:
         return 0
 
+    # Refuse BEFORE anything is swapped in. A run that lost articles to a flaky
+    # network would otherwise write a thinner corpus, restate it as fact in the
+    # generated README, delete the pins of the pages it never rebuilt, and exit
+    # 0 — the failure `api_get`'s "give up loudly rather than half-building a
+    # corpus" exists to prevent, one layer up.
+    if failed or not pages:
+        for entry in failed:
+            print(f"! {entry}", file=sys.stderr)
+        print(
+            f"! {len(failed)} article(s) failed and {len(pages)} page(s) built — the vendored "
+            f"corpus is untouched. Staging left at {STAGING_DIR} for inspection.",
+            file=sys.stderr,
+        )
+        return 1
+
     pages.sort(key=lambda page: page["file"])
     total_bytes = sum(image["bytes"] for page in pages for image in page["images"])
 
-    (OUT_DIR / "MANIFEST.json").write_text(
+    (out_dir / "MANIFEST.json").write_text(
         json.dumps(
             {
                 "generatedBy": "tools/eval-corpus-images/build.py",
@@ -1141,8 +1337,12 @@ def main() -> int:
         + "\n",
         encoding="utf8",
     )
-    write_attribution(pages)
-    write_readme(pages, stats, total_bytes)
+    write_attribution(pages, out_dir)
+    write_readme(pages, stats, total_bytes, out_dir)
+
+    if CORPUS_DIR.exists():
+        shutil.rmtree(CORPUS_DIR)
+    os.replace(out_dir, CORPUS_DIR)
 
     print()
     print(f"pages            {len(pages)}")
@@ -1154,10 +1354,22 @@ def main() -> int:
     print(f"figures rejected {len(stats.rejections)} {stats.by_reason()}")
     if thin:
         print(f"articles dropped {len(thin)}: {', '.join(thin)}")
+
+    exit_code = 0
     if total_bytes > TOTAL_BYTE_BUDGET:
         print("! over the image budget", file=sys.stderr)
-        return 1
-    return 0
+        exit_code = 1
+    if stats.drifted and not args.update:
+        # The bytes ARE written — a diff you can look at is more use than a
+        # refusal — but this run did not reproduce the corpus, and saying so is
+        # the whole point of recording the sha1.
+        print(file=sys.stderr)
+        print(f"! {len(stats.drifted)} upstream file(s) changed since the recorded sha1:", file=sys.stderr)
+        for entry in stats.drifted:
+            print(f"!   {entry}", file=sys.stderr)
+        print("! this rebuild is NOT a reproduction of the committed bytes.", file=sys.stderr)
+        exit_code = 1
+    return exit_code
 
 
 if __name__ == "__main__":

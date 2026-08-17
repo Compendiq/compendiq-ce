@@ -267,6 +267,8 @@ Bei der Frage, welchen Energiegehalt das zur Verfügung stehende Licht hat, gibt
 
 Der theoretische Wirkungsgrad  der Photosynthese ergibt sich aus dem Verhältnis der gewonnenen chemischen Energie  zu der absorbierten Energie der elektromagnetischen Strahlung :
 
+## Energiebilanz bei Pflanzen und anderen Organismen mit oxygener Photosynthese
+
 ### Wirkungsgrad
 
 Um aus 6 Mol CO2 im Calvin-Zyklus 1 Mol Kohlenhydrat D-Glucose aufzubauen, werden unter Standardbedingungen 2872 kJ benötigt:

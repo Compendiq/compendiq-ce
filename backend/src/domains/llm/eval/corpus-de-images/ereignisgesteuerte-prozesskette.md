@@ -53,6 +53,8 @@ EPKs können für verschiedene Aufgaben eingesetzt werden:
 
 Erweiterte Ereignisgesteuerte Prozessketten (eEPKs) mit ihrer freien Platzierung der Elemente auf der Zeichenfläche werden in ganz ähnlicher Weise verwendet und können die gleichen Sachverhalte darstellen wie Vorgangskettendiagramme (VKDs) mit ihrer spaltenweisen Sortierung der Elemente.
 
+## Vorteile und Nachteile der Ereignisgesteuerten Prozesskette
+
 ### Vorteile
 
 - Ereignisgesteuerte Prozessketten bieten durch die freie Platzierung der Elemente auf der Zeichenfläche Vorteile bei der Darstellung von alternativen oder parallelen Abläufen und bei Rückschleifen sowie bei der Ausnutzung der vorhandenen Zeichenfläche.

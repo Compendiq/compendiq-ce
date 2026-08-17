@@ -1,7 +1,5 @@
 # Elektromotor
 
-![](images/elektromotor__1.jpg)
-
 Ein **Elektromotor** ist ein elektromechanischer Wandler (elektrische Maschine), der elektrische Leistung in mechanische Leistung umwandelt. In herkömmlichen Elektromotoren erzeugen stromdurchflossene Leiterspulen Magnetfelder, deren gegenseitige Anziehungs- und Abstoßungskräfte in Bewegung umgesetzt werden. Damit ist der Elektromotor das Gegenstück zum sehr ähnlich aufgebauten Generator, der Bewegungsleistung in elektrische Leistung umwandelt. Elektromotoren erzeugen meist rotierende Bewegungen, sie können aber auch für translatorische Bewegungen gebaut sein (Linearantrieb). Elektromotoren werden zum Antrieb vieler Gerätschaften, Arbeitsmaschinen und Fahrzeuge eingesetzt.
 
 ## Geschichte
@@ -18,7 +16,7 @@ Siehe auch: Technik in der Industrialisierung
 
 ## Grundprinzip/​Funktionsweise
 
-![](images/elektromotor__2.png)
+![](images/elektromotor__1.png)
 
 Die Drehbewegung eines Elektromotors beruht auf den Anziehungs- und Abstoßungskräften, die mehrere Magnetfelder aufeinander ausüben (Lorentzkraft). Im üblichen Elektromotor gibt es einen feststehenden Außenteil sowie einen sich darin drehenden Innenteil. Entweder besitzt einer davon Permanentmagneten und der andere elektrische Spulen, oder beide Komponenten besitzen Spulen. Jede stromdurchflossene Spule erzeugt ein Magnetfeld, dessen Ausrichtung (Nordpol/Südpol) abhängig von der Stromrichtung ist – fließt der Strom in entgegengesetzter Richtung durch die Spule, so wird auch das Magnetfeld umgedreht. Durch fortwährendes Umschalten der Stromrichtung bzw. passendes „Umpolen“ der Spulen während des Umlaufs wird eine kontinuierliche Drehung des Innenteils erreicht.
 
@@ -43,7 +41,7 @@ Kommutator
 
 → *Hauptartikel: Gleichstrommaschine*
 
-![](images/elektromotor__3.jpg)
+![](images/elektromotor__2.jpg)
 
 Der (feststehende) Stator kann bei einem Gleichstrommotor ein Dauermagnet mit Polschuhen sein, jedoch ist auch eine Fremderregung über eine Erregerspule anstatt des Dauermagneten möglich. Bei einem Wechselstrom-Kommutatormotor oder auch Universalmotor befindet sich im Stator hingegen immer eine Erregerspule. Wird Strom durch diese Spule geleitet, baut sich das Erregerfeld (Magnetfeld) auf (Ørsted-Prinzip).
 
@@ -59,6 +57,8 @@ Nach diesem Prinzip können auch Wechselstrommotoren gebaut werden, wenn das Err
 
 ### Wechsel- und Drehstrommotoren
 
+![](images/elektromotor__3.jpg)
+
 Bei Wechselstrom kann auch auf einen Kommutator verzichtet werden, wenn die Umdrehungszahl im Rhythmus des Wechselstromes erfolgt; das dann mit umlaufende Magnetfeld des Rotors wird dann erzeugt:
 
 - durch vom Erregerfeld induzierte Ströme in einer Kurzschlusswicklung (Asynchronmotor)
@@ -72,6 +72,8 @@ Solche Motoren besitzen daher kein oder ein geringes Anlaufmoment. Sie benötige
 - Kondensator- und Spaltpolmotoren erzeugen sich aus einem einphasigen Wechselstrom selbst eine Hilfsphase (ein Drehfeld) zum Anlauf.
 - Schrittmotoren und Reluktanzmotoren werden mit frequenzveränderlichem Wechselstrom und/oder mit mehreren Phasen betrieben, damit sie „im Tritt“ bleiben bzw. keine Schrittverluste auftreten.
 - Synchronmotoren benötigen eine Starthilfe oder schaukeln/schwingen sich von selbst „in Tritt“.
+
+## Arten
 
 ### Drehfeld- und Wanderfeld-Maschinen
 

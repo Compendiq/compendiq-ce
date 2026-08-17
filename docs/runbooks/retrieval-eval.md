@@ -605,7 +605,7 @@ Licences are not the text corpus's. Page text is CC BY-SA 4.0 (adapted);
 images are filtered to CC0 / public domain / CC BY x / CC BY-SA x with a named
 author each, and the obligations are stated per page and per image in that
 directory's `LICENSE-ATTRIBUTION.md`. It is a test fixture, licensed separately
-from this MIT repository.
+from this repository's own **AGPL-3.0** (root `LICENSE`).
 
 ## The `vocabulary-gap` slice (#1112)
 

@@ -22,6 +22,13 @@ python3 -m venv .venv
 
 `--probe --articles some.yaml` runs the same selection over a candidate list
 without touching `articles.yaml`; that is how the shipped list was pruned.
+`--only` and `--articles` **require** `--probe` and the tool refuses them
+without it: both subset the article list, and a subset written over the corpus
+is a corpus of one page whose other 65 revision pins are gone — after which the
+next plain run re-pins them at current revisions and every label written
+against them is stale. The build also stages into
+`corpus-de-images.staging/` and swaps it in only once every article has
+succeeded, so a flaky network cannot leave a thinner corpus behind.
 
 ## What it does, and why each step is there
 
@@ -29,9 +36,20 @@ without touching `articles.yaml`; that is how the shipped list was pruned.
    rendered HTML (`action=parse&oldid=…`). The pin is the whole point: a
    re-run reproduces the committed bytes rather than tracking whatever the
    article says today. Pins are read back out of the corpus's own
-   `MANIFEST.json` — **before** the output directory is wiped, which is a scar
-   from `scripts/vendor-eval-corpus.ts`, whose first cut read it afterwards and
-   left the checkout as dead code while three documents claimed reproducibility.
+   `MANIFEST.json` — **before** anything is written, which is a scar from
+   `scripts/vendor-eval-corpus.ts`, whose first cut read it afterwards and left
+   the checkout as dead code while three documents claimed reproducibility. An
+   article that is not in the pins is built at the *current* revision and says
+   so by name: absent and renamed-upstream look identical here, and absorbing
+   the difference into a `.get` default is how a reproducible run quietly stops
+   being one.
+
+   The **images are pinned separately**, because a revision id says nothing
+   about them: Commons serves the current version of a file, so an SVG re-drawn
+   or a photograph re-cropped upstream changes a "pinned" rebuild with nothing
+   to notice it. Each image records the upstream `sha1`; a run that finds one
+   moved names the file and exits non-zero, having written the bytes anyway so
+   the diff is inspectable.
 
 2. **Strips captions and alt text from the page body.** The corpus mimics a
    Confluence page where the visual content is *not* restated in prose — that is
@@ -45,9 +63,23 @@ without touching `articles.yaml`; that is how the shipped list was pruned.
    construction* — a licence id that does not match one of the three permitted
    shapes fails closed — so GFDL-only, NC, ND, fair use and unknown need no
    entry in a deny-list to be refused. An image with no `Artist` /
-   `Attribution` / `Credit` is dropped, because the obligation is not
-   satisfiable without a name and writing "unknown" into the notices file would
-   be a claim rather than a record.
+   `Attribution` is dropped, because the obligation is not satisfiable without
+   a name and writing "unknown" into the notices file would be a claim rather
+   than a record.
+
+   Two halves of that rule are easy to get wrong, and the first cut got both.
+   **`Credit` is not an author** — it is Commons' *Source* field, and reading
+   it as one credited a PD photograph to "Eigenes Werk" ("own work"). And the
+   **unknown-author templates are localised**: de.wikipedia renders them as
+   "Autor/-in unbekannt Unknown author" and "Anonym Unknown author", which an
+   equality test against `"unknown"` reads as a name. The match is anchored, so
+   Commons' "No machine-readable author provided. *X* assumed…" — which does
+   name someone — still passes.
+
+   A credit longer than 400 characters is abbreviated on a **word boundary**
+   and marked ` […]`. A flat character cap shipped `AxelScheithauer` as
+   `AxelSch` and dropped a third contributor entirely, on a CC BY-SA image
+   whose whole obligation is that credit.
 
 4. **Re-encodes every image locally.** ≤ 512 px longest edge, aiming at 80 KB,
    refused above 120 KB. SVG figures arrive as Wikimedia's PNG thumbnail
@@ -96,7 +128,7 @@ corpus refresh; there is nothing to gain from pushing the API.
 ## Licensing
 
 The corpus this produces is **third-party content**, licensed separately from
-this MIT repository — page text CC BY-SA 4.0 (adapted), images under their own
-licences. The obligations are written into
+this repository's **AGPL-3.0** (root `LICENSE`) — page text CC BY-SA 4.0
+(adapted), images under their own licences. The obligations are written into
 `backend/src/domains/llm/eval/corpus-de-images/LICENSE-ATTRIBUTION.md`, per page
 and per image.

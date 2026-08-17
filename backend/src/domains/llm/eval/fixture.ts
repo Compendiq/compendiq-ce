@@ -18,6 +18,8 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 
+import { IMAGE_CORPUS_DIR } from './corpus-images.js';
+
 export const CORPUS_DIR = join(import.meta.dirname, 'corpus');
 
 export const FixtureLabelSchema = z.object({
@@ -113,7 +115,22 @@ export const CORPUS_DIRS = [CORPUS_DIR, SYNTHETIC_CORPUS_DIR] as const;
  * resolves it at module load.
  */
 export function translatedCorpusDirs(lang: string): readonly string[] {
-  return [join(import.meta.dirname, `corpus-${lang}`)];
+  const dir = join(import.meta.dirname, `corpus-${lang}`);
+  // `corpus-<lang>` is a namespace, and #1115's image corpus lives inside it
+  // under a name that is not a language: `--lang de-images` resolved onto
+  // `corpus-de-images` and this function handed it back as a translated
+  // corpus. It died a step later on a missing `fixture-de-images.json`, which
+  // is luck rather than a guard — P5b wires that corpus in through its own
+  // `--images` axis, on purpose, and nothing may reach it by spelling a
+  // language.
+  if (dir === IMAGE_CORPUS_DIR) {
+    throw new Error(
+      `--lang ${lang} resolves onto ${IMAGE_CORPUS_DIR}, which is #1115's image corpus and not a ` +
+        'translation. It is measured on its own axis (P5b), never as a language variant of the ' +
+        'English gate.',
+    );
+  }
+  return [dir];
 }
 
 /** Corpus directories for a run: English by default, one translated dir otherwise. */

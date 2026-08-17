@@ -1,8 +1,8 @@
 # Image eval corpus — licences and attribution
 
 Everything in this directory is **third-party content**, vendored as a test fixture for
-#1115's image retrieval eval. It is **not** covered by this repository's MIT licence, and
-nothing here ships in the product.
+#1115's image retrieval eval. It is **not** covered by this repository's AGPL-3.0 licence
+(see the root `LICENSE`), and nothing here ships in the product.
 
 ## What you must do if you redistribute this directory
 
@@ -19,7 +19,10 @@ nothing here ships in the product.
   modification, and is stated here rather than left to be inferred.
 
 Only CC0, public domain, CC BY x and CC BY-SA x were vendored. GFDL-only, NonCommercial,
-NoDerivatives, fair-use and unattributed files were rejected by the builder.
+NoDerivatives, fair-use and unattributed files were rejected by the builder. Every credit
+below is a name Commons records: a file whose author is one of the unknown-author templates
+(`Autor/-in unbekannt`, `Anonym`, `Eigenes Werk`) was dropped rather than credited to a
+phrase, and Commons' `Credit` field is never read as an author because it is the *Source*.
 
 ## Airbus A380
 
@@ -65,8 +68,8 @@ NoDerivatives, fair-use and unattributed files were rejected by the builder.
 
 | Image | Commons file | Author | Licence |
 |---|---|---|---|
-| `images/bahnstrom__1.png` | [File:Europe rail electrification de.svg](https://commons.wikimedia.org/wiki/File:Europe_rail_electrification_de.svg) | Europe_rail_electrification_en.svg : * Europe_rail_electrification.png : PNG author: Jklamo , 31. July 2007 Blank_map_europe.svg : PNG author: San Jose , 19. July 2006. SVG trace b | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
-| `images/bahnstrom__2.png` | [File:Catenary construction on the New York–Washington line.png](https://commons.wikimedia.org/wiki/File:Catenary_construction_on_the_New_York–Washington_line.png) | Autor/-in unbekannt Unknown author | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
+| `images/bahnstrom__1.jpg` | [File:Oberleitung sbb.JPG](https://commons.wikimedia.org/wiki/File:Oberleitung_sbb.JPG) | Der ursprünglich hochladende Benutzer war Filzstift in der Wikipedia auf Deutsch | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
+| `images/bahnstrom__2.png` | [File:Europe rail electrification de.svg](https://commons.wikimedia.org/wiki/File:Europe_rail_electrification_de.svg) | Europe_rail_electrification_en.svg : * Europe_rail_electrification.png : PNG author: Jklamo , 31. July 2007 Blank_map_europe.svg : PNG author: San Jose , 19. July 2006. SVG trace by RedHotHeat 06 August 2006 derivative work: N299 ( talk ) derivative work: Simon Legner ( User:simon04 ) | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
 | `images/bahnstrom__3.png` | [File:Strommix Deutsche Bahn 2022.svg](https://commons.wikimedia.org/wiki/File:Strommix_Deutsche_Bahn_2022.svg) | Pedalito | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
 
 ## Balanced Scorecard
@@ -221,9 +224,9 @@ NoDerivatives, fair-use and unattributed files were rejected by the builder.
 
 | Image | Commons file | Author | Licence |
 |---|---|---|---|
-| `images/elektromotor__1.jpg` | [File:TMW 50906 Schnittmodell einer Drehstrommaschine (Asynchronmaschine).jpg](https://commons.wikimedia.org/wiki/File:TMW_50906_Schnittmodell_einer_Drehstrommaschine_(Asynchronmaschine).jpg) | Eigenes Werk | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
-| `images/elektromotor__2.png` | [File:Animation einer Gleichstrommaschine.gif](https://commons.wikimedia.org/wiki/File:Animation_einer_Gleichstrommaschine.gif) | MichaelFrey | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
-| `images/elektromotor__3.jpg` | [File:Ankerde.jpg](https://commons.wikimedia.org/wiki/File:Ankerde.jpg) | Ulfbastel | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
+| `images/elektromotor__1.png` | [File:Animation einer Gleichstrommaschine.gif](https://commons.wikimedia.org/wiki/File:Animation_einer_Gleichstrommaschine.gif) | MichaelFrey | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
+| `images/elektromotor__2.jpg` | [File:Ankerde.jpg](https://commons.wikimedia.org/wiki/File:Ankerde.jpg) | Ulfbastel | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
+| `images/elektromotor__3.jpg` | [File:Stator and rotor by Zureks.JPG](https://commons.wikimedia.org/wiki/File:Stator_and_rotor_by_Zureks.JPG) | Zureks | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
 
 ## Entity-Relationship-Modell
 
@@ -351,7 +354,7 @@ NoDerivatives, fair-use and unattributed files were rejected by the builder.
 
 | Image | Commons file | Author | Licence |
 |---|---|---|---|
-| `images/kohlenstoffkreislauf__1.png` | [File:Carbon cycle-cute diagram-german.svg](https://commons.wikimedia.org/wiki/File:Carbon_cycle-cute_diagram-german.svg) | derivative work: FischX Carbon_cycle-cute_diagram.svg : *derivative work: FischX Carbon_cycle-cute_diagram.jpeg : User Kevin Saff on en.wikipedia Carbon_cycle-cute_diagram.jpeg : U | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
+| `images/kohlenstoffkreislauf__1.png` | [File:Carbon cycle-cute diagram-german.svg](https://commons.wikimedia.org/wiki/File:Carbon_cycle-cute_diagram-german.svg) | derivative work: FischX Carbon_cycle-cute_diagram.svg : *derivative work: FischX Carbon_cycle-cute_diagram.jpeg : User Kevin Saff on en.wikipedia Carbon_cycle-cute_diagram.jpeg : User Kevin Saff on en.wikipedia | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
 | `images/kohlenstoffkreislauf__2.png` | [File:Kohlenstoffzyklus elemente.svg](https://commons.wikimedia.org/wiki/File:Kohlenstoffzyklus_elemente.svg) | DeWikiMan | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) |
 | `images/kohlenstoffkreislauf__3.png` | [File:Carbon Dioxide 400kyr.svg](https://commons.wikimedia.org/wiki/File:Carbon_Dioxide_400kyr.svg) | Robert A. Rohde (original PNG), User:Jklamo (SVG conversion) | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
 
@@ -400,7 +403,7 @@ NoDerivatives, fair-use and unattributed files were rejected by the builder.
 | Image | Commons file | Author | Licence |
 |---|---|---|---|
 | `images/nervenzelle__1.png` | [File:Complete neuron cell diagram de.svg](https://commons.wikimedia.org/wiki/File:Complete_neuron_cell_diagram_de.svg) | LadyofHats (English original); NEUROtiker (German translation) | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
-| `images/nervenzelle__2.png` | [File:Synapse diag1.svg](https://commons.wikimedia.org/wiki/File:Synapse_diag1.svg) | vectorization: Mouagip ( talk ) Synapse_diag1.png : Drawn by fr:Utilisateur:Dake Corrections of original PNG by en:User:Nrets Diese W3C- unbestimmte Vektorgrafik wurde mit Adobe Il | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
+| `images/nervenzelle__2.png` | [File:Synapse diag1.svg](https://commons.wikimedia.org/wiki/File:Synapse_diag1.svg) | vectorization: Mouagip ( talk ) Synapse_diag1.png : Drawn by fr:Utilisateur:Dake Corrections of original PNG by en:User:Nrets Diese W3C- unbestimmte Vektorgrafik wurde mit Adobe Illustrator erstellt. | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
 | `images/nervenzelle__3.png` | [File:Aktionspotential.svg](https://commons.wikimedia.org/wiki/File:Aktionspotential.svg) | Action_potential.svg : Original by en:User:Chris 73 , updated by en:User:Diberri , converted to SVG by tiZom derivative work: de:Benutzer:Jnns | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
 
 ## Nürburgring
@@ -507,7 +510,7 @@ NoDerivatives, fair-use and unattributed files were rejected by the builder.
 |---|---|---|---|
 | `images/plattentektonik__1.png` | [File:Snider-Pellegrini Wegener fossil map-de.svg](https://commons.wikimedia.org/wiki/File:Snider-Pellegrini_Wegener_fossil_map-de.svg) | Osvaldocangaspadilla ; Lumu ( talk ) | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
 | `images/plattentektonik__2.png` | [File:Oceanic.Stripe.Magnetic.Anomalies.Scheme.svg](https://commons.wikimedia.org/wiki/File:Oceanic.Stripe.Magnetic.Anomalies.Scheme.svg) | Chmee2 | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
-| `images/plattentektonik__3.png` | [File:Indian subcontinent drift-de.svg](https://commons.wikimedia.org/wiki/File:Indian_subcontinent_drift-de.svg) | Indischer_Subkontinent_Drift.png : W. Jacquelyne Kious and Robert I. Tilling: This dynamic earth: the story of plate tectonics. U.S. Geological Survey, 1996 ( https://doi.org/10.31 | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
+| `images/plattentektonik__3.png` | [File:Indian subcontinent drift-de.svg](https://commons.wikimedia.org/wiki/File:Indian_subcontinent_drift-de.svg) | Indischer_Subkontinent_Drift.png : W. Jacquelyne Kious and Robert I. Tilling: This dynamic earth: the story of plate tectonics. U.S. Geological Survey, 1996 ( https://doi.org/10.3133/7000097 ). Additionally translated and slightly altered by the original uploader. derivative work: Sémhur ( talk ) | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
 
 ## Porsche 911
 
@@ -576,8 +579,8 @@ NoDerivatives, fair-use and unattributed files were rejected by the builder.
 | Image | Commons file | Author | Licence |
 |---|---|---|---|
 | `images/schloss-neuschwanstein__1.jpg` | [File:Sammlung malerischer Burgen (1846) - 029 Vorderhohenschwangau.jpg](https://commons.wikimedia.org/wiki/File:Sammlung_malerischer_Burgen_(1846)_-_029_Vorderhohenschwangau.jpg) | D Quaglio, C A Lebschee | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
-| `images/schloss-neuschwanstein__2.jpg` | [File:Wartburg19003.jpg](https://commons.wikimedia.org/wiki/File:Wartburg19003.jpg) | Autor/-in unbekannt Unknown author | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
-| `images/schloss-neuschwanstein__3.jpg` | [File:Château de Pierrefonds exterior Oise.jpg](https://commons.wikimedia.org/wiki/File:Château_de_Pierrefonds_exterior_Oise.jpg) | Jebulon | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| `images/schloss-neuschwanstein__2.jpg` | [File:Château de Pierrefonds exterior Oise.jpg](https://commons.wikimedia.org/wiki/File:Château_de_Pierrefonds_exterior_Oise.jpg) | Jebulon | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| `images/schloss-neuschwanstein__3.jpg` | [File:Christian Jank - Entwurf von Schloss Neuschwanstein 1869 restored.jpg](https://commons.wikimedia.org/wiki/File:Christian_Jank_-_Entwurf_von_Schloss_Neuschwanstein_1869_restored.jpg) | Christian Jank | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
 
 ## Scrum
 
@@ -705,7 +708,7 @@ NoDerivatives, fair-use and unattributed files were rejected by the builder.
 
 | Image | Commons file | Author | Licence |
 |---|---|---|---|
-| `images/unified-modeling-language__1.png` | [File:OO-historie-2.svg](https://commons.wikimedia.org/wiki/File:OO-historie-2.svg) | File:Objektorientieren methoden historie.png : GuidoZockoll, Mitarbeiter der oose.de Dienstleistungen für Innovative Informatik GmbH derivative work: File:OO-historie.svg : AxelSch | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
+| `images/unified-modeling-language__1.png` | [File:OO-historie-2.svg](https://commons.wikimedia.org/wiki/File:OO-historie-2.svg) | File:Objektorientieren methoden historie.png : GuidoZockoll, Mitarbeiter der oose.de Dienstleistungen für Innovative Informatik GmbH derivative work: File:OO-historie.svg : AxelScheithauer, oose.de Dienstleistungen für Innovative Informatik GmbH derivative work: Chris828 ( talk ) | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
 | `images/unified-modeling-language__2.png` | [File:MetamodelHierarchy de.svg](https://commons.wikimedia.org/wiki/File:MetamodelHierarchy_de.svg) | Jens von Pilgrim | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
 | `images/unified-modeling-language__3.png` | [File:Uml-Pin-1.svg](https://commons.wikimedia.org/wiki/File:Uml-Pin-1.svg) | Stkl | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
 
@@ -800,6 +803,6 @@ NoDerivatives, fair-use and unattributed files were rejected by the builder.
 
 | Image | Commons file | Author | Licence |
 |---|---|---|---|
-| `images/zugspitze__1.jpg` | [File:Karte des Zugspitzgebiets ca1730.jpg](https://commons.wikimedia.org/wiki/File:Karte_des_Zugspitzgebiets_ca1730.jpg) | Anonym Unknown author | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
-| `images/zugspitze__2.jpg` | [File:Luftbild aus 10.000 Meter Höhe vom Wettersteingebirge und der Zugspitze.jpg](https://commons.wikimedia.org/wiki/File:Luftbild_aus_10.000_Meter_Höhe_vom_Wettersteingebirge_und_der_Zugspitze.jpg) | HUvB | [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) |
-| `images/zugspitze__3.jpg` | [File:ZugspitzeJubilaeumsgratHoellental.JPG](https://commons.wikimedia.org/wiki/File:ZugspitzeJubilaeumsgratHoellental.JPG) | Christian Nawroth | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
+| `images/zugspitze__1.jpg` | [File:Luftbild aus 10.000 Meter Höhe vom Wettersteingebirge und der Zugspitze.jpg](https://commons.wikimedia.org/wiki/File:Luftbild_aus_10.000_Meter_Höhe_vom_Wettersteingebirge_und_der_Zugspitze.jpg) | HUvB | [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) |
+| `images/zugspitze__2.jpg` | [File:ZugspitzeJubilaeumsgratHoellental.JPG](https://commons.wikimedia.org/wiki/File:ZugspitzeJubilaeumsgratHoellental.JPG) | Christian Nawroth | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
+| `images/zugspitze__3.jpg` | [File:Zugspitze-Luftbild.JPG](https://commons.wikimedia.org/wiki/File:Zugspitze-Luftbild.JPG) | Octagon | [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) |

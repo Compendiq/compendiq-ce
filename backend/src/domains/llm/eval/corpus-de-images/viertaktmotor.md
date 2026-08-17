@@ -34,6 +34,8 @@ Der Kolben bewegt sich in Richtung des unteren Totpunktes, das Brenngas verricht
 
 Wenn der Kolben den unteren Totpunkt wieder verlässt, wird mit der Aufwärtsbewegung des Kolbens das Abgas aus dem Zylinder geschoben. Am Ende des Ausstoßtaktes kommt es zur so genannten Ventilüberschneidung. Das Einlassventil wird geöffnet, bevor der Kolben den oberen Totpunkt erreicht und bevor das Auslassventil geschlossen hat. Erst kurz nachdem der Kolben den oberen Totpunkt erreicht hat, schließt das Auslassventil.
 
+## Ventilsteuerung
+
 ### Überblick über die Ausführungen
 
 ![](images/viertaktmotor__3.jpg)

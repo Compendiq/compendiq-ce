@@ -8,6 +8,8 @@ Der Fernsehturm im Internationalen Stil wurde 1965–1969 von der Deutschen Post
 
 Das intern als „Fernmeldeturm 32“ bezeichnete Bauwerk dient neben seiner Hauptfunktion als Standort mehrerer Rundfunksender für Hörfunk und Fernsehen als Aussichtsturm mit einer Aussichtsetage inklusive Bar auf 203 Metern Höhe und beinhaltet ein Drehrestaurant auf 207 Metern Höhe. Darüber hinaus dient der Berliner Fernsehturm als Veranstaltungsort. Das markante und stadtprägende Bauwerk unterlag einer starken symbolischen Wandlung. Von einem politisch vereinnahmten nationalen Symbol der DDR entwickelte es sich nach der deutschen Wiedervereinigung zum gesamtstädtischen Symbol im wiedervereinten Berlin. Aufgrund seiner universellen und zeitlosen Formensprache fand es zunehmend als Markenzeichen Verwendung und wird international mit Berlin und Deutschland identifiziert. Der Berliner Fernsehturm erhielt 1979 in der DDR den Denkmalstatus, der nach der deutschen Wiedervereinigung fortgeschrieben wurde.
 
+## Geschichte
+
 ### Vorgeschichte
 
 ![](images/berliner-fernsehturm__2.jpg)
@@ -53,6 +55,8 @@ Die Öffentlichkeit erfuhr am 13. Februar 1965 aus dem Zentralorgan *Neues Deut
 > „Ein Kollektiv des VEB Industrieprojektierung Berlin unter Leitung des Bauingenieurs Joachim Petersohn beschäftigt sich gegenwärtig mit dem Studienprojekt eines Fernsehturms für die Hauptstadt der DDR. Um seinen Aufgaben — bessere Empfangsmöglichkeiten für Berlin und Umgebung und die Ausstrahlung eines zweiten Fernsehprogramms zu gewährleisten — gerecht zu werden, ist eine Turmhöhe von 360 Metern vorgesehen. Damit wird er den Pariser Eiffelturm um 60 Meter überragen. Der sich in 206 Meter Höhe befindliche Turmkopf soll ein Restaurant für 150 Personen erhalten, worauf sich eine Aussichtsplattform für 300 Personen befindet. Zwischen dem Restaurant und dem technischen Turmkopf mit voraussichtlich neun Etagen wird sich die Spiegelplattform für die Hornparabolstrahler erheben.“
 
 – Neues Deutschland, 10. Februar 1961, S. 8
+
+### Der Bau
 
 #### Baubeginn ohne Genehmigung
 
@@ -116,6 +120,8 @@ Die am Nordrand liegende von der Gontardstraße abgehende Panoramastraße wurde 
 
 Zeitgleich mit dem Fernsehturm wurde das 1970 fertiggestellte, 125 m hohe Hotelhochhaus *Interhotel Stadt Berlin* am Alexanderplatz fertiggestellt, das als *Park Inn by Radisson Berlin Alexanderplatz* geführt wird. Zwischen 1967 und 1972 entstanden direkt südlich vom Fernsehturm die Rathauspassagen als langer Riegel neben dem Roten Rathaus.
 
+## Baubeschreibung
+
 ### Fundament, Basis und Schaft
 
 Der Berliner Fernsehturm ist wegen des ungleichen Untergrunds zwischen 2,70 und 5,80 Metern gegründet; das Fundament hat eine Wandstärke von 50 Zentimetern. Verglichen mit Fundamenttiefen anderer Fernsehtürme, wie dem in Stuttgart mit 8 Metern oder dem Europaturm in Frankfurt am Main mit 18,5 Metern ist der Berliner flach gegründet. Die Probebohrungen förderten eine Mischung aus Kies, Sand, Stein- und Braunkohleschichten zutage, die eine gute Tragfähigkeit aufweisen. Zudem liegt der Standort trotz der relativen Nähe zur Spree auf einer der Talsandinseln, auf denen das historische Berlin gegründet wurde. Der Außendurchmesser des Fundaments beträgt 42 Meter. Das Bauwerk ist auf einem drei Meter dicken und leicht nach innen vorgespannten Ringfundament mit 41 Metern Außendurchmesser gegründet. Neben diesem Fundament besteht noch ein zweites quadratisches mit Seiten von 4,70 Metern, das den inneren Teil des Turmschaftes trägt. Es handelt sich um eine 390 Tonnen schwere, selbsttragende Stützkonstruktion aus Stahl, die bis auf 230 Meter Höhe ragt. Das Gerüst nimmt drei Fahrstühle, Versorgungsschächte und Kabel sowie eine Nottreppe mit 986 Stufen auf. Das Schaftgerüst ist aus Stabilitätsgründen an verschiedenen Stellen mit der Innenseite des Betonschafts verbunden.
@@ -129,6 +135,8 @@ Die sichtbare Basis auf Geländehöhe hat einen Durchmesser von 32 Metern und v
 Drei Pavillons, deren Grundrisse pfeilförmig und symmetrisch zur Längsachse des Turmplatzes verlaufen, säumen den Turm an seiner ebenerdigen Basis. Die zweigeschossigen, sechseckigen Bauten dienen als Eingangsbereich sowie für gastronomische Einrichtungen und für Ausstellungen. Bis zur Eröffnung war nur der Eingangspavillon fertiggestellt. Sie sind an allen Seiten verglast und lichtdurchflutet. Markantestes Merkmal dieses Basiskomplexes sind die mit einer dreißigprozentigen Neigung verlaufenden Betonfaltdächer, deren Spitzen etwa 30 Zentimeter über dem Boden beginnen. Andere Teile des Daches streben aufwärts und ragen bis zu 21 Meter hoch. Der Eingangsbau befindet sich rund 50 Meter gegenüber dem Bahnhof Alexanderplatz. Die offene Eingangshalle wird von einer sechsteiligen Freitreppe flankiert, deren Teile sich mittig in einem zentralen Podest treffen. In dieser Halle sind der Kassenbereich für die Turmauffahrt und ein Souvenirladen untergebracht. Ein in sechs Metern Höhe angeordneter verglaster und überdachter Übergang (Skyway genannt) führt zu den Umgängen am Turmschaft und zu den Aufzügen.
 
 Das hexagonale Raster des Umbauungskomplexes setzt sich in der nach Südwesten gerichteten großen Freitreppe fort, die zu den beiden anderen Pavillons führt. Die Treppe schiebt sich förmlich von der Turmumbauung als Terrasse in den Park hinein. Zu beiden Seiten der Treppe sind vier Wasserbecken symmetrisch angeordnet, die zu jeder vollen Stunde automatisch angesteuert werden, um mit Fontänen verschiedene Wasserfiguren zu erzeugen. Die Anlage besteht aus 560 Düsen und verfügt über 296 Unterwasserscheinwerfer, um das Wasserspiel anzustrahlen. Aus der Vogelperspektive erscheint die Grundfläche der Umbauung als Pfeil oder Rakete. Der Neptunbrunnen befindet sich in einer Sichtachse zur südwestlichen Freitreppe. Die Freifläche ist rund 600 Meter lang und 300 Meter breit. Sie wurde von den Architekten Hubert Matthes, Eberhard Horn und Rolf Rühle gestaltet. Die bauliche Ausführung der Fußumbauung oblag dem VEB BMK Ingenieurhochbau Berlin, wobei Ulrich Müther mit seiner Baufirma VEB Spezialbetonbau Rügen den Maschinenpark für das Torkretieren der auskragenden Faltwerkdächer zur Verfügung stellte. Entwurf und die Planung des Umbauungskomplexes erfolgten durch den Architekten Walter Herzog und den Tragwerksplaner Rolf Heider.
+
+### Turmkugel
 
 #### Aufbau und Technik
 
@@ -212,6 +220,8 @@ Nachdem Kosel und Dieter den Standpunkt Henselmanns öffentlich angriffen, beant
 
 Die einzige umfassende Nennung der beteiligten Personen bleibt eine im August 1970 erschienene Ausgabe der Zeitschrift *Deutsche Architektur*, in der Fritz Dieter und Günter Franke für die architektonische Gestaltung genannt werden und Hermann Henselmann als künstlerischer Berater. Die Zeitschrift nannte die Ipro-Architekten erst nach mehreren Interventionen. Es darf davon ausgegangen werden, dass sich die Parteien durchaus gegenseitig beeinflusst und inspiriert haben. Wie hoch dieser Anteil der eigenschöpferischen Leistung war, ist nicht genau rekonstruierbar. Es ist fraglich, ob die tatsächliche Urheberschaft jemals geklärt werden kann, zumal Dieter (1931–2002), Franke wie auch Henselmann und Kosel inzwischen verstorben sind. Henselmann kann durch einen Beitrag des französischen Architekten Jean Faugeron inspiriert worden sein, dessen Wettbewerbsentwurf für West-Berlin 1957/1958 einen Fernsehturm vorsah, der in der perspektivischen Darstellung die Gestaltungsansätze des Berliner Fernsehturms vorwegnahm.
 
+## Rezeption
+
 ### Architektur
 
 Mit dem kugelförmigen Turmkopf unterscheidet sich der Berliner Fernsehturm besonders deutlich von den bis dahin gebauten Fernsehtürmen, die zumeist zylindrische, kegelförmige oder scheibenförmige Auskragungen besitzen. Damit ist er ein Unikat und hebt sich von anderen Bauwerken seiner Art ab. Die Kugelform hat die Eigenschaft, dass sie unabhängig vom Standpunkt immer gleichermaßen als solche erkennbar ist. Bei anderen Formen verliert sich die Form vor allem bei starker Untersicht.
@@ -253,6 +263,8 @@ Die Filmindustrie entdeckte den starken Wahrzeichencharakter ebenfalls für sich
 Neben den üblichen Souvenirs ist auch ein gläserner Parfümflakon in Form des Turms erhältlich. Eine lokale Manufaktur bietet unter dem Namen *Berlin Flower Tower* eine Samenbombe in Gestalt des Fernsehturms an, die Samen Berliner Wildpflanzen enthält. In der Werbeindustrie wurde der Fernsehturm besonders von – mit der Stadt Berlin in Beziehung stehenden – Unternehmen zahlreich zitiert. Besondere Bekanntheit erlangte die Werbung des Bierherstellers *Berliner Kindl*, die in einem Plakat eine Bierflasche darstellte, in deren Schattenwurf sich der Berliner Fernsehturm abzeichnet. Der Modelleisenbahn-Zubehörhersteller Faller hat einen – dem Berliner Fernsehturm nachempfundenen – mehrteiligen Bausatz herausgebracht.
 
 Anlässlich der Mailänder Möbelmesse 2008 *(Salone del Mobile)* erhielt der Berliner Fernsehturm als temporäre Kunstinstallation eine künstlerische Rezeption. Die stilisierte Turmkugel mit rot-weißer Antennenspitze diente der Messe als 15 Meter hoher geodätischer Dom *(Berlin Design Dome)* sowie als Treffpunkt und Ausstellungsraum. Der Berliner Verein *c-base* verwendet den Fernsehturm in seinem Logo und gestaltet mit ihm einen fiktiven Gründungsmythos, in dem der Turm lediglich die aus dem Boden ragende Antenne einer in Berlin-Mitte abgestürzten Raumstation sei.
+
+## Frequenzen und Programme
 
 ### Analoges Radio (UKW-Rundfunk)
 

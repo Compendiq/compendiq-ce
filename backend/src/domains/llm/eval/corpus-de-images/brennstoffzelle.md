@@ -63,11 +63,15 @@ Bei der Niedertemperatur-Protonenaustauschmembran-Brennstoffzelle (*Proton Excha
 
 Eine mögliche Alternative zur direkten Wasserstoffspeicherung in Drucktanks oder Kryotanks sind Metallhydride oder andere chemische Wasserstoffspeicher. Bei den letzteren wird aus Treibstoffen wie Methanol oder aus geeigneten Kohlenwasserstoffen wie Dibenzyltoluol kurz vor Gebrauch der Wasserstoff durch katalytische Verfahren und/oder Erhitzen gewonnen. Sofern der Brennstoff regenerativ gewonnen wurde (z. B. Methanolherstellung aus Müll oder aus CO2 mit erneuerbarem Strom), so wird bei einer Dampfreformierung zu wasserstoff-haltigem Gas kein zusätzliches CO2 emittiert.
 
+## Brennstoffzellentypen
+
 ### Bedeutende Brennstoffzellentypen
 
 Die bis 2018 wichtigsten Brennstoffzellentypen sind:
 
 Neben der Klassifizierung nach Zelltypen wird teilweise auch die Klassifizierung nach Brennstoffzellen-System-Typen angewandt. Ein Beispiel hierfür ist die Indirekte Methanolbrennstoffzelle.
+
+### Weitere Brennstoffzellentypen in der Forschung
 
 #### Alternative Brennstoffe
 
@@ -158,6 +162,8 @@ Das Digitalfunknetz der Behörden und Organisationen mit Sicherheitsaufgaben (BO
 Bei der stationären BZ-Anwendung in Form von Heizungen steht derzeit die Wärmeproduktion gegenüber der Stromproduktion im Vordergrund. Diese Systeme werden deshalb meist wärmebedarfsgeführt betrieben. Das bedeutet, dass die Systemleistung nach der benötigten Wärmemenge geregelt wird, wobei der erzeugte elektrische Strom in das öffentliche Stromnetz eingespeist wird. Stationäre BZ-Systeme werden am besten mit einer geringen Leistungsmodulation betrieben. Idealerweise wird der Wärmegrundlastbedarf komplett über das BZ-BHKW gedeckt. (Wärme-)Lastspitzen werden über konventionelle Heizgeräte abgedeckt. Auf diese Weise arbeitet das stationäre BZ-System bei lediglich einem einzigen konstanten Lastpunkt. Dadurch kann das System auf den maximalen Wirkungsgrad hin ausgelegt werden. Die Lebensdauer einer BZ ist in erster Annäherung durch die Anzahl der Start-Stopp-Zyklen bestimmt, da diese die ungünstigste Auswirkung auf die Katalysatoren im Inneren zeigen.
 
 Für eine PEM-Brennstoffzelle mit geschlossener Kathode gilt, dass sie in ausgeschaltetem Zustand beidseitig – also auch sauerstoffseitig – abgedichtet werden sollte. Das vereinfacht einen erneuten Start, da die für den Betrieb notwendige Feuchtigkeit beibehalten wird, und sich keine schädlichen Gase ansammeln können. Sofern die Lagerung bei Temperaturen unter dem Gefrierpunkt erfolgen soll, muss die Brennstoffzelle komplett ausgetrocknet werden, um Schäden durch Eisbildung zu verhindern.
+
+### Mobiler Einsatz
 
 #### Gabelstapler und andere Flurförderzeuge
 

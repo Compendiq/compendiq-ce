@@ -59,7 +59,36 @@ export const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
 export const MIN_PAGES_PER_CATEGORY = 10;
 
 /**
- * The licences this repository may carry inside an MIT tree, as canonical
+ * Per-image ceiling on a credit. Above it the builder abbreviates on a WORD
+ * boundary and marks the result, so a partial credit says it is partial and
+ * sends the reader to `sourceUrl` for the rest. The first cut cut at a flat
+ * 180 characters: `AxelScheithauer` shipped as `AxelSch` and a third
+ * contributor was not credited at all, on a CC BY-SA image whose entire
+ * obligation is that credit.
+ */
+export const MAX_AUTHOR_CHARS = 400;
+export const AUTHOR_ABBREVIATED_MARK = ' […]';
+
+/**
+ * The unknown-author templates, as de.wikipedia RENDERS them — which is the
+ * only form the builder ever sees, because `extmetadata` is localised. An
+ * image whose credit is one of these names nobody, and the notices file must
+ * not state a phrase as a person: the builder drops them.
+ *
+ * Anchored, never a substring test. Commons' "No machine-readable author
+ * provided. *X* assumed (based on copyright claims)." DOES name someone, and
+ * "Eigenes Werk von Max Mustermann" is a name too.
+ */
+const UNNAMED_AUTHOR =
+  /^(?:(?:autor(?:\/-?in)?\s+)?unbekannt(?:er\s+autor)?|urheber\s+unbekannt|nicht\s+bekannt|unknown(?:\s+author)?|anonym(?:ous)?|eigenes\s+werk|own\s+work|self[-\s]?made|selbst\s+erstellt|n\/?a|[-–—?.])(?:\s+unknown\s+author)?$/i;
+
+export function namesAnAuthor(author: string): boolean {
+  const trimmed = author.trim();
+  return trimmed.length > 0 && !UNNAMED_AUTHOR.test(trimmed);
+}
+
+/**
+ * The licences this repository may carry beside its own AGPL-3.0, as canonical
  * labels the builder writes (it maps Commons' `extmetadata.License` ids onto
  * these, so the allow-list is a closed set of strings rather than a fuzzy
  * match over free text).
@@ -99,6 +128,13 @@ export const ImageCorpusImageSchema = z.object({
   /** `File:…` on Commons, in the canonical English namespace. */
   sourceTitle: z.string(),
   sourceUrl: z.string(),
+  /**
+   * The UPSTREAM file's content address, not this vendored copy's. The article
+   * revision pins the text; nothing pinned the pictures, and Commons serves
+   * the current version of a file — so an SVG re-drawn or a photograph
+   * re-cropped upstream changed a "pinned" rebuild with nothing to notice it.
+   */
+  sha1: z.string(),
   author: z.string(),
   license: z.string(),
   licenseUrl: z.string(),

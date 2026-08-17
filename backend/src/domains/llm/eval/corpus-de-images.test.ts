@@ -25,8 +25,15 @@
  *    trusting what the builder wrote into the manifest.
  * 4. **A licence the repo may not carry.** CC0 / public domain / CC BY x /
  *    CC BY-SA x only, each with a named author, because the attribution file
- *    is an obligation and not a courtesy.
- * 5. **Wiring it into the eval runner by accident.** See the last test.
+ *    is an obligation and not a courtesy. "Named" is checked, not merely
+ *    "non-empty": de.wikipedia renders the unknown-author templates localised
+ *    ("Autor/-in unbekannt Unknown author"), Commons' `Credit` is the *Source*
+ *    field rather than an author, and a hard character cap on a long credit
+ *    cuts a surname in half and drops the contributors behind it. All three
+ *    put a sentence into `LICENSE-ATTRIBUTION.md` that is not a fact, on the
+ *    one artifact here whose entire purpose is being accurate.
+ * 5. **Wiring it into the eval runner by accident.** See the last two tests —
+ *    including the one language string that resolves onto this directory.
  */
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -39,11 +46,14 @@ import {
   MAX_IMAGE_FILE_BYTES,
   MAX_TOTAL_IMAGE_BYTES,
   MIN_PAGES_PER_CATEGORY,
+  MAX_AUTHOR_CHARS,
+  AUTHOR_ABBREVIATED_MARK,
   IMAGE_FILE_NAME,
   isAllowedImageLicense,
+  namesAnAuthor,
   loadImageCorpusManifest,
 } from './corpus-images.js';
-import { CORPUS_DIRS, corpusDirsForLanguage } from './fixture.js';
+import { CORPUS_DIRS, corpusDirsForLanguage, translatedCorpusDirs } from './fixture.js';
 import { sniffImageFormat, readImageDimensions } from '../../../core/services/image-validator.js';
 
 const manifest = loadImageCorpusManifest();
@@ -215,13 +225,58 @@ describe('corpus-de-images — images', () => {
 
   it('carries a named author and a permitted licence for every image', () => {
     const offenders = allImages
-      .filter(({ image }) => !isAllowedImageLicense(image.license) || image.author.trim().length === 0)
+      .filter(({ image }) => !isAllowedImageLicense(image.license) || !namesAnAuthor(image.author))
       .map(({ image }) => `${image.file}: author=${JSON.stringify(image.author)} license=${JSON.stringify(image.license)}`);
     expect(
       offenders,
-      'Only CC0, public domain, CC BY x and CC BY-SA x are permitted, each with a named author. ' +
-        'GFDL-only, NC, ND, fair use and unknown are rejected at build time — an image reaching ' +
-        'here without one means the filter was edited or the manifest was.',
+      'Only CC0, public domain, CC BY x and CC BY-SA x are permitted, each with a NAMED author. ' +
+        'Non-empty is not named: de.wikipedia renders the unknown-author templates localised ' +
+        '("Autor/-in unbekannt Unknown author", "Anonym Unknown author"), and Commons\' `Credit` ' +
+        'field is the *Source*, so reading it as an author credits a photograph to "Eigenes ' +
+        'Werk". Each of those is a sentence in LICENSE-ATTRIBUTION.md that is not a fact.',
+    ).toEqual([]);
+  });
+
+  it('never abbreviates a credit into a name nobody can look up', () => {
+    const overCap = allImages
+      .filter(({ image }) => image.author.length > MAX_AUTHOR_CHARS)
+      .map(({ image }) => `${image.file}: ${image.author.length} chars`);
+    expect(
+      overCap,
+      `A credit past ${MAX_AUTHOR_CHARS} characters must be abbreviated by the builder.`,
+    ).toEqual([]);
+
+    // The signature of a hard character cap is several credits ending at the
+    // identical length. The first cut capped at a flat 180: five credits came
+    // out at exactly 180 characters, two of them CC BY-SA, one cutting
+    // `AxelScheithauer` mid-surname and dropping a third contributor entirely.
+    // Below 120 characters an identical length is coincidence, so only long
+    // credits are compared.
+    const LONG_CREDIT_CHARS = 120;
+    const byLength = new Map<number, string[]>();
+    for (const { image } of allImages) {
+      if (image.author.length < LONG_CREDIT_CHARS) continue;
+      if (image.author.endsWith(AUTHOR_ABBREVIATED_MARK)) continue;
+      byLength.set(image.author.length, [...(byLength.get(image.author.length) ?? []), image.file]);
+    }
+    expect(
+      [...byLength.entries()].filter(([, files]) => files.length > 1).map(([len, files]) => `${len} chars: ${files.join(', ')}`),
+      'Several long credits stop at exactly the same length, which is what a character cap looks ' +
+        `like and not what authorship looks like. Abbreviate on a word boundary and mark it with ` +
+        `"${AUTHOR_ABBREVIATED_MARK.trim()}" so a reader can tell the credit is partial and follow ` +
+        'sourceUrl for the rest.',
+    ).toEqual([]);
+  });
+
+  it('records the upstream content address of every image', () => {
+    const offenders = allImages
+      .filter(({ image }) => !/^[0-9a-f]{40}$/.test(image.sha1))
+      .map(({ image }) => `${image.file}: sha1=${JSON.stringify(image.sha1)}`);
+    expect(
+      offenders,
+      "The article revision pins the TEXT. Commons serves the current version of a file, so an " +
+        'SVG re-drawn or a photograph re-cropped upstream changes a "pinned" rebuild with nothing ' +
+        'to notice it — the sha1 is what turns that from a silent byte diff into a named failure.',
     ).toEqual([]);
   });
 
@@ -332,6 +387,39 @@ describe('corpus-de-images — no caption or alt text reaches the page body', ()
     ).toEqual([]);
   });
 
+  it('keeps the section a subsection belongs to', () => {
+    // The builder drops headings with nothing under them, because a table
+    // stripped out of a section leaves a subject line entering the index with
+    // no text behind it. Its first cut stopped at the next heading of ANY
+    // depth, which deletes something else entirely: a `##` whose subsections
+    // are all populated has nothing between itself and its first `###`. That
+    // cost a section title on 22 of 66 pages — `koelner-dom.md` ran its `#`
+    // title straight into `### Römische und merowingische Bischofskirche` and
+    // the parent's subject line was on the page nowhere. P5c labels against
+    // this text, so a lost section title is lost retrieval signal for the text
+    // leg the image leg is measured against.
+    //
+    // A skipped level is what that looks like from outside the builder.
+    const jumps: string[] = [];
+    for (const page of pages) {
+      const levels = [...pageBody(page.file).matchAll(/^(#{1,6}) (.*)$/gm)].map((m) => ({
+        depth: m[1]!.length,
+        text: m[2]!,
+      }));
+      for (let i = 0; i < levels.length - 1; i += 1) {
+        if (levels[i + 1]!.depth - levels[i]!.depth > 1) {
+          jumps.push(`${page.file}: "${levels[i]!.text}" (h${levels[i]!.depth}) → "${levels[i + 1]!.text}" (h${levels[i + 1]!.depth})`);
+        }
+      }
+    }
+    expect(
+      jumps,
+      'A heading level was skipped, which means the parent section title was deleted while its ' +
+        'subsections survived. Drop a heading only when the NEXT heading is at the same or a ' +
+        'shallower level.',
+    ).toEqual([]);
+  });
+
   it('keeps real prose around the images', () => {
     for (const page of pages) {
       const prose = pageBody(page.file)
@@ -358,5 +446,18 @@ describe('corpus-de-images — not wired into the eval runner', () => {
     for (const lang of ['en', 'de', undefined]) {
       expect([...corpusDirsForLanguage(lang)]).not.toContain(IMAGE_CORPUS_DIR);
     }
+  });
+
+  it('refuses the one language string that resolves onto it', () => {
+    // `translatedCorpusDirs` derives its directory from the language name, and
+    // this corpus lives inside that namespace under a name that is not a
+    // language: `corpus-de-images`. So `--lang de-images` handed the image
+    // corpus back as a translated corpus, and the run only died a step later
+    // on a missing `fixture-de-images.json`. That is luck, not a guard, and
+    // the loop above proved nothing about it.
+    expect(() => corpusDirsForLanguage('de-images')).toThrow(/image corpus/i);
+    expect(() => translatedCorpusDirs('de-images')).toThrow(/image corpus/i);
+    // Ordinary translated languages are untouched.
+    expect([...translatedCorpusDirs('de')]).toHaveLength(1);
   });
 });

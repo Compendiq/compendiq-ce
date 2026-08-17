@@ -377,6 +377,8 @@ Außerdem ist es auch möglich, die Stromverteilung entlang der Antenne anzugebe
 
 Siehe auch: Momentenmethode (Elektrotechnik)
 
+## Sicherheitsbestimmungen beim Antennenbau
+
 ### Blitzschutz
 
 Werden Antennen im Freien an hohe Masten montiert, welche die Umgebung überragen, so müssen sie vor Blitzschlag geschützt werden. Die Vorschriften dazu sind im Baurecht des jeweiligen Landes oder Staates enthalten. Für Deutschland siehe das Merkblatt des VDE.

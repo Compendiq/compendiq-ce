@@ -7,6 +7,8 @@ Es hat eine Reichweite von max. 15.200 km und eine Reisegeschwindigkeit von etwa
 
 Die Endmontage fand in Toulouse und die Kabinenausrüstung in Hamburg-Finkenwerder statt. Der Erstflug wurde am 27. April 2005 mit einer A380-841 absolviert, bis zum 10. März 2018 wurden 331 Maschinen bestellt. Nachdem Emirates angekündigt hatte, die Bestellung um 39 auf 123 Stück zu reduzieren, stellte Airbus die Produktion im Jahre 2021 ein, Emirates erhielt am 16. Dezember 2021 die letzte A380.
 
+## Geschichte
+
 ### Vorgeschichte
 
 Die Entwicklung des Airbus A380 geht bis in die 1980er-Jahre zurück, als erste Machbarkeitsstudien bezüglich eines Großflugzeuges sowohl für Passagiere als auch für den Frachtflugverkehr erstellt wurden. In der zweiten Hälfte der 1990er-Jahre ergab sich eine Marktsituation, die aus der Sicht von Airbus eine Realisierung der Pläne gestattete. Diese Einschätzung resultierte zum einen aus der wachsenden Nachfrage nach Großraumflugzeugen, zum anderen aus der Entscheidung des Airbus-Konkurrenten Boeing, keine Gelder für neue Versionen seiner Boeing 747 in Forschung und Entwicklung zu investieren. Als im Jahr 2000 die ersten 50 Kaufabsichtserklärungen vorlagen, begann Airbus 2001 mit der Konstruktion. Während der Konzeptionsphase wurde das Flugzeug als *Airbus A3XX* bezeichnet.
@@ -18,6 +20,8 @@ Für die Entwicklung des Flugzeuges war sowohl die Erhöhung der möglichen Pass
 ![](images/airbus-a380__1.jpg)
 
 Die Abmessungen des Flugzeugs übertreffen nicht die 80×80-Meter-Box, wodurch es sich auf bestehenden Rollwegen bewegen und auch die Abfertigungsinfrastruktur der Terminals nutzen kann. Zur schnelleren Passagierabfertigung werden allerdings oft die bestehenden Einrichtungen derart erweitert, dass der Ein- und Ausstieg parallel über beide Decks ablaufen kann. Ziel ist das Erreichen vergleichbarer Turnaround-Zeiten wie bei einstöckigen Großraumflugzeugen.
+
+### Testprogramm
 
 #### Erste öffentliche Präsentation (Rollout)
 
@@ -156,6 +160,8 @@ Am 17. März 2021 verließ die letzte Maschine dieses Typs mit der Fertigungsnum
 
 Nach Produktionsende und im Rahmen der COVID-19-Pandemie wurden A380-Flotten vieler Fluggesellschaften vorübergehend stillgelegt; ab November 2021 nahmen einige Fluggesellschaften, darunter British Airways, Singapore Airlines und Qatar Airways, A380-Flüge wieder auf. Die Lufthansa plante eine Auflösung ihrer A380-Flotte und gab Flugzeuge an den Hersteller zurück, hat aber Flüge damit ab Juni 2023 wieder aufgenommen. Die erste reaktivierte A380 der Lufthansa wurde am 1. Juni 2023 im regulären Liniendienst von München nach Boston eingesetzt.
 
+## Wirtschaftlichkeit
+
 ### Finanzierung der Entwicklung
 
 Das A380-Programm war für Airbus lange Zeit defizitär. Ein gutes Drittel der Entwicklungskosten von 12 Milliarden Euro wurde aus Steuergeldern finanziert. Ob allein die von Airbus geleisteten Aufwendungen wieder eingespielt werden können, war lange offen. Airbus selbst hat im Laufe der Jahre unterschiedliche Angaben zum Erreichen der Gewinnschwelle gemacht und statt der ursprünglich genannten Stückzahl von 230 später das Jahr 2015 genannt. Auf der Jahrespressekonferenz am 12. Januar 2016 teilte Airbus mit, 2015 die Gewinnschwelle erreicht zu haben.
@@ -230,6 +236,8 @@ Das Seitenleitwerk besteht ausschließlich aus kohlenstofffaserverstärktem Kuns
 
 Das Höhenleitwerk ist wie das Seitenleitwerk und die Hecksektion ebenfalls aus kohlenstofffaserverstärktem Kunststoff hergestellt. Es hat die Fläche einer gesamten Tragfläche eines Airbus A320. Es hat insgesamt vier Höhenruder, die jeweils von zwei Hydraulikaktoren betätigt werden. Zudem befindet sich im Höhenleitwerk auch ein Kraftstofftank, der zur Optimierung des Schwerpunktes individuell und automatisch am Boden gefüllt und im Flug geleert wird. Dieser Trimmtank kann mit 18,6 t Kerosin befüllt werden.
 
+### Triebwerke
+
 #### Strahltriebwerke
 
 Die A380-800 ist mit vier Triebwerken ausgestattet, die an Pylonen unter den Tragflächen montiert sind. Der Kunde hat die Wahl zwischen Triebwerken der Rolls-Royce-Trent-900- oder Engine-Alliance-GP7200-Serien. Rolls-Royce bietet für die A380 das Trent 970 mit 311 kN (70.000 lbf) Schub und das Trent 972 mit 320 kN (72.000 lbf) Schub an. So ausgerüstete A380 erhalten die Unterversion -x41 für das Trent 970 bzw. -x42 für das Trent 972. Für schwerere Varianten wie die A380F und die A380-900 würden zudem die noch einmal stärkeren Varianten Trent 977 mit 340 kN (77.000 lbf) Schub (Unterversion -x43) und Trent 980 mit 356 kN (80.000 lbf) Schub zur Verfügung stehen. Eine A380-800 mit Trent-970-Triebwerken erhält somit die Versionsbezeichnung A380-841, mit Trent 972 wäre es A380-842.
@@ -264,6 +272,8 @@ Bei einem Strom-Totalausfall steht zur Notstromerzeugung eine Ram-Air-Turbine mi
 Der Airbus A380 hat zwei Klimaanlagen *(packs)*, die jeweils zwei sogenannte *Air Generation Units* (AGUs) beinhalten. Der Vorteil beim Design der AGUs besteht in einer sehr kompakten Bauweise. Die Leistung der *packs* beträgt etwa 450 kW und bewirkt einen Luftstrom in die Kabine von 2,5 bis 2,7 kg/s. Die Versorgung durch Stauluft (ram air) liegt bei 6,5 kg/s. Die Kabinenluft wird bei voller Leistung etwa alle drei Minuten komplett durch Frischluft ersetzt.
 
 Der Kabinendruck im Airbus A380 entspricht dem Luftdruck auf einer Höhe von rund 2.100 m (7.000 ft).
+
+### Hydrauliksystem
 
 #### Hydraulikkreisläufe
 
@@ -366,6 +376,8 @@ Durch den Streit mit Rolls-Royce über die Wartungsanfälligkeit der Triebwerke 
 Emirates hat nachfolgend das Thema A380neo nicht mehr angesprochen, aber forderte im Juni 2024 Nachfolger für A350/B777, da die noch eingesetzten A380 eine Auslastung von 85 % haben und Emirates „in Zukunft ein Flugzeug mit 1.500 Sitzen brauchen werde“. Mit diesem Traum spielt Emirates-Chef Tim Clark darauf an, dass die Rolls-Royce UltraFan-Entwicklung im November 2023 einen Test mit 378 kN absolviert hat, und das Design der Triebwerke bis zu 490 kN ermöglichen könnte – über 50 % mehr als die Triebwerke des A380-900 mit knapp tausend Sitzen. Diese Dimension geht allerdings über eine schlichte Verlängerung des A380 hinaus. Tim Clark selbst geht von einer Entwicklungszeit von 15 Jahren für ein neues Modell aus, das ab 2050 zur Verfügung stehen könnte.
 
 Nachdem sich die Boeing 777X verzögerte, hat sich das Interesse von Emirates auf einen verlängerten Airbus A350 verlagert. Im Februar 2026 bestätigte Emirates, einen angedachten A350-2000 zu kaufen, kurz nachdem auch Rolls-Royce verbesserte Triebwerke ab 2028 in Aussicht gestellt hatte.
+
+## Betreiber
 
 ### Größe des Marktes
 

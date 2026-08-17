@@ -1,5 +1,7 @@
 # Bahnstrom
 
+![](images/bahnstrom__1.jpg)
+
 **Bahnstrom** (auch **Bahnenergie** genannt) bezeichnet die elektrische Energie zum Betrieb elektrischer Bahnen. Sie wird überwiegend für den Antrieb von Triebfahrzeugen genutzt. Die Versorgung elektrischer Bahnen mit Bahnstrom wird als **Bahnstromversorgung** oder **Bahnenergieversorgung** bezeichnet. Diese lässt sich in die funktionellen Teilbereiche *Erzeugung*, *Übertragung*, *Verteilung*, *Zuführung* und *Rückführung* des Bahnstroms bzw. der Bahnenergie unterteilen. Dabei stellt die Speisung mobiler Verbraucher über Fahrleitungen und Stromabnehmer den wesentlichen Unterschied zum öffentlichen Stromnetz dar.
 
 Historisch entwickelten sich in den verschiedenen Ländern oder bei unterschiedlichen Bahngesellschaften verschiedene **Bahnstromsysteme** bzw. **Bahnstromarten**, die in der Regel nicht direkt mit dem öffentlichen Stromnetz eines Landes gekoppelt sind, sondern eigene Anlagen benötigen. Dies ist insbesondere bei Betrieb mit Gleichstrom der Fall.
@@ -21,6 +23,8 @@ Der heutige Stand der Technik im Bereich der Leistungselektronik macht die vermi
 Außerdem wird der Zeitpunkt einer möglichen Umstellung des Bahnstroms in Deutschland beeinflusst durch die Nutzungsdauer der älteren Baureihen mit Wechselstrommotoren, die sich schwer umrüsten lassen. Die Baureihen 103, 141 und 150 sind bereits ausgemustert, unter den Einheitslokomotiven verbleiben die Baureihen 110, 140, 139, einige der jüngeren Exemplare der 111 sowie der 151. Wenn auch die Reichsbahn-Baureihen 112, 114, 143 und 155 ausgemustert sind, verbleiben im Bestand der Deutschen Bahn ausschließlich Drehstromlokomotiven. Eine Umstellung ist dann relativ einfach, im Gegenzug kann auf die Unterhaltung eines eigenständigen 110-kV-Hochspannungsnetzes verzichtet werden und die Unterwerke können an die Hochspannungsnetze der allgemeinen Energieversorgungsunternehmen angebunden werden. Da die Hochspannungsnetze schon errichtet sind, besteht kein Handlungsbedarf und die Ausmusterung der älteren Baureihen kann noch Jahrzehnte dauern.
 
 In der Nachkriegszeit fiel die Entscheidung, großflächig Dampfloks durch E-Loks zu ersetzen. Anfangs waren nur 5 % der Strecken elektrifiziert, daher stellte sich die Wahl des Stromsystems neu. Um nicht von RWE abhängig zu werden, fiel die Entscheidung, kleinere technische Nachteile und eine Einzellösung in Mitteleuropa in Kauf zu nehmen und ein eigenständiges Bahnstromnetz zu errichten. Zum 1. Juni 1958 nahm die *Zentralstelle für Bahnstromversorgung* (ZBV) aufgrund einer Verfügung des Vorstands der Deutschen Bundesbahn in Frankfurt am Main ihre Arbeit auf.
+
+## Bahnstromsysteme
 
 ### Gleichspannung
 
@@ -56,6 +60,8 @@ Die Stromversorgung gleichstrombetriebener Bahnen erfolgt schon seit den 1920er 
 Wechselspannung kann genauso wie für die öffentliche Elektrizitätsversorgung einfach erzeugt (Generator) und in Transformatoren umgespannt und verteilt werden.
 
 Das Stromsystem des Antriebs ist dabei von dem der Energiezuführung zu unterscheiden. Es gibt für jeden Anwendungsfall eine passende Möglichkeit, beliebige Stromsysteme auf Antriebs- und Netzseite mittels Leistungselektronik miteinander zu koppeln. Bei elektronisch geregelten Bahnfahrzeugen mit entsprechenden Wechselrichtern kann der elektrische Energiefluss dabei meist in beiden Richtungen erfolgen, d. h. das Fahrzeug entnimmt für den Antrieb elektrische Energie aus dem Versorgungssystem und kann beim Bremsen zum Verzögern oder bei Bergabfahrt aus Bewegungsenergie elektrischen Energie generieren und zurück in das Netz einspeisen, also rekuperieren.
+
+#### Einphasensysteme
 
 ##### Wechselspannung mit Standard-Industriefrequenz
 
@@ -127,7 +133,7 @@ Durch die Verwendung von Leistungselektronik können moderne Lokomotiven in beli
 
 ## Bahnstromversorgung
 
-![](images/bahnstrom__1.png)
+![](images/bahnstrom__2.png)
 
 ### Bereitstellung und Übertragung
 
@@ -194,6 +200,8 @@ Stand 2018 wird etwa ein Drittel des Bahnstroms in Deutschland über die Stromb�
 
 Die Umwandlung des Bahnstroms in die Spannung und Frequenz des jeweiligen Bahnstromsystems erfolgt über die sogenannte *Bahnstromverteilung*.
 
+#### Unterwerke (Uw)
+
 ##### Wechselstrombahnen
 
 Ein Unterwerk entspricht etwa einem Umspannwerk im öffentlichen Netz. Ein Unterwerk transformiert die Energie aus dem Hochspannungsnetz in das Oberleitungsnetz.
@@ -245,8 +253,6 @@ Ergänzend zur Zentralen Leitstelle Innsbruck haben die ÖBB vier regionale Leit
 Die Zentrale Netzleitstelle (ZLS) der SBB wird vom Geschäftsbereich Energie der Division Infrastruktur in Zollikofen betrieben. Von dort aus können die Kraftwerke und fast alle Umrichterwerke ferngesteuert werden.
 
 ## Signalstromversorgung
-
-![](images/bahnstrom__2.png)
 
 Im Bahnbetrieb werden besonders hohe Anforderungen an die Verfügbarkeit von sicherheitsrelevanten Systemen wie Stellwerke, Bahnübergänge, Signalanlagen oder Notbeleuchtungen gestellt. Diese Systeme werden meist über eine Unterbrechungsfreie Stromversorgung (USV) betrieben, die bei Spannungsausfall die Energie aus Batterien bezieht. Eine andere Möglichkeit ist die Versorgung über das Fahrleitungsnetz – eine Möglichkeit, die vor allem auch früher verwendet wurde, wo noch nicht überall ein zuverlässiges Landesnetz zur Verfügung stand. Heute werden oft USV-Anlagen verwendet, die sowohl aus dem Landesnetz, wie aus der Fahrleitung mit Energie versorgt werden, sodass auch bei hohen Ansprüchen an die Verfügbarkeit keine zusätzlichen Dieselgeneratoren benötigt werden.
 
