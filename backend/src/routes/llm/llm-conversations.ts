@@ -12,6 +12,9 @@ import {
 import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { getUserAccessibleSpacesMemoized } from '../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
+import { selectReplayableHistory } from '../../domains/llm/services/history-budget.js';
 import { ImprovementsQuerySchema } from './_helpers.js';
 
 /** One row of the conversation list / detail SELECTs (#1361). */
@@ -39,7 +42,7 @@ const SUMMARY_COLUMNS = `c.id, COALESCE(NULLIF(trim(c.title), ''), 'Untitled con
        c.title_source, c.model, c.page_ref, p.title AS page_title, c.created_at, c.updated_at`;
 const SUMMARY_FROM = `FROM llm_conversations c
     LEFT JOIN pages p ON p.id = c.page_ref AND p.deleted_at IS NULL`;
-// (`SUMMARY_FROM` is used by the list route below and by GET :id in Task 12.)
+// (`SUMMARY_FROM` is used by both the list route and the GET :id detail route below.)
 
 function toSummary(r: ConversationRow): ConversationSummary {
   return {
@@ -79,6 +82,30 @@ function decodeCursor(raw: string | undefined): { updatedAt: string; id: string 
   throw Object.assign(new Error('Invalid cursor'), { statusCode: 400 });
 }
 
+/**
+ * Read-time source annotation (#1361): mark a KB source `unavailable` when its
+ * page is trashed or no longer visible to the caller — the retrieval path's
+ * own predicate, bound the same way rag-service binds it. External/web
+ * sources carry no pageId and are never annotated. Nothing is written back.
+ */
+async function annotateUnavailableSources(messages: StoredChatMessage[], userId: string): Promise<StoredChatMessage[]> {
+  const ids = new Set<number>();
+  for (const m of messages) for (const s of m.sources ?? []) if (typeof s.pageId === 'number' && s.pageId > 0) ids.add(s.pageId);
+  if (ids.size === 0) return messages;
+  const spaces = await getUserAccessibleSpacesMemoized(userId);
+  const visible = await query<{ id: number }>(
+    `SELECT cp.id FROM pages cp
+      WHERE cp.id = ANY($3::int[]) AND ${visiblePagesPredicate(1, 2)} AND cp.deleted_at IS NULL`,
+    [spaces, userId, [...ids]],
+  );
+  const ok = new Set(visible.rows.map((r) => r.id));
+  return messages.map((m) => (
+    m.sources
+      ? { ...m, sources: m.sources.map((s) => (typeof s.pageId === 'number' && s.pageId > 0 && !ok.has(s.pageId) ? { ...s, unavailable: true as const } : s)) }
+      : m
+  ));
+}
+
 export async function llmConversationRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
@@ -106,31 +133,26 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     return { items: page.map(toSummary), nextCursor };
   });
 
-  // GET /api/llm/conversations/:id
+  // GET /api/llm/conversations/:id — full detail for reopening (#1361)
   fastify.get('/llm/conversations/:id', async (request) => {
     const { id } = ConversationIdParamSchema.parse(request.params);
-    const result = await query<{
-      id: string;
-      model: string;
-      title: string;
-      messages: StoredChatMessage[];
-      created_at: Date;
-    }>(
-      'SELECT id, model, title, messages, created_at FROM llm_conversations WHERE id = $1 AND user_id = $2',
+    const result = await query<ConversationRow & { messages: StoredChatMessage[] }>(
+      `SELECT ${SUMMARY_COLUMNS}, c.messages
+       ${SUMMARY_FROM}
+       WHERE c.id = $1 AND c.user_id = $2`,
       [id, request.userId],
     );
-
     if (result.rows.length === 0) {
       throw fastify.httpErrors.notFound('Conversation not found');
     }
-
     const row = result.rows[0]!;
+    const messages = await annotateUnavailableSources(row.messages, request.userId);
     return {
-      id: row.id,
-      model: row.model,
-      title: row.title,
-      messages: row.messages,
-      createdAt: row.created_at,
+      ...toSummary(row),
+      messages,
+      // The reopen-time half of decision 10: the same walk the ask route runs,
+      // so a long conversation says so the moment it opens.
+      historyTruncated: selectReplayableHistory(row.messages).truncated,
     };
   });
 

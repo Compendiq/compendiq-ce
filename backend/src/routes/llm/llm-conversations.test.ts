@@ -47,6 +47,12 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// --- Mock: rbac-service (the read-time source annotation binds the caller's spaces) ---
+const mockAccessibleSpaces = vi.fn(async (_userId: string) => ['ENG']);
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpacesMemoized: (userId: string) => mockAccessibleSpaces(userId),
+}));
+
 import { llmConversationRoutes } from './llm-conversations.js';
 
 // =============================================================================
@@ -222,33 +228,77 @@ describe('llm-conversations routes - CRUD', () => {
 
   // --- GET /api/llm/conversations/:id ---
 
-  it('should return a specific conversation by ID', async () => {
+  it('returns the detail: summary columns, messages with refused/sources, historyTruncated (#1361)', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [{
-        id: CONV_1,
-        model: 'llama3',
-        title: 'Docker questions',
+        id: CONV_1, title: 'Docker questions', title_source: 'generated', model: 'llama3', page_ref: null, page_title: null,
         messages: [
           { role: 'user', content: 'What is Docker?' },
-          { role: 'assistant', content: 'Docker is a container platform.' },
+          { role: 'assistant', content: 'A container platform.', sources: [{ pageTitle: 'Intro', pageId: 7, similarity: 0.8 }] },
+          { role: 'user', content: 'and 2027 revenue?' },
+          { role: 'assistant', content: 'I am not answering.', refused: true },
         ],
-        created_at: new Date('2026-01-01T10:00:00Z'),
+        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z'),
       }],
     });
+    // the visibility probe for pageId 7 → visible
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 7 }] });
 
-    const response = await app.inject({
-      method: 'GET',
-      url: `/api/llm/conversations/${CONV_1}`,
-    });
-
+    const response = await app.inject({ method: 'GET', url: `/api/llm/conversations/${CONV_1}` });
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
-    expect(body.id).toBe(CONV_1);
-    expect(body.model).toBe('llama3');
-    expect(body.title).toBe('Docker questions');
-    expect(body.messages).toHaveLength(2);
-    expect(body.messages[0].role).toBe('user');
-    expect(body.messages[1].role).toBe('assistant');
+    expect(body).toMatchObject({
+      id: CONV_1, title: 'Docker questions', titleSource: 'generated', model: 'llama3', pageId: null, pageTitle: null,
+      createdAt: '2026-01-01T10:00:00.000Z', updatedAt: '2026-01-01T11:00:00.000Z', historyTruncated: false,
+    });
+    expect(body.messages).toHaveLength(4);
+    expect(body.messages[1].sources[0]).toEqual({ pageTitle: 'Intro', pageId: 7, similarity: 0.8 });
+    expect(body.messages[3].refused).toBe(true);
+    const [detailSql, detailParams] = mockQuery.mock.calls[0] as [string, unknown[]];
+    expect(detailSql).toContain('c.messages');
+    expect(detailSql).toContain('LEFT JOIN pages p ON p.id = c.page_ref AND p.deleted_at IS NULL');
+    expect(detailParams).toEqual([CONV_1, 'test-user-123']);
+    const [visSql, visParams] = mockQuery.mock.calls[1] as [string, unknown[]];
+    expect(visSql).toContain('deleted_at IS NULL');
+    expect(visParams).toEqual([['ENG'], 'test-user-123', [7]]);
+  });
+
+  it('marks a source unavailable when its page is trashed or no longer visible, and leaves url sources alone', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: CONV_1, title: 't', title_source: 'question', model: 'm', page_ref: null, page_title: null,
+        messages: [
+          { role: 'user', content: 'q' },
+          { role: 'assistant', content: 'a', sources: [
+            { pageTitle: 'Gone', pageId: 9, similarity: 0.5 },
+            { pageTitle: 'Still here', pageId: 7, similarity: 0.6 },
+            { pageTitle: 'Web', url: 'https://example.com', similarity: null },
+          ] },
+        ],
+        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z'),
+      }],
+    });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 7 }] }); // 9 is not visible
+
+    const body = JSON.parse((await app.inject({ method: 'GET', url: `/api/llm/conversations/${CONV_1}` })).body);
+    const [gone, here, web] = body.messages[1].sources;
+    expect(gone.unavailable).toBe(true);
+    expect(here).not.toHaveProperty('unavailable');
+    expect(web).not.toHaveProperty('unavailable');
+  });
+
+  it('reports historyTruncated: true for a conversation longer than the replay budget', async () => {
+    const messages: Array<{ role: string; content: string }> = [];
+    for (let n = 0; n < 6; n++) {
+      messages.push({ role: 'user', content: 'x'.repeat(4_000) }, { role: 'assistant', content: 'y'.repeat(4_000) });
+    }
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: CONV_1, title: 't', title_source: 'question', model: 'm', page_ref: null, page_title: null, messages,
+        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z') }],
+    });
+    const body = JSON.parse((await app.inject({ method: 'GET', url: `/api/llm/conversations/${CONV_1}` })).body);
+    expect(body.historyTruncated).toBe(true);
+    expect(body.messages).toHaveLength(12); // stored messages are untouched
   });
 
   it('should return 404 for a non-existent conversation', async () => {
