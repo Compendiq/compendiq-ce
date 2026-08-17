@@ -1808,10 +1808,29 @@ describe('POST /api/llm/ask', () => {
       const serialized = JSON.stringify(entry);
       expect(serialized).not.toContain(PNG.toString('base64').slice(0, 24));
       expect(serialized).not.toContain('data:image/');
-      // The per-message length is the TEXT length, not the part count and not
-      // the base64 size.
-      const messages = entry.inputMessages as Array<{ contentLength: number }>;
-      expect(messages.every((m) => m.contentLength < 10_000)).toBe(true);
+
+      // …and the per-message length is EXACTLY the text part's length. A
+      // bound like "< 10_000" would pass whether or not image parts were
+      // folded in, because these fixtures are small; the equality is what
+      // fails the moment `contentToText` stops dropping them.
+      const content = sentUserContent() as Array<Record<string, unknown>>;
+      const sentText = (content.find((p) => p.type === 'text') as { text: string }).text;
+      const messages = entry.inputMessages as Array<{ role: string; contentLength: number }>;
+      const userEntry = messages.find((m) => m.role === 'user')!;
+      expect(userEntry.contentLength).toBe(sentText.length);
+
+      // The token estimate reads the same flattening, so pin it against the
+      // text of EVERY message and nothing else.
+      const sentMessages = mockStreamChatClient.mock.calls[0]![2] as Array<{ content: unknown }>;
+      const flattened = sentMessages
+        .map((m) => (typeof m.content === 'string'
+          ? m.content
+          : (m.content as Array<Record<string, unknown>>)
+            .filter((p) => p.type === 'text')
+            .map((p) => p.text as string)
+            .join('\n')))
+        .join('');
+      expect(entry.inputTokens).toBe(Math.ceil(flattened.length / 4));
     });
 
     it('keys the answer cache on the images it attached', async () => {
