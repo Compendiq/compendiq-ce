@@ -623,6 +623,96 @@ regularly not the bare name in `Author`, and both are kept because `Artist` is
 often the fuller of the two. It is a test fixture, licensed separately from
 this repository's own **AGPL-3.0** (root `LICENSE`).
 
+### Image fixture (#1115 P5c)
+
+`fixture-de-images.json` labels that corpus: **307 queries over all 65 pages and
+all 187 images**, written by six independent vision-capable agents on a
+different model from the implementer, one disjoint page slice each, blind to the
+retrieval code — the owner's #1102 amendment. It is `query → page AND the image
+on that page that answers it`, so it carries `expectedImages[]` beside
+`expectedFiles[]`, a per-label `lang` (`de` | `en`) and two styles: `image`, and
+`image-negative` for a page whose *text* is about the subject while none of its
+pictures show it. A negative's `expectedImages` is empty, and that is the point
+— without them a leg that returns a picture for every query scores the same as
+one that returns the right picture.
+
+**That point has to reach the English slice too**, and at first it did not: all
+18 negatives were German, so the cross-lingual slice the fixture certifies as
+reportable on its own — the case a shared VL space is claimed for and the text
+leg cannot serve — was 100% positives and scored an always-answers leg exactly
+like a correct one. Review r2 added four English ones (`img-06-*`, the merger's
+own slice rather than a blind labeller's, spread one per content shape), and the
+guard is now **per language** as well as whole-fixture, so a slice cannot go
+all-positive again and "add English distractors" cannot be satisfied by
+re-languaging the German ones. Writing them is a pixel job like any other label:
+the first draft asked how long a Daily Scrum may last, which `scrum__1.png`
+answers on its face — it prints "15-minute event" beside the Daily Scrum — so an
+attribution question took its place. Attribution and dates are the shape that
+travels: a diagram names no people.
+
+**Those four are the one part of this fixture its own protocol does not cover**
+— they are the merger's, written after the six blind slices had been submitted
+(`labeledBy` discloses it, and the `img-06-*` slice keeps them separable), so
+**P5b should replace or extend them with blind-labelled procedural negatives**
+and the ceiling below carries the headroom to do it without moving a bound.
+
+It is a **separate schema and a separate loader** (`ImageFixtureSchema` /
+`loadImageFixture`), never a widened `FixtureSchema`: the two are scored on
+different axes, and every baseline in this runbook is a comparison against the
+text one. `loadImageFixture` throws rather than filtering, exactly as
+`loadFixture` does, and checks the three corpus-relative things a fixture cannot
+check about itself — the page exists, the image exists **on disk**, and the
+image belongs to one of that label's own pages. The last is the one nobody
+eyeballs: `imageHit@K` is scored inside the retrieved page, so an image credited
+to the wrong page is unreachable however good the leg is, and both halves
+individually exist.
+
+`fixture-de-images.test.ts` pins the rest — `corpusManifestSha` against
+`computeCorpusManifestSha([IMAGE_CORPUS_DIR])` (the same contract
+`fixture.json` has: a corpus refresh moves the captions these labels were
+written from), the N ≥ 100 floor, ≥ 20 English, 8–26 negatives of which ≥ 4 are
+English and ≥ 8 German (the ceiling carries four rungs of headroom for P5b's
+blind-labelled English negatives, and stays a count rather than a share — a
+ratio at N = 307 would silently license 30), no content shape
+below 15%, every image accounted for by a label or by a `notUsable` entry
+carrying the labeller's reason (capped at a **tenth** of the corpus, so an image
+can be dropped on the record but the *measured* set cannot quietly shrink), and
+no query that restates a manifest caption. That last one is the corpus's
+caption-strip rule guarded from the other side: a query copied off the manifest
+hands the leg the match the empty alt text was there to deny it. It compares
+under the test's own normaliser, which folds **punctuation** as well as case and
+whitespace — an exact match passes `Rollout Januar 2005` against the caption
+`Rollout, Januar 2005`, and someone pasting a caption is exactly who drops the
+comma. That normaliser is deliberately not `normalizeQuery`, which also backs
+`loadFixture`'s duplicate-query rule for the shipped **text** fixture. It also
+requires a non-empty `rationale` on **every** label, reported by id: the schema
+defaults that field to `''`, so a label written without one parses clean and is
+indistinguishable from one whose reason was deleted — and the rationale is the
+only record of why an image was credited to a query, which is what the r1 and r2
+findings in the paragraph below were adjudicated out of.
+
+Two label-quality rules the guard cannot enforce, and which reviews r1 and r2
+had to fix by hand: a query must describe **the pixels**, not the caption's word
+list (`img-02-053` asked for an "Explosionszeichnung" of a bearing rendered as a
+cutaway, while the page's real exploded view is the sibling two other labels
+already claim; `img-04-014` separated the two Nassi-Shneiderman selections only
+by the word "einfache", which is the caption's own word — `Einfache Auswahl` vs
+`Zweifache Auswahl` — and never named the one-block-vs-two the pictures actually
+differ by), and where a page carries two images that answer the same sentence,
+the query must name what separates them (`periodensystem__1` vs `__2`,
+`viertaktmotor__1` vs `__2`, `petri-netz__1` vs `__3`, `u-bahn-berlin__1` vs
+`__2`). A discriminator can also point the **wrong** way: `img-03-033` put its
+routers "im Rechenzentrum" while `router__2.png` is a manufacturer lineup on a
+plain white field and the rack photo is the sibling `router__3.jpg`, so the one
+visual assertion in the query steered a leg that read it correctly to the other
+picture. All of it is invisible to a schema: the label validates, the page and
+image exist and belong together, and the leg is simply scored a miss for
+returning the defensible answer.
+
+**Nothing consumes it yet.** P5b adds the `--images` axis; until then the
+fixture is committed data with a guard over it and no runner path, for the same
+reason the corpus is absent from `CORPUS_DIRS`.
+
 ## The `vocabulary-gap` slice (#1112)
 
 Every style above was written by an agent **reading the page**, and that

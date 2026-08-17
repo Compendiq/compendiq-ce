@@ -13,12 +13,12 @@
  *    filenames are stable. `#1106`'s page-merge changes page identity, and
  *    resolving late is what lets the fixture survive it.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 
-import { IMAGE_CORPUS_DIR } from './corpus-images.js';
+import { IMAGE_CORPUS_DIR, loadImageCorpusManifest } from './corpus-images.js';
 
 export const CORPUS_DIR = join(import.meta.dirname, 'corpus');
 
@@ -206,7 +206,7 @@ export function loadFixture(raw: unknown, corpus: CorpusPage[]): Fixture {
 
     // Near-duplicate queries inflate N without adding information, and the
     // bootstrap treats them as independent evidence when they are not.
-    const normalized = label.query.trim().toLowerCase().replace(/\s+/g, ' ');
+    const normalized = normalizeQuery(label.query);
     if (seenQueries.has(normalized)) problems.push(`duplicate query: "${label.query}"`);
     seenQueries.add(normalized);
 
@@ -237,4 +237,193 @@ export function assertFixturePower(fixture: Fixture): void {
         'effects it exists to detect.',
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// #1115 P5c — the IMAGE fixture.
+// ---------------------------------------------------------------------------
+
+/**
+ * A separate schema and a separate loader, never a widened `FixtureLabelSchema`.
+ *
+ * The two fixtures answer different questions and are scored on different
+ * axes: the text fixture is `query → page`, and every recorded baseline in
+ * `docs/runbooks/retrieval-eval.md` is a comparison against it. This one is
+ * `query → page AND the image on that page that answers it`, measured on P5b's
+ * own `--images` axis. Adding `lang` / `expectedImages` / two more `style`
+ * values to the shipped schema would have made every existing label validate
+ * with an absent image list and an unstated language — so the one thing the
+ * image leg is scored on (`imageHit@K`) would have been a field the text
+ * fixture is silently missing, rather than a fixture it does not belong to.
+ * `fixture.test.ts` is untouched by this file for the same reason.
+ */
+export const ImageFixtureLabelSchema = z.object({
+  /** Stable identity for pairing baseline against candidate runs. */
+  id: z.string().min(1),
+  query: z.string().min(3),
+  /**
+   * The corpus is German, so German is the ordinary case and English is the
+   * CROSS-LINGUAL one — a query in a language the page never uses, which the
+   * text leg cannot serve and a shared VL space is claimed to. It is carried
+   * per label rather than inferred, because a slice that has to be recovered
+   * by guessing the language of a sentence is a slice nobody will report on.
+   */
+  lang: z.enum(['de', 'en']),
+  /** Corpus filenames, best first — resolved to page ids at seed time. */
+  expectedFiles: z.array(z.string().min(1)).min(1),
+  /**
+   * Manifest-relative image paths (`images/…`), best first. EMPTY is legal and
+   * meaningful: an `image-negative` label is a page whose *text* is about the
+   * subject while none of its pictures show it, so the correct image answer is
+   * "none of them". Those labels are what keeps `imageHit@K` honest — without
+   * them a leg that returns an image for every query scores the same as one
+   * that returns the right image.
+   */
+  expectedImages: z.array(z.string().min(1)),
+  style: z.enum(['image', 'image-negative']),
+  rationale: z.string().default(''),
+});
+
+/**
+ * An image the labeller looked at and refused to write a query for, with the
+ * reason. It exists so that "no label mentions this image" has two possible
+ * causes and they are told apart: a labeller who judged a figure unusable said
+ * so, and anything else is a slice that was silently skipped. The guard
+ * requires the union of referenced + not-usable to cover the corpus, so an
+ * image can be dropped only on the record.
+ */
+export const ImageFixtureNotUsableSchema = z.object({
+  file: z.string().min(1),
+  reason: z.string().min(1),
+});
+
+export const ImageFixtureSchema = z.object({
+  /**
+   * The image corpus's manifest hash — `computeCorpusManifestSha([IMAGE_CORPUS_DIR])`,
+   * the same function and the same contract `fixture.json` has. The captions
+   * these labels were written against live in that manifest, so re-vendoring
+   * the corpus without re-labelling leaves every `expectedImages` entry
+   * pointing at bytes nobody looked at.
+   */
+  corpusManifestSha: z.string().min(1),
+  labeledBy: z.string().min(1),
+  notUsable: z.array(ImageFixtureNotUsableSchema).default([]),
+  labels: z.array(ImageFixtureLabelSchema),
+});
+
+export type ImageFixtureLabel = z.infer<typeof ImageFixtureLabelSchema>;
+export type ImageFixtureNotUsable = z.infer<typeof ImageFixtureNotUsableSchema>;
+export type ImageFixture = z.infer<typeof ImageFixtureSchema>;
+
+/** The image fixture, beside the corpus it is labelled against. */
+export const IMAGE_FIXTURE_PATH = join(import.meta.dirname, 'fixture-de-images.json');
+
+/**
+ * Parses and checks the image fixture against the image corpus. Throws rather
+ * than filtering, exactly as `loadFixture` does and for the same reason: a
+ * loader that quietly drops broken labels changes N between runs, and N is
+ * what the statistical gate is sized against.
+ *
+ * Three checks are corpus-relative and none of them can be made from the
+ * fixture alone:
+ *
+ * 1. **Every `expectedFile` is a page in the manifest.** A mistyped filename
+ *    is a query that can never be satisfied, which scores as a permanent
+ *    retrieval failure for a reason that has nothing to do with retrieval.
+ * 2. **Every `expectedImage` exists on disk under `images/`.** The manifest is
+ *    consulted for the page association below, but existence is checked
+ *    against the bytes: a manifest entry for a file the builder did not write
+ *    is exactly what `corpus-de-images.test.ts` exists to catch, and this
+ *    loader must not inherit that lie.
+ * 3. **Every `expectedImage` belongs to one of the label's own
+ *    `expectedFiles`.** This is the one that cannot be eyeballed. `imageHit@K`
+ *    is scored inside the retrieved page, so an image credited to the wrong
+ *    page is unreachable however good the leg is — and because both the page
+ *    and the image individually exist, nothing else in the pipeline notices.
+ */
+export function loadImageFixture(
+  path: string = IMAGE_FIXTURE_PATH,
+  corpusDir: string = IMAGE_CORPUS_DIR,
+): ImageFixture {
+  const fixture = ImageFixtureSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+  const manifest = loadImageCorpusManifest(corpusDir);
+
+  const pageFiles = new Set(manifest.pages.map((p) => p.file));
+  const imageOwner = new Map<string, string>();
+  for (const page of manifest.pages) {
+    for (const image of page.images) imageOwner.set(image.file, page.file);
+  }
+
+  const problems: string[] = [];
+  const seenIds = new Set<string>();
+  const seenQueries = new Set<string>();
+  const referenced = new Set<string>();
+
+  for (const label of fixture.labels) {
+    if (seenIds.has(label.id)) problems.push(`duplicate label id: ${label.id}`);
+    seenIds.add(label.id);
+
+    // Near-duplicate queries inflate N without adding information, and the
+    // bootstrap treats them as independent evidence when they are not.
+    const normalized = normalizeQuery(label.query);
+    if (seenQueries.has(normalized)) problems.push(`duplicate query: "${label.query}"`);
+    seenQueries.add(normalized);
+
+    for (const file of label.expectedFiles) {
+      if (!pageFiles.has(file)) {
+        problems.push(`label ${label.id} expects a page not in the image corpus: ${file}`);
+      }
+    }
+
+    // `image-negative` is the whole point of the negative slice: the correct
+    // image answer is "none". A negative carrying an image contradicts its own
+    // name, and a positive carrying none can never contribute to `imageHit@K`
+    // — both validate and both quietly measure nothing.
+    if (label.style === 'image' && label.expectedImages.length === 0) {
+      problems.push(`label ${label.id} is style 'image' but names no expected image`);
+    }
+    if (label.style === 'image-negative' && label.expectedImages.length > 0) {
+      problems.push(
+        `label ${label.id} is style 'image-negative' but names ${label.expectedImages.length} expected image(s)`,
+      );
+    }
+
+    for (const image of label.expectedImages) {
+      referenced.add(image);
+      if (!existsSync(join(corpusDir, image))) {
+        problems.push(`label ${label.id} expects an image not on disk: ${image}`);
+        continue;
+      }
+      const owner = imageOwner.get(image);
+      if (owner === undefined) {
+        problems.push(`label ${label.id} expects an image absent from the manifest: ${image}`);
+      } else if (!label.expectedFiles.includes(owner)) {
+        problems.push(
+          `label ${label.id} expects image ${image}, which the manifest puts on ${owner} — ` +
+            `not on any of its expected pages (${label.expectedFiles.join(', ')})`,
+        );
+      }
+    }
+  }
+
+  for (const entry of fixture.notUsable) {
+    if (!imageOwner.has(entry.file)) {
+      problems.push(`notUsable names an image absent from the manifest: ${entry.file}`);
+    }
+    if (referenced.has(entry.file)) {
+      problems.push(`${entry.file} is both labelled and marked notUsable`);
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new FixtureValidationError(
+      `Image fixture does not match the corpus:\n  ${problems.join('\n  ')}`,
+    );
+  }
+  return fixture;
+}
+
+/** Case- and whitespace-insensitive form, shared by the duplicate and caption rules. */
+export function normalizeQuery(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ');
 }

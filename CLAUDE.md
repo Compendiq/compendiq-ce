@@ -153,7 +153,54 @@ later on a missing `fixture-de-images.json`, which is luck, not a guard. Its
 page bodies carry `![](images/…)` with an **empty alt and no caption** — a page
 that captions its own figures is answerable from text alone, so an image leg
 measured on it scores a win it did not earn; the captions live in the manifest,
-for P5c's independent labeller. And it is the **first vendored content whose own
+for P5c's independent labeller. **P5c's labels are now committed
+(`fixture-de-images.json`, 307 queries over all 65 pages and all 187 images) and
+still nothing consumes them** — P5b remains the PR that wires the axis. They get
+their **own** schema and loader (`ImageFixtureSchema` / `loadImageFixture`),
+never a widened `FixtureSchema`: the two fixtures are scored on different axes,
+and adding `lang` / `expectedImages` / two more styles to the shipped schema
+would have left every existing text label validating with the image leg's only
+metric silently absent. `loadImageFixture` throws rather than filters
+(`loadFixture`'s precedent) and checks the three things a fixture cannot check
+about itself — the page exists, the image exists *on disk*, and the image
+belongs to one of that label's own pages. The last is the one nobody eyeballs:
+`imageHit@K` is scored inside the retrieved page, so an image credited to the
+wrong page is unreachable however good the leg is, while the page and the image
+each exist. `fixture-de-images.test.ts` pins the sha, N ≥ 100, ≥ 20 English
+(the cross-lingual case the text leg cannot serve), 8–26 `image-negative`
+distractors with EMPTY `expectedImages` (without them a leg that answers with a
+picture every time scores like one that answers correctly), no content shape
+below 15%, every image accounted for by a label or a `notUsable` reason, a
+non-empty `rationale` on every label (the schema defaults it to `''`, so a
+missing reason parses clean and reads back exactly like a deleted one — and the
+rationale is what both review rounds were adjudicated out of), and
+**no query that restates a manifest caption** — the caption-strip rule guarded
+from the other side, since a query copied off the manifest hands the leg the
+match the empty alt text exists to deny it. Three of those are narrower than they
+read and were widened in review. The caption rule compares under its **own**
+normaliser, which folds punctuation as well as case and whitespace: an exact
+match passes `Rollout Januar 2005` against the caption `Rollout, Januar 2005`,
+and a labeller pasting a caption is exactly who drops the comma. It is
+deliberately *not* `normalizeQuery`, which also backs `loadFixture`'s
+duplicate-query rule for the shipped text fixture — a different gate, on a
+different corpus. And `notUsable` is **capped at a tenth of the corpus**,
+because "accounted for" is an unbounded excuse: retiring 60 of the 187 images
+with a reason and deleting their 103 labels leaves every other assertion in that
+file green while the set actually measured shrinks by a third. Today it is
+empty, so the cap ships with full slack. And the negative count is now **per
+language** as well (≥ 4 English, ≥ 8 German): all 18 shipped negatives were
+German, so a whole-fixture bound stayed green over an English slice that was
+100% positives — the one slice this file certifies as reportable on its own,
+scoring an always-answers leg exactly like a correct one, on the case a shared
+VL space is claimed for. Review r2 added four English ones under their **own**
+id slice (`img-06-*`), because they are the merger's rather than a blind
+labeller's and those ids are the fixture's authorship record; the German floor
+sits beside the English one so the gap can never be closed by re-languaging the
+negatives already there. Those four are the one part of the fixture its own
+protocol does not cover, so **P5b should replace or extend them with
+blind-labelled procedural negatives** — which is what the ceiling's four rungs
+of headroom above 22 are for, and why it stays a count rather than a share (a
+ratio at N = 307 would license 30). And it is the **first vendored content whose own
 licence is not MIT** (the English corpus is MIT documentation; this repository
 itself is **AGPL-3.0**): page text is CC BY-SA 4.0 (adapted) and images are
 filtered to CC0 / public domain / CC BY x / CC BY-SA x with a **named** author
