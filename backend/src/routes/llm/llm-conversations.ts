@@ -1,45 +1,119 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
-import { ChatMessage } from '../../domains/llm/services/prompts.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
-import { ApplyImprovementRequestSchema } from '@compendiq/contracts';
+import {
+  ApplyImprovementRequestSchema,
+  ConversationIdParamSchema,
+  ConversationListQuerySchema,
+  type ConversationSummary,
+  type StoredChatMessage,
+  type TitleSource,
+} from '@compendiq/contracts';
 import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
-import { IdParamSchema, ImprovementsQuerySchema } from './_helpers.js';
+import { ImprovementsQuerySchema } from './_helpers.js';
+
+/** One row of the conversation list / detail SELECTs (#1361). */
+type ConversationRow = {
+  id: string;
+  title: string;
+  title_source: TitleSource;
+  model: string;
+  page_ref: number | null;
+  page_title: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+/**
+ * The summary columns every conversation route returns. `title` is COALESCEd
+ * on read (a whitespace-only first question yields '' — the DB column stays
+ * nullable so the migration cannot fail on a legacy row); the page join is
+ * `deleted_at IS NULL` because pages are SOFT deleted and the FK's SET NULL
+ * only fires on a hard delete. No visibility predicate on the join: page_ref
+ * was authorised at write time (llm-ask.ts), and the row records where the
+ * user started a conversation they were allowed to have.
+ */
+const SUMMARY_COLUMNS = `c.id, COALESCE(NULLIF(trim(c.title), ''), 'Untitled conversation') AS title,
+       c.title_source, c.model, c.page_ref, p.title AS page_title, c.created_at, c.updated_at`;
+const SUMMARY_FROM = `FROM llm_conversations c
+    LEFT JOIN pages p ON p.id = c.page_ref AND p.deleted_at IS NULL`;
+// (`SUMMARY_FROM` is used by the list route below and by GET :id in Task 12.)
+
+function toSummary(r: ConversationRow): ConversationSummary {
+  return {
+    id: r.id,
+    title: r.title,
+    titleSource: r.title_source,
+    model: r.model,
+    pageId: r.page_ref,
+    pageTitle: r.page_title,
+    createdAt: r.created_at.toISOString(),
+    updatedAt: r.updated_at.toISOString(),
+  };
+}
+
+// Keyset cursor: the (updated_at, id) of the last row served. Keyset rather
+// than offset because this list is prepended-to on every ask (updated_at
+// bumps), so an offset page shifts under the reader; rename does NOT bump
+// updated_at, so paging is stable through it.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function encodeCursor(updatedAtIso: string, id: string): string {
+  return Buffer.from(JSON.stringify([updatedAtIso, id])).toString('base64url');
+}
+function decodeCursor(raw: string | undefined): { updatedAt: string; id: string } | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
+    if (
+      Array.isArray(parsed) && parsed.length === 2
+      && typeof parsed[0] === 'string' && !Number.isNaN(Date.parse(parsed[0]))
+      && typeof parsed[1] === 'string' && UUID_RE.test(parsed[1])
+    ) {
+      return { updatedAt: new Date(parsed[0]).toISOString(), id: parsed[1] };
+    }
+  } catch {
+    // fall through
+  }
+  throw Object.assign(new Error('Invalid cursor'), { statusCode: 400 });
+}
 
 export async function llmConversationRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
-  // GET /api/llm/conversations - list conversations
+  // GET /api/llm/conversations?limit&cursor — the user's list, newest first (#1361)
   fastify.get('/llm/conversations', async (request) => {
-    const result = await query<{
-      id: string;
-      model: string;
-      title: string;
-      created_at: Date;
-      updated_at: Date;
-    }>(
-      'SELECT id, model, title, created_at, updated_at FROM llm_conversations WHERE user_id = $1 ORDER BY updated_at DESC',
-      [request.userId],
+    const { limit, cursor } = ConversationListQuerySchema.parse(request.query);
+    let after: { updatedAt: string; id: string } | null;
+    try {
+      after = decodeCursor(cursor);
+    } catch {
+      throw fastify.httpErrors.badRequest('Invalid cursor');
+    }
+    const result = await query<ConversationRow>(
+      `SELECT ${SUMMARY_COLUMNS}
+       ${SUMMARY_FROM}
+       WHERE c.user_id = $1
+         AND ($2::timestamptz IS NULL OR (c.updated_at, c.id) < ($2::timestamptz, $3::uuid))
+       ORDER BY c.updated_at DESC, c.id DESC
+       LIMIT $4`,
+      [request.userId, after?.updatedAt ?? null, after?.id ?? null, limit + 1],
     );
-    return result.rows.map((r) => ({
-      id: r.id,
-      model: r.model,
-      title: r.title,
-      createdAt: r.created_at,
-      updatedAt: r.updated_at,
-    }));
+    const page = result.rows.slice(0, limit);
+    const last = page[page.length - 1];
+    const nextCursor = result.rows.length > limit && last ? encodeCursor(last.updated_at.toISOString(), last.id) : null;
+    return { items: page.map(toSummary), nextCursor };
   });
 
   // GET /api/llm/conversations/:id
   fastify.get('/llm/conversations/:id', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+    const { id } = ConversationIdParamSchema.parse(request.params);
     const result = await query<{
       id: string;
       model: string;
       title: string;
-      messages: ChatMessage[];
+      messages: StoredChatMessage[];
       created_at: Date;
     }>(
       'SELECT id, model, title, messages, created_at FROM llm_conversations WHERE id = $1 AND user_id = $2',
@@ -62,7 +136,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
   // DELETE /api/llm/conversations/:id
   fastify.delete('/llm/conversations/:id', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+    const { id } = ConversationIdParamSchema.parse(request.params);
     await query('DELETE FROM llm_conversations WHERE id = $1 AND user_id = $2', [id, request.userId]);
     return { message: 'Conversation deleted' };
   });

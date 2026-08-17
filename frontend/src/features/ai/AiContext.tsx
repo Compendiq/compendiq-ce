@@ -606,7 +606,12 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
   const conversationsQuery = useQuery<Conversation[]>({
     queryKey: ['llm', 'conversations'],
-    queryFn: () => apiFetch<Conversation[]>('/llm/conversations'),
+    // #1361 PR 1: the list endpoint now returns { items, nextCursor }; this
+    // mirror is deleted in PR 2 (the pane owns the query). Tolerate both.
+    queryFn: async () => {
+      const r = await apiFetch<Conversation[] | { items: Conversation[] }>('/llm/conversations');
+      return Array.isArray(r) ? r : r.items;
+    },
     retry: false,
     staleTime: 30_000,
     enabled: hasConsumers,
