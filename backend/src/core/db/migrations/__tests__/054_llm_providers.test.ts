@@ -1,26 +1,70 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../../test-db-helper.js';
 import { query, runMigrations } from '../../postgres.js';
 
 const dbAvailable = await isDbAvailable();
 
+const migrationsDir = path.dirname(fileURLToPath(import.meta.url)) + path.sep + '..';
+
+/**
+ * Every migration that (re)writes `llm_usecase_assignments_usecase_check`.
+ *
+ * DISCOVERED, never listed. The CHECK is 054's inline column constraint, which
+ * Postgres auto-names `<table>_<column>_check`, so widening it means dropping
+ * and re-adding the WHOLE list — 090 added `rerank`, 093 added
+ * `image_embedding`, and the next use case will do the same. The repair below
+ * has to re-run all of them in order; re-running only the one that happened to
+ * be current when this file was written leaves the constraint NARROWER than
+ * the schema, which is the exact bug this comment used to describe for 090.
+ */
+function usecaseCheckMigrations(): string[] {
+  return fs
+    .readdirSync(migrationsDir)
+    .filter((f) => f.endsWith('.sql'))
+    .filter((f) =>
+      fs.readFileSync(path.join(migrationsDir, f), 'utf8').includes('llm_usecase_assignments_usecase_check'),
+    )
+    .sort();
+}
+
+/**
+ * Undo the schema damage the pre-054 simulation cases below inflict on the
+ * SHARED test database: force the affected migrations to re-run by deleting
+ * their `_migrations` rows. Exported shape kept local — it is only ever the
+ * cleanup, plus the regression test that pins it.
+ */
+async function repairSharedSchema(): Promise<void> {
+  // Several cases below `DROP TABLE IF EXISTS llm_providers CASCADE` to
+  // simulate the pre-054 world. That CASCADE also removes migration 087's
+  // FK on llm_model_capabilities, and the runner will not rebuild it
+  // because `_migrations` still lists 087 as applied — which silently
+  // breaks every later CASCADE assertion against this shared test DB.
+  // Force 087 to re-run so the constraint is back before the pool closes.
+  await query(`DROP TABLE IF EXISTS llm_model_capabilities CASCADE`);
+  // The same cases recreate llm_usecase_assignments from 054's original DDL,
+  // silently reverting its usecase CHECK to the five original names (#1104 was
+  // the first victim). Same fix, over every widener rather than a hardcoded
+  // one — all of them are idempotent (`DROP CONSTRAINT IF EXISTS` + `ADD`).
+  //
+  // The rows go first: replaying the wideners in order means an OLDER one
+  // briefly re-imposes its shorter list, and `ADD CONSTRAINT` validates
+  // existing rows — so a row naming a use case a LATER migration introduced
+  // aborts the replay. Content is not what this repairs, and every test file
+  // seeds its own.
+  await query(`TRUNCATE TABLE llm_usecase_assignments`);
+  await query(`DELETE FROM _migrations WHERE name = ANY($1::text[])`, [
+    ['087_llm_model_capabilities.sql', ...usecaseCheckMigrations()],
+  ]);
+  await runMigrations();
+}
+
 describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
   beforeAll(async () => { await setupTestDb(); });
   afterAll(async () => {
-    // Several cases below `DROP TABLE IF EXISTS llm_providers CASCADE` to
-    // simulate the pre-054 world. That CASCADE also removes migration 087's
-    // FK on llm_model_capabilities, and the runner will not rebuild it
-    // because `_migrations` still lists 087 as applied — which silently
-    // breaks every later CASCADE assertion against this shared test DB.
-    // Force 087 to re-run so the constraint is back before the pool closes.
-    await query(`DROP TABLE IF EXISTS llm_model_capabilities CASCADE`);
-    // 090 altered llm_usecase_assignments' usecase CHECK; the pre-054 cases
-    // recreate the table from 054's original DDL, silently reverting it the
-    // same way (#1104 was the first victim). Same fix: force a re-run.
-    await query(
-      `DELETE FROM _migrations WHERE name IN ('087_llm_model_capabilities.sql', '090_rerank_usecase.sql')`,
-    );
-    await runMigrations();
+    await repairSharedSchema();
     await teardownTestDb();
   });
   beforeEach(async () => { await truncateAllTables(); });
@@ -157,5 +201,48 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
       { usecase: 'embedding', provider_name: 'Ollama', model: 'bge-m3' },
       { usecase: 'summary', provider_name: 'OpenAI', model: 'gpt-4o-mini' },
     ]);
+  });
+
+  it('repairs the usecase CHECK to the NEWEST widener, not to a hardcoded one', async () => {
+    // The cases above leave the shared database carrying 054's original
+    // five-name CHECK. The repair in `afterAll` has to put every later
+    // widening migration back — if it re-runs only the one that was current
+    // when it was written, the constraint ends up narrower than the schema
+    // and the *next* test file to assert on a newer use case fails for a
+    // reason that has nothing to do with it (093 hit exactly this).
+    const wideners = usecaseCheckMigrations();
+    expect(wideners.length).toBeGreaterThan(1); // 090 and 093 today
+
+    // Names the newest widener admits — read from the migration rather than
+    // listed here, so a future widener is covered without editing this test.
+    const newest = fs.readFileSync(path.join(migrationsDir, wideners[wideners.length - 1]!), 'utf8');
+    const listed = /CHECK\s*\(\s*usecase\s+IN\s*\(([^)]*)\)/i.exec(newest);
+    expect(listed).not.toBeNull();
+    const expected = [...listed![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+    expect(expected).toContain('image_embedding');
+
+    // Revert to 054's inline five — exactly the end state the pre-054 cases
+    // above produce by recreating the table from 054's own DDL.
+    await query(`ALTER TABLE llm_usecase_assignments DROP CONSTRAINT IF EXISTS llm_usecase_assignments_usecase_check`);
+    await query(
+      `ALTER TABLE llm_usecase_assignments ADD CONSTRAINT llm_usecase_assignments_usecase_check
+         CHECK (usecase IN ('chat','summary','quality','auto_tag','embedding'))`,
+    );
+
+    await repairSharedSchema();
+
+    for (const usecase of expected) {
+      await query(
+        `INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ($1, NULL, 'm')`,
+        [usecase],
+      );
+    }
+    const { rows } = await query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM llm_usecase_assignments',
+    );
+    expect(rows[0]!.count).toBe(String(expected.length));
+    await expect(
+      query(`INSERT INTO llm_usecase_assignments (usecase) VALUES ('bogus')`),
+    ).rejects.toThrow();
   });
 });
