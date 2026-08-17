@@ -1339,6 +1339,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         `UPDATE pages SET
            title = $2, body_html = $3, body_text = $4,
            version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
+           -- #1115 P2 (review r1) — the editor is a body writer, so it can add
+           -- an <img> (paste stages the bytes BEFORE this save lands, so the
+           -- attachment-side flag can be cleared against the old body) and it
+           -- can remove one, which nothing else notices: no attachment write
+           -- happens on a delete, so without this the index keeps a row for a
+           -- picture the page no longer shows. Gated on body_html alone —
+           -- that is where the src attributes are, and a title-only save
+           -- cannot move an image.
+           image_embedding_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+             ELSE image_embedding_dirty
+           END,
            embedding_status = 'not_embedded', embedded_at = NULL,
            -- #828: the content changed, so re-queue the summary and quality
            -- workers. Reset both status AND retry_count — a page that had
@@ -1433,6 +1445,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       `UPDATE pages SET
          title = $2, body_storage = $3, body_html = $4, body_text = $5,
          version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+         -- #1115 P2 (review r1) — and this path especially: the comment below
+         -- notes the follow-up sync short-circuits on an already-current
+         -- version, so syncPage's own image flag never runs for it.
+         image_embedding_dirty = CASE
+           WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+           ELSE image_embedding_dirty
+         END,
          embedding_status = 'not_embedded', embedded_at = NULL,
          -- #828: content changed on this app-side Confluence push, so re-queue
          -- the summary/quality workers (reset status + retry_count so a
@@ -1805,6 +1824,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           body_html = draft_body_html, body_text = draft_body_text,
           body_storage = COALESCE(draft_body_storage, body_storage),
           version = version + 1, embedding_dirty = TRUE,
+          -- #1115 P2 (review r1) — publishing a draft is the moment its body
+          -- becomes the live one, so this is the first point at which an
+          -- <img> the draft added or dropped is real. Both sides of the
+          -- comparison read the OLD row, which is what makes the gate work.
+          image_embedding_dirty = CASE
+            WHEN body_html IS DISTINCT FROM draft_body_html THEN TRUE
+            ELSE image_embedding_dirty
+          END,
           embedding_status = 'not_embedded', embedded_at = NULL,
           last_modified_at = NOW(),
           -- Stamp local-edit markers (#305): publishing a draft is a local
@@ -2181,6 +2208,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             `UPDATE pages SET
                title = $2, body_storage = $3, body_html = $4, body_text = $5,
                version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+               -- #1115 P2 (review r1) — a bulk refresh rewrites body_html
+               -- from upstream, which is exactly what can move an image.
+               image_embedding_dirty = CASE
+                 WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+                 ELSE image_embedding_dirty
+               END,
                embedding_status = 'not_embedded', embedded_at = NULL,
                -- Clear local-edit markers (#305): this is a bulk
                -- refresh-from-Confluence path (sync-side).

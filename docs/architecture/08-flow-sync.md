@@ -662,7 +662,19 @@ it:
   the instance for the duration of an image scan.
 - **The dirty flag is the queue AND the retry queue.** It clears only for a page
   whose scan had no failure, so an endpoint outage leaves exactly the affected
-  pages queued for the next cadence. An unassigned leg clears nothing at all.
+  pages queued for the next cadence. An unassigned leg clears nothing at all. A
+  page whose write THROWS is counted (`pagesFailed`), left dirty and stepped
+  past — a corpus scan must not be abortable by one page.
+- **The lock renews on a clock, not a page counter.** A page may legitimately
+  issue `rag_images_per_page_max` sequential VL requests, so a count-based
+  cadence lets a 600 s TTL lapse mid-run and a second scan start on the same
+  backlog. The holder-epoch guard runs on a third of the TTL and both renews
+  and re-reads the holder.
+- **The sync kick is the only automatic trigger.** `syncUser` fire-and-forgets
+  `processDirtyPageImages()` beside `processDirtyPages`; there is no repeatable
+  job. On an instance with **no Confluence credentials** `runScheduledSync`
+  never calls `syncUser` at all, so a local-only deployment's backlog drains
+  only from the Embeddings card's **Process now** / **Re-scan all**.
 
 The attachment writers close what P0 called the fact-base hole: sync's
 **version-unchanged** branch re-downloads missing attachments without touching
@@ -670,7 +682,21 @@ the page row, so the page's images can change while `embedding_dirty` correctly
 stays put. `syncImageAttachments` / `syncDrawioAttachments` raise
 `image_embedding_dirty` there — but only on a real DOWNLOAD, because both
 functions skip files already on disk and an unconditional flag would re-scan
-every page carrying a diagram on every sync.
+every page carrying a diagram on every sync. `fetchAndCachePageImage` — the
+per-request lazy fetch on `/api/attachments/:pageId/:filename` — raises it on
+the same rule, because it is the recovery path for a `missing` skip: a skip is
+terminal (the page still clears its flag), so nothing else would re-queue the
+page once the bytes finally land.
+
+**Page-body writes raise it too, and not through that module.** The sync upsert,
+the conflict-policy update, both relocate directions and the four `body_html`
+writers in `routes/knowledge/pages-crud.ts` (the editor save, the app-side
+Confluence push, publish-draft, the bulk refresh) each set the column inline in
+an UPDATE they already own, gated on `body_html IS DISTINCT FROM $n`. That gate
+is the whole point: `body_text` alone cannot move an `img src`, and the editor
+path is the *only* trigger for a page whose image was DELETED — that writes no
+attachment at all, so without it the index keeps a row for a picture the page no
+longer shows.
 
 ## Content pipeline hand-off
 
@@ -686,7 +712,7 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/domains/confluence/services/sync-overview-service.ts`
 - `backend/src/domains/llm/services/embedding-service.ts`
 - `backend/src/domains/llm/services/image-embedding-service.ts` — `embedPageImages`, `processDirtyPageImages` (#1115 P2)
-- `backend/src/core/services/image-embedding-dirty.ts` — the one writer of `pages.image_embedding_dirty`
+- `backend/src/core/services/image-embedding-dirty.ts` — `pages.image_embedding_dirty` for the ATTACHMENT writers (the body writers raise it inline; see ADR-025)
 - `backend/src/routes/llm/llm-image-index.ts` — status, re-scan, process (all `requireAdmin`)
 - `backend/src/routes/confluence/sync.ts`
 - `backend/src/routes/confluence/spaces.ts` — `DELETE /api/spaces/:key` (unsync)

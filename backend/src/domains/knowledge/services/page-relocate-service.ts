@@ -106,6 +106,12 @@ export interface RelocatablePage {
   local_modified_at: Date | null;
   local_modified_by: string | null;
   embedding_dirty: boolean;
+  /**
+   * #1115 P2 (review r1) — captured because the move now WRITES it. The rule
+   * above is not advisory: a column the move sets and the snapshot omits comes
+   * back from a compensation still carrying the moved value.
+   */
+  image_embedding_dirty: boolean;
   embedding_status: string | null;
   embedded_at: Date | null;
 }
@@ -113,7 +119,7 @@ export interface RelocatablePage {
 export const RELOCATABLE_COLUMNS =
   'id, title, source, space_key, confluence_id, visibility, created_by_user_id, ' +
   'body_html, body_storage, version, inherit_perms, local_modified_at, ' +
-  'local_modified_by, embedding_dirty, embedding_status, embedded_at';
+  'local_modified_by, embedding_dirty, image_embedding_dirty, embedding_status, embedded_at';
 
 /** A mirrored Confluence page restriction, as stored in `access_control_entries`. */
 interface PageAce {
@@ -902,7 +908,8 @@ async function restorePreMoveState(
          source = $2, confluence_id = $3, space_key = $4, visibility = $5,
          created_by_user_id = $6, body_html = $7, body_storage = $8,
          inherit_perms = $9, local_modified_at = $10, local_modified_by = $11,
-         embedding_dirty = $12, embedding_status = $13, embedded_at = $14
+         embedding_dirty = $12, image_embedding_dirty = $13,
+         embedding_status = $14, embedded_at = $15
        WHERE id = $1`,
       [
         snapshot.id,
@@ -917,6 +924,7 @@ async function restorePreMoveState(
         snapshot.local_modified_at,
         snapshot.local_modified_by,
         snapshot.embedding_dirty,
+        snapshot.image_embedding_dirty,
         snapshot.embedding_status,
         snapshot.embedded_at,
       ],

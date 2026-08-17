@@ -459,12 +459,16 @@ together, which matters most for #1114's query-side prefix.
   - **`image_embedding_dirty` is separate from `embedding_dirty` on purpose.**
     An attachment can change under an unchanged page version — sync's
     version-unchanged branch is exactly that case — and then the images must be
-    re-embedded and the text must not. P2 raises it from one `core` module
-    (`core/services/image-embedding-dirty.ts`) at every write that can move an
-    image: the sync upsert, the two sync attachment writers, `writeAttachmentCache`,
-    `putLocalAttachment`, both relocate directions and `cleanPageAttachments` —
-    and it is CLEARED only by a page whose scan had no failure, so the flag is
-    the retry queue as well as the work queue. Design of record: ADR-025.
+    re-embedded and the text must not. P2 raises it at every write that can move
+    an image, in two shapes: the ATTACHMENT writers call
+    `core/services/image-embedding-dirty.ts` (the two sync attachment writers,
+    `fetchAndCachePageImage`, `writeAttachmentCache`, `putLocalAttachment`,
+    `cleanPageAttachments`), while the BODY writers raise the column inline in
+    the UPDATE they already own, gated on `body_html` alone (the sync upsert,
+    the conflict-policy update, both relocate directions, and the four
+    `body_html` writers in `routes/knowledge/pages-crud.ts`). It is CLEARED only
+    by a page whose scan had no failure, so the flag is the retry queue as well
+    as the work queue. Design of record: ADR-025.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
   page's average chunk vector, written by `embedPage` inside the same
   transaction as the chunk inserts, with its own HNSW index

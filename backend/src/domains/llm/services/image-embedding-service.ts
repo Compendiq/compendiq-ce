@@ -77,8 +77,15 @@ import {
 } from '../../../core/services/redis-cache.js';
 import { resolveImageEmbeddingUsecase } from './llm-provider-resolver.js';
 import { embedImagesVl } from './vl-embedding-client.js';
-import { imageIndexIdentityFromClient, readImageIndexIdentity } from './image-embedding-index.js';
-import { toUserFacingEmbeddingError } from './embedding-error-message.js';
+import {
+  imageIndexIdentityFromClient,
+  readImageIndexDimensions,
+  readImageIndexIdentity,
+} from './image-embedding-index.js';
+import {
+  ImageEmbeddingDimensionMismatchError,
+  toUserFacingEmbeddingError,
+} from './embedding-error-message.js';
 import { ImageIndexRunSchema } from '@compendiq/contracts';
 import type { ImageIndexRun, ImageSkipCounts, PageSource } from '@compendiq/contracts';
 
@@ -99,12 +106,23 @@ export const DIRTY_IMAGE_PAGE_BATCH_SIZE = 50;
 const CONSECUTIVE_FAILURE_PAUSE_THRESHOLD = 5;
 const CONSECUTIVE_FAILURE_PAUSE_MS = 30_000;
 
-/** Pages between holder-epoch lock re-reads. */
-const GUARD_CHECK_EVERY = 20;
-
 /** The one worker lock for the image index. Distinct from `embedding:lock:*`. */
 export const IMAGE_INDEX_WORKER_LOCK = 'image-embedding-index';
 const IMAGE_INDEX_LOCK_TTL_SECONDS = 600;
+
+/**
+ * How often the holder-epoch guard runs — in TIME, not in pages (review r1).
+ *
+ * The lock's TTL is a wall-clock expiry, so its renewal has to be paced by the
+ * same clock. A page-count cadence cannot be: a page may legitimately issue up
+ * to `rag_images_per_page_max` (default 20) sequential VL requests at
+ * `IMAGE_EMBED_TIMEOUT_MS` each, so ONE slow page can outlive a 600 s TTL
+ * before a 20-page counter has ticked once — the key expires mid-run, the next
+ * sync tick or `Process now` acquires the free lock, and two scans walk the
+ * same backlog, which is the single thing the lock exists to prevent. A third
+ * of the TTL leaves two whole intervals of slack for a transient Redis blip.
+ */
+const LOCK_GUARD_INTERVAL_MS = (IMAGE_INDEX_LOCK_TTL_SECONDS * 1000) / 3;
 
 /** `admin_settings` key holding the last run's counters, as JSON. */
 export const IMAGE_INDEX_LAST_RUN_KEY = 'image_index_last_run';
@@ -198,12 +216,14 @@ export async function embedPageImages(pageId: number): Promise<ImageEmbedOutcome
   const resolved = await resolveImageEmbeddingUsecase();
   if (!resolved) return emptyOutcome('unassigned');
 
-  const [perPageMax, indexExternal, targetDimensions, identityBefore] = await Promise.all([
-    getRagImagesPerPageMax(),
-    getRagImageIndexExternal(),
-    getImageEmbeddingTargetDimensions(),
-    readImageIndexIdentity(),
-  ]);
+  const [perPageMax, indexExternal, targetDimensions, identityBefore, indexDimensions] =
+    await Promise.all([
+      getRagImagesPerPageMax(),
+      getRagImageIndexExternal(),
+      getImageEmbeddingTargetDimensions(),
+      readImageIndexIdentity(),
+      readImageIndexDimensions(),
+    ]);
 
   const skipped = emptySkips();
   const allRefs = extractImageReferencesFromHtml(page.body_html);
@@ -286,6 +306,20 @@ export async function embedPageImages(pageId: number): Promise<ImageEmbedOutcome
         },
       );
       if (!embedding) throw new Error('The image-embedding response carried no embedding');
+      // Width check BEFORE the write (review r1). Without it a vector of the
+      // wrong length reaches the INSERT and pgvector raises — which is a
+      // DATABASE error, so it escapes this function, aborts the whole scan and
+      // records no run at all. The reachable case is the guarded-DDL branch,
+      // where the assignment saved and the `ALTER` did not: the identity
+      // recheck below passes (both sides are the OLD identity) and every page
+      // with an image would die on the same first insert, forever.
+      if (indexDimensions !== null && embedding.length !== indexDimensions) {
+        throw new ImageEmbeddingDimensionMismatchError(
+          resolved.model,
+          indexDimensions,
+          embedding.length,
+        );
+      }
       prepared.push({
         ref,
         sha256,
@@ -434,6 +468,15 @@ export interface ProcessDirtyPageImagesResult {
   removed: number;
   /** Images whose embed call failed. Their pages stay dirty. */
   failed: number;
+  /**
+   * Pages that THREW — a database error, not a fact about an image (review r1).
+   *
+   * Counted separately from `failed` because the two are different outages
+   * with different remedies, and because a page that threw embedded nothing at
+   * all: folding it into an image counter would report "1 image failed" for a
+   * page whose eight successful embeds were rolled back.
+   */
+  pagesFailed: number;
   skipped: ImageSkipCounts;
   /** Another process holds the worker lock; this call did nothing. */
   alreadyRunning?: boolean;
@@ -444,6 +487,22 @@ export interface ProcessDirtyPageImagesResult {
 export interface ProcessDirtyPageImagesOptions {
   /** Ceiling on pages visited in this run. Unset walks the whole backlog. */
   maxPages?: number;
+  /**
+   * Test seam — pages per LIMIT/OFFSET window, defaulting to
+   * {@link DIRTY_IMAGE_PAGE_BATCH_SIZE}.
+   *
+   * Exposed because the offset-advance rule is only observable once a window
+   * FILLS: below the batch size the loop always exits on the short read and
+   * the offset is never read a second time, so the property that stops an
+   * all-pages-stayed-dirty run re-walking the same 50 rows forever cannot be
+   * asserted without seeding 51 pages per case.
+   */
+  batchSize?: number;
+  /**
+   * Test seam — milliseconds between holder-epoch lock checks, defaulting to
+   * {@link LOCK_GUARD_INTERVAL_MS}. `0` checks before every page.
+   */
+  lockGuardIntervalMs?: number;
 }
 
 /**
@@ -481,8 +540,11 @@ export async function processDirtyPageImages(
     reused: 0,
     removed: 0,
     failed: 0,
+    pagesFailed: 0,
     skipped: emptySkips(),
   };
+  const batchSize = opts.batchSize ?? DIRTY_IMAGE_PAGE_BATCH_SIZE;
+  const guardIntervalMs = opts.lockGuardIntervalMs ?? LOCK_GUARD_INTERVAL_MS;
 
   // Fast path BEFORE the lock: the common case is an instance that never
   // assigned the leg, and taking a Redis lock to discover that on every sync
@@ -505,7 +567,7 @@ export async function processDirtyPageImages(
   }
 
   let consecutiveFailures = 0;
-  let sinceGuardCheck = 0;
+  let lastGuardCheckAt = Date.now();
   let offset = 0;
   let aborted = false;
 
@@ -519,7 +581,7 @@ export async function processDirtyPageImages(
             AND COALESCE(page_type, 'page') != 'folder'
           ORDER BY last_modified_at DESC NULLS LAST, id DESC
           LIMIT $1 OFFSET $2`,
-        [DIRTY_IMAGE_PAGE_BATCH_SIZE, offset],
+        [batchSize, offset],
       );
       if (batch.rows.length === 0) break;
 
@@ -529,11 +591,14 @@ export async function processDirtyPageImages(
           aborted = true;
           break;
         }
-        // Holder-epoch guard: a force-release or an expiry-and-re-acquire
-        // means another process owns this scan now, and two of them walking
-        // the same backlog is the duplicated-work case the lock exists for.
-        if (sinceGuardCheck >= GUARD_CHECK_EVERY) {
-          sinceGuardCheck = 0;
+        // Holder-epoch guard, on a TIME cadence: it both renews the TTL and
+        // detects a force-release or an expiry-and-re-acquire, and two scans
+        // walking the same backlog is the duplicated-work case the lock exists
+        // for. Checked BEFORE the page — the failure it prevents is a lock
+        // expiring while a slow page is in flight, so a check that only ran
+        // after N pages could not renew in time to matter.
+        if (Date.now() - lastGuardCheckAt >= guardIntervalMs) {
+          lastGuardCheckAt = Date.now();
           // A failed READ is not evidence the lock moved — `processDirtyPages`'
           // guard logs and continues rather than aborting, and so does this.
           let holder: string | null = token;
@@ -556,9 +621,37 @@ export async function processDirtyPageImages(
           }
         }
 
-        const outcome = await embedPageImages(row.id);
+        // Per-page try/catch, exactly as `processDirtyPages` wraps `embedPage`
+        // (review r1). `embedPageImages` swallows everything the corpus can
+        // contain, but a DATABASE error still escapes it by design — and a
+        // width mismatch against the live column is PERMANENT, so a bare call
+        // let one page abort the corpus scan on every future trigger and
+        // record nothing at all on the card. A thrown page is counted, left
+        // dirty, and stepped past.
+        let outcome: ImageEmbedOutcome;
+        try {
+          outcome = await embedPageImages(row.id);
+        } catch (err) {
+          totals.pages++;
+          totals.pagesFailed++;
+          stillDirty++;
+          consecutiveFailures++;
+          logger.error(
+            { err, pageId: row.id },
+            'Image indexing threw for a page — it stays image_embedding_dirty; continuing',
+          );
+          if (consecutiveFailures >= CONSECUTIVE_FAILURE_PAUSE_THRESHOLD) {
+            logger.warn(
+              { consecutiveFailures },
+              `${consecutiveFailures} consecutive image-embedding failures — pausing ${CONSECUTIVE_FAILURE_PAUSE_MS / 1000}s`,
+            );
+            await sleep(CONSECUTIVE_FAILURE_PAUSE_MS);
+            consecutiveFailures = 0;
+          }
+          await sleep(INTER_PAGE_DELAY_MS);
+          continue;
+        }
         totals.pages++;
-        sinceGuardCheck++;
         totals.embedded += outcome.embedded;
         totals.reused += outcome.reused;
         totals.removed += outcome.removed;
@@ -594,7 +687,7 @@ export async function processDirtyPageImages(
       }
 
       offset += stillDirty;
-      if (batch.rows.length < DIRTY_IMAGE_PAGE_BATCH_SIZE) break;
+      if (batch.rows.length < batchSize) break;
     }
   } finally {
     await releaseWorkerLock(IMAGE_INDEX_WORKER_LOCK, token);
@@ -628,6 +721,7 @@ async function recordImageIndexRun(totals: ProcessDirtyPageImagesResult): Promis
     reused: totals.reused,
     removed: totals.removed,
     failed: totals.failed,
+    pagesFailed: totals.pagesFailed,
     skipped: totals.skipped,
   };
   try {

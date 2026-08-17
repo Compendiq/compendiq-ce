@@ -31,9 +31,20 @@ vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
   resolveImageEmbeddingUsecase: (...a: unknown[]) => resolver.resolve(...a),
 }));
 
-const index = vi.hoisted(() => ({ dims: vi.fn() }));
-vi.mock('../../domains/llm/services/image-embedding-index.js', () => ({
+const index = vi.hoisted(() => ({ dims: vi.fn(), identity: vi.fn() }));
+vi.mock('../../domains/llm/services/image-embedding-index.js', async (importOriginal) => ({
+  // `imageIndexIdentityFor` stays REAL. Re-spelling `provider:model@url#dims`
+  // here is how the route and the rebuild drift into disagreeing about what
+  // counts as the same vector space — which is the exact disagreement the
+  // flag under test reports.
+  ...(await importOriginal<Record<string, unknown>>()),
   readImageIndexDimensions: (...a: unknown[]) => index.dims(...a),
+  readImageIndexIdentity: (...a: unknown[]) => index.identity(...a),
+}));
+
+const target = vi.hoisted(() => ({ dims: vi.fn() }));
+vi.mock('../../core/services/image-embedding-target-dimensions.js', () => ({
+  getImageEmbeddingTargetDimensions: (...a: unknown[]) => target.dims(...a),
 }));
 
 const db = vi.hoisted(() => ({ query: vi.fn() }));
@@ -104,6 +115,10 @@ describe('#1115 P2 image-index routes', () => {
       model: 'Qwen/Qwen3-VL-Embedding-2B',
     });
     index.dims.mockResolvedValue(2048);
+    index.identity.mockResolvedValue(
+      '00000000-0000-4000-8000-000000000001:Qwen/Qwen3-VL-Embedding-2B@http://vl/v1#native',
+    );
+    target.dims.mockResolvedValue(null);
     svc.lastRun.mockResolvedValue(null);
     redis.locked.mockResolvedValue(false);
     stubCounts(12, 3, 100);
@@ -127,6 +142,58 @@ describe('#1115 P2 image-index routes', () => {
       model: 'Qwen/Qwen3-VL-Embedding-2B',
       dimensions: 2048,
       tier: 'halfvec',
+    });
+  });
+
+  /**
+   * Review r1 — `identity` mixes two documents on one line: the LIVE
+   * assignment's provider and model, and the RECORDED index's width and tier.
+   * They can disagree, because the column DDL behind an assignment is guarded
+   * (a failed `ALTER` answers 200 with a warning naming Re-check), and the
+   * card would otherwise present a model+width pair no index has ever had.
+   */
+  describe('identityMatchesAssignment', () => {
+    it('is true when the recorded identity is the one the live pair produces', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/admin/embedding/image-index' });
+      expect(ImageIndexStatusSchema.parse(res.json()).identityMatchesAssignment).toBe(true);
+    });
+
+    it('is false when the model moved but the rebuild did not land', async () => {
+      index.identity.mockResolvedValue(
+        '00000000-0000-4000-8000-000000000001:Qwen/Qwen3-VL-Embedding-8B@http://vl/v1#native',
+      );
+      const res = await app.inject({ method: 'GET', url: '/api/admin/embedding/image-index' });
+      expect(res.json().identityMatchesAssignment).toBe(false);
+    });
+
+    it('is false when only the ENDPOINT moved', async () => {
+      // `PATCH /admin/llm-providers/:id` moves a provider's base URL without
+      // changing its id, which is the nearest signal a pinned-vLLM-version
+      // change leaves — so the URL is in the identity in its own right.
+      resolver.resolve.mockResolvedValue({
+        config: { providerId: '00000000-0000-4000-8000-000000000001', baseUrl: 'http://vl-2/v1' },
+        model: 'Qwen/Qwen3-VL-Embedding-2B',
+      });
+      const res = await app.inject({ method: 'GET', url: '/api/admin/embedding/image-index' });
+      expect(res.json().identityMatchesAssignment).toBe(false);
+    });
+
+    it('is false when only the MRL truncation width moved', async () => {
+      target.dims.mockResolvedValue(2048);
+      const res = await app.inject({ method: 'GET', url: '/api/admin/embedding/image-index' });
+      expect(res.json().identityMatchesAssignment).toBe(false);
+    });
+
+    it('is null with nothing to compare — an unassigned leg or a fresh install', async () => {
+      // Neither is a mismatch, and rendering one would put a permanent amber
+      // strip on every new deployment.
+      index.identity.mockResolvedValue(null);
+      const fresh = await app.inject({ method: 'GET', url: '/api/admin/embedding/image-index' });
+      expect(ImageIndexStatusSchema.parse(fresh.json()).identityMatchesAssignment).toBeNull();
+
+      resolver.resolve.mockResolvedValue(null);
+      const off = await app.inject({ method: 'GET', url: '/api/admin/embedding/image-index' });
+      expect(ImageIndexStatusSchema.parse(off.json()).identityMatchesAssignment).toBeNull();
     });
   });
 

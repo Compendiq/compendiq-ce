@@ -35,6 +35,9 @@ let attachmentsDir: string;
 let previousAttachmentsDir: string | undefined;
 let writeAttachmentCache: typeof import('../../domains/confluence/services/attachment-handler.js')['writeAttachmentCache'];
 let cleanPageAttachments: typeof import('../../domains/confluence/services/attachment-handler.js')['cleanPageAttachments'];
+let syncImageAttachments: typeof import('../../domains/confluence/services/attachment-handler.js')['syncImageAttachments'];
+let syncDrawioAttachments: typeof import('../../domains/confluence/services/attachment-handler.js')['syncDrawioAttachments'];
+let fetchAndCachePageImage: typeof import('../../domains/confluence/services/attachment-handler.js')['fetchAndCachePageImage'];
 let putLocalAttachment: typeof import('./local-attachment-service.js')['putLocalAttachment'];
 let syncPage: typeof import('../../domains/confluence/services/sync-service.js')['__internal']['syncPage'];
 
@@ -92,9 +95,13 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
     // Imported AFTER the env is pointed at the temp root: `attachment-handler`
     // resolves its on-disk base at module load (the `sync-service.unsync`
     // test's pattern).
-    ({ writeAttachmentCache, cleanPageAttachments } = await import(
-      '../../domains/confluence/services/attachment-handler.js'
-    ));
+    ({
+      writeAttachmentCache,
+      cleanPageAttachments,
+      syncImageAttachments,
+      syncDrawioAttachments,
+      fetchAndCachePageImage,
+    } = await import('../../domains/confluence/services/attachment-handler.js'));
     ({ putLocalAttachment } = await import('./local-attachment-service.js'));
     ({ __internal: { syncPage } } = await import(
       '../../domains/confluence/services/sync-service.js'
@@ -217,6 +224,88 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
         userId: OWNER,
       });
       expect(await flags(pageId)).toEqual({ image: true, text: false });
+    });
+
+    /**
+     * The two SYNC writers — the "attachment changed under an unchanged page
+     * version" hole P0 recorded, and the only half of it the flag can close.
+     *
+     * Both raises were deletable with every suite green: the sync fixtures
+     * hand these functions an empty attachment list, so `downloaded` is always
+     * 0 and the branch is never entered. Driven directly here with a client
+     * that really returns bytes, and with the negative half the code's own
+     * comment argues for — a second, cached call must NOT re-dirty, or every
+     * diagram-bearing page re-scans on every `SYNC_INTERVAL_MIN`.
+     */
+    describe('the two sync attachment writers', () => {
+      function clientReturning(bytes: Buffer) {
+        return {
+          downloadAttachment: async () => bytes,
+          getPageAttachments: async () => ({ results: [] as never[] }),
+        } as never;
+      }
+      function attachment(title: string) {
+        return [{ title, _links: { download: `/download/${title}` }, extensions: {} }] as never;
+      }
+
+      it('syncImageAttachments raises the flag on a real download, not on a cached skip', async () => {
+        const pageId = await seed({ title: 'Img', source: 'confluence', confluenceId: '5150' });
+        const body = `<ac:image><ri:attachment ri:filename="pic.png" /></ac:image>`;
+
+        await syncImageAttachments(
+          clientReturning(PNG), 'u1', '5150', body, attachment('pic.png'), 'DEV',
+        );
+        expect(await flags(pageId)).toEqual({ image: true, text: false });
+
+        // The file is on disk now, so the second pass downloads nothing.
+        await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1`, [pageId]);
+        await syncImageAttachments(
+          clientReturning(PNG), 'u1', '5150', body, attachment('pic.png'), 'DEV',
+        );
+        expect((await flags(pageId)).image).toBe(false);
+      });
+
+      it('syncDrawioAttachments raises the flag on a real download, not on a cached skip', async () => {
+        const pageId = await seed({ title: 'Drawio sync', source: 'confluence', confluenceId: '5151' });
+        const body =
+          `<ac:structured-macro ac:name="drawio">` +
+          `<ac:parameter ac:name="diagramName">topology</ac:parameter></ac:structured-macro>`;
+
+        await syncDrawioAttachments(
+          clientReturning(PNG), 'u1', '5151', body, attachment('topology.png'),
+        );
+        expect(await flags(pageId)).toEqual({ image: true, text: false });
+
+        await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1`, [pageId]);
+        await syncDrawioAttachments(
+          clientReturning(PNG), 'u1', '5151', body, attachment('topology.png'),
+        );
+        expect((await flags(pageId)).image).toBe(false);
+      });
+
+      it('fetchAndCachePageImage raises the flag — the recovery path for a `missing` skip', async () => {
+        // A skip is terminal: the worker counts the image and the page still
+        // CLEARS its flag. So when this route finally materialises the bytes,
+        // nothing else would ever re-queue the page and the image stays out of
+        // the index until a new version, another download or a manual re-scan.
+        const pageId = await seed({ title: 'Lazy', source: 'confluence', confluenceId: '5152' });
+        const body = `<ac:image><ri:attachment ri:filename="late.png" /></ac:image>`;
+
+        const bytes = await fetchAndCachePageImage({
+          client: {
+            downloadAttachment: async () => PNG,
+            getPageAttachments: async () => ({ results: attachment('late.png') }),
+          } as never,
+          userId: 'u1',
+          pageId: '5152',
+          localFilename: 'late.png',
+          bodyStorage: body,
+          currentSpaceKey: 'DEV',
+        });
+
+        expect(bytes).not.toBeNull();
+        expect(await flags(pageId)).toEqual({ image: true, text: false });
+      });
     });
 
     it('cleanPageAttachments raises the flag, so reconcile removes the orphaned rows', async () => {

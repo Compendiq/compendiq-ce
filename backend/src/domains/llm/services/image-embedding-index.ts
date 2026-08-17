@@ -53,7 +53,7 @@ export const IMAGE_EMBEDDING_DIMENSIONS_KEY = 'image_embedding_dimensions';
 /**
  * `<providerId>:<model>@<baseUrl>#<requestedDims|native>` the live index was
  * built for — all four parts, because a width change and an endpoint change are
- * each a different vector space in the same column (`identityOf`).
+ * each a different vector space in the same column (`imageIndexIdentityFor`).
  */
 export const IMAGE_EMBEDDING_INDEX_MODEL_KEY = 'image_embedding_index_model';
 /** The one HNSW index over `page_image_embeddings.embedding`. */
@@ -85,7 +85,15 @@ export interface EnsureImageIndexResult {
   dirtiedPages: number;
 }
 
-function identityOf(pair: ImageIndexPair): string {
+/**
+ * The identity string a rebuild records for one pair.
+ *
+ * Exported since #1115 P2's review r1: the admin status route has to answer
+ * whether the recorded identity is the one the LIVE assignment would produce,
+ * and re-spelling the format there is how the two drift into disagreeing about
+ * what counts as the same vector space.
+ */
+export function imageIndexIdentityFor(pair: ImageIndexPair): string {
   return `${pair.providerId}:${pair.model}@${pair.baseUrl}#${pair.targetDimensions ?? 'native'}`;
 }
 
@@ -176,7 +184,7 @@ export async function ensureImageEmbeddingColumn(
   // Throws on a non-integer or out-of-range width, BEFORE any DDL: pgvector
   // type arguments cannot be bound, so `columnType` is interpolated.
   const { columnType, opclass, tier } = columnTypeFor(dimensions);
-  const identity = identityOf(pair);
+  const identity = imageIndexIdentityFor(pair);
 
   if (!opclass) {
     logger.warn(

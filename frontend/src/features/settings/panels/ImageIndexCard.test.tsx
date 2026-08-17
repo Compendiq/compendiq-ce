@@ -36,6 +36,7 @@ const ASSIGNED: ImageIndexStatus = {
     dimensions: 2048,
     tier: 'halfvec',
   },
+  identityMatchesAssignment: true,
   rows: 42,
   pagesDirty: 3,
   pagesTotal: 120,
@@ -65,17 +66,37 @@ function mockApi(
   });
 }
 
+/** Every GET on this route fails; POSTs still succeed. */
+function mockApiFailingStatus(capture?: Array<{ url: string; method: string }>) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    const method = init?.method ?? 'GET';
+    capture?.push({ url, method });
+    if (url.includes('/admin/embedding/image-index') && method === 'GET') {
+      return new Response(JSON.stringify({ message: 'boom' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ marked: 120, started: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+}
+
 /**
  * Wait for the STATUS to have arrived, not merely for the card to exist.
  *
- * Every element here renders on the first paint with placeholder values, so a
- * bare `findByTestId` resolves against the pre-fetch render and an assertion
- * built on it passes whatever the response says — the `EmbeddingShadowMigration`
- * card's review-r5 trap, reached from the other direction.
+ * Every element here renders on the first paint, so a bare `findByTestId`
+ * resolves against the pre-fetch render and an assertion built on it passes
+ * whatever the response says — the `EmbeddingShadowMigration` card's review-r5
+ * trap, reached from the other direction. The pending paint shows `—` for
+ * every number (review r1: a number the server has not sent is not a zero), so
+ * that is what this waits out.
  */
 async function awaitLoaded(): Promise<void> {
   await waitFor(() =>
-    expect(screen.getByTestId('image-index-counters').textContent).not.toContain('0/0'),
+    expect(screen.getByTestId('image-index-counters').textContent).not.toContain('—'),
   );
 }
 
@@ -204,11 +225,14 @@ describe('ImageIndexCard (#1115 P2)', () => {
     await screen.findByTestId('image-index-status');
 
     const before = calls.filter((c) => c.method === 'GET').length;
+    // One whole 5s interval (the cadence is deliberately not 3s — see the
+    // rate-limit test below).
     await vi.advanceTimersByTimeAsync(6_000);
     const during = calls.filter((c) => c.method === 'GET').length;
     expect(during).toBeGreaterThan(before);
 
-    // Settled: the last response says `running: false`, so the interval stops.
+    // Settled: the third response says `running: false`, so the interval stops.
+    await vi.advanceTimersByTimeAsync(6_000);
     await waitFor(() => expect(screen.queryByTestId('image-index-running')).toBeNull());
     const settled = calls.filter((c) => c.method === 'GET').length;
     await vi.advanceTimersByTimeAsync(10_000);
@@ -228,6 +252,7 @@ describe('ImageIndexCard (#1115 P2)', () => {
           reused: 5,
           removed: 1,
           failed: 0,
+          pagesFailed: 0,
           skipped: { ...NO_SKIPS, unsupported: 2, capped: 3 },
         },
       });
@@ -252,6 +277,7 @@ describe('ImageIndexCard (#1115 P2)', () => {
           reused: 0,
           removed: 0,
           failed: 4,
+          pagesFailed: 0,
           skipped: NO_SKIPS,
         },
       });
@@ -260,5 +286,141 @@ describe('ImageIndexCard (#1115 P2)', () => {
     const failed = await screen.findByTestId('image-index-last-run-failed');
     expect(failed.textContent).toContain('4');
     expect(container.innerHTML).toMatch(/warning/);
+  });
+
+  /**
+   * #1115 P2 review r1 — a failed FETCH is a failure, not an unassigned leg.
+   *
+   * CLAUDE.md's `usePageTree` rule, on a different surface: reading `{ data }`
+   * alone collapsed a 500 into the not-assigned state, so an admin whose leg
+   * IS assigned was told to go and assign it, and both remedies were disabled
+   * on the one surface that reports the index.
+   */
+  describe('a failed status read', () => {
+    it('does not claim the leg is unassigned', async () => {
+      mockApiFailingStatus();
+      renderCard();
+
+      const status = await screen.findByTestId('image-index-status');
+      await waitFor(() => expect(status.textContent).toMatch(/could not be read/i));
+      expect(status.textContent).not.toMatch(/not assigned/i);
+      // …and it says what is NOT affected, so nobody goes looking for a
+      // destroyed index.
+      expect(status.textContent).toMatch(/assignment and the stored index are unaffected/i);
+    });
+
+    it('takes the destructive treatment, not amber — it is a failure, not a warning', async () => {
+      const { container } = (() => {
+        mockApiFailingStatus();
+        return renderCard();
+      })();
+      await waitFor(() =>
+        expect(screen.getByTestId('image-index-status').textContent).toMatch(/could not be read/i),
+      );
+      expect(screen.getByTestId('image-index-status').className).toMatch(/text-destructive/);
+      expect(container.innerHTML).not.toMatch(/text-warning/);
+    });
+
+    it('leaves both remedies live, because they are the recovery', async () => {
+      const calls: Array<{ url: string; method: string }> = [];
+      mockApiFailingStatus(calls);
+      renderCard();
+      await waitFor(() =>
+        expect(screen.getByTestId('image-index-status').textContent).toMatch(/could not be read/i),
+      );
+
+      expect((screen.getByTestId('image-index-process') as HTMLButtonElement).disabled).toBe(false);
+      fireEvent.click(screen.getByTestId('image-index-process'));
+      await waitFor(() =>
+        expect(
+          calls.some((c) => c.method === 'POST' && c.url.endsWith('/admin/embedding/image-index/process')),
+        ).toBe(true),
+      );
+    });
+
+    it('shows no invented zeroes while the first read is in flight', async () => {
+      // A number the server has not sent is not a zero: `0 rows` on a healthy
+      // index is exactly the reading that sends an operator to the runbook.
+      mockApi(ASSIGNED);
+      renderCard();
+      expect(screen.getByTestId('image-index-counters').textContent).toContain('—');
+      await awaitLoaded();
+      expect(screen.getByTestId('image-index-counters').textContent).toContain('42');
+    });
+  });
+
+  it('flags an index built for a different model than the one assigned now', async () => {
+    // The guarded-DDL branch: the assignment saved, the `ALTER` did not, so
+    // the status line names a model and a width that belong to different
+    // things. Amber, like a failed run — the operator has to press Re-check.
+    mockApi({ ...ASSIGNED, identityMatchesAssignment: false });
+    renderCard();
+    await awaitLoaded();
+
+    const note = await screen.findByTestId('image-index-identity-mismatch');
+    expect(note.textContent).toMatch(/different model or endpoint/i);
+    expect(note.textContent).toMatch(/Re-check/);
+  });
+
+  it('says nothing about the identity when it matches', async () => {
+    mockApi(ASSIGNED);
+    renderCard();
+    await awaitLoaded();
+    expect(screen.queryByTestId('image-index-identity-mismatch')).toBeNull();
+  });
+
+  it('says nothing about the identity when there is nothing to compare', async () => {
+    // A fresh install has recorded no identity at all; that is not a mismatch,
+    // and rendering one would put a permanent amber strip on every new
+    // deployment — which is how the reserved colour stops meaning anything.
+    mockApi({ ...ASSIGNED, identityMatchesAssignment: null });
+    renderCard();
+    await awaitLoaded();
+    expect(screen.queryByTestId('image-index-identity-mismatch')).toBeNull();
+  });
+
+  it('reports pages that could not be WRITTEN separately from images that failed to embed', async () => {
+    // Different outages, different remedies: an image failure is the provider,
+    // a page failure is the index. Reporting one as the other sends the
+    // operator to the wrong place.
+    mockApi({
+      ...ASSIGNED,
+      lastRun: {
+        at: '2026-08-17T10:00:00.000Z',
+        pages: 6,
+        embedded: 0,
+        reused: 0,
+        removed: 0,
+        failed: 0,
+        pagesFailed: 6,
+        skipped: NO_SKIPS,
+      },
+    });
+    renderCard();
+    await awaitLoaded();
+
+    expect(screen.queryByTestId('image-index-last-run-failed')).toBeNull();
+    const pages = screen.getByTestId('image-index-last-run-pages-failed');
+    expect(pages.textContent).toContain('6');
+    expect(pages.textContent).toMatch(/stay queued/i);
+  });
+
+  it('polls no faster than the admin rate limit allows', async () => {
+    // 20/min is the per-route admin bucket, so a 3s interval sits exactly at
+    // it — before the mount fetch and before the invalidate every button press
+    // fires. With `retry: false` a 429 then freezes the card on stale counters
+    // with both buttons disabled and no error shown.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi({ ...ASSIGNED, running: true }, calls);
+    renderCard();
+    await screen.findByTestId('image-index-status');
+    await waitFor(() => expect(calls.filter((c) => c.method === 'GET').length).toBeGreaterThan(0));
+
+    const before = calls.filter((c) => c.method === 'GET').length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    const perMinute = calls.filter((c) => c.method === 'GET').length - before;
+
+    expect(perMinute).toBeLessThan(20);
   });
 });

@@ -518,7 +518,26 @@ interface FetchAndCachePageImageOptions {
   redis?: ReturnType<typeof getRedisClient>;
 }
 
+/**
+ * Lazily materialise one image the page's body already references.
+ *
+ * #1115 P2 (review r1) — this is the RECOVERY path for the index's `missing`
+ * skip, and therefore a dirty-flag writer. A skip is terminal by design: the
+ * worker counts the image and the page still clears its flag, so nothing would
+ * ever re-queue that page once the bytes finally arrive. Raised only when
+ * bytes really came back, matching the sync writers' download-not-skip rule;
+ * the route only reaches here on a cache MISS, so a page whose images are all
+ * cached never pays for it.
+ */
 export async function fetchAndCachePageImage(
+  options: FetchAndCachePageImageOptions,
+): Promise<Buffer | null> {
+  const data = await fetchAndCachePageImageBytes(options);
+  if (data) await markPageImagesDirtyByAttachmentKey(options.pageId);
+  return data;
+}
+
+async function fetchAndCachePageImageBytes(
   options: FetchAndCachePageImageOptions,
 ): Promise<Buffer | null> {
   const { client, userId, pageId, localFilename, bodyStorage, currentSpaceKey, redis } = options;

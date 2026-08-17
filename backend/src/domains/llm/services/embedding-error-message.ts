@@ -40,6 +40,36 @@ export class EmbeddingDimensionMismatchError extends Error {
 }
 
 /**
+ * The `image_embedding` leg answered a width the image index is not typed for
+ * (#1115 P2, review r1).
+ *
+ * Reachable and PERMANENT rather than transient, which is why it is a named
+ * type and not a generic provider failure: `ensureImageEmbeddingColumn`
+ * retypes the column and records the identity in one transaction, and that DDL
+ * is *guarded* — a failed `ALTER` answers 200 with a warning naming Re-check
+ * (ADR-025). The assignment is then live at the new pair while the column and
+ * the recorded width are still the old one's, so every page with an image
+ * would otherwise raise a raw pgvector dimension error out of the INSERT,
+ * abort the whole scan, and record nothing on the card.
+ *
+ * Caught before the write instead, so the page is a counted failure and the
+ * remedy — Re-check on the Image embedding row — reaches the operator.
+ */
+export class ImageEmbeddingDimensionMismatchError extends Error {
+  constructor(
+    readonly model: string,
+    readonly expected: number,
+    readonly received: number,
+  ) {
+    super(
+      `Image embedding model "${model}" returned ${received}-dimensional vectors but the ` +
+      `page_image_embeddings.embedding column is typed to ${expected}. Nothing was written.`,
+    );
+    this.name = 'ImageEmbeddingDimensionMismatchError';
+  }
+}
+
+/**
  * Convert any thrown embedding error into a short, safe, user-facing message.
  * Never returns the raw upstream text — every branch, including the fallback,
  * yields a fixed constant string.
@@ -68,6 +98,14 @@ export function toUserFacingEmbeddingError(err: unknown): string {
   if (err instanceof EmbeddingDimensionMismatchError) {
     return 'The embedding model produces vectors of a different size than the stored index. '
       + 'Change the model back, or run a zero-downtime re-embed from Settings → AI Models.';
+  }
+
+  // #1115 P2 — a different index, and therefore a different remedy. The image
+  // index rebuilds itself from Re-check on the Image embedding row; there is
+  // no shadow-migration path for it (ADR-025 D7: it truncates and re-scans).
+  if (err instanceof ImageEmbeddingDimensionMismatchError) {
+    return 'The image embedding model produces vectors of a different size than the image index. '
+      + 'Press Re-check on the Image embedding row in Settings → AI Models to rebuild it.';
   }
 
   const raw = err instanceof LlmHttpError

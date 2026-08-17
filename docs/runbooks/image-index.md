@@ -242,7 +242,9 @@ the backlog.
 |---|---|
 | A page is created or updated by sync | the sync upsert, beside `embedding_dirty` |
 | A page's body changes on a conflict-policy update | gated on `body_html` alone — `body_text` cannot move an `<img>` |
+| A page is edited **in the app** | all four `body_html` writers in `pages-crud.ts` — the editor save on a local page, the app-side Confluence push, publish-draft and the bulk refresh — each gated on `body_html`. This is the only trigger for an image that was **deleted**: that writes no attachment at all |
 | A new or changed attachment is downloaded under an **unchanged** page version | `syncImageAttachments` / `syncDrawioAttachments`, on a real download only |
+| An image is fetched lazily on a cache miss while viewing a page | `fetchAndCachePageImage` — the recovery path for a `missing` skip |
 | An image is pasted, or imported from an external URL | `writeAttachmentCache` |
 | A draw.io diagram is saved on a local page | `putLocalAttachment` |
 | A page is relocated between Confluence and local | both directions — the move rewrites every `<img src>` |
@@ -251,7 +253,12 @@ the backlog.
 
 The worker runs **off the sync cadence** — fire-and-forget beside
 `processDirtyPages`, which is how the text embedder is scheduled too — plus the
-two admin actions below. There is no separate repeatable job.
+two admin actions below. There is no separate repeatable job, and that has a
+consequence worth stating: `runScheduledSync` only reaches `syncUser` for users
+with a Confluence URL *and* a PAT *and* a space assignment, so on a deployment
+with **no Confluence credentials at all** — where local pages still raise the
+flag through `putLocalAttachment` and `writeAttachmentCache` — nothing ever
+kicks the worker automatically. Press **Process now**.
 
 ### What is embedded
 
@@ -287,6 +294,17 @@ A **failure** is different: the endpoint refused or never answered. The page
 stays `image_embedding_dirty`, the counter is `failed`, and the card renders it
 in amber. Retrying is automatic on the next scan.
 
+A **page failure** is a third thing, counted separately (`pagesFailed`, its own
+amber line). The scan reached the database and the write did not land — the page
+embedded nothing at all, because its transaction rolled back. The reachable
+cause is a column typed to a width the assigned model no longer answers with,
+which is the guarded-DDL state §6 describes: the assignment saved, the `ALTER`
+did not, and the remedy is **Re-check** on the Image embedding row, not anything
+to do with the provider. The card also says so directly when it can — if the
+recorded index identity is not the pair assigned now, it renders an amber line
+naming Re-check above the counters. A page failure never aborts the scan; the
+run continues, and the page stays queued.
+
 ### The two knobs
 
 Both live in `admin_settings` and are settable through `PUT /api/admin/settings`
@@ -315,11 +333,21 @@ and both return immediately — the scan runs detached, and the card polls.
 - **Images embedded** — rows in `page_image_embeddings`. Expect it to be *lower*
   than the number of pictures in the corpus; the skip table above is why.
 - **Pages pending** — `image_embedding_dirty` over live non-folder pages. On a
-  settled instance this is 0. If it is not falling, either the leg is unassigned
-  (the card says so) or the last run failed.
+  settled instance this is 0. If it is not falling, there are three causes and
+  the card distinguishes them: the leg is **unassigned** (it says so); the last
+  run **failed** (an amber line, and `failed`/`pagesFailed` name which kind);
+  or **nothing has kicked the worker** — its automatic cadence rides `syncUser`,
+  which only runs for users with a configured Confluence URL and PAT, so a
+  local-only instance fills the index from **Process now** / **Re-scan all** and
+  nothing else.
 - **Last run** — pages visited, embedded, reused, removed, and skipped by
   reason. `removed` counts rows reconciled away, which is the expected outcome
-  of a page that lost an image.
+  of a page that lost an image — including one whose `<img>` was deleted in the
+  app's own editor, which is why every `body_html` writer raises the flag.
+- **A status read that FAILS** says so, in the destructive treatment, and states
+  that the assignment and the stored index are unaffected. It never renders as
+  "not assigned" — that would send an operator whose leg is working to go and
+  assign it — and both actions stay live, because they are the recovery.
 
 ## 6. Changing the model (or the provider)
 

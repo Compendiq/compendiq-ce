@@ -290,6 +290,7 @@ describe('ImageIndexStatusSchema (#1115 P2)', () => {
       dimensions: 2048,
       tier: 'halfvec' as const,
     },
+    identityMatchesAssignment: true,
     rows: 42,
     pagesDirty: 3,
     pagesTotal: 120,
@@ -301,6 +302,7 @@ describe('ImageIndexStatusSchema (#1115 P2)', () => {
       reused: 5,
       removed: 1,
       failed: 0,
+      pagesFailed: 0,
       skipped: { missing: 1, unsupported: 2, oversized: 0, tooLarge: 0, capped: 3, external: 0 },
     },
   };
@@ -350,5 +352,41 @@ describe('ImageIndexStatusSchema (#1115 P2)', () => {
     });
     expect(parsed.identity).not.toHaveProperty('baseUrl');
     expect(parsed.identity).not.toHaveProperty('apiKey');
+  });
+
+  /**
+   * Review r1 — `identity` deliberately merges the LIVE assignment's pair with
+   * the RECORDED index's width, so the payload has to carry whether they
+   * agree. The three states are not interchangeable: `false` is a real
+   * mismatch (the guarded-DDL branch), `null` is "nothing to compare", and a
+   * missing key would read as either.
+   */
+  it('requires identityMatchesAssignment, and takes all three states', () => {
+    const { identityMatchesAssignment: _dropped, ...without } = base;
+    expect(() => ImageIndexStatusSchema.parse(without)).toThrow();
+    for (const value of [true, false, null]) {
+      expect(() =>
+        ImageIndexStatusSchema.parse({ ...base, identityMatchesAssignment: value }),
+      ).not.toThrow();
+    }
+  });
+
+  /**
+   * `pagesFailed` counts pages whose WRITE threw, which is a different outage
+   * from an image the provider refused — and it defaults, so a run recorded
+   * before the field existed still parses instead of being dropped whole on
+   * upgrade (`readImageIndexLastRun` answers null on a parse failure).
+   */
+  it('defaults pagesFailed to 0 for a run recorded before the field existed', () => {
+    const { pagesFailed: _dropped, ...older } = base.lastRun;
+    const parsed = ImageIndexStatusSchema.parse({ ...base, lastRun: older });
+    expect(parsed.lastRun?.pagesFailed).toBe(0);
+    expect(parsed.lastRun?.embedded).toBe(20);
+  });
+
+  it('rejects a negative pagesFailed', () => {
+    expect(() =>
+      ImageIndexStatusSchema.parse({ ...base, lastRun: { ...base.lastRun, pagesFailed: -1 } }),
+    ).toThrow();
   });
 });

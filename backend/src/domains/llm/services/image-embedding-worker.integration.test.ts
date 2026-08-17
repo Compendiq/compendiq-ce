@@ -268,6 +268,140 @@ describe.skipIf(!dbAvailable)('processDirtyPageImages (#1115 P2)', () => {
     expect(stillDirty.rows.map((r) => r.title)).toEqual(['broken']);
   });
 
+  it('reaches the pages BEHIND a full window that all stayed dirty', async () => {
+    // The offset-advance rule, at the only size where it is observable. Below
+    // the batch size the loop always exits on the short read and the offset is
+    // never read a second time, so the previous test — which seeds two pages
+    // against a batch of fifty — passes with `offset += 0`. Here the first
+    // window FILLS with pages that keep their flag, and zeroing the advance
+    // re-reads those same two forever while `fine` is never visited.
+    await assign();
+    await seedPageWithImage('brokenA', '2026-03-03T00:00:00Z');
+    await seedPageWithImage('brokenB', '2026-03-02T00:00:00Z');
+    await seedPageWithImage('fine', '2020-01-01T00:00:00Z');
+    let seen = 0;
+    respond = (res) => {
+      seen++;
+      if (seen <= 2) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'boom' }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ embedding: [1, 0, 0, 0] }] }));
+    };
+
+    const result = await processDirtyPageImages({ batchSize: 2 });
+
+    expect(result.pages).toBe(3);
+    expect(result.failed).toBe(2);
+    expect(result.embedded).toBe(1);
+    const stillDirty = await query<{ title: string }>(
+      `SELECT title FROM pages WHERE image_embedding_dirty ORDER BY title`,
+    );
+    expect(stillDirty.rows.map((r) => r.title)).toEqual(['brokenA', 'brokenB']);
+  });
+
+  it.skipIf(!redis)('aborts when the worker lock is re-acquired mid-scan', async () => {
+    // The holder-epoch guard. `lockGuardIntervalMs: 0` makes it run before
+    // every page rather than on its production time cadence — the branch is
+    // otherwise unreachable in a fixture, since the real interval is a third
+    // of a ten-minute TTL.
+    await assign();
+    await seedPageWithImage('first', '2026-04-02T00:00:00Z');
+    await seedPageWithImage('second', '2026-04-01T00:00:00Z');
+    const lockKey = `worker:lock:${IMAGE_INDEX_WORKER_LOCK}`;
+    let seen = 0;
+    respond = (res) => {
+      void (async () => {
+        seen++;
+        if (seen === 1) {
+          // Another pod takes the lock while this page is in flight — the
+          // expiry-and-re-acquire case the guard exists to notice. Stolen
+          // BEFORE the response returns, so the next guard check sees it.
+          await redis!.set(lockKey, 'another-pod');
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ embedding: [1, 0, 0, 0] }] }));
+      })();
+    };
+
+    try {
+      const result = await processDirtyPageImages({ lockGuardIntervalMs: 0 });
+
+      expect(result.pages).toBe(1);
+      expect(calls).toBe(1);
+      // The page behind it keeps its flag: the run stood down, it did not
+      // decide the page was done.
+      const stillDirty = await query<{ title: string }>(
+        `SELECT title FROM pages WHERE image_embedding_dirty`,
+      );
+      expect(stillDirty.rows.map((r) => r.title)).toEqual(['second']);
+      // …and the release is ownership-checked, so standing down did not delete
+      // the other holder's lock on the way out.
+      expect(await redis!.get(lockKey)).toBe('another-pod');
+    } finally {
+      await redis!.del(lockKey);
+    }
+  });
+
+  it('counts a page whose WRITE fails, keeps going, and still records the run', async () => {
+    // Reachable and permanent, not transient: `ensureImageEmbeddingColumn`
+    // retypes the column and records the width in ONE transaction, and that
+    // DDL is guarded — so a restored dump or a failed `ALTER` leaves the
+    // recorded width agreeing with the model and disagreeing with the column.
+    // The INSERT then raises a pgvector dimension error, which is a DATABASE
+    // failure and escapes `embedPageImages` by design. Unwrapped, it aborted
+    // the whole scan on the first page and recorded nothing at all.
+    await assign();
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('image_embedding_dimensions', '8')
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = '8'`,
+    );
+    respond = (res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ embedding: [1, 0, 0, 0, 0, 0, 0, 0] }] }));
+    };
+    await seedPageWithImage('one', '2026-05-02T00:00:00Z');
+    await seedPageWithImage('two', '2026-05-01T00:00:00Z');
+
+    const result = await processDirtyPageImages();
+
+    expect(result.pages).toBe(2);
+    expect(result.pagesFailed).toBe(2);
+    // Both pages stay queued — nothing about them was decided.
+    const dirty = await query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM pages WHERE image_embedding_dirty`,
+    );
+    expect(Number(dirty.rows[0]!.count)).toBe(2);
+    // …and the card learns about it. Without the run summary the operator sees
+    // a backlog that never drains and no failure anywhere on screen.
+    expect(await readImageIndexLastRun()).toMatchObject({ pages: 2, pagesFailed: 2 });
+  });
+
+  it('counts a width the index is not typed for as a failed IMAGE, before the write', async () => {
+    // The guarded-DDL branch proper: the assignment saved, the `ALTER` did
+    // not, so the recorded width still describes the column and the model
+    // answers the new one. Caught before the INSERT, so it is a counted image
+    // failure with a remedy rather than a thrown page.
+    await assign();
+    respond = (res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ embedding: [1, 0, 0, 0, 0, 0, 0, 0] }] }));
+    };
+    await seedPageWithImage('one', '2026-05-02T00:00:00Z');
+
+    const result = await processDirtyPageImages();
+
+    expect(result.failed).toBe(1);
+    expect(result.pagesFailed).toBe(0);
+    expect(result.embedded).toBe(0);
+    const rows = await query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM page_image_embeddings`,
+    );
+    expect(Number(rows.rows[0]!.count)).toBe(0);
+  });
+
   it('records the run summary, and does not overwrite it with a no-op trigger', async () => {
     await assign();
     await seedPageWithImage('one', '2026-01-01T00:00:00Z');

@@ -28,17 +28,38 @@ import { formatRelativeTime } from '../../../shared/lib/format-relative-time';
  *    on essentially every real corpus, and `unsupported` (a draw.io `.png` that
  *    is really XML) is working as designed while `missing` is a broken sync.
  *
+ * **A failed FETCH is a failure, not an unassigned leg** (review r1, and
+ * CLAUDE.md's `usePageTree` rule). Reading `{ data }` alone collapsed both the
+ * pre-fetch paint and a 500 into the not-assigned state: an admin whose leg is
+ * assigned and working was told to go and assign it, and both remedies —
+ * Process now and Re-scan all — were disabled on the one surface that reports
+ * the index. So three states, not one. Pending renders em-dashes rather than a
+ * claim; an error says the status could not be READ, states that the
+ * assignment and the index are untouched, and leaves the actions live, because
+ * a status read failing is no reason to withhold the buttons that fix things.
+ *
  * **Colour follows ADR-010 exactly.** Everything here is a MEASUREMENT and
- * renders neutral — the `QualityScoreBadge` argument. The one exception is a
- * last run that FAILED, which is amber, because a leg whose endpoint is
- * refusing is genuinely attention-worthy and is the only state on this card an
- * operator has to act on.
+ * renders neutral — the `QualityScoreBadge` argument. Two exceptions, both
+ * genuinely attention-worthy and both requiring the operator to act: a last run
+ * that FAILED, and an index built for a model other than the one assigned now
+ * (the guarded-DDL branch, whose only other symptom is a backlog that never
+ * drains). A failed status READ is neither — it is a failure, so it takes the
+ * destructive treatment rather than amber.
  */
 
 const STATUS_QUERY_KEY = ['admin', 'image-index'] as const;
 
-/** How often the card re-reads while a scan is running. */
-const POLL_MS = 3_000;
+/**
+ * How often the card re-reads while a scan is running.
+ *
+ * 5s matches `EmbeddingShadowMigrationCard` and `ActiveEmbeddingLocksBanner`,
+ * and stays under the default 20/min per-route admin rate limit. 3s sits
+ * EXACTLY at it, before the mount fetch and before the invalidate each button
+ * press fires — and with `retry: false` a 429 leaves the last payload in
+ * cache, so `running` stays true, the interval keeps firing and the card
+ * freezes on stale counters with both buttons disabled and no error shown.
+ */
+const POLL_MS = 5_000;
 
 const TIER_LABEL: Record<NonNullable<NonNullable<ImageIndexStatus['identity']>['tier']>, string> = {
   vector: 'vector HNSW',
@@ -65,7 +86,7 @@ const SKIP_LABEL: Record<keyof NonNullable<ImageIndexStatus['lastRun']>['skipped
 export function ImageIndexCard() {
   const qc = useQueryClient();
 
-  const { data } = useQuery<ImageIndexStatus>({
+  const { data, isPending, isError } = useQuery<ImageIndexStatus>({
     queryKey: STATUS_QUERY_KEY,
     queryFn: () => apiFetch<ImageIndexStatus>('/admin/embedding/image-index'),
     retry: false,
@@ -97,6 +118,14 @@ export function ImageIndexCard() {
 
   const assigned = data?.assigned ?? false;
   const busy = kick.isPending || (data?.running ?? false);
+  // Live whenever the leg is known to be assigned, and ALSO when the status
+  // could not be read: the buttons are the remedy, and a card that hides them
+  // because its own GET 500'd removes the recovery from the surface that
+  // exists to provide it. Only the pending paint disables them, where nothing
+  // is known yet and a press would be a guess.
+  const actionsDisabled = busy || isPending || (!isError && !assigned);
+  /** A number the server has not sent yet is `—`, never a claimed zero. */
+  const num = (n: number | undefined): string => (isPending || isError ? '—' : String(n ?? 0));
 
   return (
     <div className="nm-card border-status-embedding/30 space-y-3 p-3 text-sm" data-testid="image-index-card">
@@ -113,8 +142,15 @@ export function ImageIndexCard() {
         )}
       </div>
 
-      <p className="text-muted-foreground text-xs" data-testid="image-index-status">
-        {assigned && data?.identity ? (
+      <p
+        className={isError ? 'text-destructive text-xs' : 'text-muted-foreground text-xs'}
+        data-testid="image-index-status"
+      >
+        {isError ? (
+          'The index status could not be read. The assignment and the stored index are unaffected — retry, or check the server logs.'
+        ) : isPending ? (
+          'Reading index status…'
+        ) : assigned && data?.identity ? (
           <>
             <span className="font-mono">
               {data.identity.dimensions ?? '—'}-dim ·{' '}
@@ -127,15 +163,33 @@ export function ImageIndexCard() {
         )}
       </p>
 
+      {/*
+        The one state where the line above names a model and a width that
+        belong to different things. The DDL behind an assignment is guarded, so
+        an `ALTER` that failed leaves the new pair live against the old column
+        — amber, because nothing else on screen says so and the backlog simply
+        stops draining.
+      */}
+      {data?.identityMatchesAssignment === false && (
+        <p
+          className="text-warning inline-flex items-center gap-1.5 text-xs"
+          data-testid="image-index-identity-mismatch"
+        >
+          <AlertTriangle size={12} aria-hidden="true" />
+          The index was built for a different model or endpoint than the one assigned now. Press
+          Re-check on the Image embedding row to rebuild it.
+        </p>
+      )}
+
       <dl className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 text-xs" data-testid="image-index-counters">
         <div className="flex gap-1.5">
           <dt>Images embedded</dt>
-          <dd className="text-foreground font-mono">{data?.rows ?? 0}</dd>
+          <dd className="text-foreground font-mono">{num(data?.rows)}</dd>
         </div>
         <div className="flex gap-1.5">
           <dt>Pages pending</dt>
           <dd className="text-foreground font-mono">
-            {data?.pagesDirty ?? 0}/{data?.pagesTotal ?? 0}
+            {num(data?.pagesDirty)}/{num(data?.pagesTotal)}
           </dd>
         </div>
       </dl>
@@ -168,15 +222,28 @@ export function ImageIndexCard() {
             </p>
           )}
           {/*
-            The one amber thing on this card. A failed run means the endpoint
-            refused, the pages stayed queued, and somebody has to look — which
-            is exactly what ADR-010 reserves amber for.
+            The amber pair. A failed run means the endpoint refused, the pages
+            stayed queued, and somebody has to look — which is exactly what
+            ADR-010 reserves amber for. A page that THREW is reported
+            separately because it is a different outage: the scan never reached
+            the provider, so "the model refused" would send the operator to the
+            wrong place.
           */}
           {data.lastRun.failed > 0 && (
             <p className="text-warning inline-flex items-center gap-1.5" data-testid="image-index-last-run-failed">
               <AlertTriangle size={12} aria-hidden="true" />
               {data.lastRun.failed} image{data.lastRun.failed === 1 ? '' : 's'} failed to embed — those
               pages stay queued and will be retried.
+            </p>
+          )}
+          {data.lastRun.pagesFailed > 0 && (
+            <p
+              className="text-warning inline-flex items-center gap-1.5"
+              data-testid="image-index-last-run-pages-failed"
+            >
+              <AlertTriangle size={12} aria-hidden="true" />
+              {data.lastRun.pagesFailed} page{data.lastRun.pagesFailed === 1 ? '' : 's'} could not be
+              written to the index and stay queued — see the server logs.
             </p>
           )}
         </div>
@@ -190,7 +257,7 @@ export function ImageIndexCard() {
           // Both actions are inert without an assignment: the worker's own
           // fast path answers "unassigned" and clears nothing, so a live
           // button would report success for work that never starts.
-          disabled={!assigned || busy}
+          disabled={actionsDisabled}
           onClick={() => kick.mutate('process')}
         >
           <Play size={12} aria-hidden="true" />
@@ -200,7 +267,7 @@ export function ImageIndexCard() {
           type="button"
           data-testid="image-index-rescan"
           className="nm-button-ghost px-2.5 py-1 text-xs"
-          disabled={!assigned || busy}
+          disabled={actionsDisabled}
           onClick={() => kick.mutate('rescan')}
           aria-describedby="image-index-rescan-note"
         >

@@ -228,6 +228,18 @@ export const ImageIndexRunSchema = z.object({
   removed: z.number().int().nonnegative(),
   /** Images whose embed call failed; their pages stay dirty. */
   failed: z.number().int().nonnegative(),
+  /**
+   * Pages whose scan THREW — a database error, never a fact about an image
+   * (#1115 P2, review r1). Separate from `failed` because a page that threw
+   * embedded nothing at all (its transaction rolled back), and because the
+   * remedy is different: an image failure is the provider, a page failure is
+   * the index — most reachably a column typed to a width the assigned model
+   * no longer answers with, after a guarded `ALTER` did not land.
+   *
+   * Defaulted rather than required so a row written before this field existed
+   * still parses; the alternative is a silently-dropped last run on upgrade.
+   */
+  pagesFailed: z.number().int().nonnegative().default(0),
   skipped: ImageSkipCountsSchema,
 });
 export type ImageIndexRun = z.infer<typeof ImageIndexRunSchema>;
@@ -257,6 +269,21 @@ export const ImageIndexStatusSchema = z.object({
       tier: VectorIndexTierSchema.nullable(),
     })
     .nullable(),
+  /**
+   * Whether the index was built for the pair that is assigned RIGHT NOW
+   * (review r1).
+   *
+   * `identity` above deliberately mixes two documents — the live assignment's
+   * provider and model, the recorded index's width and tier — because that is
+   * what an operator wants to read on one line. They can disagree: the column
+   * DDL is guarded, so an `ALTER` that fails answers 200 with a warning and
+   * leaves the new pair assigned against the old column. Without this flag the
+   * card states a model+width pair no index has ever had, and the only visible
+   * symptom is a backlog that will not drain. `null` when the leg is
+   * unassigned (there is no live pair to compare) or when no rebuild has ever
+   * recorded an identity (a fresh install, which is not a mismatch).
+   */
+  identityMatchesAssignment: z.boolean().nullable(),
   /** Rows in `page_image_embeddings`. */
   rows: z.number().int().nonnegative(),
   /** Live non-folder pages awaiting a scan. */

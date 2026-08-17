@@ -4,15 +4,31 @@
  * **The flag is the queue.** `processDirtyPageImages` walks nothing else, so a
  * write that does not raise it leaves `page_image_embeddings` describing bytes
  * that have changed or gone — and nothing ever notices, because a stale row
- * and a correct one are the same shape. That is the failure mode this module
- * exists to make hard to reintroduce: one place, two entry points, every
- * writer calling one of them.
+ * and a correct one are the same shape.
  *
- * **It lives in `core` because its callers are spread across three layers**
- * that cannot import each other — `domains/confluence` (the sync attachment
- * writers), `domains/knowledge` (the relocate) and `routes/knowledge` (paste,
- * import and the local draw.io save). `core` is the only place all three may
- * reach (`backend/eslint.config.js:50-53`).
+ * **This module is the ATTACHMENT half of that, not all of it** (review r1).
+ * A flag writer comes in two shapes, and only one of them belongs here:
+ *
+ *  - An **attachment** write is its own event — bytes appear, change or go
+ *    with no statement against `pages` in flight — so it calls one of the two
+ *    functions below. Its callers are `syncImageAttachments`,
+ *    `syncDrawioAttachments`, `fetchAndCachePageImage`, `writeAttachmentCache`
+ *    and `cleanPageAttachments` in `domains/confluence`, plus
+ *    `putLocalAttachment` here in `core`.
+ *  - A **body** write already owns an UPDATE on the very row, so it raises the
+ *    column inline as one more clause: the sync upsert and the conflict-policy
+ *    update (`sync-service.ts`), both relocate directions
+ *    (`page-relocate-service.ts`) and the four `body_html` writers in
+ *    `routes/knowledge/pages-crud.ts`. Routing those through a second
+ *    statement would cost a round trip per page of a full sync and could not
+ *    be gated on `body_html IS DISTINCT FROM $n`, which is what keeps a
+ *    title-only save from re-scanning a page's pictures.
+ *
+ * So do not read this module's importers as the audit list — grep the column.
+ *
+ * **It lives in `core`** because `core/services/local-attachment-service.ts`
+ * is one of its callers and `core` may not import a domain
+ * (`backend/eslint.config.js:50-53`); `domains/confluence` is the other.
  *
  * **`embedding_dirty` is never touched here**, and that is the whole reason
  * migration 093 gave the two flags separate columns: an attachment changing

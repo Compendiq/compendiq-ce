@@ -2315,16 +2315,35 @@ a column another rebuild has just emptied. `image_embedding_dirty` clears only
 when nothing FAILED — a skip is a fact about the file, a failure is a fact about
 the endpoint, and only the second has to be retried. **Unassigned is not a
 failure and not a success**: the worker returns without clearing the flag, so
-the backlog survives until the leg is assigned. The flag itself is raised by
-`core/services/image-embedding-dirty.ts` from every layer that can move an
-image — the sync upsert, the two sync attachment writers (which closes the
-"attachment changed under an unchanged page version" hole), `writeAttachmentCache`,
-`putLocalAttachment`, both relocate directions and `cleanPageAttachments` — and
-by the Embeddings-tab **Re-scan all**. The worker runs off the sync cadence
-(fire-and-forget beside `processDirtyPages`, which is how the text embedder is
-scheduled) plus the two admin routes, under its own `worker:lock:` key rather
-than the per-user embedding lock, whose holders `processDirtyPages` backs off
-from.
+the backlog survives until the leg is assigned. A page whose write THROWS is
+counted and stepped past rather than aborting the scan, and a returned vector
+whose width disagrees with the recorded one is refused before the INSERT — the
+guarded-DDL branch (an assignment that saved while its `ALTER` did not) leaves
+the new pair live against the old column, so a raw pgvector error there would
+have killed the corpus scan on its first page on every trigger, permanently,
+and recorded nothing on the card.
+
+The flag has two kinds of writer. **Attachment** writes go through
+`core/services/image-embedding-dirty.ts`: the two sync attachment writers on a
+real download (which closes the "attachment changed under an unchanged page
+version" hole), `fetchAndCachePageImage` (the lazy per-request fetch — the
+recovery path for a `missing` skip, which is terminal and would otherwise never
+re-queue), `writeAttachmentCache`, `putLocalAttachment` and
+`cleanPageAttachments`. **Body** writes raise the column inline in the UPDATE
+they already own, gated on `body_html` alone: the sync upsert, the
+conflict-policy update, both relocate directions (also a `RELOCATABLE_COLUMNS`
+snapshot entry, or a compensated move keeps the moved value), and the four
+`body_html` writers in `routes/knowledge/pages-crud.ts` — the editor save, the
+app-side Confluence push, publish-draft and the bulk refresh. That last group is
+the reconcile's only trigger for a locally-edited page: deleting an `<img>` in
+the editor writes no attachment at all. Plus the Embeddings-tab **Re-scan all**.
+The worker runs off the sync cadence (fire-and-forget beside
+`processDirtyPages`, which is how the text embedder is scheduled) plus the two
+admin routes, under its own `worker:lock:` key rather than the per-user
+embedding lock, whose holders `processDirtyPages` backs off from — with the
+holder-epoch guard renewing on a **time** cadence, since one page may spend
+`rag_images_per_page_max × IMAGE_EMBED_TIMEOUT_MS` and a page-count cadence
+would let the lock lapse mid-run.
 
 ### Retrieval, in one paragraph (P3)
 

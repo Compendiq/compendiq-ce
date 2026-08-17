@@ -191,10 +191,17 @@ hoisted into `core/db`:
   borrowing it would have made an image scan block every text embed.
 
 Two `core` modules complete the P2 half. `core/services/image-embedding-dirty.ts`
-is the one writer of `pages.image_embedding_dirty`, in `core` because its
-callers are spread across `domains/confluence` (the sync attachment writers),
-`domains/knowledge` (relocate) and `routes/knowledge` (paste, import, the local
-draw.io save) — three layers that cannot import each other. And
+raises `pages.image_embedding_dirty` for the ATTACHMENT writers — the two sync
+attachment writers, `fetchAndCachePageImage`, `writeAttachmentCache`,
+`cleanPageAttachments` (all `domains/confluence`) and `putLocalAttachment`
+(`core`) — which is why it is in `core`: `core` may not import a domain, and one
+of its callers lives there. The **body** writers do not go through it; each is
+already issuing an UPDATE on the row and raises the column inline as one more
+clause, gated on `body_html IS DISTINCT FROM $n` so a title-only save costs
+nothing: the sync upsert and the conflict-policy update (`sync-service.ts`),
+both relocate directions (`page-relocate-service.ts`) and the four `body_html`
+writers in `routes/knowledge/pages-crud.ts`. Audit the column, not this module's
+importers. And
 `core/services/image-references.ts` gained `extractImageReferencesFromHtml`,
 which reads the STORED body rather than Confluence's storage format, because a
 standalone page has no `body_storage` and a relocated one still carries a stale

@@ -4,7 +4,12 @@ import { logger } from '../../core/utils/logger.js';
 import { columnTypeFor } from '../../core/db/vector-column-tier.js';
 import { isWorkerLocked } from '../../core/services/redis-cache.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
-import { readImageIndexDimensions } from '../../domains/llm/services/image-embedding-index.js';
+import {
+  imageIndexIdentityFor,
+  readImageIndexDimensions,
+  readImageIndexIdentity,
+} from '../../domains/llm/services/image-embedding-index.js';
+import { getImageEmbeddingTargetDimensions } from '../../core/services/image-embedding-target-dimensions.js';
 import { resolveImageEmbeddingUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import {
   IMAGE_INDEX_WORKER_LOCK,
@@ -22,12 +27,15 @@ const ADMIN_RATE_LIMIT = {
  * #1115 P2 — the image index's admin surface, behind `requireAdmin`.
  *
  * Three routes and one shape. `GET` is the Embeddings-tab card's whole data
- * source, and it keeps THREE facts apart that a smaller payload would let a
+ * source, and it keeps FOUR facts apart that a smaller payload would let a
  * reader infer from one another: whether the leg is assigned, what the column
- * is typed to, and what the last scan did. Assigned-with-an-empty-index is a
- * fresh assignment; unassigned-with-rows is a leg that was switched off, which
- * destroys nothing (ADR-025 D7); assigned-with-a-failed-run is an endpoint
- * problem the operator has to go and fix.
+ * is typed to, whether those two agree, and what the last scan did.
+ * Assigned-with-an-empty-index is a fresh assignment; unassigned-with-rows is
+ * a leg that was switched off, which destroys nothing (ADR-025 D7);
+ * assigned-with-a-failed-run is an endpoint problem the operator has to go and
+ * fix; and assigned-but-not-matching is the guarded-DDL branch, where the
+ * assignment saved and the `ALTER` did not — the one state where the width on
+ * screen belongs to a different model than the name beside it.
  *
  * Both actions are **fire-and-forget**. A corpus-wide scan runs for as long as
  * the corpus takes, and awaiting it inside the request would hold a connection
@@ -44,7 +52,16 @@ export async function llmImageIndexRoutes(fastify: FastifyInstance) {
     '/admin/embedding/image-index',
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async (): Promise<ImageIndexStatus> => {
-      const [resolved, rowsRes, pagesRes, dimensions, lastRun, running] = await Promise.all([
+      const [
+        resolved,
+        rowsRes,
+        pagesRes,
+        dimensions,
+        lastRun,
+        running,
+        recordedIdentity,
+        targetDimensions,
+      ] = await Promise.all([
         resolveImageEmbeddingUsecase(),
         query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM page_image_embeddings`),
         query<{ dirty: string; total: string }>(
@@ -56,6 +73,8 @@ export async function llmImageIndexRoutes(fastify: FastifyInstance) {
         readImageIndexDimensions(),
         readImageIndexLastRun(),
         isWorkerLocked(IMAGE_INDEX_WORKER_LOCK),
+        readImageIndexIdentity(),
+        getImageEmbeddingTargetDimensions(),
       ]);
 
       return {
@@ -70,6 +89,22 @@ export async function llmImageIndexRoutes(fastify: FastifyInstance) {
               tier: tierFor(dimensions),
             }
           : null,
+        // …and, because `identity` above is deliberately two documents in one
+        // line, whether they agree (review r1). They can disagree: the column
+        // DDL is guarded, so a failed `ALTER` answers 200 and leaves the new
+        // pair assigned against the old column and the old recorded width.
+        // Reported rather than papered over — the card's remedy is Re-check,
+        // and the only other symptom is a backlog that will not drain.
+        identityMatchesAssignment:
+          resolved === null || recordedIdentity === null
+            ? null
+            : recordedIdentity ===
+              imageIndexIdentityFor({
+                providerId: resolved.config.providerId,
+                model: resolved.model,
+                baseUrl: resolved.config.baseUrl,
+                targetDimensions,
+              }),
         rows: Number(rowsRes.rows[0]?.count ?? 0),
         pagesDirty: Number(pagesRes.rows[0]?.dirty ?? 0),
         pagesTotal: Number(pagesRes.rows[0]?.total ?? 0),
