@@ -6,6 +6,7 @@ import { useAuthStore } from '../../../stores/auth-store';
 import { useEnterprise } from '../../enterprise/use-enterprise';
 import { ShortcutHint } from '../ShortcutHint';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
+import { SidebarSessionChrome } from './SidebarSessionChrome';
 import {
   SETTINGS_NAV,
   canSeeItem,
@@ -59,6 +60,10 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
         </button>
 
         <MainNavStripCollapsed onNavigate={onNavigate} />
+
+        <div className="mt-auto">
+          <SidebarSessionChrome compact />
+        </div>
       </m.div>
     );
   }
@@ -169,6 +174,10 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
           );
         })}
       </nav>
+
+      <div className="panel-toolbar shrink-0 border-t px-2 py-1.5">
+        <SidebarSessionChrome />
+      </div>
     </m.aside>
   );
 }

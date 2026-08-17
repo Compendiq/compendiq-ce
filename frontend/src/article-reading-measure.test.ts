@@ -32,23 +32,16 @@ describe('article reading measure', () => {
     expect(body).toMatch(/line-height:\s*1\.65/);
   });
 
-  it('caps text elements — not the whole .prose container — at a 68ch reading measure', () => {
-    // Deliberately NOT on `.prose` itself: a narrower container would also
-    // drag tables, images, code blocks and Confluence macros down to 68ch,
-    // when only the text needs the narrower measure.
-    const capBody = ruleBody('.prose :where(h1, h2, h3, h4, h5, h6, p, li, blockquote)');
-    expect(capBody).toMatch(/max-width:\s*68ch/);
+  it('lets text use the same column as tables and other blocks', () => {
+    // The article column is the measure. A 68ch cap on headings/paragraphs
+    // left a ragged rag beside full-width tables; do not put it back.
+    expect(css).not.toMatch(/max-width:\s*68ch/);
 
-    // The container itself must stay unconstrained so wide content keeps
-    // using the full 1200px outer column.
     const proseBase = ruleBody('.prose');
     expect(proseBase).not.toMatch(/max-width/);
   });
 
-  it('leaves tables at their own deliberately smaller, unconstrained size', () => {
-    // Tables already opt into a denser 15px and must not be swept into the
-    // 68ch text cap or the 16px base bump — both are deliberate choices for
-    // tabular content, not part of the flagged reading-column regression.
+  it('leaves tables at their own denser size, still unconstrained', () => {
     const body = ruleBody('.prose :where(table)');
     expect(body).toMatch(/font-size:\s*0\.9375rem/);
     expect(body).not.toMatch(/max-width/);

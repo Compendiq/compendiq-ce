@@ -19,6 +19,7 @@ import { ApiError } from '../../lib/api';
 import { getSpaceIcon } from '../spaces/space-icons';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
+import { SidebarSessionChrome } from './SidebarSessionChrome';
 import { usePageTree, useCreatePage, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
@@ -857,6 +858,10 @@ export function SidebarTreeView({
               {selectedSpaceLabel} · Expand to change
             </span>
           </div>
+
+          <div className="mt-auto">
+            <SidebarSessionChrome compact />
+          </div>
         </m.aside>
       </AnimatePresence>
     );
@@ -1459,14 +1464,16 @@ export function SidebarTreeView({
         )}
       </div>
 
-      {/* Stable footer keeps the current scope visible beneath long trees. */}
-      {treeData && (
-        <div className="panel-toolbar border-t px-3 py-2">
-          <span className="text-[11px] text-muted-foreground">
-            {treeData.total} {treeData.total === 1 ? 'page' : 'pages'}{treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}
-          </span>
-        </div>
-      )}
+      {/* Scope count + session chrome. Out of the scroller so account and
+          theme stay reachable under a long tree. */}
+      <div className="panel-toolbar flex shrink-0 items-center justify-between gap-2 border-t px-2 py-1.5">
+        <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+          {treeData
+            ? `${treeData.total} ${treeData.total === 1 ? 'page' : 'pages'}${treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}`
+            : ''}
+        </span>
+        <SidebarSessionChrome />
+      </div>
 
       {/* Resize handle */}
       <div

@@ -164,7 +164,7 @@ export function PageViewSkeleton() {
         </div>
       </div>
 
-      <div className="mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12">
+      <div className="mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10">
         {/* Title */}
         <div className="skeleton mb-4 h-9 w-3/5 rounded sm:h-10" />
 

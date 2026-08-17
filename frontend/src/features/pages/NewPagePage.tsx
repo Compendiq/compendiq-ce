@@ -305,9 +305,11 @@ export function NewPagePage() {
   return (
     <div>
       {/* ── Sticky formatting toolbar ───────────────────────────────────────
-          The ONLY thing that stays pinned while scrolling — same "bar across
-          the column, not a floating card" treatment as PageViewPage's edit
-          toolbar (it loses the border/radius and keeps a bottom hairline).
+          The ONLY thing that stays pinned while scrolling — bar across the
+          column, not a floating card (loses the border/radius, keeps a
+          bottom hairline). The article editor's format bar now lives in the
+          app header; New Page keeps this in-column strip because its
+          Create action and space/type context still sit in the page.
           It used to wrap the whole header INCLUDING the editor body in one
           sticky box, which meant nothing actually stayed pinned once a draft
           grew past a screenful: a sticky element's stuck position is bounded
@@ -569,7 +571,7 @@ export function NewPagePage() {
 
         {/* Editor body — same 1200px reading column as the article editor,
             so the writing experience matches the reading one exactly. */}
-        <div className={cn('mx-auto max-w-[1200px]', headerNumbering && 'header-numbering')}>
+        <div className={cn('mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}>
           <FeatureErrorBoundary featureName="Editor">
             <Editor
               content={bodyHtml}

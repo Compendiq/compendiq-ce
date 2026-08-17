@@ -3,6 +3,7 @@ import { m } from 'framer-motion';
 import { ArrowLeft, RotateCcw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTrash, useRestorePage } from '../../shared/hooks/use-standalone';
+import { HeaderHost } from '../../shared/components/layout/header-slot';
 
 export function TrashPage() {
   const navigate = useNavigate();
@@ -27,18 +28,15 @@ export function TrashPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3">
+      <HeaderHost fallbackClassName="flex items-center gap-3">
         <button onClick={() => navigate('/')} aria-label="Back to dashboard" className="nm-icon-button">
           <ArrowLeft size={18} />
         </button>
-        <div>
-          <h1 className="text-lg font-semibold">Trash</h1>
-          <p className="text-sm text-muted-foreground">
-            Deleted pages are automatically purged 30 days after deletion
-          </p>
-        </div>
-      </div>
+        <h1 className="text-[15px] font-semibold sm:text-lg">Trash</h1>
+      </HeaderHost>
+      <p className="text-sm text-muted-foreground">
+        Deleted pages are automatically purged 30 days after deletion
+      </p>
 
       {/* Trash list */}
       {isLoading ? (
