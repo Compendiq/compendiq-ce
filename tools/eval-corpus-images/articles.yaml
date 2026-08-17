@@ -30,6 +30,14 @@
 # flowchart article is `Programmablaufplan`, which does qualify, and stands in
 # for `Flussdiagramm`.
 #
+# `Projektmanagement` joined them in review round 2. It shipped with two images
+# and one of them, `File:Magischesdreieck.gif`, is credited on Commons to
+# `unbekant` — a mistyped `unbekannt`, which the unknown-author filter did not
+# recognise until the spelling was added to it. Without that image the article
+# is a one-figure page, below the two-figure floor. It is a fair example of the
+# selection rule doing its job rather than a gap to paper over: the subject is
+# well covered by `Scrum`, `V-Modell` and `Demingkreis` in the same shape.
+#
 # Titles are German Wikipedia article titles, exactly as the API normalises
 # them. Redirects ARE followed and the RESOLVED title is what lands in the
 # manifest, so a few entries below appear under another name in the corpus
@@ -79,7 +87,6 @@ science:
 process:
   - Scrum
   - Organigramm
-  - Projektmanagement
   - Demingkreis
   - Extreme Programming
   - Unified Modeling Language

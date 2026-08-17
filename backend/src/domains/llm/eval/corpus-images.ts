@@ -78,9 +78,16 @@ export const AUTHOR_ABBREVIATED_MARK = ' […]';
  * Anchored, never a substring test. Commons' "No machine-readable author
  * provided. *X* assumed (based on copyright claims)." DOES name someone, and
  * "Eigenes Werk von Max Mustermann" is a name too.
+ *
+ * The spellings are what Commons ACTUALLY answers, not what the templates are
+ * supposed to render. `author=` is a free-text parameter somebody typed, so
+ * `File:Magischesdreieck.gif` says `unbekant` (one `n` short) and
+ * `File:Turbolader LKW.jpg` a bare `selbst` — both of which the first cut read
+ * as names and shipped into the notices file, while the corpus README
+ * published "no named author: 11" as if the filter had caught them.
  */
 const UNNAMED_AUTHOR =
-  /^(?:(?:autor(?:\/-?in)?\s+)?unbekannt(?:er\s+autor)?|urheber\s+unbekannt|nicht\s+bekannt|unknown(?:\s+author)?|anonym(?:ous)?|eigenes\s+werk|own\s+work|self[-\s]?made|selbst\s+erstellt|n\/?a|[-–—?.])(?:\s+unknown\s+author)?$/i;
+  /^(?:(?:autor(?:\/-?in)?\s+)?unbekan{1,2}t(?:er\s+autor)?|urheber\s+unbekan{1,2}t|nicht\s+bekannt|unknown(?:\s+author)?|anonym(?:ous)?|eigenes\s+werk|own\s+work|self[-\s]?made|selbst(?:\s+(?:erstellt|gemacht|fotografiert|aufgenommen))?|n\/?a|[-–—?.])(?:\s+unknown\s+author)?$/i;
 
 export function namesAnAuthor(author: string): boolean {
   const trimmed = author.trim();
@@ -136,6 +143,23 @@ export const ImageCorpusImageSchema = z.object({
    */
   sha1: z.string(),
   author: z.string(),
+  /**
+   * The credit line the LICENSOR specified, verbatim, or `''` where Commons
+   * records no such requirement (`AttributionRequired`).
+   *
+   * Separate from `author` because they answer different questions and the
+   * answers differ on 21 of these 187 files. CC BY-SA 4.0 §3(a)(1)(A)(i)
+   * obliges attribution "in any reasonable manner requested by the Licensor";
+   * Commons' `extmetadata.Attribution` IS that request, so `Bundesarchiv, Bild
+   * 183-85770-0002 / Junge, Peter Heinz / CC-BY-SA 3.0` is what has to travel
+   * with that photograph and `Peter Heinz Junge` — the `Artist` field — is not.
+   *
+   * It does not REPLACE `author`, because `Artist` is regularly the fuller of
+   * the two: `Madprime (original) Woudloper (rotated image)` against a credit
+   * line of `I, Madprime`. Preferring one would drop a contributor to satisfy
+   * an obligation the second field satisfies without losing anything.
+   */
+  requiredCredit: z.string(),
   license: z.string(),
   licenseUrl: z.string(),
   /** Stripped out of the page body; kept here for the independent labeller. */

@@ -579,8 +579,8 @@ questions flatter the vector leg.
 
 ### Image corpus (#1115 P5a)
 
-`backend/src/domains/llm/eval/corpus-de-images/` is a **third** corpus: 66
-German Wikipedia articles carrying 189 vendored images (6.2 MB), across four
+`backend/src/domains/llm/eval/corpus-de-images/` is a **third** corpus: 65
+German Wikipedia articles carrying 187 vendored images (6.2 MB), across four
 content shapes — engineering diagrams, scientific figures, process notation and
 photographs. It exists because #1115's image retrieval leg cannot be measured on
 a corpus with no pictures. Built by `tools/eval-corpus-images/build.py` from
@@ -604,8 +604,12 @@ for the labeller.
 Licences are not the text corpus's. Page text is CC BY-SA 4.0 (adapted);
 images are filtered to CC0 / public domain / CC BY x / CC BY-SA x with a named
 author each, and the obligations are stated per page and per image in that
-directory's `LICENSE-ATTRIBUTION.md`. It is a test fixture, licensed separately
-from this repository's own **AGPL-3.0** (root `LICENSE`).
+directory's `LICENSE-ATTRIBUTION.md`. Where Commons records the licensor's own
+credit line (`AttributionRequired`), that string is reproduced verbatim in a
+`Required credit` column and is the one to travel with the image — it is
+regularly not the bare name in `Author`, and both are kept because `Artist` is
+often the fuller of the two. It is a test fixture, licensed separately from
+this repository's own **AGPL-3.0** (root `LICENSE`).
 
 ## The `vocabulary-gap` slice (#1112)
 

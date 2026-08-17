@@ -253,18 +253,32 @@ describe('corpus-de-images — images', () => {
     // Below 120 characters an identical length is coincidence, so only long
     // credits are compared.
     const LONG_CREDIT_CHARS = 120;
+    const unmarked = allImages
+      .map(({ image }) => image)
+      .filter((image) => !image.author.endsWith(AUTHOR_ABBREVIATED_MARK));
+    const longest = Math.max(0, ...unmarked.map((image) => image.author.length));
+
     const byLength = new Map<number, string[]>();
-    for (const { image } of allImages) {
+    for (const image of unmarked) {
       if (image.author.length < LONG_CREDIT_CHARS) continue;
-      if (image.author.endsWith(AUTHOR_ABBREVIATED_MARK)) continue;
+      // A collision only means "cap" if nothing UNMARKED is longer than it. A
+      // cap truncates the longest credits first, so one credit past the
+      // colliding length is proof there is no cap there — and without that
+      // half the check is a birthday-paradox generator. Two of these 187
+      // credits really did land on 276 characters by coincidence
+      // (`bahnstrom__2`, `unified-modeling-language__1`, both whole, both
+      // ending on a complete name) while `plattentektonik__3` ran to 292 and
+      // the configured cap is 400. Thirteen credits are over 120 characters,
+      // so a bare "two share a length" fires about one build in fourteen.
+      if (image.author.length < longest) continue;
       byLength.set(image.author.length, [...(byLength.get(image.author.length) ?? []), image.file]);
     }
     expect(
       [...byLength.entries()].filter(([, files]) => files.length > 1).map(([len, files]) => `${len} chars: ${files.join(', ')}`),
-      'Several long credits stop at exactly the same length, which is what a character cap looks ' +
-        `like and not what authorship looks like. Abbreviate on a word boundary and mark it with ` +
-        `"${AUTHOR_ABBREVIATED_MARK.trim()}" so a reader can tell the credit is partial and follow ` +
-        'sourceUrl for the rest.',
+      'Several long credits stop at exactly the same length, and nothing is longer — which is what ' +
+        `a character cap looks like and not what authorship looks like. Abbreviate on a word ` +
+        `boundary and mark it with "${AUTHOR_ABBREVIATED_MARK.trim()}" so a reader can tell the ` +
+        'credit is partial and follow sourceUrl for the rest.',
     ).toEqual([]);
   });
 
@@ -311,34 +325,187 @@ describe('corpus-de-images — images', () => {
 describe('corpus-de-images — the attribution file covers what is committed', () => {
   const attribution = readFileSync(join(IMAGE_CORPUS_DIR, 'LICENSE-ATTRIBUTION.md'), 'utf8');
 
+  /**
+   * The notices file per `## <article title>` section.
+   *
+   * Every assertion below is anchored to a section and then to a ROW, and that
+   * is the whole point rather than tidiness. The first cut ran four
+   * independent `attribution.includes(...)` calls over the whole file, so a
+   * credit attached to the WRONG image passed: swapping the author cells of
+   * `airbus-a380__1.jpg` and `zugspitze__1.jpg` — two CC BY photographs on
+   * different pages — left both strings present somewhere in the file and the
+   * suite green at 23/23. That is the exact defect class this file was added
+   * to catch ("the notices file names four authors it does not have"), tested
+   * by a check that cannot see it.
+   */
+  const sections = new Map<string, string>();
+  for (const part of attribution.split(/^## /m).slice(1)) {
+    sections.set(part.split('\n', 1)[0]!.trim(), part);
+  }
+
+  /** The row for one image, with the writer's `\|` escaping undone. */
+  function rowFor(section: string, file: string): string | undefined {
+    return section
+      .split('\n')
+      .find((line) => line.startsWith(`| \`${file}\` |`))
+      ?.replaceAll('\\|', '|');
+  }
+
   it('names every page, its revision and its licence', () => {
     const missing = pages
-      .filter((page) => !attribution.includes(page.title) || !attribution.includes(String(page.revid)))
+      .filter((page) => {
+        const section = sections.get(page.title);
+        return (
+          !section ||
+          !section.includes(page.url) ||
+          !section.includes(String(page.revid)) ||
+          !section.includes(page.license)
+        );
+      })
       .map((page) => page.file);
     expect(
       missing,
       'CC BY-SA 4.0 obliges attribution to the article, and the revision is what makes the ' +
         '"adapted from" claim checkable. A page in the corpus but not in the notices file is an ' +
-        'obligation the repository is not meeting.',
+        'obligation the repository is not meeting — and a revision under the wrong article is a ' +
+        'claim that does not check out.',
     ).toEqual([]);
   });
 
-  it('names every image with its Commons file, author and licence', () => {
-    const missing = allImages
-      .filter(
-        ({ image }) =>
-          !attribution.includes(image.file) ||
-          !attribution.includes(image.sourceTitle) ||
-          !attribution.includes(image.author) ||
-          !attribution.includes(image.license),
-      )
-      .map(({ image }) => image.file);
+  it('names every image with its Commons file, author and licence, on its own row', () => {
+    const problems: string[] = [];
+    for (const { page, image } of allImages) {
+      const section = sections.get(page.title);
+      if (!section) {
+        problems.push(`${image.file}: no "## ${page.title}" section`);
+        continue;
+      }
+      const row = rowFor(section, image.file);
+      if (!row) {
+        problems.push(`${image.file}: no row under "## ${page.title}"`);
+        continue;
+      }
+      for (const [field, value] of [
+        ['sourceTitle', image.sourceTitle],
+        ['sourceUrl', image.sourceUrl],
+        ['author', image.author],
+        ['license', image.license],
+      ] as const) {
+        if (!row.includes(value)) problems.push(`${image.file}: row does not carry ${field} ${JSON.stringify(value)}`);
+      }
+    }
     expect(
-      missing,
+      problems,
       'Every CC BY and CC BY-SA image requires its author credit to travel with it. This file is ' +
         'where that credit lives, and it is generated — a drift means the manifest and the ' +
-        'notices came from different builds.',
+        'notices came from different builds, and a cell on the wrong row is a credit given to the ' +
+        'wrong photographer.',
     ).toEqual([]);
+  });
+
+  it("reproduces the licensor's own credit line where one is required", () => {
+    const problems: string[] = [];
+    for (const { page, image } of allImages) {
+      if (!image.requiredCredit) continue;
+      const row = rowFor(sections.get(page.title) ?? '', image.file);
+      if (!row?.includes(image.requiredCredit)) {
+        problems.push(`${image.file}: ${JSON.stringify(image.requiredCredit)}`);
+      }
+    }
+    expect(
+      problems,
+      'CC BY-SA 4.0 §3(a)(1)(A)(i) obliges attribution "in any reasonable manner requested by the ' +
+        'Licensor" and §3(a)(1)(B) the retention of a supplied copyright notice. Commons records ' +
+        "that request as `Attribution`, and it is regularly not the `Artist` field: `Bundesarchiv, " +
+        'Bild 183-85770-0002 / Junge, Peter Heinz / CC-BY-SA 3.0` is what must travel with that ' +
+        'photograph. A required credit in the manifest and absent from the notices row is the ' +
+        'obligation recorded and not met.',
+    ).toEqual([]);
+
+    // Not vacuous: the field exists because 21 of these files carry a credit
+    // line their `Artist` does not state. A build that stopped reading
+    // `AttributionRequired` would pass every assertion above with the column
+    // empty, which is the failure this number is here to notice.
+    expect(
+      allImages.filter(({ image }) => image.requiredCredit).length,
+      'No image records a required credit. Either the corpus changed beyond recognition or the ' +
+        'builder stopped reading Commons\' `Attribution`/`AttributionRequired`, which silently ' +
+        'drops a licence obligation rather than failing.',
+    ).toBeGreaterThan(10);
+  });
+});
+
+describe('corpus-de-images — the credit and licence predicates themselves', () => {
+  // The corpus assertions above use these as FILTERS over bytes that already
+  // satisfy them, so replacing either body with `() => true` leaves the whole
+  // file green. That is how `unbekant` and a bare `selbst` shipped as author
+  // names: the regex is the thing under test and the corpus is a witness only
+  // for the strings it happens to contain.
+
+  it('refuses a credit that names nobody', () => {
+    for (const credit of [
+      'Autor/-in unbekannt Unknown author',
+      'Autor unbekannt',
+      'unbekannt',
+      'unbekant', // one `n` short — hand-typed, and live on File:Magischesdreieck.gif
+      'Urheber unbekannt',
+      'Unknown author',
+      'Anonym Unknown author',
+      'Eigenes Werk',
+      'Own work',
+      'self-made',
+      'selbst', // live on File:Turbolader LKW.jpg
+      'selbst erstellt',
+      'n/a',
+      '-',
+      '?',
+      '   ',
+      '',
+    ]) {
+      expect(namesAnAuthor(credit), `${JSON.stringify(credit)} names nobody`).toBe(false);
+    }
+  });
+
+  it('accepts a credit that does name somebody', () => {
+    for (const credit of [
+      // Commons' wording for a file that DOES name someone — the reason the
+      // pattern is anchored rather than a substring search.
+      'No machine-readable author provided. Marcelo Reis assumed (based on copyright claims).',
+      'Eigenes Werk von Max Mustermann',
+      'Ɯ', // a real Commons username, and one character long
+      'Thomas Wolf, www.foto-tw.de',
+      'Madprime (original) Woudloper (rotated image)',
+      'Unknown Soldier Memorial Committee',
+    ]) {
+      expect(namesAnAuthor(credit), `${JSON.stringify(credit)} names somebody`).toBe(true);
+    }
+  });
+
+  it('permits exactly the four licence families the repository may carry', () => {
+    for (const license of [
+      'CC0 1.0',
+      'Public domain',
+      'CC BY 2.0',
+      'CC BY 4.0',
+      'CC BY-SA 3.0',
+      'CC BY-SA 4.0',
+      'CC BY-SA 3.0 DE', // ported: the jurisdiction suffix must survive
+    ]) {
+      expect(isAllowedImageLicense(license), `${license} is permitted`).toBe(true);
+    }
+    for (const license of [
+      'GFDL 1.2',
+      'GFDL 1.3 or CC BY-SA 3.0',
+      'CC BY-NC 3.0',
+      'CC BY-NC-SA 4.0',
+      'CC BY-ND 4.0',
+      'Fair use',
+      'Attribution',
+      'cc by-sa 4.0', // the canonical label is what the builder writes
+      '',
+    ]) {
+      expect(isAllowedImageLicense(license), `${license} is refused`).toBe(false);
+    }
   });
 });
 

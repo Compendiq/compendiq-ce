@@ -44,8 +44,14 @@ of a file, and an SVG re-drawn or a photograph re-cropped upstream changes a
 rebuild with nothing in the manifest to notice it. So each image also records
 the upstream `sha1`, and a pinned run reports every file whose sha1 has moved
 and exits non-zero — the bytes are still written, so the diff is inspectable,
-but the run does not claim to have reproduced the corpus. `--update`
-deliberately moves to current revisions, which obliges a re-label.
+but the run does not claim to have reproduced the corpus. There is a THIRD
+thing neither pin covers: whether a figure is still *usable*. Commons metadata
+is live, so a licence retagged, an author blanked or a thumbnail that stopped
+rendering quietly turns a 3-image page into a 2-image one, or drops it out of
+the corpus. So a pinned run also diffs its own inventory against the committed
+manifest and exits non-zero on anything it lost (`lost_since`). `--update`
+deliberately moves to current revisions and skips all three, which obliges a
+re-label.
 
 Nothing is written into the corpus directory until the whole run succeeds: the
 build stages into a sibling directory and swaps it in at the end. A run that
@@ -73,6 +79,8 @@ import sys
 import time
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -223,15 +231,52 @@ session = requests.Session()
 session.headers.update({"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"})
 
 
+def retry_after_seconds(header: str | None, fallback: float) -> float:
+    """`Retry-After` as a number of seconds, whichever of its two forms arrived.
+
+    RFC 9110 permits an HTTP-date as well as a delta, and `float()` on one
+    raises `ValueError` — which escapes the retry loop, is caught as an article
+    failure, and refuses the swap. The one path written for "we are being
+    rate-limited" was the path that killed the build.
+    """
+    if not header:
+        return fallback
+    try:
+        return max(0.0, float(header))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(header)
+    except (TypeError, ValueError):
+        return fallback
+    if when is None:
+        return fallback
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
 def api_get(url: str, params: dict[str, Any] | None = None, *, binary: bool = False) -> Any:
     """One GET with the project's back-off manners: honour Retry-After, then
-    exponential, then give up loudly rather than half-building a corpus."""
+    exponential, then give up loudly rather than half-building a corpus.
+
+    A transport failure takes the SAME back-off as a 5xx rather than escaping.
+    A full build is ~600 requests over ten minutes of network, so one connection
+    reset otherwise costs the entire run — and the run refuses to swap on a
+    single failed article, by design.
+    """
     delay = 1.0
     for attempt in range(6):
         time.sleep(REQUEST_DELAY_S)
-        response = session.get(url, params=params, timeout=60)
+        try:
+            response = session.get(url, params=params, timeout=60)
+        except requests.RequestException as error:
+            print(f"  ! {type(error).__name__} from {url}; backing off {delay:.0f}s", file=sys.stderr)
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
+            continue
         if response.status_code == 429 or response.status_code >= 500:
-            wait = float(response.headers.get("Retry-After", delay))
+            wait = retry_after_seconds(response.headers.get("Retry-After"), delay)
             print(f"  ! {response.status_code} from {url}; backing off {wait:.0f}s", file=sys.stderr)
             time.sleep(wait)
             delay = min(delay * 2, 60)
@@ -433,18 +478,43 @@ def file_title_from_figure(figure: Tag) -> str | None:
     return None
 
 
+#: Zero-width characters Commons' templates sprinkle into rendered HTML. They
+#: survive `get_text`, so a credit compared against the licensor's own string
+#: differs by a character nobody can see.
+_INVISIBLES = str.maketrans(dict.fromkeys("\u200b\u200c\u200d\ufeff", ""))
+
+
+def tidy_inline_text(text: str) -> str:
+    """Undo what `get_text(" ")` does to punctuation, then collapse whitespace.
+
+    BeautifulSoup inserts a separator at every inline boundary, so `<b>oben</b>:`
+    comes back as "oben :" and `<a>Thomas Wolf</a>, www.foto-tw.de` as
+    "Thomas Wolf , www.foto-tw.de". Cosmetic in a caption; not cosmetic in a
+    credit, which is a string the licensor specified and this file claims to
+    reproduce.
+    """
+    text = text.translate(_INVISIBLES)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+([:;,.)»])", r"\1", text)
+    text = re.sub(r"([(«])\s+", r"\1", text)
+    return text.strip()
+
+
+def extmeta_text(extmeta: dict[str, Any], key: str) -> str:
+    """One `extmetadata` field as readable text. Commons serves them as HTML."""
+    raw = (extmeta.get(key) or {}).get("value") or ""
+    if not isinstance(raw, str):
+        return ""
+    return tidy_inline_text(BeautifulSoup(raw, "html.parser").get_text(" ", strip=True))
+
+
 def caption_text(figure: Tag) -> str:
     caption = figure.find("figcaption") or figure.select_one(".thumbcaption")
     if caption is None:
         return ""
     text = caption.get_text(" ", strip=True)
     text = re.sub(r"\[\d+\]", "", text)          # leftover reference markers
-    text = re.sub(r"\s+", " ", text)
-    # `get_text(" ")` inserts a space at every inline boundary, so `<b>oben</b>:`
-    # comes back as "oben :". The labeller reads these; leave them tidy.
-    text = re.sub(r"\s+([:;,.)»])", r"\1", text)
-    text = re.sub(r"([(«])\s+", r"\1", text)
-    return text.strip()
+    return tidy_inline_text(text)
 
 
 def hoist_boxed_figures(root: Tag) -> None:
@@ -709,17 +779,25 @@ def slugify(title: str) -> str:
 # Anchored, never a substring search: "No machine-readable author provided.
 # Marcelo Reis assumed…" is Commons' wording for a file that DOES name someone,
 # and "Eigenes Werk von Max Mustermann" is a name too.
+#
+# The spellings are what Commons ACTUALLY answers, not what the templates are
+# supposed to render: `File:Magischesdreieck.gif` gives `unbekant` (one `n`
+# short) and `File:Turbolader LKW.jpg` a bare `selbst`. Both are hand-typed into
+# the `author=` parameter, so a filter matching only the template's own wording
+# is a filter that misses the field it was written for — the first cut shipped
+# two credits naming nobody while the README published "no named author: 11" as
+# if the filter had caught them all.
 _UNKNOWN_AUTHOR = re.compile(
     r"^(?:"
-    r"(?:autor(?:/-?in)?\s+)?unbekannt(?:er\s+autor)?"
-    r"|urheber\s+unbekannt"
+    r"(?:autor(?:/-?in)?\s+)?unbekan{1,2}t(?:er\s+autor)?"
+    r"|urheber\s+unbekan{1,2}t"
     r"|nicht\s+bekannt"
     r"|unknown(?:\s+author)?"
     r"|anonym(?:ous)?"
     r"|eigenes\s+werk"
     r"|own\s+work"
     r"|self[-\s]?made"
-    r"|selbst\s+erstellt"
+    r"|selbst(?:\s+(?:erstellt|gemacht|fotografiert|aufgenommen))?"
     r"|n/?a"
     r"|[-–—?.]"
     r")"
@@ -761,14 +839,45 @@ def plain_author(extmeta: dict[str, Any]) -> str:
     dropped: the attribution obligation is not satisfiable without a name, and
     writing "unknown" into the notices file would be a claim rather than a
     record.
+
+    `Artist` stays FIRST even though `Attribution` is what a CC BY-SA licensor
+    specified (see `required_credit`), because the two answer different
+    questions and `Attribution` is regularly the shorter answer: Commons
+    records `Madprime (original) Woudloper (rotated image)` as the artist of a
+    derivative and `I, Madprime` as the credit line, `Original: Andreas Wieland
+    Vektor: EssensStrassen` against a bare `Andreas Wieland`. Swapping the
+    order would drop a contributor from the notices file to satisfy a
+    requirement the extra column satisfies without losing anything.
     """
     for key in ("Artist", "Attribution"):
-        raw = (extmeta.get(key) or {}).get("value") or ""
-        text = BeautifulSoup(raw, "html.parser").get_text(" ", strip=True)
-        text = re.sub(r"\s+", " ", text).strip()
+        text = extmeta_text(extmeta, key)
         if text and not _UNKNOWN_AUTHOR.match(text):
             return abbreviate_author(text)
     return ""
+
+
+def required_credit(extmeta: dict[str, Any]) -> str:
+    """The credit line the LICENSOR specified, verbatim, or "" if there is none.
+
+    CC BY-SA 4.0 §3(a)(1)(A)(i) obliges attribution "in any reasonable manner
+    requested by the Licensor" and §3(a)(1)(B) the retention of a supplied
+    copyright notice; 3.0 §4(c) says the same through "Attribution Parties".
+    Commons' `extmetadata.Attribution` IS that request, and `AttributionRequired`
+    is Commons saying the licence makes it one — so `© Raimond Spekking / CC
+    BY-SA 4.0 (via Wikimedia Commons)` and `Bundesarchiv, Bild 183-85770-0002 /
+    Junge, Peter Heinz / CC-BY-SA 3.0` are the strings that must travel with
+    those files, not the bare names in `Artist`.
+
+    Gated on `AttributionRequired` rather than on the field being present: a
+    public-domain file with an `Attribution` (`© Sémhur / Wikimedia Commons`,
+    on a USGS-derived map) carries no obligation, and printing one under a
+    "required" heading would be a claim rather than a record — the same mistake
+    as writing "unknown" into an author column.
+    """
+    required = str((extmeta.get("AttributionRequired") or {}).get("value", "")).strip().lower()
+    if required != "true":
+        return ""
+    return abbreviate_author(extmeta_text(extmeta, "Attribution"))
 
 
 # ---------------------------------------------------------------------------
@@ -885,6 +994,37 @@ def read_image_sha1s(manifest: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def lost_since(manifest: dict[str, Any], pages: list[dict[str, Any]]) -> list[str]:
+    """Pages and images the committed manifest has and this build does not.
+
+    The `revid` pin covers the article TEXT and the `sha1` the image BYTES;
+    neither covers whether a figure is still *usable*. Commons metadata is
+    live, so a licence retagged upstream, an author field blanked or a
+    thumbnail that stopped rendering silently turns a 3-image page into a
+    2-image one — or drops it below `MIN_IMAGES_PER_PAGE` and out of the corpus
+    entirely — on a run whose whole claim is that it reproduces the committed
+    bytes. The Vitest guard cannot see it either: four category counts of 17
+    pass exactly as four counts of 18 do.
+
+    The previous inventory is already in hand (`read_manifest` runs before
+    anything is written), so the comparison is free. Skipped under `--update`,
+    which is the flag that means "move".
+    """
+    previous_pages = {page["file"]: page for page in manifest.get("pages", [])}
+    current_pages = {page["file"]: page for page in pages}
+    lost: list[str] = []
+    for file, page in previous_pages.items():
+        current = current_pages.get(file)
+        if current is None:
+            lost.append(f"{file} ({len(page.get('images', []))} image(s)) is no longer built")
+            continue
+        now = {image["file"] for image in current.get("images", [])}
+        for image in page.get("images", []):
+            if image["file"] not in now:
+                lost.append(f"{image['file']} ({image.get('sourceTitle', '?')}) is no longer vendored")
+    return lost
+
+
 def build_page(
     title: str,
     category: str,
@@ -963,6 +1103,7 @@ def build_page(
             "sourceUrl": COMMONS_FILE_URL + source_title.replace(" ", "_"),
             "sha1": sha1,
             "author": author,
+            "requiredCredit": required_credit(extmeta),
             "license": label,
             "licenseUrl": license_url(label),
             "caption": figure.caption,
@@ -1087,9 +1228,19 @@ def write_attribution(pages: list[dict[str, Any]], out_dir: Path) -> None:
         "  keep the attribution and must stay under CC BY-SA 4.0 — ShareAlike is not optional.",
         "- **Images keep their own licences**, which are not all the same and are not all the page's.",
         "  Each is listed with its Commons file, its author and its licence. CC BY and CC BY-SA",
-        "  images require the author credit below to travel with the image; CC BY-SA images",
+        "  images require the credit below to travel with the image; CC BY-SA images",
         "  additionally require ShareAlike. CC0 and public-domain images carry no obligation, and are",
         "  credited anyway because the record is worth more than the minimum.",
+        "- **Where a licensor specified the wording, the `Required credit` column is that wording,",
+        "  verbatim, and it is the string to reproduce.** CC BY-SA 4.0 §3(a)(1)(A)(i) obliges",
+        "  attribution \"in any reasonable manner requested by the Licensor\" and §3(a)(1)(B) the",
+        "  retention of a supplied copyright notice; 3.0 says the same through \"Attribution Parties\".",
+        "  Commons records that request as `Attribution`, and it is regularly not the bare name in",
+        "  the `Author` column (`Bundesarchiv, Bild 183-85770-0002 / Junge, Peter Heinz /",
+        "  CC-BY-SA 3.0`, `© Raimond Spekking / CC BY-SA 4.0 (via Wikimedia Commons)`). The `Author`",
+        "  column is kept beside it rather than replaced, because it is regularly the FULLER of the",
+        "  two — a derivative work's original author and its vectoriser, where the credit line names",
+        "  only one. A `—` means Commons records no such requirement for that file.",
         "- Images were **downscaled and re-encoded** (≤ 512 px longest edge, JPEG or PNG). That is a",
         "  modification, and is stated here rather than left to be inferred.",
         "",
@@ -1113,15 +1264,18 @@ def write_attribution(pages: list[dict[str, Any]], out_dir: Path) -> None:
         lines.append(f"- Revision: `{page['revid']}`")
         lines.append(f"- Text: {PAGE_LICENSE}, text adapted")
         lines.append("")
-        lines.append("| Image | Commons file | Author | Licence |")
-        lines.append("|---|---|---|---|")
+        lines.append("| Image | Commons file | Author | Licence | Required credit |")
+        lines.append("|---|---|---|---|---|")
         for image in page["images"]:
             author = image["author"].replace("|", "\\|")
             source = image["sourceTitle"].replace("|", "\\|")
             link = image["licenseUrl"]
             licence = f"[{image['license']}]({link})" if link else image["license"]
+            credit = (image.get("requiredCredit") or "").replace("|", "\\|")
+            credit_cell = f"`{credit}`" if credit else "—"
             lines.append(
-                f"| `{image['file']}` | [{source}]({image['sourceUrl']}) | {author} | {licence} |"
+                f"| `{image['file']}` | [{source}]({image['sourceUrl']}) | {author} | {licence} "
+                f"| {credit_cell} |"
             )
         lines.append("")
     (out_dir / "LICENSE-ATTRIBUTION.md").write_text("\n".join(lines), encoding="utf8")
@@ -1232,7 +1386,7 @@ def main() -> int:
     args = parser.parse_args()
 
     # Both flags subset the article list, and a subset written over the whole
-    # corpus is a corpus of one page — with the other 65 articles' revision
+    # corpus is a corpus of one page — with every other article's revision
     # pins deleted, so the next plain run silently re-pins them at CURRENT
     # revisions and every label written against them goes stale. They are
     # documented as probing tools; this is what makes them so.
@@ -1369,6 +1523,22 @@ def main() -> int:
             print(f"!   {entry}", file=sys.stderr)
         print("! this rebuild is NOT a reproduction of the committed bytes.", file=sys.stderr)
         exit_code = 1
+    if not args.update:
+        lost = lost_since(manifest, pages)
+        if lost:
+            # Same rule as the sha1 branch, for the half a sha1 cannot see: the
+            # bytes are written so the diff is inspectable, and the run stops
+            # claiming to have reproduced the corpus.
+            print(file=sys.stderr)
+            print(f"! {len(lost)} item(s) in the committed manifest are absent from this build:", file=sys.stderr)
+            for entry in lost:
+                print(f"!   {entry}", file=sys.stderr)
+            print(
+                "! this rebuild is NOT a reproduction of the committed corpus. Commons metadata is "
+                "live: a licence, an author field or a thumbnail moved. Re-label before committing.",
+                file=sys.stderr,
+            )
+            exit_code = 1
     return exit_code
 
 

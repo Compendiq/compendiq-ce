@@ -2,8 +2,6 @@
 
 ![](images/turbolader__1.jpg)
 
-![](images/turbolader__2.jpg)
-
 Als **Turbolader**, auch **Abgasturbolader** (**ATL**) oder umgangssprachlich auch *Turbo*, wird ein Nebenaggregat des Verbrennungsmotors zur Verdichtung der zugeführten Luft bezeichnet (Motoraufladung). Die Motorleistung oder die Effizienz wird gegenüber einem Motor, der die Luft lediglich ansaugt (Saugmotor), gesteigert. Das Wirkprinzip des Turboladers besteht darin, einen Teil der Energie des Motorabgases mittels einer Turbine und eines Verdichters zu nutzen, um eine größere Luftmasse in den Zylinder einströmen zu lassen. Dadurch kann mehr Kraftstoff verbrannt werden und die Ansaugarbeit des Kolbens entfällt.
 
 Erfinder des Turboladers ist der Schweizer Alfred Büchi, der im Jahre 1905 ein Patent über die *Gleichdruck-* oder auch *Stauaufladung* anmeldete. In den 1930er-Jahren wurden von der Adolph Saurer AG aus Arbon Diesel-Lastwagen als erste Straßenfahrzeuge mit Turbolader produziert.
@@ -18,7 +16,7 @@ Die Abgasturbine ist nicht immer mit einem Verdichter gekoppelt. Ihre Wellenleis
 
 ### Aufladung beim Zweitakt-Motor
 
-![](images/turbolader__3.png)
+![](images/turbolader__2.png)
 
 Von den üblichen Viertaktmotoren unterscheiden sich Zweitaktmotoren bezogen auf den Turbolader vor allem dadurch, dass während des Startvorgangs noch keine Abgasenergie zur Verfügung steht. Da der Turbolader also während des Startvorgangs nicht den Ladungswechsel (Spülung) bewirken kann, wird für diese Phase ein weiteres Gebläse benötigt. Im einfachsten Fall könnte dies eine Kurbelgehäusespülung sein, bei großen Schiffsmotoren ist es ein elektrisch zuschaltbares Gebläse.
 
@@ -61,6 +59,8 @@ Nach mehr als 100 Jahren Entwicklungs- und Optimierungsarbeit hat sich der Turbo
 In einzelnen Anwendungsbereichen (z. B. Explosionsschutz) stört die hohe Oberflächentemperatur oder Wärmeabstrahlung des Turboladergehäuses. Zu den typischen Problemen früher turbogeladener Motoren gehörte das „Turbo-Pfeifen“, was besonders bei Lastwechseln zu hören war, wenn also bei hoher Motorlast und -drehzahl vom Gas gegangen wurde. Verursacht wurde es durch strömungstechnisch unvorteilhafte Gestaltung der Turbinenräder. Auch das schnelle Abstellen eines betriebsheißen Motors konnte zu Problemen führen, siehe Drehzahl und Lagerung der Turboladerwelle. Weitere zwischenzeitlich behobene „Kinderkrankheiten“ wurden im Lastwechselbetrieb sichtbar.
 
 #### Lastwechsel
+
+![](images/turbolader__3.jpg)
 
 In der Anfangszeit waren Turbolader sehr groß, sehr schwer, ließen sich dadurch kaum raumsparend am Verbrennungsmotor anbringen und waren wenig für Lastwechselbetrieb geeignet. Daimler-Benz bot deshalb für seine Industrie-Dieselmotoren nach dem Zweiten Weltkrieg parallel Turbolader oder Kompressor als Auflademethode an. Erst Fortschritte bei Werkstoffeigenschaften und Fertigungstechnik machten eine Verkleinerung möglich, diese wiederum sorgte für eine Verbesserung der Betriebscharakteristika des Systems Turboaufladung.
 Beispiel PKW-Motor: Bei hoher Motordrehzahl und maximaler Last nimmt der Fahrer den Fuß vom Gas, der Motor geht in den Schiebebetrieb, schlagartig wird der Abgasturbine nicht mehr maximal Wärme zugeführt, sondern durch den hohen Volumenstrom mit niedriger Temperatur erheblich Wärme entzogen. Im nächsten Moment gibt der Fahrer wieder Vollgas und die eben ausgekühlte Turbine wird wieder aufgeheizt. Diese abrupten Temperaturschwankungen können insbesondere an den Turbinenschaufeln unmittelbar oder längerfristig zu Rissen oder Brüchen führen.

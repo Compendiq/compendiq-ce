@@ -21,7 +21,8 @@
           "sourceTitle": "File:Airbus A380 Frankfurt crop.jpg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Airbus_A380_Frankfurt_crop.jpg",
           "sha1": "372e468508d47a51c50152418cd0aead6336b581",
-          "author": "cmdslater , derivative work Lämpel",
+          "author": "cmdslater, derivative work Lämpel",
+          "requiredCredit": "",
           "license": "CC BY 2.0",
           "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
           "caption": "Parallele Abfertigung beider Decks in Frankfurt"
@@ -36,6 +37,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:A380_Reveal_1.jpg",
           "sha1": "828d4a38325cf74c5d404c487fe19f006a684231",
           "author": "de:Benutzer:Xeper",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Rollout, Januar 2005"
@@ -50,6 +52,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:A380_teststation_fb06rs.jpg",
           "sha1": "cd05351939d769dd431efb7f5e0234800711a78e",
           "author": "Yummifruitbat",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Arbeitskonsole der Flight Test Engineers"
@@ -76,6 +79,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:EM-Wave_noGIF.svg",
           "sha1": "b89733615b7fe24b452b28f2de24289594fd5a88",
           "author": "user And1mu",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Fernfeld einer linear polarisierten elektromagnetischen Welle im Vakuum. Die monochromatische Welle mit Wellenlänge breitet sich x -Richtung aus, die elektrische Feldstärke (in blau) und die magnetische Flussdichte (in rot) sind senkrecht dazu."
@@ -90,6 +94,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Antennensymbole.svg",
           "sha1": "03afc0081dd090e30b17de135f9b4698cc97d835",
           "author": "Frank Murmann",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Schaltungssymbole für Antennenanschlüsse, links zwei für einpolige Langdraht- oder Stabantennen, rechts für zwei Dipolvarianten"
@@ -104,6 +109,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Impedanz.svg",
           "sha1": "32f50882b6b0e35ebfee99016124566cedefa4a1",
           "author": "Frank Murmann",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Ersatzschaltbild zur Impedanz"
@@ -130,6 +136,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Snellen_chart.svg",
           "sha1": "d519d2990c9c1164936f137d4609ff3ed061bc66",
           "author": "Jeff Dahl",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Sehprobentafel im angel­sächsischen Raum zur Ermittlung der Seh­schärfe beim Menschen. In Europa ist der Landoltring das Normseh­zeichen für Sehtests."
@@ -144,6 +151,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Linear_visible_spectrum.svg",
           "sha1": "04b42f0f1124d028704825398c78db433738aac8",
           "author": "Gringer",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Lineare Darstellung des Spektrums sichtbaren Lichts"
@@ -158,6 +166,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Euglena_-_schema.svg",
           "sha1": "b1d06cfc04278ffd717cd515cf86e79fa1d629ea",
           "author": "Shazz",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Euglena 8 Photorezeptor, 9 Pigmentfleck"
@@ -184,6 +193,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Oberleitung_sbb.JPG",
           "sha1": "fa149fa298831fd001e80fb1727478d888970f60",
           "author": "Der ursprünglich hochladende Benutzer war Filzstift in der Wikipedia auf Deutsch",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Bahnstrom- Oberleitung an Portalmast (Schweizerische Bundesbahnen)"
@@ -197,10 +207,11 @@
           "sourceTitle": "File:Europe rail electrification de.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Europe_rail_electrification_de.svg",
           "sha1": "3c91625dfd6d140ee63f011152bb862081d7669e",
-          "author": "Europe_rail_electrification_en.svg : * Europe_rail_electrification.png : PNG author: Jklamo , 31. July 2007 Blank_map_europe.svg : PNG author: San Jose , 19. July 2006. SVG trace by RedHotHeat 06 August 2006 derivative work: N299 ( talk ) derivative work: Simon Legner ( User:simon04 )",
+          "author": "Europe_rail_electrification_en.svg: * Europe_rail_electrification.png: PNG author: Jklamo, 31. July 2007 Blank_map_europe.svg: PNG author: San Jose, 19. July 2006. SVG trace by RedHotHeat 06 August 2006 derivative work: N299 (talk) derivative work: Simon Legner (User:simon04)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
-          "caption": "Bahnstromsysteme in Europa ﻿ 750 V = ﻿ 1,5 kV = ﻿ 3 kV = ﻿ 15 kV ~ ﻿ 25 kV ~ ﻿ nicht elektrifiziert"
+          "caption": "Bahnstromsysteme in Europa 750 V = 1,5 kV = 3 kV = 15 kV ~ 25 kV ~ nicht elektrifiziert"
         },
         {
           "file": "images/bahnstrom__3.png",
@@ -212,6 +223,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Strommix_Deutsche_Bahn_2022.svg",
           "sha1": "2ee95bf42bf55a180ef639a81a03a0790a6933d9",
           "author": "Pedalito",
+          "requiredCredit": "",
           "license": "CC0 1.0",
           "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
           "caption": "Strommix des Bahnstroms 2022 der Deutschen Bahn AG. Aktuelle Zahlen für 2023 siehe hier"
@@ -238,6 +250,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Strategy_map.JPG",
           "sha1": "2eb568662f5e0bb3f97b8479600b592d612de54e",
           "author": "Parveson",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Strategy Map für öffentliche Dienste in einer Graphen - bzw. Kontrollflussdarstellung"
@@ -252,6 +265,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Balanced_Scorecard.png",
           "sha1": "12d54c2519814a8ccdd0761217dc7b5b2c80766a",
           "author": "Benutzer:Stern",
+          "requiredCredit": "Stern",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Herkömmliche Darstellung zur Balanced Scorecard"
@@ -266,6 +280,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Technology-Push_Market-Pull.png",
           "sha1": "a1cb3fb1787a3edee291c6a188eb5b70e77fc6b3",
           "author": "Grochim",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Im Kern entsprechen die üblichen 4 Perspektiven der Scorecard den generischen Wertschöpfungs-Stufen Input, Process, Output, Impact/Outcome/Result/Return, hier am Beispiel einer Darstellung des PUSH-PULL-Prozesses zum Kunden"
@@ -291,7 +306,8 @@
           "sourceTitle": "File:Weltzeituhr mit Fernsehturm - Alexanderplatz.jpg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Weltzeituhr_mit_Fernsehturm_-_Alexanderplatz.jpg",
           "sha1": "f4e6427d99ba31684ad2346587d9da5fd1fc6081",
-          "author": "Christian Wolf ( www.c-w-design.de )",
+          "author": "Christian Wolf (www.c-w-design.de)",
+          "requiredCredit": "Christian Wolf (www.c-w-design.de)",
           "license": "CC BY-SA 3.0 DE",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/de/",
           "caption": "Blick auf den Fernsehturm in Berlin-Mitte (mit Urania-Weltzeituhr vom Alexanderplatz aus)"
@@ -306,6 +322,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Berlin_-_Fernsehzentrum_Adlershof.jpg",
           "sha1": "267b8f7a16c778d8449ccc78a26b306460a4d8e3",
           "author": "Marek Śliwecki",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Mit Errichtung des Fernsehzentrum Berlin in Adlershof (im Bild der ehemalige Richtfunkturm) begann 1950 das DDR-Fernsehen"
@@ -320,6 +337,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Bundesarchiv_Bild_183-85770-0002,_Berlin,_Walter_Ulbricht_auf_Wahlkundgebung.jpg",
           "sha1": "fc3daa2e91068935f14294c5bc1c4848607c5f8e",
           "author": "Peter Heinz Junge",
+          "requiredCredit": "Bundesarchiv, Bild 183-85770-0002 / Junge, Peter Heinz / CC-BY-SA 3.0",
           "license": "CC BY-SA 3.0 DE",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/de/",
           "caption": "Der Fernsehturm wurde den planungspolitischen Präferenzen Walter Ulbrichts unterworfen"
@@ -346,6 +364,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Blutkreislauf_im_Tierreich.svg",
           "sha1": "3df255304b33bbd8e0d0e4806c558993f2648b32",
           "author": "Scivit",
+          "requiredCredit": "",
           "license": "CC BY 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
           "caption": "Schemata verschiedener Kreislaufsysteme. Links offener Kreislauf, zum Beispiel bei Spinnen, danach geschlossene Kreislaufsysteme verschiedener Wirbeltiergruppen."
@@ -360,6 +379,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Offener_Blutkreislauf.svg",
           "sha1": "ed14e69c66f3f7399b72d77574f739080a423593",
           "author": "Jaax",
+          "requiredCredit": "",
           "license": "CC0 1.0",
           "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
           "caption": "Offener Kreislauf: Hämolymphe wird nur teilweise in Gefäßen geführt, teilweise umfließt sie die Gewebe."
@@ -374,6 +394,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Insect_anatomy_diagram.svg",
           "sha1": "78d1f8f16ca3f56c61134dd27d563a4b873e0290",
           "author": "Piotr Jaworski, PioM",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Schema der Insektenanatomie. Herz und Aorta sind am Rücken dunkelrot eingezeichnet und mit der Nummer 7 markiert."
@@ -400,6 +421,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Boeing_747_Official_Colors.jpg",
           "sha1": "61772520007ac3ea96ae5b537857f92058b0b1f9",
           "author": "San Diego Air and Space Museum",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Der Boeing-747- Prototyp mit dem Kennzeichen N7470 beim Erstflug am 9. Februar 1969 über dem Puget Sound"
@@ -414,6 +436,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Boeing_747_prototype.JPG",
           "sha1": "fba4915d8371d376e80c733c427fd86ead602f9d",
           "author": "Fawcett5",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Der erste Prototyp der 747 – „City of Everett“ im Museum of Flight in Seattle"
@@ -428,6 +451,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Pan_Am_Boeing_747_at_Zurich_Airport_in_May_1985.jpg",
           "sha1": "f2dddd81e33374b4284356b90b0c2430240b8714",
           "author": "Eduard Marmet",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Boeing 747-100 der Pan Am"
@@ -454,6 +478,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Berlin-Brandenburg_Gate_overview.jpg",
           "sha1": "b20404d92b51a47567384bd97c16db2ad4272d48",
           "author": "Cezary p in der Wikipedia auf Polnisch",
+          "requiredCredit": "Cezary p in der Wikipedia auf Polnisch",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Das Brandenburger Tor mit dem Pariser Platz in westlicher Blickrichtung zur Straße des 17. Juni, 2007"
@@ -468,6 +493,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:BerlinBrandenburgerTor1985.jpg",
           "sha1": "01e5f455a58a98adc16e97be3c2415e755e16e62",
           "author": "Joergsam",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Das Brandenburger Tor in östlicher Blickrichtung zur Zeit der Berliner Mauer, 1985"
@@ -482,6 +508,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:1850er_Leopold_Ahrendts_-_Brandenburger_Tor.jpg",
           "sha1": "9042f01f9b4b3939622ccf0ed8804bf29dfa679e",
           "author": "Leopold Ahrendts",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Das Brandenburger Tor um 1855"
@@ -507,7 +534,8 @@
           "sourceTitle": "File:Fuel cell NASA p48600ac sh.jpg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Fuel_cell_NASA_p48600ac_sh.jpg",
           "sha1": "ab0ebd3779822b3b8603d4f10263c3aeab5593c3",
-          "author": "Fuel_cell_NASA_p48600ac.jpg : created by NASA derivative work: Abrev ( talk )",
+          "author": "Fuel_cell_NASA_p48600ac.jpg: created by NASA derivative work: Abrev (talk)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Mit Methanol betriebene Brennstoffzelle"
@@ -522,6 +550,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Brennstoffzelle_funktionsprinzip.png",
           "sha1": "96805e5857009080b3b018e2c618ba31d8412af5",
           "author": "Christoph Lingg",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Funktionsprinzip einer PEMFC-/DMFC-(/PAFC-)Brennstoffzelle: Die Wasserstoffmoleküle geben ihre Elektronen ab. Die verbleibenden Protonen treten durch die Elektrolytmembran und reagieren mit den Sauerstoffatomen auf der rechten Seite zu Wasser."
@@ -536,6 +565,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Brennstoffzelle.PNG",
           "sha1": "a0882b67e27453f5084958a1be668a3ba2e5fe84",
           "author": "Oguenther",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Schema einer basischen Wasserstoffbrennstoffzelle"
@@ -562,6 +592,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:BPMN-1.svg",
           "sha1": "d28b7800037330821f93b783838ff8e46aca0e47",
           "author": "Stkl",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Beispiel eines Geschäftsprozessdiagramms, erstellt mit der BPMN"
@@ -576,6 +607,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:BPMN-2d.svg",
           "sha1": "89ef3b292f293b458031ae62f8276c84187db05e",
           "author": "Stkl",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Beispiele für Activities"
@@ -590,6 +622,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:BPMN-3.svg",
           "sha1": "6ff3e7cef313d2268e7c5055d0866574a2df354d",
           "author": "Stkl",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Beispiele für Gateways"
@@ -616,6 +649,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:PDCA_Zirkel_-_ISO_50001.png",
           "sha1": "06937dbeda630e86cb8233dfceb038fe0cf50d3f",
           "author": "FW8100",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Die vier Phasen des PDCA-Zirkels bezogen auf die Norm ISO 50001 (Energiemanagementsysteme)"
@@ -629,7 +663,8 @@
           "sourceTitle": "File:PDCA Cycle.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:PDCA_Cycle.svg",
           "sha1": "0d283bf157e7a2142c88b70000945d1fa2675ce9",
-          "author": "Karn-b - Karn Bulsuk ( http://www.bulsuk.com ). Originally published at http://www.bulsuk.com/2009/02/taking-first-step-with-pdca.html",
+          "author": "Karn-b - Karn Bulsuk (http://www.bulsuk.com). Originally published at http://www.bulsuk.com/2009/02/taking-first-step-with-pdca.html",
+          "requiredCredit": "",
           "license": "CC BY 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
           "caption": "Phasen des PDCA-Zyklus"
@@ -644,6 +679,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:PDCA_Process.png",
           "sha1": "33b78764e13e64287e8bf805b71a4adad4aa8b55",
           "author": "Johannes Vietze",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Kontinuierliche Qualitätsverbesserung durch Standardisierung"
@@ -669,7 +705,8 @@
           "sourceTitle": "File:Chemische Struktur der DNA.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Chemische_Struktur_der_DNA.svg",
           "sha1": "bb6671c26b85687dae81fa310017a182cc4541b4",
-          "author": "DNA_chemical_structure.svg : Madeleine Price Ball, User:Madprime derivative work: Matt ( talk )",
+          "author": "DNA_chemical_structure.svg: Madeleine Price Ball, User:Madprime derivative work: Matt (talk)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Strukturformel eines DNA-Ausschnitts"
@@ -683,7 +720,8 @@
           "sourceTitle": "File:Levo dextro-4.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Levo_dextro-4.svg",
           "sha1": "4c8abbf31226bf0cbcd891c5af71606906312bb9",
-          "author": "Levo_dextro.svg : * File:Levo dextro.png : Deneapol ( talk ) Original uploader was Deneapol . derivative work: KES47 derivative work: Parzi",
+          "author": "Levo_dextro.svg: * File:Levo dextro.png: Deneapol (talk) Original uploader was Deneapol. derivative work: KES47 derivative work: Parzi",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "a) rechtsgängige Doppelhelix b) linksgängige Doppelhelix"
@@ -698,6 +736,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:DNA_replication_split_horizontal.svg",
           "sha1": "a41333d83f07a33f8cdf53e200b673e27af69df1",
           "author": "Madprime (original) Woudloper (rotated image)",
+          "requiredCredit": "I, Madprime",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Die Doppelhelix wird durch die Helikase und die Topoisomerase geöffnet. Für den Start setzt die Primase jeweils einen Primer, an dem eine DNA-Polymerase mit der Synthese beginnt und den vorliegenden Einzelstrang durch Aufbau eines neuen komplementären Strangs zum Doppelstrang ergänzt. Während beim Leitstrang die Synthese kontinuierlich an einem Stück verläuft, werden beim Folgestrang zunächst mehrere Stücke aufgebaut, einzelne Okazaki-Fragmente, die anschließend von einer DNA-Ligase zusammengefügt werden."
@@ -724,6 +763,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Diesel_Engine_(4_cycle_running).gif",
           "sha1": "7294ecd98ef3cfd2d82d004ab992dadaa4052862",
           "author": "Tosaka",
+          "requiredCredit": "",
           "license": "CC BY 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by/3.0/",
           "caption": "Viertaktverfahren beim Diesel-Motor schematisch dargestellt"
@@ -738,6 +778,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Cutaway_of_a_MAN_V8_Diesel_engine.jpg",
           "sha1": "2c9ed3f5c0bb9974c10dc3782eaa90f57035dc75",
           "author": "Olivier Cleynen",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Nicht unterteilter Brennraum eines Common-Rail-Dieselmotors"
@@ -752,6 +793,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:PKW_nach_Treibstoffart_in_Deutschland.svg",
           "sha1": "8046db742cbc03ec73f45132e573a312613302ac",
           "author": "Tkarcher",
+          "requiredCredit": "",
           "license": "CC0 1.0",
           "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
           "caption": "Pkw-Bestand in Deutschland nach Treibstoffart, 2004 bis 2017"
@@ -778,6 +820,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Tour_Eiffel_Wikimedia_Commons.jpg",
           "sha1": "ecddecabc256113d4b17589350de9284b135643c",
           "author": "Benh LIEU SONG",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Datei:Tour Eiffel Wikimedia Commons.jpg"
@@ -792,6 +835,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:The_Centennial_Tower_Philadelphia_1876.jpeg",
           "sha1": "74113e8cd8cbe5dade0a1609200b4e79fca63cbe",
           "author": "user:Jeangagnon",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Zeichnung des Centennial Tower im Größenvergleich zu anderen Bauwerken"
@@ -806,6 +850,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Maurice_koechlin_pylone.jpg",
           "sha1": "e61ba4512581ada226bc385eb5e9e7677695a9d5",
           "author": "Maurice Koechlin, Émile Nouguier",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Entwurf von Koechlin und Nouguier (1884) mit Höhenvergleich anderer bedeutender Bauwerke (links), Stephen Sauvestres überarbeiteter Vorentwurf von 1887 (rechts) wurde beim Wettbewerb eingereicht"
@@ -832,6 +877,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Elbphilharmonie,_Hamburg.jpg",
           "sha1": "29603b973b27eaadf5269306d17af02d33d85444",
           "author": "Hackercatxxy",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Elbphilharmonie"
@@ -846,6 +892,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:RK_1009_9904_Elbphilharmonie_HafenCity.jpg",
           "sha1": "f184ff94fdb9d971976c89fb688e019a92d6b4e2",
           "author": "Reinhard Kraasch",
+          "requiredCredit": "Foto: Reinhard Kraasch, Lizenz: CC-BY-SA 4.0 DE",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Luftbild der Baustelle mit Hamburger Altstadt, Alster, HafenCity und Elbphilharmonie, September 2010"
@@ -860,6 +907,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Elbphilharmonie,_Februar_2015-4958.jpg",
           "sha1": "2d8b7203da96e3a9f528fb0e288d8d5de97c134a",
           "author": "Raimond Spekking",
+          "requiredCredit": "© Raimond Spekking / CC BY-SA 4.0 (via Wikimedia Commons)",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Fassade mit Baukran, Februar 2015"
@@ -886,6 +934,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Animation_einer_Gleichstrommaschine.gif",
           "sha1": "3cc9b21a5817d6e179dd4e1b58b11b1b6d6076fd",
           "author": "MichaelFrey",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Magnetfeldpolung des Rotors in einem Gleichstrommotor mit Permanentmagnetstator"
@@ -900,6 +949,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Ankerde.jpg",
           "sha1": "886d420bbe5fcc188e4fe21172367a902262132b",
           "author": "Ulfbastel",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Läufer eines Kommutatormotors; Kohlebürsten und Stator sind entfernt"
@@ -914,6 +964,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Stator_and_rotor_by_Zureks.JPG",
           "sha1": "8750ac0f1c509491bf01dc3fc5562c32ec7e954b",
           "author": "Zureks",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Zerlegter Asynchron-Drehstrommotor mit Kurzschlussläufer und Leistung von 750 Watt"
@@ -940,6 +991,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Spezialisierg_Generalisierg.png",
           "sha1": "85284f0789f0e8b40583f44c051e783415cc738e",
           "author": "VÖRBY",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Generalisierung/Spezialisierung ergeben sich aus dem Modellierungsverlauf"
@@ -954,6 +1006,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:ERD_Darstellungen.png",
           "sha1": "391192dc3f0015533040b4cca98bab36ae790ce0",
           "author": "Frank Roeing",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "ERD in unterschiedlichen Notationen"
@@ -980,6 +1033,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Top_of_Atmosphere.jpg",
           "sha1": "f4c5051cd15eba3e226c2e620a24c43c2dc726e1",
           "author": "NASA Earth Observatory",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Atmosphäre der Erde, aufgenommen von der ISS (2013)"
@@ -994,6 +1048,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Atmosphäre_Stufen.svg",
           "sha1": "9b820a6d1e6045f50e542a4ec3434548ec9c31bc",
           "author": "Niko Lang (original image), Ladyt (vector version)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0 DE",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/de/",
           "caption": "Aufbau der Atmosphäre der Erde"
@@ -1007,7 +1062,8 @@
           "sourceTitle": "File:OxygenLevel-1000ma.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:OxygenLevel-1000ma.svg",
           "sha1": "bbaa509099f6ae1a2c8a340c4cdfd67a8cf082fb",
-          "author": "Sauerstoffgehalt-1000mj.svg : LordToran Sauerstoffgehalt-1000mj2.png : * Sauerstoffgehalt-1000mj.svg : LordToran abgeleitetes Werk: WolfmanSF abgeleitetes Werk: Rursus ( Rursus )",
+          "author": "Sauerstoffgehalt-1000mj.svg: LordToran Sauerstoffgehalt-1000mj2.png: * Sauerstoffgehalt-1000mj.svg: LordToran abgeleitetes Werk: WolfmanSF abgeleitetes Werk: Rursus (Rursus)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Entwicklung des O 2 -Gehaltes während der letzten Jahrmilliarde"
@@ -1034,6 +1090,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Beispiel_ereignisorientierte_Prozesskette_(EPK).png",
           "sha1": "655ea880d4e67de00d44a9c86b74e4073bdebf99",
           "author": "Stern in der Wikipedia auf Deutsch",
+          "requiredCredit": "Stern",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Einfaches Beispiel"
@@ -1048,6 +1105,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:EPK_komplex.png",
           "sha1": "d22c57ee739e646e74a3a24ff1198e04184c265c",
           "author": "https://commons.wikimedia.org/wiki/User:SuperFLoh",
+          "requiredCredit": "",
           "license": "CC BY 2.5",
           "licenseUrl": "https://creativecommons.org/licenses/by/2.5/",
           "caption": "Komplexes Beispiel eines eEPK-Modells"
@@ -1074,6 +1132,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:XP-Life.png",
           "sha1": "c796bd54cd59618e501ea24e327020bacabeb99a",
           "author": "Michael Hüttermann",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "XP-Lebenszyklus"
@@ -1088,6 +1147,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Xpkurve.png",
           "sha1": "98a6c762ebff621899ade35e52f3136ab15c935a",
           "author": "GuidoZockoll oose.de Dienstleistungen für Innovative Informatik GmbH",
+          "requiredCredit": "German Wikipedia Benutzer GuidoZockoll",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Änderungskostenkurve in Abhängigkeit vom Zeitpunkt der Änderung"
@@ -1102,6 +1162,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Extreme_Programming_Planungs-_und_Feedback-Schleifen.svg",
           "sha1": "6415432a3e522793bfc62226d55fc34f668fbfed",
           "author": "DonWells",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Zeitlicher Abstand der Schritte"
@@ -1128,6 +1189,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Dresden_Germany_Exterior-of-Frauenkirche-04.jpg",
           "sha1": "efe8411a5e6eac8c0f25dd36b0faf689dffd8def",
           "author": "CEphoto, Uwe Aranas",
+          "requiredCredit": "Photo by CEphoto, Uwe Aranas or alternatively © CEphoto, Uwe Aranas",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Frauenkirche Dresden"
@@ -1142,6 +1204,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Dresden_-_Treasures_from_the_Saxon_State_Library_Seite_083.jpg",
           "sha1": "fb555aec980ffbc9e6a313b94f9fe905047df78b",
           "author": "Library of Congress Washington, D.C.",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Entwurf von George Bähr"
@@ -1156,6 +1219,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Canaletto_-_View_of_the_Neumarkt_in_Dresden_from_the_Jüdenhofe_-_Google_Art_Project.jpg",
           "sha1": "48d3cc96204a59fba942a1ea8ea355ea4377b4ac",
           "author": "Bernardo Bellotto",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Bernardo Bellotto, gen. Canaletto: Der Neumarkt in Dresden vom Jüdenhofe aus (1749)"
@@ -1182,6 +1246,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Golden_Gate_Bridge_as_seen_from_Battery_East.jpg",
           "sha1": "c6a6fa13c14a9078821dff570fdd432059383518",
           "author": "Frank Schulenburg",
+          "requiredCredit": "© Frank Schulenburg",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Golden Gate Bridge"
@@ -1195,7 +1260,8 @@
           "sourceTitle": "File:Golden Gate Bridge cable seat, HAER CA-31-31.jpg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Golden_Gate_Bridge_cable_seat,_HAER_CA-31-31.jpg",
           "sha1": "1ca8b1cebb3757017b3cb2d4a6d252028ebce781",
-          "author": "Jet Lowe , photographer",
+          "author": "Jet Lowe, photographer",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Kabelsattel auf einem Pylon der Golden Gate Bridge"
@@ -1210,6 +1276,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Golden_Gate_Bridge_architecture_04.jpg",
           "sha1": "58d8a85942578329f2dadcbdb5e61d5da99761ca",
           "author": "Tewy",
+          "requiredCredit": "",
           "license": "CC BY 2.5",
           "licenseUrl": "https://creativecommons.org/licenses/by/2.5/",
           "caption": "Verkehr auf der Golden Gate Bridge"
@@ -1236,6 +1303,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:PPN66970766X_Das_Raht_Haus_zu_Hamburg_(1723).jpg",
           "sha1": "86fc9131aa6a413e2c3884e002643bed0cc9394b",
           "author": "Fassmann, David",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Altes Rathaus an der Trostbrücke von 1290, Zustand um 1700"
@@ -1250,6 +1318,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Stadthaus_Neuer_Wall_1887.jpg",
           "sha1": "0fdfdae1c1b36031b6c02d2424d6110211185ae9",
           "author": "Wilhelm Heuer",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Rathaus (Mairie) zur „ Franzosenzeit “ (1811–1814)"
@@ -1263,7 +1332,8 @@
           "sourceTitle": "File:Waisenhaus Hamburg um 1855.jpg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Waisenhaus_Hamburg_um_1855.jpg",
           "sha1": "d4c39161ef0959b9f8e9d85d6af841d42100a8e1",
-          "author": "James Gray ; Carl M. Laeisz",
+          "author": "James Gray; Carl M. Laeisz",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Provisorisches Rathaus nach dem Brand: Das alte Waisenhaus in der Admiralitätstraße (1842–1897)"
@@ -1290,6 +1360,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Two_chamber_heart.svg",
           "sha1": "61c4edc651e67efabd93908d60151fdb3918b3da",
           "author": "Ahnode",
+          "requiredCredit": "",
           "license": "CC BY 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by/3.0/",
           "caption": "Das zweikammrige (vierteilige) Herz der Fische. Das Vorderende des Tiers liegt links; rechts sind die Enden einiger zuführender Venen eingezeichnet. Es folgen der Sinus venosus, der Vorhof, der Ventrikel und je nach Art der Bulbus arteriosus oder der Conus arteriosus."
@@ -1304,6 +1375,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Diagram_of_the_human_heart_(cropped)_de.svg",
           "sha1": "628bb8a40187526b70012cf8c2bf9f142364b3ed",
           "author": "Jakov",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Schema des menschlichen Herzens"
@@ -1317,7 +1389,8 @@
           "sourceTitle": "File:Wiggers Diagram de.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Wiggers_Diagram_de.svg",
           "sha1": "b5804ed9f2500db38e0c24e290997e900e04c9a4",
-          "author": "Wiggers_Diagram.svg : DanielChangMD revised original work of DestinyQx ; Redrawn as SVG by xavax derivative work: Dietzel65",
+          "author": "Wiggers_Diagram.svg: DanielChangMD revised original work of DestinyQx; Redrawn as SVG by xavax derivative work: Dietzel65",
+          "requiredCredit": "",
           "license": "CC BY-SA 2.5",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.5/",
           "caption": "Wiggers -Diagramm der Vorgänge im linken Herzteil während zweier Herzzyklen."
@@ -1344,6 +1417,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Düsseldorf_Rath_DB_9003_omleiding_2_(52219697326).jpg",
           "sha1": "afdcfc705634195c20e517a06e6bb02f1902ed64",
           "author": "Rob Dammers",
+          "requiredCredit": "",
           "license": "CC BY 2.0",
           "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
           "caption": "Triebzug 9003 in Düsseldorf-Rath"
@@ -1358,6 +1432,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Door_open_-_DB_BR_412_-_ICE_4_to_Frankfurt_Main_Süd.jpg",
           "sha1": "bbc12a85f345b462f1df584e293d5a0864251091",
           "author": "Flickr.d5e",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Endwagen, Einstiegsbereich"
@@ -1372,6 +1447,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:ICE_4_Restaurant.jpg",
           "sha1": "1cc8449b896bfe4aa83396afe5b376420bc4f517",
           "author": "StagiaireMGIMO",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Plätze im Speisewagen"
@@ -1397,7 +1473,8 @@
           "sourceTitle": "File:Kölner Dom nachts 2013.jpg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Kölner_Dom_nachts_2013.jpg",
           "sha1": "694a04fc79d4a09964d74dd4f334c4ab8df6441c",
-          "author": "Thomas Wolf , www.foto-tw.de",
+          "author": "Thomas Wolf, www.foto-tw.de",
+          "requiredCredit": "Thomas Wolf, www.foto-tw.de",
           "license": "CC BY-SA 3.0 DE",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/de/",
           "caption": "Ansicht vom Deutzer Rheinufer bei Nacht (2013)"
@@ -1412,6 +1489,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Kölner_Dom_Luftbild_Bahnhof_-_cologne_aerial_(25326253726).jpg",
           "sha1": "ca4939433868f6b14865bc9d6547b18628a5dff2",
           "author": "dronepicr",
+          "requiredCredit": "",
           "license": "CC BY 2.0",
           "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
           "caption": "Musical Dome, Dom, Hauptbahnhof und Hohenzollernbrücke aus Nordosten (2016)"
@@ -1426,6 +1504,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Übergabe_Rohbau_Baptisterium_Kölner_Dom-9593.jpg",
           "sha1": "2e4569c26684ea2132297bb01e3b99c7a836215c",
           "author": "Raimond Spekking",
+          "requiredCredit": "© Raimond Spekking / CC BY-SA 4.0 (via Wikimedia Commons)",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Frühes christliches Zeugnis: Baptisterium östlich des Domchors (2015)"
@@ -1451,7 +1530,8 @@
           "sourceTitle": "File:Carbon cycle-cute diagram-german.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Carbon_cycle-cute_diagram-german.svg",
           "sha1": "204ff353e5e36111af6619fba6cf1f32e38b131d",
-          "author": "derivative work: FischX Carbon_cycle-cute_diagram.svg : *derivative work: FischX Carbon_cycle-cute_diagram.jpeg : User Kevin Saff on en.wikipedia Carbon_cycle-cute_diagram.jpeg : User Kevin Saff on en.wikipedia",
+          "author": "derivative work: FischX Carbon_cycle-cute_diagram.svg: *derivative work: FischX Carbon_cycle-cute_diagram.jpeg: User Kevin Saff on en.wikipedia Carbon_cycle-cute_diagram.jpeg: User Kevin Saff on en.wikipedia",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Diagramm des Kohlenstoffkreislaufs: Die schwarzen Zahlen zeigen an, wie viele Milliarden Tonnen oder Gigatonnen Kohlenstoff (Gt C) in den verschiedenen Kohlenstoffspeichern vorhanden sind; die violetten Zahlen geben an, wie viel Kohlenstoff zwischen den einzelnen Speichern pro Jahr (Gt/a C) ausgetauscht wird. Stand: ca. 2006"
@@ -1466,6 +1546,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Kohlenstoffzyklus_elemente.svg",
           "sha1": "b803da3d7d20f396d06742d1f0ea1df3a2015e83",
           "author": "DeWikiMan",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Schematische Darstellung der Begriffe"
@@ -1480,6 +1561,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Carbon_Dioxide_400kyr.svg",
           "sha1": "0aae4d2d90cbcb7f78c7841123ff641124a4232d",
           "author": "Robert A. Rohde (original PNG), User:Jklamo (SVG conversion)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "CO 2 -Gehalt der Atmosphäre während der vier letzten Eiszeiten"
@@ -1505,7 +1587,8 @@
           "sourceTitle": "File:Singlemode fibre structure.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Singlemode_fibre_structure.svg",
           "sha1": "0648489e369ea6bf2115cbd436eba3d8beb6f96e",
-          "author": "Original by Bob Mellish , SVG derivative by Benchill",
+          "author": "Original by Bob Mellish, SVG derivative by Benchill",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Typischer Aufbau einer Glasfaser: 1 – Kern (engl. core) 2 – Mantel (engl. cladding) mit n K > n M 3 – Schutzbeschichtung (engl. coating und/oder buffer) und 4 – äußere Hülle (engl. jacket). Für die Größenverhältnisse der einzelnen Bereiche siehe Tabelle im Text."
@@ -1519,7 +1602,8 @@
           "sourceTitle": "File:Multi-Mode-Fiber Diameter.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Multi-Mode-Fiber_Diameter.svg",
           "sha1": "f8a8d17a0c3075f164b35bf83ba66ac3d87e9233",
-          "author": "Stkl ; Original by Kirnehkrib",
+          "author": "Stkl; Original by Kirnehkrib",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Größenverhältnisse von Kern-, Mantel- und Coating-Durchmesser für den gebräuchlichsten 50-µm-Multimode­fasertyp (links, oben) sowie für andere größere Fasertypen (genaue Durchmesser: siehe Tabelle)."
@@ -1534,6 +1618,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Optical-fibre.svg",
           "sha1": "9629076b965428111a032626787f72b01be35c84",
           "author": "Gringer",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Lichtführung durch Totalreflexion in einer Multimode-Stufenindex-Glasfaser: Einfallende Strahlen außerhalb des Akzeptanzkegels werden nicht in der Faser geführt und gehen verloren."
@@ -1559,7 +1644,8 @@
           "sourceTitle": "File:Schemazeichnung Mitose.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Schemazeichnung_Mitose.svg",
           "sha1": "57c046c29a60f31bcc98e5ad14e47a147d3bb874",
-          "author": "Diagrama Mitosis.svg : Jpablo cad translation: Matt",
+          "author": "Diagrama Mitosis.svg: Jpablo cad translation: Matt",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Schemazeichnung eines Zellzyklus mit der Interphase und den einzelnen Phasen der Mitose als Kernteilung, bevor es zur Zellteilung kommt"
@@ -1573,7 +1659,8 @@
           "sourceTitle": "File:Hauptereignisse der Mitose.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Hauptereignisse_der_Mitose.svg",
           "sha1": "82e18d5f943df110c73ad421b65f085af498ccc0",
-          "author": "Major_events_in_mitosis.svg : Mysid derivative work: Matt ( talk )",
+          "author": "Major_events_in_mitosis.svg: Mysid derivative work: Matt (talk)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Stark vereinfachtes Schema des Zellkernzyklus bei Diplonten. (Chromosomen der Interphase mit den gleichen Symbolen wie die der Mitosephase dargestellt, obgleich ihr wirkliches Aussehen verschieden ist.)"
@@ -1587,7 +1674,8 @@
           "sourceTitle": "File:Mitotic Prometaphase.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Mitotic_Prometaphase.svg",
           "sha1": "a0512fa8853a012f70bb15dab0b4b6ee06884aaf",
-          "author": "MITOSIS_cells_secuence.svg : LadyofHats cutting: Matt ( talk )",
+          "author": "MITOSIS_cells_secuence.svg: LadyofHats cutting: Matt (talk)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Prometaphase"
@@ -1614,6 +1702,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:EinfAusw.png",
           "sha1": "bdfba8692e22d7d1d4ffeec2c8966ea383074e49",
           "author": "Renzsorf",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Einfache Auswahl"
@@ -1628,6 +1717,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:ZweifAusw.png",
           "sha1": "013eff56374a615702e422fd1aaac15d4ef06a30",
           "author": "Renzsorf",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Zweifache Auswahl"
@@ -1642,6 +1732,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:MehrfAusw.png",
           "sha1": "3933c2d5c173ea033c7339e47f88fced2190afa8",
           "author": "Renzsorf",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Mehrfachauswahl"
@@ -1668,6 +1759,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Complete_neuron_cell_diagram_de.svg",
           "sha1": "a38892144c86622d9dd22f44ba93ae334d18e770",
           "author": "LadyofHats (English original); NEUROtiker (German translation)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Aufbau eines Neurons: Das Schema zeigt die Struktur einer Wirbeltiernervenzelle, deren Axon peripher liegt (im zentralen Nervensystem bilden Oligodendrozyten die Myelinscheide)"
@@ -1681,7 +1773,8 @@
           "sourceTitle": "File:Synapse diag1.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Synapse_diag1.svg",
           "sha1": "496c5a95203e38cb1352db056beafab0f79ea532",
-          "author": "vectorization: Mouagip ( talk ) Synapse_diag1.png : Drawn by fr:Utilisateur:Dake Corrections of original PNG by en:User:Nrets Diese W3C- unbestimmte Vektorgrafik wurde mit Adobe Illustrator erstellt.",
+          "author": "vectorization: Mouagip (talk) Synapse_diag1.png: Drawn by fr:Utilisateur:Dake Corrections of original PNG by en:User:Nrets Diese W3C- unbestimmte Vektorgrafik wurde mit Adobe Illustrator erstellt.",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Schema der Erregungsübertragung an einer chemischen Synapse von Nervenzelle A mit der Präsynapse zu Zelle B mit der Postsynapse – 1 Mitochondrium, 2 synaptisches Vesikel, 3 Autorezeptor, 4 synaptischer Spalt mit freigesetzten ungebundenen Neurotransmittern, 5 postsynaptischer Rezeptor, 6 Calciumkanal, 7 Exocytose des Vesikels, 8 aktiver Transport durch die Zellmembran"
@@ -1695,7 +1788,8 @@
           "sourceTitle": "File:Aktionspotential.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Aktionspotential.svg",
           "sha1": "230c77b75c30c10fb21830a568d3abc162f14b83",
-          "author": "Action_potential.svg : Original by en:User:Chris 73 , updated by en:User:Diberri , converted to SVG by tiZom derivative work: de:Benutzer:Jnns",
+          "author": "Action_potential.svg: Original by en:User:Chris 73, updated by en:User:Diberri, converted to SVG by tiZom derivative work: de:Benutzer:Jnns",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Verlauf des Aktionspotentials"
@@ -1722,6 +1816,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Nürburgring,_Vogelschauansicht,_Eugen_Felle,_1927.jpg",
           "sha1": "c87d760c0e7c30ba3b5068ccb903507c39496c3b",
           "author": "Eugen Felle",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Der Nürburgring aus der Vogelschau 1927, Karte von Eugen Felle"
@@ -1736,6 +1831,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Nürburgring_Grundstein_27.09.1925_Landrat_Dr._Otto_Creutz_IMG_0411.jpg",
           "sha1": "a84faabd70b7572e9c69b596cda1300e6ae81796",
           "author": "Wolfgang Pehlemann Wiesbaden Germany",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0 DE",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/de/",
           "caption": "Gedenkstein Grundsteinlegung am 27. September 1925 für Landrat Otto Creutz"
@@ -1750,6 +1846,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Nürburgring_die_Nürburg_als_Namensgeber_für_die_Autorennstrecke_IMG_0457.jpg",
           "sha1": "05cb27d4e474eda2c19151007f163e38d5cdbf7e",
           "author": "Wolfgang Pehlemann Wiesbaden Germany",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0 DE",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/de/",
           "caption": "Die Nürburg als Namensgeber für die Autorennstrecke"
@@ -1776,6 +1873,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Blue_Linckia_Starfish.JPG",
           "sha1": "bef8c556a6bfa068b9f9c4841263fc5ca4b107e3",
           "author": "Richard Ling <wikipedia@rling.com>",
+          "requiredCredit": "Copyright (c) 2004 Richard Ling",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Korallenriff als Beispiel für ein marines Ökosystem"
@@ -1789,7 +1887,8 @@
           "sourceTitle": "File:Destruenten im Stoffkreislauf.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Destruenten_im_Stoffkreislauf.svg",
           "sha1": "f7ff5705390c9a207d6f72c5d001d816b81a9804",
-          "author": "Blerim Haliti , MichaelFrey , Biggerj1 (original version)",
+          "author": "Blerim Haliti, MichaelFrey, Biggerj1 (original version)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Produzenten und Destruenten im Stoffkreislauf. Einfaches Modell eines Ökosystems"
@@ -1804,6 +1903,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Carbon_stored_in_ecosystems.png",
           "sha1": "960b61cffa27ff7a9ab1d088d6856e84a8563dfb",
           "author": "Zac Kayler, Maria Janowiak, Chris Swanston",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Im Rahmen der globalen Erwärmung spielt die Speicherung von Kohlenstoff in Ökosystemen eine zentrale Rolle"
@@ -1830,6 +1930,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Beispiel_Organigrammsymbole.svg",
           "sha1": "7e833aa992737714531b6e86281a88f1df5da051",
           "author": "SLSCHNÖLL",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Symbole Organigramm"
@@ -1844,6 +1945,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Organigramm_2.png",
           "sha1": "502dd1a0f2faa33a7af3b7ba02424a7b51d473db",
           "author": "Sprenger in der Wikipedia auf Deutsch",
+          "requiredCredit": "Sprenger",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Beispiel: Organigramm"
@@ -1870,6 +1972,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Osi-modell-kommunikation.svg",
           "sha1": "3ce5f860eb6ebab932b936e542d80211215947cc",
           "author": "Runtux",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Kommunikation im OSI-Modell am Beispiel der Schichten 3 bis 5"
@@ -1884,6 +1987,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:ISO-OSI-7-Schichten-Modell_(in_Deutsch).svg",
           "sha1": "306052a0f39e68017077f2301f2444315b64fa09",
           "author": "Michael von Brandenburg",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "ISO-OSI-7-Schichten-Modell"
@@ -1910,6 +2014,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Periodensystem_Einfach.svg",
           "sha1": "325163d2f9927a42000cde7ede97d5d1d598eb9f",
           "author": "Antonsusi",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Periodensystem der Elemente, mit den Ordnungszahlen, Elementsymbolen und Elementnamen, Angaben zur Atommasse, Dichte und Elektronegativität sowie mit farblich markierten Elementkategorien."
@@ -1924,6 +2029,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Periodensystem_newdraft.svg",
           "sha1": "a941064133c079a9af29d340fe80d9846f86a488",
           "author": "Mrmw",
+          "requiredCredit": "",
           "license": "CC0 1.0",
           "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
           "caption": "Die mittellange Form des Periodensystems: Ein Teil der beiden letzten Perioden ist aus Platzgründen unterhalb des Hauptsystems angeordnet."
@@ -1938,6 +2044,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Energieniveau.svg",
           "sha1": "6c5eecdc428f9b28d043b1a1e43d74620365085d",
           "author": "Flexxxv",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Schematische Darstellung der Energie-Niveaus der Elektronenhülle"
@@ -1964,6 +2071,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Seasons_1.svg",
           "sha1": "13459bcebc76c43ba7e8a64b0cc0fa242b310fcc",
           "author": "Ɯ",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Abb. 0a: Vier-Jahreszeiten-Netz (1)"
@@ -1978,6 +2086,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Petrinet_transition_example.svg",
           "sha1": "140569898c0cc74d58957c3742ac37b51a1ff5f7",
           "author": "Le blue",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Beispiel: Schalten einer Transition"
@@ -1992,6 +2101,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Seasons_2.svg",
           "sha1": "c0f7d9dca2512d48acd24dd1152f9ff40f0f6c60",
           "author": "Ɯ",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Abb. 0b: Erweitertes Vier-Jahreszeiten-Netz"
@@ -2017,7 +2127,8 @@
           "sourceTitle": "File:Engelmannscher Bakterienversuch.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Engelmannscher_Bakterienversuch.svg",
           "sha1": "a30dbb7bda622ecb77c0f53f5be2b156ba05436c",
-          "author": "Lichtabsorbtion_eines_buchenblattes.svg : Lanzi derivative work: Matt ( talk )",
+          "author": "Lichtabsorbtion_eines_buchenblattes.svg: Lanzi derivative work: Matt (talk)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "oben: Absorptionsspektren von Chlorophyll a, b und β-Carotin. Mit der Absorption korreliert die Photosyntheserate (photosynthetisches Wirkspektrum). unten: Engelmannscher Bakterienversuch (nicht maßstabsgetreue Grafik). Das Lichtspektrum eines Prismas wurde auf einen Fadenthallus einer Grünalge (Oedogonium) projiziert. Im roten und blauen Bereich sammeln sich hierbei besonders viele aerophile, aktiv schwimmende Bakterien (rote Kugeln) an. Durch die abschirmende Wirkung der Carotinoide im blauen Bereich ist das photosynthetische Wirkspektrum dort geringer als im roten Bereich."
@@ -2032,6 +2143,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Chloroplasts_-_diffusion_of_photons.svg",
           "sha1": "69fbe9ebe6b051cefddfcc9937dade00a1008676",
           "author": "Jiří Janoušek",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Lichtsammelkomplex mit Licht absorbierenden und emittierenden Carotinoiden sowie zentralen Chlorophyllmolekülen"
@@ -2046,6 +2158,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Thylakoid_membrane.svg",
           "sha1": "4a78696c6ae549ef7fb991f7479ebab190a53c6f",
           "author": "Yikrazuul",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Die Photosysteme einer Pflanze als vereinfachte Darstellung. Bei allen grünen Pflanzen, Algen sowie Cyanobakterien sind beide Photosyntheseapparate funktionell hintereinander geschaltet. Abkürzungen: PS = Photosystem; PQH 2 = reduziertes Plastochinon; PC = Plastocyanin; Fd = Ferredoxin; Fp = Ferredoxin-NADP-Reduktase"
@@ -2072,6 +2185,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:SolarCellWithFigures_W3C.svg",
           "sha1": "fe7b28a370544d640bd5a88236a1e1a7fedb6647",
           "author": "Michael32710",
+          "requiredCredit": "Foto: Michael Paetzold, Lizenz: Creative Commons by-sa-4.0",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Photovoltaik-Funktionsprinzip am Beispiel einer Dünnschicht-Solarzelle aus Silizium (Erläuterungen zu den Ziffern siehe Text)"
@@ -2086,6 +2200,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Stromgestehungskosten_Fraunhofer_2024.svg",
           "sha1": "a0bf4c81392456520e9510d3acd2e87698c7000a",
           "author": "H005",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Stromgestehungskosten für verschiedene Stromerzeugungsanlagen in Deutschland. Datenquelle: Fraunhofer ISE; Juli 2024"
@@ -2100,6 +2215,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Installierte_Photovoltaikleistung_in_Deutschland_2025.svg",
           "sha1": "f27d22295541fd88024151f036cee1e34dfcd760",
           "author": "Michael32710",
+          "requiredCredit": "Foto: Michael Paetzold, Lizenz: Creative Commons by-sa-4.0",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Installierte PV-Leistung in Deutschland"
@@ -2125,7 +2241,8 @@
           "sourceTitle": "File:Snider-Pellegrini Wegener fossil map-de.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Snider-Pellegrini_Wegener_fossil_map-de.svg",
           "sha1": "0d836feabc12bb58a3e22b21e1fd844b34f0b264",
-          "author": "Osvaldocangaspadilla ; Lumu ( talk )",
+          "author": "Osvaldocangaspadilla; Lumu (talk)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Die paläobiogeographischen Verbreitungsgebiete von Cynognathus, Mesosaurus, Glossopteris und Lystrosaurus (hier stark schematisch dargestellt und nicht mit den tatsächlichen, anhand der Fossilfundstellen rekonstruierten Verbreitungsgebieten identisch) gehören zu den Belegen für die frühere Existenz von Gondwana, dem Südteil der Wegener’schen Pangaea, und damit auch für die Kontinentaldrift."
@@ -2140,6 +2257,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Oceanic.Stripe.Magnetic.Anomalies.Scheme.svg",
           "sha1": "74d1a3f34e56011eacfdee76156b4c2155a0fb4c",
           "author": "Chmee2",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Muster der mit wechselnder Polarität magnetisierten ozeanischen Kruste. a) vor 5 Mio. Jahren, b) vor 2–3 Mio. Jahren, c) heute"
@@ -2153,7 +2271,8 @@
           "sourceTitle": "File:Indian subcontinent drift-de.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Indian_subcontinent_drift-de.svg",
           "sha1": "b70de026aae7ea9e05d4584494a5a8ac5ac7116f",
-          "author": "Indischer_Subkontinent_Drift.png : W. Jacquelyne Kious and Robert I. Tilling: This dynamic earth: the story of plate tectonics. U.S. Geological Survey, 1996 ( https://doi.org/10.3133/7000097 ). Additionally translated and slightly altered by the original uploader. derivative work: Sémhur ( talk )",
+          "author": "Indischer_Subkontinent_Drift.png: W. Jacquelyne Kious and Robert I. Tilling: This dynamic earth: the story of plate tectonics. U.S. Geological Survey, 1996 (https://doi.org/10.3133/7000097). Additionally translated and slightly altered by the original uploader. derivative work: Sémhur (talk)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Die Drift der indischen Landmasse nach Norden"
@@ -2180,6 +2299,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Porsche_911_2.0_Coupe_IMG_0819.jpg",
           "sha1": "ecb3c021af2043c88a4b3019dcc88eb2c25e98ef",
           "author": "Alexander Migl",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Porsche 911 – Modelljahr 1964"
@@ -2194,6 +2314,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Porsche_356.jpg",
           "sha1": "d4f174e89a079a165f4bbc8b4163bd8aa1b22c9a",
           "author": "Die Autorenschaft wurde nicht in einer maschinell lesbaren Form angegeben. Es wird Popie~commonswiki als Autor angenommen (basierend auf den Rechteinhaber-Angaben).",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Das Vorgängermodell des Porsche 911, der Porsche 356"
@@ -2208,6 +2329,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:1964_Porsche_911_-_yellow_-_fvl.jpg",
           "sha1": "780d3ebf7f66b21ddcbfdfd7653eae888ad63906",
           "author": "Pat Durkin",
+          "requiredCredit": "",
           "license": "CC BY-SA 2.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0/",
           "caption": "Porsche 911 (Urmodell) mit zeitgenössischer Lackierung der 1960er Jahre"
@@ -2234,6 +2356,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Flowchart_de.svg",
           "sha1": "fa5b68650b2861b7822f74b98538bdf2dab4ecfb",
           "author": "Erik Streb",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Beispiel eines Flussdiagramms (Programmablaufplans)"
@@ -2248,49 +2371,10 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Flow_Chart_Stencil_SEL-9829.jpg",
           "sha1": "c976adaf2c84ce937c5898e43d1b22290997f6b2",
           "author": "Raimond Spekking",
+          "requiredCredit": "© Raimond Spekking / CC BY-SA 4.0 (via Wikimedia Commons)",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Historische Zeichenschablone für Programmablauf­pläne (SEL, 1950er Jahre) mit Symbolen auch für Ein-/Ausgabeoperationen auf Lochkarte, Magnetband und Drucker"
-        }
-      ]
-    },
-    {
-      "file": "projektmanagement.md",
-      "title": "Projektmanagement",
-      "titleSource": "wikipedia",
-      "source": "wikipedia-de",
-      "url": "https://de.wikipedia.org/wiki/Projektmanagement",
-      "revid": 267419653,
-      "license": "CC BY-SA 4.0",
-      "category": "process",
-      "images": [
-        {
-          "file": "images/projektmanagement__1.png",
-          "width": 506,
-          "height": 245,
-          "bytes": 4576,
-          "format": "png",
-          "sourceTitle": "File:Verzahnung PM-Projekt.png",
-          "sourceUrl": "https://commons.wikimedia.org/wiki/File:Verzahnung_PM-Projekt.png",
-          "sha1": "05b665b564fe947099ce698fd704b89d7955d76d",
-          "author": "VÖRBY",
-          "license": "CC BY-SA 3.0",
-          "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
-          "caption": "Verzahnung des Projektmanagements mit dem Gesamtprojekt"
-        },
-        {
-          "file": "images/projektmanagement__2.png",
-          "width": 500,
-          "height": 380,
-          "bytes": 3428,
-          "format": "png",
-          "sourceTitle": "File:Magischesdreieck.gif",
-          "sourceUrl": "https://commons.wikimedia.org/wiki/File:Magischesdreieck.gif",
-          "sha1": "0004e052cbd3a7116cb86e98891d4eb8baaaffcf",
-          "author": "unbekant",
-          "license": "Public domain",
-          "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
-          "caption": "Magisches Dreieck"
         }
       ]
     },
@@ -2314,6 +2398,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:W_Titzenthaler_-_Reichstagsprovisorium_1898.jpg",
           "sha1": "200635f576665b4026d3e34e0bf73866262184cf",
           "author": "Waldemar Titzenthaler",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Provisorium Leipziger Straße 4"
@@ -2328,6 +2413,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Königsplatz_Berlin,_um_1880.jpg",
           "sha1": "27161fc52c8391be737170250ea068e22b019608",
           "author": "Hermann Rückwardt",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Östlicher Teil des Königsplatzes mit Palais Raczyński um 1880, Blick von der (später versetzten) Siegessäule"
@@ -2342,6 +2428,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:ReichstagBohnstedt.jpg",
           "sha1": "b3eceaa19c24bd04da7ee0471f74c7271dab9314",
           "author": "Ludwig Bohnstedt",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Ludwig Bohnstedts Wettbewerbsentwurf, 1872"
@@ -2368,6 +2455,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Router.svg",
           "sha1": "dbb8ec110cab7e187a60d3409775e46e4441ef83",
           "author": "George Shuklin",
+          "requiredCredit": "I, George Shuklin",
           "license": "CC BY 2.5",
           "licenseUrl": "https://creativecommons.org/licenses/by/2.5/",
           "caption": "(Cisco -)Symbol für einen Router"
@@ -2382,6 +2470,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Juniper_MX-Series_routers_and_switches.gif",
           "sha1": "9ee68971f22c06c2545b00a95555f308da9f0430",
           "author": "Produced by Juniper Networks internally",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Hochleistungsrouter"
@@ -2396,6 +2485,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:2024-12-08_09_11_24-Mobilfunk_Das_erste_5G-Corenetz_in_Bamberg_-_YouTube_–_Mozilla_Firefox.png",
           "sha1": "acac3270e389e0ee40dc1ca883d892c9facf5b9a",
           "author": "Deutsche Telekom",
+          "requiredCredit": "",
           "license": "CC BY-SA 2.5",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.5/",
           "caption": "Core-Router Cisco ASR im Backbone der Deutschen Telekom"
@@ -2422,6 +2512,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Sammlung_malerischer_Burgen_(1846)_-_029_Vorderhohenschwangau.jpg",
           "sha1": "f6dc8e4f00b90925384a154fab9e8189ea33b809",
           "author": "D Quaglio, C A Lebschee",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Ruine der Burg Vorderhohenschwangau, Zeichnung von Domenico Quaglio (1846)"
@@ -2436,6 +2527,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Château_de_Pierrefonds_exterior_Oise.jpg",
           "sha1": "81aa4936ff3deb9013adf3686366d22b6107e910",
           "author": "Jebulon",
+          "requiredCredit": "",
           "license": "CC0 1.0",
           "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
           "caption": "Schloss Pierrefonds bei Compiègne"
@@ -2450,6 +2542,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Christian_Jank_-_Entwurf_von_Schloss_Neuschwanstein_1869_restored.jpg",
           "sha1": "54a4299a74625af878608c09ab35b988aa9e9358",
           "author": "Christian Jank",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Entwurf von Christian Jank 1869"
@@ -2476,6 +2569,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Scrum_Agile_events.png",
           "sha1": "4685d05c5a270d185c9b180bc51e6f6d5bc0fc94",
           "author": "Stefan Morcov",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Scrum Agile Events – Überblick"
@@ -2489,7 +2583,8 @@
           "sourceTitle": "File:Scrum process-de.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Scrum_process-de.svg",
           "sha1": "3993ec3989a82f8cca9168a825b68b6cc38078d4",
-          "author": "Scrum_process.svg : Lakeworks derivative work: Sebastian Wallroth ( talk )",
+          "author": "Scrum_process.svg: Lakeworks derivative work: Sebastian Wallroth (talk)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Der Scrum-Prozess"
@@ -2504,6 +2599,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Burndown_Chart.svg",
           "sha1": "4ee6f039c1f99cec2f8a828df19c09440134f47e",
           "author": "Philip Gillißen",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Beispiel eines Sprint Burndown Charts"
@@ -2530,6 +2626,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:DMAIC-Zyklus.svg",
           "sha1": "78b07840dce518b24dd1d9b64156020f51281065",
           "author": "C64zottel",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "DMAIC-Zyklus für bereits existierende Prozesse"
@@ -2544,6 +2641,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:6_Sigma_Normal_distribution.jpg",
           "sha1": "c85622872c1a807d09bbb4b233c03a50c2722928",
           "author": "Jayen466, Fleshgrinder",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Schaubild der Normalverteilung, auf der die statistischen Grundannahmen des Six-Sigma-Modells beruhen. Der griechische Kleinbuchstabe σ (Sigma) steht für den horizontalen Abstand zwischen dem arithmetischen Mittelwert µ (Gipfelpunkt der Normal verteilungskurve) und dem Wendepunkt der Kurve. Je größer dieser Abstand ist, desto breiter sind die Werte des gemessenen Merkmals gestreut. In der hier gezeigten Abbildung sind die Spezifikationsgrenzen (USL, LSL) 6 σ vom Mittelwert entfernt. Werte jenseits der Spezifikationsgrenzen sind extrem unwahrscheinlich, selbst wenn sich die Verteilungskurve später um 1,5 σ nach links oder rechts verschieben sollte."
@@ -2570,6 +2668,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Inner_Planet_Orbits_01.svg",
           "sha1": "1a963aa32aafdd9babd080d42f64a2a00fa6dfbf",
           "author": "Mrmw",
+          "requiredCredit": "",
           "license": "CC0 1.0",
           "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
           "caption": "Die vier inneren Planeten"
@@ -2583,7 +2682,8 @@
           "sourceTitle": "File:Oort cloud Sedna orbit-de.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Oort_cloud_Sedna_orbit-de.svg",
           "sha1": "d11a7e5491396c45c5e8ba4c0d74f7e6657d1d60",
-          "author": "Oort_cloud_Sedna_orbit.jpg : Image courtesy of NASA / JPL-Caltech / R. Hurt Original text courtesy of NASA / JPL-Caltech derivative work: FrancescoA ( talk )",
+          "author": "Oort_cloud_Sedna_orbit.jpg: Image courtesy of NASA / JPL-Caltech / R. Hurt Original text courtesy of NASA / JPL-Caltech derivative work: FrancescoA (talk)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Die Umlaufbahnen der Objekte des Sonnensystems im Maßstab"
@@ -2598,6 +2698,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Lokale_Blase_in_der_Milchstraße.svg",
           "sha1": "2ffb196a03bdd7f05419b4f2f62a25e719c0f4ef",
           "author": "N. Henbest / H. Couper. Jschmied at de.wikipedia",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Erweiterte Nachbarschaft der Sonne in der lokalen Blase. (Draufsicht auf galaktische Ebene, galaktisches Zentrum ist oben)"
@@ -2623,7 +2724,8 @@
           "sourceTitle": "File:Cicle del nitrogen de.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Cicle_del_nitrogen_de.svg",
           "sha1": "fa1fd81dc096459df6faeb61800be17b7a69c563",
-          "author": "Cicle_del_nitrogen_ca.svg : Johann Dréo ( User:Nojhan ), traduction de Joanjoc d'après Image:Cycle azote fr.svg . derivative work: Burkhard ( talk )",
+          "author": "Cicle_del_nitrogen_ca.svg: Johann Dréo (User:Nojhan), traduction de Joanjoc d'après Image:Cycle azote fr.svg. derivative work: Burkhard (talk)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Grafische Darstellung des Stickstoffkreislaufs"
@@ -2638,6 +2740,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Estimated_nitrogen_surplus_across_Europe_2005.png",
           "sha1": "918086a91a66b05be48d22a15af062f5e1143bdd",
           "author": "European Environment Agency",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Geschätzter Stickstoffüberschuss (die Differenz zwischen anorganischer und organischer Düngung, atmosphärischer Deposition, Fixierung und Pflanzenaufnahme) in Europa (2005)."
@@ -2664,6 +2767,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:N855GT_-_Etihad_Cargo_(Atlas_Air)-_Boeing_747-87U(F)_(32785161245).jpg",
           "sha1": "a7e0ba63a165eb95340ff5f54a594de0f70b5006",
           "author": "Shadman Samee from Dhaka, Bangladesh",
+          "requiredCredit": "",
           "license": "CC BY-SA 2.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0/",
           "caption": "Lieferketten sind heutzutage international und werden über Land-, See- oder Luftfracht abgewickelt. Das Lieferkettenmanagement ist eine Managementdisziplin, die verschiedene Methoden und Prozesse auf Lieferketten anwendet. (Aufnahme einer Etihad -Cargo- Luftfrachtmaschine, 2017)"
@@ -2678,6 +2782,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Supply_and_demand_network_(de).svg",
           "sha1": "bc9345089c413975f5afdce3c1d3ffb8f48ad49f",
           "author": "Original: Andreas Wieland Vektor: EssensStrassen",
+          "requiredCredit": "Andreas Wieland",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Das Lieferkettenmanagement befasst sich mit komplexen und dynamischen Lieferanten- und Kundennetzwerken sowie den Warenflüssen vom Eingang bis zum Ausgang der Produkte."
@@ -2691,7 +2796,8 @@
           "sourceTitle": "File:Bullwhip effect.png",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Bullwhip_effect.png",
           "sha1": "bbe96ea325b8d7745d1a1b54240da38e65642009",
-          "author": "Gusts_Must_be_Ambulatory.JPG : Thwongterry Amplitude_modulation.svg : Toobaz derivative work: Stern ( talk )",
+          "author": "Gusts_Must_be_Ambulatory.JPG: Thwongterry Amplitude_modulation.svg: Toobaz derivative work: Stern (talk)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Illustration des Peitscheneffekts: Der Endkunde gibt eine Bestellung auf (Peitschenschlag), und in vorgelagerte Richtung schaukeln sich die Bestellschwankungen immer weiter auf"
@@ -2717,7 +2823,8 @@
           "sourceTitle": "File:NPN transistor basic operation.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:NPN_transistor_basic_operation.svg",
           "sha1": "d339b6c1ad9b1415cd6bb410e1fdbd68da1cee07",
-          "author": "KaiMartin , Cepheiden",
+          "author": "KaiMartin, Cepheiden",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Schema eines npn-Transistors, der im Verstärkungsbereich betrieben wird. Im Halbleiterkristall wird elektrischer Strom durch Löcher und Elektronen übertragen."
@@ -2731,7 +2838,8 @@
           "sourceTitle": "File:MISFET-Transistor Symbole.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:MISFET-Transistor_Symbole.svg",
           "sha1": "84e8007e07371a1016976c3c2249039b9838b957",
-          "author": "Arne Nordmann ( norro )",
+          "author": "Arne Nordmann (norro)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Schaltsymbole von MOSFETs"
@@ -2746,6 +2854,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:N-Kanal-MOSFET_(Schema).svg",
           "sha1": "05b86819c8778c4800b6416b2d6d56b2bdd77d76",
           "author": "PNG-Version: Markus A. Hennig (17. Dezember 2005) SVG-Umsetzung Cepheiden",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Prinzipieller Aufbau eines n-Kanal- MOSFETs im Querschnitt"
@@ -2771,7 +2880,8 @@
           "sourceTitle": "File:Tcp-handshake.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Tcp-handshake.svg",
           "sha1": "971d4dcd3ca87fabcba9ead0858d528a2a34021b",
-          "author": "300px-Tcp-handshake.png : ??? derivative work: Snubcube ( talk )",
+          "author": "300px-Tcp-handshake.png: ??? derivative work: Snubcube (talk)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "TCP-Handshake"
@@ -2786,6 +2896,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:TCP_Header.svg",
           "sha1": "97df894f64727d5e3147a14a6c8b6cc28fe6cd39",
           "author": "Appaloosa 23:04, 6. Jul. 2007 (CEST)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Aufbau des TCP-Headers"
@@ -2800,6 +2911,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Tcp_daten.svg",
           "sha1": "782015381f0d4334d1ce85e73c52521fc2022c90",
           "author": "Appaloosa",
+          "requiredCredit": "I, Appaloosa",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Segmentierung der Nutzdaten"
@@ -2826,26 +2938,13 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Turbocharger.jpg",
           "sha1": "14612129f373a50ff892883a250b4cea29419c49",
           "author": "Quentin Schwinn (NASA)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Abgasturbolader im Schnitt; links die Turbinenseite (Abgas), rechts der Verdichter (Ansaugluft)"
         },
         {
-          "file": "images/turbolader__2.jpg",
-          "width": 439,
-          "height": 512,
-          "bytes": 59960,
-          "format": "jpeg",
-          "sourceTitle": "File:Turbolader LKW.jpg",
-          "sourceUrl": "https://commons.wikimedia.org/wiki/File:Turbolader_LKW.jpg",
-          "sha1": "16448f1ca456b2aa24b54833855e02d0b1d35106",
-          "author": "selbst",
-          "license": "Public domain",
-          "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
-          "caption": "Turbolader an einem Schauraum- Motorblock eines Lkws"
-        },
-        {
-          "file": "images/turbolader__3.png",
+          "file": "images/turbolader__2.png",
           "width": 264,
           "height": 512,
           "bytes": 15210,
@@ -2854,9 +2953,25 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Diesel_engine_Uniflow.PNG",
           "sha1": "ea8b1a40b67cfdece3d7cf810e409f6f76be5dd0",
           "author": "Tosaka",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Zweitakt-Dieselmotor mit gesteuertem Auslassventil (Längsspülung)"
+        },
+        {
+          "file": "images/turbolader__3.jpg",
+          "width": 512,
+          "height": 341,
+          "bytes": 49346,
+          "format": "jpeg",
+          "sourceTitle": "File:Nagavali Exp. (24331909063).jpg",
+          "sourceUrl": "https://commons.wikimedia.org/wiki/File:Nagavali_Exp._(24331909063).jpg",
+          "sha1": "e4d97c888386390e7843b2f250bf8dcbfacd6aff",
+          "author": "Belur Ashok from Secunderabad, India",
+          "requiredCredit": "",
+          "license": "CC BY 2.0",
+          "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
+          "caption": "Turboloch bei einer indischen Diesellokomotive"
         }
       ]
     },
@@ -2880,6 +2995,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Karte_ubahn_berlin_entwicklung_2025.png",
           "sha1": "37636b3bf28f6f234f5c067a20e7df65a2b80a5e",
           "author": "Sansculotte",
+          "requiredCredit": "",
           "license": "CC BY 2.5",
           "licenseUrl": "https://creativecommons.org/licenses/by/2.5/",
           "caption": "Entwicklung des Berliner U-Bahn-Netzes von 1902 bis 2026"
@@ -2894,6 +3010,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:U-Bahn_Berlin_-_Netzplan.svg",
           "sha1": "d582f5818e6ebecd48f4047b0fa4236e9a84da49",
           "author": "Arbalete",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Netzplan der U-Bahn-Linien seit dem 4. Dezember 2020"
@@ -2908,6 +3025,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Lichtkastenazeiger_Berlin_U-Bahn.png",
           "sha1": "c50c9ac692cde6d8510b23eaa902fa11d67037df",
           "author": "Benjamin Hauber",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Transparentanzeiger am Bahnsteig"
@@ -2934,6 +3052,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Netzplan_U-Bahn_München.svg",
           "sha1": "7d9512452314fe49d5876da320d9b66b459554d8",
           "author": "Zeno Heilmaier",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Plan des Münchner U-Bahn-Netzes (Stand 2018)"
@@ -2947,7 +3066,8 @@
           "sourceTitle": "File:U-Bahn-Plan München.png",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:U-Bahn-Plan_München.png",
           "sha1": "f4eacb54179dadb02fcbbbfa4459a40f0960e3dc",
-          "author": "Maximilian Dörrbecker ( Chumwa )",
+          "author": "Maximilian Dörrbecker (Chumwa)",
+          "requiredCredit": "",
           "license": "CC BY-SA 2.5",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.5/",
           "caption": "Das U-Bahn-Liniennetz in topografischer Darstellung (Stand 2013)"
@@ -2961,7 +3081,8 @@
           "sourceTitle": "File:München U8.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:München_U8.svg",
           "sha1": "9cec43027aa91c376397acbf5d095f3f249d0255",
-          "author": "Claus Färber ( 3247 )",
+          "author": "Claus Färber (3247)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Signet der U-Bahn-Linie U8"
@@ -2987,7 +3108,8 @@
           "sourceTitle": "File:OO-historie-2.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:OO-historie-2.svg",
           "sha1": "3109bfb73cd754d06846e15fa0685694b517f365",
-          "author": "File:Objektorientieren methoden historie.png : GuidoZockoll, Mitarbeiter der oose.de Dienstleistungen für Innovative Informatik GmbH derivative work: File:OO-historie.svg : AxelScheithauer, oose.de Dienstleistungen für Innovative Informatik GmbH derivative work: Chris828 ( talk )",
+          "author": "File:Objektorientieren methoden historie.png: GuidoZockoll, Mitarbeiter der oose.de Dienstleistungen für Innovative Informatik GmbH derivative work: File:OO-historie.svg: AxelScheithauer, oose.de Dienstleistungen für Innovative Informatik GmbH derivative work: Chris828 (talk)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Historie der objektorientierten Methoden und Notationen"
@@ -3002,6 +3124,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:MetamodelHierarchy_de.svg",
           "sha1": "81202f2554df48aabdff088a909e430b4d6ccc4f",
           "author": "Jens von Pilgrim",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Hierarchie der Metamodellierung"
@@ -3016,6 +3139,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Uml-Pin-1.svg",
           "sha1": "051e2593fc0f724b1ecd3d5dadfd7a0f93209d65",
           "author": "Stkl",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Beispiel der graphischen Notation für eine Aktion mit zwei Eingabe- und einem Ausgabepin"
@@ -3041,7 +3165,8 @@
           "sourceTitle": "File:V-Modell.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:V-Modell.svg",
           "sha1": "9b9257f116fd2c7f08d385800832fd07f15d4466",
-          "author": "Michael Pätzold , S. Seyfert",
+          "author": "Michael Pätzold, S. Seyfert",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Phasen des V-Modells über Zeit und Detaillierung"
@@ -3056,6 +3181,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:V-Modell_VDI-VDE-2206_Nov2021.png",
           "sha1": "12b8801647e05f554c7aee78124976e716d5e1df",
           "author": "Verein Deutscher Ingenieure, VDI/VDE-Gesellschaft Mess- und Automatisierungstechnik, VDI/VDE 2206",
+          "requiredCredit": "",
           "license": "CC0 1.0",
           "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
           "caption": "V-Modell nach VDI/VDE 2206 aus dem Jahr 2021"
@@ -3081,7 +3207,8 @@
           "sourceTitle": "File:4-Stroke-Engine-with-airflows numbers.gif",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:4-Stroke-Engine-with-airflows_numbers.gif",
           "sha1": "66eb59e44d001540ad7d0881906e68877c3d7539",
-          "author": "4-Stroke-Engine.gif : UtzOnBike (3D-model & animation: Autodesk Inventor) derivative work: Cuddlyable3 and Jahobr",
+          "author": "4-Stroke-Engine.gif: UtzOnBike (3D-model & animation: Autodesk Inventor) derivative work: Cuddlyable3 and Jahobr",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Animation eines Viertaktmotors"
@@ -3096,6 +3223,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:4-Stroke-Engine.gif",
           "sha1": "c05641f8da965e7d6efbc5e864ab63f9133ee98e",
           "author": "UtzOnBike (3D-model & animation: Autodesk Inventor)",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Die vier Takte: 1. Ansaugen 2. Verdichten 3. Arbeiten 4. Ausstoßen (Animation)"
@@ -3110,6 +3238,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:4-Taktmotor_Schnitt_Motorrad_1-Zylinder.jpg",
           "sha1": "ba547daabdb40623f84f8e00f373e46494dc6878",
           "author": "Der ursprünglich hochladende Benutzer war Stahlkocher in der Wikipedia auf Deutsch",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Schnitt durch einen OHC-Motorradmotor"
@@ -3136,6 +3265,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Hotspot(geology)-1.svg",
           "sha1": "133972b3f61e919b0ff050da394d5690febeab03",
           "author": "Los688",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Schemazeichnung:Vulkan über Hotspot"
@@ -3149,7 +3279,8 @@
           "sourceTitle": "File:Tectonic plates hotspots-en.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Tectonic_plates_hotspots-en.svg",
           "sha1": "41037fc37a3e4e9fb4e7ec1b17b52cbdad6ed2d3",
-          "author": "Eric Gaba ( Sting - fr:Sting )",
+          "author": "Eric Gaba (Sting - fr:Sting)",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Die bekanntesten Hotspots"
@@ -3164,6 +3295,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Subduktionszone.svg",
           "sha1": "fb917c6084c6f24641a0bb11ded3f1feb2694d27",
           "author": "Felanox",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Entstehung von Vulkanen an Plattengrenzen"
@@ -3189,7 +3321,8 @@
           "sourceTitle": "File:Radial-deep-groove-ball-bearing din625-t1 2rs 120 labelled.png",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Radial-deep-groove-ball-bearing_din625-t1_2rs_120_labelled.png",
           "sha1": "a786725d4f9824699670b8425a9bdb2c2ca31c87",
-          "author": "Silberwolf ( talk )",
+          "author": "Silberwolf (talk)",
+          "requiredCredit": "",
           "license": "CC BY-SA 2.5",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.5/",
           "caption": "Rillenkugellager (beispielhafter Aufbau und Bezeichnung der Komponenten nach DIN 625) 1. Innenring 2. Käfig 3. Dichtscheibe 4. Wälzkörper 5. Außenring"
@@ -3204,6 +3337,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Ball-bearing-numbered.png",
           "sha1": "6a6e42074a7b1d550098d30a0deb2f640de6a5ab",
           "author": "Niabot",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Kugellager: 1. Außenring 2. Führung 3. Wälzkörper 4. Käfig 5. Führung 6. Innenring"
@@ -3218,6 +3352,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Cylindrical-roller-bearing_din5412-t1_type-nu_ex.png",
           "sha1": "f79effd41cc6642f9a22c80efa504995221bc3e9",
           "author": "Silberwolf",
+          "requiredCredit": "",
           "license": "CC BY 2.5",
           "licenseUrl": "https://creativecommons.org/licenses/by/2.5/",
           "caption": "Zylinderrollenlager vom Typ NU (DIN 5412). Der Innenring lässt sich beidseitig herausziehen."
@@ -3244,6 +3379,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Heatpump_hg.svg",
           "sha1": "de6615c17a0e236552a54ab50a53830692c0d922",
           "author": "Hannes Grobe",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Erdsonden und Wärmepumpen zur Gewinnung von Erdwärme"
@@ -3258,6 +3394,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Scroll_scrollcrompressor.svg",
           "sha1": "36057165fc6a6b3853495b90a13baaeebe8b712a",
           "author": "Kbentekik",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Abbildung 7: Arbeitsphasen des Scrollverdichters: (1) und (2): Eintritt und Einschluss des Gases (3) und (4): Kompression und Ausströmung"
@@ -3272,6 +3409,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Bilanz_der_Wärmepumpe.svg",
           "sha1": "f8252b6bdfae48b2fe9cf8d2fb80186276617a7e",
           "author": "Rainer Sielker",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Abbildung 9: Leistungsbilanz der Wärmepumpe: Der COP beschreibt den Quotienten aus nutzbarer Wärme (rot) und der dafür aufgewendeten elektrischen Verdichterleistung (gelb)"
@@ -3297,7 +3435,8 @@
           "sourceTitle": "File:Nc-gear-3 part1.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Nc-gear-3_part1.svg",
           "sha1": "60777136acb49d92ae320489b55f41cfa17975f4",
-          "author": "File:Nc-gear-3.svg : Biezl derivative work: Sunspeanzler",
+          "author": "File:Nc-gear-3.svg: Biezl derivative work: Sunspeanzler",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "Ellipsenrad (Schemabeispiel)"
@@ -3311,7 +3450,8 @@
           "sourceTitle": "File:Sprocket35b.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Sprocket35b.svg",
           "sha1": "c5b474d364af8f5f0f47059019187c38171b8308",
-          "author": "Д.Ильин : vectorization",
+          "author": "Д.Ильин: vectorization",
+          "requiredCredit": "",
           "license": "CC0 1.0",
           "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
           "caption": "Hypoidgetriebe"
@@ -3325,7 +3465,8 @@
           "sourceTitle": "File:Involute gears.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Involute_gears.svg",
           "sha1": "a2963e086ff6603d8fcc1a363ddd46963b1025e1",
-          "author": "Д.Ильин : vectorization",
+          "author": "Д.Ильин: vectorization",
+          "requiredCredit": "",
           "license": "CC0 1.0",
           "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
           "caption": "Zahnflanken als Teile von Evolventen"
@@ -3352,6 +3493,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Animal_Cell.svg",
           "sha1": "437a1e698973ab23dc94b4e6087e42a17b44f38a",
           "author": "Kelvinsong",
+          "requiredCredit": "",
           "license": "CC0 1.0",
           "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
           "caption": "Organisation einer typischen eukaryotischen Tierzelle: 1. Nucleolus (Kernkörperchen) 2. Zellkern (Nukleus) 3. Ribosomen 4. Vesikel 5. Raues (Granuläres) ER (Ergastoplasma) 6. Golgi-Apparat 7. Cytoskelett 8. Glattes (Agranuläres) ER 9. Mitochondrien 10. Lysosom 11. Cytoplasma (mit Cytosol und Cytoskelett) 12. Peroxisomen 13. Zentriolen 14. Zellmembran"
@@ -3365,7 +3507,8 @@
           "sourceTitle": "File:Diagram human cell nucleus numbered version.svg",
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Diagram_human_cell_nucleus_numbered_version.svg",
           "sha1": "52de23d49b268477dd8b1d200f655fee277b6866",
-          "author": "original version by Mariana Ruiz . numbered version by Felipe Fontoura .",
+          "author": "original version by Mariana Ruiz. numbered version by Felipe Fontoura.",
+          "requiredCredit": "",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
           "caption": "1. Kernhülle 1a. äußere Membran 1b. innere Membran 2. Nucleolus 3. Karyoplasma 4. Chromatin 4a. Heterochromatin 4b. Euchromatin 5. Ribosomen 6. Kernporen"
@@ -3380,6 +3523,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Zellkern_Aufbau.svg",
           "sha1": "4b3b44cf12b9532da8515845d4bf2897261cd57c",
           "author": "MoreInput",
+          "requiredCredit": "",
           "license": "CC BY-SA 4.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
           "caption": "Aufbau eines Wirbeltier-Zellkerns. Einzelne Bereiche der Grafik verlinken auf den Artikel in der Wikipedia."
@@ -3406,6 +3550,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Luftbild_aus_10.000_Meter_Höhe_vom_Wettersteingebirge_und_der_Zugspitze.jpg",
           "sha1": "a9851a94d96ce6ed7474725728257c7afb409547",
           "author": "HUvB",
+          "requiredCredit": "",
           "license": "CC BY 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by/3.0/",
           "caption": "Luftbild aus 10.000 Meter Höhe vom Wettersteingebirge und der Zugspitze"
@@ -3420,6 +3565,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:ZugspitzeJubilaeumsgratHoellental.JPG",
           "sha1": "dfa63a20d526529c04023c06231e48143c5b57ac",
           "author": "Christian Nawroth",
+          "requiredCredit": "",
           "license": "CC BY-SA 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
           "caption": "Blick von der Alpspitze auf den Zugspitzgipfel mit Höllentalferner 2007"
@@ -3434,6 +3580,7 @@
           "sourceUrl": "https://commons.wikimedia.org/wiki/File:Zugspitze-Luftbild.JPG",
           "sha1": "82adfc640ac76348b19d8057e5a6ce5555317f19",
           "author": "Octagon",
+          "requiredCredit": "",
           "license": "CC BY 3.0",
           "licenseUrl": "https://creativecommons.org/licenses/by/3.0/",
           "caption": "Luftbild des Zugspitzmassivs mit Erklärungen"

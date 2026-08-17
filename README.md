@@ -313,11 +313,15 @@ Explore all architecture patterns in [`docs/integrations/README.md`](docs/integr
 
 Compendiq Community Edition is licensed under the **GNU Affero General Public License v3.0** — see [`LICENSE`](LICENSE).
 
-One subtree is third-party content and is **not** covered by it:
-[`backend/src/domains/llm/eval/corpus-de-images/`](backend/src/domains/llm/eval/corpus-de-images/) is a retrieval-evaluation
-fixture built from German Wikipedia. Its page text is CC BY-SA 4.0 (adapted) and each image keeps its own licence (CC0,
-public domain, CC BY or CC BY-SA), with the attribution and ShareAlike obligations stated per page and per image in that
-directory's `LICENSE-ATTRIBUTION.md`. None of it ships in the product image.
+Two subtrees are third-party content and are **not** covered by it — the retrieval-evaluation fixture corpora under
+`backend/src/domains/llm/eval/`, each carrying its own `LICENSE-ATTRIBUTION.md` with the notices its licence requires.
+Neither ships in the product image.
+
+- [`corpus/`](backend/src/domains/llm/eval/corpus/) — verbatim copies of MIT-licensed documentation (fastify, vite,
+  postgres), reproduced with their notices in full.
+- [`corpus-de-images/`](backend/src/domains/llm/eval/corpus-de-images/) — built from German Wikipedia. Its page text is
+  CC BY-SA 4.0 (adapted) and each image keeps its own licence (CC0, public domain, CC BY or CC BY-SA), with the
+  attribution and ShareAlike obligations stated per page and per image.
 
 ---
 

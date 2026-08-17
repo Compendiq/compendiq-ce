@@ -136,7 +136,7 @@ And `resetEvalCorpus` drops the
 warning, which is the safe verdict for "unknown".
 
 **A third corpus exists and nothing consumes it yet (#1115 P5a).**
-`eval/corpus-de-images/` is 66 German Wikipedia articles carrying 189 vendored
+`eval/corpus-de-images/` is 65 German Wikipedia articles carrying 187 vendored
 images, for the image retrieval leg — built by `tools/eval-corpus-images/`
 (Python; Pillow does the re-encoding the backend deliberately has no dependency
 for). Three rules are load-bearing. It is **absent from `CORPUS_DIRS` and
@@ -160,20 +160,42 @@ image in that directory's `LICENSE-ATTRIBUTION.md`. "Named" is the half that is
 easy to fake and was: Commons' `Credit` is the *Source* field, not an author
 (reading it as one credited a photograph to "Eigenes Werk"), the unknown-author
 templates arrive **localised** from de.wikipedia ("Autor/-in unbekannt Unknown
-author"), so an equality test against `"unknown"` reads them as a name, and a
-flat character cap on a credit shipped `AxelScheithauer` as `AxelSch` with a
-third contributor missing — a credit past 400 chars is abbreviated on a word
-boundary and marked. `corpus-de-images.test.ts` fails on any of these — the
+author"), so an equality test against `"unknown"` reads them as a name, they
+also arrive **mistyped** (`author=` is free text: `unbekant`, a bare `selbst`),
+and a flat character cap on a credit shipped `AxelScheithauer` as `AxelSch`
+with a third contributor missing — a credit past 400 chars is abbreviated on a
+word boundary and marked. **`Artist` is not the whole obligation either**:
+where Commons records an `Attribution` with `AttributionRequired`, that string
+is the credit line the licensor specified (CC BY-SA 4.0 §3(a)(1)(A)(i)) and it
+is regularly not the bare name — `Bundesarchiv, Bild 183-85770-0002 / Junge,
+Peter Heinz / CC-BY-SA 3.0`, `© Raimond Spekking / CC BY-SA 4.0 (via Wikimedia
+Commons)`. It is recorded as `requiredCredit` and printed verbatim in its own
+notices column, **beside** `author` rather than replacing it, because `Artist`
+is regularly the fuller of the two (`Madprime (original) Woudloper (rotated
+image)` against a credit line of `I, Madprime`), so preferring either alone
+loses a contributor. `corpus-de-images.test.ts` fails on any of these — the
 wiring, a caption leaking into a page, a licence outside the allow-list, an
-unnamed or silently-cut author — and on a manifest hand-edited away from the
-files beside it. **The builder is the only writer, and it never half-writes**:
+unnamed or silently-cut author, a required credit absent from the notices — and
+on a manifest hand-edited away from the files beside it. Its notices assertions
+are anchored to the page section and then to the image's ROW: four whole-file
+`includes()` calls passed with two photographs credited to each other's
+photographers, which is the defect class the file was added to catch. And
+`namesAnAuthor` / `isAllowedImageLicense` carry table-driven unit tests of their
+own, because a predicate exercised only as a filter over bytes that already
+satisfy it has no test that fails when the predicate is wrong — which is how
+`unbekant` shipped green. **The builder is the only writer, and it never half-writes**:
 it stages the whole corpus into a sibling directory and swaps it in only once
 every article has succeeded, `--only`/`--articles` are refused without
 `--probe` (both subset the list, and a subset written over the corpus deletes
 the other articles' revision pins), and each image records the upstream `sha1`
-because a revision id pins the text and nothing pinned the pictures. It does
-not reach the runtime image: the Dockerfile copies `backend/dist/`, and `tsc`
-emits no markdown.
+because a revision id pins the text and nothing pinned the pictures. A pinned
+run also **diffs its own inventory against the committed manifest**, because
+neither pin covers whether a figure is still *usable*: Commons metadata is
+live, so a licence retagged or an author blanked upstream turns a 3-image page
+into a 2-image one on a run advertising itself as a reproduction, and the
+Vitest guard cannot see it — four category counts of 17 pass exactly as four
+counts of 18 do. It does not reach the runtime image: the Dockerfile copies
+`backend/dist/`, and `tsc` emits no markdown.
 
 **Query-time latency is measured OUTSIDE `eval/`**, by
 `backend/scripts/benchmark-query-latency.ts` — `runner.ts`'s participation

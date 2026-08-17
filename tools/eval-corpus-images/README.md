@@ -24,7 +24,7 @@ python3 -m venv .venv
 without touching `articles.yaml`; that is how the shipped list was pruned.
 `--only` and `--articles` **require** `--probe` and the tool refuses them
 without it: both subset the article list, and a subset written over the corpus
-is a corpus of one page whose other 65 revision pins are gone — after which the
+is a corpus of one page whose every other revision pin is gone — after which the
 next plain run re-pins them at current revisions and every label written
 against them is stale. The build also stages into
 `corpus-de-images.staging/` and swaps it in only once every article has
@@ -51,6 +51,15 @@ succeeded, so a flaky network cannot leave a thinner corpus behind.
    moved names the file and exits non-zero, having written the bytes anyway so
    the diff is inspectable.
 
+   And a **third check covers what neither pin can**: whether a figure is still
+   *usable*. Commons metadata is live, so a licence retagged, an author field
+   blanked or a thumbnail that stopped rendering turns a 3-image page into a
+   2-image one — or drops it below the two-image floor and out of the corpus —
+   on a run advertising itself as a reproduction. So the build diffs its own
+   inventory against the committed manifest and exits non-zero on anything it
+   lost. The Vitest guard cannot see this: four category counts of 17 pass
+   exactly as four counts of 18 do.
+
 2. **Strips captions and alt text from the page body.** The corpus mimics a
    Confluence page where the visual content is *not* restated in prose — that is
    the only shape on which an image retrieval leg can add anything over the text
@@ -67,19 +76,42 @@ succeeded, so a flaky network cannot leave a thinner corpus behind.
    a name and writing "unknown" into the notices file would be a claim rather
    than a record.
 
-   Two halves of that rule are easy to get wrong, and the first cut got both.
-   **`Credit` is not an author** — it is Commons' *Source* field, and reading
-   it as one credited a PD photograph to "Eigenes Werk" ("own work"). And the
-   **unknown-author templates are localised**: de.wikipedia renders them as
+   Three halves of that rule are easy to get wrong, and earlier cuts got all
+   three. **`Credit` is not an author** — it is Commons' *Source* field, and
+   reading it as one credited a PD photograph to "Eigenes Werk" ("own work").
+   The **unknown-author templates are localised**: de.wikipedia renders them as
    "Autor/-in unbekannt Unknown author" and "Anonym Unknown author", which an
    equality test against `"unknown"` reads as a name. The match is anchored, so
    Commons' "No machine-readable author provided. *X* assumed…" — which does
-   name someone — still passes.
+   name someone — still passes. And the templates are only the *tidy* spellings:
+   `author=` is free text somebody typed, so `File:Magischesdreieck.gif` says
+   `unbekant` and `File:Turbolader LKW.jpg` a bare `selbst`, both of which
+   shipped into the notices file as names while the corpus README published a
+   "no named author" count as if the filter had caught them.
 
    A credit longer than 400 characters is abbreviated on a **word boundary**
    and marked ` […]`. A flat character cap shipped `AxelScheithauer` as
    `AxelSch` and dropped a third contributor entirely, on a CC BY-SA image
    whose whole obligation is that credit.
+
+   **`Artist` is not the whole obligation either.** Where Commons records an
+   `Attribution` with `AttributionRequired`, that string is the credit line the
+   licensor *specified* — CC BY-SA 4.0 §3(a)(1)(A)(i) obliges attribution "in
+   any reasonable manner requested by the Licensor", §3(a)(1)(B) the retention
+   of a supplied copyright notice — and it is regularly not the bare name in
+   `Artist`: `Bundesarchiv, Bild 183-85770-0002 / Junge, Peter Heinz /
+   CC-BY-SA 3.0`, `© Raimond Spekking / CC BY-SA 4.0 (via Wikimedia Commons)`,
+   `Copyright (c) 2004 Richard Ling`. It is recorded as `requiredCredit` and
+   printed verbatim in its own notices column. It does **not** replace `author`,
+   because `Artist` is regularly the fuller of the two — `Madprime (original)
+   Woudloper (rotated image)` against a credit line of `I, Madprime` — so
+   preferring either one alone loses something.
+
+   All of it goes through one text extractor, and that is not cosmetic:
+   `get_text(" ")` inserts a separator at every inline boundary, which turned
+   the photographer credit `Thomas Wolf, www.foto-tw.de` into `Thomas Wolf ,
+   www.foto-tw.de` — one character off the string this file exists to reproduce
+   exactly.
 
 4. **Re-encodes every image locally.** ≤ 512 px longest edge, aiming at 80 KB,
    refused above 120 KB. SVG figures arrive as Wikimedia's PNG thumbnail
@@ -113,7 +145,13 @@ succeeded, so a flaky network cannot leave a thinner corpus behind.
   leaves the corpus as "no imageinfo".
 - **`requirements.txt` is pinned**, Pillow included: a different encoder major
   can change output bytes for identical input, which would turn "reproduce the
-  pinned revisions" into a diff.
+  pinned revisions" into a diff. Two *transitive* packages are pinned for the
+  same reason — `soupsieve`, the selector engine behind every `select()` here
+  (the drop sweep, the figure hoist, the figure collection), and `six`, which
+  markdownify carries. The rest are requests' network plumbing and are left
+  floating on purpose: pinning `certifi` freezes a CA bundle, and a build tool
+  that stops trusting Wikimedia's certificate is a worse failure than a
+  floating transitive.
 - **Two rejection denominators are reported, not one.** A page stops evaluating
   once it has its three images, so most captioned figures never reach the
   licence filter. Quoting refusals against every figure seen would describe a
@@ -124,6 +162,14 @@ succeeded, so a flaky network cannot leave a thinner corpus behind.
 `build.py` sends a descriptive `User-Agent` with a contact URL, sleeps between
 requests, honours `Retry-After` and backs off on 429/5xx. It runs once per
 corpus refresh; there is nothing to gain from pushing the API.
+
+`Retry-After` is parsed in **both** its forms. RFC 9110 permits an HTTP-date,
+and `float("Wed, 21 Oct 2015 07:28:00 GMT")` raises — which escaped the retry
+loop, was caught as an article failure and refused the swap, so the one path
+written for "we are being rate-limited" was the path that killed the build. A
+transport error (`ConnectionError`, `ReadTimeout`) takes the same back-off as a
+5xx for the same reason: a full build is ~600 requests over ten minutes of
+network, and a single reset otherwise costs the whole run.
 
 ## Licensing
 

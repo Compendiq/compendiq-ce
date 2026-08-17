@@ -1,13 +1,13 @@
 # German image-bearing eval corpus (#1115 P5a)
 
-66 German Wikipedia articles carrying 189 vendored images
-(6.21 MB), built by `tools/eval-corpus-images/build.py`.
+65 German Wikipedia articles carrying 187 vendored images
+(6.19 MB), built by `tools/eval-corpus-images/build.py`.
 
 | Shape | Pages | What it is |
 |---|---|---|
 | `technical` | 16 | engineering diagrams and schematics |
 | `science` | 16 | labelled scientific figures |
-| `process` | 18 | process, lifecycle and network notation |
+| `process` | 17 | process, lifecycle and network notation |
 | `photo` | 16 | photographs of things and places |
 
 ## What it is for
@@ -66,13 +66,13 @@ on a manifest that has drifted from the files beside it.
 
 ## What the licence filter rejected on this build
 
-The articles carry **1075** captioned figures between them. A page
-contributes at most 3, so the filter ran on **207**
-of them and refused **18**. The larger number is not the
+The articles carry **1073** captioned figures between them. A page
+contributes at most 3, so the filter ran on **206**
+of them and refused **19**. The larger number is not the
 filter's denominator and is not quoted as one.
 
 | Reason | Figures |
 |---|---|
-| no named author | 11 |
+| no named author | 12 |
 | licence not permitted | 4 |
 | not hosted on Commons | 3 |
