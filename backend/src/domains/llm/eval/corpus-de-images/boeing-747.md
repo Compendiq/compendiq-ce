@@ -453,38 +453,6 @@ Bei diesen Ereignissen kamen insgesamt 3848 Menschen ums Leben, davon allein 583
 
 Übersicht der technischen Daten der wichtigsten 747-Varianten.
 
-### Passagier- und Kombi-Varianten
-
-1
-
-Das RB211-524H2-T war nicht für die ER-Versionen der 747-400 und -400F erhältlich.
-
-2
-
-Diese Zahl schließt die folgenden Baureihen ein: 747-100, -100B und -100SR.
-
-3
-
-Diese Zahl schließt die folgenden Baureihen ein: 747-200B, -200C/M (C- und M-Version sind beide Kombi-Versionen).
-
-4
-
-Diese Zahl schließt die folgenden Baureihen ein: 747-300, -300M und -300SR.
-
-5
-
-Diese Zahl schließt die folgenden Baureihen ein: 747-400, -400M, -400D, -400ER.
-
-### Frachter-Varianten
-
-6
-
-Das RB211-524H2-T war nicht für die ER-Versionen der 747-400 und -400F erhältlich.
-
-7
-
-Diese Zahl schließt die folgenden Baureihen ein: 747-400F und -400ERF.
-
 ## Boeing 747 in Museen
 
 Der Prototyp der Boeing 747 steht im Museum of Flight in Seattle. Eine Boeing 747-100 der Air France ist im Musée de l’air et de l’espace am Pariser Flughafen Le Bourget zu besichtigen. Im Technik-Museum Speyer befindet sich die ehemalige Boeing 747-230 *Schleswig-Holstein* der Lufthansa (Kennzeichen *D-ABYM*), welche z. B. einen begehbaren Rumpf und große Teile des sonstigen Innenraumes zu bieten hat. Die auf den Stand der Boeing 747-300 gebrachte Version 200 *Louis Blériot* der KLM wird im Aviodrome am Flughafen Lelystad ausgestellt. Eine Boeing 747-238B (*City of Bunbury*) der Qantas Airways ist im Qantas Founders Outback Museum in Longreach zu finden. Je eine 747-SP und eine 747-200 befinden sich im Museum der South African Airways in der Nähe von Johannesburg. Des Weiteren befindet sich eine zum Jumbo-Hostel umgebaute 747-200 der ehemaligen Fluggesellschaft Transjet auf dem Flughafen in Stockholm. Im Flieger-Flab-Museum in Dübendorf steht das Cockpit der 747-338 ex VH-EBW und ist ab Mai 2017 als öffentlicher Simulator zugänglich. Im Februar 2019 wurde eine ausrangierte Boeing 747 vom Amsterdamer Flughafen Schiphol quer über Kanäle und eine eigens abgesperrte Autobahn zum nahegelegenen Corendon Village Hotel in Badhoevedorp geschleppt, um dort aufgestellt zu werden. Eine Boeing 747-100 ist im Evergreen Aviation & Space Museum in McMinnville im US-Bundesstaat Oregon zu besichtigen. Eine Boeing 747-400 der Delta Air Lines steht im Delta Flight Museum in Atlanta, Georgia in der Nähe des Atlanta Hartsfield-Jackson Flughafen.

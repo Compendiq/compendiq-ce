@@ -212,10 +212,6 @@ Der Porsche 992 bildet die 8. Generation des Porsche 911. Das Modell wurde am Vo
 
 Der Porsche 911 wurde von 1963 bis 2009 je Modellreihe in folgenden Stückzahlen produziert.
 
-1
-
-Beinhaltet nur die produzierten Fahrzeuge von 2005 bis 2009.
-
 Am 11. Mai 2017 rollte der einmillionste Porsche 911 vom Band. Das in Grün lackierte Fahrzeug verblieb in Firmenbesitz und ist seit 2018 Teil der Ausstellung *Driven by Dreams. 75 Jahre Porsche Sportwagen* im Berliner Automuseum *Volkswagen Group Forum*.
 
 ## Fahrzeugentwicklungen auf Basis des 911

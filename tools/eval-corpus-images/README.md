@@ -15,13 +15,18 @@ to add a decoder to the product so a fixture can be built once a year.
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-.venv/bin/python build.py --probe    # usable figures per article; writes nothing
+.venv/bin/python build.py --probe    # UPPER BOUND on usable figures; writes nothing
 .venv/bin/python build.py            # rebuild at the PINNED revisions
 .venv/bin/python build.py --update   # move to current revisions (obliges a re-label)
 ```
 
 `--probe --articles some.yaml` runs the same selection over a candidate list
-without touching `articles.yaml`; that is how the shipped list was pruned.
+without touching `articles.yaml`; that is how the shipped list was pruned. Its
+count is an **upper bound**, and the flag it prints says so: a probe returns
+before the thumbnail fetch and the re-encode, so the two rejections that can
+only be known by trying — `no thumbnail` and `cannot meet the byte cap` — have
+not run. `ok?` marks an article sitting exactly on the two-figure floor, which
+a full build can still drop.
 `--only` and `--articles` **require** `--probe` and the tool refuses them
 without it: both subset the article list, and a subset written over the corpus
 is a corpus of one page whose every other revision pin is gone — after which the
@@ -33,28 +38,38 @@ succeeded, so a flaky network cannot leave a thinner corpus behind.
 ## What it does, and why each step is there
 
 1. **Resolves each article to a revision id** and fetches *that revision's*
-   rendered HTML (`action=parse&oldid=…`). The pin is the whole point: a
-   re-run reproduces the committed bytes rather than tracking whatever the
-   article says today. Pins are read back out of the corpus's own
-   `MANIFEST.json` — **before** anything is written, which is a scar from
-   `scripts/vendor-eval-corpus.ts`, whose first cut read it afterwards and left
-   the checkout as dead code while three documents claimed reproducibility. An
-   article that is not in the pins is built at the *current* revision and says
-   so by name: absent and renamed-upstream look identical here, and absorbing
-   the difference into a `.get` default is how a reproducible run quietly stops
-   being one.
+   rendered HTML (`action=parse&oldid=…`). Pins are read back out of the
+   corpus's own `MANIFEST.json` — **before** anything is written, which is a
+   scar from `scripts/vendor-eval-corpus.ts`, whose first cut read it afterwards
+   and left the checkout as dead code while three documents claimed
+   reproducibility. An article that is not in the pins is built at the *current*
+   revision and says so by name: absent and renamed-upstream look identical
+   here, and absorbing the difference into a `.get` default is how a
+   reproducible run quietly stops being one.
 
-   The **images are pinned separately**, because a revision id says nothing
-   about them: Commons serves the current version of a file, so an SVG re-drawn
-   or a photograph re-cropped upstream changes a "pinned" rebuild with nothing
-   to notice it. Each image records the upstream `sha1`; a run that finds one
-   moved names the file and exits non-zero, having written the bytes anyway so
-   the diff is inspectable.
+   **A revid does not pin the text**, and it is the easiest of the four checks
+   to over-claim. `oldid` selects a *wikitext* revision, which MediaWiki then
+   renders through the **current** template set and the current parser — so an
+   upstream template edit or a MediaWiki release changes the prose of a page
+   nobody edited. It has already happened to this builder once: 1.43 started
+   wrapping `h2` in `<div class="mw-heading">`, which `cut_tail_sections`
+   carries a branch for. So each page records a `textSha256` over the Markdown
+   it produced, and a rebuild that renders different bytes names the page and
+   exits non-zero. Without it a template edit lands silently on a run that
+   prints its totals and exits 0, and P5c's labels are then written against text
+   that has moved.
 
-   And a **third check covers what neither pin can**: whether a figure is still
-   *usable*. Commons metadata is live, so a licence retagged, an author field
-   blanked or a thumbnail that stopped rendering turns a 3-image page into a
-   2-image one — or drops it below the two-image floor and out of the corpus —
+   The **images are pinned separately** for the same reason one rung along:
+   Commons serves the current version of a file, so an SVG re-drawn or a
+   photograph re-cropped upstream changes a "pinned" rebuild with nothing to
+   notice it. Each image records the upstream `sha1`; a run that finds one moved
+   names the file and exits non-zero, having written the bytes anyway so the
+   diff is inspectable.
+
+   And a **fourth check covers what none of them can**: whether a figure is
+   still *usable*. Commons metadata is live, so a licence retagged, an author
+   field blanked or a thumbnail that stopped rendering turns a 3-image page into
+   a 2-image one — or drops it below the two-image floor and out of the corpus —
    on a run advertising itself as a reproduction. So the build diffs its own
    inventory against the committed manifest and exits non-zero on anything it
    lost. The Vitest guard cannot see this: four category counts of 17 pass
@@ -66,6 +81,21 @@ succeeded, so a flaky network cannot leave a thinner corpus behind.
    leg. A page that captions its own figures is answerable from text alone, so
    the measurement would flatter the feature. Captions are not discarded: they
    go into `MANIFEST.json` for the independent labeller (P5c).
+
+   **The captions of DROPPED figures are the half that got away.** Only 187 of
+   1073 captioned figures are vendored, and a caption whose figure was never
+   selected has no manifest entry — so the Vitest guard, which compares the body
+   against the manifest, is structurally unable to see it. Three markup shapes
+   put one into the prose: a panorama, which is a bare `<div>` around a
+   `.thumbinner` with no `.thumb` class anywhere (`nuerburgring.md` ran a whole
+   section consisting of "Start-und-Ziel-Gerade und Boxengasse des
+   Nürburgrings. (Der schnurgerade Streckenabschnitt erscheint auf dem Bild…)",
+   about a picture not on the page); `.dewiki-gallery`, whose `-title` is a
+   caption over its figures; and `.gallerytext` / `.gallerycaption` one rung
+   down. The final sweep therefore decomposes every caption *container*, not
+   only `figure, .thumb`. `u-bahn-muenchen.md` is the case that shows why it
+   matters — it carried "U-Bahn-Linienschema München, Stand: Dezember 2018" as
+   prose, which is the network diagram described in words.
 
 3. **Filters licences.** CC0, public domain, CC BY x and CC BY-SA x only, each
    with a named author, each hosted on Commons. The filter rejects *by
@@ -133,6 +163,21 @@ succeeded, so a flaky network cannot leave a thinner corpus behind.
   the ranking, `Kölner Dom` contributed a medieval illumination, a reliquary and
   a floor plan — three diagrams and no cathedral, on a page vendored to be a
   photograph.
+- **Hidden nodes are not prose, as a rule rather than a selector list.**
+  de.wikipedia's infobox templates emit their maintenance categories as
+  `<div style="display:none">`, so `{{Infobox Berg}}` opened `zugspitze.md` on
+  `pd5` and `Vorlage:Infobox Berg/Wartung/BILD1` — the first body text under the
+  H1, inside the first chunk that gets embedded. `.infobox` never matched it:
+  that page's infobox is a `wikitable float-right`. Anything the reader does not
+  see is dropped, which also took two `Wikipedia:WikiProjekt …` links off other
+  pages.
+- **A footnote whose table is gone goes with it.** `table` is stripped, so
+  de.wikipedia's `{{FN}}` family (`.fussnoten-etui` in the cell,
+  `.fussnoten-box` below it) annotates columns that no longer exist — six pages
+  carried 20 lines that were nothing but a `1`, a `(1)` or a `\*`. The
+  containers are dropped, and `drop_orphan_markers` sweeps a marker-only line
+  regardless of which template produced it, because that class of defect has
+  more than one template.
 - **Infobox figures are hoisted, not dropped.** The lead photograph of a
   building or an aircraft lives in the infobox, and the infobox is chrome. The
   figure is lifted to the top of the article before the box is removed.

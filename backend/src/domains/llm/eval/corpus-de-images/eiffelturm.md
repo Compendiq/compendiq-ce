@@ -38,8 +38,6 @@ Unter regem Interesse der Öffentlichkeit begannen am 28. Januar 1887 die Bauarb
 
 Eiffel verwendete als Baumaterial im Puddelverfahren produziertes Schmiedeeisen, was zu seiner besonderen Haltbarkeit beigetragen hat. Da die Eisenverbindung mit geringem Kohlenstoffgehalt nicht geschweißt, sondern nur genietet werden konnte, ließ Eiffel in seinem Firmensitz in Levallois-Perret die notwendigen Einzelteile im Baukastenprinzip vorproduzieren und in Paris vor Ort zusammensetzen. Die Teile wurden exakt berechnet, geschnitten und mit den Löchern für das spätere Nieten versehen. Für die Vorproduktion bis zur Errichtung hatte Eiffel einen festen Ablaufplan. Fehlerhafte Teile wurden wieder zur Fabrik zurückgeschickt und nicht vor Ort angepasst. Ein Stab von etwa 40 technischen Zeichnern, Architekten und Ingenieuren erfasste in 700 Gesamtansichten und 3.600 Werkzeichnungen das gesamte, aus 18.038 Einzelteilen bestehende Bauwerk.
 
-Baufortschritt des Eiffelturms
-
 Am 1. Juli 1887 begann die Errichtung der vier Turmfüße. Die zunächst freitragend montierten Sparren wurden von 30 Meter hohen provisorischen Baugerüsten getragen. Am 7. Dezember 1887 erfolgte die Montage der ersten Etage, auf deren Höhe ein 45 Meter hohes Gerüst zur Abstützung der Horizontalbalken diente. Oberhalb der Etage stützten sich die Strebepfeiler von selbst. Alle Werkstücke wurden von dampfgetriebenen Kränen auf den Führungsschienen positioniert, auf denen später die unteren Fahrstühle verkehren sollten. Einer der heikelsten Bauabschnitte war die Verbindung der vier horizontalen Tragbalken in der ersten Etage. Für deren exakte Ausrichtung nutzte Eiffel sogenannte Sandkisten, mit denen die Träger millimetergenau ausgependelt werden konnten. In zwei Pfeilern befanden sich manuell mit Handpumpen bedienbare hydraulisch verstellbare Hubspindeln, mit denen die Sparren auf ihre Position gebracht wurden. Damit war eine sehr präzise Justierung der Balken möglich. Nachdem die Tragpfeiler fest miteinander verbunden waren, ersetzte man die Hubspindeln durch verankerte Stahlkeile. Die sorgfältige Planung und Ausführung führte dazu, dass die Nietlöcher erst ab einer Höhe von 57 Metern angepasst werden mussten. Vermutlich wurde die hohe Präzision durch Zusammenlegen der Teile in der Werkstatt und anschließendes Aufreiben der Nietlöcher erzielt. Eiffel selbst führte dazu aus:
 
 > „[…] bei unserem Verfahren waren alle Löcher im voraus mit großer Genauigkeit gebohrt, die Montage durch die Löcher selbst reguliert, und durch Zusammenheften, d. h. durch gewaltsames Eintreiben einer großen Zahl von Stahldornen in die Löcher, führte man die Zusammenfügung herbei.“
@@ -180,8 +178,6 @@ Folgende für den Fahrzeugverkehr freigegebene Straßen tangieren das Turmareal:
 Die dem Eiffelturm nächsten Haltestellen der Métro Paris sind Bir-Hakeim (Tour Eiffel) der Linie 6 und École Militaire der Linie 8. Die Linie C der Pariser S-Bahn RER hält südwestlich des Turms am Bahnhof Champ de Mars - Tour Eiffel. In unmittelbarer Nähe des Eiffelturms halten verschiedene Buslinien.
 
 ### Architektur
-
-Detailansichten
 
 Wie Gustave Eiffel in einem Vortrag vor der *Société des Ingénieurs civils* am 30. März 1885 erklärte, ging es in der Architektur des Turms darum,
 

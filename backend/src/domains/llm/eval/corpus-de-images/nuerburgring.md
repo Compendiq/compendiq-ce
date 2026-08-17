@@ -105,10 +105,6 @@ Im Juni 2021 wurde die erste Kurve der Nordschleife nach dem Streckenabschnitt �
 
 ## Nutzung
 
-### Streckenführungen
-
-Start-und-Ziel-Gerade und Boxengasse des Nürburgrings. (Der schnurgerade Streckenabschnitt erscheint auf dem Bild aus fototechnischen Gründen gebogen.)
-
 ### Sonstige Motorsportveranstaltungen
 
 Bis in die 1980er gab es auf der Südschleife Bergrennen, mit Start in Müllenbach, dem tiefsten Punkt der Südschleife. Gefahren wurde entgegen der üblichen Richtung hoch zu Start und Ziel. Da dann die Rückführung weiter im Kreis zurück nach Müllenbach führte, war ein unterbrechungsloser Betrieb möglich. Solche Bergrennen konnten innerhalb eines Tages mit allen Trainings- und Wertungsläufen durchgeführt werden.
@@ -156,9 +152,6 @@ Bis Sommer 2009 entstand zwischen der Bundesstraße und der Start-Ziel-Gerade ei
 Die offizielle Eröffnung des „neuen Nürburgrings“ fand am 10. Juli 2009 statt, ein Großteil der neuen Attraktionen war zu diesem Zeitpunkt allerdings noch nicht in Betrieb. Die größte Attraktion sollte der sogenannte Ring-Racer werden – eine Achterbahn, deren Besonderheit die enorme Beschleunigung am Start war. Dieser *Launch Coaster* wurde mit Luftdruck beschleunigt. Er wurde symbolisch beim Großen Preis mit Prominenten eröffnet. Nachdem es während der Testfahrten im Sommer 2009 zu zwei Explosionen mit Verletzten gekommen war, wurde das Fahrgeschäft nicht in Betrieb genommen. Erst am 31. Oktober 2013 wurde der Vollbetrieb aufgenommen. Jedoch wurde bereits am 3. November 2013 der Fahrbetrieb wieder vollständig eingestellt.
 
 Das Projekt *Nürburgring 2009*, in das rund 350 Millionen Euro aus Steuergeldern flossen, führte im Sommer 2009 zum Rücktritt des rheinland-pfälzischen Finanzministers und Aufsichtsratschefs der Nürburgring GmbH, Ingolf Deubel.
-
-Außenansicht der neuen Gebäude des Projektes Nürburgring 2009
-mit Lindner-Hotel, ring°racer, Warsteiner Event-Center, ring°arena, ring°boulevard und ring°werk (von links nach rechts)
 
 Der damalige rheinland-pfälzische Ministerpräsident Kurt Beck hatte betont, das Projekt werde den Steuerzahler keinen Euro kosten. Als Berater wurden die Macher des gescheiterten Space Park Bremen engagiert. Bei der Suche nach Investoren wurden dubiose Finanzvermittler beauftragt und unter anderem zum Beweis der Liquidität des Bundeslandes Rheinland-Pfalz eine Summe von 95 Millionen Euro nach Liechtenstein überwiesen. Nachdem kein Investor gefunden worden war, wurde die gesamte Investition zumindest vorläufig aus Steuergeldern finanziert und mit dem Bau begonnen. In die Kritik geriet Landesfinanzminister Ingolf Deubel, da die Finanzierung des Ausbaus über hochspekulative Fonds, Liechtensteiner Konten und unbekannte Geschäftspartner in Dubai stattfinden sollte. Am 7. Juli 2009 trat Deubel auf Grund der Kritik am Geschäftsgebaren eines Schweizer Vermittlers bei der Privatfinanzierung des geplanten Freizeitzentrums zurück. Zudem war beim kritisch berichtenden Journalisten Wilhelm Hahne eine Hausdurchsuchung durchgeführt worden.
 

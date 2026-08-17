@@ -588,6 +588,17 @@ a corpus with no pictures. Built by `tools/eval-corpus-images/build.py` from
 plain re-run reproduces the committed bytes, `--update` moves to current
 revisions and obliges a re-label. Read its `README.md` first.
 
+**A revision id is one of four pins, not the whole of reproducibility.**
+`action=parse&oldid=` renders a fixed *wikitext* revision through the **current**
+template set and parser, so a template edit or a MediaWiki release moves the
+prose of a page nobody edited — the builder already carries a branch for one such
+change. So a plain re-run checks four things and exits non-zero on any of them:
+the page text against a recorded `textSha256`, each image against the upstream
+Commons `sha1`, the inventory against the committed manifest (a figure can stop
+being *usable* without either digest moving), and the total image budget. In
+every case the bytes are still written, so the diff is inspectable — the run
+simply stops claiming to have reproduced the corpus.
+
 **Nothing here consumes it yet, and that is deliberate.** It is absent from
 `CORPUS_DIRS` and from `corpusDirsForLanguage`, so no run this runbook describes
 touches it and every recorded baseline stays comparable —

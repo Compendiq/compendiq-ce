@@ -175,11 +175,16 @@ is regularly the fuller of the two (`Madprime (original) Woudloper (rotated
 image)` against a credit line of `I, Madprime`), so preferring either alone
 loses a contributor. `corpus-de-images.test.ts` fails on any of these — the
 wiring, a caption leaking into a page, a licence outside the allow-list, an
-unnamed or silently-cut author, a required credit absent from the notices — and
-on a manifest hand-edited away from the files beside it. Its notices assertions
-are anchored to the page section and then to the image's ROW: four whole-file
-`includes()` calls passed with two photographs credited to each other's
-photographers, which is the defect class the file was added to catch. And
+unnamed or silently-cut author, a required credit absent from the notices, a
+page body whose sha256 no longer matches, a raw `<img>`, an orphaned footnote
+marker — and on a manifest hand-edited away from the files beside it. Its
+notices assertions are anchored to the page section, then to the image's ROW,
+and then to the **cell**: four whole-file `includes()` calls passed with two
+photographs credited to each other's photographers, and a row-anchored
+`includes()` still passed a `CC BY-SA 3.0 DE` shortened to `CC BY-SA 3.0` and a
+credit truncated to its first contributor, because both are prefixes. It also
+pins the notices file's obligations *paragraph*, which the rows are evidence
+for and which could be deleted whole with the suite green. And
 `namesAnAuthor` / `isAllowedImageLicense` carry table-driven unit tests of their
 own, because a predicate exercised only as a filter over bytes that already
 satisfy it has no test that fails when the predicate is wrong — which is how
@@ -187,15 +192,30 @@ satisfy it has no test that fails when the predicate is wrong — which is how
 it stages the whole corpus into a sibling directory and swaps it in only once
 every article has succeeded, `--only`/`--articles` are refused without
 `--probe` (both subset the list, and a subset written over the corpus deletes
-the other articles' revision pins), and each image records the upstream `sha1`
-because a revision id pins the text and nothing pinned the pictures. A pinned
-run also **diffs its own inventory against the committed manifest**, because
-neither pin covers whether a figure is still *usable*: Commons metadata is
-live, so a licence retagged or an author blanked upstream turns a 3-image page
-into a 2-image one on a run advertising itself as a reproduction, and the
-Vitest guard cannot see it — four category counts of 17 pass exactly as four
-counts of 18 do. It does not reach the runtime image: the Dockerfile copies
-`backend/dist/`, and `tsc` emits no markdown.
+the other articles' revision pins). **A revid is one pin of four, and on its
+own it over-claims**: `action=parse&oldid=` renders a fixed *wikitext* revision
+through the CURRENT template set and parser, so an upstream template edit or a
+MediaWiki release moves the prose of a page nobody edited — this builder already
+carries a branch for one (1.43's `<div class="mw-heading">`). So each page
+records a `textSha256`, each image the upstream Commons `sha1` (a revision id
+never pinned the pictures), and a pinned run also **diffs its own inventory
+against the committed manifest**, because no digest covers whether a figure is
+still *usable*: Commons metadata is live, so a licence retagged or an author
+blanked upstream turns a 3-image page into a 2-image one on a run advertising
+itself as a reproduction, and the Vitest guard cannot see it — four category
+counts of 17 pass exactly as four counts of 18 do. All three write their bytes
+and exit non-zero, because an inspectable diff beats a refusal. **The caption
+strip has a second half the guard is structurally blind to**: only 187 of 1073
+captioned figures are vendored, so a caption belonging to a figure the builder
+*dropped* has no manifest entry to be compared against — a panorama
+(`.thumbinner` with no `.thumb`), a `.dewiki-gallery` title and a `.gallerytext`
+each shipped one as body prose, one of them the München U-Bahn network diagram
+restated in words. Caption *containers* are swept, not only `figure, .thumb`.
+Same class, different source: anything the article renders `display:none` is
+dropped (a `{{Infobox Berg}}` maintenance link opened `zugspitze.md` on `pd5`),
+and a footnote box whose table was stripped goes with it. It does not reach the
+runtime image: the Dockerfile copies `backend/dist/`, and `tsc` emits no
+markdown.
 
 **Query-time latency is measured OUTSIDE `eval/`**, by
 `backend/scripts/benchmark-query-latency.ts` — `runner.ts`'s participation

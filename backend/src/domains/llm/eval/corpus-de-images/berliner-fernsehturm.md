@@ -274,10 +274,6 @@ Der Privatsender BB Radio nutzte seine für den Fernsehturm koordinierte Frequen
 
 Beim Antennendiagramm sind im Falle gerichteter Strahlung die Hauptstrahlrichtungen in Grad angegeben.
 
-1)
-
-Ausgestrahlt von einer anderen Sendeanlage
-
 ### Digitales Radio (DAB)
 
 DAB wird meist in horizontaler Polarisation und im Gleichwellenbetrieb mit anderen Sendern ausgestrahlt. Für den Kanal 12D werden vertikale Strahler in niedrigerer Höhe verwendet.

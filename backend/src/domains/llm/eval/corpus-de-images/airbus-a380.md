@@ -81,24 +81,6 @@ Drei Tage später, am 29. März 2006, bestätigten die Europäische Agentur für
 
 Am 30. November 2006 beendete die A380 mit einem letzten Flug von Vancouver über den Nordpol nach Toulouse das Zulassungsprogramm erfolgreich. Am 12. Dezember 2006 erhielt die Passagierversion der A380 mit Triebwerken der Trent-900-Serie – als erstes bis dahin zivil zugelassenes Passagierflugzeug – die kombinierte behördliche Musterzulassung durch die Europäische Agentur für Flugsicherheit (EASA) sowie die US-amerikanische Federal Aviation Administration (FAA). Am 23. April 2007 erhielt die A380 die Typenzulassung von der EASA für den Betrieb mit Triebwerken der Engine-Alliance-GP7200-Serie. Von der FAA war dieser Triebwerkstyp bereits im Dezember 2005 für die A380 zertifiziert worden. Zu diesem Zeitpunkt waren mit dem Triebwerk GP7200 mehr als 111 Flüge und 1348 Flugstunden absolviert worden. Im Juli 2007 gaben FAA und EASA ihre Zulassung der A380 für den Betrieb auch auf Start- und Landebahnen mit nur 45 Metern Breite bekannt. Bis dahin war eine Zulassung ausschließlich für Bahnen ab einer Breite von 60 Metern erfolgt.
 
-#### Liste der Testflugzeuge
-
-1
-
-Manufacturer Serial Number: Hersteller-Seriennummer
-
-2
-
-Die zwei letzten Ziffern geben bei Airbus normalerweise den Triebwerkstyp und dessen Unterversion an; die Strukturtestzellen wurden jedoch nicht mit Triebwerken ausgerüstet.
-
-3
-
-Diese Maschine sollte ursprünglich an Etihad ausgeliefert werden. Etihad hat die A380-Auslieferungen jedoch verschoben. MSN007 ging nun an Emirates, wofür eine Umrüstung auf Engine-Alliance-Triebwerke nötig wurde. Mit der Umrüstung wechselte die Typbezeichnung somit von A380-8*41* (Bezeichnung für Maschinen mit Rolls-Royce Trent 970) zu A380-8*61* (Bezeichnung für Maschinen mit GP7276-Antrieb).
-
-4
-
-Wie MSN007 sollte MSN009 ursprünglich an Etihad gehen, was eine Umrüstung auf Rolls-Royce Trent nötig gemacht hätte. Der neue Abnehmer Emirates wird jedoch den Engine-Alliance-Antrieb beibehalten.
-
 ### Auslieferungsschwierigkeiten
 
 Am 29. Oktober 2005 wurde der Flughafen Frankfurt als erster Flughafen außerhalb von Toulouse zur Durchführung von Abfertigungstests angeflogen. Am 8. November 2005 wurde zum ersten Mal das Airbuswerk Hamburg-Finkenwerder von der zweiten Versuchsmaschine MSN 002 angeflogen. In den Jahren 2006, 2008, 2010, 2014, 2016, 2018 und 2022 besuchte je eine A380 die Internationale Luft- und Raumfahrtausstellung Berlin. Der erste Besuch am Flughafen München Franz Josef Strauß fand am 28. März 2007 statt.

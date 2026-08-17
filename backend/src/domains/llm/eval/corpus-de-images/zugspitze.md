@@ -1,9 +1,5 @@
 # Zugspitze
 
-pd5
-
-Vorlage:Infobox Berg/Wartung/BILD1
-
 Die **Zugspitze** ist mit 2962 m ü. NHN der höchste Gipfel des Wettersteingebirges und gleichzeitig Deutschlands höchster Berg.
 
 Das Zugspitzmassiv liegt südwestlich von Garmisch-Partenkirchen in Bayern und im Norden Tirols. Ein Teil des Zugspitzmassivs liegt somit auf österreichischem Staatsgebiet, über seinen Westgipfel verläuft die Grenze zwischen Deutschland und Österreich. Südlich des Berges schließt sich das Zugspitzplatt an, eine Karst-Hochfläche mit zahlreichen Höhlen. An den Flanken der Zugspitze befinden sich zwei der insgesamt vier bayerischen Gletscher: der Nördliche Schneeferner, der in seinem Bestand stark gefährdet ist, und der Höllentalferner.
@@ -36,8 +32,6 @@ Die Zugspitze erhebt sich elf Kilometer südwestlich von Garmisch-Partenkirchen 
 
 #### Zugspitzmassiv
 
-Das Zugspitzmassiv von Westen mit beschrifteten Gipfeln, gesehen vom Almkopf; Höhenangaben nach BEV
-
 Das Massiv der Zugspitze umfasst weitere Gipfel. Nach Süden wird das Zugspitzplatt in einem Bogen vom Zugspitzeck (2820 m) und Schneefernerkopf (2874 m), den Wetterspitzen (2747 m), dem Wetterwandeck (2698 m), den Plattspitzen (2679 m) sowie den Gatterlköpfen (2490 m) umrahmt. Das Massiv endet mit dem Gatterl (2024 m), einer Scharte zum Hochwanner hin. Von der Zugspitze nach Osten verläuft der *Jubiläumsgrat* in Richtung Alpspitze und Hochblassen über die Höllentalspitzen. In nordöstlicher Richtung zieht der kurze *Riffelwandkamm* über die Riffelwandspitzen (2626 m) und die Riffelköpfe (2459 m), zur Riffelscharte (2161 m). Von hier verläuft der *Waxensteinkamm* über die Riffelspitzen bis hin zum Waxenstein.
 
 #### Zugspitzplatt
@@ -45,10 +39,6 @@ Das Massiv der Zugspitze umfasst weitere Gipfel. Nach Süden wird das Zugspitzpl
 Das *Platt* (auch Zugspitzplatt) ist eine Hochfläche unterhalb des Zugspitzgipfels in südlicher und südöstlicher Richtung auf einer Höhe zwischen 2000 und 2650 m. Es bildet den Abschluss des Reintals und ist durch Verwitterung, Verkarstung und glaziale Überprägung entstanden. Die Fläche enthält Rundhöcker, Dolinen, Karren oder Schratten als Folge der Eiszeiten. Außerdem sind von verschiedenen Kaltzeiten Moränen zurückgeblieben. Zu Beginn des 19. Jahrhunderts war das *Platt* zum letzten Mal vollständig vergletschert. Heute besteht es zu 52 % aus Schutt, zu 32 % aus anstehendem Gestein und zu 16 %, vor allem im mittleren und unteren Bereich, aus Böden mit Vegetation.
 
 Die Mariä-Heimsuchung-Kapelle besteht seit 1981.
-
-Bergpanorama von der Aussichtsplattform am Zugspitzplatt Richtung Südosten auf die Zillertaler Alpen im Winter
-
-Aus digitalem Geländemodell berechnetes Bergpanorama von der Aussichtsplattform am Zugspitzplatt
 
 ### Naturräumliche Zuordnung
 

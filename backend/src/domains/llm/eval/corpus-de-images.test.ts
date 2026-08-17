@@ -36,6 +36,7 @@
  *    including the one language string that resolves onto this directory.
  */
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -101,6 +102,37 @@ describe('corpus-de-images — manifest and disk agree', () => {
     const files = pages.map((p) => p.file);
     expect(new Set(files).size, 'duplicate page file in MANIFEST.json').toBe(files.length);
     expect(files.filter((f) => !/^[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(f))).toEqual([]);
+  });
+
+  it('records the digest of the text it pinned', () => {
+    // The revision id pins the WIKITEXT, not the prose: `action=parse&oldid=`
+    // renders through the current template set and the current parser, so an
+    // upstream template edit or a MediaWiki release moves the text of a page
+    // nobody edited — this builder already carries a branch for one such
+    // change (1.43's `<div class="mw-heading">` wrapper). Without a recorded
+    // digest a "pinned" rebuild prints its totals and exits 0 while P5c's
+    // labels sit against text that has moved underneath them. `build.py`
+    // compares this on every pinned run; here it is what stops a hand-edit to
+    // a page body from being invisible.
+    const offenders = pages
+      .filter((page) => !/^[0-9a-f]{64}$/.test(page.textSha256))
+      .map((page) => `${page.file}: ${JSON.stringify(page.textSha256)}`);
+    expect(offenders, 'textSha256 must be a sha256 in lowercase hex').toEqual([]);
+
+    const mismatched = pages
+      .map((page) => ({
+        page,
+        actual: createHash('sha256').update(readFileSync(join(IMAGE_CORPUS_DIR, page.file))).digest('hex'),
+      }))
+      .filter(({ page, actual }) => actual !== page.textSha256)
+      .map(({ page, actual }) => `${page.file}: manifest ${page.textSha256.slice(0, 12)}, file ${actual.slice(0, 12)}`);
+    expect(
+      mismatched,
+      'A page body was edited without the builder. The builder is the only writer here — it stages ' +
+        'the whole directory and swaps it in — so an edit made by hand is deleted without a word ' +
+        'on the next rebuild, and until then the labels and the digest disagree about which text ' +
+        'was measured.',
+    ).toEqual([]);
   });
 
   it('gives every page at least one image', () => {
@@ -343,13 +375,58 @@ describe('corpus-de-images — the attribution file covers what is committed', (
     sections.set(part.split('\n', 1)[0]!.trim(), part);
   }
 
-  /** The row for one image, with the writer's `\|` escaping undone. */
-  function rowFor(section: string, file: string): string | undefined {
-    return section
-      .split('\n')
-      .find((line) => line.startsWith(`| \`${file}\` |`))
-      ?.replaceAll('\\|', '|');
+  /**
+   * The row for one image, split into its five cells:
+   * `` `file` `` | Commons file | Author | Licence | Required credit.
+   *
+   * A `row.includes(value)` is not enough, and the two ways it is not enough
+   * are the two ways a credit goes wrong. Every allowed licence label is a
+   * PREFIX of a ported one — `CC BY-SA 3.0` inside `CC BY-SA 3.0 DE` — so a
+   * manifest that dropped the jurisdiction suffix passes against a notices row
+   * that kept it, and the file is then attributed under a licence it is not
+   * released under. And every truncation of a credit is a prefix of the
+   * credit, so `cmdslater, derivative work Lämpel` cut to `cmdslater,` passes
+   * against a row naming both contributors. Both were planted on the committed
+   * bytes and left the suite green. The `AxelSch` incident is that defect one
+   * layer up, and the sibling test below cannot see a SINGLE truncation either
+   * — its heuristic needs several long credits to collide on one length.
+   *
+   * The split runs on the RAW line and unescapes afterwards, never before: the
+   * writer escapes a `|` inside a value as `\|` precisely so the row stays one
+   * row, and undoing that first would let a credit containing a pipe split
+   * itself into two cells.
+   */
+  function cellsFor(section: string, file: string): string[] | undefined {
+    const row = section.split('\n').find((line) => line.startsWith(`| \`${file}\` |`));
+    if (!row) return undefined;
+    return row
+      .replace(/^\| /, '')
+      .replace(/ \|$/, '')
+      .split(' | ')
+      .map((cell) => cell.replaceAll('\\|', '|').trim());
   }
+
+  it('states the obligations the rows are evidence for', () => {
+    // The rows are DATA; this paragraph is the obligation, and it is the only
+    // prose in the repository that states it. Deleting the whole
+    // "What you must do if you redistribute this directory" section left every
+    // other assertion in this file green — 2317 characters covering the four
+    // things a redistributor has to be told, guarded by nothing.
+    for (const phrase of [
+      'ShareAlike is not optional', // the page text is CC BY-SA 4.0 and that is contagious
+      'AGPL-3.0', // this directory is NOT under the repository's own licence
+      'downscaled and re-encoded', // the images were modified, and a modification must be disclosed
+      'Required credit', // which column is the string a licensor asked to see
+      'GFDL', // what the filter refused, so nobody assumes the whole article's figure set is here
+    ]) {
+      expect(
+        attribution,
+        `LICENSE-ATTRIBUTION.md no longer states: ${phrase}. The per-image rows below it are the ` +
+          'evidence; this section is the obligation, and a table of credits under no statement of ' +
+          'what a reader must do with them is a record, not a licence notice.',
+      ).toContain(phrase);
+    }
+  });
 
   it('names every page, its revision and its licence', () => {
     const missing = pages
@@ -380,18 +457,23 @@ describe('corpus-de-images — the attribution file covers what is committed', (
         problems.push(`${image.file}: no "## ${page.title}" section`);
         continue;
       }
-      const row = rowFor(section, image.file);
-      if (!row) {
+      const cells = cellsFor(section, image.file);
+      if (!cells) {
         problems.push(`${image.file}: no row under "## ${page.title}"`);
         continue;
       }
-      for (const [field, value] of [
-        ['sourceTitle', image.sourceTitle],
-        ['sourceUrl', image.sourceUrl],
-        ['author', image.author],
-        ['license', image.license],
+      // The cell EQUALS the manifest value. Anything looser lets a prefix
+      // through, and both fields have prefixes that are wrong answers.
+      for (const [field, column, expected] of [
+        ['commons file', 1, `[${image.sourceTitle}](${image.sourceUrl})`],
+        ['author', 2, image.author],
+        ['licence', 3, image.licenseUrl ? `[${image.license}](${image.licenseUrl})` : image.license],
       ] as const) {
-        if (!row.includes(value)) problems.push(`${image.file}: row does not carry ${field} ${JSON.stringify(value)}`);
+        if (cells[column] !== expected) {
+          problems.push(
+            `${image.file}: ${field} cell is ${JSON.stringify(cells[column])}, manifest says ${JSON.stringify(expected)}`,
+          );
+        }
       }
     }
     expect(
@@ -406,10 +488,13 @@ describe('corpus-de-images — the attribution file covers what is committed', (
   it("reproduces the licensor's own credit line where one is required", () => {
     const problems: string[] = [];
     for (const { page, image } of allImages) {
-      if (!image.requiredCredit) continue;
-      const row = rowFor(sections.get(page.title) ?? '', image.file);
-      if (!row?.includes(image.requiredCredit)) {
-        problems.push(`${image.file}: ${JSON.stringify(image.requiredCredit)}`);
+      const cells = cellsFor(sections.get(page.title) ?? '', image.file);
+      // Both directions: a required credit missing from the notices is an
+      // obligation not met, and a credit in the notices that the manifest does
+      // not record is a claim about the licensor nobody can check.
+      const expected = image.requiredCredit ? `\`${image.requiredCredit}\`` : '—';
+      if (cells?.[4] !== expected) {
+        problems.push(`${image.file}: credit cell is ${JSON.stringify(cells?.[4])}, expected ${JSON.stringify(expected)}`);
       }
     }
     expect(
@@ -525,10 +610,59 @@ describe('corpus-de-images — no caption or alt text reaches the page body', ()
   it('leaves no figure markup behind', () => {
     for (const page of pages) {
       const body = pageBody(page.file);
-      for (const marker of ['<figure', '<figcaption', 'class="thumb', 'mw-default-size', 'thumbcaption']) {
+      for (const marker of [
+        '<figure',
+        '<figcaption',
+        'class="thumb',
+        'mw-default-size',
+        'thumbcaption',
+        // `<img>` is job #2 of this file and was the one marker missing from
+        // the list. markdownify emits a surviving image as a raw tag with an
+        // absolute upload.wikimedia.org src AND its alt text — an unattributed
+        // image and a caption leak in the same node — and `imageRefs` only
+        // matches `![alt](target)`, so the empty-alt assertion above is blind
+        // to it. Planted alongside an intact `![](images/…)` reference, the
+        // whole suite stayed green.
+        '<img',
+        'upload.wikimedia.org',
+      ]) {
         expect(body.includes(marker), `${page.file} still contains ${marker}`).toBe(false);
       }
     }
+  });
+
+  it('leaves no template or footnote residue behind', () => {
+    // Two classes of non-prose the caption assertion above structurally cannot
+    // see, because it compares the body against the 187 captions in the
+    // manifest and neither of these belongs to a vendored image.
+    //
+    // 1. Hidden template output. `{{Infobox Berg}}` emits its maintenance
+    //    categories as `<div style="display:none">`, so `zugspitze.md` opened
+    //    on `pd5` and `Vorlage:Infobox Berg/Wartung/BILD1` — the first body
+    //    text under the H1, inside the first chunk that gets embedded.
+    // 2. An orphaned footnote marker. `.fussnoten-box` annotates a table, and
+    //    tables are stripped, so six pages carried 20 lines that were nothing
+    //    but a `1`, a `(1)` or a `\*` pointing at rows that are not there.
+    const RESIDUE = [/^Vorlage:/, /^Wikipedia:/, /^pd\d+$/];
+    const ORPHAN_MARKER = /^(?:\(\d{1,2}\)|\d{1,2}\)?|(?:\\?\*){1,4}|[†‡])$/;
+    const found: string[] = [];
+    for (const page of pages) {
+      pageBody(page.file)
+        .split('\n')
+        .forEach((line, index) => {
+          const text = line.trim();
+          if (!text) return;
+          if (RESIDUE.some((pattern) => pattern.test(text)) || ORPHAN_MARKER.test(text)) {
+            found.push(`${page.file}:${index + 1}: ${JSON.stringify(text)}`);
+          }
+        });
+    }
+    expect(
+      found,
+      'A line that is only a footnote marker or a maintenance-template link is not prose. It ' +
+        'embeds as if it were, and it sits in the chunk beside the text the labels are written ' +
+        'against.',
+    ).toEqual([]);
   });
 
   it('does not restate a manifest caption verbatim in the prose', () => {

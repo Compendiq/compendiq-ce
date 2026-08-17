@@ -9,6 +9,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Airbus_A380",
       "revid": 269696564,
+      "textSha256": "530d8da6cd58618917b4c6856e7315592c4de70fb40f2b8ff0d0fed401ba0e35",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -66,6 +67,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Antenne",
       "revid": 269032932,
+      "textSha256": "fb86782485db194c852a86046b4227464e5e5bb35157f501e4390d9d973b1bac",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -123,6 +125,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Auge",
       "revid": 268120578,
+      "textSha256": "726da5be08da6edc8b0746f02cbf6a22f60d53d48588350a4597ec14aa19d59f",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -180,6 +183,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Bahnstrom",
       "revid": 269400468,
+      "textSha256": "b12db716667b6dc458100287a09b5526530cc748f523d9abd2600e56d4202dd9",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -237,6 +241,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Balanced_Scorecard",
       "revid": 268370739,
+      "textSha256": "5d14f8b5a005f433ca32ae1dc3c1207c19d89fe6d3c650b65fa535925b205b5a",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -294,6 +299,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Berliner_Fernsehturm",
       "revid": 269238118,
+      "textSha256": "b28238a79aae0183b5a0ed81b59e869f582e00ba2ad822f5032d56ef2621e279",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -351,6 +357,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Blutkreislauf",
       "revid": 267827696,
+      "textSha256": "1c4df3984dd0e922d28b26d4209bcbe4a254af0f713938482c31d790c1d6cb65",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -408,6 +415,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Boeing_747",
       "revid": 269633097,
+      "textSha256": "ab631df9ce198d1adfcc4e76f54d9b86b79bc85a489e5b95072ba173e7037b68",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -465,6 +473,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Brandenburger_Tor",
       "revid": 269387418,
+      "textSha256": "7d967ce84ebe9edf477e921657a2151468a150c0378b1ea6ae6e5d71fb7c6c9e",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -522,6 +531,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Brennstoffzelle",
       "revid": 268988924,
+      "textSha256": "fef1452e98457e78a7e8b0e1039101d16b26a2adb24eac3c24b41acb6a4a5462",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -579,6 +589,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Business_Process_Model_and_Notation",
       "revid": 266409070,
+      "textSha256": "b949961dc2f8b7fed580b0c586fdb1b5d4715bc21403fa52fdcdeec67bc95640",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -636,6 +647,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Demingkreis",
       "revid": 266113402,
+      "textSha256": "6f1e33fb9b9aa3de6b612cf0c87b3ae46789a58030356a57543e4b149ace73f1",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -693,6 +705,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Desoxyribonukleinsäure",
       "revid": 269646120,
+      "textSha256": "2ff0ccd9ee93ad0c08db67b321667ef0c15b9ccaf24cef2ea8599ed36974acd2",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -750,6 +763,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Dieselmotor",
       "revid": 268199400,
+      "textSha256": "387aa6fb4b021d1dae95d0d7b9ed18bfd265ad971e59606ef457be0026f286a9",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -807,6 +821,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Eiffelturm",
       "revid": 269548358,
+      "textSha256": "93078a9c333abde2dfeb4d2f6aa5858d5f05721bf3cd8d56c983a74f64f54a86",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -864,6 +879,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Elbphilharmonie",
       "revid": 269691461,
+      "textSha256": "2aba85780515aaad1538beac880992c24b2f12a9375fb7fab10fe24e5aa3b603",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -921,6 +937,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Elektromotor",
       "revid": 269190474,
+      "textSha256": "b01e2bc8d4f23614b6c6192f6a5d01775ddf9b1bf16b39a7fc6e944bf6072e77",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -978,6 +995,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Entity-Relationship-Modell",
       "revid": 266267590,
+      "textSha256": "58a50c75906193dd18fbd083779065ae47ba6cf5d96539109a2459757afb0153",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -1020,6 +1038,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Erdatmosphäre",
       "revid": 269512997,
+      "textSha256": "fedeb6cd3fabcdbe3fbcc0009bd4ce248c3f2e6514b23fd38d3ae23c7eb7c894",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -1077,6 +1096,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Ereignisgesteuerte_Prozesskette",
       "revid": 264856091,
+      "textSha256": "cf09d6a8fb247cebd6ea612d3b8b01a704e845dede658cd5ee00dc9a0be491da",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -1119,6 +1139,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Extreme_Programming",
       "revid": 258570931,
+      "textSha256": "6ae8a1eca67c697ce3725a74daae415c6ba9d6a8c757ca180a65e24e26ada133",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -1176,6 +1197,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Frauenkirche_(Dresden)",
       "revid": 265340811,
+      "textSha256": "809b25ed07cd744b470da534065fe2533f482f85e8b5c5665e48d1dc8620b444",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -1233,6 +1255,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Golden_Gate_Bridge",
       "revid": 269206032,
+      "textSha256": "6996fa579b82cb501ec8b319d38a1426981d60b9a7fc6d4a70af2bff98f4a2e7",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -1290,6 +1313,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Hamburger_Rathaus",
       "revid": 268424518,
+      "textSha256": "33a951f9025a6407fcc63da5a5871c84a071de5c2663444914eca50f51a82de7",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -1347,6 +1371,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Herz",
       "revid": 269239462,
+      "textSha256": "d85d745f94d69dd0ab0b250a4d389c15cb986bcc7e2f942638ef0e069c801844",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -1404,6 +1429,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/ICE_4",
       "revid": 269685647,
+      "textSha256": "4dfb483c6b5f2a42fa5697eb6bd99c1d83dc14dbf7e35c4c62fa49450ed1532b",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -1461,6 +1487,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Kölner_Dom",
       "revid": 269588741,
+      "textSha256": "626595bf9b3372603796be83ff9099f15c7a4d87f72e95fbcc8ecff8e8330f1e",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -1518,6 +1545,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Kohlenstoffkreislauf",
       "revid": 268827774,
+      "textSha256": "28d3b43da7fc40f98c90cfee106dfe4d516b44f09e96efa2115e37ddf99e01de",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -1575,6 +1603,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Lichtwellenleiter",
       "revid": 269301801,
+      "textSha256": "b2946c0f93848d7cf45c56a67f162ed8a90f529ae48fcd6e3506225d2fea81ce",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -1632,6 +1661,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Mitose",
       "revid": 262276330,
+      "textSha256": "5a1b67cec96b6322dbe3583469b3750bd180d99583ae84d0231a9f2757bfbfec",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -1689,6 +1719,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Nassi-Shneiderman-Diagramm",
       "revid": 266461709,
+      "textSha256": "462a23229857de9a1d0e20094d16458888f4f2503121c33857e7621279059ac4",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -1746,6 +1777,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Nervenzelle",
       "revid": 268775074,
+      "textSha256": "79c613e5e084d09279b0db27f10d7b96b534bd2115f4debbe79411c1c41ee13e",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -1803,6 +1835,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Nürburgring",
       "revid": 268359531,
+      "textSha256": "a9d61d5ac9573a485f91fa05ff9ebf5780386b799671abbd3154f4b9c05192a9",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -1860,6 +1893,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Ökosystem",
       "revid": 266628346,
+      "textSha256": "f124297615ef7270f7e9a39a9f102fc5a0c8020847b8df2f2bcb714cdac5b00d",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -1917,6 +1951,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Organigramm",
       "revid": 262643267,
+      "textSha256": "30027bc9e3e07f53a4d0187760966342b9567666d72ed9e7d515ed850eb4a096",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -1959,6 +1994,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/OSI-Modell",
       "revid": 267867774,
+      "textSha256": "fd06a7b2cc12985bf9103663537a420d8f533d41643eb2da4a850310d4672041",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -2001,6 +2037,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Periodensystem",
       "revid": 269567099,
+      "textSha256": "42693bf10e867246cb1ea681f883be5139d621d2732b7caa53f896244008bf0a",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -2058,6 +2095,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Petri-Netz",
       "revid": 266311558,
+      "textSha256": "23cf0b4aa24c209159af029bdd51494aa5b33dfa46145a4e17299e405b3fab40",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -2115,6 +2153,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Photosynthese",
       "revid": 268891481,
+      "textSha256": "42a7b32bc7f9bfa390f41dd41ad3d508dfd54bfa86f6fc17b1fc7f6e89bccce1",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -2172,6 +2211,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Photovoltaik",
       "revid": 268987123,
+      "textSha256": "1de153300b7fd0331d515aad1c8da08e8f89a8b7b4ec67ff5dd834efd676305f",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -2229,6 +2269,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Plattentektonik",
       "revid": 268350008,
+      "textSha256": "1015407e6e668bf3fcb9c90021423637ec6e58eff918c5fab83bcb6e36145d88",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -2286,6 +2327,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Porsche_911",
       "revid": 267366775,
+      "textSha256": "1aba67fc217bd32149e2738aa7582c1280763cfcb06ca11cfcab2b83817998db",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -2343,6 +2385,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Programmablaufplan",
       "revid": 261517630,
+      "textSha256": "4fb7029ca199bed399526a64274fa09405cdc177192ead47d0570e01321ae8e4",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -2385,6 +2428,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Reichstagsgebäude",
       "revid": 269450765,
+      "textSha256": "eb26f9e018137653e46d1b286f0b6e1953f4510aed8ad4d15ce5b62d9f2f0a87",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -2442,6 +2486,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Router",
       "revid": 265153302,
+      "textSha256": "a7ec9361132cb09c6d3a66aa7212ab09fcf9000479b4874dfa0bb5651d224555",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -2499,6 +2544,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Schloss_Neuschwanstein",
       "revid": 269567466,
+      "textSha256": "1a061e630ef71b8470aecdc012677b6d7ab86617700719a7e96738dcf10776f3",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [
@@ -2556,6 +2602,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Scrum",
       "revid": 266861251,
+      "textSha256": "fcb5925b8909567a820a12f12f28b168498f1a3a0856459a78a3f89a00b284f3",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -2613,6 +2660,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Six_Sigma",
       "revid": 269036696,
+      "textSha256": "f8348a5fed5263987eb5476303aa7cdf4e1332bd8262b3bb281fc1de60889ac4",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -2655,6 +2703,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Sonnensystem",
       "revid": 266435561,
+      "textSha256": "76c2de18872d46f5a47ace9192e2be85357e3fc7ade4ea9ac176f4a928f94207",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -2712,6 +2761,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Stickstoffkreislauf",
       "revid": 265855738,
+      "textSha256": "57ca0acb957ea5b3ba992c9ed332f294fb7d54460c00ec70e390c5d967a62243",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -2754,6 +2804,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Supply-Chain-Management",
       "revid": 268676444,
+      "textSha256": "c1e3d81ddebc49c71ed9d4b220e26691797ccca83fb6334e143b0538e03bd787",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -2811,6 +2862,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Transistor",
       "revid": 267138212,
+      "textSha256": "4b0c44f3229414d26d9c6009b4740b1b979ff3caa4a89d51202ca4a53fa341d7",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -2868,6 +2920,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Transmission_Control_Protocol",
       "revid": 269592170,
+      "textSha256": "e680ad5c85fd64d2295e1e7f5b9703535a200c80dd8be5e9eee56d045e5a2741",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -2925,6 +2978,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Turbolader",
       "revid": 267533098,
+      "textSha256": "7d36d9741baad90ff8ea5fd6f10f3ed01563fa8daccc653caf4fdd89e147e002",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -2982,6 +3036,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/U-Bahn_Berlin",
       "revid": 269304389,
+      "textSha256": "c9d8844084ae1ed17de014884eb6426578700ab9240464dd8fedd7cbf392eccc",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -3039,6 +3094,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/U-Bahn_München",
       "revid": 269622942,
+      "textSha256": "08889c374e824301ba517532ad0b6beff4b7e667a2c0f31699c3603c42f23a03",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -3096,6 +3152,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Unified_Modeling_Language",
       "revid": 267705497,
+      "textSha256": "eb2e96f4f9559ed57f4dea84c22260efacc1331749438c211ebede1a369dfd7a",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -3153,6 +3210,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/V-Modell",
       "revid": 258803524,
+      "textSha256": "5c6772043eeac70c1462b807104d96ba6f50673876ffa6387209205db7b7cce0",
       "license": "CC BY-SA 4.0",
       "category": "process",
       "images": [
@@ -3195,6 +3253,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Viertaktmotor",
       "revid": 267136828,
+      "textSha256": "da9ff3031965cbacd490a87d02722d567f66d97e2724c50dbf6a95feb5f11f69",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -3252,6 +3311,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Vulkan",
       "revid": 266300685,
+      "textSha256": "00b235e47b070dbd73dc5bc5987d5bd3a715b8deff825493b8575db0d6c30807",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -3309,6 +3369,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Wälzlager",
       "revid": 267905770,
+      "textSha256": "9da4b767055b9e23158e17e5f6f78251a169b08bcd260b18bfbcc21953a3e052",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -3366,6 +3427,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Wärmepumpe",
       "revid": 269702072,
+      "textSha256": "01f4eeb04e7a167a0460360a50f6bd5886ba47444bc769da425028a26984b457",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -3423,6 +3485,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Zahnrad",
       "revid": 267673447,
+      "textSha256": "090a32f2bc6bbcc6e399ae73e61cd27f6b7c90ac41ba2ff486c1a4fba4b6fd9d",
       "license": "CC BY-SA 4.0",
       "category": "technical",
       "images": [
@@ -3480,6 +3543,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Zellkern",
       "revid": 263037820,
+      "textSha256": "771e55e3160c04f30893851a3fe407d23012b70e76a882332ba9d14d2620963e",
       "license": "CC BY-SA 4.0",
       "category": "science",
       "images": [
@@ -3537,6 +3601,7 @@
       "source": "wikipedia-de",
       "url": "https://de.wikipedia.org/wiki/Zugspitze",
       "revid": 269568403,
+      "textSha256": "75b94a2fac336a5543f9ba4ac771373aabc9fb5a317a64dd60a2114381715013",
       "license": "CC BY-SA 4.0",
       "category": "photo",
       "images": [

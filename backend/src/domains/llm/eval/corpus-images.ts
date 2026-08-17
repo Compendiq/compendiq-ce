@@ -174,6 +174,21 @@ export const ImageCorpusPageSchema = z.object({
   url: z.string(),
   /** The revision the text and the figure list were taken from — a rebuild pins to it. */
   revid: z.number().int().positive(),
+  /**
+   * sha256 of this page's Markdown, and the half of reproducibility the
+   * revision id does NOT buy. `action=parse&oldid=` renders that revision's
+   * wikitext through the CURRENT template set and parser, so an upstream
+   * template edit or a MediaWiki release moves the prose of a page nobody
+   * edited — this builder already carries a branch for one such change (1.43
+   * wrapping `h2` in `<div class="mw-heading">`). Without a recorded digest a
+   * "pinned" rebuild prints its totals and exits 0 while P5c's labels sit
+   * against text that has changed underneath them.
+   *
+   * Shape-only here, like `sha1` above: the hex form and the match against the
+   * bytes on disk are asserted in the guard, for the reason the block comment
+   * on this schema gives.
+   */
+  textSha256: z.string(),
   license: z.literal('CC BY-SA 4.0'),
   category: z.enum(IMAGE_CORPUS_CATEGORIES),
   images: z.array(ImageCorpusImageSchema),

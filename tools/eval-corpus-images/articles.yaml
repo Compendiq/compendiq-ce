@@ -22,6 +22,13 @@
 # title below was probed, and the ones that came back with fewer than two
 # usable figures were replaced rather than shipped thin.
 #
+# The probe count is an UPPER BOUND, not the number that ships. `build_page`
+# returns before the thumbnail fetch and the re-encode under `--probe`, so
+# `no thumbnail` and `cannot meet the byte cap` — the two rejections that can
+# only be known by trying — have not run. An article probed at exactly two can
+# therefore still build at one and be dropped; `--probe` prints `ok?` rather
+# than `ok` for exactly that case.
+#
 # Probed and dropped, so nobody re-adds them expecting them to work:
 # `Wasserfallmodell`, `Flussdiagramm`, `Kanban`, `Gantt-Diagramm`,
 # `Fehlermöglichkeits- und Einflussanalyse` and `Wasserkreislauf` each came back

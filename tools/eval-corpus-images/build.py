@@ -35,23 +35,35 @@ Three rules do the real work.
    the repository, both because a VL encoder needs raster and because SVG
    carries script/XXE risk.
 
-Determinism has TWO halves, and only one of them is an article revision.
-Revisions are pinned in the corpus's own MANIFEST.json and read back on a plain
-re-run (read BEFORE the output directory is wiped — that is a scar from the
-English vendoring script, whose first cut read the manifest afterwards and
-found nothing). The other half is the FILES: Commons serves the current version
-of a file, and an SVG re-drawn or a photograph re-cropped upstream changes a
-rebuild with nothing in the manifest to notice it. So each image also records
-the upstream `sha1`, and a pinned run reports every file whose sha1 has moved
-and exits non-zero — the bytes are still written, so the diff is inspectable,
-but the run does not claim to have reproduced the corpus. There is a THIRD
-thing neither pin covers: whether a figure is still *usable*. Commons metadata
-is live, so a licence retagged, an author blanked or a thumbnail that stopped
+Determinism is not one pin but four checks, and a revision id is only the first
+of them. Revisions are pinned in the corpus's own MANIFEST.json and read back on
+a plain re-run (read BEFORE the output directory is wiped — that is a scar from
+the English vendoring script, whose first cut read the manifest afterwards and
+found nothing).
+
+A revid does NOT pin the text. `action=parse&oldid=` renders that revision's
+wikitext through the CURRENT template set and the current parser, so a template
+edit or a MediaWiki upgrade moves the prose under a fixed revision — this script
+already carries a workaround for one such change (`cut_tail_sections`, on
+1.43's `<div class="mw-heading">` wrapper). So each page also records
+`textSha256` over the Markdown it wrote, and a pinned run that produces
+different bytes names the page and exits non-zero.
+
+Nor does it pin the FILES: Commons serves the current version of a file, and an
+SVG re-drawn or a photograph re-cropped upstream changes a rebuild with nothing
+in the manifest to notice it. So each image records the upstream `sha1`, and a
+pinned run reports every file whose sha1 has moved and exits non-zero.
+
+And nothing above covers whether a figure is still *usable*. Commons metadata is
+live, so a licence retagged, an author blanked or a thumbnail that stopped
 rendering quietly turns a 3-image page into a 2-image one, or drops it out of
 the corpus. So a pinned run also diffs its own inventory against the committed
-manifest and exits non-zero on anything it lost (`lost_since`). `--update`
-deliberately moves to current revisions and skips all three, which obliges a
-re-label.
+manifest and exits non-zero on anything it lost (`lost_since`).
+
+In all three failure branches the bytes ARE written, because a diff you can look
+at is more use than a refusal — the run simply stops claiming to have reproduced
+the corpus. `--update` deliberately moves to current revisions and skips all
+three, which obliges a re-label.
 
 Nothing is written into the corpus directory until the whole run succeeds: the
 build stages into a sibling directory and swaps it in at the end. A run that
@@ -61,7 +73,7 @@ is the reproducibility property above, deleted by a transient 502.
 
 Usage:
     python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-    .venv/bin/python build.py --probe          # per-article usable-figure count
+    .venv/bin/python build.py --probe          # per-article usable-figure UPPER BOUND
     .venv/bin/python build.py                  # rebuild at the pinned revisions
     .venv/bin/python build.py --update         # move to current revisions
 """
@@ -69,6 +81,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import io
 import json
@@ -409,7 +422,23 @@ DROP_SELECTORS = [
     ".toc", "#toc", ".mw-kartographer-map", ".side-box", ".ambox", ".mw-collapsible",
     ".gallery", ".mwe-math-element", ".thumbinner .magnify", "table", ".mw-indicators",
     ".mw-authority-control", ".navigation-not-searchable", ".mw-jump-link",
+    # de.wikipedia's `{{FN}}` family: `.fussnoten-etui` is the marker inside a
+    # table cell and `.fussnoten-box` the definition list under it. `table` is
+    # already dropped above, so the definitions annotate columns that no longer
+    # exist — the marker arrives as a bare `1` on its own line and the text
+    # below it refers to rows nobody can see. Six pages shipped 20 such lines.
+    ".fussnoten-box", ".fussnoten-block", ".fussnoten-etui",
 ]
+
+#: Elements a reader never sees. de.wikipedia's infobox templates emit their
+#: maintenance-category links as `<div style="display:none">`, so `{{Infobox
+#: Berg}}` put `pd5` and `Vorlage:Infobox Berg/Wartung/BILD1` into `zugspitze.md`
+#: as its first two body lines — i.e. into the first chunk that gets embedded,
+#: on the page opening a retrieval eval weights most. The rule is general rather
+#: than a selector per template: text the article does not display is not the
+#: article's prose. `.infobox` never matched this one, because the page's
+#: infobox is a `wikitable float-right`.
+_HIDDEN_STYLE = re.compile(r"display\s*:\s*none", re.I)
 
 # Everything from one of these headings onward is apparatus: link farms,
 # bibliographies and footnotes, none of which reads as knowledge-base prose.
@@ -426,6 +455,10 @@ def strip_noise(soup: BeautifulSoup) -> None:
     for selector in DROP_SELECTORS:
         for node in soup.select(selector):
             node.decompose()
+    for node in soup.select(".editoronly"):
+        node.decompose()
+    for node in soup.find_all(style=_HIDDEN_STYLE):
+        node.decompose()
 
 
 def cut_tail_sections(root: Tag) -> None:
@@ -707,7 +740,23 @@ def to_markdown(root: Tag) -> str:
     md = re.sub(r"\n{3,}", "\n\n", md)
     # markdownify emits empty emphasis for the stripped inline markup.
     md = re.sub(r"^\s*\*\*\s*$", "", md, flags=re.M)
-    return drop_empty_headings(md).strip()
+    return drop_empty_headings(drop_orphan_markers(md)).strip()
+
+
+#: A line that is only a footnote marker. `.fussnoten-box` above is the template
+#: that produced every one of the 20 committed cases, so this is belt and
+#: braces — but the *class* of defect is "an annotation whose subject was
+#: stripped", and de.wikipedia has more than one template for it. A marker with
+#: nothing to point at is noise in the index either way, and a rule over the
+#: rendered Markdown catches a template this script has never met. Digits and
+#: asterisks only (markdownify escapes the latter to `\*`); a bare `a)` is
+#: plausible prose and is left alone.
+_ORPHAN_MARKER = re.compile(r"^(?:\(\d{1,2}\)|\d{1,2}\)?|(?:\\?\*){1,4}|[†‡])$")
+
+
+def drop_orphan_markers(md: str) -> str:
+    """Remove marker-only lines, before `drop_empty_headings` counts content."""
+    return "\n".join(line for line in md.split("\n") if not _ORPHAN_MARKER.fullmatch(line.strip()))
 
 
 def drop_empty_headings(md: str) -> str:
@@ -994,6 +1043,32 @@ def read_image_sha1s(manifest: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def text_drift(manifest: dict[str, Any], pages: list[dict[str, Any]]) -> list[str]:
+    """Pages whose rendered Markdown differs from the committed bytes.
+
+    The half of reproducibility a revision id does not buy. `action=parse` with
+    an `oldid` renders that revision's wikitext through the CURRENT templates and
+    parser, so an upstream template edit or a MediaWiki release changes the prose
+    of a page nobody edited. It has already happened to this builder once —
+    1.43 started wrapping `h2` in `<div class="mw-heading">`, which
+    `cut_tail_sections` carries a branch for.
+
+    Absent from the committed manifest means "not recorded yet", not "matches":
+    the field arrived after the first corpus was vendored, so a page without one
+    is skipped rather than reported as drifted.
+    """
+    recorded = {
+        page["file"]: page["textSha256"]
+        for page in manifest.get("pages", [])
+        if page.get("textSha256")
+    }
+    return [
+        f"{page['file']}: {recorded[page['file']][:12]} -> {page['textSha256'][:12]}"
+        for page in pages
+        if page["file"] in recorded and recorded[page["file"]] != page["textSha256"]
+    ]
+
+
 def lost_since(manifest: dict[str, Any], pages: list[dict[str, Any]]) -> list[str]:
     """Pages and images the committed manifest has and this build does not.
 
@@ -1170,7 +1245,27 @@ def build_page(
     # would emit an absolute upload.wikimedia.org URL with alt text, which is
     # both an unattributed image and the caption leak this corpus exists to
     # avoid.
-    for node in root.select("figure, .thumb"):
+    #
+    # The CAPTION containers go with them, and that half is not covered by
+    # `figure, .thumb` — which is the mechanism by which captions belonging to
+    # figures this build DROPPED shipped as body prose. Three shapes did it:
+    #   * a panorama is `<div style=…><div class="thumbinner centered panorama">`
+    #     with no `.thumb` anywhere, so decomposing the `<img>` left its
+    #     `.thumbcaption` standing as a paragraph. `nuerburgring.md` ran a whole
+    #     `### Streckenführungen` section consisting of "Start-und-Ziel-Gerade
+    #     und Boxengasse des Nürburgrings. (Der schnurgerade Streckenabschnitt
+    #     erscheint auf dem Bild…)" — prose referring to "dem Bild", about a
+    #     picture that is not on the page;
+    #   * `.dewiki-gallery` is a de.wikipedia template whose `-title` is a
+    #     heading over its figures (`Baufortschritt des Eiffelturms`), and it is
+    #     a caption whether or not one of those figures was vendored;
+    #   * `.gallerycaption` / `.gallerytext`, for the same reason one rung down.
+    # The guard cannot catch these on its own: it compares the body against the
+    # 187 captions in the manifest, and a dropped figure has no manifest entry.
+    for node in root.select(
+        "figure, .thumb, .thumbinner, .thumbcaption, figcaption, "
+        ".gallerycaption, .gallerytext, .dewiki-gallery-title, .dewiki-gallery-nav"
+    ):
         node.decompose()
     for node in root.find_all("img"):
         node.decompose()
@@ -1198,6 +1293,12 @@ def build_page(
         "source": "wikipedia-de",
         "url": f"https://de.wikipedia.org/wiki/{title.replace(' ', '_')}",
         "revid": revid,
+        # The revid pins the wikitext; this pins the PROSE. See the module
+        # docstring: `oldid` renders through the live template set, so the
+        # rendered text of a fixed revision moves on a template edit or a
+        # MediaWiki upgrade, and without this a rebuild reports totals and
+        # exits 0 while P5c's labels sit against text that has changed.
+        "textSha256": hashlib.sha256(markdown.encode("utf8")).hexdigest(),
         "license": PAGE_LICENSE,
         "category": category,
         "images": accepted,
@@ -1349,14 +1450,25 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
 A plain run reads the `revid` of every page back out of `MANIFEST.json`, so it
-rebuilds the committed text rather than tracking whatever the articles say
-today. The images are pinned by a second mechanism, because Commons serves the
-current version of a file and an upstream re-draw would otherwise change a
-"pinned" rebuild silently: each image records the upstream `sha1`, and a run
-that finds one moved names the file and exits non-zero. Nothing here may be
-hand-edited — the builder regenerates the whole directory into a staging
-sibling and swaps it in only on success, and `corpus-de-images.test.ts` fails
-on a manifest that has drifted from the files beside it.
+asks for the committed revision rather than whatever the article says today.
+That is where the pinning starts and not where it ends, because a revid does
+**not** pin the prose: `action=parse&oldid=` renders that revision's wikitext
+through the *current* template set and parser, so a template edit or a MediaWiki
+release moves the text of a page nobody edited. So each page also records a
+`textSha256` over the Markdown it produced, and a rebuild that renders different
+bytes names the page and exits non-zero.
+
+The images need a third pin, because Commons serves the current version of a
+file and an upstream re-draw would otherwise change a "pinned" rebuild silently:
+each image records the upstream `sha1`, and a run that finds one moved names the
+file and exits non-zero. A fourth check covers what none of them can — whether a
+figure is still *usable* — by diffing this build's inventory against the
+committed manifest.
+
+Nothing here may be hand-edited. The builder regenerates the whole directory
+into a staging sibling and swaps it in only on success, and
+`corpus-de-images.test.ts` fails on a manifest that has drifted from the files
+beside it — including a page body whose sha256 no longer matches.
 
 ## What the licence filter rejected on this build
 
@@ -1376,7 +1488,12 @@ filter's denominator and is not quoted as one.
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--update", action="store_true", help="move to current revisions")
-    parser.add_argument("--probe", action="store_true", help="report usable figures per article; write nothing")
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="report an UPPER BOUND on usable figures per article (it stops before the download "
+        "and the re-encode, so two rejection reasons have not run); write nothing",
+    )
     parser.add_argument("--only", default=None, help="comma-separated article titles, for probing")
     parser.add_argument(
         "--articles",
@@ -1447,7 +1564,13 @@ def main() -> int:
             continue
         if args.probe:
             usable = result["usable"] if result else 0
-            flag = "ok " if usable >= MIN_IMAGES_PER_PAGE else "THIN"
+            # An UPPER BOUND, and the flag says so when it matters. `build_page`
+            # returns before the download and the re-encode under `--probe`, so
+            # the two rejections that can only be known by trying — `no
+            # thumbnail` and `cannot meet the byte cap` — have not run. An
+            # article probed at exactly the floor can therefore still ship at
+            # one figure and be dropped by the full build.
+            flag = "THIN" if usable < MIN_IMAGES_PER_PAGE else ("ok? " if usable == MIN_IMAGES_PER_PAGE else "ok  ")
             print(f"{flag} {category:10s} {resolved:45s} {usable}")
             continue
         if result is None:
@@ -1458,6 +1581,13 @@ def main() -> int:
         print(f"  + {result['file']:40s} {len(result['images'])} images  rev {revid}")
 
     if args.probe:
+        print(
+            "\nCounts are an UPPER BOUND: a probe stops before the thumbnail fetch and the "
+            f"re-encode, so `no thumbnail` and `cannot meet the byte cap` have not run. `ok?` "
+            f"marks an article sitting exactly on the {MIN_IMAGES_PER_PAGE}-figure floor, which a "
+            "full build can still drop.",
+            file=sys.stderr,
+        )
         return 0
 
     # Refuse BEFORE anything is swapped in. A run that lost articles to a flaky
@@ -1524,6 +1654,20 @@ def main() -> int:
         print("! this rebuild is NOT a reproduction of the committed bytes.", file=sys.stderr)
         exit_code = 1
     if not args.update:
+        moved = text_drift(manifest, pages)
+        if moved:
+            # Same rule as the sha1 branch, for the half a revid cannot pin.
+            print(file=sys.stderr)
+            print(f"! {len(moved)} page(s) rendered different text at the pinned revision:", file=sys.stderr)
+            for entry in moved:
+                print(f"!   {entry}", file=sys.stderr)
+            print(
+                "! this rebuild is NOT a reproduction of the committed text. `oldid` renders through "
+                "the CURRENT template set: a template edit or a MediaWiki upgrade moved the prose. "
+                "Read the diff and re-label before committing.",
+                file=sys.stderr,
+            )
+            exit_code = 1
         lost = lost_since(manifest, pages)
         if lost:
             # Same rule as the sha1 branch, for the half a sha1 cannot see: the

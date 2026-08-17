@@ -271,39 +271,11 @@ Der *optische Empfänger* am Ende eines Lichtwellenleiters muss eine möglichst 
 
 Ähnlich wie in der Kupfertechnik wurden zur Kenntlichmachung der Übertragungsbandbreiten und des Leistungsvermögens von Multimode- und Monomodefasern optische Klassen und Kategorien eingeführt. Durch den zunehmenden Bandbreitenbedarf und immer höhere Datenraten beim Übergang vom MBit- zum GBit-Bereich, sowie der Einführung von (Multi-)GBit-Protokollen wie zum Beispiel Ethernet, Fibre Channel oder InfiniBand, wurden so seit Mitte der 1980er Jahre bisher die Kategorien OM1, OM2, OM3, OM4 und OM5 (Optical Multimode) für Multimodefasern, sowie die Kategorien OS1 und OS2 (Optical Singlemode) für Monomodefasern eingeführt. Die Faserkategorien sind nach ISO/IEC 11801 und 24702 international spezifiziert, und die steigende Anzahl der aufgenommenen Kategorien trägt dabei den gewachsenen Anforderungen Rechnung.
 
-1
-
-**EMB:** *Effektive-Modale*-Bandbreite
-
-2
-
-**OFL:** *Over-Filled-Launch*-Bandbreite
-
-3
-
-OM1 wird von einigen Herstellern auch in **grau** angeboten.
-
-4
-
-OM4 wird von einigen Herstellern auch in **aqua** angeboten.
-
-5
-
-OS1 und OS2 wird von einigen Herstellern auch in **grün** angeboten.
-
 #### Kategorien für Multimodefasern
 
 Historisch bedingt gibt es bei den Methoden zur Klassifizierung der Faserkategorien für *Multimodefasern* (OM1–OM4) wesentliche Unterschiede. Frühere Übertragungsverfahren nutzten primär kostengünstige LEDs zu Sendezwecken. LEDs sind jedoch nur bis zu einer Datenrate von 622 MBit/s geeignet, da sie bauartbedingt eine geringe Fokussierung aufweisen und somit sowohl in den Faserkern als auch in einen Teil des Claddings Licht einkoppeln. Man spricht hier vom sogenannten *over-filled launch* (OFL). Ab Gbit-Ethernet kommen Oberflächenemitter (VCSEL, engl. *vertical-cavity surface-emitting laser*) bei Wellenlängen von 850 und 1310 nm zum Einsatz, die eine recht starke Fokussierung aufweisen und nur noch in einen Bruchteil des Faserkerns einkoppeln. Man spricht in diesem Fall vom *reduced mode launch* (RML). Die Bestimmung und Spezifizierung der Bandbreite wurde früher (OM1 und OM2) mit der OFL- und RML-Methode im Frequenzbereich durchgeführt, welche sich aber zur Bestimmung der Übertragungslängen für Gbit-Anwendungen als unzureichend erwiesen. Die Messmethodik musste insofern abgeändert werden, und für hochwertige laseroptimierte Multimodefasern wird heute (anstelle der RML-Methode) die *effektive modale Bandbreite* (EMB) im Zeitbereich bestimmt, mit der DMD-Messmethode (engl. *differential mode delay*) oder der minEMBc-Messmethode (engl. *minimum effective modal bandwidth calculated*).
 
 Die Faserkategorien OM1 und OM2 sind typischerweise für LED-basierte Anwendungen konzipiert, wobei durch die Reduzierung des Kerndurchmessers auf 50 µm die Modendispersion verringert und die Bandbreite somit erhöht werden konnte. Die Faserkategorien OM3 und OM4 sind nur noch mit 50 µm Kerndurchmesser erhältlich (G50/125) und für Hochgeschwindigkeits-Applikationen wie (10/40/100-)Gigabit-Ethernet oder Fibre Channel bei 850 nm vorgesehen. Sie besitzen ein verbessertes Brechungsindexprofil als OM1/2-Fasern, welche herstellungsbedingt einen leichten Brechungsindexeinbruch in der Faserkernmitte besitzen (beispielsweise bei dem OVD-, MCVD- oder PCVD-Verfahren mit Abscheidungsprozessen im Inneren der Preform), was die hochbitratige RML-Übertragung mit Oberflächenemittern beeinträchtigt.
-
-\*
-
-bei 1490 nm
-
-\*\*
-
-Erhöhung der Datenübertragungsrate durch parallele Übertragung über 4(8) / 8(16) / 12(24) Kanäle(Fasern)
 
 Die maximale spezifizierte Übertragungsreichweite der eingesetzten Faserkategorie (siehe Tabelle) richtet sich nach der Datenrate und der genutzten Wellenlänge (850 nm oder 1300 nm). Während bei 10 MBit/s bis 1 GBit/s ohne weiteres 300 m bei 850 nm auch mit OM1- und OM2-Fasern möglich sind, ist die erreichbare Länge bei Übertragungsraten von mehr als 4 GBit/s auf unter 100 m bei dieser Wellenlänge begrenzt (für die unterschiedlichen Hochgeschwindigkeits-Anwendungen sind leicht abweichende minimale Übertragungslängen spezifiziert, siehe Tabelle). Fasern der Kategorie OM3 und OM4 erlauben hingegen auch Längen von ca. 300 m bei 850 nm. Mit OM4-Fasern kann zusätzlich bei Anwendungen mit mehr als 10 GBit/s die Übertragungslänge um einige 10 Meter gegenüber OM3-Fasern erhöht werden. OM5 wurde eingeführt, um per Wellenlängenmultiplexverfahren Datenraten von 100 bis 400 Gbit/s auch mit wenigen Fasern erreichen zu können.
 

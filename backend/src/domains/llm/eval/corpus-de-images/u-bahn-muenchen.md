@@ -33,8 +33,6 @@ Die Nummerierung der Linien ist nicht in der Reihenfolge ihrer Eröffnung erfolg
 
 Die MVG betreibt acht U-Bahn-Linien, davon zwei nur zeitweise verkehrende Verstärkerlinien (Signets mit zweifarbigem Hintergrund).
 
-U-Bahn-Linienschema München, Stand: Dezember 2018
-
 ### Linie U1
 
 → *Hauptartikel: Stammstrecke 2*
@@ -149,8 +147,6 @@ Die U8 ist eine Verstärkerlinie und verkehrt nur am Samstagnachmittag. Mit dem 
 → *Hauptartikel: Liste der Münchner U-Bahnhöfe*
 
 ### Struktur und Ausstattung
-
-Bodenleitsystem U-Bahn
 
 Bis auf die ebenerdig gelegenen Bahnhöfe *Studentenstadt*, *Freimann*, *Kieferngarten*, *Fröttmaning*, *Garching-Hochbrück* (alle U6) sowie den in Hochlage errichteten Bahnhof *Neuperlach Süd* (U5) sind alle Bahnhöfe als Tunnelbahnhöfe in mindestens einfacher Tiefenlage ausgeführt. Die Bahnsteige sind in der Regel etwa 120 Meter lang. Alle Bahnhöfe wurden mit einem taktilen Rillenband vor der Bahnsteigkante ausgestattet, neuere Bahnhöfe verfügen über ein komplettes taktiles Leitsystem von den Liften und Treppen zum Bahnsteig. Dafür wurde den Stadtwerken 1996 der Integrationspreis des Bayerischen Blindenbundes verliehen. Die ursprünglichen Rillen wurden inzwischen durch besser fühlbare Rillen- und Noppenplatten ersetzt.
 

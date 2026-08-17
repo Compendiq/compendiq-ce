@@ -282,8 +282,6 @@ Im Rahmen eines Forschungsprojekts soll ein Triebzug für eine Fernsteuerung auf
 
 ## Instandhaltung
 
-Wikipedia:WikiProjekt Ereignisse/Vergangenheit/fehlend
-
 Leitwerk für die Instandhaltung ist das ICE-Werk Hamburg. Alle Instandhaltungsstufen an den 100 geplanten Triebzügen sollen dort abgearbeitet werden. Bis Ende 2020 sollen 60 Millionen Euro in die Modernisierung des Werkes investiert werden. Während des Probebetriebs sollten die Züge in den ICE-Werken Hamburg und München instand gehalten werden.[veraltet]
 
 Erster geplanter Instandhaltungsort für die Triebzüge ist der Betriebsbahnhof Berlin-Rummelsburg.

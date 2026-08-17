@@ -10,10 +10,6 @@ Das Bauwerk wurde 1937 eröffnet, hat eine lichte Durchfahrtshöhe von 67 Metern
 
 Die Golden Gate Bridge war bei ihrer Eröffnung mit einer Hauptstützweite von 1280 Metern die längste Hängebrücke der Welt. Erst 27 Jahre später wurde sie 1964 von der Verrazzano-Narrows Brücke abgelöst, gehört aber weiterhin zu den längsten Hängebrücken weltweit. Der ganze Brückenzug ist inklusive der Zufahrtsbrücken 2737 Meter lang. Die eigentliche Hängebrücke hat eine Gesamtstützweite von 1966 Metern und weist 227 Meter hohe Pylone auf. Die Pylonstiele sind aus Stahl und in ihrer Dicke dreimal abgestuft. An jeder Abstufung sind sie durch Querriegel miteinander verbunden. Die Höhen der Stufen und der Querriegel nehmen nach oben ab. Der 27,4 Meter breite Fahrbahnträger besteht in Längsrichtung aus 7,6 Meter hohen Fachwerkträgern, die durch horizontale Verbände miteinander verbunden sind. Die beiden Kabel haben einen Durchmesser von jeweils 0,92 Metern, an ihnen sind die Hänger in Abständen von je 15 Metern befestigt.
 
-## Größenvergleich
-
-Größenvergleich bekannter Brücken **→** Zur **interaktiven** Version **←**
-
 ## Bau der Brücke
 
 ### Vorgeschichte
@@ -55,10 +51,6 @@ Insgesamt wiegt das Bauwerk 887.000 Tonnen, 22.226 Tonnen wiegen jeweils die zwe
 
 Um die für unvermeidlich gehaltene Zahl der Unfälle zu reduzieren, hatte Joseph B. Strauss erstmals strikte Anweisung gegeben, dass Schutzhelme getragen werden mussten und dass vor der Montage eines neuen Trägerabschnitts ein Auffangnetz installiert werden musste, das abstürzende Bauarbeiter auffangen sollte. Dieses Netz rettete während der Bauphase neunzehn Arbeitern das Leben, unter anderem Alfred Zampa. Diese Gruppe der Überlebenden wurde als „Half-Way-to-Hell-Club“ bekannt. Bis Ende Januar 1937 gab es bei den Bauarbeiten einen Toten zu beklagen. Am 17. Februar 1937 stürzte ein mit zwölf Personen besetztes Gerüstteil in das Netz, dieses konnte der Wucht nicht standhalten, und zehn Arbeiter stürzten in den Tod. Es gab somit insgesamt elf Tote, während davon ausgegangen wurde, pro Million Dollar Baukosten einen Arbeiter, also 35 Menschenleben, zu verlieren.
 
-Golden Gate Bridge von Südwesten aus gesehen, von Lands End, mit dem Nordteil der San Francisco Bay im Hintergrund
-
-Golden Gate Bridge von Hawk Hill, mit der Stadt San Francisco im Hintergrund
-
 ## Namensherkunft
 
 Benannt wurde die Brücke nach der natürlichen Einfahrt zur Bucht von San Francisco. Diese Einfahrt (the Golden Gate, das Goldene Tor) ist 1,6 Kilometer breit. Die Buchteinfahrt erhielt um 1848 während des Goldrausches in Kalifornien ihren Namen *Golden Gate* oder *Chrysopylae* von Captain John C. Frémont, den die Meeresstraße an das *Goldene Horn* (griech. *Chrysoceras*) in Konstantinopel erinnerte.
@@ -67,13 +59,9 @@ Benannt wurde die Brücke nach der natürlichen Einfahrt zur Bucht von San Franc
 
 ![](images/golden-gate-bridge__3.jpg)
 
-Täglich befahren rund 120.000 Fahrzeuge die Brücke. Die Fahrt stadtauswärts in Richtung Norden ist für alle Fahrzeuge kostenfrei, die Rückfahrt in die Stadt ist mautpflichtig. Fahrzeuge mit einem elektronischen Identifizierungs- und Zahlungssystem namens *FasTrak* (1) zahlen einen geringeren Betrag. Während der beiden täglichen Spitzenzeiten erhalten Fahrzeuge mit mindestens drei Insassen zusätzlichen Rabatt. Fahrradfahrer und Fußgänger müssen keine Maut entrichten. Die immer wieder angepassten Mauteinnahmen decken seit Jahrzehnten die Unterhaltskosten, obschon hohe Summen aufgebracht werden müssen, um das im Gegensatz zur San Francisco-Oakland Bay Bridge nicht rostfreie Metallgerüst vor der salzhaltigen Luft zu schützen.
+Täglich befahren rund 120.000 Fahrzeuge die Brücke. Die Fahrt stadtauswärts in Richtung Norden ist für alle Fahrzeuge kostenfrei, die Rückfahrt in die Stadt ist mautpflichtig. Fahrzeuge mit einem elektronischen Identifizierungs- und Zahlungssystem namens *FasTrak*  zahlen einen geringeren Betrag. Während der beiden täglichen Spitzenzeiten erhalten Fahrzeuge mit mindestens drei Insassen zusätzlichen Rabatt. Fahrradfahrer und Fußgänger müssen keine Maut entrichten. Die immer wieder angepassten Mauteinnahmen decken seit Jahrzehnten die Unterhaltskosten, obschon hohe Summen aufgebracht werden müssen, um das im Gegensatz zur San Francisco-Oakland Bay Bridge nicht rostfreie Metallgerüst vor der salzhaltigen Luft zu schützen.
 
 Von den sechs Fahrstreifen sind in der morgendlichen Rush Hour an Werktagen vier stadteinwärts und zwei stadtauswärts freigegeben. Außerhalb dieser Zeit fährt der Verkehr in beiden Richtungen auf drei Fahrstreifen. Bis Januar 2015 waren die stadtauswärts und stadteinwärts führenden Fahrstreifen durch gelbe Plastikrohre voneinander getrennt. Diese Plastikrohre wurden zweimal am Tag von Hand umgesteckt. Weil diese leichten Fahrbahntrennungen keine Durchbrüche verhindern konnten, kam es zwischen 1970 und 2015 zu 128 Frontalkollisionen. Zur Erhöhung der Verkehrssicherheit auf der Brücke wurde am 9. und 10. Januar 2015 ein verstellbares Mittelplankensystem (engl. *Moveable Median Barrier System*) installiert. Seither sind die beiden Fahrtrichtungen durch 3.500 mit Stahlstiften verbundene Stahlelemente mit Betonfüllung getrennt, diese werden zweimal am Tag durch ein entlangfahrendes Spezialfahrzeug verschoben. Im Rahmen der Installation des neuen, 30 Millionen Dollar teuren Systems war die Brücke zum ersten Mal seit 1987 vollständig für den Autoverkehr gesperrt. Diese Sperrung war gleichzeitig die bis dahin längste in der Geschichte der Golden Gate Bridge.
-
-(1)
-
-FasTrak ist ein elektronisches System des Staates Kalifornien zur Kassierung von Mautgebühren. Im Wagen wird ein Sender angebracht, der das Fahrzeug an der Mautstelle identifiziert. Beim Durchfahren der Mautstelle wird die Anzahl der Achsen ermittelt und die fällige Gebühr von einem Prepaid-Konto abgebucht. So muss der Fahrer zur Entrichtung der Mautgebühren nicht anhalten.
 
 ## Farbe und Anstrich
 

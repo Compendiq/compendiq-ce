@@ -55,14 +55,25 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
 A plain run reads the `revid` of every page back out of `MANIFEST.json`, so it
-rebuilds the committed text rather than tracking whatever the articles say
-today. The images are pinned by a second mechanism, because Commons serves the
-current version of a file and an upstream re-draw would otherwise change a
-"pinned" rebuild silently: each image records the upstream `sha1`, and a run
-that finds one moved names the file and exits non-zero. Nothing here may be
-hand-edited — the builder regenerates the whole directory into a staging
-sibling and swaps it in only on success, and `corpus-de-images.test.ts` fails
-on a manifest that has drifted from the files beside it.
+asks for the committed revision rather than whatever the article says today.
+That is where the pinning starts and not where it ends, because a revid does
+**not** pin the prose: `action=parse&oldid=` renders that revision's wikitext
+through the *current* template set and parser, so a template edit or a MediaWiki
+release moves the text of a page nobody edited. So each page also records a
+`textSha256` over the Markdown it produced, and a rebuild that renders different
+bytes names the page and exits non-zero.
+
+The images need a third pin, because Commons serves the current version of a
+file and an upstream re-draw would otherwise change a "pinned" rebuild silently:
+each image records the upstream `sha1`, and a run that finds one moved names the
+file and exits non-zero. A fourth check covers what none of them can — whether a
+figure is still *usable* — by diffing this build's inventory against the
+committed manifest.
+
+Nothing here may be hand-edited. The builder regenerates the whole directory
+into a staging sibling and swaps it in only on success, and
+`corpus-de-images.test.ts` fails on a manifest that has drifted from the files
+beside it — including a page body whose sha256 no longer matches.
 
 ## What the licence filter rejected on this build
 
