@@ -1,4 +1,11 @@
 import { query, getPool } from '../../../core/db/postgres.js';
+// One statement of pgvector's HNSW tiering, shared with the destructive
+// re-embed path, the eval seeder and #1115's image index.
+import { columnTypeFor, HNSW_PARAMS } from '../../../core/db/vector-column-tier.js';
+// Bounded-lock DDL, shared with #1115's image index. Hoisted out of this file —
+// the discipline (lock_timeout, statement_timeout 0, retry 55P03/40P01) was
+// worked out here and its rationale now lives with the helper.
+import { withLockRetry } from '../../../core/db/with-lock-retry.js';
 import { generateEmbedding } from './openai-compatible-client.js';
 import { LlmHttpError } from './llm-http-error.js';
 import { getProviderById } from './llm-provider-service.js';
@@ -97,13 +104,6 @@ export interface ShadowMigrationStatus extends ShadowMigrationState {
   backfilledPages: number;
   stragglerPages: number;
   indexReady: boolean;
-}
-
-/** Same tiering as the destructive path: vector ≤2000, halfvec ≤4000, else unindexed vector. */
-function columnTypeFor(dimensions: number): { columnType: string; opclass: string | null } {
-  if (dimensions <= 2000) return { columnType: `vector(${dimensions})`, opclass: 'vector_cosine_ops' };
-  if (dimensions <= 4000) return { columnType: `halfvec(${dimensions})`, opclass: 'halfvec_cosine_ops' };
-  return { columnType: `vector(${dimensions})`, opclass: null };
 }
 
 export async function getShadowMigrationState(): Promise<ShadowMigrationState | null> {
@@ -278,7 +278,7 @@ export async function startShadowMigration(opts: {
   // ADD COLUMN takes a brief ACCESS EXCLUSIVE lock too — same bounded-lock
   // discipline as the swap (review r1), or the start can queue indefinitely
   // behind a long reader while blocking every new one.
-  await withLockRetry({ lockTimeoutMs: 5000, maxAttempts: 5 }, async (client) => {
+  await withLockRetry({ lockTimeoutMs: 5000, maxAttempts: 5, operation: 'the shadow migration start' }, async (client) => {
     // Lock first, re-verify second — the same discipline as swap/abort/
     // revert/cleanup, and start needs it most: the probe above is a
     // provider round-trip seconds wide, so the pre-probe checks are long
@@ -574,11 +574,11 @@ async function buildShadowIndexes(state: ShadowMigrationState): Promise<void> {
     // Documented in the runbook; sync writes queue behind it briefly.
     await idxClient.query(
       `CREATE INDEX IF NOT EXISTS idx_page_embeddings_hnsw_next
-       ON page_embeddings USING hnsw (embedding_next ${opclass}) WITH (m = 16, ef_construction = 200)`,
+       ON page_embeddings USING hnsw (embedding_next ${opclass}) ${HNSW_PARAMS}`,
     );
     await idxClient.query(
       `CREATE INDEX IF NOT EXISTS idx_pages_page_avg_embedding_hnsw_next
-       ON pages USING hnsw (page_avg_embedding_next ${opclass}) WITH (m = 16, ef_construction = 200)`,
+       ON pages USING hnsw (page_avg_embedding_next ${opclass}) ${HNSW_PARAMS}`,
     );
   } finally {
     // RESET restores the pool's startup value, not Postgres' default — the
@@ -596,9 +596,6 @@ async function buildShadowIndexes(state: ShadowMigrationState): Promise<void> {
     }
   }
 }
-
-const LOCK_NOT_AVAILABLE = '55P03';
-const DEADLOCK_DETECTED = '40P01';
 
 /**
  * `page_relationships.embedding_similarity` is a PERSISTED derivative of
@@ -668,53 +665,6 @@ async function refreshSimilarityEdges(phase: 'swap' | 'rollback'): Promise<void>
   }
 }
 
-/**
- * Run `fn` inside a transaction with `SET LOCAL lock_timeout`, retrying with
- * backoff when a lock wait times out. No pool sets lock_timeout (only
- * runMigrations, to 0), so without the explicit SET LOCAL the renames would
- * queue indefinitely behind long-running readers while blocking every new one.
- */
-async function withLockRetry(
-  opts: { lockTimeoutMs: number; maxAttempts: number },
-  fn: (client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> }) => Promise<void>,
-): Promise<void> {
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= opts.maxAttempts; attempt++) {
-    const client = await getPool().connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(`SET LOCAL lock_timeout = '${Number(opts.lockTimeoutMs)}ms'`);
-      // A deployment that sets PG_STATEMENT_TIMEOUT applies it to every pooled
-      // connection, and these transactions run genuinely long statements: the
-      // re-dirty scan, the NULL-row DELETE and the SET NOT NULL validation
-      // scan. 57014 is neither a lock code nor retried, so it aborted the
-      // transaction and propagated — cleanup and rollback would fail EVERY
-      // time, stranding the instance in `swapped` with no way out of the UI
-      // (review r8). SET LOCAL, so it lasts exactly this transaction; the
-      // lock_timeout above still bounds the wait that could hurt others.
-      await client.query('SET LOCAL statement_timeout = 0');
-      await fn(client as unknown as { query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> });
-      await client.query('COMMIT');
-      return;
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => {});
-      lastErr = err;
-      const code = (err as { code?: string }).code;
-      // 55P03 = lock_not_available (our SET LOCAL fired), 40P01 = deadlock
-      // detected — e.g. against the per-search coverage COUNT, which touches
-      // the same two tables (review r1). Both are transient; retry.
-      if (code !== LOCK_NOT_AVAILABLE && code !== DEADLOCK_DETECTED) throw err;
-      logger.warn({ attempt, maxAttempts: opts.maxAttempts, code }, 'Shadow DDL lock wait failed — retrying');
-      await new Promise((r) => setTimeout(r, 200 * attempt));
-    } finally {
-      client.release();
-    }
-  }
-  throw new Error(
-    `Could not acquire the table lock for the shadow swap after ${opts.maxAttempts} attempts (lock_timeout ${opts.lockTimeoutMs}ms) — retry when long-running queries have drained: ${String((lastErr as Error)?.message ?? lastErr)}`,
-  );
-}
-
 export async function performShadowSwap(opts?: {
   lockTimeoutMs?: number;
   maxAttempts?: number;
@@ -771,7 +721,7 @@ export async function performShadowSwap(opts?: {
   // resolver needed on this side: the swap always writes an explicit model.
   let swappedTo: string | null = null;
   await withLockRetry(
-    { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
+    { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5, operation: 'the shadow swap' },
     async (client) => {
       // Acquire the exclusive locks FIRST (still under lock_timeout), so the
       // straggler recheck below runs with every writer either committed or
@@ -911,7 +861,7 @@ export async function rollbackShadowMigration(opts?: {
       }
     }
     await withLockRetry(
-      { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
+      { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5, operation: 'the shadow swap' },
       async (client) => {
         // Lock FIRST, then re-verify (review r2+r3): the drops are IF EXISTS
         // and would silently no-op against a post-swap schema, after which
@@ -948,7 +898,7 @@ export async function rollbackShadowMigration(opts?: {
   let revertedFrom: string | null = null;
   let revertedTo: string | null = null;
   await withLockRetry(
-    { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
+    { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5, operation: 'the shadow swap' },
     async (client) => {
       // Lock FIRST, re-verify second (review r4, same discipline as swap/
       // abort/cleanup): a revert losing the race to a cleanup or a second
@@ -1075,7 +1025,7 @@ export async function cleanupShadowMigration(opts?: {
   // One bounded-lock transaction (review r1): these DROPs take ACCESS
   // EXCLUSIVE on the hot tables, and half-done cleanup must not be possible.
   await withLockRetry(
-    { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
+    { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5, operation: 'the shadow swap' },
     async (client) => {
       // Lock FIRST, re-verify second (review r3, same discipline as the
       // swap): a state SELECT holds no conflicting lock, so it would read

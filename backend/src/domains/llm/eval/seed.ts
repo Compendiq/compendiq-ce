@@ -9,6 +9,9 @@
  */
 import pLimit from 'p-limit';
 import { query } from '../../../core/db/postgres.js';
+// The eval exercises the same index type production does, from the same
+// statement of the tiering rule (hoisted into core in #1115).
+import { columnTypeFor, HNSW_PARAMS } from '../../../core/db/vector-column-tier.js';
 import { markdownToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { embedPage, CHUNK_HARD_LIMIT } from '../services/embedding-service.js';
 import { generateEmbedding } from '../services/openai-compatible-client.js';
@@ -28,18 +31,6 @@ export interface SeedResult {
   pageIdByFile: Map<string, number>;
   embeddedPages: number;
   skipped: string[];
-}
-
-/**
- * pgvector's index tiers, mirroring the destructive re-embed path: HNSW on
- * `vector` up to 2000 dims, on `halfvec` to 4000, unindexed above. The eval
- * corpus is small enough that an unindexed tier would still work, but the
- * gate should exercise the same index type production does.
- */
-function columnTypeFor(dims: number): { columnType: string; opclass: string | null } {
-  if (dims <= 2000) return { columnType: `vector(${dims})`, opclass: 'vector_cosine_ops' };
-  if (dims <= 4000) return { columnType: `halfvec(${dims})`, opclass: 'halfvec_cosine_ops' };
-  return { columnType: `vector(${dims})`, opclass: null };
 }
 
 async function currentVectorDimensions(): Promise<number | null> {
@@ -78,10 +69,10 @@ export async function ensureVectorDimensions(dims: number): Promise<void> {
   await query(`ALTER TABLE pages ALTER COLUMN page_avg_embedding TYPE ${columnType} USING NULL`);
   if (opclass) {
     await query(
-      `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding ${opclass}) WITH (m = 16, ef_construction = 200)`,
+      `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding ${opclass}) ${HNSW_PARAMS}`,
     );
     await query(
-      `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding ${opclass}) WITH (m = 16, ef_construction = 200)`,
+      `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding ${opclass}) ${HNSW_PARAMS}`,
     );
   }
   await query(

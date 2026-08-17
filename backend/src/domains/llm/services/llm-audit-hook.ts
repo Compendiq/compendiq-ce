@@ -51,7 +51,13 @@ export interface LlmAdminAuditEntry {
     | 'llm_provider_set_default'
     | 'llm_usecase_assignments_updated'
     /** #1184 — an admin forced a fresh vision probe of the resolved chat pair. */
-    | 'llm_vision_capability_reprobed';
+    | 'llm_vision_capability_reprobed'
+    /**
+     * #1115 — an admin forced a fresh image-embedding probe. Worth auditing
+     * beyond the vision case: a successful re-probe can retype the image
+     * column, empty `page_image_embeddings` and re-dirty the whole corpus.
+     */
+    | 'llm_image_embedding_reprobed';
   userId: string | null;
   metadata?: Record<string, unknown>;
 }

@@ -19,13 +19,13 @@ flowchart LR
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service"]
     end
 
     subgraph core["core/ (infrastructure)"]
         direction TB
-        cDB["db/ — pg pool, migrations"]
+        cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry"]
         cPlug["plugins/ — auth, correlation-id, redis"]
         cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
@@ -144,6 +144,62 @@ The guard it exports the other way round, `assertNoShadowMigration` /
 `routes/knowledge/pages-crud.ts` and `routes/foundation/admin.ts` as well as
 `routes/llm` — the same `routes/* → domains/llm` composition those files
 already do for `processDirtyPages`.
+
+## The image-embedding leg (#1115 P1)
+
+Three new modules in `domains/llm/services`, and two rules hoisted into
+`core/db`:
+
+- **`vl-embedding-client.ts`** — the only thing in the tree that speaks vLLM's
+  chat-embeddings extension: `POST {baseUrl}/embeddings` with a `messages`
+  array and a trailing empty `assistant` turn. It sits beside
+  `rerank-client.ts` for the same reason that one exists — a differently-shaped
+  endpoint that still inherits `providerRequestInfra` (queue, per-provider
+  breaker, bearer headers, TLS dispatcher) — and **not** as a branch inside
+  `openai-compatible-client.ts`'s `generateEmbedding`, whose `{model, input}`
+  body bypasses the chat template. Its module header carries the non-support
+  list (TEI, LM Studio, `llama-server`'s non-OpenAI route, the plain shape) and
+  the pinned-vLLM-version rule, so nobody re-derives them.
+- **`image-embedding-probe.ts`** — `vision-probe.ts`'s sibling. It embeds a
+  known image *and* a text through the client, requires equal widths, and
+  persists the verdict in `admin_settings.image_embedding_probe`. Its `error`
+  is the provider's own body, so it is admin-only (#1184's rule). It also
+  sends the configured MRL truncation width on both calls and requires it
+  back — see the core reader below — and it classifies a failure by status:
+  the four `VL_SHAPE_REFUSAL_STATUSES` are `shape_rejected`, everything else
+  with an HTTP answer is `provider_error`.
+- **`image-embedding-index.ts`** — `ensureImageEmbeddingColumn(dims, pair)`, the
+  runtime DDL migration 093 deliberately left out: it retypes
+  `page_image_embeddings.embedding` to the probed width, builds the HNSW index
+  for that tier, and truncates + re-dirties when the width or the assigned
+  `provider:model@baseUrl#dims` changes. The base URL is in the identity because
+  a provider row's endpoint can move without its id changing (ADR-025 D12), the
+  `#dims` half is the requested MRL truncation width, and the model half is the
+  **resolved** one, which `llm-usecases.ts` pins into
+  `llm_usecase_assignments.model` at probe time so it cannot drift with
+  `provider.default_model`.
+
+`core/services/image-embedding-target-dimensions.ts` holds the MRL truncation
+width (`admin_settings.image_embedding_target_dimensions`), in `core` because
+`routes/foundation/admin.ts` writes it through `PUT /admin/settings` and
+`routes/foundation` may not import a domain. `dimensions` is a **per-request**
+vLLM parameter, so this is what makes the ≤ 4000 remedy the settings row and the
+422 both name actually performable — and one reader is what keeps the probe, the
+column type and (from P2) the image embedder and the query side sending the same
+number.
+
+`core/db/vector-column-tier.ts` (`columnTypeFor`, `HNSW_PARAMS`) and
+`core/db/with-lock-retry.ts` are **moves, not additions**: the tiering rule was
+stated identically in `shadow-migration-service.ts`, `embedding-service.ts` and
+`eval/seed.ts`, and the bounded-lock DDL transaction lived in the first of
+those. Both are now imported by all their callers, image path included. They are
+in `core/db` because they are facts about Postgres and pgvector, not about LLMs,
+and because `domains/llm` may import `core` and nothing else.
+
+All arrows stay inside `llm → core`. `routes/llm/llm-usecases.ts` is the admin
+surface: the probe-gated assignment PUT plus `GET`/`POST`
+`/admin/llm-usecases/image_embedding/probe` / `…/reprobe`, `requireAdmin` on
+all of them.
 
 ## Attachment bytes: one reader in `core`, the writers in `confluence` (#1115)
 

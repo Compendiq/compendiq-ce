@@ -1163,6 +1163,113 @@ the per-user mitigation, with `OOM` on the `SET` arriving only once BullMQ is
 already blocked. ADR-021's `#1183` paragraphs carry the reasoning; `.env.example`
 states the condition where an operator will meet it.
 
+## Image retrieval leg — configuration and probe (#1115, P1)
+
+**Nothing in this section retrieves anything yet.** P1 lands the leg's
+configuration and the proof that a configured endpoint can serve it; the
+page-embedding worker is P2 and the third RRF leg is P3. Design of record:
+ADR-025 and `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`.
+
+```
+Settings → AI Models → "Image embedding" row
+  |
+  |  PUT /api/admin/llm-usecases  { image_embedding: { providerId, model? } }
+  v
+resolve the pair the assignment WOULD produce
+  (assignment model, else provider.default_model, else refuse)
+  |
+  v
+read admin_settings.image_embedding_target_dimensions  (MRL width, or null)
+  |
+  v
+probeImageEmbedding(cfg, model, targetDimensions)  <- BLOCKING, before the row
+  |  embedImagesVl(...)  the known 3-colour-band PNG   is written
+  |  embedTextsVl(...)   one text, VL_QUERY_INSTRUCTION
+  |  both carry `dimensions: targetDimensions` when one is configured
+  |  require: both widths equal, 1..16000, and == targetDimensions when set
+  |
+  +-- failure --> answer 422 with the CATEGORY, as prose AND as `reason`
+  |               (shape_rejected | provider_error | unreachable |
+  |                width_mismatch | dimensions_ignored | unusable_width)
+  |               write NO assignment row
+  |               overwrite the stored probe ONLY when the refused pair IS the
+  |                 live pair (else a refused CHANGE would replace a working
+  |                 leg's verdict with "Not established")
+  |
+  +-- success --> persist the probe
+                  write the assignment row, with the RESOLVED model pinned
+                  ensureImageEmbeddingColumn(dims,
+                      { providerId, model, baseUrl, targetDimensions })
+                    width or provider:model@baseUrl#dims changed?
+                      yes -> DROP INDEX; TRUNCATE; ALTER TYPE; CREATE INDEX;
+                             record dims + provider:model@baseUrl#dims;
+                             mark every non-folder page image_embedding_dirty
+                      no  -> ensure the index exists, touch nothing else
+                    it throws? -> 200 + imageIndexWarning naming Re-check
+                                  (the row committed; a bare 500 would deny it)
+```
+
+Eight things are load-bearing.
+
+1. **`image_embedding` never inherits** (`resolveImageEmbeddingUsecase`;
+   `resolveUsecase('image_embedding')` throws, exactly as it does for
+   `rerank`). Unassigned means the image leg is off. The reason is sharper than
+   rerank's: a default text embedder handed this request does not error, it
+   answers the plain `{model, input}` shape with a well-formed vector from the
+   wrong pooling position.
+2. **The probe gates the assignment**, unlike #1154's vision probe, which is
+   fire-and-forget after the save. A wrong vision verdict disables an optional
+   composer control; a wrong `image_embedding` assignment silently fills an
+   index with garbage. So it blocks, and a failure refuses.
+3. **The 422 names the category, never the provider's body.** The body can echo
+   request fragments and internal topology; it stays on
+   `GET /admin/llm-usecases/image_embedding/probe` (`requireAdmin`, truncated at
+   `PROBE_ERROR_MAX_CHARS`, rendered as plain JSX). `UsecaseDefaultSchema` —
+   authenticated but not admin-gated — must never gain it. Same rule as #1184.
+4. **Mismatched widths are a refusal, not a curiosity.** `mlx_vlm.server`
+   applies the chat template to images and skips it for text, which would put
+   two vector spaces into one column; a width disagreement is the only symptom
+   reachable from a client.
+5. **Unassigning is not probed and destroys nothing.** The leg goes off, and the
+   column and index survive, so re-assigning the same pair costs nothing.
+   `POST …/reprobe` re-runs the probe and, on success only, re-runs
+   `ensureImageEmbeddingColumn` — which is the remedy for an operator who
+   restarted the model server at a different width. A failed re-probe leaves the
+   column alone: an unreachable endpoint is not evidence that the existing index
+   is wrong.
+6. **The identity is `provider:model@baseUrl#dims`, and the model is PINNED at
+   assignment.** An assignment of `{provider, model: null}` re-resolves
+   `provider.default_model` on every read, so leaving it unpinned let a
+   `PATCH /admin/llm-providers/:id` repoint the live image model with no probe
+   and no rebuild; the base URL is in the identity for the same reason, one
+   layer out (that PATCH also moves the endpoint without changing the provider
+   id). A server upgraded **in place** at the same URL remains invisible — D12's
+   version pin is an operator step, not an automatic one.
+7. **Re-check is not merely diagnostic, so it says what it did.** On a width or
+   endpoint change it truncates `page_image_embeddings` and re-dirties every
+   non-folder page, so the reprobe route answers `rebuilt` + `dirtiedPages` and
+   the panel's toast names the emptied index. A probe that established no width
+   is announced as an error, not in the success treatment: it is a refusal or an
+   outage, and ADR-010 reserves green for succeeded.
+8. **MRL truncation is a REQUEST parameter, so the app has to send it.**
+   `--hf-overrides '{"is_matryoshka": true}'` only makes vLLM *accept*
+   `dimensions`; there is no serve-time flag that changes the default output
+   width, so an 8B answers 4096 — pgvector's unindexed tier — until a client
+   asks for less. The number lives in
+   `admin_settings.image_embedding_target_dimensions` (Settings → AI Models →
+   Image embedding), and **one reader**
+   (`getImageEmbeddingTargetDimensions`) serves the probe, the column type,
+   the rebuild identity and — from P2 — the image embedder and the query side.
+   The probe both sends it and requires it back: a server that ignores the
+   parameter answers 200 at its native width, and recording that would type
+   the column for a space nothing else writes into (`dimensions_ignored`).
+   The category split also matters here: `shape_rejected` is the four statuses
+   that prove the server is reachable and refusing the request
+   (400/404/405/422, `VL_SHAPE_REFUSAL_STATUSES`), while 401/403/429 and 5xx
+   are `provider_error` — a vLLM still loading a model answers 503, and
+   telling that operator their server is the wrong kind is the opposite of the
+   remedy.
+
 ## Retrieval details
 
 - **Query-instruction prefix (#1114).** Qwen3's embedding models are trained
@@ -1221,6 +1328,19 @@ states the condition where an operator will meet it.
   `embed` and is deliberately narrow: prefixing a model not trained for it
   corrupts every query vector, while failing to prefix one that was merely
   gives up some accuracy, so unknown models fall to the safe side.
+  **It also excludes any id containing `vl` (#1115).** `Qwen3-VL-Embedding`
+  satisfies both needles and wants an entirely different format — the
+  instruction as a **system message inside a chat template**, terminated by
+  `<|im_start|>assistant\n`, not the flat `Instruct:/Query:` string. The two
+  conventions are unrelated and share no characters. VL formatting lives in
+  `vl-embedding-client.ts` and reaches a model only through the
+  `image_embedding` use case, never through `generateEmbedding`; the exclusion
+  here is for the operator who points the *text* `embedding` assignment at a VL
+  id by hand, which the model picker allows because it lists whatever the
+  provider serves. It is a bare substring rather than a `-vl-` boundary match,
+  because ids arrive in at least four spellings and the asymmetry above applies
+  to the exclusion too: over-matching costs a bare query, under-matching
+  corrupts every query vector.
 - **Vector search** uses pgvector's `<=>` cosine distance against an HNSW
   index on `page_embeddings.embedding`. `ef_search` is set per request for
   a recall/latency trade-off.

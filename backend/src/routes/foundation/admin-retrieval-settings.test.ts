@@ -179,6 +179,13 @@ beforeEach(() => {
       target[key] = value;
       return { rows: [], rowCount: 1 };
     }
+    if (/^\s*DELETE FROM admin_settings/i.test(sql)) {
+      // The clear-to-default shape (`drawioEmbedUrl`, and #1115's truncation
+      // width): the key is either bound or named as a literal.
+      const key = typeof params?.[0] === 'string' ? (params[0] as string) : settingKeysIn(sql)[0];
+      if (key !== undefined) delete (pending ?? rows)[key];
+      return { rows: [], rowCount: 1 };
+    }
     if (/SELECT setting_key, setting_value FROM admin_settings/i.test(sql)) {
       const keys = settingKeysIn(sql);
       return {
@@ -251,6 +258,58 @@ function put(body: Record<string, unknown>) {
 function stored(key: string): string | undefined {
   return rows[key];
 }
+
+/**
+ * #1115 — the image leg's MRL truncation width.
+ *
+ * It lives here rather than beside the assignment because it is an
+ * `admin_settings` row like every knob above, and because three different
+ * callers have to read the SAME number: the assignment probe, `Re-check`, and
+ * (from P2) the image embedder and the query side. The write path is what makes
+ * the remedy the settings row, the 422 and the runbook all name actually
+ * performable — vLLM's `dimensions` is a per-request parameter, so without a
+ * stored value nothing ever sends one and an 8B stays at 4096 for ever.
+ */
+describe('PUT /api/admin/settings — the image leg’s MRL truncation width (#1115)', () => {
+  it('persists the requested width under image_embedding_target_dimensions', async () => {
+    const res = await put({ imageEmbeddingTargetDimensions: 2048 });
+    expect(res.statusCode).toBe(200);
+    expect(stored('image_embedding_target_dimensions')).toBe('2048');
+  });
+
+  it('clears the row on an explicit null — back to the model’s native width', async () => {
+    await put({ imageEmbeddingTargetDimensions: 2048 });
+    expect(stored('image_embedding_target_dimensions')).toBe('2048');
+
+    const res = await put({ imageEmbeddingTargetDimensions: null });
+    expect(res.statusCode).toBe(200);
+    expect(stored('image_embedding_target_dimensions')).toBeUndefined();
+  });
+
+  it('leaves the stored width alone when the body omits it', async () => {
+    await put({ imageEmbeddingTargetDimensions: 2048 });
+    const res = await put({ ragFetchWidth: 40 });
+    expect(res.statusCode).toBe(200);
+    expect(stored('image_embedding_target_dimensions')).toBe('2048');
+  });
+
+  it.each([63, 16_001, 2048.5])('refuses %s at the boundary', async (value) => {
+    const res = await put({ imageEmbeddingTargetDimensions: value });
+    expect(res.statusCode).toBe(400);
+    expect(stored('image_embedding_target_dimensions')).toBeUndefined();
+  });
+
+  /**
+   * 4000 is the largest INDEXABLE width, not the largest legal one — the row
+   * reports the unindexed tier rather than refusing it, and `columnTypeFor`
+   * accepts it. Refusing here would make the two disagree.
+   */
+  it('accepts a storable-but-unindexable width', async () => {
+    const res = await put({ imageEmbeddingTargetDimensions: 4096 });
+    expect(res.statusCode).toBe(200);
+    expect(stored('image_embedding_target_dimensions')).toBe('4096');
+  });
+});
 
 describe('PUT /api/admin/settings — retrieval knobs are persisted (#1118)', () => {
   it('writes each knob under its documented admin_settings key', async () => {

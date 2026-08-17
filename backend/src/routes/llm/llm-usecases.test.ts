@@ -83,7 +83,7 @@ beforeEach(async () => {
 });
 
 describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases', () => {
-  it('returns all 6 rows with resolved blocks (#1104 adds rerank)', async () => {
+  it('returns all 7 rows with resolved blocks (#1104 adds rerank, #1115 image_embedding)', async () => {
     const p = await app.inject({
       method: 'POST', url: '/api/admin/llm-providers',
       headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
@@ -100,15 +100,20 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases', () => {
     });
     expect(r.statusCode).toBe(200);
     const body = r.json();
-    expect(Object.keys(body).sort()).toEqual(['auto_tag', 'chat', 'embedding', 'quality', 'rerank', 'summary']);
+    expect(Object.keys(body).sort()).toEqual([
+      'auto_tag', 'chat', 'embedding', 'image_embedding', 'quality', 'rerank', 'summary',
+    ]);
     expect(body.chat.resolved).toMatchObject({ providerId: id, model: 'mA' });
     // Rerank must NOT inherit the default provider: unassigned renders the
-    // empty sentinel — the stage is disabled, not defaulted (#1104).
-    expect(body.rerank.resolved).toMatchObject({
-      providerId: '00000000-0000-0000-0000-000000000000',
-      providerName: '',
-      model: '',
-    });
+    // empty sentinel — the stage is disabled, not defaulted (#1104). #1115's
+    // image_embedding follows the same rule.
+    for (const u of ['rerank', 'image_embedding']) {
+      expect(body[u].resolved).toMatchObject({
+        providerId: '00000000-0000-0000-0000-000000000000',
+        providerName: '',
+        model: '',
+      });
+    }
   });
 
   it('PUT assigns rerank and GET resolves it without a default-provider fallback (#1104)', async () => {

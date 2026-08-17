@@ -2,7 +2,11 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
 import { createProvider, setDefaultProvider } from './llm-provider-service.js';
-import { resolveUsecase, resolveConfidenceBasisPair } from './llm-provider-resolver.js';
+import {
+  resolveUsecase,
+  resolveConfidenceBasisPair,
+  resolveImageEmbeddingUsecase,
+} from './llm-provider-resolver.js';
 import { bumpProviderCacheVersion } from './cache-bus.js';
 
 const dbAvailable = await isDbAvailable();
@@ -95,5 +99,63 @@ describe.skipIf(!dbAvailable)('resolveUsecase — truth table', () => {
       await seed();
       expect(await resolveConfidenceBasisPair('rerank')).toEqual({ resolved: true, pair: null });
     });
+  });
+
+  /**
+   * #1115 — `image_embedding` is the `rerank` rule one rung stronger.
+   *
+   * Rerank's argument was that a default chat provider handed `/v1/rerank`
+   * traffic ERRORS, which is loud. Here the default text embedder would answer
+   * the plain `{model, input}` shape with a perfectly well-formed vector that
+   * is simply wrong — off-distribution, pooled at a different position — and
+   * wrong vectors are indistinguishable from bad retrieval.
+   */
+  describe('resolveImageEmbeddingUsecase (#1115)', () => {
+    it('answers null when nothing is assigned, even with a default provider', async () => {
+      await seed();
+      expect(await resolveImageEmbeddingUsecase()).toBeNull();
+    });
+
+    it('answers the assigned pair', async () => {
+      const { bId } = await seed();
+      await query(
+        `INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('image_embedding',$1,$2)`,
+        [bId, 'Qwen/Qwen3-VL-Embedding-2B'],
+      );
+      const r = await resolveImageEmbeddingUsecase();
+      expect(r?.config.id).toBe(bId);
+      expect(r?.model).toBe('Qwen/Qwen3-VL-Embedding-2B');
+    });
+
+    it("falls back to the provider's default_model when the assignment pins no model", async () => {
+      const { bId } = await seed();
+      await query(
+        `INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('image_embedding',$1,NULL)`,
+        [bId],
+      );
+      expect((await resolveImageEmbeddingUsecase())?.model).toBe('mB');
+    });
+
+    // Assigned-but-unresolvable is the leg OFF, not the leg pointed at an
+    // empty model name: a request with `model: ''` is a wasted round-trip and
+    // a confusing provider error.
+    it('answers null when a provider is assigned but no model resolves anywhere', async () => {
+      const c = await createProvider({
+        name: 'C', baseUrl: 'http://c/v1', authType: 'none', verifySsl: true, defaultModel: null,
+      });
+      await query(
+        `INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('image_embedding',$1,NULL)`,
+        [c.id],
+      );
+      expect(await resolveImageEmbeddingUsecase()).toBeNull();
+    });
+  });
+
+  it("resolveUsecase refuses 'image_embedding', exactly as it refuses 'rerank'", async () => {
+    await seed();
+    await expect(resolveUsecase('image_embedding')).rejects.toThrow(
+      /resolveImageEmbeddingUsecase/,
+    );
+    await expect(resolveUsecase('rerank')).rejects.toThrow(/resolveRerankUsecase/);
   });
 });

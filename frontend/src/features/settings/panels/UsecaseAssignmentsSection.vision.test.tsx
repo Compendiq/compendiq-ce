@@ -57,7 +57,10 @@ function renderSection() {
     <QueryClientProvider client={qc}>
       <UsecaseAssignmentsSection
         assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
         providers={[providerA]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={() => {}}
       />
     </QueryClientProvider>,

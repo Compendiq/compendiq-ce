@@ -12,6 +12,7 @@ import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ProviderListSection } from './ProviderListSection';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
+import { clampImageEmbeddingTargetDimensions } from './image-embedding-target-dimensions';
 import { EmbeddingReembedBanner } from './EmbeddingReembedBanner';
 import { EmbeddingShadowMigrationCard } from './EmbeddingShadowMigrationCard';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
@@ -71,6 +72,11 @@ export function LlmTab() {
   const [assignmentsInitialized, setAssignmentsInitialized] = useState(false);
   const [shadowMigrationActive, setShadowMigrationActive] = useState(false);
   const [capInitialized, setCapInitialized] = useState(false);
+  // #1115 — the image leg's MRL truncation width. Same one-shot hydration
+  // guard as the two above, and dropped by the same post-save reset so the
+  // field re-seeds from the value the server actually stored.
+  const [imageTargetDims, setImageTargetDims] = useState<number | null>(null);
+  const [imageTargetInitialized, setImageTargetInitialized] = useState(false);
 
   // Mirror the server-provided assignments once per load. Using useEffect
   // keeps the setState out of render (avoids an infinite update loop).
@@ -92,6 +98,17 @@ export function LlmTab() {
     }
   }, [adminSettings, capInitialized]);
 
+  // #1115 — mirror the stored truncation width once. `?? null` covers both an
+  // instance that never set one and a backend older than the field.
+  useEffect(() => {
+    if (adminSettings && !imageTargetInitialized) {
+      setImageTargetDims(adminSettings.imageEmbeddingTargetDimensions ?? null);
+      setImageTargetInitialized(true);
+    }
+  }, [adminSettings, imageTargetInitialized]);
+
+  const savedImageTargetDims = adminSettings?.imageEmbeddingTargetDimensions ?? null;
+
   const embeddingPending = useMemo(() => {
     if (!rawAssignments || !assignments) return null;
     const origE = rawAssignments.embedding;
@@ -109,10 +126,45 @@ export function LlmTab() {
     return { providerId, model };
   }, [rawAssignments, assignments, providers]);
 
-  const save = useMutation({
-    mutationFn: (diff: UpdateUsecaseAssignmentsInput) =>
-      apiFetch('/admin/llm-usecases', { method: 'PUT', body: JSON.stringify(diff) }),
-    onSuccess: async () => {
+  const save = useMutation<
+    { ok: boolean; imageIndexWarning?: string },
+    Error,
+    { diff: UpdateUsecaseAssignmentsInput; imageTargetDimensions?: number | null }
+  >({
+    // #1115 — two requests, in this order and never the other. The truncation
+    // width is what the probe SENDS, so it has to be stored before the
+    // assignment PUT re-probes; a probe run against the old width would type
+    // the column for a request the leg no longer makes.
+    mutationFn: async ({ diff, imageTargetDimensions }) => {
+      if (imageTargetDimensions !== undefined) {
+        await apiFetch('/admin/settings', {
+          method: 'PUT',
+          body: JSON.stringify({ imageEmbeddingTargetDimensions: imageTargetDimensions }),
+        });
+      }
+      if (Object.keys(diff).length === 0) return { ok: true };
+      return apiFetch('/admin/llm-usecases', { method: 'PUT', body: JSON.stringify(diff) });
+    },
+    // #1115 review round 3 — the settings document is re-read on EVERY
+    // outcome, not only success, because the two requests above are not
+    // atomic: a 422 from the assignment PUT (the designed answer when the
+    // probe refuses the pair) leaves the width already persisted by the
+    // request before it. Invalidating only on success left
+    // `savedImageTargetDims` naming the pre-save value while the server held
+    // the new one, so the runbook's own remedy — "clear the field, and save
+    // again" — compared the cleared field against a stale baseline, read as
+    // unchanged, and reported "No changes" over a width the server still had.
+    //
+    // Both halves live here rather than in `onSuccess` because React Query
+    // runs `onSettled` LAST: dropping the hydration guard before the refetch
+    // lands re-seeds the field from the stale cache entry and then locks it
+    // there. And the guard is dropped on success ONLY — after a refusal the
+    // admin's typed value must survive so they can correct it in place.
+    onSettled: async (_result, error) => {
+      await qc.invalidateQueries({ queryKey: ['admin-settings'] });
+      if (!error) setImageTargetInitialized(false);
+    },
+    onSuccess: async (result) => {
       // Refetch the canonical assignments, then drop the one-shot hydration
       // guard so the form re-seeds from the fresh server state (#949) — the
       // same post-save reset IpAllowlistTab does. Awaiting the invalidation
@@ -127,6 +179,13 @@ export function LlmTab() {
       // use-case-keyed entry so dropdowns refresh without a hard reload.
       qc.invalidateQueries({ queryKey: ['llm', 'usecase-default'] });
       qc.invalidateQueries({ queryKey: ['llm', 'models'] });
+      // #1115: the row saved but the image column's DDL did not. Amber, not
+      // green — the assignment landed and the leg is misconfigured behind it,
+      // and the server's sentence names the remedy (Re-check on that row).
+      if (result?.imageIndexWarning) {
+        toast.warning(result.imageIndexWarning);
+        return;
+      }
       toast.success('Use-case assignments saved');
     },
     onError: (e: Error) => toast.error(e.message),
@@ -178,11 +237,32 @@ export function LlmTab() {
   function handleSave() {
     if (!assignments || !rawAssignments) return;
     const diff = diffUsecaseAssignments(rawAssignments, assignments);
-    if (Object.keys(diff).length === 0) {
+    // Clamped BEFORE the comparison, not only before the request: a typed 32
+    // against a stored 64 is not a change once the clamp has run, and diffing
+    // the raw value would re-send the assignment and re-probe for a width the
+    // server already holds. The field clamps on blur too — this is the backstop
+    // for a save reached without one, and the clamp is idempotent.
+    const nextImageTargetDims = clampImageEmbeddingTargetDimensions(imageTargetDims);
+    const imageTargetChanged =
+      imageTargetInitialized && nextImageTargetDims !== savedImageTargetDims;
+    if (Object.keys(diff).length === 0 && !imageTargetChanged) {
       toast.message('No changes');
       return;
     }
-    save.mutate(diff);
+    // #1115 — a changed truncation width IS a change to the image leg, so it
+    // re-sends the saved assignment when the admin did not touch the
+    // dropdowns. Without this the width lands in `admin_settings` and nothing
+    // re-probes: the column keeps its old type while every later call asks for
+    // the new one, and the operator has to discover that Re-check is the
+    // second half of a save they thought they had finished.
+    const savedImageProvider = rawAssignments.image_embedding?.providerId ?? null;
+    if (imageTargetChanged && !diff.image_embedding && savedImageProvider) {
+      diff.image_embedding = { providerId: savedImageProvider };
+    }
+    save.mutate({
+      diff,
+      ...(imageTargetChanged ? { imageTargetDimensions: nextImageTargetDims } : {}),
+    });
   }
 
   function handleSaveRuntimeLimits() {
@@ -242,8 +322,11 @@ export function LlmTab() {
       )}
       <UsecaseAssignmentsSection
         assignments={assignments}
+        savedAssignments={rawAssignments}
         providers={providers}
         onChange={setAssignments}
+        imageTargetDimensions={imageTargetDims}
+        onImageTargetDimensionsChange={setImageTargetDims}
       />
       <div className="flex gap-3">
         <button

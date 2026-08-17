@@ -19,7 +19,7 @@ erDiagram
 
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
-    pages ||--o{ page_image_embeddings : "images indexed as (#1115, P0 schema)"
+    pages ||--o{ page_image_embeddings : "images indexed as (#1115, P0 schema, P1 typing)"
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
@@ -413,26 +413,44 @@ together, which matters most for #1114's query-side prefix.
   destructive `enqueueReembedAll({newDimensions})` path refuses to run while
   that state row exists (and vice versa). Runbook:
   `docs/runbooks/shadow-reembed.md`.
-- **The image index is a separate table (#1115) — `P0 schema, populated from
-  P2`.** `page_image_embeddings` holds one vector per referenced image per page,
-  produced by a *different* model from a *different* ADR-021 use case
-  (`image_embedding`), and `pages.image_embedding_dirty` is its own dirty flag.
-  Migration `093` ships the shape; **nothing writes or reads either yet**. Four
-  properties are deliberate:
+- **The image index is a separate table (#1115) — `P0 schema, typed at probe
+  time in P1, populated from P2`.** `page_image_embeddings` holds one vector per
+  referenced image per page, produced by a *different* model from a *different*
+  ADR-021 use case (`image_embedding`), and `pages.image_embedding_dirty` is its
+  own dirty flag. Migration `093` ships the shape and P1 gives it its real type
+  and index; **nothing writes or reads a row yet**. Four properties are
+  deliberate:
   - **Not rows in `page_embeddings`.** A `kind` discriminator would have made
     `embedPage`'s `DELETE`, its `AVG(embedding)` for `page_avg_embedding`, the
     `(page_id, chunk_index)` uniqueness, #1116's shadow columns, MMR, rerank and
     sibling assembly all conditional. A separate table keeps every one of them
     text-only by construction, and it is the only shape that can hold two
     different probed widths at once.
-  - **The declared `vector(…)` width in the migration is a placeholder.** The
-    live type follows the image model's probed width through the same tiering
-    the text column uses, and **the migration ships no HNSW index at all** —
-    the opclass is unknown until the probe answers, so the index is runtime DDL
-    (`ensureImageEmbeddingColumn`, P1), like the shadow columns above.
+  - **The declared `vector(…)` width in the migration is a placeholder, and
+    the index is built at PROBE TIME.** The live type follows the image model's
+    probed width through the same tiering the text column uses
+    (`core/db/vector-column-tier.ts`, shared with the destructive re-embed, the
+    shadow path and the eval seeder), and **the migration ships no HNSW index at
+    all** — the opclass is unknown until the probe answers. Assigning the
+    `image_embedding` use case runs the probe and then
+    `ensureImageEmbeddingColumn(dims, {providerId, model, baseUrl,
+    targetDimensions})` (P1), which retypes the column and creates
+    `page_image_embeddings_embedding_hnsw_idx` under the same bounded-lock DDL
+    discipline as the shadow columns above. Above 4000 dimensions there is no
+    index and the settings panel says so — with the remedy beside it, since
+    `admin_settings.image_embedding_target_dimensions` is the MRL width the leg
+    *requests* (vLLM's `dimensions` is per-request, so nothing truncates unless
+    the client asks). `admin_settings.image_embedding_dimensions` and
+    `…_index_model` record what the live index was built for.
   - **A model change here truncates and re-scans.** No shadow swap: the leg is
     disabled while the index is empty, so text retrieval is never degraded, and
-    images are cheap to redo (content-addressed by `sha256`).
+    images are cheap to redo (content-addressed by `sha256`). The trigger is the
+    probed width **or** the recorded `provider:model@baseUrl#dims` changing — two
+    models at the same width are two incompatible spaces, and a column type
+    cannot tell them apart; the base URL is there because a provider row's
+    endpoint can move without its id changing, and the model is the *resolved*
+    one, pinned into the assignment row at probe time so it cannot follow
+    `provider.default_model` around.
   - **`image_embedding_dirty` is separate from `embedding_dirty` on purpose.**
     An attachment can change under an unchanged page version — sync's
     version-unchanged branch is exactly that case — and then the images must be

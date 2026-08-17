@@ -1,8 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import {
+  IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN,
+  IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX,
+} from '@compendiq/contracts';
 import { LlmTab } from './LlmTab';
 import { useAuthStore } from '../../../stores/auth-store';
+
+// #1115 — a refused `image_embedding` assignment is reported as an error
+// toast, and the reason it carries is the thing under test.
+vi.mock('sonner', () => ({
+  toast: { error: vi.fn(), success: vi.fn(), message: vi.fn(), warning: vi.fn() },
+}));
 
 function createWrapper() {
   const qc = new QueryClient({
@@ -83,14 +94,40 @@ const assignments = {
     model: null,
     resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
   },
+  // #1115: same non-inheriting rule as rerank.
+  image_embedding: {
+    providerId: providerB.id,
+    model: 'Qwen/Qwen3-VL-Embedding-2B',
+    resolved: { providerId: providerB.id, providerName: 'OpenAI', model: 'Qwen/Qwen3-VL-Embedding-2B' },
+  },
 };
+
+/** #1115 — the last record a re-probe wrote, so GET reflects it (see below). */
+let lastImageProbe: Record<string, unknown> | null = null;
 
 function mockRoutes(options?: {
   concurrentStreamsCap?: number;
   /** `null` → field omitted from the settings payload (legacy backend). */
   embeddingDimensions?: number | null;
   probeDimensions?: number;
+  /** #1115 — the stored image-embedding probe, or `null` for a 404. */
+  imageProbe?: Record<string, unknown> | null;
+  /** #1115 — make the assignments PUT fail with this 422 body. */
+  putError?: string;
+  /**
+   * #1115 — serve an `image_embedding` row with NO provider assigned, which is
+   * every instance that has not configured the leg. The strip still renders;
+   * the probe status and Re-check inside it do not.
+   */
+  imageUnassigned?: boolean;
+  /** #1115 — what `POST …/reprobe` answers with. */
+  reprobeResult?: Record<string, unknown>;
+  /** #1115 — what `PUT /admin/llm-usecases` answers with on success. */
+  putResult?: Record<string, unknown>;
+  /** #1115 — the stored MRL truncation width in the settings document. */
+  imageTargetDimensions?: number | null;
 }) {
+  lastImageProbe = null;
   const cap = options?.concurrentStreamsCap ?? 3;
   const settingsBody: Record<string, unknown> = {
     ftsLanguage: 'simple',
@@ -98,10 +135,26 @@ function mockRoutes(options?: {
     embeddingChunkOverlap: 50,
     drawioEmbedUrl: null,
     llmMaxConcurrentStreamsPerUser: cap,
+    // #1115 — null on every instance that has not asked for MRL truncation.
+    imageEmbeddingTargetDimensions: options?.imageTargetDimensions ?? null,
   };
   if (options?.embeddingDimensions !== null) {
     settingsBody.embeddingDimensions = options?.embeddingDimensions ?? 1024;
   }
+  const servedAssignments = options?.imageUnassigned
+    ? {
+        ...assignments,
+        image_embedding: {
+          providerId: null,
+          model: null,
+          resolved: {
+            providerId: '00000000-0000-0000-0000-000000000000',
+            providerName: '',
+            model: '',
+          },
+        },
+      }
+    : assignments;
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
     if (url.endsWith('/admin/llm-providers') && (init as RequestInit).method !== 'POST') {
@@ -110,12 +163,54 @@ function mockRoutes(options?: {
       });
     }
     if (url.endsWith('/admin/llm-usecases') && !(init as RequestInit).method) {
-      return new Response(JSON.stringify(assignments), {
+      return new Response(JSON.stringify(servedAssignments), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
     if (url.endsWith('/admin/llm-usecases') && (init as RequestInit).method === 'PUT') {
-      return new Response(JSON.stringify(assignments), {
+      if (options?.putError) {
+        return new Response(JSON.stringify({ error: options.putError, statusCode: 422 }), {
+          status: 422,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify(options?.putResult ?? servedAssignments), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    // #1115 — the admin-only image-embedding probe detail + its Re-check.
+    // Stateful, because the server is: a successful re-probe overwrites the
+    // stored record, so the invalidation the component fires must see the NEW
+    // verdict rather than the old one.
+    if (url.endsWith('/admin/llm-usecases/image_embedding/probe')) {
+      if (options?.imageProbe === null) {
+        return new Response(JSON.stringify({ error: 'unassigned' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify(lastImageProbe ?? options?.imageProbe ?? {
+          providerId: providerB.id,
+          model: 'Qwen/Qwen3-VL-Embedding-2B',
+          dimensions: 2048,
+          tier: 'halfvec',
+          probedAt: '2026-08-17T10:00:00.000Z',
+          error: null,
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url.endsWith('/admin/llm-usecases/image_embedding/reprobe')) {
+      lastImageProbe = options?.reprobeResult ?? {
+        providerId: providerB.id,
+        model: 'Qwen/Qwen3-VL-Embedding-2B',
+        dimensions: 1024,
+        tier: 'vector',
+        probedAt: '2026-08-17T11:00:00.000Z',
+        error: null,
+      };
+      return new Response(JSON.stringify(lastImageProbe), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -125,6 +220,11 @@ function mockRoutes(options?: {
       });
     }
     if (url.endsWith('/admin/settings') && (init as RequestInit).method === 'PUT') {
+      // Stateful, because the server is: `PUT /admin/settings` and `PUT
+      // /admin/llm-usecases` are two requests, and the first one LANDS even
+      // when the second is refused. A mock that answered a fixed document
+      // could not show what the panel does after that partial save.
+      Object.assign(settingsBody, JSON.parse((init as RequestInit).body as string));
       return new Response(JSON.stringify({ message: 'Admin settings updated' }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -777,5 +877,610 @@ describe('LlmTab', () => {
     });
     fireEvent.click(await screen.findByRole('button', { name: /probe/i }));
     await screen.findByText(/dimension stays at 1024/i);
+  });
+
+  // ── #1115: the image-embedding row ──────────────────────────────────────
+  //
+  // A seventh use case that never inherits the default provider. Everything an
+  // admin needs to judge it has to be ON SCREEN, not in a hover tooltip: the
+  // non-support list is the difference between "this will work" and "this
+  // silently indexes garbage", and a caveat reachable only by hover is
+  // unreachable by touch, keyboard and screen readers (#1119's rule).
+
+  it('renders the Image embedding row with its scope copy and the non-support note', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    const row = await screen.findByTestId('usecase-row-image_embedding');
+    expect(within(row).getByText('Image embedding')).toBeTruthy();
+    expect(within(row).getByText(/never inherits the default provider/i)).toBeTruthy();
+    expect(within(row).getByText(/unassigned means image search is off/i)).toBeTruthy();
+    const note = within(row).getByTestId('image-embedding-support-note');
+    expect(note.textContent).toMatch(/Ollama, LM Studio and TEI do not/i);
+    // "Disabled", not "Inherit default" — the select must not offer a fallback
+    // that does not exist.
+    const select = within(row).getByTestId('usecase-image_embedding-provider') as HTMLSelectElement;
+    expect(select.options[0]!.text).toMatch(/disabled/i);
+  });
+
+  it('shows the probed width and index tier', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const status = await screen.findByTestId('image-embedding-probe-status');
+    await waitFor(() => expect(status.textContent).toMatch(/2048-dim/));
+    expect(status.textContent).toMatch(/halfvec HNSW/);
+  });
+
+  it('states that an unindexed width is sequentially scanned', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      imageProbe: {
+        providerId: providerB.id,
+        model: 'Qwen/Qwen3-VL-Embedding-8B',
+        dimensions: 4096,
+        tier: 'unindexed',
+        probedAt: '2026-08-17T10:00:00.000Z',
+        error: null,
+      },
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    const status = await screen.findByTestId('image-embedding-probe-status');
+    await waitFor(() => expect(status.textContent).toMatch(/4096-dim/));
+    expect(status.textContent).toMatch(/no index/i);
+    expect(await screen.findByTestId('image-embedding-unindexed-note')).toBeTruthy();
+  });
+
+  it('keeps the provider body behind a disclosure, as plain text', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      imageProbe: {
+        providerId: providerB.id,
+        model: 'nomic-embed-text',
+        dimensions: null,
+        tier: null,
+        probedAt: '2026-08-17T10:00:00.000Z',
+        error: 'vlEmbedding HTTP 422: Extra inputs are not permitted: messages',
+      },
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    const details = await screen.findByTestId('image-embedding-probe-error');
+    expect(details.tagName).toBe('DETAILS');
+    expect(
+      within(details).getByTestId('image-embedding-probe-error-text').textContent,
+    ).toContain('Extra inputs are not permitted');
+  });
+
+  it('Re-check posts to the reprobe route and renders the new verdict', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-probe-status');
+
+    fireEvent.click(screen.getByTestId('image-embedding-recheck'));
+
+    await waitFor(() => {
+      const posted = spy.mock.calls.filter(([input, init]) => {
+        const url = typeof input === 'string' ? input : (input as URL).toString();
+        return url.endsWith('/admin/llm-usecases/image_embedding/reprobe')
+          && (init as RequestInit | undefined)?.method === 'POST';
+      });
+      expect(posted).toHaveLength(1);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('image-embedding-probe-status').textContent).toMatch(/1024-dim/);
+    });
+  });
+
+  /**
+   * The strip is deliberately rendered whether or not the leg is assigned —
+   * its two sentences are what tell an operator whether the row is usable on
+   * their stack at all, and the instance that most needs to read them is the
+   * one that has not assigned it yet. Gating the whole strip on `providerId`
+   * left every earlier assertion green, because the only fixture had the leg
+   * assigned (review round 1).
+   */
+  it('keeps the scope copy and the non-support note when the leg is unassigned', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({ imageUnassigned: true });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    const row = await screen.findByTestId('usecase-row-image_embedding');
+    expect(within(row).getByTestId('image-embedding-support-note')).toBeTruthy();
+    expect(within(row).getByText(/unassigned means image search is off/i)).toBeTruthy();
+    // No assignment: nothing to report a verdict about, and no route to ask.
+    expect(within(row).queryByTestId('image-embedding-probe-status')).toBeNull();
+    expect(within(row).queryByTestId('image-embedding-recheck')).toBeNull();
+    expect(
+      spy.mock.calls.filter(([input]) =>
+        (typeof input === 'string' ? input : (input as URL).toString())
+          .endsWith('/admin/llm-usecases/image_embedding/probe'),
+      ),
+    ).toHaveLength(0);
+  });
+
+  /**
+   * The probe strip describes the SAVED leg, so an unsaved dropdown change must
+   * not summon it. It used to read LlmTab's draft: picking a provider fired the
+   * admin probe route and rendered a Re-check whose POST answers 404 "Assign
+   * one in Settings → AI Models" — an error toast telling the admin to do the
+   * thing they are on the page doing.
+   */
+  it('does not probe or offer Re-check for an unsaved provider choice', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({ imageUnassigned: true });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-image_embedding-provider'), {
+      target: { value: providerB.id },
+    });
+
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId('usecase-image_embedding-provider') as HTMLSelectElement).value,
+      ).toBe(providerB.id);
+    });
+    expect(screen.queryByTestId('image-embedding-recheck')).toBeNull();
+    expect(
+      spy.mock.calls.filter(([input]) =>
+        (typeof input === 'string' ? input : (input as URL).toString())
+          .endsWith('/admin/llm-usecases/image_embedding/probe'),
+      ),
+    ).toHaveLength(0);
+  });
+
+  // The mirror image: clearing the select without saving must not hide a strip
+  // that still describes a live, assigned leg.
+  it('keeps the probe status when an unsaved edit clears the provider', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-probe-status');
+
+    fireEvent.change(screen.getByTestId('usecase-image_embedding-provider'), {
+      target: { value: '' },
+    });
+
+    expect(screen.getByTestId('image-embedding-probe-status')).toBeTruthy();
+    expect(screen.getByTestId('image-embedding-recheck')).toBeTruthy();
+  });
+
+  /**
+   * ADR-010 reserves green for connected/succeeded. A probe that did not
+   * complete at all — unreachable endpoint, open breaker — was announced in the
+   * success treatment (review round 1).
+   */
+  it('reports a re-check that established no width as an error', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      reprobeResult: {
+        providerId: providerB.id,
+        model: 'Qwen/Qwen3-VL-Embedding-2B',
+        dimensions: null,
+        tier: null,
+        probedAt: '2026-08-17T11:00:00.000Z',
+        error: 'vlEmbedding HTTP 422: Extra inputs are not permitted: messages',
+      },
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-probe-status');
+
+    // The sonner module mock is shared across this file's cases, so clear the
+    // success channel here rather than asserting a global never-called.
+    vi.mocked(toast.success).mockClear();
+    fireEvent.click(screen.getByTestId('image-embedding-recheck'));
+
+    await waitFor(() => {
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        expect.stringContaining('refused the probe'),
+      );
+    });
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+  });
+
+  /**
+   * "Re-check" reads as diagnostic, and on a width or endpoint change it is
+   * not: the server truncates `page_image_embeddings` and re-dirties every
+   * non-folder page. The consequence has to be named where the operator reads
+   * it, not only in the audit log.
+   */
+  it('names the emptied index and the queued re-scan when the re-check rebuilt', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      reprobeResult: {
+        providerId: providerB.id,
+        model: 'Qwen/Qwen3-VL-Embedding-2B',
+        dimensions: 2560,
+        tier: 'halfvec',
+        probedAt: '2026-08-17T11:00:00.000Z',
+        error: null,
+        rebuilt: true,
+        dirtiedPages: 12,
+      },
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-probe-status');
+
+    fireEvent.click(screen.getByTestId('image-embedding-recheck'));
+
+    await waitFor(() => {
+      expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
+        expect.stringMatching(/emptied/i),
+      );
+    });
+    expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
+      expect.stringContaining('12 pages were queued'),
+    );
+  });
+
+  /**
+   * Review round 2 — the ONE surface that tells an admin the assignment saved
+   * but the image column was not retyped. Deleting the branch left the whole
+   * suite green, so the server's honest sentence was discarded and the admin
+   * saw the green "Use-case assignments saved" for a leg whose column is still
+   * at the previous width: exactly the misreport a bare 500 was rejected for.
+   */
+  it('warns instead of celebrating when the server could not retype the index', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      putResult: {
+        ok: true,
+        imageIndexWarning:
+          'The assignment was saved, but the image index could not be retyped — it is still at its previous width. Use Re-check on the Image embedding row to retry.',
+      },
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    vi.mocked(toast.success).mockClear();
+    vi.mocked(toast.warning).mockClear();
+    fireEvent.change(screen.getByTestId('usecase-image_embedding-provider'), {
+      target: { value: providerA.id },
+    });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(expect.stringMatching(/Re-check/i));
+    });
+    expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('previous width'),
+    );
+    // The green "saved" must not run beside it: the row landed and the leg is
+    // misconfigured behind it.
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+  });
+
+  // ── #1115 review round 2: the MRL truncation width ──────────────────────
+  //
+  // `dimensions` is a per-REQUEST parameter — the vLLM override only makes the
+  // server accept it — so the remedy the unindexed note names is only real if
+  // there is somewhere to put the number and something that sends it.
+
+  it('renders the truncation field, empty, with its caveat visible at rest', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    const field = (await screen.findByTestId(
+      'image-embedding-target-dimensions',
+    )) as HTMLInputElement;
+    expect(field.value).toBe('');
+    // Not a `title` (#1119's rule): the contract of the field is on screen.
+    const help = document.getElementById('image-embedding-target-dimensions-help');
+    expect(help?.textContent).toMatch(/native width/i);
+    expect(field.getAttribute('aria-describedby')).toBe('image-embedding-target-dimensions-help');
+  });
+
+  it('hydrates the truncation field from the stored setting', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({ imageTargetDimensions: 2048 });
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = (await screen.findByTestId(
+      'image-embedding-target-dimensions',
+    )) as HTMLInputElement;
+    await waitFor(() => expect(field.value).toBe('2048'));
+  });
+
+  /**
+   * The order is load-bearing: the width has to be stored BEFORE the
+   * assignment PUT, because that PUT re-probes and the probe sends this
+   * number. And the assignment has to be re-sent at all — otherwise the width
+   * lands in `admin_settings`, nothing re-probes, and the column keeps a type
+   * that no later writer will match.
+   */
+  it('saves the width first, then re-probes the saved assignment with it', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-target-dimensions');
+
+    fireEvent.change(screen.getByTestId('image-embedding-target-dimensions'), {
+      target: { value: '2048' },
+    });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      const puts = spy.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(puts).toHaveLength(2);
+    });
+    const puts = spy.mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PUT',
+    );
+    const urlOf = (c: unknown[]) =>
+      typeof c[0] === 'string' ? (c[0] as string) : (c[0] as URL).toString();
+    expect(urlOf(puts[0]!)).toMatch(/\/admin\/settings$/);
+    expect(JSON.parse((puts[0]![1] as RequestInit).body as string)).toEqual({
+      imageEmbeddingTargetDimensions: 2048,
+    });
+    expect(urlOf(puts[1]!)).toMatch(/\/admin\/llm-usecases$/);
+    // The saved provider, re-sent: a changed width IS a change to the leg, and
+    // the probe + column DDL hang off the assignment PUT.
+    expect(JSON.parse((puts[1]![1] as RequestInit).body as string)).toEqual({
+      image_embedding: { providerId: providerB.id },
+    });
+  });
+
+  it('clears the width with an explicit null when the field is emptied', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({ imageTargetDimensions: 2048 });
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = (await screen.findByTestId(
+      'image-embedding-target-dimensions',
+    )) as HTMLInputElement;
+    await waitFor(() => expect(field.value).toBe('2048'));
+
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      const settingsPut = spy.mock.calls.find(
+        ([input, init]) =>
+          (typeof input === 'string' ? input : (input as URL).toString()).endsWith(
+            '/admin/settings',
+          ) && (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(settingsPut).toBeTruthy();
+      expect(JSON.parse((settingsPut![1] as RequestInit).body as string)).toEqual({
+        imageEmbeddingTargetDimensions: null,
+      });
+    });
+  });
+
+  it('does not touch the settings route when the width was not edited', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({ imageTargetDimensions: 2048 });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-target-dimensions');
+
+    fireEvent.change(screen.getByTestId('usecase-summary-provider'), {
+      target: { value: providerB.id },
+    });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      expect(
+        spy.mock.calls.filter(
+          ([input, init]) =>
+            (typeof input === 'string' ? input : (input as URL).toString()).endsWith(
+              '/admin/llm-usecases',
+            ) && (init as RequestInit | undefined)?.method === 'PUT',
+        ),
+      ).toHaveLength(1);
+    });
+    expect(
+      spy.mock.calls.filter(
+        ([input, init]) =>
+          (typeof input === 'string' ? input : (input as URL).toString()).endsWith(
+            '/admin/settings',
+          ) && (init as RequestInit | undefined)?.method === 'PUT',
+      ),
+    ).toHaveLength(0);
+  });
+
+  /**
+   * Review round 3 — the two PUTs are not atomic, and the refused half is the
+   * DESIGNED outcome: the probe gate answers 422 whenever the endpoint will
+   * not serve the width. The settings PUT in front of it has already landed by
+   * then, so `docs/runbooks/image-index.md` §2 tells the operator to clear the
+   * field and save again. That remedy only works if the panel's comparison
+   * baseline names what the server actually stored — invalidating
+   * `['admin-settings']` only on success left it on the PRE-save value, so
+   * reverting the field read as unchanged and reported "No changes" over a
+   * width the server still held, silently, until a reload.
+   */
+  it('re-reads the stored width after a refused save, so reverting it is a real change', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({
+      putError:
+        "This endpoint refused the request. Image embedding needs a server that accepts vLLM's chat-embeddings shape on /v1/embeddings.",
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = (await screen.findByTestId(
+      'image-embedding-target-dimensions',
+    )) as HTMLInputElement;
+
+    const urlOf = (c: unknown[]) =>
+      typeof c[0] === 'string' ? (c[0] as string) : (c[0] as URL).toString();
+    const settingsCalls = (method: string | undefined) =>
+      spy.mock.calls.filter(
+        (c) =>
+          urlOf(c).endsWith('/admin/settings')
+          && (c[1] as RequestInit | undefined)?.method === method,
+      );
+
+    fireEvent.change(field, { target: { value: '4000' } });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    // The width landed; the assignment PUT behind it was refused.
+    await waitFor(() => expect(settingsCalls('PUT')).toHaveLength(1));
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalled());
+    // …and the panel re-read the document anyway, which is the fix.
+    await waitFor(() => expect(settingsCalls(undefined).length).toBeGreaterThan(1));
+    // The typed value survives the refusal — the admin corrects it in place.
+    expect(field.value).toBe('4000');
+
+    // The runbook's remedy: clear the field, save again.
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => expect(settingsCalls('PUT')).toHaveLength(2));
+    expect(JSON.parse((settingsCalls('PUT')[1]![1] as RequestInit).body as string)).toEqual({
+      imageEmbeddingTargetDimensions: null,
+    });
+    expect(vi.mocked(toast.message)).not.toHaveBeenCalledWith('No changes');
+  });
+
+  /**
+   * Review round 3 — `min`/`max` on a bare `type="number"` input constrain
+   * nothing about the value read off `e.target.value`, so an out-of-range
+   * entry reached `ImageEmbeddingTargetDimensionsSchema` and came back as a
+   * raw Zod issue path. The sibling control one function away has clamped for
+   * exactly this reason since #268.
+   */
+  it('clamps an out-of-range truncation width instead of letting Zod refuse it', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = await screen.findByTestId('image-embedding-target-dimensions');
+
+    fireEvent.change(field, { target: { value: '32' } });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      const settingsPut = spy.mock.calls.find(
+        ([input, init]) =>
+          (typeof input === 'string' ? input : (input as URL).toString()).endsWith(
+            '/admin/settings',
+          ) && (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(settingsPut).toBeTruthy();
+      expect(JSON.parse((settingsPut![1] as RequestInit).body as string)).toEqual({
+        imageEmbeddingTargetDimensions: 64,
+      });
+    });
+  });
+
+  /**
+   * Final review, nit 3 — the `min`/`max` attributes are the schema's own
+   * bounds, read from the contract rather than typed in. A hand-copied pair
+   * would let the field advertise a range the server refuses (or, worse, refuse
+   * one it accepts) the first time either bound is retuned.
+   */
+  it('advertises the contract bounds on the truncation field', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = await screen.findByTestId('image-embedding-target-dimensions');
+
+    expect(field.getAttribute('min')).toBe(String(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN));
+    expect(field.getAttribute('max')).toBe(String(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX));
+  });
+
+  /**
+   * Final review, nit 2 — the clamp above runs at SAVE, so until the admin
+   * pressed the button the field sat showing a number that was not the one
+   * about to be sent. It now settles on blur, and only on blur: clamping per
+   * keystroke rewrites `4` to `64` the moment it is typed, which makes `4000`
+   * — the largest indexable width, and the one the unindexed note tells the
+   * operator to enter — unreachable from an empty field.
+   */
+  it('clamps the truncation width on blur while keeping keystrokes typeable', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = (await screen.findByTestId(
+      'image-embedding-target-dimensions',
+    )) as HTMLInputElement;
+
+    // Mid-entry: below the floor, and left exactly as typed.
+    fireEvent.change(field, { target: { value: '4' } });
+    expect(field.value).toBe('4');
+    fireEvent.change(field, { target: { value: '40' } });
+    expect(field.value).toBe('40');
+    // …all the way to a legal width, which a per-keystroke clamp would have
+    // made unreachable.
+    fireEvent.change(field, { target: { value: '4000' } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(field.value).toBe('4000'));
+
+    // Leaving the field on an out-of-range value settles it on what will be
+    // sent, rather than arguing with the admin at Save time.
+    fireEvent.change(field, { target: { value: '32' } });
+    fireEvent.blur(field);
+    await waitFor(() =>
+      expect(field.value).toBe(String(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN)),
+    );
+
+    fireEvent.change(field, { target: { value: '99999' } });
+    fireEvent.blur(field);
+    await waitFor(() =>
+      expect(field.value).toBe(String(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX)),
+    );
+
+    // An empty field still means "native width", not the floor.
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(field.value).toBe(''));
+  });
+
+  /**
+   * Review round 2 — P1 types the column, builds the index and dirties every
+   * page, and then nothing happens until P2's worker exists. The description
+   * beside it says "for image search" and a successful Re-check says
+   * "confirmed"; both read as "assigned ⇒ it works". #1119's rule: the caveat
+   * is on screen, at rest.
+   */
+  it('says on screen that nothing is indexed yet in this release', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const row = await screen.findByTestId('usecase-row-image_embedding');
+    const note = within(row).getByTestId('image-embedding-inert-note');
+    expect(note.textContent).toMatch(/not indexed yet/i);
+    expect(note.textContent).toMatch(/later release/i);
+  });
+
+  /**
+   * The chip renders the PROBE, not the column — they diverge on the
+   * guarded-DDL branch above, where the assignment saves and the column keeps
+   * its previous width. Labelling it "Image index" made it assert a width the
+   * column does not have.
+   */
+  it('labels the probe chip as the last probe, not as the index', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const row = await screen.findByTestId('usecase-row-image_embedding');
+    await screen.findByTestId('image-embedding-probe-status');
+    expect(within(row).getByText('Last probe')).toBeTruthy();
+    expect(within(row).queryByText('Image index')).toBeNull();
+  });
+
+  it('surfaces the refusal reason when the probe blocks the assignment', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      putError:
+        "This endpoint refused the request. Image embedding needs a server that accepts vLLM's chat-embeddings shape on /v1/embeddings — Ollama, LM Studio and TEI do not.",
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-image_embedding-provider'), {
+      target: { value: providerA.id },
+    });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        expect.stringContaining('chat-embeddings shape'),
+      );
+    });
   });
 });

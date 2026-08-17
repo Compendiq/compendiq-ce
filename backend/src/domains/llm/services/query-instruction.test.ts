@@ -50,6 +50,36 @@ describe('query-instruction (#1114)', () => {
       expect(wantsInstructionPrefix(undefined)).toBe(false);
       expect(wantsInstructionPrefix('')).toBe(false);
     });
+
+    /**
+     * #1115 — the Qwen3-**VL**-Embedding family matches both needles above and
+     * wants a completely different format: a chat template with the
+     * instruction as a system message, not `Instruct:/Query:`. That formatting
+     * lives in `vl-embedding-client.ts`.
+     *
+     * This matters because an operator can point the *text* `embedding`
+     * assignment at a VL model by hand — the model picker lists whatever the
+     * provider serves — and the failure would be silent: a garbled preamble
+     * on every query vector, which reads as poor retrieval rather than as a
+     * misconfiguration.
+     */
+    it('excludes the VL family, whatever the naming convention', () => {
+      for (const m of [
+        'qwen3-vl-embedding-2b',
+        'Qwen/Qwen3-VL-Embedding-8B',
+        'qwen3-vl-embedding:2b',
+        'QWEN3-VL-EMBEDDING-8B',
+        'text-embedding-qwen3-vl-embedding-2b',
+      ]) {
+        expect(wantsInstructionPrefix(m), m).toBe(false);
+      }
+    });
+
+    it('carries the exclusion through formatQueryForEmbedding', () => {
+      expect(formatQueryForEmbedding('Qwen/Qwen3-VL-Embedding-2B', 'wie viele Kammern?')).toBe(
+        'wie viele Kammern?',
+      );
+    });
   });
 
   describe('formatQueryForEmbedding', () => {

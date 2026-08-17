@@ -19,6 +19,9 @@ const validReadPayload = {
   embeddingChunkSize: 500,
   embeddingChunkOverlap: 50,
   drawioEmbedUrl: null,
+  // #1115 — required on read, null on every instance that has not asked the
+  // image leg for MRL truncation.
+  imageEmbeddingTargetDimensions: null,
   reembedHistoryRetention: 150,
   adminAccessDeniedRetentionDays: 90,
   // Compendiq/compendiq-ee#113 Phase B-3 — required on read so a GET response
@@ -500,6 +503,58 @@ describe('retrieval knobs (#1118)', () => {
       expect(() => UpdateAdminSettingsSchema.parse({ ragRerankCandidates: 9 })).toThrow();
       expect(() => UpdateAdminSettingsSchema.parse({ ragRerankCandidates: 101 })).toThrow();
       expect(() => UpdateAdminSettingsSchema.parse({ ragRerankCandidates: 30.5 })).toThrow();
+    });
+  });
+
+  /**
+   * #1115 — the MRL truncation width the image leg sends. Three states, and
+   * the middle one is the reason this is `nullish` rather than `optional`:
+   * omitted leaves the stored width alone, `null` clears it back to the
+   * model's native width, and a number pins it.
+   */
+  describe('image_embedding_target_dimensions — [64, 16000] integer or null', () => {
+    it('accepts the bounds and an explicit null', () => {
+      expect(
+        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 64 })
+          .imageEmbeddingTargetDimensions,
+      ).toBe(64);
+      expect(
+        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 16_000 })
+          .imageEmbeddingTargetDimensions,
+      ).toBe(16_000);
+      expect(
+        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: null })
+          .imageEmbeddingTargetDimensions,
+      ).toBeNull();
+    });
+
+    it('rejects below 64, above pgvector’s ceiling, and non-integers', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 63 })).toThrow();
+      expect(() =>
+        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 16_001 }),
+      ).toThrow();
+      expect(() =>
+        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 2048.5 }),
+      ).toThrow();
+    });
+
+    /**
+     * 4000 is the largest INDEXABLE width, not the largest legal one. The
+     * settings row reports the unindexed tier; refusing the number here would
+     * leave an operator who deliberately wants a sequential scan unable to say
+     * so, and would contradict `columnTypeFor`, which accepts it.
+     */
+    it('accepts an unindexable-but-storable width', () => {
+      expect(
+        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 4096 })
+          .imageEmbeddingTargetDimensions,
+      ).toBe(4096);
+    });
+
+    it('leaves the stored width alone when the field is omitted', () => {
+      expect(UpdateAdminSettingsSchema.parse({})).not.toHaveProperty(
+        'imageEmbeddingTargetDimensions',
+      );
     });
   });
 

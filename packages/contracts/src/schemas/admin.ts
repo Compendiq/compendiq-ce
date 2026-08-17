@@ -124,6 +124,25 @@ const RagMmrLambdaSchema = z.number().min(0).max(1);
 const RagRankingPriorWeightSchema = z.number().min(0).max(0.05);
 
 /**
+ * #1115 — `image_embedding_target_dimensions`, the MRL truncation width the
+ * image leg REQUESTS. Declared once and used nullable on read, nullish on
+ * update (null clears the row, i.e. "use the model's native width").
+ *
+ * The bounds are pgvector's column limit at the top and a sanity floor at the
+ * bottom. Deliberately NOT capped at 4000: that is the largest indexable
+ * width, and the settings row already reports the unindexed tier — refusing
+ * the number here would make an operator who *wants* a sequential-scan index
+ * unable to say so.
+ */
+export const IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN = 64;
+export const IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX = 16_000;
+export const ImageEmbeddingTargetDimensionsSchema = z
+  .number()
+  .int()
+  .min(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN)
+  .max(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX);
+
+/**
  * #1114 — which model a confidence threshold was calibrated against, and
  * whether that model is still the live one.
  *
@@ -270,6 +289,23 @@ export const AdminSettingsSchema = z.object({
    * so the read schema must accept `null` rather than `undefined`.
    */
   drawioEmbedUrl: z.string().url().nullable(),
+  /**
+   * #1115 — MRL truncation width for the `image_embedding` leg, or `null` to
+   * take whatever width the served checkpoint answers with.
+   *
+   * It is a REQUEST parameter, not a serving flag: vLLM's `dimensions` is
+   * per-request and `--hf-overrides '{"is_matryoshka": true}'` only makes the
+   * server accept it. So the number has to live somewhere the client can read
+   * it — here — and the probe, P2's image embedder and P3's query embed all
+   * send the same value, or the column is typed to one width and filled from
+   * another.
+   *
+   * The floor is 64 because MRL truncation below that is not a width any of
+   * these checkpoints is trained to be useful at; the ceiling is pgvector's
+   * own column limit. 4000 is the largest *indexable* width — that is a tier
+   * boundary the settings row states, not a validation error.
+   */
+  imageEmbeddingTargetDimensions: ImageEmbeddingTargetDimensionsSchema.nullable(),
   // AI Safety settings
   aiGuardrailNoFabrication: z.string().max(5000).optional(),
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),
@@ -370,6 +406,12 @@ export const UpdateAdminSettingsSchema = z.object({
    *  - URL string    → set / replace value
    */
   drawioEmbedUrl: z.string().url().nullish(),
+  /**
+   * #1115 — same three-state update semantics as `drawioEmbedUrl`: omitted
+   * leaves the row alone, `null` deletes it (back to the model's native
+   * width), a number sets the truncation width every image-side call sends.
+   */
+  imageEmbeddingTargetDimensions: ImageEmbeddingTargetDimensionsSchema.nullish(),
   // AI Safety settings
   aiGuardrailNoFabrication: z.string().max(5000).optional(),
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),

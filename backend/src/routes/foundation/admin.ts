@@ -46,6 +46,10 @@ import { toFixedDecimalString } from '../../core/utils/fixed-decimal.js';
 import { getRegistrationMode } from '../../core/services/registration-policy-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
 import {
+  getImageEmbeddingTargetDimensions,
+  IMAGE_EMBEDDING_TARGET_DIMENSIONS_KEY,
+} from '../../core/services/image-embedding-target-dimensions.js';
+import {
   setLlmConcurrencyClusterWide,
   setLlmMaxQueueDepthClusterWide,
 } from '../../domains/llm/services/llm-queue.js';
@@ -349,6 +353,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragPinIdentifiers,
       ragMmr,
       ragRankingPriorWeight,
+      imageEmbeddingTargetDimensions,
     ] = await Promise.all([
       getEmbeddingDimensions(),
       getAiGuardrails(),
@@ -381,6 +386,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
       getRagPinIdentifiersEnabled(),
       getRagMmrConfig(),
       getRagRankingPriorWeight(),
+      // #1115 — uncached, like `getFtsLanguage`: it is read a handful of times
+      // per admin action, and a stale one would let a probe fired seconds after
+      // the width was saved measure the OLD width and type the column to it.
+      getImageEmbeddingTargetDimensions(),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
@@ -437,6 +446,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
+      // #1115 — the MRL truncation width the image leg requests, or null for
+      // the model's native width. Read through its own reader (which discards
+      // an out-of-range row) rather than off `map`, so the panel is shown the
+      // number the probe and P2's embedder will actually send.
+      imageEmbeddingTargetDimensions,
       // Issue #257 — re-embed-all job history retention (default 150, [10, 10000]).
       reembedHistoryRetention: parseInt(map['reembed_history_retention'] ?? '150', 10),
       // Issue #264 — retention for ADMIN_ACCESS_DENIED audit rows
@@ -559,6 +573,28 @@ export async function adminRoutes(fastify: FastifyInstance) {
         await query(`DELETE FROM admin_settings WHERE setting_key = 'drawio_embed_url'`);
       } else {
         updates.push({ key: 'drawio_embed_url', value: body.drawioEmbedUrl });
+      }
+    }
+    // #1115 — the image leg's MRL truncation width, with the same three-state
+    // semantics: absent leaves it, null clears it back to the model's native
+    // width, a number pins what every image-side call requests. Zod already
+    // bounded it to [64, 16000]; `columnTypeFor` decides the tier from what the
+    // model ANSWERS, so nothing here is interpolated into DDL.
+    //
+    // Writing it does not re-probe on its own. The panel's Save re-sends the
+    // image assignment when this changes, and Re-check is the other entry
+    // point — those are the only two moments the column is brought in line.
+    if (body.imageEmbeddingTargetDimensions !== undefined) {
+      if (body.imageEmbeddingTargetDimensions === null) {
+        await query(
+          `DELETE FROM admin_settings WHERE setting_key = $1`,
+          [IMAGE_EMBEDDING_TARGET_DIMENSIONS_KEY],
+        );
+      } else {
+        updates.push({
+          key: IMAGE_EMBEDDING_TARGET_DIMENSIONS_KEY,
+          value: String(body.imageEmbeddingTargetDimensions),
+        });
       }
     }
     // Per-user concurrent SSE-stream cap (#268). Zod already validated the
