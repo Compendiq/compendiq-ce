@@ -70,15 +70,18 @@ describe('UserMenu', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders the user avatar and username', () => {
+  it('renders an avatar-only trigger named for the signed-in user', () => {
     renderUserMenu();
     expect(screen.getByText('T')).toBeInTheDocument();
-    expect(screen.getByText('testuser')).toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: 'testuser menu' });
+    expect(trigger).toBeInTheDocument();
+    // Username lives in the menu, not beside the avatar.
+    expect(trigger).not.toHaveTextContent('testuser');
   });
 
   it('renders a trigger button with menu role', () => {
     renderUserMenu();
-    const trigger = screen.getByRole('button');
+    const trigger = screen.getByRole('button', { name: 'testuser menu' });
     expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
   });
 
@@ -244,16 +247,15 @@ describe('UserMenu', () => {
     }
   });
 
-  // Task 5 — avatar initial bubble is brand chrome (not an AI affordance), so
-  // it must route to ink-action and not amber. The Playwright contrast spec in
-  // Task 6 will catch the colour combo at run-time; this guards the contract
-  // at the unit level so a future regression can't quietly re-amber it.
-  it('user avatar uses ink-action, not amber (avatar is brand chrome, not AI)', () => {
+  // Identity, not an action: teal is reserved for actions. Neutral chip, never
+  // amber (AI) and never the filled accent.
+  it('user avatar is a neutral chip, not an accent or amber mark', () => {
     mockUser = { username: 'simon', role: 'user' };
     renderUserMenu();
     const avatar = screen.getByTestId('user-avatar-initial');
     expect(avatar.className).not.toMatch(/text-primary|bg-primary/);
-    expect(avatar.className).toMatch(/bg-action/);
-    expect(avatar.className).toMatch(/text-action-foreground/);
+    expect(avatar.className).not.toMatch(/bg-action|text-action/);
+    expect(avatar.className).toMatch(/bg-muted/);
+    expect(avatar.className).toMatch(/text-foreground/);
   });
 });

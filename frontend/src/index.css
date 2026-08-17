@@ -646,28 +646,6 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   outline-offset: -1px;
 }
 
-@utility app-search {
-  color: var(--color-muted-foreground);
-  background: var(--color-card);
-  border: 1px solid var(--color-border);
-  transition:
-    color 120ms ease-out,
-    border-color 120ms ease-out,
-    background-color 120ms ease-out;
-
-  &:hover {
-    color: var(--color-foreground);
-    border-color: var(--color-border-interactive);
-  }
-
-  &:focus-visible {
-    color: var(--color-foreground);
-    border-color: var(--color-primary);
-    outline: 2px solid var(--color-ring);
-    outline-offset: -1px;
-  }
-}
-
 /* Light mode is composed as paper and ink, not an inverted dark shell.
    Chrome stays opaque and quiet, the sidebar sits one value step below the
    reading canvas, and the search boundary remains unambiguous in daylight. */
@@ -1460,21 +1438,12 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    Base prose type — reading measure
    ============================================
    `.prose` set no font-size of its own, so the article inherited the app's
-   14px UI text and, unconstrained by the outer 1200px column, wrapped at up
-   to ~128 characters per line at wide viewports — twice the comfortable
-   45–75cpl measure, on the one surface whose entire job is reading (#P1).
-   16px/1.65 is the type; the 68ch cap on TEXT elements specifically (not
-   `.prose` itself) is the measure — tables, images, code blocks and
-   Confluence macros stay unconstrained so they keep using the full column,
-   because a narrower `.prose` would drag them down to 68ch too. Both halves
-   are required together: widening the type alone pushes cpl further up,
-   and capping the measure alone leaves the type undersized. */
+   14px UI text. 16px/1.65 is the type. The measure is the article column
+   itself (`max-w-[1200px] px-5 sm:px-10`) — the same box tables, images,
+   code blocks and macros already use. A 68ch cap on headings/paragraphs
+   left a narrower rag beside those blocks; the document is one width. */
 .prose {
   font-size: 1rem;
-}
-
-.prose :where(h1, h2, h3, h4, h5, h6, p, li, blockquote) {
-  max-width: 68ch;
 }
 
 /* ============================================

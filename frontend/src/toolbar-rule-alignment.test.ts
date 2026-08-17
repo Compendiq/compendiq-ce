@@ -77,10 +77,11 @@ describe('the 48px line across the top of every pane', () => {
   });
 
   it('keeps the edit toolbar on the article strip’s 48px line', () => {
-    // The view-mode strip owns its hairline on the sticky parent; the editor
-    // toolbar does the same. Both inner rows therefore need the 47px height
-    // so their parent border completes the shared 48px header height. The edit
-    // row is explicitly non-wrapping, so its height must be exact rather than
+    // The format toolbar now fills the app header's content box (h-12 minus
+    // the header's own hairline). PageViewPage fallbacks — read-mode chips
+    // and the in-place edit row when the header slot is missing — still
+    // subtract their parent's border the same way. The edit row is
+    // explicitly non-wrapping, so its height must be exact rather than
     // merely a minimum that actions can expand.
     expect(read('features/pages/PageViewPage.tsx')).toContain('min-h-[calc(3rem-1px)]');
     expect(read(EDIT_TOOLBAR)).toContain('h-[calc(3rem-1px)] min-h-[calc(3rem-1px)]');

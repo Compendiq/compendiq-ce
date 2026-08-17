@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
-import { Search, Menu, X } from 'lucide-react';
+import { Menu, X } from 'lucide-react';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
 import { useUiStore } from '../../../stores/ui-store';
@@ -10,7 +10,6 @@ import { CommandPalette } from './CommandPalette';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { ServiceStatus } from '../badges/ServiceStatus';
 import { TrialBanner } from '../banners/TrialBanner';
-import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
 import { SettingsSidebar } from './SettingsSidebar';
 import {
@@ -20,11 +19,9 @@ import {
 import { AiProvider } from '../../../features/ai/AiContext';
 import { AiDock } from '../../../features/ai/dock/AiDock';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
-import { ShortcutHint } from '../ShortcutHint';
 import { Logo } from '../Logo';
-import { ThemeToggle } from './ThemeToggle';
+import { AppHeaderMain } from './header-slot';
 import { PageTransition } from './PageTransition';
-import { LayoutPresetMenu, type LayoutPreset } from './LayoutPresetMenu';
 import { useMediaQuery, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
 
@@ -32,23 +29,19 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const openCommandPalette = useCommandPaletteStore((s) => s.open);
-  const isCommandPaletteOpen = useCommandPaletteStore((s) => s.isOpen);
   const toggleShortcutsModal = useKeyboardShortcutsStore((s) => s.toggle);
   const shortcutsModalOpen = useKeyboardShortcutsStore((s) => s.isOpen);
   const pendingSequence = useKeyboardShortcutsStore((s) => s.pendingSequence);
   const setPendingSequence = useKeyboardShortcutsStore((s) => s.setPendingSequence);
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const toggleArticleSidebar = useUiStore((s) => s.toggleArticleSidebar);
-  const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
   const articleSidebarCollapsed = useUiStore((s) => s.articleSidebarCollapsed);
-  const setTreeSidebarCollapsed = useUiStore((s) => s.setTreeSidebarCollapsed);
   const setArticleSidebarCollapsed = useUiStore((s) => s.setArticleSidebarCollapsed);
   const singleKeyShortcutsEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
   const dockOpen = useAiDockStore((s) => s.open);
   const openDock = useAiDockStore((s) => s.openDock);
   const closeDock = useAiDockStore((s) => s.closeDock);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [activeLayoutPreset, setActiveLayoutPreset] = useState<LayoutPreset | null>(null);
   const [inspectorViewRequest, setInspectorViewRequest] = useState<InspectorViewRequest | null>(null);
   const [midWidthTreeExpandedOverride, setMidWidthTreeExpandedOverride] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -72,57 +65,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
     }));
   }, []);
 
-  const applyLayoutPreset = useCallback((preset: LayoutPreset) => {
-    setActiveLayoutPreset(preset);
-
-    if (preset === 'reading') {
-      setTreeSidebarCollapsed(true);
-      setArticleSidebarCollapsed(false);
-      closeDock();
-      requestInspectorView('outline');
-      setMidWidthTreeExpandedOverride(false);
-      return;
-    }
-
-    if (preset === 'editing') {
-      setTreeSidebarCollapsed(false);
-      setArticleSidebarCollapsed(false);
-      closeDock();
-      requestInspectorView('details');
-      // Editing intentionally keeps navigation available even where the
-      // inspector would normally compact it for reading room.
-      setMidWidthTreeExpandedOverride(true);
-      return;
-    }
-
-    if (preset === 'focus') {
-      setTreeSidebarCollapsed(true);
-      setArticleSidebarCollapsed(true);
-      closeDock();
-      setMidWidthTreeExpandedOverride(false);
-      return;
-    }
-
-    // The AI preset. `setArticleSidebarCollapsed(true)` here was correct when
-    // the assistant was its own column and the inspector had to step aside for
-    // it; now the assistant IS a tab in that inspector, so collapsing it hid
-    // the very thing the preset asks for. The effect below turns `openDock()`
-    // into the tab selection on every layout that has an inspector.
-    setTreeSidebarCollapsed(false);
-    setArticleSidebarCollapsed(false);
-    openDock();
-    setMidWidthTreeExpandedOverride(false);
-  }, [
-    closeDock,
-    openDock,
-    requestInspectorView,
-    setArticleSidebarCollapsed,
-    setTreeSidebarCollapsed,
-  ]);
-
-  // "Show me the assistant" is raised as `openDock()` from three places: Alt+I
-  // in PageViewPage, the AI layout preset above, and the inspector's own rail
-  // button. Below `md` that still means the bottom sheet, which is all `AiDock`
+  // "Show me the assistant" is raised as `openDock()` from two places: Alt+I
+  // in PageViewPage and the inspector's own rail button. Below `md` that still
+  // means the bottom sheet, which is all `AiDock`
   // renders now.
   //
   // At `md` and above it can no longer mean "open the dock", because there is
@@ -180,22 +125,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
     midWidthTreeExpandedOverride,
   ]);
 
-  // A manual panel change means the last command is no longer an exact preset.
-  useEffect(() => {
-    if (!activeLayoutPreset) return;
-    const matches = {
-      reading: treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
-      editing: !treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
-      focus: treeSidebarCollapsed && articleSidebarCollapsed && !dockOpen,
-      research: !treeSidebarCollapsed && articleSidebarCollapsed && dockOpen,
-    }[activeLayoutPreset];
-    if (!matches) setActiveLayoutPreset(null);
-  }, [activeLayoutPreset, articleSidebarCollapsed, dockOpen, treeSidebarCollapsed]);
-
   useEffect(() => {
     if (previousLayoutPathRef.current === location.pathname) return;
     previousLayoutPathRef.current = location.pathname;
-    setActiveLayoutPreset(null);
     setMidWidthTreeExpandedOverride(false);
   }, [location.pathname]);
 
@@ -257,7 +189,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       key: 'Ctrl+K',
       keys: ['k'],
       mod: true,
-      description: 'Open command palette / quick search',
+      description: 'Jump to page or command',
       category: 'navigation',
       action: openCommandPalette,
     },
@@ -434,7 +366,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       {/* Top navigation bar. 48px: the workspace convention, and 10px back from
           the 58px the neumorphic header needed to give its extrusion room to
           read. The height is spent on content everywhere else in the app. */}
-      <header className="app-header relative z-10 flex h-12 shrink-0 items-center border-b px-3">
+      <header className="app-header relative z-10 flex h-12 shrink-0 items-center gap-3 border-b px-3">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
           onClick={() => setMobileSidebarOpen((v) => !v)}
@@ -446,53 +378,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
 
-        {/* Logo - always visible in header */}
-        <Link to="/" aria-label="Compendiq home" className="mr-3 flex shrink-0 items-center group">
+        <Link to="/" aria-label="Compendiq home" className="flex shrink-0 items-center group">
           <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
         </Link>
 
-        {/* Spacer — the in-page breadcrumb was removed; the sidebar carries all
-            navigation context now (main nav strip + tree / settings nav). */}
-        <div className="flex min-w-0 flex-1 items-center" />
-
-
-        {/* Center: search bar — absolutely centered in header */}
-        <div className="pointer-events-none absolute inset-x-0 hidden justify-center sm:flex" role="search">
-          <button
-            onClick={openCommandPalette}
-            aria-label="Search knowledge base"
-            aria-expanded={isCommandPaletteOpen}
-            className="app-search pointer-events-auto flex h-8 w-full max-w-lg items-center gap-2 rounded-md px-2.5 text-[13px]"
-          >
-            <Search size={14} className="shrink-0" />
-            <span className="truncate">Search pages, commands...</span>
-            <span className="ml-auto shrink-0">
-              <ShortcutHint shortcutId="search" />
-            </span>
-          </button>
-        </div>
-
-        {/* Mobile search button (visible on small screens only) */}
-        <button
-          onClick={openCommandPalette}
-          aria-label="Search"
-          aria-expanded={isCommandPaletteOpen}
-          className="app-search ml-auto mr-2 flex items-center rounded-md p-1.5 sm:hidden"
-        >
-          <Search size={16} />
-        </button>
-
-        {/* Right side: article layout + theme + user */}
-        <div className="flex items-center gap-3 sm:ml-auto">
-          {isArticleRoute && (
-            <LayoutPresetMenu
-              activePreset={activeLayoutPreset}
-              onSelect={applyLayoutPreset}
-            />
-          )}
-          <ThemeToggle />
-          <UserMenu />
-        </div>
+        {/* Route title and page actions. Pages (and any HeaderHost) claim
+            the slot; otherwise the path name is wayfinding. */}
+        <AppHeaderMain />
       </header>
 
       {/* Mobile sidebar slide-over */}

@@ -37,6 +37,7 @@ import { hasSubstantialLede } from '../../shared/lib/article-lede';
 import type { TocHeading } from '../../shared/components/article/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagPopover } from '../../shared/components/TagPopover';
+import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { neutralChipClass } from '../../shared/components/badges/neutral-chip';
 import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
@@ -704,124 +705,94 @@ export function PageViewPage() {
       transition={{ duration: 0.18 }}
       data-testid="article-page"
     >
-      {/* Sticky toolbar with an UNDER-mask that sits behind the toolbar at
-          a lower z-index. The mask is opaque bg-background, so article
-          content scrolling under the translucent toolbar is fully occluded
-          rather than showing through its rounded-corner cutouts. */}
+      {/* Format tools + tags + Cancel/Save live in the 48px app header.
+          The document title stays in the article (the 3xl textarea). Table /
+          layout / section strips stay contextual below — they only exist
+          when the caret is in one of those blocks. */}
       {editing && (
-        <div className="sticky -top-5 z-30 isolate -mt-5">
-          {/* Under-mask: behind the toolbar (z-[-1]), covering the toolbar's
-              box AND the strip of scroll-container padding above it.
-
-              A sticky box does NOT pin at the scrollport's top edge when the
-              scroll container has top padding: it is clamped to its
-              containing block, which begins *after* that padding. Measured in
-              Chromium, the stuck toolbar's top is AppLayout's scroll-container
-              content-box top — 20px (its pt-5) below the scrollport edge — so
-              article content scrolls up through that strip in full view before
-              the scrollport clips it (#1186). `-top-5` must therefore track
-              that `pt-5`; scroll-padding-mask.test.ts fails if they diverge.
-
-              Only the block-start edge overhangs. Block-start overflow is
-              clipped by the scrollport and adds no scrollable height, unlike
-              the block-end overhang that inflated /ai's page height (#769) —
-              so bottom/left/right stay flush on the toolbar's box. The fill
-              stays flat bg-background rather than a copy of the gradient
-              --surface-backdrop: at this height the radial has all but
-              resolved to --color-background (measured max delta 3/255 in
-              Graphite, 2/255 in Paper, and exact at the column
-              edges), while a re-declared gradient can only line up with the
-              app shell's via background-attachment: fixed, which silently
-              re-anchors to the framer-motion transform on this very element.
-              Rounded bottom corners keep the mask in the toolbar's
-              silhouette.
-
-              It is deliberately NOT pointer-events-none. Hit-testing follows
-              paint order, so over the toolbar's own box the card below still
-              takes every click (measured: the Save button and the toolbar body
-              keep their hits) — but the padding strip is paint with nothing
-              else in it, and a mask that opts out of hit-testing there hands
-              clicks to the editor content it just hid: a click 2px above the
-              toolbar landed in invisible prose, jumping the caret or toggling
-              an unseen task checkbox. What is occluded to the eye has to be
-              occluded to the pointer. */}
-          <div
-            aria-hidden
-            data-testid="edit-toolbar-mask"
-            className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-card"
-          />
-        {/* The edit toolbar is a bar across the column now, not a floating
-            card: it loses the border and radius and keeps only a bottom
-            hairline, matching the context strip above it. The under-mask fill
-            follows the surface it hides content against — that is `bg-card`
-            here, because on an article route the main column IS the pane; it
-            was `bg-background`, which would now paint a chassis-coloured band
-            across a white document. `-top-5` still tracks the scroll
-            container's `pt-5` (scroll-padding-mask.test.ts). */}
-        <div className="-mx-4 border-b border-border bg-card sm:-mx-6 relative">
-          {editorInstance && (
-            <div className="mx-auto max-w-[1248px] px-4 sm:px-16">
-              <EditorToolbar
-                editor={editorInstance}
-                headerNumbering={headerNumbering}
-                onToggleHeaderNumbering={toggleHeaderNumbering}
-                actions={
-                  <>
-                    <TagPopover
-                      tags={editing ? draftLabels : page.labels}
-                      onAddTag={handleAddTag}
-                      onRemoveTag={handleRemoveTag}
-                      suggestions={filterOptions?.labels}
-                      isLoading={labelsMutation.isPending}
-                    />
-                    {/* Labelled, not icon-only: Save publishes a version visible
-                        to the whole Confluence instance on a synced page, so
-                        it — and its adjacent Cancel — are the app's own
-                        `nm-button-ghost` / `nm-button-primary` pair rather than
-                        a pair of unlabeled 28px glyphs one pixel-cluster apart. */}
-                    <button
-                      onClick={handleCancelEditing}
-                      title="Cancel editing (Esc)"
-                      className="nm-button-ghost shrink-0"
-                      data-testid="cancel-edit-btn"
-                    >
-                      <X size={15} aria-hidden="true" />
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSave}
-                      disabled={updateMutation.isPending}
-                      title="Save changes (Ctrl+S)"
-                      className="nm-button-primary shrink-0"
-                      data-testid="save-page-btn"
-                    >
-                      {updateMutation.isPending ? (
-                        <span className="animate-spin text-xs" aria-hidden="true">…</span>
-                      ) : (
-                        <Save size={15} aria-hidden="true" />
-                      )}
-                      {updateMutation.isPending ? 'Saving…' : 'Save'}
-                    </button>
-                  </>
-                }
-              />
-            </div>
-          )}
-          {editorInstance && (
-            <EditorContextToolbars
-              editor={editorInstance}
-              innerClassName="mx-auto max-w-[1248px] px-4 sm:px-16"
-            />
-          )}
-        </div>
-        </div>
+        <HeaderHost fallbackClassName="border-b border-border bg-card">
+          {(portaled) => {
+            const sessionActions = (
+              <>
+                <TagPopover
+                  tags={draftLabels}
+                  onAddTag={handleAddTag}
+                  onRemoveTag={handleRemoveTag}
+                  suggestions={filterOptions?.labels}
+                  isLoading={labelsMutation.isPending}
+                />
+                <button
+                  onClick={handleCancelEditing}
+                  title="Cancel editing (Esc)"
+                  className="nm-button-ghost shrink-0"
+                  data-testid="cancel-edit-btn"
+                >
+                  <X size={15} aria-hidden="true" />
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={updateMutation.isPending}
+                  title="Save changes (Ctrl+S)"
+                  className="nm-button-primary shrink-0"
+                  data-testid="save-page-btn"
+                >
+                  {updateMutation.isPending ? (
+                    <span className="animate-spin text-xs" aria-hidden="true">…</span>
+                  ) : (
+                    <Save size={15} aria-hidden="true" />
+                  )}
+                  {updateMutation.isPending ? 'Saving…' : 'Save'}
+                </button>
+              </>
+            );
+            return (
+              <div
+                className={cn(
+                  'flex min-w-0 flex-1 items-center',
+                  !portaled && 'mx-auto min-h-[calc(3rem-1px)] max-w-[1248px] px-4 sm:px-16',
+                )}
+              >
+                {editorInstance ? (
+                  <EditorToolbar
+                    editor={editorInstance}
+                    headerNumbering={headerNumbering}
+                    onToggleHeaderNumbering={toggleHeaderNumbering}
+                    actions={sessionActions}
+                  />
+                ) : (
+                  <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
+                    {sessionActions}
+                  </div>
+                )}
+              </div>
+            );
+          }}
+        </HeaderHost>
       )}
-      <div className={cn(editing && 'mt-7')}>
-        {/* Breadcrumb / action strip (hidden while editing to keep top overhead to a single 44px toolbar) */}
-        <div className={cn('sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6', editing && 'hidden')}>
-        <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1248px] flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16">
-          <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground/60">
-            <FileText size={12} className="shrink-0" />
+
+      {editing && editorInstance && (
+        <EditorContextToolbars
+          editor={editorInstance}
+          className="sticky top-0 z-20 -mx-4 sm:-mx-6"
+          innerClassName="mx-auto max-w-[1248px] px-4 sm:px-16"
+        />
+      )}
+      <div>
+        {!editing && (
+        <HeaderHost fallbackClassName="sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6">
+        {(portaled) => (
+        <div
+          className={cn(
+            'flex min-w-0 flex-1 items-center justify-between gap-3',
+            !portaled && 'mx-auto min-h-[calc(3rem-1px)] max-w-[1248px] flex-wrap gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16',
+          )}
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="min-w-0 truncate text-[15px] font-semibold text-foreground sm:text-lg">
+              {page.title}
+            </span>
+            <span className="hidden min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60 sm:flex">
             {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
             {page.source === 'standalone' ? (
               <span className={neutralChipClass} data-testid="badge-local">
@@ -860,12 +831,11 @@ export function PageViewPage() {
               qualityAnalyzedAt={page.qualityAnalyzedAt}
               qualityError={page.qualityError}
             />
+            </span>
           </span>
 
           <div className="flex items-center gap-1.5">
             <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
-            {editing ? null : (
-              <>
                 <div className="flex items-center gap-1.5">
                   {canRelocate && (
                     <button
@@ -964,33 +934,32 @@ export function PageViewPage() {
                   Edit
                   <ShortcutHint shortcutId="toggle-edit" />
                 </button>
-              </>
-            )}
           </div>
         </div>
-        </div>
+        )}
+        </HeaderHost>
+        )}
 
         {editing ? (
           <>
-            <div className="border-b border-border py-5">
-              <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
-                {/* Type ramp is copied from the read-mode <h1> verbatim
-                    (`text-3xl sm:text-4xl leading-[1.2] tracking-[-0.02em]`) so
-                    the title does not resize or re-wrap when you toggle Edit. */}
+            <div className="mx-auto max-w-[1200px] px-5 pt-4 sm:px-10">
+                {/* Same column and top inset as the read-mode <h1>. Type ramp
+                    is copied verbatim so the title does not resize or re-wrap
+                    when you toggle Edit. `p-0` kills the UA textarea padding
+                    so the first line sits on the same baseline as the h1. */}
                 <AutoGrowTextarea
                   value={editTitle}
                   onValueChange={setEditTitle}
-                  className="text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground placeholder:text-muted-foreground/40 sm:text-4xl"
+                  className="mb-4 p-0 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground placeholder:text-muted-foreground/40 sm:text-4xl"
                   placeholder="Page title…"
                   aria-label="Page title"
                   data-testid="edit-title-input"
                 />
-              </div>
             </div>
 
             {/* Editor body — same 1200px reading column so the editing
                 experience matches the reader's line length exactly. */}
-            <div className={cn('mx-auto max-w-[1200px]', headerNumbering && 'header-numbering')}>
+            <div className={cn('mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}>
               <FeatureErrorBoundary featureName="Editor">
                 <Editor content={editHtml} onChange={() => setIsDirty(true)} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} />
               </FeatureErrorBoundary>
@@ -1000,7 +969,7 @@ export function PageViewPage() {
           /* Empty page — no content yet */
           <div
             ref={contentRef}
-            className="mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            className="mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
             data-testid="article-content-shell"
           >
             <h1 className="mb-6 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
@@ -1022,7 +991,7 @@ export function PageViewPage() {
           /* Reading view — constrained to 1200px reading column */
           <div
             ref={contentRef}
-            className="mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            className="mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
             data-testid="article-content-shell"
           >
             <h1 className="mb-4 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">

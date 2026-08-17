@@ -200,6 +200,14 @@ export type SettingsPanelIdIsLiteralUnion = LiteralUnionOnly<
   string extends SettingsPanelId ? false : true
 >;
 
+/** Rail label for the panel at this path, or undefined if the URL is not a panel. */
+export function settingsPanelFromPath(pathname: string): SettingsPanelRef | undefined {
+  const match = pathname.match(/^\/settings\/[^/]+\/([^/?#]+)/);
+  const id = match?.[1];
+  if (!id) return undefined;
+  return id in SETTINGS_PANELS ? SETTINGS_PANELS[id as SettingsPanelId] : undefined;
+}
+
 export const SETTINGS_PANELS = Object.fromEntries(
   SETTINGS_NAV.flatMap((group) =>
     group.items.map((item): [SettingsPanelId, SettingsPanelRef] => [

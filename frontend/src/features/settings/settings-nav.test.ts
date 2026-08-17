@@ -4,6 +4,7 @@ import {
   SETTINGS_PANELS,
   canSeeItem,
   firstVisiblePath,
+  settingsPanelFromPath,
   type AccessContext,
   type SettingsNavItem,
 } from './settings-nav';
@@ -137,5 +138,17 @@ describe('SETTINGS_PANELS', () => {
   it('keeps the shared AI Models path constant in sync', () => {
     // ServiceStatus's health-alert CTA links via this constant from shared/.
     expect(SETTINGS_PANELS.models.path).toBe(AI_MODELS_SETTINGS_PATH);
+  });
+});
+
+describe('settingsPanelFromPath', () => {
+  it('resolves a live panel from its URL', () => {
+    expect(settingsPanelFromPath('/settings/knowledge/spaces')?.label).toBe('Spaces & Sync');
+  });
+
+  it('ignores query strings and unknown segments', () => {
+    expect(settingsPanelFromPath('/settings/personal/confluence?tab=x')?.label).toBe('Confluence');
+    expect(settingsPanelFromPath('/settings')).toBeUndefined();
+    expect(settingsPanelFromPath('/settings/knowledge/not-a-panel')).toBeUndefined();
   });
 });

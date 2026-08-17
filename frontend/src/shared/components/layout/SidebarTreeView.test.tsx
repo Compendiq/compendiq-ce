@@ -16,6 +16,10 @@ vi.mock('framer-motion', async () => {
 // resolves synchronously in tests without pulling in @dnd-kit. The stub mirrors
 // the real component's `data-active` marker on the active row (#707) so the
 // parent's scroll-into-view effect can find it end-to-end for local spaces.
+vi.mock('./SidebarSessionChrome', () => ({
+  SidebarSessionChrome: () => <div data-testid="sidebar-session-chrome" />,
+}));
+
 vi.mock('./DndLocalSpaceTree', () => ({
   default: ({ activePageId }: { activePageId?: string }) => (
     <div data-testid="dnd-local-space-tree">
@@ -2015,6 +2019,11 @@ describe('SidebarTreeNode memoization', () => {
       useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
       render(<SidebarTreeView />, { wrapper: createWrapper() });
       expect(screen.getByText('4 pages in DEV')).toBeInTheDocument();
+    });
+
+    it('keeps session chrome in the footer, not the header', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByTestId('sidebar-session-chrome')).toBeInTheDocument();
     });
   });
 

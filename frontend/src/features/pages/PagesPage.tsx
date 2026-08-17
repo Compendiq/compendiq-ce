@@ -28,6 +28,7 @@ import { cn } from '../../shared/lib/cn';
 import { neutralChipClass } from '../../shared/components/badges/neutral-chip';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
+import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
@@ -738,15 +739,14 @@ export function PagesPage() {
     // `mx-auto`: this is a workspace pane beside a sidebar, not a centered
     // page, so the cap should keep content flush-left, not float it.
     <div className="max-w-[1100px] space-y-3">
-      {/* Header with Title, KPI metrics, and action buttons in one row */}
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 border-b border-border pb-2.5">
-        <div className="flex items-center gap-3 shrink-0">
-          <h1 className="text-lg font-semibold">Pages</h1>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-x-3 sm:gap-x-4 gap-y-2">
-          {/* Landmarked status metrics */}
-          <section aria-labelledby="kb-status-heading" className="flex items-center">
+      <HeaderHost fallbackClassName="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 border-b border-border pb-2.5">
+        <h1 className="shrink-0 text-[15px] font-semibold sm:text-lg">Pages</h1>
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-2 sm:gap-x-4">
+          <section
+            data-header-kpis
+            aria-labelledby="kb-status-heading"
+            className="flex items-center"
+          >
             <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
             <KPICards
               embeddingStatus={embeddingStatusData}
@@ -757,12 +757,12 @@ export function PagesPage() {
             />
           </section>
 
-          <span aria-hidden className="hidden h-4 w-px bg-border sm:block" />
+          <span aria-hidden className="hidden h-4 w-px bg-border lg:block" />
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
             <button
               onClick={() => navigate('/trash')}
-              className="nm-button-ghost flex items-center gap-1.5 h-8 px-2.5 text-xs sm:text-sm"
+              className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
               data-testid="trash-link"
               title="Trash"
             >
@@ -772,55 +772,16 @@ export function PagesPage() {
 
             <button
               onClick={() => navigate('/pages/new')}
-              className="nm-button-primary h-8 px-3 text-xs sm:text-sm"
+              className="nm-button-ghost h-8 px-3 text-xs sm:text-sm"
+              data-testid="new-page-button"
             >
               <Plus size={15} />
               <span>New Page</span>
-              <ShortcutHint shortcutId="new-page" className="border-primary-foreground/30 bg-transparent text-primary-foreground" />
+              <ShortcutHint shortcutId="new-page" />
             </button>
           </div>
         </div>
-      </div>
-
-      {/* Sync progress */}
-      {syncStatus?.status === 'syncing' && syncStatus.progress && (
-        <div className="rounded-xl border border-border bg-card p-3">
-          <div className="flex items-center justify-between text-sm">
-            <span>Syncing {syncStatus.progress.space}...</span>
-            <span>{syncStatus.progress.current}/{syncStatus.progress.total}</span>
-          </div>
-          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
-            <div
-              className="h-full rounded-full bg-action transition-all"
-              style={{ width: `${(syncStatus.progress.current / syncStatus.progress.total) * 100}%` }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Embedding progress */}
-      {embeddingStatusData?.isProcessing && (
-        <div className="rounded-xl border border-border bg-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
-          <Loader2 size={16} className="animate-spin text-action" />
-          <span className="text-sm">
-            Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
-          </span>
-          <div className="ml-auto flex items-center gap-2">
-            <div className="h-1.5 w-32 overflow-hidden rounded-full bg-foreground/10">
-              <div
-                className="h-full rounded-full bg-action transition-all"
-                style={{ width: `${(embeddingStatusData.embeddedPages / Math.max(embeddingStatusData.totalPages, 1)) * 100}%` }}
-              />
-            </div>
-            <span className="text-xs text-muted-foreground">
-              {embeddingStatusData.embeddedPages}/{embeddingStatusData.totalPages}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Pinned Pages */}
-      <PinnedArticlesSection />
+      </HeaderHost>
 
       {/* Filters */}
       {/* A control row, not a pane. This was a bordered `bg-card` box with
@@ -904,13 +865,12 @@ export function PagesPage() {
 
           {/* Search mode toggle — keyword / semantic / hybrid.
 
-              A segmented control on a recessed track, not three loose pills.
-              The active segment used to be a near-black `bg-action` fill with a
-              coloured shadow and a ring, which read as the most important
-              control on the page — louder than "New Page", the actual primary
-              action — when all it does is pick a retrieval strategy. Neutral
-              fill plus weight carries "selected" here; the accent stays spent
-              on actions. */}
+              Hidden until there is a query (or a non-default mode from the
+              URL). Picking an IR algorithm is not a landing decision; the
+              list field is. A `?mode=hybrid` deep link still reveals it so
+              the restored state is visible. Neutral fill plus weight carries
+              "selected"; the accent stays spent on actions. */}
+          {(search || searchMode !== 'keyword') && (
           <div
             className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
             data-testid="search-mode-toggle"
@@ -944,6 +904,7 @@ export function PagesPage() {
                 <Loader2 size={14} className="ml-1 animate-spin text-action" data-testid="search-enhanced-loading" />
               )}
             </div>
+          )}
 
           <select
             value={spaceKey}
@@ -1224,6 +1185,46 @@ export function PagesPage() {
           </div>
         )}
       </section>
+
+      {/* Sync progress */}
+      {syncStatus?.status === 'syncing' && syncStatus.progress && (
+        <div className="rounded-xl border border-border bg-card p-3">
+          <div className="flex items-center justify-between text-sm">
+            <span>Syncing {syncStatus.progress.space}...</span>
+            <span>{syncStatus.progress.current}/{syncStatus.progress.total}</span>
+          </div>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
+            <div
+              className="h-full rounded-full bg-action transition-all"
+              style={{ width: `${(syncStatus.progress.current / syncStatus.progress.total) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Embedding progress */}
+      {embeddingStatusData?.isProcessing && (
+        <div className="rounded-xl border border-border bg-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
+          <Loader2 size={16} className="animate-spin text-action" />
+          <span className="text-sm">
+            Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <div className="h-1.5 w-32 overflow-hidden rounded-full bg-foreground/10">
+              <div
+                className="h-full rounded-full bg-action transition-all"
+                style={{ width: `${(embeddingStatusData.embeddedPages / Math.max(embeddingStatusData.totalPages, 1)) * 100}%` }}
+              />
+            </div>
+            <span className="text-xs text-muted-foreground">
+              {embeddingStatusData.embeddedPages}/{embeddingStatusData.totalPages}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Pinned Pages — after Find, not before it. */}
+      <PinnedArticlesSection />
 
       {/* No-embeddings warning for semantic/hybrid search */}
       {search && searchMode !== 'keyword' && !searchResults.hasEmbeddings && (
