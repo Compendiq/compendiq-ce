@@ -588,7 +588,8 @@ a corpus with no pictures. Built by `tools/eval-corpus-images/build.py` from
 plain re-run reproduces the committed bytes, `--update` moves to current
 revisions and obliges a re-label. Read its `README.md` first.
 
-**A revision id is one of four pins, not the whole of reproducibility.**
+**A revision id is the pin the four checks sit on, not one of them, and not the
+whole of reproducibility.**
 `action=parse&oldid=` renders a fixed *wikitext* revision through the **current**
 template set and parser, so a template edit or a MediaWiki release moves the
 prose of a page nobody edited — the builder already carries a branch for one such

@@ -18,7 +18,14 @@ python3 -m venv .venv
 .venv/bin/python build.py --probe    # UPPER BOUND on usable figures; writes nothing
 .venv/bin/python build.py            # rebuild at the PINNED revisions
 .venv/bin/python build.py --update   # move to current revisions (obliges a re-label)
+
+.venv/bin/python -m unittest test_build   # the pure text transforms, offline
 ```
+
+`test_build.py` is stdlib `unittest` rather than pytest on purpose:
+`requirements.txt` is the record of what the committed bytes were built with,
+and a test runner nobody builds with does not belong in it. It runs from the
+same venv because `build.py` imports Pillow and friends at module scope.
 
 `--probe --articles some.yaml` runs the same selection over a candidate list
 without touching `articles.yaml`; that is how the shipped list was pruned. Its
@@ -47,11 +54,13 @@ succeeded, so a flaky network cannot leave a thinner corpus behind.
    here, and absorbing the difference into a `.get` default is how a
    reproducible run quietly stops being one.
 
-   **A revid does not pin the text**, and it is the easiest of the four checks
-   to over-claim. `oldid` selects a *wikitext* revision, which MediaWiki then
-   renders through the **current** template set and the current parser — so an
-   upstream template edit or a MediaWiki release changes the prose of a page
-   nobody edited. It has already happened to this builder once: 1.43 started
+   **A revid does not pin the text**, and it is the easiest pin to over-claim —
+   it is the thing the four checks sit on, not one of them. (The four, in the
+   same words as `build.py`'s docstring and `docs/runbooks/retrieval-eval.md`:
+   `textSha256`, the Commons `sha1`, the inventory diff, and the image budget.)
+   `oldid` selects a *wikitext* revision, which MediaWiki then renders through
+   the **current** template set and the current parser — so an upstream template
+   edit or a MediaWiki release changes the prose of a page nobody edited. It has already happened to this builder once: 1.43 started
    wrapping `h2` in `<div class="mw-heading">`, which `cut_tail_sections`
    carries a branch for. So each page records a `textSha256` over the Markdown
    it produced, and a rebuild that renders different bytes names the page and
@@ -66,7 +75,7 @@ succeeded, so a flaky network cannot leave a thinner corpus behind.
    names the file and exits non-zero, having written the bytes anyway so the
    diff is inspectable.
 
-   And a **fourth check covers what none of them can**: whether a figure is
+   And a **third check covers what neither digest can**: whether a figure is
    still *usable*. Commons metadata is live, so a licence retagged, an author
    field blanked or a thumbnail that stopped rendering turns a 3-image page into
    a 2-image one — or drops it below the two-image floor and out of the corpus —
@@ -74,6 +83,10 @@ succeeded, so a flaky network cannot leave a thinner corpus behind.
    inventory against the committed manifest and exits non-zero on anything it
    lost. The Vitest guard cannot see this: four category counts of 17 pass
    exactly as four counts of 18 do.
+
+   The **fourth** is not about reproduction: the corpus has a total image
+   budget, and a build over it exits non-zero. It is also the only one of the
+   four `--update` does not skip — the three above are gated on a pinned run.
 
 2. **Strips captions and alt text from the page body.** The corpus mimics a
    Confluence page where the visual content is *not* restated in prose — that is
@@ -96,6 +109,17 @@ succeeded, so a flaky network cannot leave a thinner corpus behind.
    only `figure, .thumb`. `u-bahn-muenchen.md` is the case that shows why it
    matters — it carried "U-Bahn-Linienschema München, Stand: Dezember 2018" as
    prose, which is the network diagram described in words.
+
+   **A `--update` re-vendoring must re-read the page bodies for caption prose**,
+   because neither automated check covers that run. The Vitest guard compares
+   bodies against the 187 *manifest* captions, so a caption belonging to a figure
+   the builder DROPPED has no entry to compare against — which is the whole class
+   above, and it lands as ordinary prose carrying no marker. `text_drift` does
+   close the loop on a plain rebuild by naming the page whose `textSha256` moved,
+   but it is gated on `not args.update`, and `--update` is precisely the run that
+   re-vendors. So on a `--update` the container sweep is the only thing standing
+   between a caption template this builder has never met and the corpus: read the
+   page diff, not only the counts, before committing.
 
 3. **Filters licences.** CC0, public domain, CC BY x and CC BY-SA x only, each
    with a named author, each hosted on Commons. The filter rejects *by

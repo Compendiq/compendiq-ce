@@ -25,6 +25,11 @@ Everything in this directory is **third-party content**, vendored as a test fixt
   column is kept beside it rather than replaced, because it is regularly the FULLER of the
   two — a derivative work's original author and its vectoriser, where the credit line names
   only one. A `—` means Commons records no such requirement for that file.
+  The wording is recorded **as de.wikipedia renders it** — that is where the builder reads the
+  file's metadata — and a credit assembled by a Commons *template* arrives localised
+  (`Cezary p in der Wikipedia auf Polnisch`, which Commons itself renders as `Cezary p at
+  Polish Wikipedia`). Where the two differ, the canonical form is on the linked Commons file
+  page.
 - Images were **downscaled and re-encoded** (≤ 512 px longest edge, JPEG or PNG). That is a
   modification, and is stated here rather than left to be inferred.
 

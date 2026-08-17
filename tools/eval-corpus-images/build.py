@@ -35,11 +35,15 @@ Three rules do the real work.
    the repository, both because a VL encoder needs raster and because SVG
    carries script/XXE risk.
 
-Determinism is not one pin but four checks, and a revision id is only the first
-of them. Revisions are pinned in the corpus's own MANIFEST.json and read back on
-a plain re-run (read BEFORE the output directory is wiped — that is a scar from
-the English vendoring script, whose first cut read the manifest afterwards and
-found nothing).
+Determinism is not one pin but four checks, and the revision id is the pin they
+sit ON rather than one of them: `oldid` selects a wikitext revision and nothing
+else, and no branch below exits non-zero for it. The four are the page text
+against a recorded `textSha256`, each image against the upstream Commons `sha1`,
+the inventory against the committed manifest, and the total image budget — the
+same four, in the same words, as `docs/runbooks/retrieval-eval.md`. Revisions are
+pinned in the corpus's own MANIFEST.json and read back on a plain re-run (read
+BEFORE the output directory is wiped — that is a scar from the English vendoring
+script, whose first cut read the manifest afterwards and found nothing).
 
 A revid does NOT pin the text. `action=parse&oldid=` renders that revision's
 wikitext through the CURRENT template set and the current parser, so a template
@@ -60,10 +64,14 @@ rendering quietly turns a 3-image page into a 2-image one, or drops it out of
 the corpus. So a pinned run also diffs its own inventory against the committed
 manifest and exits non-zero on anything it lost (`lost_since`).
 
-In all three failure branches the bytes ARE written, because a diff you can look
+The fourth is not about reproduction at all: the corpus has a total image
+budget, and a build over it exits non-zero whether or not it was pinned.
+
+In all three DRIFT branches the bytes ARE written, because a diff you can look
 at is more use than a refusal — the run simply stops claiming to have reproduced
 the corpus. `--update` deliberately moves to current revisions and skips all
-three, which obliges a re-label.
+three, which obliges a re-label; the budget check is not one of the three and
+runs on every build.
 
 Nothing is written into the corpus directory until the whole run succeeds: the
 build stages into a sibling directory and swaps it in at the end. A run that
@@ -755,8 +763,28 @@ _ORPHAN_MARKER = re.compile(r"^(?:\(\d{1,2}\)|\d{1,2}\)?|(?:\\?\*){1,4}|[†‡]
 
 
 def drop_orphan_markers(md: str) -> str:
-    """Remove marker-only lines, before `drop_empty_headings` counts content."""
-    return "\n".join(line for line in md.split("\n") if not _ORPHAN_MARKER.fullmatch(line.strip()))
+    """Remove marker-only lines, before `drop_empty_headings` counts content.
+
+    Fenced code is EXEMPT. Inside a ``` block a line that is exactly `1` or `*`
+    is a line of the sample, not an annotation whose subject was stripped, and
+    deleting it is the one edit `textSha256` cannot describe: the drift report
+    says the page rendered different text, never that a line of a code listing
+    vanished. No committed page hits this today (3 fenced blocks, none with such
+    a line), so this is a guard for `--update` and for the next article added.
+    markdownify emits ``` for every `<pre>` it converts, so that one fence
+    marker is the whole of what this builder can produce; an unclosed fence
+    leaves the rest of the page exempt, which is the safe direction.
+    """
+    kept: list[str] = []
+    in_fence = False
+    for line in md.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and _ORPHAN_MARKER.fullmatch(stripped):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def drop_empty_headings(md: str) -> str:
@@ -1285,7 +1313,12 @@ def build_page(
             (out_dir / entry["file"]).unlink(missing_ok=True)
         return None
 
-    (out_dir / f"{slug}.md").write_text(markdown, encoding="utf8")
+    # `newline="\n"` on every committed-text write below: the default translates
+    # `\n` to `os.linesep`, while `textSha256` (and the Vitest guard, which
+    # hashes the file's raw bytes) is taken over the untranslated string. On
+    # Windows the two would disagree for every page, and a first build would
+    # report all 65 as drifted rather than reproduced.
+    (out_dir / f"{slug}.md").write_text(markdown, encoding="utf8", newline="\n")
     return {
         "file": f"{slug}.md",
         "title": title,
@@ -1342,6 +1375,11 @@ def write_attribution(pages: list[dict[str, Any]], out_dir: Path) -> None:
         "  column is kept beside it rather than replaced, because it is regularly the FULLER of the",
         "  two — a derivative work's original author and its vectoriser, where the credit line names",
         "  only one. A `—` means Commons records no such requirement for that file.",
+        "  The wording is recorded **as de.wikipedia renders it** — that is where the builder reads the",
+        "  file's metadata — and a credit assembled by a Commons *template* arrives localised",
+        "  (`Cezary p in der Wikipedia auf Polnisch`, which Commons itself renders as `Cezary p at",
+        "  Polish Wikipedia`). Where the two differ, the canonical form is on the linked Commons file",
+        "  page.",
         "- Images were **downscaled and re-encoded** (≤ 512 px longest edge, JPEG or PNG). That is a",
         "  modification, and is stated here rather than left to be inferred.",
         "",
@@ -1379,7 +1417,7 @@ def write_attribution(pages: list[dict[str, Any]], out_dir: Path) -> None:
                 f"| {credit_cell} |"
             )
         lines.append("")
-    (out_dir / "LICENSE-ATTRIBUTION.md").write_text("\n".join(lines), encoding="utf8")
+    (out_dir / "LICENSE-ATTRIBUTION.md").write_text("\n".join(lines), encoding="utf8", newline="\n")
 
 
 def write_readme(
@@ -1482,6 +1520,7 @@ filter's denominator and is not quoted as one.
 {reject_rows}
 """,
         encoding="utf8",
+        newline="\n",
     )
 
 
@@ -1620,6 +1659,7 @@ def main() -> int:
         )
         + "\n",
         encoding="utf8",
+        newline="\n",
     )
     write_attribution(pages, out_dir)
     write_readme(pages, stats, total_bytes, out_dir)
