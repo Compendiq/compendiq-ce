@@ -135,24 +135,3 @@ describe('deleting a page is not promoted by collapsing the inspector', () => {
     expect(pane).toMatch(/setConfirmTrashOpen\(true\)/);
   });
 });
-
-describe('the onboarding banner does not outrank the page', () => {
-  const banner = codeOf('shared/components/banners/ConfluencePatBanner.tsx');
-
-  // It renders on every authenticated route. As a card with a filled primary it
-  // was the loudest element on screen — including on /pages/:id, where the
-  // page's own primary action sat beside it at a quarter of the weight.
-  it('carries no filled primary button', () => {
-    expect(banner).not.toMatch(/nm-button-primary/);
-  });
-
-  it('is a strip, not a card', () => {
-    expect(banner).not.toMatch(/nm-card/);
-  });
-
-  it('still names what it asks for, and still dismisses', () => {
-    expect(banner).toMatch(/personal access token/);
-    expect(banner).toMatch(/Configure PAT/);
-    expect(banner).toMatch(/Dismiss Confluence PAT reminder/);
-  });
-});

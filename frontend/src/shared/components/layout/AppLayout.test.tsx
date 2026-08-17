@@ -55,12 +55,6 @@ vi.mock('../badges/ServiceStatus', () => ({
   ServiceStatus: () => null,
 }));
 
-// Self-fetching banner (GET /api/settings) — mock it so AppLayout tests stay
-// hermetic (no unmocked fetch through jsdom).
-vi.mock('../banners/ConfluencePatBanner', () => ({
-  ConfluencePatBanner: () => null,
-}));
-
 vi.mock('./ThemeToggle', () => ({
   ThemeToggle: () => <div data-testid="theme-toggle" />,
 }));
