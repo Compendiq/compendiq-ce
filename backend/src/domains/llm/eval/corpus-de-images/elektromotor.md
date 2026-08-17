@@ -73,8 +73,6 @@ Solche Motoren besitzen daher kein oder ein geringes Anlaufmoment. Sie benötige
 - Schrittmotoren und Reluktanzmotoren werden mit frequenzveränderlichem Wechselstrom und/oder mit mehreren Phasen betrieben, damit sie „im Tritt“ bleiben bzw. keine Schrittverluste auftreten.
 - Synchronmotoren benötigen eine Starthilfe oder schaukeln/schwingen sich von selbst „in Tritt“.
 
-## Arten
-
 ### Drehfeld- und Wanderfeld-Maschinen
 
 - Drehstrommotor

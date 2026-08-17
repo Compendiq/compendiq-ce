@@ -387,9 +387,9 @@ NoDerivatives, fair-use and unattributed files were rejected by the builder.
 
 | Image | Commons file | Author | Licence |
 |---|---|---|---|
-| `images/nassi-shneiderman-diagramm__1.png` | [File:NassiShneiderman.png](https://commons.wikimedia.org/wiki/File:NassiShneiderman.png) | Hubi in der Wikipedia auf Deutsch | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
-| `images/nassi-shneiderman-diagramm__2.png` | [File:Endlosschleife.png](https://commons.wikimedia.org/wiki/File:Endlosschleife.png) | Benutzer:Renzsorf | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
-| `images/nassi-shneiderman-diagramm__3.png` | [File:FussgesteuerteSchleife.png](https://commons.wikimedia.org/wiki/File:FussgesteuerteSchleife.png) | Renzsorf | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
+| `images/nassi-shneiderman-diagramm__1.png` | [File:EinfAusw.png](https://commons.wikimedia.org/wiki/File:EinfAusw.png) | Renzsorf | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
+| `images/nassi-shneiderman-diagramm__2.png` | [File:ZweifAusw.png](https://commons.wikimedia.org/wiki/File:ZweifAusw.png) | Renzsorf | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
+| `images/nassi-shneiderman-diagramm__3.png` | [File:MehrfAusw.png](https://commons.wikimedia.org/wiki/File:MehrfAusw.png) | Renzsorf | [Public domain](https://en.wikipedia.org/wiki/Public_domain) |
 
 ## Nervenzelle
 

@@ -9,8 +9,6 @@ Je stärker sich die Blutgefäße verzweigen, desto kleiner wird ihr Durchmesser
 
 Bei Tieren mit einem offenen Kreislaufsystem ergießt sich die Flüssigkeit, die hier nicht Blut, sondern Hämolymphe genannt wird, aus arteriellen Blutgefäßen in die Körperhöhle, um die Organe zu umfließen. Durch die Körperhöhle fließt sie zu venösen Gefäßen oder direkt zurück zum Herzen.
 
-## Funktion
-
 ### Stofftransport
 
 Bei etlichen Gruppen der vielzelligen Tiere sichert ein Kreislauf das Überleben des Organismus, indem er Stoffwechsel in allen Teilen des Körpers ermöglicht und die chemischen und physiologischen Eigenschaften der Körperflüssigkeiten aufrechterhält.
@@ -43,8 +41,6 @@ Die genaue Abgrenzung ist in der Literatur uneinheitlich. In einem Lehrbuch von 
 
 Auch in dieser Arbeit wird allen Wirbeltieren ein geschlossenes Kreislaufsystem zugesprochen, aber auch einigen Wirbellosen, namentlich Ringelwürmern und Kopffüßern. Es wird ausdrücklich erwähnt, dass die Abgrenzung zwischen offenen und geschlossenen Kreislaufsystemen nicht immer eindeutig und eine zu starke Vereinfachung sei. Denn bei manchen Tieren mit offenem Kreislauf wie dem Hummer (siehe unten) oder der marinen Seeohren (*Haliotis*), bei der die Hinterleibsarterien in kapillar-ähnliche Gefäße verzweigen, gäbe es durchaus auch Merkmale eines geschlossenen Kreislaufes. Und auch bei geschlossenen Kreisläufen der Wirbeltiere gäbe es Gefäßbereiche, wo es direkten Kontakt des Blutes mit dem Interstitium gäbe (siehe auch unten). Ein weiteres Lehrbuch von 2008 führt wiederum aus, dass eine Gruppe der Wirbeltiere, nämlich die Kieferlosen (Schleimaale und Neunaugen), im Gegensatz zu den anderen Wirbeltieren ein teilweise offenes Kreislaufsystem haben, bei dem sich das Blut in einigen Körperbereichen in offene Lakunen entleert. Den höheren Kopffüßern (Kalmare und Kraken) wird ein geschlossenes Kreislaufsystem zugesprochen.
 
-### Offene Kreislaufsysteme
-
 #### Hämolymphe als einheitliche Körperflüssigkeit
 
 ![](images/blutkreislauf__2.png)
@@ -64,8 +60,6 @@ Die Herztätigkeit hat eine nur geringe Auswirkung auf den sehr variablen Druck.
 #### Verbreitung
 
 Offene Kreislaufsysteme kommen vor bei Schnecken, Muscheln, Gliederfüßern, Manteltieren und manchen Ringelwürmern.
-
-### Geschlossene Kreislaufsysteme
 
 #### Geschlossen bedeutet nicht abgeschlossen: Stoffaustausch
 
@@ -186,8 +180,6 @@ Daneben gibt es das Blutgefäßsystem, das bei den Stachelhäutern auch als Blut
 
 Wesentliche Teile des Blutgefäßsystems sind ein „oraler Gefäßring“, der um den Mund herum läuft (im Tier unten oder vorne) und ein „aboraler Gefäßring“, die Entsprechung am anderen Körperende (siehe Abbildung). Beide sind durch das Axialorgan verbunden, eine Struktur, die viele Blutgefäße und Blutzellen enthält und durch letztere häufig dunkel gefärbt ist. Ihm angelagert ist die Dorsalblase, die pulsiert und vermutlich die Funktion eines Herzens übernimmt. Sie ist auch mit den Gefäßen des Darms und der Gonaden verbunden. Das Axialorgan hat auch Ausscheidungsfunktionen und ist vermutlich den Glomeruli der Wirbeltierniere homolog.
 
-## Chordatiere (Chordata)
-
 ### Urchordaten
 
 Die Manteltiere (Tunicata) und die Schädellosen (Lanzettfischchen), die wie die Wirbeltiere zu den Chordatieren gehören, haben ebenfalls ein offenes Kreislaufsystem. Ein einfaches, röhrenförmiges Herz geht in zahlreiche wohldefinierte Kanäle über, die aber keine Gefäßwände haben, und daher nicht als Blutgefäße angesehen werden. Bei manchen Manteltieren, zum Beispiel *Ciona*, kann sich die Richtung der peristaltischen Kontraktionen des Herzens umkehren, und somit auch die Flussrichtung. Bei den Lanzettfischchen ist der Kreislauf weitgehend geschlossen, die Gefäße münden nur in wenige Lakunen.
@@ -215,8 +207,6 @@ Kiefertragende Wirbeltiere (Kiefermäuler) besitzen einen geschlossenen Kreislau
 Das Herz-Kreislauf-System der Fische ist unter den kiefertragenden Wirbeltieren das am einfachsten gebaute. Das Herz besteht aus vier Räumen, zwei einleitenden dünnwandigen, *Sinus venosus* und Vorhof, einer dickwandigen, muskulösen Kammer und dem abschließenden *Bulbus* oder *Conus arteriosus*. Zwischen Vorhof und Kammer befindet sich eine Klappe, die einen Rückstrom des Blutes verhindert. Ebenso wie das Herz ist auch der Blutkreislauf selbst relativ einfach strukturiert. Das sauerstoffarme Blut wird aus dem Herzen in die Kiemen gepumpt, in denen es mit Sauerstoff aus dem Wasser angereichert wird. Anschließend wird das sauerstoffreiche Blut in den Körper weiter transportiert. In den Kapillaren gibt es den Sauerstoff ab und nimmt dafür Kohlendioxid auf. Neben dem Herz nimmt auch die Muskulatur der Kiemen am Pumpvorgang teil. Der Nachteil dieser Konstruktion ist, dass der Blutdruck im Kapillarnetz des Kiemenkreislaufs stark abfällt, der Blutstrom durch den Körper also relativ langsam ist. Das Blutvolumen macht weniger als ein Zehntel des Körpergewichts aus. Der Sauerstoffgehalt im Blut der Fische liegt weit unter dem des menschlichen Blutes.
 
 Bei den meisten Fischen sind Herz und Kiemen wie beschrieben in Serie (nacheinander) geschaltet. Eine Vermischung von sauerstoffarmem mit sauerstoffreichem Blut findet nicht statt. Der Australische Lungenfisch besitzt wie die Landwirbeltiere einen separaten Lungenkreislauf.
-
-### Amphibien
 
 #### Doppelter Kreislauf
 
@@ -249,8 +239,6 @@ Ein wichtiger Vorteil eines eigenen, getrennten Lungenkreislaufs ist, dass in di
 Im Lungenkreislauf verlässt das Blut die rechte Herzkammer über den *Lungenstamm* (lat. *Truncus pulmonalis*) in Richtung der Lungen, wo es mit Sauerstoff angereichert wird. Dann wird es durch die Lungenvenen (lat. *Venae pulmonales*) in den linken Herzvorhof geführt. Vom linken Vorhof gelangt es in die linke Kammer, von wo aus es durch die Aorta in den Körperkreislauf gelangt. Während bei den Säugern die Aorta auf der linken Körperseite verläuft, liegt sie bei Vögeln auf der rechten. Nach der Versorgung der Organe kehrt das nun mit Kohlenstoffdioxid angereicherte Blut durch die vordere (beim Menschen: obere) und die hintere (beziehungsweise untere) Hohlvene in den rechten Vorhof zurück. Wenn das Blut vom rechten Vorhof in die rechte Kammer kommt, beginnt der Kreislauf von neuem.
 
 Eine Besonderheit stellt das Pfortadersystem der Leber dar. Blut, das von den Organen des Verdauungstrakts kommt, wird in der Pfortader gesammelt und gelangt in die Leber, wo die aufgenommenen Nährstoffe verwertet werden. Das Blut strömt dadurch nacheinander durch zwei Kapillarsysteme, bevor es zum Herzen zurückkommt. Auch die Hirnanhangsdrüse (Hypophyse) hat ein Pfortadersystem. Vögel haben wie Reptilien zudem eine Nierenpfortader.
-
-## Entwicklung der Kreislaufsysteme
 
 ### Phylogenese: Gemeinsamer evolutionärer Ursprung aller Kreislaufsysteme
 

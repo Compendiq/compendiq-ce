@@ -377,8 +377,6 @@ Außerdem ist es auch möglich, die Stromverteilung entlang der Antenne anzugebe
 
 Siehe auch: Momentenmethode (Elektrotechnik)
 
-## Sicherheitsbestimmungen beim Antennenbau
-
 ### Blitzschutz
 
 Werden Antennen im Freien an hohe Masten montiert, welche die Umgebung überragen, so müssen sie vor Blitzschlag geschützt werden. Die Vorschriften dazu sind im Baurecht des jeweiligen Landes oder Staates enthalten. Für Deutschland siehe das Merkblatt des VDE.
@@ -396,8 +394,6 @@ Antennen, Mastkonstruktionen und Abspannungen können im Winter vereisen. Dabei 
 Durch starke Vereisung kann es zu Verformungen des Antennendiagramms, Reduzierung des Antennengewinns, der Richtwirkung und Vor-/Rückverhältnis einer Antenne kommen, z. B. Antennen-Arrays der Landekurssender von Instrumentenlandesystemen (ILS) die mit Logarithmisch-Periodischen-Dipol-Antennen (LPD, engl. Logarithmic-Periodic-Dipole-Antenna) aufgebaut sind. Für solche Einzelfälle gibt es daher auch die Möglichkeit eine Heizung für eine/jede Einzelantenne nachzurüsten um einer Vereisung vorzubeugen, z. B. für LPD-Antenne die in manchen Antennen-Arrays als Einzelantennen verwendet werden.
 
 Eine andere Möglichkeit, einer Vereisung zu verhindern, ist der Einbau der Antenne in ein Radom oder eine Schutzhülle mit glatter Außenoberfläche. Radome werden z. B. sind z. B. bei Radar-Anlagen, ILS-Landekurssender-Antennen, UHF-Fernsehsendern, oder VHF- und UKW-Sendern angewendet.
-
-## Bilder
 
 ## Benennung von Rundfunkprogrammen
 

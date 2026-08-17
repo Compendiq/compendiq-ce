@@ -6,8 +6,6 @@ Der **Eiffelturm** (französisch Tour Eiffel, ) ist ein 330 Meter hoher Eisenfac
 
 Als höchstes Bauwerk von Paris prägt er das Stadtbild bis heute und zählt mit gut sechs Millionen zahlenden Besuchern pro Jahr zu den meistbesuchten Wahrzeichen der Welt. Der Turm ist eine der bekanntesten Ikonen der Architektur und der Ingenieurskunst. Der Eiffelturm ist das Vorbild vieler Nachahmerbauten und wird in Kunst und Kultur im Zusammenhang mit Paris und Frankreich vielfach aufgegriffen. Er gilt als nationales Symbol Frankreichs und avancierte zu einer weltweiten Ikone der Moderne. Seit 1964 ist der Eiffelturm als *monument historique* denkmalgeschützt, und 1986 nahm die American Society of Civil Engineers das Bauwerk in die Liste der historischen Meilensteine der Ingenieurbaukunst auf.
 
-## Geschichte
-
 ### Hintergrund
 
 ![](images/eiffelturm__2.jpg)
@@ -92,8 +90,6 @@ Am 28. Dezember 1897 einigte man sich schließlich, den Eiffelturm weitgehend un
 
 Neben der wissenschaftlichen Nutzung wuchs vor allem auch der militärische Wert des Turmes. Am 15. Dezember 1893 erlaubte Eiffel dem Kriegsminister Auguste Mercier, auf dem Turm Antennen zu befestigen, und übernahm sogar deren Kosten. Am 21. Januar 1904 unterstützte er Hauptmann Gustave-Auguste Ferrié, einen Offizier der Pioniertruppen, die drahtlose Telegrafie für die militärische Nutzung voranzutreiben. Ferrié richtete das militärische Netzwerk ein und wurde zum zweitwichtigsten Mann neben Eiffel. Nachdem bereits 1898 eine drahtlose Verbindung hergestellt worden war, wurden 1903 zwischen dem Eiffelturm und einigen Militäranlagen in Paris weitere Funkverbindungen geschaffen und ein Jahr später wurde die Verbindung in den Osten Frankreichs erweitert. 1906 wurde ein Radiosender auf dem Turm eingerichtet. Die nach 20 Jahren ausgelaufene Konzession wurde am 1. Januar 1910 um weitere 70 Jahre verlängert. Mit der gestiegenen strategischen Bedeutung war auch der Fortbestand des Eiffelturms gesichert; sie war sogar ausschlaggebend für die Fortsetzung der Konzession, denn der wissenschaftliche Nutzen blieb real betrachtet eher bescheiden.
 
-### Wissenschaftliche, fernmeldetechnische und militärische Nutzung
-
 #### Sender und wissenschaftliche Nutzung
 
 Ab dem 23. Mai 1910 diente der Eiffelturm der französischen Marine als Zeitzeichensender. Ein Sender auf dem Eiffelturm strahlte in regelmäßigen Abständen Signale aus, mit denen man die Uhren exakt synchronisieren konnte.
@@ -125,8 +121,6 @@ Im Jahr 1929 strahlte der Eiffelturm die Daten von 350 Wetterstationen aus und e
 Mit der Einweihung des 319 Meter hohen Chrysler Building in New York City 1930 verlor das Pariser Wahrzeichen den Titel des höchsten Bauwerks der Welt, den es fast 41 Jahre innegehabt hatte. Bis zur Fertigstellung des Tokyo Tower im Jahr 1953 blieb es noch der höchste Fernsehturm.
 
 Die erste offizielle Fernsehübertragung vom Eiffelturm am 26. April 1935 um 20:15 Uhr war die Geburtsstunde des Fernsehens in Frankreich. Genutzt wurde wie schon bei den Sendungen von Édouard Belin die Technik des sogenannten „mechanischen“ und teilweise des „elektronischen“ Fernsehens. Dazu strahlte ein 500-Watt-Sender auf der Wellenlänge 175 Meter, der allerdings bald danach durch einen 10 Kilowatt starken Sender ersetzt wurde. Das Programm strahlte man in einer halbelektronischen 60-Zeilen-Norm mit 25 Bildern pro Sekunde aus, die im Dezember von einer 180-Zeilen-Norm ersetzt wurde.
-
-### Entwicklung zur bedeutenden Sehenswürdigkeit
 
 #### 1937 bis 1979
 
@@ -168,8 +162,6 @@ Die Pariser Bürgermeisterin Anne Hidalgo kündigte an, dass die olympischen Rin
 Während der Spiele selbst fungierte das benachbart zum Eiffelturm, temporär errichtete Stade Tour Eiffel mit rund 13.000 Sitzplätzen auf dem Marsfeld als Spielstätte für die Austragung der Beachvolleyballspiele.
 
 Die Medaillen der Sommerolympiade 2024 enthielten mittig in Form eines Sechsecks ein Eisenplättchen, das aus ausgemusterten Stücken des Eiffelturms stammt. Ursprünglich hätte der Eiffelturm als stilisiertes grafisches Element auch Teil des offiziellen Logos sein sollen und war es noch während der Bewerbungsphase.
-
-## Beschreibung
 
 ### Lage und Umgebung
 
@@ -229,8 +221,6 @@ An der Spitze des Turms befinden sich über 120 Antennen zur Übertragung von du
 
 Aufgrund von Windeinwirkungen schwankte die Turmspitze während eines Sturms 1999 bis zu ca. 13 Zentimeter aus ihrer Ruhelage. Die Ausdehnung des Turms infolge starker Sonneneinstrahlung kann in der Höhe mehrere Zentimeter ausmachen, der bisherige Spitzenwert von 18 Zentimetern wurde im Sommer 1976 erreicht. Eiffels Berechnungen entsprechend könnte sich der Turm sogar um bis zu 70 Zentimeter ausdehnen. Zudem neigt er sich geringfügig zur sonnenabgewandten Seite, da sich die der Sonne zugewandte Seite stärker als die drei anderen ausdehnt. An der Spitze kann sich dieser Effekt zu mehreren Zentimetern summieren.
 
-## Technik
-
 ### Aufzüge
 
 Die Auffahrt im Eiffelturm wird von insgesamt neun verschiedenen Aufzügen ermöglicht – fünf in den Turmpfeilern, die zwischen dem Eingang und der zweiten Etage verkehren, und zwei Paar Aufzüge mit Doppelkabinen zwischen der zweiten und dritten Etage.
@@ -255,8 +245,6 @@ Für die Fläche von 250.000 Quadratmetern werden etwa 60 Tonnen Lack – inklus
 
 Der Eiffelturm wurde farblich mehrfach neu gestaltet. Während zu Beginn der Errichtung des Turms noch ein venezianisches Rot vorherrschte, schwenkte man zur Eröffnung 1889 auf Rotbraun um. Dies wurde bereits 1892 durch Ockerbraun ersetzt. 1899 verwendete man ein in fünf Töne abgestuftes Gelborange und 1907 lackierte man das Wahrzeichen in Gelbbraun. Es folgten Orangengelb und 1954 Kastanienbraun. Mit dem Wechsel im Jahr 1968 auf einen Bronzebraunton schuf man mit dem Farbton „Eiffelturmbraun“ sogar eine spezielle Mischung eigens für den Turm. Sie enthielt die Farbpigmente Rot, Schwarz und Gelb. Diese wurden vom deutschen Spezialchemie-Konzern Lanxess hergestellt und vom norwegischen Lackhersteller Jotun eigens für den Eiffelturm gemischt. Der urheberrechtlich geschützte Speziallack zeichnete sich durch ein hohes Maß an Haltbarkeit und Flexibilität aus und hält das Abplatzen unter Wind und Temperaturschwankungen so gering wie möglich. Im Frühjahr 2019 wechselte man infolge der Olympischen Sommerspiele 2024 auf einen gelbbraunen Farbton, um mit dem stärkeren Goldton an die Olympischen Spiele zu erinnern. Einen ähnlichen Farbton hatte der Eiffelturm bereits in den Jahren 1907 bis 1947.
 
-### Beleuchtung und Lichtkunst
-
 #### Generelle Beleuchtung
 
 Bereits zur Zeit seiner Fertigstellung war der Eiffelturm mit Gaslaternen beleuchtet. An der Turmspitze befanden sich zudem zwei auf Schienen verschiebbare Leuchtprojektoren, die mit einem hellen Leuchtfeuer den Pariser Nachthimmel in die Farben der französischen Trikolore eintauchten. Im Jahr 1900 wich die Gasbeleuchtung einer moderneren elektrischen Lichterkette aus 5000 Glühbirnen, welche die Konturen des Turms nachzeichnete. 1907 brachte man auf der ersten Aussichtsplattform eine sechs Meter hohe Uhr mit leuchtenden Ziffern an. Davor signalisierte man um 12 Uhr mit einem abgefeuerten Kanonenschuss die Mittagszeit.
@@ -280,8 +268,6 @@ Nach den Anschlägen vom 13. November 2015 in Paris wie auch dem Anschlag in Niz
 Da in Frankreich keine Panoramafreiheit gilt, beansprucht die Betreibergesellschaft SETE das Urheberrecht für nächtliche Aufnahmen, in denen der angestrahlte Eiffelturm als Hauptobjekt zu sehen ist, obwohl am Bauwerk selbst keine Urheberrechte mehr bestehen. Sie sieht die Illumination als Kunstwerk für sich an, wobei diese Auffassung umstritten ist und gerichtlich nie bestätigt wurde. Das Gerichtsurteil von 1992, das dafür herangezogen wird, bezieht sich ausschließlich auf eine Lichtshow aus dem Jahr 1989 und nicht auf die allnächtliche Beleuchtung des Turmes.
 Private Bilder ohne kommerzielle Nutzung stellen unabhängig davon generell keinen Verstoß dar. Lediglich bei Bildern mit einer kommerziellen Nutzung ist eine Genehmigung erforderlich, wenn das Bauwerk urheberrechtlich geschützt ist. Detailaufnahmen oder Panoramaaufnahmen, bei denen der Eiffelturm nur als Beiwerk sichtbar ist, können unabhängig vom Zweck genehmigungsfrei veröffentlicht werden. Dies gilt aufgrund des Schutzlandprinzips nicht für die Verbreitung z. B. in Deutschland.
 
-## Tourismus
-
 ### Einrichtungen für den Publikumsverkehr
 
 Der Eiffelturm ist grundsätzlich an 365 Tagen im Jahr ohne Ruhetag für die Öffentlichkeit zugänglich. Lediglich bei starken Stürmen kann es zur Schließung oder zu Einschränkungen kommen. Insgesamt sind am oder für das Wahrzeichen mehr als 600 Menschen beschäftigt. Darunter sind 280 Verwaltungsangestellte, die für die SETE arbeiten. Etwa 240 sind in den Restaurationsbetrieben angestellt, 50 im Souvenirverkauf und 50 üben weitere, meist technische Tätigkeiten aus. Im Turm befindet sich eine Poststelle, und ein eigenes Einsatzkommando der Polizei bewacht das Monument. Durch die vergleichsweise hohen Einnahmen bedingt gehört der Eiffelturm zu den wenigen französischen Sehenswürdigkeiten, die ganz ohne staatliche Subventionen auskommen.
@@ -293,8 +279,6 @@ Im Jahr seiner Eröffnung bestiegen im Rahmen der Weltausstellung 1889 knapp 1,9
 In den 2010er Jahren pendelte sich die jährliche Besucherzahl bei etwa sechs Millionen ein. Lediglich im Jahr 2020 fiel sie aufgrund der weltweiten COVID-19-Pandemie und der damit notwendigen Schließungen vieler öffentlicher Bauwerke auf gut eine Million.
 
 Laut einer statistischen Befragung von 7.989 Besuchern ergab sich 2009 folgendes Profil: Der überwiegende Teil der Besucher kam aus Westeuropa (43 %), dem metropolitanen Frankreich (29 %) und Nordamerika (11 %). Abgesehen von Frankreich waren die stärksten Besucherländer Deutschland mit 8,5 %, das Vereinigte Königreich mit 8,1 %, gefolgt von den Vereinigten Staaten (7,6 %), Spanien (7,3 %), Italien (4,8 %) und Australien (4,1 %). Teilt man das Alter der Besucher in die Kategorien „unter 25“, von „26 bis 35“, von „36 bis 45“ und „darüber“ auf, so nehmen sie jeweils rund ein Viertel ein. Über 56 Jahre waren nur 6,4 %. Der größte Teil der Besucher kam mit ihrer Familie (63,8 %); rund 23 % besuchen den Eiffelturm mit Freunden und 7,8 % in organisierten Reisegruppen. Knapp die Hälfte (46,1 %) kam mit der Metro, 17,3 % kamen zu Fuß, 12 % mit dem eigenen Auto und 7,5 % per Bus. Etwa 46 % der Befragten waren vorher schon einmal auf dem Eiffelturm.
-
-## Ereignisse
 
 ### Unfälle und Todesfälle
 
@@ -328,10 +312,6 @@ Am 25. September 1962 sang Édith Piaf auf der ersten Etage des Eiffelturms vor 
 Zum 12. Weltjugendtag 1997 versammelten sich am 21. August rund 300.000 Pilger auf dem Champ de Mars vor dem Eiffelturm, wo der damalige Papst Johannes Paul II. eine Ansprache hielt.
 
 Das Orchestre de Paris und das Boston Symphony Orchestra hielten im Mai 2000 unter der Leitung von Seiji Ozawa ein freies Konzert vor dem Eiffelturm, der zu diesem Anlass extra beleuchtet wurde. Den Konzerten wohnten rund 800.000 Menschen bei. Im selben Jahr gab am 10. Juni Johnny Hallyday vor 600.000 Zuschauern ein Freiluftkonzert, das von einer licht- und pyrotechnischen Show begleitet wurde.
-
-## Rezeption und Wirkung
-
-### Rezeption in der Architektur
 
 #### Die vom Eiffelturm ausgelöste Turmbauwelle
 
@@ -450,10 +430,6 @@ Für den Erbauer selbst symbolisierte der Turm das „Jahrhundert der Industrie 
 Der Eiffelturm ist der höchste Fernsehturm Frankreichs und mit seinen über 120 Sendeantennen wichtigster Sender für terrestrische Übertragung in der Region Paris, vor allem für UKW-Rundfunk und digitales Fernsehen. Die Übertragungsinfrastruktur wird von TDF betrieben. Derzeit (2013) werden über 30 Radio- und 45 Fernsehprogramme ausgestrahlt.
 
 Vor dem Zweiten Weltkrieg wurden vom Eiffelturm Radioprogramme im Lang- und Mittelwellenbereich gesendet. Von 1922 bis 1926 erfolgte die Ausstrahlung auf einer Frequenz von ungefähr 115 kHz – unterhalb des heutigen Rundfunk-Langwellenbereichs, von 1929 bis 1934 auf 207,4 kHz – im heutigen Langwellenbereich – und von 1934 bis 1940 auf 1455,3 kHz – im oberen Mittelwellenbereich.
-
-### Radio
-
-### Digitales Fernsehen (DVB-T)
 
 ### Analoges Fernsehen (SECAM)
 

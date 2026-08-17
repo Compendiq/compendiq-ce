@@ -315,8 +315,6 @@ Viele Unternehmen berichten öffentlich von ihren Erfahrungen mit XP. Sie schild
 
 – Gary Anthes
 
-## Kritik
-
 ### Das Alles-oder-Nichts-Prinzip
 
 Gemäß einigen Protagonisten des XP-Ansatzes wirken die einzelnen Methoden so eng zusammen, dass diese ohne Ausnahme eingesetzt werden sollen. Bereits der Verzicht auf einzelne Methoden soll die Wirksamkeit des Gesamtansatzes massiv einschränken. Da jedoch der Einsatz der Methoden oftmals auf zahlreichen Voraussetzungen basiert (siehe z. B. die Abschnitte Der ideale Kunde und Der ideale Programmierer), ist es wahrscheinlich, dass in konkreten Projekten einzelne Methoden eben gerade nicht angewandt werden können. Das liefert dann auch auf einfache Weise eine Erklärung für das Scheitern von XP-Projekten: Meist dürfte sich eine vernachlässigte Methode finden lassen, so dass das Scheitern nicht auf XP als Gesamtansatz, sondern auf die Vernachlässigung dieser Methode zurückgeführt werden kann. Mittlerweile ist es umstritten, ob tatsächlich alle Methoden angewendet werden müssen, um durch XP die Wahrscheinlichkeit auf einen erfolgreichen Projektverlauf zu erhöhen.

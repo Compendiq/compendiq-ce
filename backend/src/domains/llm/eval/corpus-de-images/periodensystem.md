@@ -6,8 +6,6 @@ Das **Periodensystem** (Langfassung **Periodensystem der Elemente**, abgekürzt 
 
 Das Periodensystem wurde 1869 unabhängig voneinander und fast identisch von zwei Chemikern vorgestellt, zunächst von dem Russen Dmitri Mendelejew und wenige Monate später von dem Deutschen Lothar Meyer. Historisch war das Periodensystem für die Vorhersage unentdeckter Elemente und deren Eigenschaften von Bedeutung, da die Eigenschaften eines Elements näherungsweise vorhergesagt werden können, wenn die Eigenschaften der umgebenden Elemente im Periodensystem bekannt sind. Heute dient es vor allem als übersichtliches Organisationsschema der Elemente und zur Ermittlung möglicher chemischer Reaktionen.
 
-## Periodensystem
-
 ### Aufbau
 
 Ein Periodensystem ist eine systematische tabellarische Zusammenstellung der chemischen Elemente, in der die Elemente nach zwei Prinzipien angeordnet sind: Sie sind einerseits nach ansteigender Ordnungszahl (also der für jedes Element eindeutigen und charakteristischen Anzahl der Protonen im Atomkern) angeordnet. Andererseits ist die Darstellung so gewählt, dass Elemente mit ähnlichem chemischen Verhalten nahe zusammen stehen. Mit ansteigender Ordnungszahl ähneln sich die Eigenschaften der Elemente in gleichmäßigen, wenn auch unterschiedlich langen periodischen Abständen. Die Bezeichnung „Periodensystem“ weist darauf hin, dass diese Periodizitäten durch die gewählte Anordnung der Elemente dargestellt werden.
@@ -35,8 +33,6 @@ Die Besonderheit des Periodensystems gegenüber einer bloßen tabellarischen Auf
 Mit der bisher letzten Erweiterung des Periodensystems im Jahre 2015 sind nun die Elemente 1 (Wasserstoff) bis 118 (Oganesson) lückenlos entdeckt oder erzeugt und beschrieben. In der Natur kommen die Elemente der Ordnungszahlen 1 bis 94 vor, wobei Technetium (OZ 43), Promethium (61), Astat (85), Neptunium (93) und Plutonium (94) in so geringen Mengen natürlich vorkommen, dass sie zuerst künstlich erzeugt und beschrieben wurden. Von diesen 94 natürlichen Elementen sind 83 primordial, existieren also seit der Entstehung der Erde. Die ursprünglichen Bestände der übrigen 11 sind wegen ihrer geringeren Halbwertszeiten längst zerfallen, sie werden aber durch radioaktive Zerfälle in den natürlichen Zerfallsreihen der primordialen Elemente ständig neu gebildet. Die Elemente der Ordnungszahlen 95 bis 118 wurden ausschließlich künstlich erzeugt.
 
 Bilder der jeweiligen Elemente finden sich in der Bildtafel der chemischen Elemente.
-
-## Atombau
 
 ### Struktur eines Atoms
 
@@ -258,8 +254,6 @@ Die ersten beiden Hauptgruppen (die Alkali- und Erdalkalimetalle) enthalten dahe
 In der V. und VI. Hauptgruppe lässt sich der innerhalb einer Gruppe stattfindende Übergang gut beobachten: Die oben in den Gruppen stehenden Elemente 7Stickstoff, 8Sauerstoff und 16Schwefel sind ausgeprägte Nichtmetalle. Die darunter stehenden Elemente 15Phosphor, 33Arsen und 34Selen kommen sowohl in nichtmetallischen Modifikationen vor (weißer, roter und violetter Phosphor, gelbes Arsen, rotes Selen) wie auch in halbleitenden (schwarzer Phosphor, graues Arsen, graues Selen). Die unten in den Gruppen stehenden Elemente 51Antimon, 52Tellur, 83Bismut und 84Polonium treten bevorzugt in halbmetallischer oder metallischer Form auf.
 
 Die typischen Vertreter der Metalle auf der linken Seite des Periodensystems besitzen stets nur eine kleine Anzahl von Valenzelektronen und geben diese bereitwillig ab (niedrige Ionisierungsenergie, siehe oben), um ein Valenzelektronen-Oktett zu erreichen. Wenn Metallatome sich mittels chemischer Bindungen zu einem Metallgitter zusammenfügen, bilden die abgegebenen Valenzelektronen ein „Elektronengas“, das die positiv geladenen Metallatome einbettet und zusammenhält. Dies ist die sogenannte metallische Bindung. Aus den Eigenschaften dieser Bindungsart folgen die für die Metalle charakteristischen Eigenschaften wie beispielsweise ihr Glanz oder ihre leichte Verformbarkeit. Insbesondere führt die große Anzahl frei beweglicher Elektronen zu einer hohen elektrischen Leitfähigkeit.
-
-### Komplexere Beziehungen
 
 #### Sonderstellung der Kopfelemente
 
@@ -563,8 +557,6 @@ Experimente zur Erzeugung synthetischer Elemente werden fortgesetzt und werden v
 Möglicherweise werden die mit der Ordnungszahl zunehmenden relativistischen Effekte (siehe oben) jedoch die Periodizitäten immer mehr verschwimmen lassen. Sie beeinflussen das Verhalten der Elektronen und damit die chemischen Eigenschaften, so dass diese nicht mehr unbedingt der Position des Elements im Periodensystem entsprechen müssen. Dies deutet sich bereits bei den bekannten Elementen an: So sollten die Übergangsmetalle 104Rutherfordium und 105Dubnium in ihrem Verhalten den jeweils im Periodensystem darüberstehenden Übergangsmetallen Hafnium beziehungsweise Tantal ähneln. Experimente zeigen jedoch ein Verhalten, das eher den Actinoiden Plutonium beziehungsweise Protactinium ähnelt. Die darauf folgenden Elemente 106Seaborgium und 107Bohrium hingegen zeigen wieder das ihrer Position im Periodensystem entsprechende Verhalten. 114Flerovium sollte als Element der vierten Hauptgruppe dem Blei ähneln, scheint sich aber eher wie ein Edelmetall zu verhalten.
 
 Je schwerer die erzeugten Atome sind, umso kürzer ist im Allgemeinen ihre Lebensdauer. Theoretische Abschätzungen lassen erwarten, dass ab Ordnungszahlen von etwas über 170 die Lebensdauer der erzeugten Atome gegen Null geht, so dass gar nicht mehr von erzeugten Atomen gesprochen werden kann. Dies wäre, sofern zutreffend, die theoretische Obergrenze für den Umfang des Periodensystems.
-
-## Andere Darstellungen des Periodensystems
 
 ### Langperiodensystem
 

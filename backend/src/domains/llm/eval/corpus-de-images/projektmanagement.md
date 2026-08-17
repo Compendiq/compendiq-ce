@@ -17,8 +17,6 @@ Projektmanagement wird je nach Quelle textlich unterschiedlich, inhaltlich aber 
 - IPMA ICB 4.0: „Das Projektmanagement befasst sich mit der Anwendung von Methoden, Tools, Techniken und Kompetenzen für ein Projekt, um Ziele zu erreichen. Es wird mithilfe von Prozessen umgesetzt und umfasst die Integration verschiedener Phasen des Projektlebenszyklus.“
 - Etymologie: leitet sich ab von lateinisch proiectum ‚das nach vorne Geworfene‘ und lat. *manum agere* ‚an der Hand führen‘.
 
-## Einführung
-
 ### Stakeholdererwartungen
 
 Der Projektmanager hat die Aufgabe, die Erwartungen der *Stakeholder* an das Projekt so weit wie möglich zu erfüllen. Die für die Erhebung der Erwartungen meist verwendete Methode ist die Projektumfeldanalyse. Als Stakeholder bezeichnet man dabei jede Person oder Organisation, deren Interessen durch den Verlauf oder das Ergebnis des Projekts betroffen sind. Dabei wird typischerweise zwischen aktiven und passiven Stakeholdern unterschieden. Die aktiven Stakeholder sind die meist direkt im Projektumfeld befindlichen Projektbetroffenen:

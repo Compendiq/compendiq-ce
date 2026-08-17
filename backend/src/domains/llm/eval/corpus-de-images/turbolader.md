@@ -24,8 +24,6 @@ Von den üblichen Viertaktmotoren unterscheiden sich Zweitaktmotoren bezogen auf
 
 Zusätzlich muss am Ende des Spülvorgangs der Auslasskanal früher geschlossen werden, um zum Aufbauen eines Ladedrucks ausreichend Zeit zu schaffen. Auch dies kann im einfachsten Fall erreicht werden durch die Anordnung der Spülkanäle oder bei großen Schiffsmotoren durch Anordnung der Einlasskanäle und die Steuerzeiten des Auslassventils.
 
-## Weiterentwicklung des Turboladers
-
 ### Ladeluftkühlung
 
 Anders als im Saugmotor, bei dem sich die angesaugte Luft wegen des Unterdrucks adiabatisch im Ansaugtakt abkühlt, führt die Kompression zu einer deutlichen Erwärmung der Luft um bis zu 180 °C. Weil warme Luft eine geringere Dichte hat, lässt sich die Füllung und damit die Leistung des Motors noch weiter steigern, indem die Ladeluft nach der Kompression durch einen Ladeluftkühler gekühlt wird. Ladeluftkühlung wird bei praktisch allen modernen aufgeladenen Motoren angewandt. Da der Ladeluftkühler einen Strömungswiderstand hat und so den vom Verdichter erzeugten Druck wieder etwas vermindert, sollte er eine Abkühlung um mehr als 50 °C bewirken, um die erwünschte Leistungssteigerung gegenüber einem Motor ohne Ladeluftkühlung zu erzielen.
@@ -41,8 +39,6 @@ Einfache ungeregelte Turbolader haben – wie alle Turbomaschinen – einen en
 Vor dem Zweiten Weltkrieg erreichten Turbolader Drehzahlen in der Größenordnung von 10.000 Umdrehungen pro Minute; kleine, moderne Turbolader können Drehzahlen bis zu 400.000 Umdrehungen pro Minute erreichen (zum Beispiel Smart Dreizylinder-Turbodiesel). Neben der Reibungswärme von Wellenlagerung und -abdichtung wird auch über das Gehäuse der sehr heißen Abgasturbine viel Wärme der Lagerung zugeführt. Die Lagereinheit ist üblicherweise an den Schmierölkreislauf des Motors angeschlossen, so dass im laufenden Betrieb diese Wärme mit dem Schmieröl in den Motor abgeführt wird. Insbesondere wenn der Motor aus hoher Last schnell gestoppt wird, kann es dagegen zu Problemen mit Stauwärme kommen, die zu einem Verkoken des Schmieröls in der Lagereinheit führen kann. Die Lagereinheiten moderner Turbolader werden deshalb wassergekühlt oder der Motor verfügt über eine elektrische Hilfspumpe, die bei abgestelltem Motor den Turbolader einige Zeit nachkühlt. Diese „wassergekühlten“ Turbolader sind zu unterscheiden von wassergekühlten Turboladern, bei denen (auch) das Turbinengehäuse durch einen Wassermantel gekühlt wird.
 
 Teilweise werden zusätzlich zu den Gleitlagern ein oder zwei keramische Kugellager eingesetzt. Kugelgelagerte Turbolader haben eine geringere Reibung, was sie schneller ansprechen lässt. Das beschleunigt den Drehzahlanstieg des Laders und lässt den Ladedruck früher einsetzen.
-
-## Vor- und Nachteile der Turboaufladung
 
 ### Vorteile
 
@@ -103,8 +99,6 @@ Entwickelt wurde der moderne VTG-Turbolader für Ottomotoren in enger Zusammenar
 VW nutzt im „1.5 TSI BlueMotion“ erstmals einen VTG-Lader bei einem Großserien-Ottomotor. Da der Motor, bedingt durch früh schließende Einlassventile, verhältnismäßig niedrige Abgastemperaturen hat (~860 °C), ist der Einsatz möglich. Entwickelt wurde der Lader von Honeywell.
 Ein weiterer bekannter Begriff für Turbolader mit verstellbaren Leitschaufeln ist auch *VNT* (Variable Nozzle Turbine). Diese Bezeichnung wird von Honeywell für deren Turbosysteme mit variabler Turbinengeometrie unter dem Markennamen *Garrett* verwendet.
 
-## Umluftventil
-
 ### Wirkungsweise ohne Umluftventil
 
 Wenn die Drosselklappe bei Ottomotoren geschlossen wird, stößt die in Bewegung befindliche Luftsäule auf die Klappe. Die Luftsäule (Drucksäule) kehrt um, läuft vor das sich drehende Verdichterrad des Turboladers und bremst dieses stark ab, was bei hohem Ladedruck auf Dauer zur Zerstörung des Turboladers führen kann (oder bei einem defekten Umluftventil). Außerdem sind starke Strömungsgeräusche hörbar, weil die Strömung am Verdichter abreißt („Pumpen“).
@@ -134,8 +128,6 @@ Technisch nicht ganz korrekt ist, dass die elektronisch gesteuerten Ventile (tec
 ### Gängige Bezeichnungen
 
 Englischsprachige Bezeichnungen für Abblasventil, Ablassventil oder (Schub-)Umluftventil, die auch häufig verwendet werden, sind unter anderem: Blow-Off-Valve (BOV), Pop-Off-Valve (POV) (eingedeutscht: „Pop-Off-Ventil“)
-
-## Weitere Bauarten
 
 ### Staudruckaufladung
 
@@ -199,8 +191,6 @@ Da das Vorkomprimieren die Lufttemperatur erhöht und somit der angestrebten Ver
 ### Kombination mit Kompressor
 
 Um das Turboloch zu vermeiden, kann man im unteren Drehzahlbereich einen Kompressor verwenden, der mit Magnetkopplung zu- und abkoppelbar ist. Bei mittlerer Drehzahl laufen beide Lader, bei höheren Drehzahlen alleine der Turbo. Beispiel: Volkswagen TSI-Motoren.
-
-## Turboaufladung bei Kraftfahrzeugen
 
 ### Anwendung bei Dieselmotoren
 

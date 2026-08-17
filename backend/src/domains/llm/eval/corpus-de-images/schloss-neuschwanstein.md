@@ -2,8 +2,6 @@
 
 **Schloss Neuschwanstein** ist ein Baudenkmal in der bayerischen Gemeinde Schwangau. Die Dreiflügelanlage wurde in den Jahren 1869 bis 1892 im Auftrag des Königs Ludwig II. von Bayern nach Plänen von Eduard Riedel im Stil der Neuromanik erbaut. Als architektonisches Vorbild dienten mittelalterliche Ritterburgen. Hervorzuheben sind der *Thronsaal*, das *Schlafzimmer* und der *Sängersaal*. Mit über einer Million Besuchern zählte es 2024 zu den meistbesuchten und berühmtesten Sehenswürdigkeiten Deutschlands.
 
-## Geschichte
-
 ### Vorgeschichte
 
 ![](images/schloss-neuschwanstein__1.jpg)
@@ -52,10 +50,6 @@ Nach dem Zweiten Weltkrieg nutzte die Bayerische Archivverwaltung einige Räume 
 
 Im Jahr 2002 stürzten in der Nähe Neuschwansteins Trümmerstücke eines Meteoriten auf die Erde, die seitdem unter dem Namen Neuschwanstein katalogisiert sind.
 
-## Schloss
-
-### Außenarchitektur
-
 #### Vollendete Anlagen
 
 Das Schloss befindet sich oberhalb des heutigen Ortsteils Hohenschwangau der Gemeinde Schwangau bei Füssen im südöstlichen bayerischen Allgäu. Die Anlage besteht aus mehreren einzelnen Baukörpern, die über eine Länge von rund 150 Metern auf dem Kamm eines früher *Jugend* genannten Felsenrückens errichtet wurden. Das langgezogene Bauwerk hat zahlreiche Türme, Ziertürmchen, Giebel, Balkone, Zinnen und Skulpturen. Die Fensteröffnungen haben in Anlehnung an den romanischen Stil meist die Form von Bi- und Triforien. Die Kombination der Einzelbauten vor dem Hintergrund des Tegelbergs und der Pöllatschlucht im Süden und der seenreichen Hügellandschaft des Voralpenlands im Norden bietet aus allen Himmelsrichtungen unterschiedliche pittoreske Ansichten des Schlosses. Es wurde als romantisches Ideal einer Ritterburg entworfen. Anders als „echte“ Burgen, deren Gebäudebestände meist das Ergebnis mehrerer Bautätigkeiten sind, wurde Neuschwanstein als gewollt asymmetrischer Bau in einem Zug geplant und in Abschnitten errichtet. Für eine Burg typische Merkmale wurden zitiert; echte Verteidigungsanlagen – das wichtigste Merkmal eines mittelalterlichen Adelssitzes – wurden nicht gebaut.
@@ -74,8 +68,6 @@ Zum Zeitpunkt des Todes Ludwigs II. 1886 war das Schloss unvollendet. Der Torba
 
 Die Ausstattung der königlichen Wohnräume im Inneren des Schlosses konnte bis 1886 größtenteils abgeschlossen werden, die Vorhallen und die Gänge wurden bis 1888 vereinfacht ausgemalt. Der vom König gewünschte *Maurische Saal*, der seinen Platz unterhalb des Thronsaals gefunden hätte, wurde nicht mehr realisiert, ebenso wenig das sogenannte *Ritterbad*, das nach dem Vorbild des Ritterbads der Wartburg als mittelalterliches Taufbad dem Ritterkult huldigen sollte. Ein für die Kemenate geplantes *Brautgemach* (nach einem entsprechenden Schauplatz in *Lohengrin*) blieb unausgeführt, ebenso die ursprünglich für das erste und das zweite Geschoss des Palas angedachten Gästezimmer und ein großer Bankettsaal. Ein vollständiger Ausbau des als „Privathaus“ gedachten Neuschwansteins war jedoch von vornherein nicht geplant, und so gab es bis zum Tode des Königs für zahlreiche Räume nicht einmal ein Nutzungskonzept. Erst die Eingangsfront der Kapelle mit dem Kirchenportal hätte dem oberen Burghof den vom König von Anfang an gewünschten szenischen Effekt aus dem 2. Akt von Richard Wagners Oper *Lohengrin* verliehen, und erst die Masse des 90 Meter hohen Bergfrieds hätte den Baukörpern von Palas, Kemenate und Ritterbau den architektonischen Zusammenhang gegeben, für den sie entworfen wurden. So blieb Neuschwanstein ein vielbewunderter, aber missverständlicher Torso. Ein weiteres von Ludwig II. geplantes, Neuschwanstein ähnliches Projekt – die in Sichtweite ca. 20 km entfernte Burg Falkenstein – kam mangels Geld nicht über das Planungsstadium hinaus.
 
-### Innenarchitektur
-
 #### Prunkräume
 
 Nach seiner Vollendung hätte das Schloss über 200 verschiedene Innenräume besessen, inklusive der Räumlichkeiten für Gäste und Bedienstete sowie für die Erschließung und Versorgung. Fertiggestellt und ausgestattet wurden rund 15 Zimmer und Säle. Der Palas beherbergt in seinen unteren Stockwerken Wirtschaftsräume und Dienerzimmer sowie die Räume der heutigen Schlossverwaltung. Die oberen Geschosse beherbergen die Prunkräume des Königs: Der vordere Baukörper nimmt im dritten Obergeschoss die Wohnräume auf, darüber folgt der Sängersaal. Der nach Westen gerichtete hintere Baukörper ist in den oberen Geschossen fast vollständig durch den Thronsaal ausgefüllt. Die Grundfläche der verschiedenen Stockwerke beträgt insgesamt fast 6.000 m2.
@@ -92,8 +84,6 @@ Das nach Osten ausgerichtete Wohnzimmer ist mit Themen aus der Lohengrin-Sage au
 Zwischen der Küche und dem Esszimmer gibt es stattdessen einen Speisenaufzug. Das dem Speisezimmer benachbarte Schlafzimmer und die daran anschließende Hauskapelle sind die einzigen neugotisch gestalteten Räume des Schlosses. Im Schlafzimmer des Königs dominiert ein mächtiges, mit Schnitzwerk verziertes Bett. An dem mit zahlreichen Fialen dekorierten Betthimmel und den Wandverkleidungen aus Eichenholz arbeiteten 14 Schnitzer über vier Jahre. In diesem Raum wurde Ludwig in der Nacht vom 11. zum 12. Juni 1886 festgenommen. Dem Schlafzimmer benachbart ist eine kleine, dem Heiligen Ludwig – dem Namenspatron des Bauherren – geweihte Hauskapelle.
 
 Die Dienerschaftsräume im Untergeschoss des Palas sind spärlich mit Mobiliar aus massiver Eiche eingerichtet. Neben je einem Tisch und einem Schrank gibt es noch je zwei 1,80 m lange Betten. Die Räume waren mit Fenstern aus undurchsichtigem Glas vom Gang, der von der Freitreppe zur Haupttreppe führte, abgegrenzt, so dass der König ungesehen ein und aus gehen konnte. Den Dienern war es verboten, die Haupttreppe zu benutzen; sie mussten die schmalere und steilere Dienerschaftstreppe nutzen. Viele Räume des Schlosses wurde außerdem mit etlichen technischen Raffinessen ausgestattet, die dem neuesten Stand des späten 19. Jahrhunderts entsprachen. So verfügte es unter anderem über eine batteriebetriebene Klingelanlage für die Dienerschaft und Telefonleitungen. Die Küchenausstattung enthielt einen Rumfordherd, der den Spieß durch Eigenwärme in Bewegung setzte und somit seine Umdrehungen der Hitze anpassen konnte. Die produzierte warme Luft wurde einer Calorifère-Heizung zugeführt. Auch eine eigene Warmwasseraufbereitung für das fließende Wasser war bereits eingebaut, für damalige Zeiten ebenso ein Novum wie die Toiletten mit automatischer Spülung.
-
-## Rezeption
 
 ### Tourismus
 

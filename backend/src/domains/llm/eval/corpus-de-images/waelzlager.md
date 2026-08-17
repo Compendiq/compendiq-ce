@@ -142,8 +142,6 @@ Es gibt sechs Grundformen von Wälzlagern:
 
 Kugellager sind die häufigsten verwendeten Wälzlager. Hier gibt es die breiteste Auswahl unterschiedlicher Abmessungen. Sie sind kostengünstig, verfügen bauartbedingt allerdings über eine begrenzte Tragfähigkeit.
 
-### Radiallager
-
 #### Rillenkugellager (DIN 625)
 
 Der bekannteste Typ ist das *Rillenkugellager*. Es ist dafür ausgelegt, überwiegend radiale Kräfte aufzunehmen. Da die Kugeln auch seitlich eng an den Laufrillen anliegen, somit Ringe und Kugeln axial nicht gegeneinander verschiebbar sind, kann dieses Lager auch geringe axiale Kräfte aufnehmen. Eine Faustregel besagt, dass die axiale Belastbarkeit ungefähr 50 % der radialen Belastbarkeit beträgt. Laut SKF-Katalog 2005 sollte die axiale Belastung im Allgemeinen den Wert 0,5 C0, bei kleinen und leichten Lagern 0,25 C0 nicht übersteigen.
@@ -203,8 +201,6 @@ Die Wälzkörper auf dem Innenring haben die Form eines Kegelstumpfes, außerdem
 Zwei Kegelrollenlager ([<) können in „O“- ([< >]) oder „X“-Anordnung ([> <]) als Lagerung montiert werden. Beispiel: Bei der Motorrad-Lenkkopflagerung ist die O-Anordnung gängig, da so von außen einwirkende Kippmomente vom Vorderrad besser aufgenommen werden können. Der Außenring wird oben unter dem Lenker eingepresst, der Innenring wird nach unten zeigend in den Außenring gelegt. Das untere Gegenlager wird mit Innenring nach oben zeigend montiert.
 Gängig sind Lager in metrischen und auch Zollabmessungen, letztere haben ein völlig anderes Bezeichnungsschema.
 
-#### Tonnen- und Pendelrollenlager (DIN 635)
-
 ##### Tonnenrollenlager DIN 635-1
 
 Dieses einreihige Tonnenrollenlager ist für hohe stoßartige Radialkräfte ausgelegt, allerdings in Axialrichtung nur gering belastbar. Es eignet sich gut zum Ausgleichen von Fluchtfehlern. Diese sind winkeleinstellbar (bis zu 4° aus der Mittellage), da der Außenring eine kugelförmige Lauffläche hat. Die Rollkörper, die sogenannten Tonnenrollen, sind fassförmig. Tonnenlager sind einreihig, d. h., sie besitzen eine Reihe von Tonnenrollen in einem Käfig. Es wurde 1912 durch Johann Modler entwickelt.
@@ -235,8 +231,6 @@ Kugelrollenlager sind mit den Rillenkugellagern verwandte Wälzlager. Sie verwen
 
 Dieser Lagertyp wurde erst vor wenigen Jahren entwickelt, er ist aktuell noch nicht genormt (Stand: Dezember 2012).
 
-### Axiallager
-
 #### Axial-Rillenkugellager (DIN 711 bzw. DIN 715)
 
 Beim Axial-Rillenkugellager laufen die Kugeln zwischen zwei oder drei Scheiben, abhängig davon, ob die Axialkraft in beiden Richtungen auftritt oder nur in einer. Bei beidseitiger Krafteinwirkung wird die mittlere Scheibe auf der Welle festgehalten, die beiden äußeren im Gehäuse. Diese Lager können ausschließlich Axialkräfte aufnehmen.
@@ -248,8 +242,6 @@ Dieser Lagertyp ist aufgebaut aus einer Wellenscheibe, einer Gehäusescheibe und
 #### Axial-Pendelrollenlager (DIN 728)
 
 Der Aufbau des Axial-Pendelrollenlagers ist ähnlich dem radialen Pendelrollenlager, allerdings wird nur eine Reihe von Wälzkörpern verwendet. Aufgrund der sphärischen Form der Laufbahnen können sowohl hohe Axiallasten aufgenommen als auch Fluchtfehler (bei geringer Belastung bis zu 3°) korrigiert werden.
-
-## Lagerauswahl
 
 ### Bemessung
 
@@ -379,8 +371,6 @@ Beispiel: Ein einreihiges Rillenkugellager, Typenbezeichnung beginnt also mit 6,
 Sondertypen und seltene Wälzlagerungen sind nicht angeführt. Es wird unterschieden zwischen
 
 Hiermit lässt sich jedes noch so verrostete Lager auf einfache Weise identifizieren.
-
-#### Kombinationstabelle Innen- und Außendurchmesser
 
 #### Abdichtung
 

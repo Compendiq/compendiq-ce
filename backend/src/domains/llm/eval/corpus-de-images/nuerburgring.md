@@ -11,8 +11,6 @@ Nachdem die *Nürburgring GmbH* im Sommer 2012 Insolvenz angemeldet hatte, wurde
 
 Betrieben wird der Nürburgring durch die *Nürburgring 1927 GmbH & Co. KG*, eine 100-%-Tochter der Nürburgring Eigentümergesellschaft. Nach eigenen Angaben schreibt die Nürburgring 1927 GmbH & Co. KG schwarze Zahlen. Zum Veranstaltungsangebot gehören nach wie vor Motorsportereignisse wie das *ADAC RAVENOL 24h-Rennen*, aber auch Musikfestivals wie *Rock am Ring* und Sportveranstaltungen. Daneben wird die Strecke wochentags für Testfahrten und andere fahraktive Veranstaltungen genutzt. Im vermarktbaren Zeitraum von Mitte März bis Mitte November sind nach Angaben des Nürburgrings beide Abschnitte – Grand-Prix-Strecke und Nordschleife – täglich voll ausgelastet.
 
-## Geschichte
-
 ### 1904 bis 1925: Idee und Planung
 
 Im Jahr 1904 veranstaltete der Belgische Automobilclub ein Rundstreckenrennen in den Ardennen, in Italien wurde zur gleichen Zeit der *Coppa Florio* ausgetragen und in den USA wurde der *Vanderbilt Cup* veranstaltet. All diese Rennen waren gut besucht und erfreuten sich hoher Beliebtheit, sodass am 17. Juni 1904 in Homburg v. d. Höhe das *Gordon-Bennett-Rennen* stattfinden konnte. Das Rennen, bei dem Fahrer aus Deutschland, der Schweiz, Frankreich, England, Italien und den USA teilnahmen, führte zu einer grundlegenden Erkenntnis in Deutschland: Der Motorsport ist populär und bringt auch finanziell große Erfolge, kann aber aus Aspekten der Sicherheit der Fahrer und Zuschauer und aus logistischen Gründen nicht mehr auf deutschen Landstraßen ausgetragen werden. Daher wurde schnell klar, dass man in Deutschland eine vom Straßenverkehr unabhängige Strecke braucht, auf der auch die deutschen Automobilhersteller ihre Modelle erproben können.
@@ -103,8 +101,6 @@ Nahe dem Freizeit- und Businesszentrum wurde 2010 ein Biomasse-Heizwerk in Betri
 
 Im Juni 2021 wurde die erste Kurve der Nordschleife nach dem Streckenabschnitt „T13“ offiziell nach der im März 2021 verstorbenen Rennfahrerin Sabine Schmitz benannt.
 
-## Nutzung
-
 ### Streckenführungen
 
 Start-und-Ziel-Gerade und Boxengasse des Nürburgrings. (Der schnurgerade Streckenabschnitt erscheint auf dem Bild aus fototechnischen Gründen gebogen.)
@@ -144,8 +140,6 @@ Wenn die Nordschleife des Nürburgrings nicht für Veranstaltungen oder Fahrzeug
 Genutzt wird die gesamte Strecke auch für Sportfahrerlehrgänge, bei denen Rennfahreraspiranten und Rennsport-Interessierte die Ideallinie auf dem Ring erlernen können, für Testfahrten der Automobil-Industrie und der Presse sowie für vieldiskutierte Rekordrunden.
 
 Im Zuge der Hilfsaktionen zur Hochwasserkatastrophe im Juli 2021 wurden die Fahrerlager, das Event-Center sowie die Parkflächen in der Umgebung als Bereitstellungsraum und Logistik- und Verpflegungszentrum für die Hochwasserhilfe genutzt. Einheiten des Katastrophenschutzes, der Bundeswehr und anderer Organisationen wurden von hier in den Einsatz in den betroffenen Gebieten geschickt und nutzten das Gelände für Ruhepausen. Von hier fanden zudem Versorgungsflüge per Außenlast mit Hubschraubern statt.
-
-## „Nürburgring 2009“
 
 ### Neue Gebäude und Attraktionen
 
@@ -199,15 +193,11 @@ Ab 2004 war das Museum Teil der *Erlebniswelt am Nürburgring*. Inzwischen heiß
 
 Am 2. Februar 2026 schloss das Ringwerk, laut Nürburgring, wegen umfangreicher Umbaumaßnahmen. Das Gebäude wird künftig neu ausgerichtet und bietet perspektivisch Flächen für Partner aus der Automobilbranche. Gleichzeitig ist auch wieder ein Erlebnismuseum am Nürburgring geplant – der genaue Zeitpunkt der Wiedereröffnung steht jedoch aktuell noch nicht fest.
 
-## Statistik
-
 ### Streckendaten
 
 - Streckenlänge: 5,148 Kilometer
 - Rundendistanz: 60 Runden (308,863 Kilometer)
 - Länge der Boxengasse: 381,4 Meter
-
-#### Streckenrekorde Formel 1
 
 ##### 22,8-km-Strecke (1951–1976)
 
@@ -223,8 +213,6 @@ Am 2. Februar 2026 schloss das Ringwerk, laut Nürburgring, wegen umfangreicher 
 
 - Qualifikation: **1:25,269 min** (Valtteri Bottas, Mercedes, 2020)
 - Rennen: **1:28,139 min** (Max Verstappen, Red Bull, 2020)
-
-### Alle Sieger von Formel-1-Rennen auf dem Nürburgring
 
 #### Nordschleife (1951–1976)
 

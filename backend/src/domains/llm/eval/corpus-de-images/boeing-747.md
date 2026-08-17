@@ -108,10 +108,6 @@ Nach Lufthansa-Berechnungsmethode (Lufthansa-Bestuhlung, durchschnittliche Ausla
 
 Im direkten Vergleich hat der Airbus A380 bei einer maximalen Bestuhlung von 853 Plätzen, welche von keiner Airline verwendet wird, einen Verbrauch von 2,4 Liter Kerosin pro 100 Passagierkilometer. Dieser erhöht sich bei einer reduzierten Bestuhlung von 555 auf 3,5 l/100 Pkm und liegt bei der kleinstmöglichen Variante von nur 362 Plätzen bei 5,2 Liter Kerosin pro 100 Passagierkilometer.
 
-## Varianten
-
-### Zivile Varianten
-
 #### 747-100
 
 Die Boeing 747-100 war das erste Modell der 747-Familie und bekam schon bald nach ihrem Erscheinen den Spitznamen *Jumbo*. Von der 747-100 wurden in allen Untervarianten insgesamt 205 Maschinen gebaut. Die letzte gebaute 747-100 war eine -100B SR mit verlängertem Oberdeck, die Japan Air Lines im September 1986 erhalten hat. Alle 747-100 sowie ihre Untertypen sind werksneu als reine Passagierflugzeuge ausgeliefert worden. Infolge der gesunkenen Passagierzahlen durch die erste Ölpreiskrise wurden Mitte der 1970er-Jahre zahlreiche 747-100 eingelagert und nachträglich zu Frachtmaschinen umgebaut.
@@ -335,8 +331,6 @@ Auch für die seinerzeit noch aktuelle 747-400 lief im Jahr 2004 ein *Special Fr
 
 Im Jahr 2005 lagen 34 Bestellungen und 29 Optionen für derartige Umbauten von sieben überwiegend asiatischen Airlines vor.
 
-### Militärische Varianten
-
 #### YAL-1
 
 → *Hauptartikel: Boeing YAL-1*
@@ -364,8 +358,6 @@ Ab März 1994 suchte die USAF nach einer Ergänzung für die noch kleine Flotte 
 → *Hauptartikel: Boeing VC-25A*
 
 Die beiden auf der 747-200B basierenden VC-25A der USAF befördern den US-Präsidenten und werden dann als *Air Force One* bezeichnet. Auch diese Maschinen können im Ernstfall als fliegende Kommandozentralen dienen; sie verfügen über modernste Kommunikationseinrichtungen, die vom Oberdeck aus bedient werden und dem Präsidenten vollen Zugriff auf alle militärischen Kommandoebenen bieten. Gegen den bei Atombombenexplosionen auftretenden elektromagnetischen Puls ist die Elektronik besonders geschützt und bei einem drohenden Angriff mit wärmesuchenden Raketen können elektronische Gegenmaßnahmen und Täuschkörper eingesetzt werden. Die Möglichkeit der Luftbetankung erhöht die Reichweite und Unabhängigkeit. Neben 26 Besatzungsmitgliedern können bis zu 76 Fluggäste befördert werden. Als *Air Force One* hatte die *VC-25A* am 6. September 1990 ihren ersten Einsatz.
-
-### Sonstige Varianten
 
 #### Shuttle Carrier Aircraft
 

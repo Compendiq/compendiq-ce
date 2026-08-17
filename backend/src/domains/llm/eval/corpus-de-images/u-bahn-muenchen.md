@@ -194,8 +194,6 @@ Ab Anfang der 1980er Jahre legte man zunehmend Wert auf die Gestaltung. Die in B
 
 Teilweise aufwendige Gestaltungen der Bahnsteige und vor allem der Hintergleiswände zeichnen die Mehrzahl der jüngeren Bahnhöfe aus. Durch hohe, säulenlose Bahnhofshallen konnte meist ein heller und freundlicher Raumeindruck vermittelt werden. Bei Bahnhöfen in geringer Tieflage, wie *Oberwiesenfeld*, *Machtlfinger Straße* (beide U3), *Messestadt West* (U2) und *St.-Quirin-Platz* (U1), wurde auch das Tageslicht bei der Raumgestaltung und Innenbeleuchtung genutzt. Die zuletzt genannte an einem Hang liegende Station wurde mit einer aufwändigen Dachkonstruktion überspannt. *St.-Quirin-Platz* ist somit der einzige unterirdisch gelegene Bahnhof in München, in dem durchfahrende Fahrgäste einen kurzen Blick „nach draußen“ (in die Grünanlage *Am Hohen Weg*) werfen können. Wo kein Tageslicht verfügbar war, wurden aus indirekter künstlicher Beleuchtung mittels reflektierender Wand- und Deckenelemente bestehende Lichtkonzepte realisiert und so der aus lang gezogenen Leuchtstoffröhrenreihen bestehende „Einheitsbrei“ bei der Beleuchtung früherer Stationen vermieden.
 
-## Geschichte
-
 ### Frühe Planungen 1905–1928
 
 Bereits 1905 gab es Pläne, eine unterirdische Gleistrasse in etwa auf der Trasse der heutigen S-Bahn-Stammstrecke zwischen Haupt- und Ostbahnhof sowie eine Ringbahn, die die Altstadt umrundet, zu bauen. Da diese Planungen für das damalige Verkehrsaufkommen aber deutlich überdimensioniert waren, wurden sie nicht umgesetzt. Das Straßenbahnnetz konnte die Verkehrsströme in der damaligen Halbmillionenstadt noch abdecken.
@@ -316,8 +314,6 @@ Die teilweise mittlerweile 50-jährigen Bauwerke benötigen aber auch optische w
 Nach einer Modernisierung des Sperrengeschosses am Karlsplatz (Stachus) erfolgte ab Mitte 2011 die Modernisierung des Zwischengeschosses des Hauptbahnhofes. Wegen Schäden der Bausubstanz durch Feuchtigkeit und vor allem durch aggressive Streusalzrückstände wurden die Gebäudehülle und die Bewehrung während des laufenden Betriebes erneuert. Im Februar 2014 wurde das modernisierte Zwischengeschoss eröffnet.
 
 Ab 2017 wurde der Bahnhof *Sendlinger Tor* umfangreich umgebaut und saniert. Es wurden zusätzliche Zugänge und erweiterte Wegeführungen gebaut. Die Gestaltung des umgebauten U-Bahnhofes wurde in den Farben gelb und blau ausgeführt. Die Zugangsbereiche und die unterste Ebene mit den Bahnsteigen der U1/U2/U7/U8 sind in gelb und die der U3/U6 in blau gestaltet. Im Dezember 2023 wurde das modernisierte Zwischengeschoss eröffnet und am 20. September 2024 die Gesamtfertigstellung gefeiert.
-
-### Ehemalige Linien
 
 #### U1 (1980)
 
@@ -515,8 +511,6 @@ Im regulären Fahrplanbetrieb wird die Strecke nicht mit Fahrgästen befahren, l
 
 Der Ausbau des Münchner U-Bahn-Netzes war mit Eröffnung der U3 nach Moosach im Dezember 2010 vorerst zur Ruhe gekommen, erst 2022 erfolgte wieder ein Baubeginn (für den Streckenabschnitt Laimer Platz – Pasing). In der Zwischenzeit gab es zum ersten Mal seit 1965 keine im Bau befindlichen U-Bahn-Abschnitte mehr in München.
 
-### Im Bau
-
 #### U5 West: Laimer Platz – Pasing
 
 Die Strecke befand sich schon vor 2005 im Planfeststellungsverfahren, wurde jedoch zunächst nicht weiter verfolgt. Für das Jahr 2008 waren vorbereitende Maßnahmen im Haushaltsplan vorgesehen. Da parallel zur geplanten Strecke bereits die S-Bahn sowie die Tram 19 fahren, war der verkehrliche Nutzen umstritten. Einige Fahrgastverbände forderten eine Führung der Verlängerung mit fünf bis sechs Stationen über die Blumenau, um ein Gebiet zu erschließen, das weiter von der S-Bahn entfernt ist und seinerzeit (und mit Stand Mitte 2022 immer noch) nur von Buslinien bedient wurde.
@@ -542,8 +536,6 @@ Ab November 2022 fanden die ersten Arbeiten zum Erdaushub statt. Der Baubeginn (
 #### U9-Entlastungsspange: Vorhaltebauwerk Hauptbahnhof
 
 Die geplante U9-Entlastungsspange soll an den Münchner Hauptbahnhof angebunden sein. Um dies später zu ermöglichen, muss im Rahmen der Sanierung des Münchner Hauptbahnhofs und der Bauarbeiten zur 2. Münchner S-Bahn-Stammstrecke ein Vorhaltekörper für den zukünftigen U9-Bahnhof errichtet werden. Die Stadt München investiert hierfür über 500 Millionen Euro.
-
-### In Planung
 
 #### Betriebshof Süd
 
@@ -581,8 +573,6 @@ Eine gemeinsame Studie der MVG und des MVV aus dem Jahr 2014 kommt zum Ergebnis,
 Mit Planungsstand Oktober 2024 sollen fünf neue U-Bahnhöfe entstehen und zwei Bahnhöfe als zukünftige Kreuzungsbahnhöfe erheblich baulich überarbeitet werden, welche durch zwei U-Bahnlinien bedient werden. Die U9 – welche die derzeitige U6 ersetzen soll – soll auf der Trasse der U6 von Martinsried bis zum Harras fahren und dann über die neue U9-Entlastungsspange die neuen U-Bahnhöfe *Impler-/Poccistraße* (mit Umsteigemöglichkeit zur U3), *Esperantoplatz*, *Hauptbahnhof*, *Pinakotheken* und *Elisabethplatz* bedienen, bevor sie auf den Kreuzungsbahnhof *Münchner Freiheit* wieder mit der U3 zusammentrifft und von dort die Trasse der U6 bis nach Garching-Forschungszentrum bedient. Eine neue U29 soll vom Klinikum Großhadern bis zum *Hauptbahnhof* parallel zur U9 verkehren und von dort zum neuen Kreuzungsbahnhof *Theresienstraße* verkehren, wo sie auf die U2 trifft und mit dieser parallel Richtung Norden verkehrt.
 
 Mit Stand Oktober 2022 ist eine Realisierung wegen der zu dem Zeitpunkt auf vier Milliarden Euro geschätzten Baukosten und deren unklarer Finanzierung nach wie vor nicht gesichert. Die Stadt München hat aber entschieden ein Vorhaltebauwerk für den zukünftigen neuen U9-Bahnhof *Hauptbahnhof* mit über 500 Millionen Euro zu finanzieren. Am 17. April 2024 wurden die dafür notwendigen vertraglichen Vereinbarungen zwischen Landeshauptstadt München, der Deutschen Bahn und dem Freistaat Bayern getroffen. Am 18. September 2024 wurde zudem vom zuständigen Ausschuss des Stadtrats ein Bebauungsplan als vorbehaltliche Satzung zur Sicherung des neuen U9-Bahnhofs *Impler-/Poccistraße* erlassen.
-
-### In Untersuchung
 
 #### U1 Nord: Olympia-Einkaufszentrum – Lerchenauer See
 
@@ -684,8 +674,6 @@ Ebenso in der Diskussion war eine Ringlinie („Ringbahn“) entlang bestehender
 #### Tangente Westfriedhof – Hohenzollernplatz
 
 Die zeitweise vom Bezirksausschuss Schwabing-West sowie von der FDP-Stadtratsfraktion geforderte U-Bahn-Querverbindung zwischen den bestehenden Linien U1 und U2 (vorgeschlagen war eine Verbindung zwischen den Bahnhöfen Westfriedhof und Hohenzollernplatz) wurde nicht in den Nahverkehrsplan aufgenommen, da eine zusätzliche Linie dort nicht in das U-Bahn-Netz integriert werden kann. Zudem hält die Münchner Verkehrsgesellschaft die bestehenden Tangentialverbindungen (Straßenbahnlinie 12 und Buslinie 53) für ausreichend.
-
-## Sonstige Einrichtungen
 
 ### Mobilfunkempfang
 

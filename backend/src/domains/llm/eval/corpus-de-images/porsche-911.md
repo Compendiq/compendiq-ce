@@ -208,8 +208,6 @@ Im Juni 2017 präsentierte Porsche den 911 GT2 RS mit einer Leistung von 515 kW 
 
 Der Porsche 992 bildet die 8. Generation des Porsche 911. Das Modell wurde am Vorabend der LA Auto Show am 27. November 2018 in Los Angeles vorgestellt. Eine Modellpflege folgte im Mai 2024.
 
-## Tabellarische Darstellung der Entwicklung des 911
-
 ## Stückzahlen
 
 Der Porsche 911 wurde von 1963 bis 2009 je Modellreihe in folgenden Stückzahlen produziert.

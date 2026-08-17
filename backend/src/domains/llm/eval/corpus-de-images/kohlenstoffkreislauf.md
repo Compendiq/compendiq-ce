@@ -74,8 +74,6 @@ Auf die Landlebewesen entfallen 700 GtC, auf die marinen Lebensformen 3 GtC. Ins
 Als Pedosphäre bezeichnet man die oberste Schicht der globalen Landflächen. Sie besteht aus Verwitterungsprodukten der Gesteine und aus organischem Material, dem Humus. Zusammen mit Wasser und Luft bietet sie Raum für verschiedene Lebensformen. Funktionell steht sie mit allen anderen Geosphären in Verbindung. Im Boden befindet sich mindestens die vierfache Menge Kohlenstoff wie in der Atmosphäre. Das Institut für Agrarwissenschaften – Fachbereich Bodenkunde – geht von einem globalen Kohlenstoffgehalt der Pedosphäre von 2500 Gt aus. Allein der weltweite C-Gehalt der Moore beträgt 900 Gt Da sich ein großer Teil des im Boden gespeicherten Kohlenstoffs in Permafrostböden befindet, wird mit Fortschreiten der globalen Erwärmung und Abtauen der Permafrostböden ein Teil davon freigesetzt werden. Doch auch aus Böden in anderen Erdregionen können durch die globale Erwärmung zunehmend gewaltige Mengen Kohlenstoff freigesetzt werden.
 Der Boden Deutschlands (0–90 cm Tiefe) enthält 5 Gt C, die landwirtschaftlich genutzten Böden 2,4 Gt C und die Böden der Wälder 1,3 Gt C. Die größten Kohlenstoffvorräte befinden dabei sich in Böden unter Dauergrünland (181 Tonnen Kohlenstoff pro Hektar). Deutlich weniger ist es beim Waldboden (100tC/ha), dicht gefolgt vom Ackerboden (95tC/ha).
 
-## Vorgänge innerhalb der Systeme
-
 ### Atmosphäre
 
 Innerhalb der Troposphäre (5 km Höhe an den Polen, 15 km am Äquator) finden intensive physikalische Transportvorgänge statt. Durch die vertikalen und horizontalen Luftbewegungen kommt es zu einer beständigen Durchmischung. Die CO2-Konzentration in den unteren Schichten der Atmosphäre ist daher überall gleich.
@@ -111,8 +109,6 @@ Beides sind klassische Kippelemente im Erdklimasystem.
 Zwischen den verschiedenen Formen des anorganischen Kohlenstoffs besteht ein chemisches Gleichgewicht (die Prozentangaben gelten für die Bedingungen T = 10 °C, pH = 8, Salzgehalt 34,3 ‰ – so wie sie zum Beispiel in weiten Bereichen der Ozeane herrschen):
 
 Wenn die CO2-Konzentration der Atmosphäre geringfügig steigt, nimmt die Hydrosphäre vermehrt Kohlenstoffdioxid auf, um das relative Gleichgewicht wiederherzustellen. Größere Änderungen von Konzentrationen ändern aber die Gleichgewichtslage, wenn die Grenzen der Aufnahmekapazitäten erreicht werden. Änderungen der Bedingungen ändern ebenfalls die Gleichgewichtslage, etwa wenn die Aufnahmekapazitätsgrenze von CO2 im Wasser sinkt. Eine globale Erwärmung etwa verschiebt das Gleichgewicht nach links.
-
-### Lithosphäre
 
 #### Sedimentation
 
@@ -219,10 +215,6 @@ Auf rasch ablaufende biochemische Prozesse folgen langfristige geologische Proze
 
 :   Siehe auch: Kohle #Entstehung
 
-## Eingriffe des Menschen in den Kohlenstoffkreislauf
-
-### Erhöhung der Kohlenstoffdioxid-Konzentration der Atmosphäre
-
 #### Historische Betrachtung
 
 ![](images/kohlenstoffkreislauf__3.png)
@@ -241,8 +233,6 @@ Die im Folgenden aufgeführten anthropogenen Emissionen werden zum Teil von den 
 
 Siehe auch: Liste der größten Kohlenstoffdioxidemittenten
 
-### Folgen der Eingriffe des Menschen in den Kohlenstoffkreislauf
-
 #### Erhöhung der Durchschnittstemperaturen in der Atmosphäre
 
 Im Bereich der Naturwissenschaften besteht weitgehender Konsens, dass der derzeitige Anstieg der Durchschnittstemperaturen auf die direkte oder indirekte menschengemachte Emission von kohlenstoffhaltigen Treibhausgasen zurückzuführen ist.
@@ -259,8 +249,6 @@ Betrachtet man die Photosynthese der marinen Ökosysteme, so steht zu befürchte
 #### Versauerung der Meere
 
 Die Erhöhung der Kohlenstoffdioxidkonzentration in der Atmosphäre führt zu einer vermehrten Lösung von CO2 im Meerwasser. Durch die Bildung von Kohlensäure wird der pH-Wert des Wassers erniedrigt (saurer). In den letzten 200 Jahren ist ungefähr die Hälfte des durch Verbrennung von fossilem Kohlenstoff freigesetzten Kohlendioxids (525 Gt CO2) von den Meeren aufgenommen worden. Der pH-Wert ist dabei um 0,1 gefallen. Eine zunehmende Versauerung der Ozeane bedroht eine Vielzahl von Meeresorganismen – angefangen von mikroskopischen Algen über Muscheln bis hin zu den Korallenriffen. Kalkbildende Arten, besonders jene, die die Kalkart Aragonit produzieren, werden durch die Versauerung gefährdet. Aragonit löst sich besonders leicht in saurem Wasser. Die Versauerung könnte den Kohlenstofftransport von den oberen Schichten in die Tiefsee vermindern. Die Versauerung könnte sich zu einem der Kippelemente im Erdklimasystem entwickeln.
-
-### Schätzungen zu neuen möglichen Kohlenstoff-Senken
 
 #### Technische Lösungen
 

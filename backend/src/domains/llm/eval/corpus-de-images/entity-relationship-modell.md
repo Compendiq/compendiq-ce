@@ -105,8 +105,6 @@ und in anderer Leserichtung:
 
 :   Fußballmannschaft *besteht-aus* (mehreren, N) Fußballspielern.
 
-## Inhalte des ER-Modells
-
 ### ER-Diagramme
 
 Die grafische Darstellung von Entitäts- und Beziehungstypen (stellvertretend und durch Typisierung abgeleitet aus den im gegebenen Kontext identifizierten Entitäten und Beziehungen) wird *Entity-Relationship-Diagramm (ERD)* oder *ER-Diagramm* genannt. Dies ist eine Übersicht/Grafik über alle relevanten Entitäten und deren Zusammenhänge, wodurch u. U. ein komplex erscheinendes, netzartiges Gebilde entsteht. Bei sehr großen Modellen werden aus Gründen der Übersichtlichkeit i. d. R. *Teilmodelle* (Ausschnitte aus dem Gesamtmodell) dargestellt. Umgangssprachlich werden ERDs z. T. vereinfachend „Datenmodell“ genannt; im weiteren Sinn versteht man aber hierunter auch die textlichen Beschreibungen.

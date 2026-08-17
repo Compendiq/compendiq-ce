@@ -14,8 +14,6 @@ Die Golden Gate Bridge war bei ihrer Eröffnung mit einer Hauptstützweite von 1
 
 Größenvergleich bekannter Brücken **→** Zur **interaktiven** Version **←**
 
-## Bau der Brücke
-
 ### Vorgeschichte
 
 Erste Pläne zur Überbrückung der Bucht stammten schon aus dem Jahr 1872, aber die offensichtlichen Schwierigkeiten – offenes Meer, tiefes Wasser, starke Gezeitenströmungen, Nebel, Stürme und Erdbebenrisiken – führten zu Bedenken, ob der Brückenbau möglich und finanzierbar sei.

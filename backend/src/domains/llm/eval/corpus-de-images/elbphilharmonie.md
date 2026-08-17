@@ -176,8 +176,6 @@ Der Youtuber und Mountainbiker Fabian Wibmer absolvierte 2025 einen Stunt auf de
 
 Im April 2026 landete die Elbphilharmonie auf der Liste der „Most Controversial Buildings of All Time“ der New York Times. Das Konzerthaus wurde als Beispiel dafür genannt, wie Kontroversen altern und aus Skandalbauten Publikumsmagneten werden können: „Once it was finished, the public perception completely changed. Everyone loves it“.
 
-## Geschichte
-
 ### Vorgeschichte des Standortes
 
 Die Elbphilharmonie steht auf dem ehemaligen *Kaiserhöft*, der im Zuge der Hafenbaumaßnahmen zum offenen Tidehafen 1865 durch die Begradigung der *Johns’schen Ecke* entstand. Auf dieser Kaispitze zwischen Sandtorhafen und Grasbrookhafen errichtete der damalige Wasserbaudirektor Johannes Dalmann 1875 den *Kaiserspeicher* am Kaiserkai, der 1893 in Dalmannkai umbenannt wurde. Der Westturm mit seinem Zeitball war lange das Wahrzeichen des Hafens. Im Zweiten Weltkrieg wurde das Hauptgebäude schwer beschädigt, nur der Turm blieb intakt.
@@ -272,8 +270,6 @@ Für den motorisierten Individualverkehr stehen im Parkhaus der Elbphilharmonie 
 Darüber hinaus finden regelmäßig von Kampf der Künste organisierte Poetry Slams in der Elbphilharmonie statt.
 
 Die Blaskapelle Meute von Bandchef Thomas Burhorn drehte ihr Musikvideo zum Song *Slip*, der sich auf dem Album *Puls* von 2020 befindet, auf dem Dach der Elbphilharmonie.
-
-## Bauphase
 
 ### Verträge
 

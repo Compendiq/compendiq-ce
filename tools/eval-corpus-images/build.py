@@ -420,20 +420,33 @@ def caption_text(figure: Tag) -> str:
 
 
 def hoist_boxed_figures(root: Tag) -> None:
-    """Lift captioned figures out of infoboxes and tables, to the top.
+    """Lift captioned figures out of the boxes that are about to be dropped.
 
     The lead photograph of a building, a train or an aircraft lives in the
     infobox on de.wikipedia, and the infobox is dropped as chrome — so a corpus
     built without this had a `photo` slice of interior shots, engravings and
-    floor plans, and no cathedral. Hoisting rather than keeping the box is the
-    point: the table around it is navigation, the picture is content, and the
-    top of the page is where a hero image belongs on a Confluence page anyway.
+    floor plans, and no cathedral.
+
+    WHERE it lifts them to is two cases, not one. An **infobox** figure has no
+    position in the prose to preserve, so it goes to the top, which is where a
+    hero image belongs on a Confluence page anyway. A figure in an **ordinary
+    content table** does have one, and moving it to the top destroys it: the
+    Nassi-Shneiderman article keeps each notation symbol in a table under its
+    own heading, and hoisting all three to the front left the page opening on
+    three stacked diagrams above two headings with nothing under them. Those go
+    immediately before their table instead, so the figure stays under the
+    heading that introduces it.
     """
     for container in root.select("table, .infobox, .vertical-navbox"):
+        classes = container.get("class") or []
+        to_top = container.name != "table" or "infobox" in classes or "vertical-navbox" in classes
         for figure in reversed(container.select("figure, .thumb")):
             if len(caption_text(figure)) < 12:
                 continue
-            root.insert(0, figure.extract())
+            if to_top:
+                root.insert(0, figure.extract())
+            else:
+                container.insert_before(figure.extract())
 
 
 @dataclass
@@ -596,7 +609,31 @@ def to_markdown(root: Tag) -> str:
     md = re.sub(r"\n{3,}", "\n\n", md)
     # markdownify emits empty emphasis for the stripped inline markup.
     md = re.sub(r"^\s*\*\*\s*$", "", md, flags=re.M)
-    return md.strip()
+    return drop_empty_headings(md).strip()
+
+
+def drop_empty_headings(md: str) -> str:
+    """Remove headings that have nothing under them.
+
+    Tables are stripped, so a section whose entire content was a table becomes
+    a heading followed by the next heading. That is not prose, it chunks badly,
+    and it puts a subject line into the index with no text to support it. An
+    image placeholder counts as content — the replacement happens after this,
+    so a section carrying only a figure keeps its heading.
+    """
+    heading = re.compile(r"^#{1,6} ")
+    lines = md.split("\n")
+    out: list[str] = []
+    for index, line in enumerate(lines):
+        if heading.match(line):
+            # Empty means "nothing before the NEXT heading", which also covers a
+            # trailing heading at the end of the document.
+            rest = lines[index + 1 :]
+            stop = next((i for i, other in enumerate(rest) if heading.match(other)), len(rest))
+            if not any(other.strip() for other in rest[:stop]):
+                continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def slugify(title: str) -> str:

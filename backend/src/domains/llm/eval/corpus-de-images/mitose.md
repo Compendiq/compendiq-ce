@@ -60,8 +60,6 @@ Eine Zellkernteilung findet überhaupt nur in Zellen von Lebewesen der Domäne d
 
 - Eine *geschlossene extranukleäre Pleuromitose* tritt bei Trichomonaden und bei Dinoflagellaten auf.
 
-## Phasen einer Mitose
-
 ### Übersicht
 
 Die Mitose wird in mehrere Phasen eingeteilt, die fließend ineinander übergehen. Während in der klassischen deutschen Literatur oft vier Hauptphasen der Mitose unterschieden werden, wobei auf die Prophase die Metaphase folgt, wird besonders in der englischsprachigen Literatur die Prometaphase als dazwischenliegende eigenständige Phase betrachtet, womit fünf Phasen der Mitose voneinander abgesetzt sind. In dieser Prometaphase zerfällt die Kernhülle für eine offene Mitose bei Zellen von Tieren und Pflanzen.
@@ -140,8 +138,6 @@ Die gleichzeitige Verlängerung der polaren Mikrotubuli hat den Effekt, dass die
 In der Telophase (altgriechisch τέλος telos ‚Ende‘) erreichen die Tochterchromosomen schließlich die Spindelpole und die immer weiter verkürzten Kinetochorfasern zerfallen weitgehend. Die polaren Fasern können sich zunächst noch weiter verlängern, bis die Pole ihren maximalen Abstand erreicht haben, dann löst sich der Spindelapparat auf. Größtenteils aus Fragmenten der alten Kernmembran wird nun die Kernhülle der Tochterkerne aufgebaut. Die Chromosomen dekondensieren wieder. Auch die Nukleoli erscheinen wieder als Körperchen im jeweiligen Kern (Nukleus).
 
 Die Teilung des Zytoplasmas und damit der Zelle wird durch die Zytokinese beschrieben.
-
-## Mitosephase im Zellzyklus
 
 ### Zytokinese
 

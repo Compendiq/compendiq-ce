@@ -58,8 +58,6 @@ Der Ertrag pro Jahr wird in Wattstunden (Wh) oder Kilowattstunden (kWh) gemessen
 
 Der spezifische Ertrag ist als Wattstunden pro installierter Nennleistung (Wh/Wp bzw. kWh/kWp) pro Zeitabschnitt definiert und erlaubt den einfachen Vergleich von Anlagen unterschiedlicher Größe. In Deutschland kann man bei einer gut ausgerichteten fest installierten Anlage pro Modulfläche mit 1 kWp mit einem Jahresertrag von ca. 1.000 kWh rechnen, wobei die Werte zwischen etwa 900 kWh in Norddeutschland und 1150 kWh in Süddeutschland liegen.
 
-### Montagesysteme
-
 #### Aufdach-/Indach-Montage
 
 Bei den Montagesystemen wird zwischen Aufdach-Systemen und Indach-Systemen unterschieden. Bei einem Aufdach-System für geneigte Hausdächer wird die Photovoltaik-Anlage mit Hilfe eines Montagegestells auf dem Dach befestigt. Diese Art der Montage wird am häufigsten gewählt, da sie für bestehende Dächer am einfachsten umsetzbar ist.
@@ -103,8 +101,6 @@ Der Großteil der Photovoltaikanlagen weltweit basiert auf Siliziumtechnik. Dane
 Als sehr aussichtsreich wurden aufgrund der günstigen Herstellung die Entwicklung von Solarmodulen auf Basis von Verbindungen (meist Halogeniden) mit Perowskitstruktur beurteilt. Die Zellen können deutlich dünner als Siliziumzellen gebaut werden. Problematisch waren um 2014 jedoch die geringe Haltbarkeit und der Bleigehalt.
 
 Ein weiteres Forschungsziel ist die Entwicklung organischer Solarzellen (*Organische Photovoltaik* (OPV)). Dem Fraunhofer-Institut für Solare Energiesysteme ISE in Freiburg gelang es 2014 zusammen mit Partnern, eine günstige organische Solarzelle auf flexibler Folie herzustellen.
-
-## Nutzung
 
 ### Weltweites Nutzungspotenzial
 
@@ -208,8 +204,6 @@ Um einen Ausfall großer Stromerzeuger abzusichern, müssen Kraftwerksbetreiber 
 
 Während der Kältewelle in Europa 2012 wirkte die Photovoltaik netzunterstützend. Im Januar/Februar 2012 speiste sie zur Mittagsspitze zwischen 1,3 und 10 GW Leistung ein. Aufgrund des winterbedingt hohen Stromverbrauchs musste Frankreich ca. 7–8 % seines Strombedarfs importieren, während Deutschland exportierte.
 
-## Wirtschaftlichkeit
-
 ### Volkswirtschaftliche Betrachtung
 
 Solarstrom verursacht geringere Umweltschäden als Energie aus fossilen Energieträgern oder Kernkraft und senkt somit die externen Kosten der Energieerzeugung (s. a. externe Kosten bei Stromgestehungskosten).
@@ -219,8 +213,6 @@ Noch im Jahre 2011 betrugen die Kosten der Vermeidung von CO2-Emissionen durch P
 Wie viele CO2-Emissionen durch Photovoltaik tatsächlich vermieden werden, hängt dabei auch von der Koordination des EEGs mit dem EU-Emissionshandel ab; außerdem von der für die Herstellung der Module verwendeten Energieform.
 
 Siehe auch: Abschnitt „Interaktion mit Emissionshandel“ unter „Erneuerbare-Energien-Gesetz“
-
-### Betriebswirtschaftliche Betrachtung
 
 #### Anschaffungskosten und Amortisationszeit
 
@@ -259,8 +251,6 @@ Als günstigster Solarpark weltweit galt bis Anfang 2016 eine Anlage in Dubai, d
 Die Modulpreise sind in den letzten Jahrzehnten stark gesunken, getrieben durch Skaleneffekte, technologische Entwicklungen, Normalisierung des Solarsiliziumpreises und durch den Aufbau von Überkapazitäten und Konkurrenzdruck bei den Herstellern. Lag der Modulpreis 1975 noch bei über 125 $ pro Watt, waren es 2022 nur noch 0,26 $/Watt (siehe Grafik rechts). Insbesondere seit 2008 ist eine starke Verbilligung feststellbar, die weiter anhält.
 
 Infolge der Marktankurbelung durch Einspeisevergütungen in Deutschland, Italien und einer Reihe weiterer Staaten kam es zu einem drastischen Kostenrückgang bei den Modulpreisen, die von 6 bis 7 USD/Watt im Jahr 2000 auf 4 $/Watt im Jahr 2006 und 0,4 $/Watt im Jahr 2016 zurückgingen. 2018 lagen die Modulpreise im globalen Schnitt bereits unter 0,25 $/Watt. Historisch betrachtet fielen die Modulpreise über die vergangenen 40 Jahre um 22,5 % pro Verdopplung der installierten Leistung. Die Großhandelspreise für Mainstream Photovoltaikmodule lagen im November 2024 bei 0,10 €/Watt.
-
-## Umweltauswirkungen
 
 ### Produktion
 

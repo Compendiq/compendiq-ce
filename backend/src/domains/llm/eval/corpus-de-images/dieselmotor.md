@@ -4,8 +4,6 @@ Ein **Dieselmotor** ist ein Verbrennungsmotor mit Kompressionszündung (Selbstz�
 
 Erfinder des Dieselmotors ist der deutsche Ingenieur Rudolf Diesel, der seine Überlegungen zu einem Motor mit besonders hohem Wirkungsgrad erstmals 1893 im Werk *Theorie und Konstruktion eines rationellen Wärmemotors* veröffentlichte. In den Jahren nach 1893 gelang es ihm in einem Labor der *Maschinenfabrik Augsburg* (heute MAN), allerdings nur durch Abweichen von dem in seinem Buch beschriebenen Konzept, einen solchen Motor zu bauen. Durch seine in vielen Ländern angemeldeten Patente und seine rege Öffentlichkeitsarbeit wurde er zum Namensgeber des Motors sowie des zugehörigen Dieselkraftstoffs, eines Mitteldestillats.
 
-## Technische Funktion
-
 ### Prinzip
 
 ![](images/dieselmotor__1.png)
@@ -128,8 +126,6 @@ Um die gleiche Leistung zu erreichen im Vergleich zu einem Ottomotor, muss ein D
 
 Ein Ottomotor liefert bei einer Drehzahl  von 6000 min−1 (100 s−1) ein Drehmoment  von 160 Nm, was einer Leistung  von ca. 100 kW entspricht. Ein gewöhnlicher Dieselmotor kann diese Drehzahl nicht erreichen, weswegen sein Drehmoment größer sein muss, um dieselbe Leistung zu erzielen. Um bei einer Drehzahl  von 3000 min−1 (50 s−1) eine Leistung  von ebenfalls 100 kW zu erzielen, muss das Drehmoment  320 Nm betragen.
 
-### Vor- und Nachteile des Dieselmotors
-
 #### Vorteile des Dieselmotors
 
 Der Dieselmotor hat aufgrund der hohen Verdichtung (Expansionsgrad) einen guten Wirkungsgrad. Durch die geringere Drosselung entstehen beim Dieselmotor geringere Ladungswechselverluste und daher insbesondere im Teillastbereich ein geringerer spezifischer Kraftstoffverbrauch. Das macht den Dieselmotor besonders wirtschaftlich. Darüber hinaus sind die eingesetzten Kraftstoffe einfacher herzustellen und weniger gefährlich, da sie langsamer verdampfen (der Flammpunkt von Dieselkraftstoff beträgt mindestens , der von Benzin ). Dieselmotoren eignen sich gut für Turboaufladung auch im niedrigen Drehzahlbereich, da der Kraftstoff wegen der inneren Gemischbildung beim Verdichtungshub nicht unkontrolliert zünden kann und das abgegebene Drehmoment durch eine Änderung der Zusammensetzung des Kraftstoffluftgemisches (Qualitätsänderung), aber nicht dessen Menge eingestellt wird.
@@ -161,8 +157,6 @@ Um den Anlasswiderstand zu verringern, können bei einigen Motoren die Ventilste
 Da keine Zündanlage und (bei Motoren mit mechanischer Einspritzpumpe) kein elektrisches System für das Aufrechterhalten des Motorlaufs benötigt werden, kann bei solchen Motoren das Abschalten der Elektrik auch den Motor nicht stoppen. Bei älteren Fahrzeugen mit Dieselmotor stoppt daher mitunter selbst das Abziehen des Schlüssels die Maschine nicht.
 
 Zum Stoppen des Motors wird entweder eine Motorstaubremse bis zum Absterben des Motors betätigt oder die Kraftstoffzufuhr zu den Einspritzdüsen mittels einer Ventilklappe unterbrochen. Bei modernen Fahrzeugmotoren wird das elektronisch geregelt, sodass sich das Verhalten des „Zündschlüssels“ eines modernen Diesel-Pkw nicht von demjenigen eines Pkw mit Ottomotor unterscheidet.
-
-## Besonderheiten bei Motoren für den Antrieb von Kraftfahrzeugen
 
 ### Drosselklappen
 
@@ -206,8 +200,6 @@ Allerdings haben die gleichen Entwicklungen bei Otto-Motoren stattgefunden, soda
 Bei Lkws liegen die Literleistungen deutlich darunter, die Motoren sind wesentlich schwerer, da hier Wirkungsgrad und Langlebigkeit deutlich mehr im Vordergrund stehen. Noch stärker ist dies bei stationären Dieselgeneratoren und bei großen Schiffsmotoren ausgeprägt, bei denen nur Langlebigkeit und Wirkungsgrad zählen. So hat der oben erwähnte Schiffsdiesel gerade einmal eine Literleistung von 3,3 kW und ein Leistungsgewicht von 36 kW pro Tonne.
 
 Tatsächlich konnte sich trotz jahrzehntelanger Parallelentwicklung im Pkw-Bau der Dieselmotor nicht gegen den Ottomotor durchsetzen, auch nicht in Ländern mit relativ hohen Kraftstoffpreisen. Seit 2015 gerät der Dieselmotor im Pkw-Bereich aus einem anderen Grund, dem sogenannten Abgasskandal, zunehmend ins Hintertreffen.
-
-## Geschichtliche Entwicklung
 
 ### Diesels Theorie
 

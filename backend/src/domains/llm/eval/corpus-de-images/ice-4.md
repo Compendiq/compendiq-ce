@@ -122,8 +122,6 @@ Die Bodenwannen erhalten eine Schlagschutzbeschichtung gegen Schotterflug.
 
 Die Führerstandsenden der Steuerwagen erhalten wie alle Triebzüge des Hochgeschwindigkeitsverkehrs Scharfenbergkupplungen des Typs 10, die Endwagen 6812.2 und 7812.2 für die siebenteiligen Einheiten wegen des vorgesehenen Einsatzes in Mehrfachtraktion zusätzlich Kontaktaufsätze.
 
-## Geschichte
-
 ### Ausschreibung
 
 Die Ausschreibung der ICE-4-Züge erfolgte unter dem Arbeitstitel *ICx* ab Sommer 2008. Nach eigenen Angaben handelte es sich dabei um die bislang größte Ausschreibung der Bahn. Die Planungen aus dem Jahr 2008 sahen vor, dass mit den neuen Triebzügen bis etwa 2020 die Garnituren der Intercity/Eurocity-Züge ersetzt werden, bis 2025 die Fahrzeuge der ICE 1 und 2. Später könnten auch die ICE 3 optional durch ICE-4-Züge ersetzt werden. Dem rund 300-seitigen, technisch-funktionalen Lastenheft der Ausschreibung lagen dabei rund 8900 Einzelanforderungen zu Grunde. Diese wurden aus rund 900 Gesichtspunkten eines betrieblich-kommerziellen Lastenheftes des zukünftigen Betreibers abgeleitet, wobei es hier beispielsweise um Einsatz, Aussehen, Sitzplätze, Komfort, aber auch um die Instandhaltung geht. Die detaillierten, funktionalen Vorgaben sollen Qualität gewährleisten, für die Umsetzung dieser Vorgaben ist die herstellende Industrie verantwortlich. 27 Prozent der Kriterien sind dabei zwingend zu erfüllen, 22 Prozent sind aus Sicht des Bestellers wünschenswert, drei Prozent sind optional vorgesehen. In das Konzept flossen Fahrplankonzepte und Nachfragekonzepte für die Jahre 2015, 2020 und 2025 ein. Für die ICE-Nachfolgerzüge war in der Ausschreibung zunächst noch eine Höchstgeschwindigkeit von 250 km/h vorgesehen, zudem war eine Höchstgeschwindigkeit von 280 km/h als Option anzubieten. Nach dem Planungsstand von 2009 sollten ab 2012 zwei Vorserienzüge fahrplanmäßig im Testbetrieb eingesetzt werden.
@@ -301,12 +299,6 @@ Die schwere Instandhaltung soll in dem im Januar 2024 eröffneten Werk in Cottbu
 Als erste ICE-Baureihe war die Baureihe ICE 4 ab Werk mit WLAN ausgerüstet.
 
 Einige Triebzüge (9001, 9008, 9009, 9012, 9014, 9024, 9025, 9026, 9028, 9031, 9034, 9041, 9045, 9047, 9050) trugen zwischen 2018 und 2022 grüne Zierstreifen mit der Aufschrift „Deutschlands schnellster Klimaschützer“ an den Endwagen. Ab Frühjahr 2022 wurden alle grünen Zierstreifen und Klimaschutz-Schriftzüge bei Instandhaltungsarbeiten wieder durch normale rote Streifen ersetzt, eine Erneuerung der grünen Beklebung fand nicht mehr statt.
-
-### Baureihe 412.0
-
-### Baureihe 412.2
-
-### Baureihe 412.4
 
 ## Auszeichnungen
 

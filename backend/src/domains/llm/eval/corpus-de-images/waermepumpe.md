@@ -152,8 +152,6 @@ so liegt der COPideal niedriger. Die Ursache ist, dass auch der idealisierte Wä
 
 Abbildung 6 zeigt den Prozess im T-s-Diagramm. Theoretisch wäre es möglich, die Arbeitsfähigkeit des Kondensates beim Entspannen (Drossel) auf den niedrigeren Druck durch eine Kraftmaschine, beispielsweise eine Turbine, zu nutzen, wie es der reversible Carnot-Prozess beschreibt. Doch dabei würde die Flüssigkeit teilweise verdampfen. Die Nutzung der Entspannungsenthalpie ist technisch nur sehr aufwändig zu realisieren und wird daher nicht angewendet. Deshalb verwendet man der Einfachheit halber hier eine Drossel (Entspannung mit konstanter Totalenthalpie). Insofern liegt der COP des idealen Wärmepumpenprozesses mit Drosselung niedriger als der Carnot-Faktor.
 
-### Thermodynamische Betrachtung
-
 #### Leistungszahl
 
 → *Hauptartikel: Leistungszahl*
@@ -174,8 +172,6 @@ Der Gütegrad  einer Wärmepumpe ist die tatsächliche Leistungszahl bezogen auf
 
 Praktisch werden Wärmepumpengütegrade  im Bereich 0,45 bis 0,55 erreicht.
 
-## Komponenten
-
 ### Verdichter
 
 Die in der Tabelle aufgeführten Verdichterbauarten sind unabhängig von dem Einsatz als Bauteil in einer Wärmepumpe oder Kälteanlage. Die Bauart des Verdichters gibt die Ausführung der Abdichtung des Verdichtergehäuses zur Umgebung an. Der hermetische Verdichter hat keine lösbaren Verbindungen; der Motor liegt im Verdichtergehäuse und im Kältemittel. Der halbhermetische Verdichter hat ein abgedichtetes Maschinengehäuse, in dem der Motor eingebaut ist; das Gehäuse hat aber keine dynamisch belastete Wellendurchführung nach außen. Der offene Verdichter hat eine Wellendurchführung und ist über eine Kupplung an den Motor angeflanscht, der ein separates Bauteil ist.
@@ -183,8 +179,6 @@ Die in der Tabelle aufgeführten Verdichterbauarten sind unabhängig von dem Ein
 ![](images/waermepumpe__2.png)
 
 Der Scrollverdichter hat sich als Verdichter in kleineren und mittleren Wärmepumpen etabliert; vorteilhaft sind die relativ einfache Bauform und der leise Betrieb, da nur eine Drehbewegung erfolgt und keine translatorische Bewegung auftritt. Er besitzt keine Ventile und hat im Vergleich zum Kolbenverdichter einen höheren isentropischen und volumetrischen Wirkungsgrad. Verdichter und Motor sind in einem hermetisch geschlossenen Gehäuse eingebaut und der Motor wird in der Regel mit einem Wechselrichter betrieben, um die Drehzahl an den Wärmebedarf anzupassen. Der Scrollverdichter hat bauartbedingt ein festes Verdichtungsverhältnis. Es kann daher eine unzureichende Verdichtung auftreten, so dass keine Förderung des Fluides möglich ist. Eine zu hohe Verdichtung verringert den Wirkungsgrad. Um diese zu vermeiden, werden dynamische Auslassventile verwendet.
-
-### Verdampfer
 
 #### Lufterwärmter Verdampfer
 
@@ -207,8 +201,6 @@ Der Kehrwert des Carnotwirkungsgrades kann bei realen Kreisprozessen für den CO
 - Temperaturdifferenz der Medien im Verflüssiger (Verflüssigungstemperatur des Kältemittels > Temperatur der Wärmesenke)
 - Temperaturdifferenz der Medien im Verdampfer (Verdampfungstemperatur des Kältemittels < Temperatur der Wärmequelle)
 - In der Regel muss das Medium der Wärmequelle mit einer Pumpe oder einem Lüfter zu den Wärmetauscherflächen des Verdampfers geleitet werden. Die elektrische Antriebsenergie muss bei dem realen Prozess berücksichtigt werden.
-
-### Maßnahmen zur Erhöhung der Effizienz
 
 #### Kältemitteleinspritzung
 
@@ -257,8 +249,6 @@ Mithilfe der JAZ lässt sich der Stromverbrauch abschätzen. An dem Beispiel ein
 
 Hinsichtlich des Kältekreislaufes und des Heizkreislaufes gibt es noch Optimierungsmöglichkeiten. Das Kältemittel kann nach der Verflüssigung bei der hohen Temperatur für die Vorwärmung des Brauchwassers bei niedrigeren Temperaturen genutzt werden. Mit dieser Maßnahme kann der COP erhöht werden, da die nutzbare Wärme zunimmt.
 Der Heizungswasserkreislauf kann mit Wärmespeichern ausgerüstet werden, damit die Wärmepumpe bei niedrigen Außentemperaturen nicht an den kältesten Tagesstunden betrieben werden muss.
-
-## Nachhaltigkeit
 
 ### Kältemittel (Arbeitsgase)
 

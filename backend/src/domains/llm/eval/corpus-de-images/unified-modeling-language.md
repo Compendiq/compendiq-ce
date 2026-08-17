@@ -183,8 +183,6 @@ UML2 setzt Zustandsautomaten in erster Linie für die Spezifikation des Verhalte
 
 Zustandsautomaten werden graphisch in Zustandsdiagrammen dargestellt. Diese sind in UML eine Variante der klassischen Statecharts.
 
-## Diagramme
-
 ### Diagrammtypen
 
 Die Diagramme in UML lassen sich in zwei Hauptgruppen aufteilen: Strukturdiagramme und Verhaltensdiagramme.

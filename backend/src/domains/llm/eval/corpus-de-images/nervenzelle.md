@@ -106,8 +106,6 @@ Je mehr Aktionspotentiale die Zelle pro Zeitspanne abfeuert, desto stärker ist 
 
 Voraussetzung für die Funktion des Neurons ist also seine Fähigkeit, einen elektrischen Impuls zu empfangen und weiterzuleiten. Dabei spielen wichtige Faktoren eine Rolle: die elektrische Erregbarkeit (den Impuls empfangen), das Ruhepotential (die Möglichkeit, ihn zu integrieren), das Aktionspotential (ihn weiterzuleiten und zu übertragen) und die Erregungsleitung (ihn zielgerichtet zu übertragen).
 
-## Unterscheidung der Nervenzellen in Bau und Funktion
-
 ### Morphologische Unterscheidung
 
 Die im Nervensystem anzutreffenden Neuronen können sich auf mehrere Weise in Aufbau und Funktion unterscheiden. Optisch lassen sie sich dabei gut durch die Art und Anzahl ihrer Fortsätze klassifizieren.
@@ -148,8 +146,6 @@ Eine weitere Möglichkeit der Unterscheidung bieten die einzelnen Funktionen der
 - Motorische Neuronen, auch als efferente Nervenzellen oder Motoneuronen bezeichnet, übermitteln die Impulse von Gehirn und Rückenmark zu den Muskeln oder Drüsen und lösen dort beispielsweise eine Kontraktion der Muskelzellen aus oder sorgen für die Absonderung von Sekreten bzw. die Ausschüttung von Hormonen.
 - Interneuronen bilden die größte Menge an Neuronen im Nervensystem und sind nicht spezifisch sensorisch oder motorisch. Sie verarbeiten Informationen in lokalen (örtlichen) Schaltkreisen, oder vermitteln Signale über weite Entfernungen zwischen verschiedenen Körperbereichen. Sie haben eine Vermittlerfunktion. Man unterscheidet hier zwischen lokalen, regionalen, segmentalen und intersegmentalen Interneuronen.
 
-## Pathologie der Nervenzelle
-
 ### Pigmentablagerungen
 
 In bestimmten Kernen des zentralen Nervensystems werden im Normalzustand Ablagerungen von Pigment innerhalb der Nervenzellen beobachtet. Besonders auffällig ist das Neuromelanin in der Substantia nigra und dem Locus caeruleus, das den Neuronen ein charakteristisches braun-schwarzes Aussehen verleiht und diese Kerngebiete bereits mit bloßem Auge erkennen lässt. Der Anteil des gelblichen Lipofuszin nimmt mit dem Alter zu und wird insbesondere im Nucleus dentatus des Kleinhirns und dem unteren Kern der Olive beobachtet. Bei bestimmten dementiellen Erkrankungen, wie dem Morbus Alzheimer werden charakteristische eosinophile Einschlusskörperchen der Nervenzellen beobachtet.
@@ -161,5 +157,3 @@ Nervengifte wirken in der Regel auf die vorhandenen Eiweißstrukturen der Zelle 
 Tetrodotoxin (TTX, Gift des Kugelfisches) blockiert Natriumkanäle. Tetraethylammonium (TEA) blockiert Kaliumkanäle.
 
 Einige bekannte Gifte sind
-
-## Beispiele spezialisierter Nervenzelltypen

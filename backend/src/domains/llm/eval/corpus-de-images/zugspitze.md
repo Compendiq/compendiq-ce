@@ -22,8 +22,6 @@ Die Zugspitze wurde erstmals 1590 namentlich erwähnt. In einer Beschreibung der
 
 Der Name der Zugspitze leitet sich vermutlich von den „Zugbahnen“ der Lawinen ab, die hier im Winter von den oberen Bereichen des Massivs ins Tal abgehen und charakteristische Lawinenüberreste mit Steinen und Geröll hinterlassen. Beim Eibsee gibt es mehrere Flurstücke mit dem gleichen Namensbezug: *Zug*, *Zuggasse*, *Zugstick*, *Zugmösel* oder *Zugwankel*. Bis ins 19. Jahrhundert war als Name *der* Zugspitz gebräuchlich. In der Franziszeischen Landesaufnahme und in einer Karte aus dem Jahr 1836 wurde daraus *die* Zugspitze.
 
-## Geographie
-
 ### Lage und Umgebung
 
 ![](images/zugspitze__2.jpg)
@@ -80,8 +78,6 @@ Im Zugspitzmassiv befinden sich zwei der vier verbliebenen deutschen Gletscher, 
 
 Der Höllentalferner liegt nordöstlich der Zugspitze in einem Kar unterhalb des Jubiläumsgrates im Süden und den Riffelwandspitzen im Westen und Norden. Er ist nach Nordosten exponiert. Das Nährgebiet wird von einer Mulde gebildet, in der sich große Lawinen-Schneemengen sammeln. Nach Süden hin schottet der Jubiläumsgrat den Gletscher vor Sonneneinstrahlung gut ab. Diese Umstände führten dazu, dass der Gletscher zwischen 1981 und 2006 nur einen relativ geringen Flächenverlust hatte. Seinen neuzeitlichen Höchststand hatte der Höllentalferner um 1820 mit einer Größe von 47 ha. Danach verlor er kontinuierlich an Fläche, bis er sich zwischen 1950 und 1981 wieder um 3,1 ha auf 30,2 ha vergrößerte. Seitdem verlor der Gletscher bis 2006 eine Fläche von 5,5 ha und war nur noch 24,7 ha groß. Sein höchster Punkt befand sich 2006 auf 2569 und sein niedrigster auf 2203 m.
 
-#### Schneeferner
-
 ##### Nördlicher Schneeferner
 
 Südwestlich der Zugspitze befindet sich zwischen *Zugspitzeck* und Schneefernerkopf der nach Osten exponierte Nördliche Schneeferner. Er ist mit einer Fläche von 27,9 ha (2013) der größte deutsche Gletscher, der jedoch Ende des 19. Jahrhunderts noch 103 ha umfasste. Um das Jahr 1820 war das komplette Zugspitzplatt vergletschert, von diesem *Plattgletscher* sind nur noch der Nördliche und der Südliche Schneeferner übrig geblieben. Grund für die relativ konstante Flächenentwicklung des nördlichen Schneeferners in den letzten Jahren ist trotz fehlenden Schattens die günstige Geländebeschaffenheit. Sie führt dazu, dass der Gletscher eher an Mächtigkeit als an Fläche verliert oder gewinnt. In der jüngeren Vergangenheit wurde der Gletscher darüber hinaus von den Skigebietsbetreibern künstlich genährt, indem große Schneemengen mit Pistenraupen auf den Gletscher geschoben wurden, um die Skisaison zu verlängern. 1993 wurde zudem begonnen, den Nördlichen Schneeferner im Sommer mit Kunststoffplanen abzudecken, um ihn vor der Sonneneinstrahlung zu schützen. Dieses Unterfangen wurde von der Bayerischen Zugspitzbahn 2013 jedoch wieder aufgegeben. Seinen letzten Hochstand hatte der Nördliche Schneeferner im Jahr 1979, als er 40,9 ha maß. Bis zum Jahr 2006 verringerte sich seine Fläche auf 30,7 ha. Der höchste Punkt lag dabei auf 2789 und der niedrigste auf 2558 m. Bis 2013 schrumpfte er weiter auf 27,9 ha, bis Ende 2025 auf 9,4 ha.
@@ -105,8 +101,6 @@ Im August 2007 wurde deshalb ein Frühwarnsystem installiert. Am Gipfel der Zugs
 Unterhalb des Zugspitzplatts haben chemische Verwitterungsvorgänge im Wettersteinkalk eine Vielzahl an Höhlen und Schächten geschaffen. In den 1930er Jahren wurde die Anzahl der Höhlen auf 300 geschätzt; erste Forschungen darin gab es 1931. Bis 1955 waren 62 Höhlen bekannt, bis 1960 wurden 47 weitere entdeckt. Größere Erkundungen fanden 1935, 1936 sowie zwischen 1955 und 1968 statt. Während einer Expedition im Jahr 1958 wurde der Finkenschacht entdeckt, die bis dahin tiefste Höhle der Zugspitze. Er ist 131 m tief, 260 m lang und trifft auf einen Wasserlauf.
 
 Die starke Verkarstung auch in höheren Regionen der Zugspitze mit Permafrostbedingungen wurde 1985 eindrücklich beim Bau des neuen Tunnels zum Zugspitzplatt bestätigt, als man auf einer Höhe von 2570 Metern beim Vortrieb im ganzen Tunnelquerschnitt über 19 Meter hinweg durch massives Eis eines Höhlensystems stieß.
-
-## Natur
 
 ### Flora
 
@@ -159,8 +153,6 @@ Von 2000 bis 2013 wurde alljährlich der Zugspitz-Extremberglauf ausgetragen. Er
 
 Ende August 2009 balancierte der Schweizer Freddy Nock auf dem Seil der Zugspitz-Gletscherbahn vom Zugspitzplatt zum Gipfel. Die 995 m lange und bis zu 56 % steile Strecke (Höhenunterschied: 348 m) legte er ungesichert in 50 min zurück. Am 20. August 2011 balancierte Nock wieder über das Seil der Zugspitz-Gletscherbahn, jedoch verzichtete er diesmal auf eine Balancierhilfe.
 
-## Alpinismus
-
 ### Erstbesteigung
 
 Bis zum Anfang des 19. Jahrhunderts galt die Zugspitze als „unersteiglich“. Die erste nachgewiesene Besteigung der Zugspitze gelang am 27. August 1820 dem Leutnant Josef Naus und dem Bergführer Johann Georg Tauschl zusammen mit Naus’ Messgehilfen und Offiziersburschen Maier. Bereits am 21. Juli hatte Naus den Weg durch das Reintal bis zum Nördlichen Schneeferner erkundet. Der Leutnant befand sich im Rahmen eines Vermessungsauftrags des *Königlich Bairischen Topographischen Bureaus* für den *Atlas von Bayern* im Werdenfelser Land. Als Gruppe stiegen die drei zusammen mit Hauptmann von Jeetze und Lieutenant Aulitschek am 26. August zur Hirtenunterkunft *Angerhütte* auf. Am 27. August um vier Uhr morgens brachen die drei Erstbesteiger in Richtung Zugspitzplatt und Zugspitzgipfel auf. Vom Schneeferner aus versuchten sie, den Westgipfel über den Westgrat zu erreichen. Der erste Versuch schlug fehl, der zweite war erfolgreich. Den Westgipfel erreichten sie schließlich um 11:45 Uhr, wo sie als Zeichen ihrer Anwesenheit einen Bergstock mit Tuch hinterließen. Ein Gewitter und Schneefall ließen die Erstbesteiger schnell wieder absteigen. Sie kehrten am 28. August gegen drei Uhr nachts zur Hirtenhütte zurück. Der Bergführer Tauschl erhielt einen Lohn von zwei Gulden und 42 Kreuzer.
@@ -188,8 +180,6 @@ Weitere Meilensteine:
 - Der *Jubiläumsgrat* wurde am 2. September 1897 in seiner ganzen Länge erstmals durch Ferdinand Henning begangen.
 
 Die Besteigungszahlen der Zugspitze stiegen jährlich stark an. Wurde der Gipfel 1854 22-mal bestiegen, gab es bis zum Jahr 1899 schon 1600 Besteigungen. Vor dem Bau einer Seilbahn im Jahr 1926 waren es schon über 10.000.
-
-### Normalwege
 
 #### Zugspitzplatt über Reintal oder Gatterl
 
@@ -231,8 +221,6 @@ Seit 1949 gibt es auf dem Zugspitzplatt ein Skigebiet, gegenwärtig betrieben vo
 
 Für Skitourengeher ist besonders die Route von Ehrwald über das Gatterl von Bedeutung. Die „Neue Welt“ genannte südseitig exponierte Abfahrt vom Schneefernerkopf nach Ehrwald gilt als extrem schwierige und gefährliche Steilabfahrt, die neben Steigungen bis zu 40 Grad auch eine Abseilstelle aufweist.
 
-## Bahnen
-
 ### Tiroler Zugspitzbahn
 
 → *Hauptartikel: Tiroler Zugspitzbahn*
@@ -258,8 +246,6 @@ Am 1. April 1928 erhielt ein Konsortium mit einem Kapital von fünf Millionen Re
 Erste Pläne für eine Seilbahn vom Eibsee zur Zugspitze gab es bereits 1909 mit der Genehmigung zur Projektierung, die 1911 verlängert wurde. Das Projekt scheiterte jedoch zunächst an der Finanzierung. 1960 erhielt die Bayerische Zugspitzbahn AG die Konzession für die Eibsee-Seilbahn. Bis zum Dezember 1962 wurde eine 4500 m lange Seilbahn zwischen Eibsee (1000 m) und Gipfel gebaut. Sie verlief über zwei 65 und 85 Meter hohe Stützen und überwand 2000 Höhenmeter. Die Neigung betrug bis zu 46 Grad. Bei der Jungfernfahrt am 1. Dezember 1962 führte eine Blockade des elektronischen Bremssystems zum Abbruch der Eröffnung. Die Kabine mit den Ehrengästen war mitten auf der Strecke steckengeblieben. Seilprobleme bei Stürmen sorgten dafür, dass die Bahn ihren Betrieb erst am 15. Mai 1963 aufnehmen konnte. 1973 wurde die obere Stütze von einer Lawine schwer beschädigt.
 
 2017 wurde die alte Seilbahn durch die heutige, leistungsfähigere Bahn ersetzt. Die letzte planmäßige Fahrt der bisherigen Bahn erfolgte am 2. April 2017. Am 21. Dezember 2017 wurde die neue Seilbahn Zugspitze in Betrieb genommen.
-
-## Forschung
 
 ### Wetterwarte Zugspitze
 

@@ -6,8 +6,6 @@ Der Bau, ein Nationalsymbol Deutschlands, wurde nach Plänen des Architekten Pau
 
 Der Reichstag gilt mit jährlich fast drei Millionen Besuchern als das weltweit meistbesuchte Parlamentsgebäude.
 
-## Zur Vorgeschichte
-
 ### Provisorien
 
 ![](images/reichstagsgebaeude__1.jpg)
@@ -151,8 +149,6 @@ Auf Initiative von Bundeskanzler Helmut Kohl und seinem Bundesbauminister Oscar 
 
 Nach der deutschen Wiedervereinigung am 3. Oktober 1990 fand am 4. Oktober die erste Sitzung des Deutschen Bundestags im wiedervereinigten Deutschland im Reichstagsgebäude statt; erstmals mit den 144 Abgeordneten, die von der frei gewählten Volkskammer für die Zeit bis zur ersten gesamtdeutschen Wahl in den Bundestag entsandt wurden. In der Sitzung wurden die neuen Bundesminister vereidigt und Bundeskanzler Helmut Kohl gab seine Regierungserklärung ab.
 
-## Umbau nach der Wiedervereinigung
-
 ### Grundsatzbeschluss und seine Umsetzung
 
 „Sitz des Deutschen Bundestages ist Berlin“ – dies bestimmte der Bundestag nach einer intensiven und kontrovers geführten Debatte im Hauptstadtbeschluss am 20. Juni 1991 in Bonn mit einer knappen Mehrheit von 338 zu 320 Stimmen. Der Ort für die Plenarsitzungen sollte das Reichstagsgebäude sein. Die Umsetzung dieses Beschlusses erforderte einen Umbau zu einem modernen Parlamentsgebäude. Dieser dauerte bis 1999. Der 14. Deutsche Bundestag verabschiedete sich in Bonn in die parlamentarische Sommerpause und trat am 8. September 1999 erstmals im neuen Plenarsaal des Reichstagsgebäudes zusammen.
@@ -203,8 +199,6 @@ Auch die Kuppel, die vor allem als prägnantes architektonisches Element wahrgen
 
 Am 19. April 1999 fand die symbolische Schlüsselübergabe an den Präsidenten des Deutschen Bundestages Wolfgang Thierse sowie eine erste Plenarsitzung statt. Der Umbau war nach rund vier Jahren Bauzeit termin- und kostengerecht abgeschlossen. Der eigentliche Umzug des Bundestages erfolgte in der Sommerpause; mit der Sitzung vom 8. September 1999 nahm das Parlament die reguläre Arbeit im Reichstagsgebäude auf.
 
-## Besucherzentrum
-
 ### Provisorium
 
 Bedingt durch Sicherheitsmaßnahmen stehen seit 2011 Containergebäude südwestlich des Reichstagsgebäudes, durch die angemeldete Besucher des Bundestages zu Führungen gelangen. Diese Container waren ursprünglich als temporäre Lösung gedacht, bestehen jedoch bis heute und sind baurechtlich problematisch. Sie stehen nur mit einer Sondergenehmigung, da eine feste Installation an dieser Stelle nicht zulässig ist. Bundestagsvizepräsident Wolfgang Kubicki bezeichnete die Container als „Schandfleck“ für die drittgrößte Wirtschaftsnation der Welt und betonte, dass sie so schnell wie möglich durch eine dauerhafte Lösung ersetzt werden müssten.
@@ -247,8 +241,6 @@ Die Gesamtausgaben für Kunstwerke im Reichstagsgebäude betrugen acht Millionen
 Die parlamentarischen Kontroversen erinnern an eine Auseinandersetzung von 1899. Während die malerische Ausgestaltung des Reichstages bis dahin vornehmlich von Historien- und Dekorationsmalern ohne nennenswerten künstlerischen Anspruch ausgeführt worden war, erhielt nun der Münchner Maler Franz von Stuck auf Veranlassung Wallots den Auftrag, Gemälde für das Foyer des Reichstagspräsidenten zu schaffen. Er stellte zwei schmale Bilder vor, jeweils 22 m lang, die unterhalb der Decke montiert werden sollten. Die Zustimmung von Kollegen und Kunstsachverständigen war einhellig, die Ablehnung durch die Abgeordneten auch. Die Bilder wurden nicht angebracht.
 
 Vor der Südwestecke des Gebäudes befindet sich seit 1992 das Denkmal zur Erinnerung an 96 von den Nationalsozialisten ermordete Reichstagsabgeordnete.
-
-## Sonstiges
 
 ### Ausrufung der Republik
 

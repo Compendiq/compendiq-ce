@@ -1518,42 +1518,42 @@
       "images": [
         {
           "file": "images/nassi-shneiderman-diagramm__1.png",
-          "width": 236,
-          "height": 179,
-          "bytes": 1136,
+          "width": 170,
+          "height": 89,
+          "bytes": 1069,
           "format": "png",
-          "sourceTitle": "File:NassiShneiderman.png",
-          "sourceUrl": "https://commons.wikimedia.org/wiki/File:NassiShneiderman.png",
-          "author": "Hubi in der Wikipedia auf Deutsch",
-          "license": "CC BY-SA 3.0",
-          "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
-          "caption": "Beispiel eines Nassi-Shneiderman Diagramms"
-        },
-        {
-          "file": "images/nassi-shneiderman-diagramm__2.png",
-          "width": 118,
-          "height": 102,
-          "bytes": 621,
-          "format": "png",
-          "sourceTitle": "File:Endlosschleife.png",
-          "sourceUrl": "https://commons.wikimedia.org/wiki/File:Endlosschleife.png",
-          "author": "Benutzer:Renzsorf",
-          "license": "Public domain",
-          "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
-          "caption": "Endlosschleife"
-        },
-        {
-          "file": "images/nassi-shneiderman-diagramm__3.png",
-          "width": 157,
-          "height": 75,
-          "bytes": 911,
-          "format": "png",
-          "sourceTitle": "File:FussgesteuerteSchleife.png",
-          "sourceUrl": "https://commons.wikimedia.org/wiki/File:FussgesteuerteSchleife.png",
+          "sourceTitle": "File:EinfAusw.png",
+          "sourceUrl": "https://commons.wikimedia.org/wiki/File:EinfAusw.png",
           "author": "Renzsorf",
           "license": "Public domain",
           "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
-          "caption": "Abweisende (fußgesteuerte) Schleife"
+          "caption": "Einfache Auswahl"
+        },
+        {
+          "file": "images/nassi-shneiderman-diagramm__2.png",
+          "width": 200,
+          "height": 89,
+          "bytes": 1186,
+          "format": "png",
+          "sourceTitle": "File:ZweifAusw.png",
+          "sourceUrl": "https://commons.wikimedia.org/wiki/File:ZweifAusw.png",
+          "author": "Renzsorf",
+          "license": "Public domain",
+          "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
+          "caption": "Zweifache Auswahl"
+        },
+        {
+          "file": "images/nassi-shneiderman-diagramm__3.png",
+          "width": 298,
+          "height": 130,
+          "bytes": 1762,
+          "format": "png",
+          "sourceTitle": "File:MehrfAusw.png",
+          "sourceUrl": "https://commons.wikimedia.org/wiki/File:MehrfAusw.png",
+          "author": "Renzsorf",
+          "license": "Public domain",
+          "licenseUrl": "https://en.wikipedia.org/wiki/Public_domain",
+          "caption": "Mehrfachauswahl"
         }
       ]
     },

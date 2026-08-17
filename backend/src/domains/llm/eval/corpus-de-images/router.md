@@ -30,8 +30,6 @@ Außerdem sind Ein- und Mehrprotokoll-Router (auch Multiprotokoll-Router) zu unt
 
 Wichtig ist die Unterscheidung zwischen den *gerouteten Protokollen* (wie Internet Protocol oder IPX) und *Routing-Protokollen*. Routing-Protokolle dienen der Verwaltung des Routing-Vorgangs und der Kommunikation zwischen den Routern, die so ihre Routing-Tabellen austauschen (beispielsweise BGP, RIP oder OSPF). Geroutete Protokolle hingegen sind die Protokolle, die den Datenpaketen, die der Router transportiert, zugrunde liegen.
 
-## Typen (Bauformen)
-
 ### Backbone-Router, Hardware-Router
 
 ![](images/router__3.jpg)

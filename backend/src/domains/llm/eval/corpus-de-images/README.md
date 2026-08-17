@@ -1,7 +1,7 @@
 # German image-bearing eval corpus (#1115 P5a)
 
 66 German Wikipedia articles carrying 189 vendored images
-(6.22 MB), built by `tools/eval-corpus-images/build.py`.
+(6.23 MB), built by `tools/eval-corpus-images/build.py`.
 
 | Shape | Pages | What it is |
 |---|---|---|

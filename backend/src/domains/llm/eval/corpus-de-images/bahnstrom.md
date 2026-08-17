@@ -22,8 +22,6 @@ Außerdem wird der Zeitpunkt einer möglichen Umstellung des Bahnstroms in Deuts
 
 In der Nachkriegszeit fiel die Entscheidung, großflächig Dampfloks durch E-Loks zu ersetzen. Anfangs waren nur 5 % der Strecken elektrifiziert, daher stellte sich die Wahl des Stromsystems neu. Um nicht von RWE abhängig zu werden, fiel die Entscheidung, kleinere technische Nachteile und eine Einzellösung in Mitteleuropa in Kauf zu nehmen und ein eigenständiges Bahnstromnetz zu errichten. Zum 1. Juni 1958 nahm die *Zentralstelle für Bahnstromversorgung* (ZBV) aufgrund einer Verfügung des Vorstands der Deutschen Bundesbahn in Frankfurt am Main ihre Arbeit auf.
 
-## Bahnstromsysteme
-
 ### Gleichspannung
 
 Fahrzeugseitig ist Gleichspannung die einfachste Lösung. Gleichstrom-Reihenschlussmaschinen waren lange Zeit die besten verfügbaren elektrischen Maschinen für Fahrzeugantriebe. Dies hat sich erst mit der seit den 1970er Jahren nach und nach verfügbaren Halbleiter-Leistungselektronik geändert. Das 1884 errichtete Kraftwerk der Frankfurt-Offenbacher Trambahn-Gesellschaft etwa erzeugte für die erste kommerziell betriebene elektrische Straßenbahnlinie der Frankfurt-Offenbacher Trambahn-Gesellschaft Gleichstrom mit einer Spannung von 300 V.
@@ -58,8 +56,6 @@ Die Stromversorgung gleichstrombetriebener Bahnen erfolgt schon seit den 1920er 
 Wechselspannung kann genauso wie für die öffentliche Elektrizitätsversorgung einfach erzeugt (Generator) und in Transformatoren umgespannt und verteilt werden.
 
 Das Stromsystem des Antriebs ist dabei von dem der Energiezuführung zu unterscheiden. Es gibt für jeden Anwendungsfall eine passende Möglichkeit, beliebige Stromsysteme auf Antriebs- und Netzseite mittels Leistungselektronik miteinander zu koppeln. Bei elektronisch geregelten Bahnfahrzeugen mit entsprechenden Wechselrichtern kann der elektrische Energiefluss dabei meist in beiden Richtungen erfolgen, d. h. das Fahrzeug entnimmt für den Antrieb elektrische Energie aus dem Versorgungssystem und kann beim Bremsen zum Verzögern oder bei Bergabfahrt aus Bewegungsenergie elektrischen Energie generieren und zurück in das Netz einspeisen, also rekuperieren.
-
-#### Einphasensysteme
 
 ##### Wechselspannung mit Standard-Industriefrequenz
 
@@ -197,8 +193,6 @@ Stand 2018 wird etwa ein Drittel des Bahnstroms in Deutschland über die Stromb�
 ### Verteilung und Zuführung
 
 Die Umwandlung des Bahnstroms in die Spannung und Frequenz des jeweiligen Bahnstromsystems erfolgt über die sogenannte *Bahnstromverteilung*.
-
-#### Unterwerke (Uw)
 
 ##### Wechselstrombahnen
 

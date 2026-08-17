@@ -4,8 +4,6 @@
 
 Die **Frauenkirche** (offiziell: *Kirche Unserer Lieben Frauen*) ist ein evangelischer Sakralbau am Neumarkt in Dresden. Der 91 Meter hohe Kuppelbau wurde 1726 bis 1743 im Auftrag des Rates der Stadt von George Bähr geschaffen. Nach der Zerstörung 1945 blieb die Frauenkirche eine Ruine, bevor sie 1993 bis 2005 wiederaufgebaut wurde. Sie gehört zu den bekanntesten Sehenswürdigkeiten der Stadt und zu den bedeutendsten Bauwerken des Barock.
 
-## Geschichte
-
 ### Übersicht
 
 Die Dresdner Frauenkirche, eigentlich *Kirche Unserer Lieben Frauen* – der Name bezieht sich auf die Heilige Maria –, ist das prägende Gebäude des Neumarkts. Sie gilt als prachtvolles Zeugnis des protestantischen Sakralbaus, besitzt eine der größten steinernen Kirchenkuppeln nördlich der Alpen und zählt zu den größten Sandsteinbauten der Welt. Der evangelisch-lutherische Kirchenbau wurde von 1726 bis 1743 nach einem Entwurf von George Bähr im Auftrag des Rates der Stadt errichtet und wurde zu einem Emblem sowohl des Dresdner Barocks wie auch der berühmten Stadtsilhouette. Von Anfang an war die Frauenkirche aber auch mit gravierenden statischen Mängeln behaftet, die nie richtig behoben werden konnten. Am Ende des Zweiten Weltkriegs wurden ihre wichtigsten tragenden Teile während der Luftangriffe auf Dresden in der Nacht vom 13. zum 14. Februar 1945 durch die Hitze des in Dresden wütenden Feuersturms so geschwächt, dass sie am Vormittag des 15. Februar ausgebrannt in sich zusammenbrach. Zu Zeiten der DDR blieb die Ruine erhalten und wurde als Mahnmal gegen Krieg und Zerstörung belassen.
@@ -82,8 +80,6 @@ Der Grundstein der neuen Frauenkirche wurde am 27. Mai 1994 gelegt. Der Wiedera
 
 Beim Innenausbau wurden anschließend die Bemalung und der Einbau des Gestühls abgeschlossen. Im Frühsommer 2005 wurde die von dem Straßburger Orgelbauer Daniel Kern gefertigte Orgel mit insgesamt 4873 Orgelpfeifen installiert. Die Aussichtsplattform in 67 Metern Höhe, von der aus man einen Ausblick auf das Elbpanorama und auf die Innenstadt hat, konnte am Dienstag, dem 1. Februar 2005 für Besucher geöffnet werden. Anlässlich des 60. Jahrestags der Bombardierung Dresdens am 13. Februar 2005 wurde der Innenraum zum stillen Gedenken geöffnet. Am 30. Oktober 2005 wurde die Frauenkirche vom sächsischen Landesbischof Jochen Bohl wieder geweiht und damit ihrer künftigen Bestimmung als Gotteshaus übergeben. Im Rahmen der Zeremonie wurden auch die liturgischen Gegenstände wieder in die Kirche gebracht. Landesbischof Jochen Bohl dankte in seiner Predigt während des Gottesdienstes bereits vorher den Verantwortlichen für den Wiederaufbau und den daran Mitwirkenden. Der Weihegottesdienst fand mit 1700 geladenen Gästen in der Kirche und mindestens 60.000 weiteren Personen auf dem Kirchplatz statt, die ihn auf einer Leinwand verfolgten. Nach dem gottesdienstlichen Teil hielt Bundespräsident Horst Köhler die Festansprache, in der er auf die Frauenkirche als Symbol für bürgerliche Freiheit und die deutsche Einheit hinwies.
 
-## Beschreibung
-
 ### Oberkirche
 
 Die Ingenieure versuchten bei der Planung der Rekonstruktion so weit wie möglich, Bährs Prinzip „Stein und Eisen“ zu folgen. Deshalb verwarfen sie beispielsweise die Variante, die Kuppel aus Stahlbeton zu gießen und lediglich mit Sandstein zu verkleiden. Ebenso sahen sie davon ab, den horizontalen Schub des Kuppelgewölbes mit einem Ring aus Stahlbeton aufzufangen. Beim Wiederaufbau wurden die katalogisierten Steine, insgesamt 43 Prozent der Original-Bausubstanz, teilweise wiederverwendet. Von den 84 Großteilen (Gewicht > 5 Tonnen) konnten lediglich zwei, der nach der Aufarbeitung noch 74 Tonnen wiegende „Schmetterling“, und ein weiteres, 18 Tonnen schweres Stück, im Ganzen wieder an ihren ursprünglichen Platz gehoben werden. Alle anderen wurden aussortiert, da infolge der Belastungen beim Einsturz und dem jahrzehntelangen Liegen im Freien strukturelle Beschädigungen anzunehmen waren. Auch die beiden wieder eingebauten Großteile befinden sich nur an statisch unkritischen Stellen.
@@ -110,15 +106,11 @@ Für eine um die Jahrtausendwende wieder errichtete Kirche sah man einige Einric
 
 Die Frauenkirche hat eine Länge von 50,02 Metern (West-Ost-Richtung) und eine Breite von 41,96 Metern (Nord-Süd-Richtung). Ihre Gesamthöhe, einschließlich des Turmkreuzes, beträgt 91,23 Meter. Im Innenraum reicht die Kuppeldecke bis zu einer Höhe von 36,65 Meter. Die Kuppel ist, ohne den Kuppelanlauf und die Laterne, 24 Meter hoch. Ihr Außendurchmesser beträgt 26,15 Meter, das Kuppelmauerwerk ist zwischen 1,19 Meter und 1,75 Meter stark. Die Besucherplattform auf der Turmlaterne befindet sich in einer Höhe von 67,06 Meter.
 
-## Ausstattung
-
 ### Altar und Kanzel
 
 Altar und Orgel sind harmonisch übereinander gesetzt und gehen optisch nahezu ineinander über. Der eigentliche Altar von Johann Christian Feige, bzw. sein Kernstück, das nach dem Krieg eingemauert wurde, wurde aus den Trümmern der alten Frauenkirche geborgen und bewusst mit seinen Beschädigungen im Neubau wiederverwendet. Er bildet in seiner optischen Rohheit einen Kontrast zum sonst üppigen Dresdner Barock der Kirche und somit ein dauerhaftes Mahnmal. In der größeren figürlichen Ebene des Altars sind neben der zentralen Szene mit Jesus am Ölberg zwei Personen des Neuen und zwei Personen des Alten Testamentes dargestellt: Ganz links Mose mit den Gesetzestafeln, in der Mitte links Paulus mit Schwert und Buch, in der Mitte rechts Philippus mit dem Kreuz und ganz rechts Moses Bruder Aaron mit Brustpanzer und Weihrauchfass als Priester. Über Mose und Paulus trägt ein Engel eine Kette aus Weizenähren und über Philippus und Aaron ein weiterer Engel eine Kette aus Weintrauben. Zusammen stehen sie für Brot und Wein bzw. Leib und Blut Christi und das Abendmahl. Links über Jesus befinden sich ein großer und ein kleiner Engel. Rechts neben ihm sind die schlafenden Jünger (farblos) dargestellt. Rechts über Jesus ist Jerusalem zu erkennen. Direkt über Jesus ist ein Engel mit einem Kreuz zu sehen – ein Hinweis auf die Art des kommenden Todes. Direkt darüber und über allem thront das *Auge Gottes*, auch Auge der Vorsehung genannt. Es ist, wie im Barock üblich, von Wolken umgeben. Darüber wiederum schließt sich die Balustrade der Orgel an.
 
 Man verzichtete auf die Rekonstruktion der nachträglich gebauten, zweiten Kanzel. Zu einem war diese von George Bähr nicht vorgesehen, zum anderen konnten die akustischen Probleme von 1738 durch Verwendung einer Lautsprecheranlage behoben werden. Die Emporen werden von Stahlkonstruktionen, die mit Brandschutzplatten verkleidet sind, getragen. Die früheren Holzkonstruktionen waren unzureichend dokumentiert und genügten nicht heutigen statischen Anforderungen. Die Sitzreihenabstände der neuen Emporen wurden an die Körpergröße heutiger Menschen angepasst. Die unterste, verglaste Empore mit den Betstübchen wurde im Sinne einer gemeinschaftlichen Teilnahme an den Veranstaltungen ohne die früher vorhandenen Abteile rekonstruiert.
-
-### Orgel
 
 #### Silbermann-Orgel von 1736
 
@@ -169,8 +161,6 @@ Im Turm C mit den drei Zifferblättern befindet sich eine der beiden mechanisch
 ### Taufe
 
 Die barocke Frauenkirche hatte keine „Taufe“ (in Sachsen für *Taufbecken*), weil das Taufrecht von der Kreuzkirche beansprucht und wahrgenommen wurde. Erst im ausgehenden 19. Jahrhundert wurde ein Taufstein aufgestellt, der 1945 beim Einsturz zerstört wurde. Im Zuge der Wiederherstellung des Innenraums war zunächst angestrebt worden, die nur wenig ältere Taufe von Johann Christian Feige aus der Freiberger Petrikirche für die Frauenkirche zu gewinnen. Da diese dort ebenfalls zu dem zwar veränderten, aber dennoch nachvollziehbaren barocken Raumkonzept gehört und deswegen von der Gemeinde nicht freigegeben wurde, bot die Petrigemeinde den etwas jüngeren Taufstein aus der Freiberger Nikolaikirche an. Dieser stand nach der Zusammenlegung der Nikolai- mit der Petrigemeinde in den 1970er-Jahren und der Entweihung der Nikolaikirche durch die Gemeinde ungenutzt in einem Nebenraum der Petrikirche. Die nunmehr in der Dresdner Frauenkirche aufgestellte hölzerne Taufe wurde im Zuge des Barockumbaus der Nikolaikirche zu Freiberg von Johann Gottfried Stecher (1718–1776) aus Hainichen im Jahr 1753 geschaffen und am 25. Januar 1754 geweiht. Für die Nutzung in der Frauenkirche wurde die spätbarocke, auf die Nikolaikirche Freiberg abgestimmte Farbfassung durch eine sich auf die Farbgestaltung des Innenraums der Frauenkirche beziehende Weiß-Gold-Fassung ersetzt.
-
-## Nutzung
 
 ### Gottesdienste
 

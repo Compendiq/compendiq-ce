@@ -159,8 +159,6 @@ Am Bahnhof Rathaus Spandau wurden bei dessen Bau zwei Gleiströge und Bahnsteigk
 
 Die Lichtraumprofile der beiden Berliner U-Bahn-Systeme werden als Kleinprofil und Großprofil bezeichnet. Auch diese U-Bahn-Systeme selbst werden zur Unterscheidung meist kurz auch nur *Kleinprofil* und *Großprofil* genannt. Bei gleicher Spurweite von 1435 mm (Normalspur) aber unterschiedlicher Fahrzeuggeometrie sind diese untereinander nur teilweise kompatibel. Die Unterschiede in der Stromschienengeometrie und der Signaltechnik stellen keine technische Notwendigkeit dar, sondern spiegeln den jeweiligen Stand der Technik zur Zeit deren Entwicklung wider. Beide Systeme haben neben eigenen Fahrzeugen und Strecken auch eigene Betriebswerke und Werkstätten, sodass der Betrieb unabhängig voneinander erfolgt. Beide Netze waren ursprünglich nicht miteinander verbunden; aus betrieblichen Gründen wurden jedoch 1952 im damaligen Ost-Berlin und später, 1978, im damaligen Westteil Berlins Verbindungen hergestellt, die auf die Gemeinsamkeiten beider Standards beschränkt bleiben mussten. Über diese können beispielsweise dieselbetriebene Arbeitszüge von einem auf das andere Netz wechseln.
 
-### Kleinprofil
-
 #### Entstehung
 
 Die zuerst (1896–1913) gebauten Strecken der Berliner U-Bahn wurden für Fahrzeuge mit einer Breite von 2,3 m ausgelegt, was etwa der Breite der damaligen Straßenbahnwagen entsprach. Dementsprechend ist das Tunnelprofil klein und entspricht den um 1900 gebräuchlichen Fahrzeugabmessungen. Da die Kleinprofilfahrzeuge weniger Kapazität als die Großprofil-Fahrzeuge bieten, gab es mehrmals Planungen, das komplette U-Bahn-Netz auf Großprofil umzustellen. Diese sind jedoch nicht mehr aktuell.
@@ -176,8 +174,6 @@ Die Linien der Kleinprofil-U-Bahn tragen die Liniennummern U1 bis U4. Die Stichs
 Die Bahnsteighöhe beträgt etwa 850 mm über der Schienenoberkante. Die Fußbodenoberkante der Wagen der neuen Baureihen HK und IK liegt bei 875 mm, die der älteren Wagen bei 990 mm.
 
 Die Wagen der Baureihe A3 sind 12,83 m lang (Länge über Kupplung), 2300 mm breit und 3180 mm hoch. Die kleinste betriebsfähige und im Personenverkehr einsetzbare Einheit ist ein Doppeltriebwagen. Bis zu vier Doppeltriebwagen werden im regulären Fahrgastbetrieb gekuppelt. Die Wagen der Baureihe GI sind 60 mm breiter und 10 mm höher. Kleinste betriebsfähige Einheit ist wiederum ein Doppeltriebwagen, die kleinste im Linienverkehr eingesetzte Einheit ist der Vierwagenzug. Bei den jüngsten Baureihen HK und IK sind jeweils vier Wagen fest gekuppelt und über Faltenbalgübergänge durchgehend begehbar, so dass mit diesen Baureihen nur Vier- oder Achtwagenzüge gebildet werden können. Die Länge über Kupplung eines Vierwagenzuges beträgt 51,59 m bei der Baureihe HK und 51,64 m bei der Baureihe IK. Die Wagen der Baureihe IK und JK sind in Hüfthöhe um 10 cm breiter (bombiert). In allen Wagen des Kleinprofils befinden sich die Fahrgastsitze längs zur Fahrtrichtung.
-
-### Großprofil
 
 #### Entstehung
 
@@ -218,8 +214,6 @@ Die U-Bahn-Züge verfügten bis 1976 auch über Raucherabteile und bis 1927 übe
 Zum 1. Januar 2016 gründete die BVG auf Betreiben von Finanzsenator Kollatz-Ahnen die Fahrzeugfinanzierungsgesellschaft (FFG), um den sich immer weiter zuziehenden Problemen von Fahrzeugmangel einerseits und Angebotsausbau andererseits in Zukunft Rechnung zu tragen. Die BVG bestellte ab 2020 für die nächsten 15 Jahre 220 Straßenbahn- und 273 U-Bahn-Wagen im Wert von rund 3,1 Milliarden Euro.
 
 Die Wagen der Berliner U-Bahn sind bisher nicht klimatisiert.
-
-### Kleinprofiltypen
 
 #### Erste Fahrzeuge (Baureihe AI)
 
@@ -407,8 +401,6 @@ Fahrzeuge der zweiten und dritten Kategorie sind im gesamten Netz universell ein
 
 Einige Flachwagen der Streckeninstandhaltung können für Tunnelbesichtigungsfahrten mit jeweils 50 Sitzplätzen ausgestattet werden. Diese werden dem interessierten Publikum, zumeist kommerziell, als sog. *Cabriofahrten* angeboten.
 
-## Fahrgastinformationen
-
 ### Akustische Informationen
 
 In den Zügen werden die Fahrgäste über das Fahrtziel und die folgende Station informiert. Dies erfolgt über deutschsprachige Ansagen per Lautsprecher. Englischsprachige Ansagen erfolgen für bestimmte Umsteigemöglichkeiten, z. B. Verbindungen zum Flughafen BER sowie Hauptbahnhof oder Übergänge zur Messe und zum Zentralen Omnibusbahnhof, bei Bauarbeiten sowie als Hinweis auf den Endbahnhof. Die Texte zur Fahrgastinformation wurden bis 2009 (ausgenommen die Baureihen H und HK) von Ingrid Metz-Neun eingesprochen.
@@ -436,8 +428,6 @@ Anfang 2019 begann die Umrüstung der zuvor lediglich für das Werbeformat *Berl
 Die neuen Fahrzeuge der Baureihen J und JK erhalten Fahrgastinformationsmonitore in der Seitenwand. Die bisher üblichen, über den Wagenübergängen angebrachten Matrix-LCD- und LED-Anzeigen werden durch zweizeilige Displays ersetzt, die bereits aus den neueren Bussen bekannt sind, in denen sie entgegen der Fahrtrichtung eingebaut sind.
 
 An Knotenpunkten wurden ab Januar 2021 Informationsdisplays aufgestellt, die das Umsteigen erleichtern sollen, indem die Abfahrtszeiten der möglichen Umsteigebeziehungen in Echtzeit angegeben werden. Die Bildschirme sollen auch grafische Informationen darstellen können, die Orientierung bei Störungen oder Baustellen bieten sollen. Im unteren Bereich werden mittels Liniengrafik und verschiedenen Symbolen (gestrichelte Linie für Bauarbeiten, Sanduhr für Verspätungen, ein Ausrufezeichen für Störungen, Haken für störungsfreien Verkehr) die Betriebsqualität aller U-Bahnlinien angegeben.
-
-## Infrastruktur der U-Bahn
 
 ### Werkstätten
 
@@ -511,8 +501,6 @@ Die Berliner U-Bahn fährt nach ortsfesten Lichtsignalen im festen Blockabstand 
 
 Ab 2025 wird auf den Großprofillinien U5 und U8 ein CBTC-System (Communication-Based Train Control) eingebaut, bei dem die Übertragung zwischen Fahrzeug und Strecke per Funk stattfindet. Diese wird einen halbautomatischen Zugbetrieb (GoA2) mit einer minimalen Zugfolgezeit von 90 Sekunden ermöglichen. Die neuen Fahrzeuge sind dafür vorbereitet. Mit der Auftragsvergabe im Juli 2024 ist der teilautomatisierte Betrieb auf der U5 ab 2029 und auf der U8 ab 2032 geplant.
 
-### Funknetze für Fahrgäste
-
 #### Mobilfunknetze
 
 Die Infrastruktur für die Mobilfunknetze (Glasfaserkabel, Antennen, Repeater etc.) wird von den privaten Netzbetreibern installiert und betrieben. Die Versorgung in Tunneln ist technisch aufwendig und teuer. Der verfügbare Platz für die Netzelemente ist sehr beschränkt und die meisten Arbeiten werden nachts durchgeführt, um den Betriebsablauf nicht zu stören. Darüber hinaus erhebt die BVG Mietgebühren von den Mobilfunkbetreibern für die Erlaubnis der Installation von Netzelementen.
@@ -528,8 +516,6 @@ WLAN steht auf den Bahnhöfen zur Verfügung, nicht aber in den Zügen selbst.
 In Räumlichkeiten am U-Bahnhof Turmstraße betreibt die BVG die *Betriebsschule U-Bahn*. Die Einrichtung wurde 1998 eröffnet und seitdem schrittweise erweitert. So kann seit 2003 in einem Zugfahrsimulator der Fahrbetrieb realistisch nachgestellt und trainiert werden. Im Jahr 2006 ging eine Stellwerkssimulation in Betrieb, 2012 folgte eine Leitstellensimulation. Darüber hinaus befinden sich in der Betriebsschule eine Weichenanlage für Übungszwecke sowie Räumlichkeiten für Computer-basiertes Training. Ein weiterer Zugfahrsimulator ging im Januar 2019 in Betrieb, Basis war das Mock-Up des IK-Zugs.
 
 In einem betrieblich nicht genutzten Teil des U-Bahnhofs Jungfernheide befindet sich die Feuerwehr-Übungsanlage der Berliner U-Bahn. Sie wurde am 14. Juli 2003 eingeweiht. Die Anlage ist 350 Meter lang, einschließlich einer 90 Meter langen Rauchkammer.
-
-## Unfälle
 
 ### Zusammenstöße
 

@@ -14,8 +14,6 @@ Die Räder eines Zahnradgetriebes drehen sich zusammen mit den Wellen, auf denen
 
 Der Radabstand ist so ausgelegt, dass die Zähne ineinander greifen, und somit die Drehbewegung des einen Zahnrades auf das andere übertragen wird. Bei der Paarung zweier außen verzahnter Räder kehrt sich die Drehrichtung um. Falls das nicht erwünscht ist, wird ein drittes Zahnrad beliebiger Größe dazwischen angeordnet. Sind die Räder unterschiedlich groß, wird die Drehzahl erhöht oder verringert, wobei das Drehmoment vermindert oder erhöht wird (Änderung des Übersetzungsverhältnisses).
 
-## Geschichte
-
 ### Frühe Beispiele für die Verwendung von Zahnrädern
 
 Bei den altägyptischen Göpeln findet man nach 300 v. Chr. die älteste Form des Zahnrades, ein Holzrad, in dessen Umfang man Pflöcke hineinstreckte. Die Rolle war bereits bei den Assyrern in Gebrauch und wurde von den Ägyptern übernommen, die Verbindung dieser Rollen mittels Seil führte zum bekannten Flaschenzug. Eine direkte Verbindung dieser Rollen wurde bereits 330 v. Chr. von Aristoteles erwähnt, gesichert ist die Anwendung von Zahnrädern bei Heron von Alexandria, überliefert durch Vitruv. Ktesibios verwendete um 250 v. Chr. an seiner Wasseruhr einen Stab, der mit Zahnrädchen besetzt war, ebenso Philon von Byzanz um 230 v. Chr. an zwei Apparaten.
@@ -32,8 +30,6 @@ Anfangs wurde wenig auf die geeignete Form der Zähne geachtet. Nach Angaben von
 ### Zeitalter der Industrialisierung
 
 Die Entwicklung der Dampfmaschine im 18. Jahrhundert führte zu einem steigenden Bedarf an Zahnrädern, da die zu übertragende Leistung kontinuierlich stieg und Zahnräder aus Metall anstatt wie bisher aus Holz gefertigt werden mussten. 1820 erfand Joseph Woollams die Schrägverzahnung und Pfeilverzahnung (Doppelschrägverzahnung) (englisches Patent Nr. 4477 vom 20. Juni 1820), James White baute 1824 daraus ein Differentialgetriebe. 1829 stellte Clavet eine Zahnhobelmaschine her, da der Werkzeugmaschinenbau ab dem 19. Jahrhundert eine steigende Genauigkeit der Verzahnungen erforderte. Die erste brauchbare Maschine zum Fräsen geradverzahnter Stirnräder baute 1887 G. Grant. 1897 entwickelte Hermann Pfauter daraus eine universale Maschine, mit der sich auch Schnecken- und Schraubräder fertigen ließen. Ab 1922 entwickelte Heinrich Schicht bei Klingelnberg ein Verfahren zur Herstellung von Kegelrädern zur Serienreife. Neu war, dass hier nun ebenso wie bei Stirnrädern das kontinuierliche Wälzfräsverfahren eingesetzt werden konnte.
-
-## Arten von Zahnrädern
 
 ### Stirnrad
 
@@ -162,8 +158,6 @@ Die Wildhaber-Novikov-Verzahnung ist eine Kreisbogenverzahnung.
 - Kritisch ist diese Verzahnung bei geometrischen Abweichungen wie Teilungs- und Zahnrichtungsfehlern sowie bei Achsabstands- und Achsneigungsabweichungen.
 - Der Herstellungsaufwand ist groß, da für Rad und Gegenrad verschiedene Verzahnwerkzeuge erforderlich sind.
 
-## Geometrische Grundlagen von Geradstirnrädern
-
 ### Unkorrigierte Zahnräder
 
 → *Hauptartikel: Profilverschiebung*
@@ -222,8 +216,6 @@ Die Herstellung von Zahnrädern kann auf drei Arten erfolgen:
 
 Aufgrund von höherer Festigkeit und Genauigkeit werden in der industriellen Fertigung von Zahnrädern spanende Fertigungsverfahren bevorzugt.
 
-### Spanende Verfahren
-
 #### Übersicht
 
 Die spanenden Verfahren zur Zahnradherstellung sind:
@@ -269,8 +261,6 @@ Zahnräder werden nach dem Verzahnen häufig gehärtet. Die Zahnflanken werden d
 ### Konstruktion / CAD
 
 Die Konstruktion von Zahnrädern erfolgt rechnergestützt mittels CAD. Für die Zahnradfertigung mit Wälzfräsverfahren werden 2D-Zeichnungsdaten und Maschineneinstelldatenblätter, für die Zahnradfertigung mittels Freiformfräsen 3D-Zeichnungsdaten benötigt. Zahnräder werden nicht manuell auf Basis von Punktewolken, sondern mit speziell entwickelter Software konstruiert. Auf diese Weise wird sichergestellt, dass die Zahnräder im Betrieb sauber ineinandergreifen. Einige Programme bieten neben der mathematischen Berechnung auch eine Simulation der Kinematik bei der Herstellung, um beispielsweise unbeabsichtigten Unterschnitt zu vermeiden.
-
-## Prüfen von Zahnrädern
 
 ### Allgemeines
 

@@ -1,11 +1,5 @@
 # Nassi-Shneiderman-Diagramm
 
-![](images/nassi-shneiderman-diagramm__1.png)
-
-![](images/nassi-shneiderman-diagramm__2.png)
-
-![](images/nassi-shneiderman-diagramm__3.png)
-
 Ein **Nassi-Shneiderman-Diagramm** ist ein Diagrammtyp zur Darstellung von Programmentwürfen im Rahmen der Methode der strukturierten Programmierung. Es wurde 1972/1973 von Isaac Nassi und Ben Shneiderman entwickelt und ist in der DIN-Norm 66261 festgelegt.
 
 Da Nassi-Shneiderman-Diagramme Programmstrukturen und Kontrollstrukturen darstellen, werden sie auch als **Struktogramme** bezeichnet.
@@ -20,8 +14,6 @@ Böhm und Jacopini haben 1966 nachgewiesen, dass sich jeder beliebige Algorithmu
 
 Die meisten der nachfolgenden Strukturblöcke können ineinander geschachtelt werden. Das aus den unterschiedlichen Strukturblöcken zusammengesetzte Struktogramm ist im Ganzen rechteckig, also genauso breit wie sein breitester Strukturblock.
 
-### Process Symbol
-
 ### Decision Symbol
 
 → *Hauptartikel: Bedingte Anweisung und Verzweigung*
@@ -30,33 +22,19 @@ Alternative Begriffe: Verzweigung, Alternative, Selektion.
 
 #### Ein möglicher Block
 
+![](images/nassi-shneiderman-diagramm__1.png)
+
 #### Zwei mögliche Blöcke
+
+![](images/nassi-shneiderman-diagramm__2.png)
 
 #### Beispiel für Verschachtelung
 
-#### Case-Statement
+![](images/nassi-shneiderman-diagramm__3.png)
 
 ### Schleifen
 
 → *Hauptartikel: Schleife (Programmierung)*
-
-#### Iteration Symbol
-
-#### Begin-End Symbol
-
-#### Sonderfall: End=true
-
-#### Sonderfall: Begin=true
-
-#### Sonderfall: Begin=End=true
-
-### Break
-
-### Blockaufruf
-
-### Parallel-Processing Symbol
-
-## Füllregeln
 
 ### Allgemeingültigkeit
 
@@ -85,8 +63,6 @@ In der Entwicklungsumgebung EasyCODE wird direkt anhand von Nassi-Shneiderman-Di
 Nassi-Shneiderman-Diagramme können auch in technischer Dokumentation eingesetzt werden.
 
 Die Programmiersprache Scratch stellt Programme visuell als Struktogramme dar.
-
-## Beispieldiagramme
 
 ### Einfaches Struktogramm
 

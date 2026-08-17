@@ -8,8 +8,6 @@ Der Begriff Ökosystem wird in den Naturwissenschaften in einem werturteilsfreie
 
 Die Bezeichnung wird bisweilen auch in anderen Bedeutungszusammenhängen verwendet, etwa in der Wirtschaft *(Ökonomie)* oder Informationstechnik.
 
-## Abgrenzung des Begriffs
-
 ### Definitionen
 
 Ein Ökosystem ist ein „dynamischer Komplex von Gemeinschaften aus Pflanzen, Tieren und Mikroorganismen sowie deren nicht lebender Umwelt, die als funktionelle Einheit in Wechselwirkung stehen“. Diese gängige Definition wird in der Biodiversitätskonvention verwendet. Sehr ähnlich sind folgende Definitionen von Ökologen:
@@ -29,8 +27,6 @@ Zusammenhängende großräumige Ökosysteme eines konkreten Raumes werden auch a
 Die Grundtypen großräumiger terrestrischer und aquatischer Ökosysteme bezeichnet man auch als Biome. Zu unterscheiden sind hier die wissenschaftliche und die landläufige Verwendung des Begriffs Ökosystem: Vieles, was populär unter „Ökosystem“ läuft, würde man fachlich meist eher als „Biom“ bezeichnen. Der Begriff des Bioms geht auf Frederic Edward Clements zurück, erfuhr seine heutige Prägung aber stark durch den Geobotaniker Heinrich Walter. Biome (bzw. als kleinere Einheit: Biogeozönosen) sind empirisch und deskriptiv abgeleitete Ausschnitte der Erdoberfläche, die durch eine bestimmte Lebensgemeinschaft (vor allem: Vegetation) charakterisiert werden können. Der funktionale Aspekt des Öko-„Systems“ kann dabei in den Hintergrund treten. Biome können als Ökosysteme betrachtet werden, müssen es aber nicht; häufig werden sie rein biogeographisch gefasst. Da der Begriff aber außerhalb der Fachöffentlichkeit völlig ungebräuchlich ist, steht in populären Veröffentlichungen dafür meist „Ökosystem“. Biome, hier am Beispiel der Wälder, wären zum Beispiel tropischer Regenwald, gemäßigter Regenwald, borealer Nadelwald, subtropischer Hartlaubwald, Lorbeerwald, gemäßigter (temperater) Laubwald.
 
 Vergleichbare Ökosysteme getrennter Großräume, die zwar nach ihrem Erscheinungsbild ähnlich aufgebaut sind, jedoch nicht in der Artenzusammensetzung, können zu abstrakten Einheiten zusammengefasst werden (z. B. borealer Nadelwald, Wüste, Steppe). Je nach Betrachtung wird in der Fachliteratur u. a. von Pflanzen- oder Vegetationsformationen, Vegetationszonen, Zonobiomen oder Ökozonen gesprochen.
-
-## Eigenschaften von Ökosystemen
 
 ### Einteilung
 
@@ -115,8 +111,6 @@ Stabilität und Konstanz in Ökosystemen sind dabei von der betrachteten räumli
 Bei der zeitlichen Entwicklung eines Ökosystems ist der Begriff der Störung ein Schlüsselbegriff. Ohne Störungen unterliegt ein System ausschließlich endogener Dynamik, Veränderungen können z. B. durch Wechselwirkungen der beteiligten Arten untereinander ablaufen. Wichtig ist in diesem Zusammenhang, dass in der Ökologie der Begriff der Störung völlig werturteilsfrei genutzt wird. Eine Störung ist nichts *per se* Schlechtes; oft lassen sich bestimmte Ökosysteme sogar nur durch regelmäßige Störungen erhalten (siehe unten).
 
 Die Größe einer Population kann durch das Beziehungsgefüge auf einer bestimmten Höhe eingeregelt werden, oder, z. B. durch zeitlich verzögerte Reaktionen, können zyklische Schwankungen auftreten (für Säugetierpopulationen z. B.). Gerichtete, dauerhafte Veränderungen des Systems bezeichnet man als Sukzession. Eine Störung ist ein von außerhalb dieses internen Beziehungsgefüges einwirkender, das System verändernder Faktor. Häufig wird zwischen seltenen und großen Störungen (Katastrophen) und kleineren und wiederkehrenden Störungen unterschieden. Der Störungsbegriff ist dabei ebenfalls skalenabhängig, z. B. kann das Abfressen durch ein weidendes Tier für eine einzelne Pflanze als Störung, für das Ökosystem Wiese aber als konstituierender und systemimmanenter Faktor gewertet werden. Einen Versuch zur absoluten Definition von Störungen haben White und Pickett unternommen, eine Definition für klimatische Extremereignisse als Störung liefert Smith. Das zeitliche Muster der Störungen oder *Störungsregime* ist ein prägender Faktor für viele Ökosysteme, wiederkehrende Störungen wie Mahd oder Beweidung im Grünland, Überflutungen im Auwald, aber auch katastrophische Störungen wie Waldbrand oder Sturmwurf in Waldökosystemen können Struktur und Zusammensetzung eines Ökosystems entscheidend prägen.
-
-## Gefährdung und Bewertung von Ökosystemen
 
 ### Bewertung
 

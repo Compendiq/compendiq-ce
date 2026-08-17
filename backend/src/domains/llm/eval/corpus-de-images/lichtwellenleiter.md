@@ -350,8 +350,6 @@ Weitere Nachteile sind:
 - empfindlich gegenüber mechanischer Belastung und Einschränkungen bei der Verlegung, da keine starken Krümmungen möglich sind (stark typenabhängig, z. B. für die Medizintechnik gibt es spezielle Typen für die Videoendoskopie)
 - keine Stromversorgung über die Netzwerk-Datenleitung möglich (Power over Ethernet)
 
-## Sonstige Anwendungen
-
 ### Störungsfreie Audioverbindungen
 
 Anfang der 1990er-Jahre wurden D/A-Umsetzer und CD-Player angeboten, die mit einer ST-Verbindung kommunizierten. Gerätebeispiele sind Parasound DAC 2000, WADIA DAC, Madrigal Proceed PDP 3 mit CD-Transport PDT 3. Diese Art der Verbindung konnte sich allerdings gegen TOSLINK, eine Verbindungstechnik mit polymeren optischen Fasern (POF), nicht durchsetzen und fand deshalb recht selten Verwendung.

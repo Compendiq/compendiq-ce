@@ -168,8 +168,6 @@ Die Sprint-Retrospektive dauert maximal 45 min je Sprint-Woche, also maximal dre
 
 Der Sprint Review geht der Sprint-Retrospektive voraus und dient dazu, die Ergebnisse eines Sprints im Team zu präsentieren. Die verantwortliche Person stellt während des Sprint Reviews fest, ob das Team die festgelegten Ziele erreicht hat und, ob der Output die Kriterien erfüllt. Die Sprint-Retrospektive fokussiert sich mehr auf die Effektivität und Effizienz des Teams während des Sprints. Dabei wird diskutiert, ob alle Prozesse funktioniert haben und was gegebenenfalls verbessert werden könnte. Die Retrospektive bietet Teams die Möglichkeit, Verbesserungen einzuplanen und erfolgreiche Praktiken aufzubauen oder im folgenden Sprint fortzusetzen.
 
-## Artefakte
-
 ### Product Backlog
 
 Das Product Backlog ist eine geordnete Auflistung der Anforderungen an das Produkt. Das Product Backlog ist dynamisch und wird ständig weiterentwickelt. Alle Arbeit, die das Entwicklungsteam erledigt, muss ihren Ursprung im Product Backlog haben. Der Product Owner ist für die Pflege des Product Backlogs verantwortlich. Er verantwortet die Reihenfolge bzw. Priorisierung der Einträge.
@@ -208,8 +206,6 @@ Das Sprint Backlog ist der aktuelle Plan der für einen Sprint zu erledigenden A
 ### Product Increment
 
 Das Inkrement ist die Summe aller Product-Backlog-Einträge, die während des aktuellen und allen vorangegangenen Sprints fertiggestellt wurden. Am Ende eines Sprints muss das neue Inkrement in einem nutzbaren Zustand sein und der Definition of Done entsprechen.
-
-## Zusätzliche Anforderungen
 
 ### Transparenz des Fortschritts
 
@@ -313,8 +309,6 @@ Zur Skalierung von Scrum auf große Projekte mit vielen Mitarbeitern und Scrum-T
 - seit 2011: Scaled Agile Framework (SAFe)
 - seit 2015: Nexus von Ken Schwaber
 - seit 2018: Scrum@Scale von Jeff Sutherland
-
-## Grenzen und Nachteile von Scrum
 
 ### Keine Erfolgsgarantie
 
