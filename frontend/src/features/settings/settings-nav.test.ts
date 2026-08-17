@@ -79,9 +79,9 @@ describe('firstVisiblePath', () => {
   });
 
   it('stays in sync with the shared CONFLUENCE_SETTINGS_PATH constant', () => {
-    // shared/lib/routes.ts duplicates this path so shared/ components
-    // (ConfluencePatBanner) can link to it without importing features/.
-    // Guard the constant against drifting from the nav-derived path.
+    // shared/lib/routes.ts duplicates this path so shared/ components can
+    // link to it without importing features/. Guard the constant against
+    // drifting from the nav-derived path.
     expect(firstVisiblePath(ctx())).toBe(CONFLUENCE_SETTINGS_PATH);
   });
 });

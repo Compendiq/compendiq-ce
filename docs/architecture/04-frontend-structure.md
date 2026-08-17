@@ -36,7 +36,7 @@ flowchart TB
     subgraph shared["shared/"]
         direction LR
         sEnt["enterprise/<br/>context · loader · types · hook"]
-        sComp["components/<br/>layout · article · diagrams · effects ·<br/>banners (TrialBanner · ConfluencePatBanner #771) · feedback ·<br/>badges/ VisionBadge (#1154) ·<br/>upload/ DocumentUploadZone (#1131) ·<br/>ImageAttachZone · composer-row (#1154)"]
+        sComp["components/<br/>layout · article · diagrams · effects ·<br/>banners (TrialBanner) · feedback ·<br/>badges/ VisionBadge (#1154) ·<br/>upload/ DocumentUploadZone (#1131) ·<br/>ImageAttachZone · composer-row (#1154)"]
         sHooks["hooks/<br/>useSessionInit · useTokenRefreshTimer ·<br/>useThemeEffect · useSetupStatus ·<br/>useAttachments · usePrepareImage (#1154)"]
         sLib["lib/ (api client, utils)<br/>downscale-image (#1154)"]
     end
