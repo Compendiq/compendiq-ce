@@ -738,69 +738,49 @@ export function PagesPage() {
     // `mx-auto`: this is a workspace pane beside a sidebar, not a centered
     // page, so the cap should keep content flush-left, not float it.
     <div className="max-w-[1100px] space-y-3">
-      {/* Header. 18px semibold, not 24px bold: this is a route label, and the
-          sidebar already says where you are. The old scale plus a subtitle plus
-          `space-y-6` spent ~110px of the first viewport restating the nav. */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
+      {/* Header with Title, KPI metrics, and action buttons in one row */}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 border-b border-border pb-2.5">
+        <div className="flex items-center gap-3 shrink-0">
           <h1 className="text-lg font-semibold">Pages</h1>
-          <p className="text-[13px] text-muted-foreground">
-            Browse and manage your knowledge base
-          </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => navigate('/trash')}
-            className="rounded-xl border border-border bg-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5"
-            data-testid="trash-link"
-          >
-            <Trash2 size={16} />
-            <span className="hidden sm:inline">Trash</span>
-          </button>
-          {/* Sync moved into the Last Sync KPI card, where it sits beside the
-              value it acts on. Keeping a second copy here would have made the
-              header four buttons wide for no added reach. */}
-          {/* The one FILLED control on this route. Everything here was an
-              outlined rectangle, so the accent never actually filled anything
-              and the page had no fast path to its own primary action — which is
-              half of what the brief asked Plane for. `nm-button-primary` is the
-              filled recipe; the outline treatment stays for secondary actions,
-              which is what makes this one read as primary. */}
-          <button
-            onClick={() => navigate('/pages/new')}
-            className="nm-button-primary"
-          >
-            <Plus size={16} />
-            {/* Labelled at every width. `hidden sm:inline` was survivable while
-                this was an outline square matching the one beside it; filling it
-                aimed the eye at the only control on the page whose meaning was
-                unstated. A saturated icon-only square is a worse affordance than
-                a quiet one. */}
-            <span>New Page</span>
-            {/* Full-opacity ink. At /80 on the accent fill this chip became the
-                lowest-contrast text in the frame — the theme guard measures
-                `primary-foreground` on `primary`, but nothing measures a
-                translucent variant of it, so the alpha put 11px text somewhere
-                no test was looking. */}
-            <ShortcutHint shortcutId="new-page" className="border-primary-foreground/30 bg-transparent text-primary-foreground" />
-          </button>
+
+        <div className="flex flex-wrap items-center gap-x-3 sm:gap-x-4 gap-y-2">
+          {/* Landmarked status metrics */}
+          <section aria-labelledby="kb-status-heading" className="flex items-center">
+            <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
+            <KPICards
+              embeddingStatus={embeddingStatusData}
+              spacesCount={spaces?.length ?? 0}
+              lastSynced={syncStatus?.lastSynced}
+              onSync={() => syncMutation.mutate()}
+              isSyncing={syncStatus?.status === 'syncing'}
+            />
+          </section>
+
+          <span aria-hidden className="hidden h-4 w-px bg-border sm:block" />
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              onClick={() => navigate('/trash')}
+              className="nm-button-ghost flex items-center gap-1.5 h-8 px-2.5 text-xs sm:text-sm"
+              data-testid="trash-link"
+              title="Trash"
+            >
+              <Trash2 size={15} />
+              <span className="hidden sm:inline">Trash</span>
+            </button>
+
+            <button
+              onClick={() => navigate('/pages/new')}
+              className="nm-button-primary h-8 px-3 text-xs sm:text-sm"
+            >
+              <Plus size={15} />
+              <span>New Page</span>
+              <ShortcutHint shortcutId="new-page" className="border-primary-foreground/30 bg-transparent text-primary-foreground" />
+            </button>
+          </div>
         </div>
       </div>
-
-      {/* Landmarked and headed so screen-reader users can jump between the
-          three regions of this page. Previously the whole dashboard exposed a
-          single H1 and nothing else, which made heading navigation — the
-          primary wayfinding tool — useless on the app's main screen. */}
-      <section aria-labelledby="kb-status-heading">
-        <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
-        <KPICards
-        embeddingStatus={embeddingStatusData}
-        spacesCount={spaces?.length ?? 0}
-        lastSynced={syncStatus?.lastSynced}
-          onSync={() => syncMutation.mutate()}
-          isSyncing={syncStatus?.status === 'syncing'}
-        />
-      </section>
 
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (
@@ -1323,9 +1303,9 @@ export function PagesPage() {
       {useSemanticSearch ? (
         <>
           {searchResults.isLoadingImmediate && searchResults.immediateResults.length === 0 ? (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="rounded-xl border border-border bg-card h-16 animate-pulse" />
+                <div key={i} className="rounded-md border border-border bg-card h-14 animate-pulse" />
               ))}
             </div>
           ) : (() => {
@@ -1354,39 +1334,17 @@ export function PagesPage() {
                   {displayItems.map((item, i) => (
                     <m.div
                       key={item.id}
-                      initial={{ opacity: 0, y: 8 }}
+                      initial={{ opacity: 0, y: 4 }}
                       animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: i * 0.03 }}
+                      transition={{ duration: 0.15, delay: i * 0.02 }}
                     >
                       <button
                         onClick={() => navigate(`/pages/${item.id}`)}
-                        // Same content-driven wrap as the browse rows above
-                        // (PageListItem): the similarity chip is `shrink-0`, so
-                        // below `sm` the truncating title absorbed the entire
-                        // width deficit. `max-sm:flex-wrap` lets the chip drop
-                        // to its own line instead — and only when the title
-                        // actually needs the width (see the title block below).
-                        // Every added class is `max-sm:*`, so `sm+` keeps
-                        // today's single-line layout untouched.
-                        className="rounded-xl border border-border bg-card transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left max-sm:flex-wrap max-sm:gap-y-1"
+                        className="flex w-full items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-accent max-sm:items-start max-sm:flex-wrap max-sm:gap-y-1"
                         data-testid={`article-hover-${item.id}`}
                       >
-                        <FileText size={18} className="shrink-0 text-muted-foreground" />
-                        {/* `basis-auto` makes the wrap content-driven —
-                            `flex-1`'s basis of 0 never triggers a line break —
-                            but this row's anatomy differs from the browse row's
-                            in one load-bearing way: the file icon is the FIRST
-                            flex item inside the wrap container (the browse
-                            row's checkbox sits outside it), and a block whose
-                            content overflows the line wraps WHOLESALE below
-                            the icon, stranding an 18px glyph alone on its own
-                            line. The max-width clamp — 100% minus the icon's
-                            18px and the 12px `gap-3` — caps the block's
-                            hypothetical main size at exactly the space beside
-                            the icon, so the block always shares the icon's
-                            line and the chip is the thing that wraps. */}
                         <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
-                          <p className="truncate font-medium">{item.title}</p>
+                          <p className="truncate text-[13px] font-medium text-foreground">{item.title}</p>
                           {/* `contain:inline-size` zeroes the excerpt's
                               contribution to the block's intrinsic width.
                               Without it the excerpt's unwrapped length — not
@@ -1414,26 +1372,37 @@ export function PagesPage() {
                               html={item.excerpt}
                               allowedTags={['mark']}
                               allowedAttrs={[]}
-                              className="mt-0.5 line-clamp-2 text-xs text-muted-foreground max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-foreground/10 [&_mark]:font-medium [&_mark]:text-foreground"
+                              className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-foreground/10 [&_mark]:font-medium [&_mark]:text-foreground"
                             />
                           )}
                           {item.spaceKey && (
-                            <span className="mt-1 inline-block text-xs text-muted-foreground">{item.spaceKey}</span>
+                            <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                              {item.spaceKey !== '__local__' ? (
+                                <span
+                                  className={cn('shrink-0', neutralChipClass)}
+                                  data-testid="badge-confluence"
+                                  data-source-badge={item.id}
+                                >
+                                  {item.spaceKey}
+                                </span>
+                              ) : (
+                                <span
+                                  className={cn('shrink-0', neutralChipClass)}
+                                  data-testid="badge-local"
+                                  data-source-badge={item.id}
+                                >
+                                  Local
+                                </span>
+                              )}
+                            </div>
                           )}
                         </div>
-                        {/* Similarity only — `score` carries whatever unit the
-                            mode produced, so rendering it showed the same page
-                            at ~87% in semantic and ~2% in hybrid (#1117). Null
-                            (keyword mode, or a full-text-only hybrid row) shows
-                            nothing rather than "0%". The `> 0` half is the
-                            pre-#1117 guard, kept: cosine distance runs to 2, so
-                            `1 - distance` can be negative for a chunk pointing
-                            away from the query, and "-23%" is not a useful
-                            badge. */}
+
+                        {/* Similarity only — renderable cosine distance percentage */}
                         {item.similarity !== null && item.similarity > 0 && (
                           <span
                             title="Semantic similarity to your query"
-                            className="shrink-0 rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground"
+                            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground border border-border/40"
                           >
                             {(item.similarity * 100).toFixed(0)}%
                           </span>
@@ -1453,9 +1422,9 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
-                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
+                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
               >
-                <ChevronLeft size={18} />
+                <ChevronLeft size={16} />
               </button>
               <span className="text-sm text-muted-foreground" aria-live="polite">
                 Page {page} of {searchResults.totalPages}
@@ -1464,9 +1433,9 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.min(searchResults.totalPages, page + 1) })}
                 disabled={page >= searchResults.totalPages}
                 aria-label="Next page"
-                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
+                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
               >
-                <ChevronRight size={18} />
+                <ChevronRight size={16} />
               </button>
             </div>
           )}
@@ -1600,9 +1569,9 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
-                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
+                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
               >
-                <ChevronLeft size={18} />
+                <ChevronLeft size={16} />
               </button>
               <span className="text-sm text-muted-foreground" aria-live="polite">
                 Page {page} of {pagesData.totalPages}
@@ -1611,9 +1580,9 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.min(pagesData.totalPages, page + 1) })}
                 disabled={page >= pagesData.totalPages}
                 aria-label="Next page"
-                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
+                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
               >
-                <ChevronRight size={18} />
+                <ChevronRight size={16} />
               </button>
             </div>
           )}
