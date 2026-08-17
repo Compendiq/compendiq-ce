@@ -35,8 +35,9 @@ describe('the Edit affordance', () => {
     expect(editButton()).toMatch(/shrink-0/);
   });
 
-  it('uses compact desktop metrics so the article strip stays on the shared 48px panel line', () => {
-    expect(editButton()).toMatch(/px-2\.5 py-1 text-xs/);
+  it('uses the real secondary button so it outranks Relocate / Verify', () => {
+    expect(editButton()).toMatch(/nm-button-ghost/);
+    expect(editButton()).not.toMatch(/px-2\.5 py-1 text-xs/);
     expect(source).toContain('min-h-[calc(3rem-1px)]');
   });
 
@@ -48,6 +49,11 @@ describe('the Edit affordance', () => {
 
   it('keeps its keyboard hint', () => {
     expect(editButton()).toMatch(/shortcutId="toggle-edit"/);
+  });
+
+  it('hosts layout presets in the article strip, not the global header', () => {
+    expect(source).toContain('LayoutPresetMenu');
+    expect(source).toContain('useArticleLayoutControls');
   });
 
   // The accent belongs to actions, and the only filled teal on this route is

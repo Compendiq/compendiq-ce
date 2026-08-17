@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Save, Upload, LayoutTemplate, Globe, Lock, X } from 'lucide-react';
+import { Save, Upload, LayoutTemplate, Globe, Lock, X } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
@@ -294,8 +294,11 @@ export function NewPagePage() {
     || !title.trim()
     || !spaceKey;
   // Explain WHY create is disabled — but not while a create is in flight
-  // (the button already says "Creating...").
+  // (the button already says "Creating…").
   const showCreateHint = isCreateDisabled && !isCreating;
+  const handleCancel = useCallback(() => {
+    navigate('/pages');
+  }, [navigate]);
   // With a space preselected (#1122), "select a space" is usually already done —
   // saying so anyway sends the user hunting for a control that is fine.
   const createHint = !spaceKey
@@ -304,27 +307,16 @@ export function NewPagePage() {
 
   return (
     <div>
-      {/* ── Sticky formatting toolbar ───────────────────────────────────────
-          The ONLY thing that stays pinned while scrolling — bar across the
-          column, not a floating card (loses the border/radius, keeps a
-          bottom hairline). The article editor's format bar now lives in the
-          app header; New Page keeps this in-column strip because its
-          Create action and space/type context still sit in the page.
-          It used to wrap the whole header INCLUDING the editor body in one
-          sticky box, which meant nothing actually stayed pinned once a draft
-          grew past a screenful: a sticky element's stuck position is bounded
-          by its own box, so a box as tall as the document never visibly
-          sticks. Shrinking the sticky box to just the toolbar is what makes
-          Create Page and the formatting controls reachable while scrolling a
-          long draft, matching the article editor.
-          `-top-5`/`-mt-5`/`isolate` plus the under-mask below are the same
-          fix #1186 gave PageViewPage's edit toolbar: a sticky box does not
-          reach the scrollport's top edge when its scroll container has top
-          padding (AppLayout's `pt-5`), so without this the bar stuck one
-          padding step too low and content scrolled up through the gap in
-          full view. The under-mask fills `bg-card`, not `bg-background` — on
-          this route the main column IS the pane, so a chassis-coloured mask
-          painted a grey band across the white document above the toolbar. */}
+      {/* Sticky write chrome: formatting + Create/Cancel, then the identity
+          row (type, space, visibility, location). Both stay pinned so a long
+          draft cannot scroll away the only exit or the space/visibility
+          decision. The editor body is outside this box — a sticky element's
+          stuck position is bounded by its own box, so wrapping the document
+          would make nothing pin.
+          `-top-5`/`-mt-5`/`isolate` plus the under-mask are the same
+          fix #1186 gave PageViewPage's edit toolbar. The under-mask fills
+          `bg-card`, not `bg-background` — on this route the main column IS
+          the pane. */}
       <div
         data-testid="new-page-sticky-header"
         className="sticky -top-5 z-30 isolate -mt-5"
@@ -341,13 +333,24 @@ export function NewPagePage() {
                 editor={editorInstance}
                 headerNumbering={headerNumbering}
                 onToggleHeaderNumbering={toggleHeaderNumbering}
+                pageProperty={
+                  <TagPopover
+                    tags={pendingLabels}
+                    onAddTag={(t) => setPendingLabels((prev) => [...prev, t])}
+                    onRemoveTag={(t) => setPendingLabels((prev) => prev.filter((item) => item !== t))}
+                  />
+                }
                 actions={
                   <>
-                    <TagPopover
-                      tags={pendingLabels}
-                      onAddTag={(t) => setPendingLabels((prev) => [...prev, t])}
-                      onRemoveTag={(t) => setPendingLabels((prev) => prev.filter((item) => item !== t))}
-                    />
+                    <button
+                      type="button"
+                      onClick={handleCancel}
+                      className="nm-button-ghost shrink-0"
+                      data-testid="cancel-new-page-btn"
+                    >
+                      <X size={15} aria-hidden="true" />
+                      Cancel
+                    </button>
                     <span title={showCreateHint ? createHint : undefined}>
                       <button
                         onClick={handleCreate}
@@ -355,7 +358,7 @@ export function NewPagePage() {
                         aria-describedby={showCreateHint ? 'create-page-hint' : undefined}
                         className="nm-button-primary shrink-0"
                       >
-                        <Save size={15} aria-hidden="true" /> {isCreating ? 'Creating...' : 'Create Page'}
+                        <Save size={15} aria-hidden="true" /> {isCreating ? 'Creating…' : 'Create Page'}
                       </button>
                     </span>
                   </>
@@ -366,27 +369,9 @@ export function NewPagePage() {
           {editorInstance && (
             <EditorContextToolbars editor={editorInstance} innerClassName="mx-auto max-w-[1248px] px-4 sm:px-16" />
           )}
-        </div>
-      </div>
-
-      <div className="mt-7">
-        {/* Context bar — everything you choose before the page exists: type,
-            space, visibility, location, plus the two content-source actions.
-            Not sticky (matching the article editor's own breadcrumb strip,
-            which the sticky toolbar above replaces while editing); it scrolls
-            away with the title once you're into the body. */}
-        <div className="-mx-4 border-b border-border bg-card sm:-mx-6">
           <div className="mx-auto max-w-[1248px] px-4 py-3 sm:px-16">
-            {/* Wraps at both levels: at 390px the title, Import Markdown and
-                Use Template could not all fit one line, and the row clipped
-                its right edge. */}
             <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-              <div className="flex shrink-0 items-center gap-3">
-                <button onClick={() => navigate('/pages')} aria-label="Back to pages" className="nm-icon-button -ml-1.5">
-                  <ArrowLeft size={18} />
-                </button>
-                <h1 className="text-lg font-semibold">New Page</h1>
-              </div>
+              <h1 className="text-lg font-semibold">New Page</h1>
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => fileInputRef.current?.click()}
@@ -551,7 +536,9 @@ export function NewPagePage() {
             </div>
           </div>
         </div>
+      </div>
 
+      <div className="mt-7">
         {/* Title — same type ramp as the article editor's own title
             (text-3xl/4xl bold) so a page in progress carries the same weight
             it will have the moment it's saved. */}

@@ -38,6 +38,8 @@ import type { TocHeading } from '../../shared/components/article/TableOfContents
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagPopover } from '../../shared/components/TagPopover';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
+import { LayoutPresetMenu } from '../../shared/components/layout/LayoutPresetMenu';
+import { useArticleLayoutControls } from '../../shared/components/layout/article-layout-controls';
 import { neutralChipClass } from '../../shared/components/badges/neutral-chip';
 import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
@@ -202,6 +204,7 @@ export function PageViewPage() {
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
   // Relocate between a local space and Confluence (#1123).
   const [relocateOpen, setRelocateOpen] = useState(false);
+  const layoutControls = useArticleLayoutControls();
 
   const [headerNumbering, setHeaderNumbering] = useState(() =>
     localStorage.getItem('editor-header-numbering') === 'true',
@@ -712,15 +715,17 @@ export function PageViewPage() {
       {editing && (
         <HeaderHost fallbackClassName="border-b border-border bg-card">
           {(portaled) => {
+            const tagChip = (
+              <TagPopover
+                tags={draftLabels}
+                onAddTag={handleAddTag}
+                onRemoveTag={handleRemoveTag}
+                suggestions={filterOptions?.labels}
+                isLoading={labelsMutation.isPending}
+              />
+            );
             const sessionActions = (
               <>
-                <TagPopover
-                  tags={draftLabels}
-                  onAddTag={handleAddTag}
-                  onRemoveTag={handleRemoveTag}
-                  suggestions={filterOptions?.labels}
-                  isLoading={labelsMutation.isPending}
-                />
                 <button
                   onClick={handleCancelEditing}
                   title="Cancel editing (Esc)"
@@ -758,10 +763,12 @@ export function PageViewPage() {
                     editor={editorInstance}
                     headerNumbering={headerNumbering}
                     onToggleHeaderNumbering={toggleHeaderNumbering}
+                    pageProperty={tagChip}
                     actions={sessionActions}
                   />
                 ) : (
                   <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
+                    {tagChip}
                     {sessionActions}
                   </div>
                 )}
@@ -836,6 +843,12 @@ export function PageViewPage() {
 
           <div className="flex items-center gap-1.5">
             <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
+            {layoutControls && (
+              <LayoutPresetMenu
+                activePreset={layoutControls.activePreset}
+                onSelect={layoutControls.applyPreset}
+              />
+            )}
                 <div className="flex items-center gap-1.5">
                   {canRelocate && (
                     <button
@@ -910,25 +923,16 @@ export function PageViewPage() {
                   </DropdownMenu.Root>
                 </div>
 
-                {/* Edit is the primary action on this route and used to be its
-                    quietest control: 12px ghost text in a ~24px box, identical
-                    in weight to Relocate/Verify/Graph beside it, and last in a
-                    wrapping row — so at 834px and 390px it landed alone on a
-                    second line, below the 44px thumb minimum, on the half of
-                    the route the authoring audience exists for. The comment
-                    above already called it "the most used control on the page";
-                    `flex-wrap` fixed the clipping it described, not the
-                    hierarchy.
-
-                    A bordered secondary button, deliberately NOT the filled
-                    primary: ADR-010 keeps the accent for actions and the only
-                    filled teal on this route belongs to the setup banner, so a
-                    second one would just move the competition rather than end
-                    it. `shrink-0` and outside the wrapping group, so the
-                    secondaries wrap among themselves and Edit stays pinned. */}
+                {/* Edit is the primary action on this route. Relocate / Verify
+                    / overflow stay muted text; Edit uses the real secondary
+                    button (bordered `nm-button-ghost` at control height) so it
+                    outranks them without spending the filled teal Save uses
+                    in write mode. `shrink-0` and outside the wrapping group,
+                    so the secondaries wrap among themselves and Edit stays
+                    pinned. */}
                 <button
                   onClick={handleStartEditing}
-                  className="nm-button-ghost shrink-0 px-2.5 py-1 text-xs max-sm:min-h-11"
+                  className="nm-button-ghost shrink-0 max-sm:min-h-11"
                   data-testid="edit-page-btn"
                 >
                   Edit
