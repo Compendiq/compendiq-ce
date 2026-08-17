@@ -8,7 +8,9 @@ export default defineConfig({
     setupFiles: ['src/test-setup.ts'],
     testTimeout: 30_000,
     // Run test files sequentially to avoid DB conflicts
-    // (multiple test files share the same PostgreSQL database)
+    // (multiple test files share the same PostgreSQL database).
+    // Per-worker DBs live in test-worker-isolation.ts; do not flip this
+    // on until src/domains finishes under fileParallelism without hanging.
     fileParallelism: false,
     coverage: {
       provider: 'v8',
@@ -21,6 +23,7 @@ export default defineConfig({
         'src/test-setup.ts',
         'src/test-db-helper.ts',
         'src/test-redis-helper.ts',
+        'src/test-worker-isolation.ts',
         'src/core/db/migrations/**',
       ],
       // Phase 0 coverage gates. Aggregate-wide floors, not per-file. The

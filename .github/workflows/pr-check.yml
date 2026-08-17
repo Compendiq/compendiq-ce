@@ -108,14 +108,31 @@ jobs:
       - name: Build contracts
         run: npm run build -w @compendiq/contracts
 
-      - name: Backend tests (with coverage)
-        run: npm run test:coverage -w backend
-
-      - name: Frontend tests
-        run: npm test -w frontend
+      # Coverage stays on push to dev/main (coverage.yml). Instrumenting
+      # every PR added ~minutes to the critical path for a floor that
+      # barely moves on a typical change.
+      - name: Backend tests
+        run: npm test -w backend
 
       - name: Contracts tests
         run: npm test -w @compendiq/contracts
+
+  frontend-test:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Frontend tests
+        run: npm test -w frontend
 
   # #1102 — retrieval quality gate. Deliberately its OWN job: it runs a real
   # embedding model, which the fast PR path must not wait on. Scoped by paths

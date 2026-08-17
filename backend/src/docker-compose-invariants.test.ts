@@ -514,6 +514,69 @@ describe('.github/workflows/pr-check.yml runs validation for every author', () =
   });
 });
 
+/**
+ * Extract a top-level GitHub Actions job block (`  <id>:` under `jobs:`).
+ * Same indent rule as extractServiceBlock: stop at the next 0- or 2-space key.
+ */
+function extractWorkflowJob(workflowText: string, jobId: string): string {
+  const lines = workflowText.split('\n');
+  const jobsAt = lines.findIndex((line) => line === 'jobs:');
+  expect(jobsAt, 'jobs: block not found').toBeGreaterThanOrEqual(0);
+  const start = lines.findIndex((line, i) => i > jobsAt && line === `  ${jobId}:`);
+  expect(start, `job "${jobId}" not found`).toBeGreaterThanOrEqual(0);
+  const block: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (/^ {0,2}\S/.test(line)) break;
+    block.push(line);
+  }
+  return block.join('\n');
+}
+
+describe('.github/workflows/pr-check.yml keeps the Tests job off the frontend and off coverage', () => {
+  const testsJob = extractWorkflowJob(prCheckWorkflow, 'test');
+  const frontendJob = extractWorkflowJob(prCheckWorkflow, 'frontend-test');
+
+  it('runs frontend tests as their own job so they do not wait on backend coverage', () => {
+    expect(frontendJob).toMatch(/name:\s*Frontend Tests/);
+    expect(frontendJob).toMatch(/npm test -w frontend/);
+    expect(frontendJob).not.toMatch(/postgres:/);
+    expect(testsJob).not.toMatch(/npm test -w frontend/);
+  });
+
+  it('runs backend tests on the PR path without coverage instrumentation', () => {
+    expect(testsJob).toMatch(/npm test -w backend/);
+    expect(testsJob).not.toMatch(/test:coverage/);
+    expect(prCheckWorkflow).not.toMatch(/test:coverage/);
+  });
+
+  it('still builds contracts and runs the contracts suite on the backend Tests job', () => {
+    expect(testsJob).toMatch(/npm run build -w @compendiq\/contracts/);
+    expect(testsJob).toMatch(/npm test -w @compendiq\/contracts/);
+  });
+});
+
+describe('.github/workflows/coverage.yml keeps the 70% backend floor on push to dev/main', () => {
+  const coverageWorkflow = readFileSync(
+    join(repoRoot, '.github', 'workflows', 'coverage.yml'),
+    'utf8',
+  );
+
+  it('is push-only to the long-lived branches — not a PR-blocking job', () => {
+    expect(coverageWorkflow).toMatch(/^on:/m);
+    expect(coverageWorkflow).toMatch(/push:/);
+    expect(coverageWorkflow).toMatch(/branches:\s*\[[^\]]*\bdev\b/);
+    expect(coverageWorkflow).toMatch(/branches:\s*\[[^\]]*\bmain\b/);
+    expect(coverageWorkflow).not.toMatch(/pull_request:/);
+  });
+
+  it('runs backend vitest with coverage (the gate the PR path dropped)', () => {
+    expect(coverageWorkflow).toMatch(/test:coverage -w backend/);
+    expect(coverageWorkflow).toMatch(/postgres:/);
+    expect(coverageWorkflow).toMatch(/redis:/);
+  });
+});
+
 describe('docker/Dockerfile.enterprise keeps the GitHub token out of image layers (issue #930)', () => {
   it('never writes the token into a persisted .npmrc via a build-arg', () => {
     // A build-arg written to .npmrc in its own RUN bakes the token into that
