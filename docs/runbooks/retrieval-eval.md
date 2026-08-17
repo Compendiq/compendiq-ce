@@ -577,6 +577,36 @@ keywords, error text and how-to phrasings, because a fixture made of one
 phrasing measures half the system — keyword queries flatter FTS, natural
 questions flatter the vector leg.
 
+### Image corpus (#1115 P5a)
+
+`backend/src/domains/llm/eval/corpus-de-images/` is a **third** corpus: 66
+German Wikipedia articles carrying 189 vendored images (6.2 MB), across four
+content shapes — engineering diagrams, scientific figures, process notation and
+photographs. It exists because #1115's image retrieval leg cannot be measured on
+a corpus with no pictures. Built by `tools/eval-corpus-images/build.py` from
+`articles.yaml`, at revisions pinned in the corpus's own `MANIFEST.json`; a
+plain re-run reproduces the committed bytes, `--update` moves to current
+revisions and obliges a re-label. Read its `README.md` first.
+
+**Nothing here consumes it yet, and that is deliberate.** It is absent from
+`CORPUS_DIRS` and from `corpusDirsForLanguage`, so no run this runbook describes
+touches it and every recorded baseline stays comparable —
+`computeCorpusManifestSha` covers every directory in that list, so wiring it in
+invalidates all of them at once. **P5b** adds the `--images` axis and does that
+on purpose; **P5c** writes the labels, by an independent vision-capable agent on
+a different model from the implementer. `corpus-de-images.test.ts` fails if the
+wiring happens by accident first, and is also what keeps the corpus honest:
+page bodies carry `![](images/…)` with an **empty alt and no caption**, because
+a page that captions its own figures is answerable from text alone and would
+score the image leg a win it did not earn. The captions live in the manifest,
+for the labeller.
+
+Licences are not the text corpus's. Page text is CC BY-SA 4.0 (adapted);
+images are filtered to CC0 / public domain / CC BY x / CC BY-SA x with a named
+author each, and the obligations are stated per page and per image in that
+directory's `LICENSE-ATTRIBUTION.md`. It is a test fixture, licensed separately
+from this MIT repository.
+
 ## The `vocabulary-gap` slice (#1112)
 
 Every style above was written by an agent **reading the page**, and that

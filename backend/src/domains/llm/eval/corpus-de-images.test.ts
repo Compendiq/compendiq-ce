@@ -1,0 +1,317 @@
+/**
+ * #1115 P5a — the guard over the vendored German image corpus.
+ *
+ * Filesystem-only, and deliberately NOT gated on a database or a network the
+ * way `runner.integration.test.ts` is (the `migration-filenames.test.ts`
+ * precedent): everything it checks is a property of committed bytes, and a
+ * guard that skips wherever the corpus is most likely to be edited by hand is
+ * not a guard.
+ *
+ * What it exists to stop, in the order the failures actually happen:
+ *
+ * 1. **A hand-edit to `MANIFEST.json`.** The builder regenerates the whole
+ *    directory, so an edit made here is deleted without a word on the next
+ *    rebuild — and until then the fixture's labeller reads captions that no
+ *    longer describe the bytes. Both directions are checked, so a page added
+ *    on disk without a manifest entry fails too.
+ * 2. **A caption or an alt text leaking into the page body.** The whole point
+ *    of this corpus is a page whose visual content is *not* restated in prose
+ *    (the design's Confluence-shaped case). If the stripping regresses, every
+ *    image query becomes answerable from text alone and the image leg measures
+ *    nothing — silently, and in the direction that flatters the feature.
+ * 3. **An image that the product would refuse.** The bytes are re-checked with
+ *    `sniffImageFormat` / `readImageDimensions` from `core/services/
+ *    image-validator.ts` — the same code the intake path runs — rather than
+ *    trusting what the builder wrote into the manifest.
+ * 4. **A licence the repo may not carry.** CC0 / public domain / CC BY x /
+ *    CC BY-SA x only, each with a named author, because the attribution file
+ *    is an obligation and not a courtesy.
+ * 5. **Wiring it into the eval runner by accident.** See the last test.
+ */
+import { describe, it, expect } from 'vitest';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
+import {
+  IMAGE_CORPUS_DIR,
+  IMAGE_CORPUS_CATEGORIES,
+  MAX_IMAGE_EDGE_PX,
+  MAX_IMAGE_FILE_BYTES,
+  MAX_TOTAL_IMAGE_BYTES,
+  MIN_PAGES_PER_CATEGORY,
+  IMAGE_FILE_NAME,
+  isAllowedImageLicense,
+  loadImageCorpusManifest,
+} from './corpus-images.js';
+import { CORPUS_DIRS, corpusDirsForLanguage } from './fixture.js';
+import { sniffImageFormat, readImageDimensions } from '../../../core/services/image-validator.js';
+
+const manifest = loadImageCorpusManifest();
+const pages = manifest.pages;
+const allImages = pages.flatMap((page) => page.images.map((image) => ({ page, image })));
+
+/** Non-corpus markdown, exactly as `corpusFilesOnDisk` treats it. */
+const NON_CORPUS = new Set(['LICENSE-ATTRIBUTION.md', 'README.md']);
+
+function pageBody(file: string): string {
+  return readFileSync(join(IMAGE_CORPUS_DIR, file), 'utf8');
+}
+
+/** Every markdown image reference in a page, alt text included. */
+function imageRefs(markdown: string): Array<{ alt: string; target: string }> {
+  return [...markdown.matchAll(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)].map((m) => ({
+    alt: m[1] ?? '',
+    target: m[2] ?? '',
+  }));
+}
+
+describe('corpus-de-images — manifest and disk agree', () => {
+  it('lists at least one page', () => {
+    expect(pages.length).toBeGreaterThan(0);
+  });
+
+  it('has a file on disk for every manifest page, and a manifest entry for every file', () => {
+    const onDisk = new Set(
+      readdirSync(IMAGE_CORPUS_DIR).filter((f) => f.endsWith('.md') && !NON_CORPUS.has(f)),
+    );
+    const inManifest = new Set(pages.map((p) => p.file));
+
+    expect(
+      [...inManifest].filter((f) => !onDisk.has(f)),
+      'MANIFEST.json names pages that are not on disk. Re-run tools/eval-corpus-images/build.py.',
+    ).toEqual([]);
+    expect(
+      [...onDisk].filter((f) => !inManifest.has(f)),
+      'Pages exist on disk that MANIFEST.json does not list. A page invisible to the manifest is ' +
+        'invisible to the seeder and to the labeller, so it silently leaves the corpus.',
+    ).toEqual([]);
+  });
+
+  it('gives every page a unique file, slug-shaped name', () => {
+    const files = pages.map((p) => p.file);
+    expect(new Set(files).size, 'duplicate page file in MANIFEST.json').toBe(files.length);
+    expect(files.filter((f) => !/^[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(f))).toEqual([]);
+  });
+
+  it('gives every page at least one image', () => {
+    const bare = pages.filter((p) => p.images.length === 0).map((p) => p.file);
+    expect(
+      bare,
+      'A page with no image is an ordinary text page. It cannot answer an image query and it ' +
+        'cannot be an image-negative distractor either, so it only dilutes N.',
+    ).toEqual([]);
+  });
+
+  it('covers every content shape', () => {
+    const counts = Object.fromEntries(
+      IMAGE_CORPUS_CATEGORIES.map((c) => [c, pages.filter((p) => p.category === c).length]),
+    );
+    for (const category of IMAGE_CORPUS_CATEGORIES) {
+      expect(
+        counts[category],
+        `Only ${counts[category]} ${category} pages. The four shapes are measured separately — ` +
+          `a shape thinner than ${MIN_PAGES_PER_CATEGORY} pages cannot carry its own slice of the ` +
+          `fixture.\n${JSON.stringify(counts)}`,
+      ).toBeGreaterThanOrEqual(MIN_PAGES_PER_CATEGORY);
+    }
+  });
+});
+
+describe('corpus-de-images — images', () => {
+  it('references every manifest image from exactly one page, and every file from exactly one reference', () => {
+    const referenced = new Map<string, string[]>();
+    for (const page of pages) {
+      for (const ref of imageRefs(pageBody(page.file))) {
+        referenced.set(ref.target, [...(referenced.get(ref.target) ?? []), page.file]);
+      }
+    }
+
+    const declared = allImages.map(({ image }) => image.file);
+    expect(new Set(declared).size, 'the same image file is declared by two manifest entries').toBe(
+      declared.length,
+    );
+
+    const shared = [...referenced.entries()].filter(([, from]) => from.length > 1);
+    expect(
+      shared.map(([file, from]) => `${file} <- ${from.join(', ')}`),
+      'An image referenced from two pages makes the labels ambiguous: a query answered by that ' +
+        'image has two correct pages, and neither the fixture nor imageHit@K models that.',
+    ).toEqual([]);
+
+    expect(
+      declared.filter((f) => !referenced.has(f)).sort(),
+      'MANIFEST.json declares images no page references.',
+    ).toEqual([]);
+    expect(
+      [...referenced.keys()].filter((f) => !declared.includes(f)).sort(),
+      'A page references an image MANIFEST.json does not declare, so it carries no attribution.',
+    ).toEqual([]);
+
+    const filesOnDisk = readdirSync(join(IMAGE_CORPUS_DIR, 'images')).map((f) => `images/${f}`);
+    expect(
+      filesOnDisk.filter((f) => !declared.includes(f)).sort(),
+      'Orphan image bytes on disk. The builder rewrites the directory, so these are leftovers ' +
+        'from a previous run — they ship in the repo and are attributed nowhere.',
+    ).toEqual([]);
+  });
+
+  it('keeps every page reference in manifest order', () => {
+    for (const page of pages) {
+      expect(
+        imageRefs(pageBody(page.file)).map((r) => r.target),
+        `${page.file}: the page's image references and its manifest entry disagree`,
+      ).toEqual(page.images.map((i) => i.file));
+    }
+  });
+
+  it('sniffs as a raster format the product accepts, at the declared size', () => {
+    for (const { page, image } of allImages) {
+      const bytes = readFileSync(join(IMAGE_CORPUS_DIR, image.file));
+      const format = sniffImageFormat(bytes);
+      expect(format, `${image.file} (${page.file}) does not sniff as a supported image`).not.toBeNull();
+      expect(
+        format,
+        `${image.file}: SVG and GIF are out — the design vendors SVG figures as Wikimedia's PNG ` +
+          'thumbnail rendering precisely so the bytes are raster.',
+      ).toBe(image.format);
+      expect(['png', 'jpeg', 'webp']).toContain(format);
+
+      const dims = readImageDimensions(bytes, format!);
+      expect(dims, `${image.file}: dimensions unreadable`).not.toBeNull();
+      expect({ ...dims }, `${image.file}: manifest dimensions disagree with the bytes`).toEqual({
+        width: image.width,
+        height: image.height,
+      });
+      expect(
+        Math.max(dims!.width, dims!.height),
+        `${image.file} is ${dims!.width}x${dims!.height}; the corpus caps the longest edge at ` +
+          `${MAX_IMAGE_EDGE_PX}px so the whole thing stays committable.`,
+      ).toBeLessThanOrEqual(MAX_IMAGE_EDGE_PX);
+
+      expect(bytes.length, `${image.file}: manifest byte count disagrees with the file`).toBe(image.bytes);
+      expect(
+        bytes.length,
+        `${image.file} is ${bytes.length} bytes; the hard cap is ${MAX_IMAGE_FILE_BYTES}.`,
+      ).toBeLessThanOrEqual(MAX_IMAGE_FILE_BYTES);
+    }
+  });
+
+  it('stays inside the repository budget', () => {
+    const total = allImages.reduce(
+      (sum, { image }) => sum + statSync(join(IMAGE_CORPUS_DIR, image.file)).size,
+      0,
+    );
+    expect(
+      total,
+      `${(total / 1024 / 1024).toFixed(2)} MB of images. These are committed binaries in an ` +
+        'otherwise text repository; the budget is what keeps a corpus refresh from being a clone-size event.',
+    ).toBeLessThanOrEqual(MAX_TOTAL_IMAGE_BYTES);
+  });
+
+  it('carries a named author and a permitted licence for every image', () => {
+    const offenders = allImages
+      .filter(({ image }) => !isAllowedImageLicense(image.license) || image.author.trim().length === 0)
+      .map(({ image }) => `${image.file}: author=${JSON.stringify(image.author)} license=${JSON.stringify(image.license)}`);
+    expect(
+      offenders,
+      'Only CC0, public domain, CC BY x and CC BY-SA x are permitted, each with a named author. ' +
+        'GFDL-only, NC, ND, fair use and unknown are rejected at build time — an image reaching ' +
+        'here without one means the filter was edited or the manifest was.',
+    ).toEqual([]);
+  });
+
+  it('points every image at the Commons file it came from', () => {
+    for (const { image } of allImages) {
+      // The canonical English namespace, not de.wikipedia's `Datei:` alias —
+      // the alias does not resolve on Commons, so an attribution carrying it
+      // links nowhere.
+      expect(image.sourceTitle, `${image.file}`).toMatch(/^File:/);
+      expect(image.sourceUrl, `${image.file}`).toMatch(/^https:\/\/commons\.wikimedia\.org\/wiki\/File:/);
+    }
+  });
+
+  it('names every image <page-slug>__<n>.<ext>', () => {
+    const offenders = allImages
+      .map(({ image }) => image.file)
+      .filter((file) => !IMAGE_FILE_NAME.test(file));
+    expect(
+      offenders,
+      'The name is what ties an image to exactly one page and makes the "referenced from one ' +
+        'page" check mechanical rather than a lookup.',
+    ).toEqual([]);
+  });
+});
+
+describe('corpus-de-images — no caption or alt text reaches the page body', () => {
+  it('renders every image with an empty alt and a relative path', () => {
+    for (const page of pages) {
+      const refs = imageRefs(pageBody(page.file));
+      expect(
+        refs.filter((r) => r.alt !== '').map((r) => `${page.file}: ![${r.alt}]`),
+        'Alt text is a restatement of the picture in prose. The text leg would answer the image ' +
+          'queries from it and the measurement would be of nothing.',
+      ).toEqual([]);
+      expect(refs.filter((r) => !r.target.startsWith('images/')).map((r) => r.target)).toEqual([]);
+    }
+  });
+
+  it('leaves no figure markup behind', () => {
+    for (const page of pages) {
+      const body = pageBody(page.file);
+      for (const marker of ['<figure', '<figcaption', 'class="thumb', 'mw-default-size', 'thumbcaption']) {
+        expect(body.includes(marker), `${page.file} still contains ${marker}`).toBe(false);
+      }
+    }
+  });
+
+  it('does not restate a manifest caption verbatim in the prose', () => {
+    // Only captions long enough that a verbatim occurrence is evidence rather
+    // than coincidence: "Kölner Dom" is a caption AND a phrase the article
+    // uses forty times, and failing on that would be a guard nobody could
+    // satisfy. A leak reintroduces the whole caption, so the long ones catch it.
+    const CAPTION_EVIDENCE_CHARS = 30;
+    const leaks: string[] = [];
+    for (const page of pages) {
+      const body = pageBody(page.file);
+      for (const image of page.images) {
+        const caption = image.caption.trim();
+        if (caption.length < CAPTION_EVIDENCE_CHARS) continue;
+        if (body.includes(caption)) leaks.push(`${page.file}: "${caption}"`);
+      }
+    }
+    expect(
+      leaks,
+      'A caption is in the manifest for the labeller and must not be in the page. The corpus ' +
+        'mimics a Confluence page whose visual content is not restated in prose — that is the ' +
+        'only reason an image leg has anything to add over the text leg here.',
+    ).toEqual([]);
+  });
+
+  it('keeps real prose around the images', () => {
+    for (const page of pages) {
+      const prose = pageBody(page.file)
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+        .replace(/^#.*$/gm, '')
+        .trim();
+      expect(
+        prose.length,
+        `${page.file} has almost no text. An image-only page cannot be a text distractor and ` +
+          'would not survive the seeder\'s 20-character floor either.',
+      ).toBeGreaterThan(400);
+    }
+  });
+});
+
+describe('corpus-de-images — not wired into the eval runner', () => {
+  it('is absent from CORPUS_DIRS and from every language', () => {
+    // P5b adds the `--images` axis and wires this in deliberately. Until then
+    // it must not join a corpus any recorded baseline was measured against:
+    // `computeCorpusManifestSha` covers every directory in the list, so adding
+    // one invalidates every baseline at once — which is the sha's job, but not
+    // a cost to pay by accident in the PR that only vendors the bytes.
+    expect([...CORPUS_DIRS]).not.toContain(IMAGE_CORPUS_DIR);
+    for (const lang of ['en', 'de', undefined]) {
+      expect([...corpusDirsForLanguage(lang)]).not.toContain(IMAGE_CORPUS_DIR);
+    }
+  });
+});

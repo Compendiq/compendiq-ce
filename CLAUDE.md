@@ -135,6 +135,28 @@ And `resetEvalCorpus` drops the
 *no* claim rather than the previous run's — absent routes the benchmark to its
 warning, which is the safe verdict for "unknown".
 
+**A third corpus exists and nothing consumes it yet (#1115 P5a).**
+`eval/corpus-de-images/` is 66 German Wikipedia articles carrying 189 vendored
+images, for the image retrieval leg — built by `tools/eval-corpus-images/`
+(Python; Pillow does the re-encoding the backend deliberately has no dependency
+for). Three rules are load-bearing. It is **absent from `CORPUS_DIRS` and
+`corpusDirsForLanguage`** until P5b adds the `--images` axis:
+`computeCorpusManifestSha` covers every directory in that list, so wiring it in
+invalidates every recorded baseline at once, and that is a cost to pay
+deliberately rather than in the PR that only vendors the bytes. Its page bodies
+carry `![](images/…)` with an **empty alt and no caption** — a page that
+captions its own figures is answerable from text alone, so an image leg measured
+on it scores a win it did not earn; the captions live in the manifest, for P5c's
+independent labeller. And it is the **first third-party content in this repo
+that is not MIT**: page text is CC BY-SA 4.0 (adapted) and images are filtered
+to CC0 / public domain / CC BY x / CC BY-SA x with a named author each, with the
+ShareAlike and attribution obligations stated per page and per image in that
+directory's `LICENSE-ATTRIBUTION.md`. `corpus-de-images.test.ts` fails on any of
+the three — the wiring, a caption leaking into a page, a licence outside the
+allow-list — and on a manifest hand-edited away from the files beside it. It
+does not reach the runtime image: the Dockerfile copies `backend/dist/`, and
+`tsc` emits no markdown.
+
 **Query-time latency is measured OUTSIDE `eval/`**, by
 `backend/scripts/benchmark-query-latency.ts` — `runner.ts`'s participation
 floors assume exactly one sequential hit per query, so a concurrency flag does

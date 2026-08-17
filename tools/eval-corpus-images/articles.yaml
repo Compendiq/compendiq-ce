@@ -1,0 +1,115 @@
+# #1115 P5a — the curated article list for the German image-bearing eval corpus.
+#
+# Four content shapes, because a corpus made of one of them measures one of
+# them. Each shape is a different bet about what a visual retrieval leg is for:
+#
+#   technical  engineering diagrams and schematics — layered stacks, cutaways,
+#              circuit and network drawings. Mostly SVG upstream, vendored as
+#              Wikimedia's PNG thumbnail rendering.
+#   science    labelled scientific figures — cycles, anatomy, cross-sections.
+#              The class where the picture carries information the prose states
+#              nowhere.
+#   process    organisational and process notation — flowcharts, lifecycle
+#              diagrams, org charts, transit network maps. Shapes and arrows,
+#              very little photographic texture.
+#   photo      photographs of things and places — buildings, trains, aircraft.
+#              The class an image encoder is best at and a text index worst at.
+#
+# Selection rule: an article qualifies only if it carries at least two captioned
+# figures whose files pass the licence filter (CC0 / public domain / CC BY x /
+# CC BY-SA x) and render to raster. `build.py --probe` reports that count per
+# article without writing anything, and is how this list was pruned — every
+# title below was probed, and the ones that came back with fewer than two
+# usable figures were replaced rather than shipped thin.
+#
+# Probed and dropped, so nobody re-adds them expecting them to work:
+# `Wasserfallmodell`, `Flussdiagramm`, `Kanban`, `Gantt-Diagramm`,
+# `Fehlermöglichkeits- und Einflussanalyse` and `Wasserkreislauf` each came back
+# with fewer than two usable figures — an article can be exactly the right
+# subject and still carry one GFDL-only diagram and nothing else. The German
+# flowchart article is `Programmablaufplan`, which does qualify, and stands in
+# for `Flussdiagramm`.
+#
+# Titles are German Wikipedia article titles, exactly as the API normalises
+# them. Redirects ARE followed and the RESOLVED title is what lands in the
+# manifest, so a few entries below appear under another name in the corpus
+# (`Antenne` -> `Antenne (Technik)`, `Abgasturbolader` -> `Turbolader`,
+# `Balanced Scorecard` -> its current title). The REVISION each article was taken at is not recorded here: it is
+# recorded in the corpus's own MANIFEST.json, and `build.py` reads those pins
+# back on a plain re-run (the `vendor-eval-corpus.ts` precedent), so rebuilding
+# reproduces the committed bytes instead of tracking whatever the article says
+# today. `--update` moves to current revisions, which obliges a re-label.
+
+technical:
+  - OSI-Modell
+  - Transmission Control Protocol
+  - Router
+  - Transistor
+  - Viertaktmotor
+  - Dieselmotor
+  - Abgasturbolader
+  - Wärmepumpe
+  - Photovoltaik
+  - Brennstoffzelle
+  - Elektromotor
+  - Wälzlager
+  - Zahnrad
+  - Lichtwellenleiter
+  - Bahnstrom
+  - Antenne
+
+science:
+  - Kohlenstoffkreislauf
+  - Photosynthese
+  - Herz
+  - Ökosystem
+  - Plattentektonik
+  - Zellkern
+  - Mitose
+  - Stickstoffkreislauf
+  - Auge
+  - Desoxyribonukleinsäure
+  - Vulkan
+  - Sonnensystem
+  - Erdatmosphäre
+  - Blutkreislauf
+  - Nervenzelle
+  - Periodensystem
+
+process:
+  - Scrum
+  - Organigramm
+  - Projektmanagement
+  - Demingkreis
+  - Extreme Programming
+  - Unified Modeling Language
+  - Business Process Model and Notation
+  - Petri-Netz
+  - Entity-Relationship-Modell
+  - Six Sigma
+  - Supply-Chain-Management
+  - Programmablaufplan
+  - Nassi-Shneiderman-Diagramm
+  - Ereignisgesteuerte Prozesskette
+  - V-Modell
+  - Balanced Scorecard
+  - U-Bahn Berlin
+  - U-Bahn München
+
+photo:
+  - Brandenburger Tor
+  - Kölner Dom
+  - ICE 4
+  - Airbus A380
+  - Schloss Neuschwanstein
+  - Elbphilharmonie
+  - Zugspitze
+  - Berliner Fernsehturm
+  - Eiffelturm
+  - Reichstagsgebäude
+  - Frauenkirche (Dresden)
+  - Porsche 911
+  - Boeing 747
+  - Golden Gate Bridge
+  - Hamburger Rathaus
+  - Nürburgring
