@@ -17,13 +17,25 @@
  * addressed skip by sha256, and only referenced images). Building a second
  * shadow apparatus for that would be cost without a benefit.
  *
- * **The identity that triggers a rebuild is `provider + model`, not width.**
- * Two different models at the same width produce two incompatible vector
- * spaces, and a column type cannot tell them apart. The provider is in the
- * identity because it carries the base URL, and ADR-025 D12 makes the served
- * vLLM version a re-index event (upstream preprocessing diverges by ~0.92
- * cosine between paths, `vllm#33204`) — repointing at a different endpoint is
- * the only signal of that this code can see.
+ * **The identity that triggers a rebuild is `provider + model + base URL`, not
+ * width.** Two different models at the same width produce two incompatible
+ * vector spaces, and a column type cannot tell them apart. The base URL is in
+ * it — spelled out rather than implied by the provider id — because ADR-025 D12
+ * makes the served vLLM version a re-index event (upstream preprocessing
+ * diverges by ~0.92 cosine between paths, `vllm#33204`), and because one model
+ * NAME can mean two different checkpoints on two different servers. Recording
+ * only `providerId:model` let an operator move a provider row's `base_url` to a
+ * different container and keep the old index (review round 1).
+ *
+ * `model` is likewise the RESOLVED model, and the assignment route pins it into
+ * `llm_usecase_assignments.model` at probe time for the same reason: an
+ * assignment that leaves the model to `provider.default_model` re-resolves on
+ * every read, so editing that default would repoint the live model with no
+ * probe and no rebuild.
+ *
+ * What is still invisible from here: a server UPGRADED IN PLACE at the same
+ * URL. Nothing in the process can see that, which is why the runbook tells
+ * operators to treat a version bump as a manual re-scan.
  */
 import { query } from '../../../core/db/postgres.js';
 import { columnTypeFor, HNSW_PARAMS } from '../../../core/db/vector-column-tier.js';
@@ -41,6 +53,8 @@ export const IMAGE_EMBEDDING_HNSW_INDEX = 'page_image_embeddings_embedding_hnsw_
 export interface ImageIndexPair {
   providerId: string;
   model: string;
+  /** The provider's `base_url` as the leg will call it. Part of the identity. */
+  baseUrl: string;
 }
 
 export interface EnsureImageIndexResult {
@@ -54,7 +68,7 @@ export interface EnsureImageIndexResult {
 }
 
 function identityOf(pair: ImageIndexPair): string {
-  return `${pair.providerId}:${pair.model}`;
+  return `${pair.providerId}:${pair.model}@${pair.baseUrl}`;
 }
 
 /**
@@ -78,7 +92,7 @@ async function hnswIndexExists(): Promise<boolean> {
  * Two outcomes:
  *
  *  - **rebuilt** — the width differs from the live column OR the recorded
- *    provider+model differs from the newly assigned one. Under one bounded-lock
+ *    provider+model+baseUrl differs from the newly assigned one. Under one bounded-lock
  *    transaction: TRUNCATE (the stored vectors are of the old width and/or the
  *    old space, and neither can be cast into the new one), retype, drop and
  *    rebuild the HNSW index for the new tier, record the pair, and mark every

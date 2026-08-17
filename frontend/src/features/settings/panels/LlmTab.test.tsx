@@ -8,7 +8,7 @@ import { useAuthStore } from '../../../stores/auth-store';
 // #1115 — a refused `image_embedding` assignment is reported as an error
 // toast, and the reason it carries is the thing under test.
 vi.mock('sonner', () => ({
-  toast: { error: vi.fn(), success: vi.fn(), message: vi.fn() },
+  toast: { error: vi.fn(), success: vi.fn(), message: vi.fn(), warning: vi.fn() },
 }));
 
 function createWrapper() {
@@ -110,6 +110,14 @@ function mockRoutes(options?: {
   imageProbe?: Record<string, unknown> | null;
   /** #1115 — make the assignments PUT fail with this 422 body. */
   putError?: string;
+  /**
+   * #1115 — serve an `image_embedding` row with NO provider assigned, which is
+   * every instance that has not configured the leg. The strip still renders;
+   * the probe status and Re-check inside it do not.
+   */
+  imageUnassigned?: boolean;
+  /** #1115 — what `POST …/reprobe` answers with. */
+  reprobeResult?: Record<string, unknown>;
 }) {
   lastImageProbe = null;
   const cap = options?.concurrentStreamsCap ?? 3;
@@ -123,6 +131,20 @@ function mockRoutes(options?: {
   if (options?.embeddingDimensions !== null) {
     settingsBody.embeddingDimensions = options?.embeddingDimensions ?? 1024;
   }
+  const servedAssignments = options?.imageUnassigned
+    ? {
+        ...assignments,
+        image_embedding: {
+          providerId: null,
+          model: null,
+          resolved: {
+            providerId: '00000000-0000-0000-0000-000000000000',
+            providerName: '',
+            model: '',
+          },
+        },
+      }
+    : assignments;
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
     if (url.endsWith('/admin/llm-providers') && (init as RequestInit).method !== 'POST') {
@@ -131,7 +153,7 @@ function mockRoutes(options?: {
       });
     }
     if (url.endsWith('/admin/llm-usecases') && !(init as RequestInit).method) {
-      return new Response(JSON.stringify(assignments), {
+      return new Response(JSON.stringify(servedAssignments), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -142,7 +164,7 @@ function mockRoutes(options?: {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify(assignments), {
+      return new Response(JSON.stringify(servedAssignments), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -170,7 +192,7 @@ function mockRoutes(options?: {
       );
     }
     if (url.endsWith('/admin/llm-usecases/image_embedding/reprobe')) {
-      lastImageProbe = {
+      lastImageProbe = options?.reprobeResult ?? {
         providerId: providerB.id,
         model: 'Qwen/Qwen3-VL-Embedding-2B',
         dimensions: 1024,
@@ -935,6 +957,149 @@ describe('LlmTab', () => {
     await waitFor(() => {
       expect(screen.getByTestId('image-embedding-probe-status').textContent).toMatch(/1024-dim/);
     });
+  });
+
+  /**
+   * The strip is deliberately rendered whether or not the leg is assigned —
+   * its two sentences are what tell an operator whether the row is usable on
+   * their stack at all, and the instance that most needs to read them is the
+   * one that has not assigned it yet. Gating the whole strip on `providerId`
+   * left every earlier assertion green, because the only fixture had the leg
+   * assigned (review round 1).
+   */
+  it('keeps the scope copy and the non-support note when the leg is unassigned', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({ imageUnassigned: true });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    const row = await screen.findByTestId('usecase-row-image_embedding');
+    expect(within(row).getByTestId('image-embedding-support-note')).toBeTruthy();
+    expect(within(row).getByText(/unassigned means image search is off/i)).toBeTruthy();
+    // No assignment: nothing to report a verdict about, and no route to ask.
+    expect(within(row).queryByTestId('image-embedding-probe-status')).toBeNull();
+    expect(within(row).queryByTestId('image-embedding-recheck')).toBeNull();
+    expect(
+      spy.mock.calls.filter(([input]) =>
+        (typeof input === 'string' ? input : (input as URL).toString())
+          .endsWith('/admin/llm-usecases/image_embedding/probe'),
+      ),
+    ).toHaveLength(0);
+  });
+
+  /**
+   * The probe strip describes the SAVED leg, so an unsaved dropdown change must
+   * not summon it. It used to read LlmTab's draft: picking a provider fired the
+   * admin probe route and rendered a Re-check whose POST answers 404 "Assign
+   * one in Settings → AI Models" — an error toast telling the admin to do the
+   * thing they are on the page doing.
+   */
+  it('does not probe or offer Re-check for an unsaved provider choice', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({ imageUnassigned: true });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-image_embedding-provider'), {
+      target: { value: providerB.id },
+    });
+
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId('usecase-image_embedding-provider') as HTMLSelectElement).value,
+      ).toBe(providerB.id);
+    });
+    expect(screen.queryByTestId('image-embedding-recheck')).toBeNull();
+    expect(
+      spy.mock.calls.filter(([input]) =>
+        (typeof input === 'string' ? input : (input as URL).toString())
+          .endsWith('/admin/llm-usecases/image_embedding/probe'),
+      ),
+    ).toHaveLength(0);
+  });
+
+  // The mirror image: clearing the select without saving must not hide a strip
+  // that still describes a live, assigned leg.
+  it('keeps the probe status when an unsaved edit clears the provider', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-probe-status');
+
+    fireEvent.change(screen.getByTestId('usecase-image_embedding-provider'), {
+      target: { value: '' },
+    });
+
+    expect(screen.getByTestId('image-embedding-probe-status')).toBeTruthy();
+    expect(screen.getByTestId('image-embedding-recheck')).toBeTruthy();
+  });
+
+  /**
+   * ADR-010 reserves green for connected/succeeded. A probe that did not
+   * complete at all — unreachable endpoint, open breaker — was announced in the
+   * success treatment (review round 1).
+   */
+  it('reports a re-check that established no width as an error', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      reprobeResult: {
+        providerId: providerB.id,
+        model: 'Qwen/Qwen3-VL-Embedding-2B',
+        dimensions: null,
+        tier: null,
+        probedAt: '2026-08-17T11:00:00.000Z',
+        error: 'vlEmbedding HTTP 422: Extra inputs are not permitted: messages',
+      },
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-probe-status');
+
+    // The sonner module mock is shared across this file's cases, so clear the
+    // success channel here rather than asserting a global never-called.
+    vi.mocked(toast.success).mockClear();
+    fireEvent.click(screen.getByTestId('image-embedding-recheck'));
+
+    await waitFor(() => {
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        expect.stringContaining('refused the probe'),
+      );
+    });
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+  });
+
+  /**
+   * "Re-check" reads as diagnostic, and on a width or endpoint change it is
+   * not: the server truncates `page_image_embeddings` and re-dirties every
+   * non-folder page. The consequence has to be named where the operator reads
+   * it, not only in the audit log.
+   */
+  it('names the emptied index and the queued re-scan when the re-check rebuilt', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      reprobeResult: {
+        providerId: providerB.id,
+        model: 'Qwen/Qwen3-VL-Embedding-2B',
+        dimensions: 2560,
+        tier: 'halfvec',
+        probedAt: '2026-08-17T11:00:00.000Z',
+        error: null,
+        rebuilt: true,
+        dirtiedPages: 12,
+      },
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-probe-status');
+
+    fireEvent.click(screen.getByTestId('image-embedding-recheck'));
+
+    await waitFor(() => {
+      expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
+        expect.stringMatching(/emptied/i),
+      );
+    });
+    expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
+      expect.stringContaining('12 pages were queued'),
+    );
   });
 
   it('surfaces the refusal reason when the probe blocks the assignment', async () => {

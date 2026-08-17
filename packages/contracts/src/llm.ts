@@ -172,6 +172,19 @@ export const ImageEmbeddingProbeSchema = z.object({
   /** ISO-8601. Null when this pair has never been probed. */
   probedAt: z.string().nullable(),
   error: z.string().nullable(),
+  /**
+   * What the re-probe's DDL did, present on `POST …/reprobe` only — the GET is
+   * a pure cache read and performs no DDL, so it omits both rather than
+   * claiming `false`.
+   *
+   * `true` means the image index was EMPTIED and every non-folder page queued
+   * for a re-scan (a width or endpoint change, ADR-025 D7). It is optional
+   * rather than nullable because the control that renders it has to be able to
+   * tell "did not rebuild" from "was never asked".
+   */
+  rebuilt: z.boolean().optional(),
+  /** Pages marked `image_embedding_dirty` by that rebuild. 0 when it did not rebuild. */
+  dirtiedPages: z.number().int().nonnegative().optional(),
 });
 export type ImageEmbeddingProbe = z.infer<typeof ImageEmbeddingProbeSchema>;
 

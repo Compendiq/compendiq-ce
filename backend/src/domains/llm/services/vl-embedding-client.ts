@@ -219,18 +219,25 @@ async function embedOne(
             signal,
           });
           if (!res.ok) {
-            // Same rule as `generateEmbedding` (#867): a deterministic
-            // client-input 400 proves the provider is REACHABLE, so it must not
-            // count against a breaker shared with chat and text embeddings.
-            // 404/405/422 deliberately do count here, unlike rerank's
-            // misconfiguration set: this client posts to `/v1/embeddings`,
-            // which every provider in the grid serves, so those statuses are
-            // far likelier to be a sick server than a wrong assignment — and
-            // the probe (`image-embedding-probe.ts`) is what catches a wrong
-            // assignment, before any of this runs.
+            // Same rule as `generateEmbedding` (#867) and `rerank-client.ts`
+            // (#1267 verification, 2): a deterministic client-input status
+            // proves the provider is REACHABLE, so it must not count against a
+            // breaker that is shared per PROVIDER with chat, summary, quality,
+            // auto_tag and the text embedder.
+            //
+            // The set includes 422 and 404/405 because those ARE the
+            // misassignment answers here: a plain text-embedding server refuses
+            // the `messages` body with a pydantic 422, and a chat-only server
+            // has no `/v1/embeddings` at all. And the caller that meets them
+            // first is `probeImageEmbedding` — which runs through this same
+            // breaker — so counting them would let three fumbled probes against
+            // the default provider open it and 503 every user's chat. Timeouts
+            // and 5xx still count.
+            const deterministic =
+              res.status === 400 || res.status === 404 || res.status === 405 || res.status === 422;
             throw new LlmHttpError(
               'vlEmbedding', res.status, await providerRequestInfra.errorDetail(res),
-              res.status === 400,
+              deterministic,
             );
           }
           const parsed = (await res.json()) as { data?: Array<{ embedding?: number[] }> };

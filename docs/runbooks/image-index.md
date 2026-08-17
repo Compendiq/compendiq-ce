@@ -74,10 +74,17 @@ reported as `vllm#33954`. A corpus embedded on one version and queried on
 another is silently degraded, and nothing in Compendiq can detect it.
 
 So: pin the served version, and when you change it, treat it exactly like
-changing the model — see §5. Re-pointing the assignment at a differently-named
-provider row is what makes that a rebuild; re-pointing the *same* provider at a
-new container is not, so if you upgrade in place, run **Re-check** and then
-force a rescan once P2 exists.
+changing the model — see §5.
+
+What Compendiq can see for you, and what it cannot:
+
+- **Moving the endpoint** — a different provider row, *or* the same provider
+  row edited to a new `base_url` — changes the recorded identity, so the next
+  save or **Re-check** rebuilds. That covers a container swapped for one running
+  a different vLLM version at a new address.
+- **Upgrading in place**, same URL, is invisible to every signal the app has.
+  After such an upgrade, run **Re-check** (it re-confirms the width) and then
+  force a rescan once P2 exists. Nothing will warn you.
 
 ## 3. Local development
 
@@ -101,6 +108,13 @@ Settings → AI Models → the **Image embedding** row.
    it prevents is silent: a plain text embedder *answers* the request with a
    well-formed vector from the wrong pooling position.
 
+On success the row is written with the **resolved model pinned into it**, even
+if you left the model on "Inherit provider's model": the probe verified exactly
+one model, and an inherited one would silently follow the provider's
+`default_model` the next time somebody edits it. So the model dropdown will show
+that model after the save. That is not a UI glitch — it is the leg refusing to
+name a model nobody probed.
+
 The probe embeds a known image **and** a text, and requires:
 
 - the endpoint accepts the `messages` shape;
@@ -108,24 +122,34 @@ The probe embeds a known image **and** a text, and requires:
   and not the other puts two vector spaces in one column);
 - the width is 1..16000.
 
-**Refusal categories**, as the toast names them:
+**Refusal categories.** The toast carries the prose in the middle column; the
+slug is the `reason` field on the 422 body, which is what a log line or a
+scripted client sees.
 
-| Category | Means | Do |
+| Category (`reason`) | What the toast says | Do |
 |---|---|---|
-| `shape_rejected` | The provider answered with an error status. | Open **Why this verdict?** on the row for the provider's own body. Usually the wrong kind of server (see §1) or the wrong model id. |
-| `unreachable` | No HTTP answer at all. | Check the base URL, credentials, and that the server is up. The per-provider breaker may also be open from earlier failures. |
-| `width_mismatch` | Image and text widths differ. | The server is not applying the same formatting to both. Not usable. |
-| `unusable_width` | A width pgvector cannot hold. | Serve at ≤ 4000 dimensions using the model's `dimensions` / MRL parameter (§2). |
+| `shape_rejected` | "This endpoint refused the request. Image embedding needs a server that accepts vLLM's chat-embeddings shape…" | Usually the wrong kind of server (see §1) or the wrong model id. The provider's own body is in the **backend log** — it is deliberately *not* stored for a pair that was refused, so the row's disclosure will not show it. |
+| `unreachable` | "The provider could not be reached for the probe…" | Check the base URL, credentials, and that the server is up. The per-provider breaker may also be open from earlier failures. |
+| `width_mismatch` | "This endpoint returned different vector widths for an image and for a text…" | The server is not applying the same formatting to both. Not usable. |
+| `unusable_width` | "This endpoint returned a vector width Postgres cannot index." | Serve at ≤ 4000 dimensions using the model's `dimensions` / MRL parameter (§2). |
 
 On success the row shows `2048-dim · halfvec HNSW` (or `vector HNSW`, or
 `no index (sequential scan)`) and when it was last checked. **Re-check** re-runs
 the probe against the currently assigned pair; on success it also re-applies the
 column type, which is the remedy when you restart the model server at a
-different width. A *failed* re-check leaves the column alone.
+different width. A *failed* re-check leaves the column alone and is reported as
+an error, not a success.
 
-The provider's raw error body is admin-only, behind the row's disclosure. It is
-never returned by `GET /llm/usecase-default`, which every logged-in user can
-call.
+**Re-check is not read-only.** If the width or the endpoint changed, re-applying
+the column type is the destructive rebuild in §5: the image index is emptied and
+every non-folder page is queued for a re-scan. The toast says so, naming the
+page count, when that is what happened.
+
+The provider's raw error body is admin-only, behind the row's disclosure — which
+shows the **currently assigned** pair's last verdict. A refused *change* never
+overwrites it, so after a refused assignment look in the backend log rather than
+there. It is never returned by `GET /llm/usecase-default`, which every logged-in
+user can call.
 
 ### Index tiers
 
@@ -145,8 +169,14 @@ that is deliberate**: the image leg is simply *off* while its index is empty, so
 text search is never degraded, and images are cheap to redo.
 
 A rebuild is triggered by the probed **width** changing **or** by the assigned
-`provider:model` changing — the second because two different models at the same
-width are two incompatible spaces that a column type cannot distinguish.
+`provider:model@baseUrl` changing — the second because two different models at
+the same width are two incompatible spaces that a column type cannot
+distinguish, and the base URL is in there because a provider row's endpoint can
+move without its id changing (§2).
+
+It is triggered by **saving** the assignment and by **Re-check** — those are the
+only two moments the app looks. Editing a provider row alone changes nothing
+until one of them runs.
 
 What happens, in one bounded-lock transaction:
 

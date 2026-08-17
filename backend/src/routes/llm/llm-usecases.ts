@@ -71,13 +71,19 @@ const NO_IMAGE_EMBEDDING_PROVIDER =
 /**
  * What a refused assignment says. **The category, never the provider's body**
  * (#1184's rule): the raw body can echo request fragments and internal
- * topology, and it lands in an admin toast from here. It stays reachable on
- * `GET /admin/llm-usecases/image_embedding/probe`, which is `requireAdmin` and
- * which an admin has to go looking for.
+ * topology, and it lands in an admin toast from here.
+ *
+ * The prose no longer points at the row's "Why this verdict?" disclosure
+ * (review round 1). On the common case — a first-ever assignment against the
+ * wrong server — the refused pair is deliberately NOT persisted, and the
+ * disclosure either shows nothing or the previous, still-working pair's answer.
+ * The provider's own body goes to the server log, which is where the sentence
+ * now sends the operator, and `reason` beside `error` is the category slug the
+ * runbook's table is keyed on.
  */
 const PROBE_REFUSAL_MESSAGE: Record<ImageProbeFailureReason, string> = {
   shape_rejected:
-    'This endpoint refused the request. Image embedding needs a server that accepts vLLM\'s chat-embeddings shape (a `messages` array) on /v1/embeddings — Ollama, LM Studio and TEI do not. See the probe detail for the provider\'s own answer.',
+    'This endpoint refused the request. Image embedding needs a server that accepts vLLM\'s chat-embeddings shape (a `messages` array) on /v1/embeddings — Ollama, LM Studio and TEI do not. The provider\'s own answer is in the backend log.',
   unreachable:
     'The provider could not be reached for the probe. Check the base URL, the credentials and that the model server is running, then try again.',
   width_mismatch:
@@ -236,7 +242,9 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       // Unassigning is not probed: there is nothing to probe, and the leg
       // simply goes off (`resolveImageEmbeddingUsecase` answers null).
       const imagePatch = updates.image_embedding;
-      let imageAssignment: { providerId: string; model: string; probe: ImageEmbeddingProbeResult } | null = null;
+      let imageAssignment:
+        | { providerId: string; model: string; baseUrl: string; probe: ImageEmbeddingProbeResult }
+        | null = null;
       if (
         imagePatch
         && (Object.prototype.hasOwnProperty.call(imagePatch, 'providerId')
@@ -289,12 +297,17 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
             await persistImageEmbeddingProbe(nextProviderId, model, probe);
           }
           if (probe.reason) {
+            // `reason` is the CATEGORY slug, not the provider's body — the
+            // thing ADR-025 and the runbook's refusal table are keyed on, and
+            // what a client needs to branch on. It is deliberately the only
+            // machine-readable half of this answer.
             return reply.code(422).send({
               error: PROBE_REFUSAL_MESSAGE[probe.reason],
+              reason: probe.reason,
               statusCode: 422,
             });
           }
-          imageAssignment = { providerId: nextProviderId, model, probe };
+          imageAssignment = { providerId: nextProviderId, model, baseUrl: cfg.baseUrl, probe };
         }
       }
 
@@ -327,7 +340,19 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
           const prev = existing.rows[0];
 
           const nextProviderId = hasProvider ? (patch.providerId ?? null) : (prev?.provider_id ?? null);
-          const nextModel = hasModel ? (patch.model ?? null) : (prev?.model ?? null);
+          // #1115, review round 1: the image leg stores the RESOLVED model, not
+          // the (possibly null) one the admin sent. An assignment of
+          // {provider: P, model: null} re-resolves `P.default_model` on every
+          // read, so editing that default would repoint the live image model
+          // with no probe and no rebuild — silently breaking D7's "a model
+          // change truncates and re-scans". The probe verified exactly one
+          // pair; the row now names it. Every other use case keeps inheriting,
+          // because for them a repoint costs a differently-worded answer, not a
+          // corrupt index.
+          const nextModel =
+            u === 'image_embedding' && imageAssignment
+              ? imageAssignment.model
+              : hasModel ? (patch.model ?? null) : (prev?.model ?? null);
 
           await client.query(
             `INSERT INTO llm_usecase_assignments (usecase, provider_id, model, updated_at)
@@ -353,11 +378,29 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       // "create the index if it is missing" when the width and the pair are
       // unchanged, so a re-save of the same assignment costs nothing; a
       // changed model truncates and re-dirties (ADR-025 D7).
+      //
+      // Guarded, because it runs AFTER the assignment transaction committed
+      // (review round 1). A lock pile-up or a failed ALTER used to surface as a
+      // bare 500 for a request whose row really did save — the panel would then
+      // show the leg as assigned against a column of the previous width, with
+      // nothing said about it. The DDL is idempotent, so the honest answer is
+      // 200 plus the remedy: press Re-check.
+      let imageIndexWarning: string | undefined;
       if (imageAssignment && imageAssignment.probe.dimensions !== null) {
-        await ensureImageEmbeddingColumn(imageAssignment.probe.dimensions, {
-          providerId: imageAssignment.providerId,
-          model: imageAssignment.model,
-        });
+        try {
+          await ensureImageEmbeddingColumn(imageAssignment.probe.dimensions, {
+            providerId: imageAssignment.providerId,
+            model: imageAssignment.model,
+            baseUrl: imageAssignment.baseUrl,
+          });
+        } catch (err) {
+          logger.error(
+            { err, providerId: imageAssignment.providerId, model: imageAssignment.model },
+            'Image embedding assignment saved, but the image index could not be brought in line',
+          );
+          imageIndexWarning =
+            'The assignment was saved, but the image index could not be retyped — it is still at its previous width. Use Re-check on the Image embedding row to retry.';
+        }
       }
 
       // #1114 — the quiet counterpart of the shadow swap's warning: no
@@ -402,7 +445,7 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
         userId: req.userId,
         metadata: { usecases: Object.keys(updates) },
       });
-      return { ok: true };
+      return imageIndexWarning ? { ok: true, imageIndexWarning } : { ok: true };
     },
   );
 
@@ -540,10 +583,21 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
 
       const probe = await probeImageEmbedding(resolved.config, resolved.model);
       await persistImageEmbeddingProbe(resolved.config.providerId, resolved.model, probe);
+      // What the DDL actually did travels back to the caller (review round 1).
+      // "Re-check" reads as diagnostic, and on a width or endpoint change it is
+      // not: it empties `page_image_embeddings` and re-dirties every non-folder
+      // page. The control cannot say so unless the server tells it.
+      //
+      // Deliberately NOT wrapped the way the assignment PUT's call is. There
+      // the row had already committed, so a 500 denied a save that happened;
+      // here applying the column type IS the request, and a failure is honestly
+      // a failed request — the operator presses Re-check again.
+      let ensured: Awaited<ReturnType<typeof ensureImageEmbeddingColumn>> | null = null;
       if (probe.dimensions !== null) {
-        await ensureImageEmbeddingColumn(probe.dimensions, {
+        ensured = await ensureImageEmbeddingColumn(probe.dimensions, {
           providerId: resolved.config.providerId,
           model: resolved.model,
+          baseUrl: resolved.config.baseUrl,
         });
       }
       emitLlmAudit({
@@ -554,6 +608,8 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
           model: resolved.model,
           dimensions: probe.dimensions,
           reason: probe.reason,
+          action: ensured?.action ?? null,
+          dirtiedPages: ensured?.dirtiedPages ?? null,
         },
       });
       const stored = await readImageEmbeddingProbe();
@@ -564,6 +620,9 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
         tier: probe.tier,
         probedAt: stored?.probedAt ?? null,
         error: probe.error,
+        ...(ensured
+          ? { rebuilt: ensured.action === 'rebuilt', dirtiedPages: ensured.dirtiedPages }
+          : {}),
       });
     },
   );

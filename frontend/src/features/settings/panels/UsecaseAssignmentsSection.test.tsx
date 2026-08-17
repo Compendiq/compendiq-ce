@@ -77,6 +77,7 @@ describe('UsecaseAssignmentsSection', () => {
     render(
       <UsecaseAssignmentsSection
         assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
         onChange={() => {}}
       />,
@@ -95,6 +96,7 @@ describe('UsecaseAssignmentsSection', () => {
     render(
       <UsecaseAssignmentsSection
         assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
         onChange={() => {}}
       />,
@@ -112,6 +114,7 @@ describe('UsecaseAssignmentsSection', () => {
     render(
       <UsecaseAssignmentsSection
         assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
         onChange={() => {}}
       />,
@@ -139,6 +142,7 @@ describe('UsecaseAssignmentsSection', () => {
     render(
       <UsecaseAssignmentsSection
         assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
         onChange={onChange}
       />,
@@ -153,6 +157,7 @@ describe('UsecaseAssignmentsSection', () => {
     render(
       <UsecaseAssignmentsSection
         assignments={updated}
+        savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
         onChange={onChange}
       />,
@@ -171,6 +176,7 @@ describe('UsecaseAssignmentsSection', () => {
     render(
       <UsecaseAssignmentsSection
         assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
         onChange={() => {}}
       />,

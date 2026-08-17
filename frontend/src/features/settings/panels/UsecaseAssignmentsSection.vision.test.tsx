@@ -57,6 +57,7 @@ function renderSection() {
     <QueryClientProvider client={qc}>
       <UsecaseAssignmentsSection
         assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
         providers={[providerA]}
         onChange={() => {}}
       />

@@ -109,10 +109,10 @@ export function LlmTab() {
     return { providerId, model };
   }, [rawAssignments, assignments, providers]);
 
-  const save = useMutation({
+  const save = useMutation<{ ok: boolean; imageIndexWarning?: string }, Error, UpdateUsecaseAssignmentsInput>({
     mutationFn: (diff: UpdateUsecaseAssignmentsInput) =>
       apiFetch('/admin/llm-usecases', { method: 'PUT', body: JSON.stringify(diff) }),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       // Refetch the canonical assignments, then drop the one-shot hydration
       // guard so the form re-seeds from the fresh server state (#949) — the
       // same post-save reset IpAllowlistTab does. Awaiting the invalidation
@@ -127,6 +127,13 @@ export function LlmTab() {
       // use-case-keyed entry so dropdowns refresh without a hard reload.
       qc.invalidateQueries({ queryKey: ['llm', 'usecase-default'] });
       qc.invalidateQueries({ queryKey: ['llm', 'models'] });
+      // #1115: the row saved but the image column's DDL did not. Amber, not
+      // green — the assignment landed and the leg is misconfigured behind it,
+      // and the server's sentence names the remedy (Re-check on that row).
+      if (result?.imageIndexWarning) {
+        toast.warning(result.imageIndexWarning);
+        return;
+      }
       toast.success('Use-case assignments saved');
     },
     onError: (e: Error) => toast.error(e.message),
@@ -242,6 +249,7 @@ export function LlmTab() {
       )}
       <UsecaseAssignmentsSection
         assignments={assignments}
+        savedAssignments={rawAssignments}
         providers={providers}
         onChange={setAssignments}
       />

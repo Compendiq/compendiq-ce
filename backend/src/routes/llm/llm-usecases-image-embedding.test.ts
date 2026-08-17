@@ -173,7 +173,9 @@ describe.skipIf(!dbAvailable)('PUT /api/admin/llm-usecases — image_embedding i
     );
     expect(type.rows[0]!.type).toBe('vector(1024)');
     expect(await setting(IMAGE_EMBEDDING_DIMENSIONS_KEY)).toBe('1024');
-    expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(`${id}:Qwen/Qwen3-VL-Embedding-2B`);
+    expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(
+      `${id}:Qwen/Qwen3-VL-Embedding-2B@${goodUrl}`,
+    );
 
     const idx = await query(
       `SELECT 1 FROM pg_indexes WHERE tablename='page_image_embeddings' AND indexname=$1`,
@@ -207,10 +209,102 @@ describe.skipIf(!dbAvailable)('PUT /api/admin/llm-usecases — image_embedding i
   it('names the category in the 422 and never the provider body', async () => {
     const id = await seedProvider('textbox2', badUrl, 'nomic-embed-text');
     const res = await put({ image_embedding: { providerId: id } });
-    const body = res.json() as { error: string };
+    const body = res.json() as { error: string; reason: string };
     expect(body.error).toMatch(/chat-embeddings|messages shape|vLLM/i);
     expect(body.error).not.toContain('10.0.0.4');
     expect(body.error).not.toContain('tenant-7');
+    // Review round 1: the CATEGORY as a slug, not only as prose. ADR-025 and
+    // the runbook's refusal table are keyed on these four names, and nothing in
+    // the answer carried them — an operator matching a toast to the table had
+    // to guess which row they were in.
+    expect(body.reason).toBe('shape_rejected');
+  });
+
+  /**
+   * Review round 1: the refused pair is deliberately NOT persisted, so the
+   * copy must not send the operator to a disclosure that is empty (first
+   * assignment) or describes a different, still-working endpoint (a refused
+   * change). The provider's body goes to the log; the sentence says so.
+   */
+  it('does not point the refusal at a probe detail it never wrote', async () => {
+    const id = await seedProvider('textbox4', badUrl, 'nomic-embed-text');
+    const res = await put({ image_embedding: { providerId: id } });
+    const body = res.json() as { error: string };
+    expect(body.error).not.toMatch(/probe detail|why this verdict/i);
+    expect(body.error).toMatch(/backend log|server log/i);
+
+    const stored = await query(
+      `SELECT 1 FROM admin_settings WHERE setting_key = 'image_embedding_probe'`,
+    );
+    expect(stored.rows).toHaveLength(0);
+  });
+
+  /**
+   * D7 says a model change truncates and re-scans. That only holds if the
+   * assignment cannot silently change model underneath it — and an assignment
+   * of {provider: P, model: null} re-resolves `P.default_model` on EVERY read,
+   * so editing that default repointed the live image model with no probe and no
+   * rebuild (review round 1). The probe verified one pair; the row names it.
+   */
+  it('pins the RESOLVED model so the provider default cannot repoint the leg', async () => {
+    const id = await seedProvider('vlbox-pin', goodUrl, 'vl-2b');
+
+    expect((await put({ image_embedding: { providerId: id } })).statusCode).toBe(200);
+
+    const row = await query<{ model: string | null }>(
+      `SELECT model FROM llm_usecase_assignments WHERE usecase = 'image_embedding'`,
+    );
+    expect(row.rows[0]!.model).toBe('vl-2b');
+
+    // Moving the provider's default now changes nothing about the image leg.
+    await query(`UPDATE llm_providers SET default_model = 'some-text-embedder' WHERE id = $1`, [id]);
+    await bumpProviderCacheVersion();
+    const r = await app.inject({
+      method: 'GET', url: '/api/admin/llm-usecases/image_embedding/probe',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.json()).toMatchObject({ model: 'vl-2b', dimensions: 1024 });
+  });
+
+  /**
+   * ADR-025 D12: the served endpoint is part of the vector space's identity.
+   * `PATCH /admin/llm-providers/:id` can move a provider row's `base_url` to a
+   * different container without changing its id, so the recorded identity
+   * carries the URL and the next probe rebuilds.
+   */
+  it('rebuilds when the same provider and model move to a new base URL', async () => {
+    const id = await seedProvider('vlbox-move', goodUrl, 'vl-2b');
+    expect((await put({ image_embedding: { providerId: id } })).statusCode).toBe(200);
+    const before = await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY);
+
+    // A second good server at a different origin — same shape, same width.
+    const moved = createServer((req, res) => {
+      let raw = '';
+      req.on('data', (c) => (raw += c));
+      req.on('end', () => {
+        void raw;
+        const v = new Array<number>(width).fill(0);
+        v[0] = 1;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ embedding: v }] }));
+      });
+    });
+    await new Promise<void>((r) => moved.listen(0, '127.0.0.1', r));
+    const movedUrl = `http://127.0.0.1:${(moved.address() as AddressInfo).port}/v1`;
+    try {
+      await query(`UPDATE llm_providers SET base_url = $1 WHERE id = $2`, [movedUrl, id]);
+      await bumpProviderCacheVersion();
+
+      const r = await app.inject({
+        method: 'POST', url: '/api/admin/llm-usecases/image_embedding/reprobe',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(r.statusCode).toBe(200);
+      expect(r.json()).toMatchObject({ rebuilt: true });
+      expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).not.toBe(before);
+    } finally {
+      await new Promise<void>((r) => moved.close(() => r()));
+    }
   });
 
   it('refuses when a provider is picked but no model resolves anywhere', async () => {
@@ -262,6 +356,39 @@ describe.skipIf(!dbAvailable)('PUT /api/admin/llm-usecases — image_embedding i
     expect(r.json()).toMatchObject({
       providerId: good, model: 'vl-2b', dimensions: 1024, tier: 'vector', error: null,
     });
+  });
+
+  /**
+   * Review round 1: the DDL runs AFTER the assignment transaction commits and
+   * used to be unguarded, so a failed `ALTER` produced a bare HTTP 500 for a
+   * request whose row really did save — the panel then showed the leg as
+   * assigned against a column of the previous width, with nothing said about
+   * it. The failure is real here (a dependent view makes `ALTER COLUMN … TYPE`
+   * illegal), not a mocked service.
+   */
+  it('saves the assignment and warns when the index DDL fails, rather than 500ing', async () => {
+    const id = await seedProvider('vlbox-ddl', goodUrl, 'vl-2b');
+    await query(`CREATE VIEW image_embedding_blocker AS SELECT embedding FROM page_image_embeddings`);
+    try {
+      const res = await put({ image_embedding: { providerId: id } });
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as { imageIndexWarning?: string }).imageIndexWarning)
+        .toMatch(/Re-check/i);
+
+      // The row landed — that is why a 500 was the wrong answer.
+      const rows = await query<{ provider_id: string }>(
+        `SELECT provider_id FROM llm_usecase_assignments WHERE usecase = 'image_embedding'`,
+      );
+      expect(rows.rows[0]!.provider_id).toBe(id);
+      // …and the column is honestly still at the old width.
+      const type = await query<{ type: string }>(
+        `SELECT format_type(atttypid, atttypmod) AS type FROM pg_attribute
+          WHERE attrelid = 'page_image_embeddings'::regclass AND attname = 'embedding'`,
+      );
+      expect(type.rows[0]!.type).toBe('vector(2048)');
+    } finally {
+      await query(`DROP VIEW IF EXISTS image_embedding_blocker`);
+    }
   });
 
   it('does not probe when the save touches only other use cases', async () => {
@@ -328,6 +455,49 @@ describe.skipIf(!dbAvailable)('the probe detail routes (#1184 shape)', () => {
         WHERE attrelid = 'page_image_embeddings'::regclass AND attname = 'embedding'`,
     );
     expect(type.rows[0]!.type).toBe('halfvec(2560)');
+  });
+
+  /**
+   * Review round 1: "Re-check" reads as diagnostic, and on a width change it
+   * empties `page_image_embeddings` and re-dirties the corpus. The control
+   * cannot say so unless the route reports it, so the verdict travels back —
+   * `rebuilt` plus the page count — and it must stay FALSE when nothing moved.
+   */
+  it('reports whether the re-probe rebuilt the index, and how many pages it queued', async () => {
+    const id = await seedProvider('vlbox-report', goodUrl, 'vl-2b');
+    expect((await put({ image_embedding: { providerId: id } })).statusCode).toBe(200);
+    await query(
+      `INSERT INTO pages (title, space_key, body_html, page_type, source)
+       VALUES ('Doc', 'DEV', '<p>x</p>', 'page', 'standalone')`,
+    );
+
+    const same = await app.inject({
+      method: 'POST', url: '/api/admin/llm-usecases/image_embedding/reprobe',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(same.json()).toMatchObject({ rebuilt: false, dirtiedPages: 0 });
+
+    width = 2560;
+    const changed = await app.inject({
+      method: 'POST', url: '/api/admin/llm-usecases/image_embedding/reprobe',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(changed.json()).toMatchObject({ rebuilt: true, dirtiedPages: 1 });
+  });
+
+  // A failed re-probe runs no DDL, so it reports no verdict about one either —
+  // absent, never `false`, which would claim the column was checked and left.
+  it('omits the rebuild verdict when the re-probe failed', async () => {
+    const id = await seedProvider('vlbox-nover', goodUrl, 'vl-2b');
+    expect((await put({ image_embedding: { providerId: id } })).statusCode).toBe(200);
+    await query(`UPDATE llm_providers SET base_url = $1 WHERE id = $2`, [badUrl, id]);
+    await bumpProviderCacheVersion();
+
+    const r = await app.inject({
+      method: 'POST', url: '/api/admin/llm-usecases/image_embedding/reprobe',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.json()).not.toHaveProperty('rebuilt');
   });
 
   it('POST reprobe records a failure without throwing', async () => {

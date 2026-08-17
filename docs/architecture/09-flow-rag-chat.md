@@ -1184,21 +1184,26 @@ probeImageEmbedding(cfg, model)          <- BLOCKING, before the row is written
   |  embedTextsVl(...)   one text, VL_QUERY_INSTRUCTION
   |  require: both widths equal, 1..16000
   |
-  +-- failure --> persist the probe, answer 422 with the CATEGORY
+  +-- failure --> answer 422 with the CATEGORY, as prose AND as `reason`
   |               (shape_rejected | unreachable | width_mismatch | unusable_width)
-  |               ...and write NO assignment row
+  |               write NO assignment row
+  |               overwrite the stored probe ONLY when the refused pair IS the
+  |                 live pair (else a refused CHANGE would replace a working
+  |                 leg's verdict with "Not established")
   |
   +-- success --> persist the probe
-                  write the assignment row
-                  ensureImageEmbeddingColumn(dims, { providerId, model })
-                    width or provider:model changed?
+                  write the assignment row, with the RESOLVED model pinned
+                  ensureImageEmbeddingColumn(dims, { providerId, model, baseUrl })
+                    width or provider:model@baseUrl changed?
                       yes -> DROP INDEX; TRUNCATE; ALTER TYPE; CREATE INDEX;
-                             record dims + provider:model;
+                             record dims + provider:model@baseUrl;
                              mark every non-folder page image_embedding_dirty
                       no  -> ensure the index exists, touch nothing else
+                    it throws? -> 200 + imageIndexWarning naming Re-check
+                                  (the row committed; a bare 500 would deny it)
 ```
 
-Five things are load-bearing.
+Seven things are load-bearing.
 
 1. **`image_embedding` never inherits** (`resolveImageEmbeddingUsecase`;
    `resolveUsecase('image_embedding')` throws, exactly as it does for
@@ -1226,6 +1231,20 @@ Five things are load-bearing.
    restarted the model server at a different width. A failed re-probe leaves the
    column alone: an unreachable endpoint is not evidence that the existing index
    is wrong.
+6. **The identity is `provider:model@baseUrl`, and the model is PINNED at
+   assignment.** An assignment of `{provider, model: null}` re-resolves
+   `provider.default_model` on every read, so leaving it unpinned let a
+   `PATCH /admin/llm-providers/:id` repoint the live image model with no probe
+   and no rebuild; the base URL is in the identity for the same reason, one
+   layer out (that PATCH also moves the endpoint without changing the provider
+   id). A server upgraded **in place** at the same URL remains invisible — D12's
+   version pin is an operator step, not an automatic one.
+7. **Re-check is not merely diagnostic, so it says what it did.** On a width or
+   endpoint change it truncates `page_image_embeddings` and re-dirties every
+   non-folder page, so the reprobe route answers `rebuilt` + `dirtiedPages` and
+   the panel's toast names the emptied index. A probe that established no width
+   is announced as an error, not in the success treatment: it is a refusal or an
+   outage, and ADR-010 reserves green for succeeded.
 
 ## Retrieval details
 

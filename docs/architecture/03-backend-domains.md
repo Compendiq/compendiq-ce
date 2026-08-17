@@ -168,7 +168,11 @@ Three new modules in `domains/llm/services`, and two rules hoisted into
   runtime DDL migration 093 deliberately left out: it retypes
   `page_image_embeddings.embedding` to the probed width, builds the HNSW index
   for that tier, and truncates + re-dirties when the width or the assigned
-  `provider:model` changes.
+  `provider:model@baseUrl` changes. The base URL is in the identity because a
+  provider row's endpoint can move without its id changing (ADR-025 D12), and
+  the model half is the **resolved** one, which `llm-usecases.ts` pins into
+  `llm_usecase_assignments.model` at probe time so it cannot drift with
+  `provider.default_model`.
 
 `core/db/vector-column-tier.ts` (`columnTypeFor`, `HNSW_PARAMS`) and
 `core/db/with-lock-retry.ts` are **moves, not additions**: the tiering rule was

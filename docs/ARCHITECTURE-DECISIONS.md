@@ -2200,16 +2200,28 @@ exists because a text re-embed degrades live search for hours; here the leg is
 simply *disabled* while the index is empty, so text retrieval is untouched.
 Images are far cheaper to redo: only referenced files, content-addressed by
 sha256, and typically a handful per page. `ensureImageEmbeddingColumn(dims,
-{providerId, model})` is D7 in code: it rebuilds when the probed **width**
-differs from the live column **or** when the recorded
+{providerId, model, baseUrl})` is D7 in code: it rebuilds when the probed
+**width** differs from the live column **or** when the recorded
 `admin_settings.image_embedding_index_model` differs from the newly assigned
-`provider:model` — the second half matters because two different models at the
-same width are two incompatible spaces that a column type cannot tell apart, and
-because the provider row carries the base URL, which is the only signal D12's
-version pin can see. A rebuild TRUNCATEs, retypes, rebuilds the HNSW index for
+`provider:model@baseUrl` — the second half matters because two different models
+at the same width are two incompatible spaces that a column type cannot tell
+apart. The **base URL is part of that identity in its own right** (review round
+1): `PATCH /admin/llm-providers/:id` moves a provider row's endpoint to a
+different container without changing its id, and one model NAME can mean two
+different checkpoints on two servers, so recording only `provider:model` kept
+the old index across exactly the move D12 calls a re-index event. And the
+`model` half only means anything because the assignment route **writes the
+RESOLVED model into `llm_usecase_assignments.model`** when the probe succeeds:
+an assignment that leaves the model to `provider.default_model` re-resolves on
+every read, so editing that default repointed the live image model with no probe
+and no rebuild. What no identity can see is a server **upgraded in place at the
+same URL** — that stays an operator responsibility, and the runbook says so.
+A rebuild TRUNCATEs, retypes, rebuilds the HNSW index for
 the new tier and marks every non-folder page `image_embedding_dirty`;
 `embedding_dirty` is deliberately untouched, which is why migration 093 gave the
-two flags separate columns.
+two flags separate columns. `POST …/reprobe` performs the same rebuild, so it
+reports `rebuilt` and `dirtiedPages` back to the panel — "Re-check" reads as
+diagnostic and on a width change is not.
 
 **D8 — The answer path degrades to text-only when the chat model's vision
 verdict is not `true`, and retrieved images never count as grounding (P4).**
@@ -2261,7 +2273,11 @@ production can prove".
 `qwen_vl_utils` preprocessing, which vLLM's docs acknowledge; `vllm#33954`
 (closed) reported quality *declining* between 0.14.0rc2 and 0.15.2; `vllm#33986` is the
 open tracking issue for the family. A corpus embedded on one version and queried
-on another is silently degraded. D7 makes honouring this cheap.
+on another is silently degraded. D7 makes honouring this cheap — but only
+*partly automatic*: a move to a different endpoint changes the recorded
+identity and rebuilds at the next probe, while an in-place upgrade behind the
+same base URL is invisible to every signal this code has, and stays an operator
+step (`docs/runbooks/image-index.md` §2).
 
 ### Retrieval, in one paragraph (P3)
 

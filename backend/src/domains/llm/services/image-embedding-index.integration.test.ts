@@ -19,7 +19,12 @@ import { logger } from '../../../core/utils/logger.js';
 
 const dbAvailable = await isDbAvailable();
 
-const PAIR = { providerId: '22222222-2222-4222-8222-222222222222', model: 'Qwen/Qwen3-VL-Embedding-2B' };
+const PAIR = {
+  providerId: '22222222-2222-4222-8222-222222222222',
+  model: 'Qwen/Qwen3-VL-Embedding-2B',
+  baseUrl: 'http://vllm-a:8000/v1',
+};
+const IDENTITY = `${PAIR.providerId}:${PAIR.model}@${PAIR.baseUrl}`;
 
 async function liveColumn(): Promise<{ type: string; dims: number }> {
   const r = await query<{ type: string; dims: number }>(
@@ -101,7 +106,7 @@ describe.skipIf(!dbAvailable)('ensureImageEmbeddingColumn (#1115)', () => {
       expect(rows.rows).toHaveLength(0);
       expect(await hnswIndexDef()).toContain('vector_cosine_ops');
       expect(await setting(IMAGE_EMBEDDING_DIMENSIONS_KEY)).toBe('1024');
-      expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(`${PAIR.providerId}:${PAIR.model}`);
+      expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(IDENTITY);
     });
 
     it('builds a halfvec index above 2000 dims', async () => {
@@ -143,18 +148,40 @@ describe.skipIf(!dbAvailable)('ensureImageEmbeddingColumn (#1115)', () => {
 
       expect(result.action).toBe('rebuilt');
       expect((await query(`SELECT 1 FROM page_image_embeddings`)).rows).toHaveLength(0);
-      expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(`${PAIR.providerId}:other-vl-model`);
+      expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(
+        `${PAIR.providerId}:other-vl-model@${PAIR.baseUrl}`,
+      );
       expect(result.dirtiedPages).toBe(1);
     });
 
-    // The provider is part of the identity because it carries the base URL,
-    // and ADR-025 D12 makes a served-version change a re-index event.
     it('treats the same model on a different provider as a change', async () => {
       await ensureImageEmbeddingColumn(1024, PAIR);
       const result = await ensureImageEmbeddingColumn(1024, {
         ...PAIR, providerId: '33333333-3333-4333-8333-333333333333',
       });
       expect(result.action).toBe('rebuilt');
+    });
+
+    /**
+     * Review round 1: the base URL is in the identity in its own right, not
+     * implied by the provider id. `PATCH /admin/llm-providers/:id` can move a
+     * provider row's `base_url` to a different container without changing that
+     * id — and ADR-025 D12 makes a differently-served model a re-index event,
+     * while one model NAME can mean two different checkpoints on two servers.
+     */
+    it('treats the same provider and model at a NEW base URL as a change', async () => {
+      const { pageId } = await seedPages();
+      await ensureImageEmbeddingColumn(1024, PAIR);
+      await insertVector(pageId, 1024);
+      await query(`UPDATE pages SET image_embedding_dirty = FALSE`);
+
+      const result = await ensureImageEmbeddingColumn(1024, {
+        ...PAIR, baseUrl: 'http://vllm-b:8000/v1',
+      });
+
+      expect(result.action).toBe('rebuilt');
+      expect((await query(`SELECT 1 FROM page_image_embeddings`)).rows).toHaveLength(0);
+      expect(result.dirtiedPages).toBe(1);
     });
   });
 

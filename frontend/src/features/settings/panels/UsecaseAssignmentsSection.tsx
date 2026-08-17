@@ -30,11 +30,25 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 interface Props {
   assignments: UsecaseAssignments;
+  /**
+   * The SERVER's document, not the edited copy. #1115's probe strip describes a
+   * live, saved leg and its Re-check posts to a route that resolves the saved
+   * assignment — reading the draft made picking a provider in the dropdown fire
+   * an admin probe and render a Re-check button that 404s, and clearing it hid a
+   * strip still describing a working leg (review round 1). Same rule
+   * `RetrievalTab`'s calibration notices already follow.
+   */
+  savedAssignments: UsecaseAssignments;
   providers: LlmProvider[];
   onChange: (next: UsecaseAssignments) => void;
 }
 
-export function UsecaseAssignmentsSection({ assignments, providers, onChange }: Props) {
+export function UsecaseAssignmentsSection({
+  assignments,
+  savedAssignments,
+  providers,
+  onChange,
+}: Props) {
   function update(u: LlmUsecase, patch: Partial<UsecaseAssignments[LlmUsecase]>) {
     onChange({ ...assignments, [u]: { ...assignments[u], ...patch } });
   }
@@ -140,9 +154,15 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
               assigned — its two sentences are what tell an operator whether
               this row is even usable on their stack, and the probe status
               inside it is gated on the assignment instead.
+
+              On the SAVED assignment, never `row` (the draft): the probe route
+              and Re-check both resolve what the server has, so a dropdown
+              change that has not been saved must not fire either.
             */}
             {u === 'image_embedding' && (
-              <ImageEmbeddingCapability assigned={row.providerId !== null} />
+              <ImageEmbeddingCapability
+                assigned={savedAssignments[u]?.providerId != null}
+              />
             )}
           </div>
         );

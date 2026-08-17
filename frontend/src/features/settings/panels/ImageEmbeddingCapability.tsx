@@ -50,8 +50,24 @@ const TIER_LABEL: Record<NonNullable<ImageEmbeddingProbe['tier']>, string> = {
   unindexed: 'no index (sequential scan)',
 };
 
+/**
+ * What a re-check answers with.
+ *
+ * Two things the first cut got wrong (review round 1). A probe that did not
+ * complete — an unreachable endpoint, an open breaker — was reported in the
+ * SUCCESS treatment; ADR-010 reserves green for connected/succeeded, so a
+ * refusal or an outage takes `toast.error`. And "Re-check" reads as purely
+ * diagnostic while a width or endpoint change makes it destructive: it empties
+ * `page_image_embeddings` and queues every non-folder page for a re-scan. The
+ * control cannot stay silent about that, so the server reports the rebuild and
+ * the toast names it.
+ */
 const RESULT_MESSAGE = {
   ok: (dims: number) => `Image embedding confirmed at ${dims} dimensions.`,
+  rebuilt: (dims: number, pages: number) =>
+    `Image embedding confirmed at ${dims} dimensions. The image index was emptied and ${pages} ${
+      pages === 1 ? 'page was' : 'pages were'
+    } queued for a re-scan.`,
   failed: 'The endpoint refused the probe. See why this verdict below.',
 };
 
@@ -76,10 +92,14 @@ export function ImageEmbeddingCapability({ assigned }: { assigned: boolean }) {
       qc.setQueryData(PROBE_QUERY_KEY, result);
       qc.invalidateQueries({ queryKey: ['llm-usecases'] });
       qc.invalidateQueries({ queryKey: ['llm', 'usecase-default'] });
+      if (result.dimensions === null) {
+        toast.error(RESULT_MESSAGE.failed);
+        return;
+      }
       toast.success(
-        result.dimensions !== null
-          ? RESULT_MESSAGE.ok(result.dimensions)
-          : RESULT_MESSAGE.failed,
+        result.rebuilt
+          ? RESULT_MESSAGE.rebuilt(result.dimensions, result.dirtiedPages ?? 0)
+          : RESULT_MESSAGE.ok(result.dimensions),
       );
     },
     onError: (e: Error) => toast.error(e.message),

@@ -442,9 +442,12 @@ together, which matters most for #1114's query-side prefix.
   - **A model change here truncates and re-scans.** No shadow swap: the leg is
     disabled while the index is empty, so text retrieval is never degraded, and
     images are cheap to redo (content-addressed by `sha256`). The trigger is the
-    probed width **or** the recorded `provider:model` changing — two models at
-    the same width are two incompatible spaces, and a column type cannot tell
-    them apart.
+    probed width **or** the recorded `provider:model@baseUrl` changing — two
+    models at the same width are two incompatible spaces, and a column type
+    cannot tell them apart; the base URL is there because a provider row's
+    endpoint can move without its id changing, and the model is the *resolved*
+    one, pinned into the assignment row at probe time so it cannot follow
+    `provider.default_model` around.
   - **`image_embedding_dirty` is separate from `embedding_dirty` on purpose.**
     An attachment can change under an unchanged page version — sync's
     version-unchanged branch is exactly that case — and then the images must be

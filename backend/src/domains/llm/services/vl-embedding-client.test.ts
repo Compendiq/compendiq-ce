@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
@@ -9,6 +9,8 @@ import {
 } from './vl-embedding-client.js';
 import { LlmHttpError, type ProviderConfig } from './openai-compatible-client.js';
 import { MAX_IMAGE_BYTES } from '../../../core/services/image-validator.js';
+import { getProviderBreaker } from '../../../core/services/circuit-breaker.js';
+import { logger } from '../../../core/utils/logger.js';
 
 /**
  * Boundary-mocked with a real local HTTP server, like `rerank-client.test.ts`
@@ -228,13 +230,39 @@ describe('MRL truncation and unit norm', () => {
   // done it. A non-unit vector there means the server is not running the
   // pooling+normalise path we think it is — worth a log line, not worth
   // silently "fixing", which would hide the misconfiguration.
+  //
+  // The warn is asserted, not just the pass-through: it is the ONLY signal that
+  // a whole index is being built from a different formatting, and without this
+  // spy the `logger.warn` could be deleted with the suite still green (review
+  // round 1).
   it('leaves a full-width vector untouched and warns when it is not unit norm', async () => {
     responder = (res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ data: [{ embedding: [3, 4, 0, 0] }] }));
     };
-    const [v] = await embedTextsVl(cfg(), 'm', ['q'], VL_QUERY_INSTRUCTION);
-    expect(v!).toEqual([3, 4, 0, 0]);
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
+    try {
+      const [v] = await embedTextsVl(cfg(), 'm', ['q'], VL_QUERY_INSTRUCTION);
+      expect(v!).toEqual([3, 4, 0, 0]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ norm: 5 }),
+        expect.stringMatching(/unit norm|pooling/i),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The other half of the same assertion: the tolerance has to stay meaningful,
+  // or "warns on a non-unit vector" is satisfied by warning on every vector.
+  it('does not warn for a unit-norm full-width vector', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
+    try {
+      await embedTextsVl(cfg(), 'm', ['q'], VL_QUERY_INSTRUCTION);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('refuses a zero vector rather than dividing by zero', async () => {
@@ -263,13 +291,19 @@ describe('error mapping', () => {
     expect((err as LlmHttpError).detail).toContain('extra fields not permitted');
   });
 
-  // Same rule the text embeddings client applies (#867): a deterministic
-  // client-side 400 proves the provider is reachable, so it must not count
-  // against the per-provider breaker shared with chat and embeddings.
+  // Same rule the text embeddings client applies (#867) and the one
+  // `rerank-client.ts` settled for the same reason (#1267 verification, 2): a
+  // deterministic client-side status proves the provider is reachable, so it
+  // must not count against the per-provider breaker shared with chat and
+  // embeddings. 422 is in the set because it is what a plain text-embedding
+  // server answers the `messages` body with — i.e. the misassignment case.
   it.each([
     [400, true],
-    [404, false],
+    [404, true],
+    [405, true],
+    [422, true],
     [500, false],
+    [503, false],
   ])('status %i bypasses the breaker: %s', async (status, bypass) => {
     responder = (res) => {
       res.writeHead(status);
@@ -277,6 +311,27 @@ describe('error mapping', () => {
     };
     const err = await embedTextsVl(cfg(), 'm', ['q'], VL_QUERY_INSTRUCTION).catch((e) => e);
     expect((err as LlmHttpError).bypassCircuitBreaker).toBe(bypass);
+  });
+
+  /**
+   * The consequence, stated as behaviour rather than as a flag.
+   *
+   * The first caller to meet a misassignment is `probeImageEmbedding`, and it
+   * runs through this same per-provider breaker. If a shape refusal counted as
+   * a failure, an admin fumbling three probes against the DEFAULT provider —
+   * the exact mistake the non-inheriting rule exists to catch — would open that
+   * provider's breaker and 503 every user's chat for 30 seconds.
+   */
+  it('leaves the shared breaker CLOSED after three consecutive shape refusals', async () => {
+    responder = (res) => {
+      res.writeHead(422, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ detail: 'Extra inputs are not permitted: messages' }));
+    };
+    const provider = cfg();
+    for (let i = 0; i < 3; i += 1) {
+      await embedTextsVl(provider, 'm', ['q'], VL_QUERY_INSTRUCTION).catch(() => {});
+    }
+    expect(getProviderBreaker(provider.providerId).getStatus().state).toBe('CLOSED');
   });
 
   it('rejects a response that carries no embedding', async () => {

@@ -166,6 +166,25 @@ describe('ImageEmbeddingProbeSchema (#1115)', () => {
     expect(() => ImageEmbeddingProbeSchema.parse({ ...base, dimensions: 0 })).toThrow();
     expect(() => ImageEmbeddingProbeSchema.parse({ ...base, dimensions: 16_001 })).toThrow();
   });
+
+  /**
+   * Review round 1: a re-probe can EMPTY the index and re-dirty the corpus, and
+   * the control that triggers it says only "Re-check". `rebuilt` is what lets
+   * the toast name the consequence — optional, not nullable, because the GET
+   * performs no DDL and "was never asked" must stay distinguishable from "did
+   * not rebuild".
+   */
+  it('carries the rebuild verdict when the re-probe reports one', () => {
+    const parsed = ImageEmbeddingProbeSchema.parse({ ...base, rebuilt: true, dirtiedPages: 42 });
+    expect(parsed.rebuilt).toBe(true);
+    expect(parsed.dirtiedPages).toBe(42);
+  });
+
+  it('leaves rebuilt absent for the read-only GET', () => {
+    const parsed = ImageEmbeddingProbeSchema.parse(base);
+    expect(parsed.rebuilt).toBeUndefined();
+    expect(parsed.dirtiedPages).toBeUndefined();
+  });
 });
 
 describe('UsecaseDefaultSchema vision tri-state (#1154)', () => {
