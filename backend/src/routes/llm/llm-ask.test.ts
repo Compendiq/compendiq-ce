@@ -1078,6 +1078,53 @@ describe('POST /api/llm/ask', () => {
       const messages = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; sources?: unknown[] }>;
       expect(messages.find((m) => m.role === 'assistant')!.sources).toHaveLength(1);
     });
+
+    it('replays only the newest exchanges within the token budget and flags historyTruncated on the final frame', async () => {
+      // 6 exchanges × (4,000 + 4,000 chars) ≈ 2,000 tokens each; the 4,000-token
+      // budget keeps exactly the newest two.
+      const history: Array<{ role: string; content: string }> = [];
+      for (let n = 1; n <= 6; n++) {
+        history.push({ role: 'user', content: `Q${n} ` + 'x'.repeat(3_996) });
+        history.push({ role: 'assistant', content: `A${n} ` + 'y'.repeat(3_996) });
+      }
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [{ messages: history }] };
+        }
+        return { rows: [{ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('A7'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'Q7', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      const [, , messages] = mockStreamChatClient.mock.calls[0] as [unknown, unknown, Array<{ role: string; content: string }>];
+      const replayed = messages.filter((m) => m.role !== 'system').map((m) => m.content.slice(0, 2));
+      expect(replayed).toEqual(['Q5', 'A5', 'Q6', 'A6', 'Co']); // 'Co' = "Context from knowledge base…" (the current turn)
+      const final = (parseSseBody(response.body) as Array<Record<string, unknown>>).find((f) => f.final === true)!;
+      expect(final.historyTruncated).toBe(true);
+    });
+
+    it('omits historyTruncated when the whole history fits', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [{ messages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }] }] };
+        }
+        return { rows: [{ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('a2'));
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q2', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      const final = (parseSseBody(response.body) as Array<Record<string, unknown>>).find((f) => f.final === true)!;
+      expect('historyTruncated' in final).toBe(false);
+    });
   });
 
   it('should return 400 when question exceeds maximum length', async () => {

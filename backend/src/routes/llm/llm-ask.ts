@@ -33,6 +33,7 @@ import { AskRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { selectReplayableHistory } from '../../domains/llm/services/history-budget.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
 import {
   resolveSystemPrompt,
@@ -760,13 +761,15 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         ? [{ type: 'text', text: userTextContent }, imagePart]
         : userTextContent;
 
+      // #1361 (decision 10): replay the newest whole exchanges within a token
+      // budget. Refusal turns never reach the wire (they are persistence/UI
+      // records), and neither do the `refused`/`sources` fields — the walk
+      // strips both. `historyTruncated` rides the final frame so the client
+      // can say older messages are no longer sent.
+      const { replay, truncated: historyTruncated } = selectReplayableHistory(conversationHistory);
       const messages: ChatMessage[] = [
         { role: 'system', content: askPrompt + multiPageSuffix },
-        // Refusal turns are persistence/UI records, not model context —
-        // and the `refused` field must not reach the provider wire.
-        ...conversationHistory.filter((m) => !m.refused).map(
-          ({ role, content }): ChatMessage => ({ role, content }),
-        ),
+        ...replay,
         {
           role: 'user',
           content: userContent,
@@ -830,6 +833,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             final: true,
             conversationId: convId ?? null,
             sources,
+            ...(historyTruncated ? { historyTruncated: true } : {}),
           })}\n\n`);
         }
       } catch (err) {
