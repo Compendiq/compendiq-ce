@@ -10,6 +10,14 @@ import type { Source } from './SourceCitations';
  * after RRF fusion is a fusion value typically near 0.033 — is what made
  * ConfidenceBadge render "Low confidence" on every knowledge-base answer
  * (#1117). Callers must render no badge when this returns `null`.
+ *
+ * #1115 P3 — image sources are covered by the SAME rule and needed no new
+ * branch: the backend emits `similarity: null` on every `kind: 'image'` entry
+ * deliberately, because the image leg's own score is a CROSS-MODAL cosine
+ * sitting in a different band from the text cosines beside it (ADR-025 §8), so
+ * averaging the two would rate an answer on a mixture of scales. The filter
+ * below is what makes that guarantee hold here, and `source-confidence.test.ts`
+ * pins it so a future "let's show the image score too" cannot pass silently.
  */
 export function averageSourceSimilarity(sources: Source[]): number | null {
   const measured = sources

@@ -286,7 +286,7 @@ prod can prove).
 | P0 ✅ | This spec + ADR-025 + amendments; migration `093` (table, dirty flag, CHECK widening; **no HNSW**); core `attachment-store.ts` hoist + `resolveAttachmentBytes`; diagrams 03 / 06 / README. **No contracts change, no behaviour change.** | owner approval |
 | P1 ✅ | `vl-embedding-client.ts` + resolver + probe + `ensureImageEmbeddingColumn` + assignment UI/routes + the `image_embedding` contracts enum + the `vl` exclusion in the text-side instruction matcher. Landed with two hoists the plan did not anticipate: `columnTypeFor` and `withLockRetry` into `core/db`. | P0 |
 | P2 | `image-embedding-service.ts` + dirty-flag wiring (sync, uploads, local attachments) + worker + Embeddings-tab card + re-scan | P1 |
-| P3 | Retrieval leg + fusion + analytics + wire shape (`sources.kind`) + Retrieval-tab knobs + frontend source rendering | P1, P2 |
+| P3 ✅ | Retrieval leg (`image-leg-search.ts`) + third-leg fusion + `image_leg_unavailable` + wire shape (`sources.kind`) + Retrieval-tab knobs + frontend thumbnails. **Rulings §5 left open**: an image-only row is excluded from the confidence sample entirely (both directions — see ADR-012's #1115 amendment), the synthesised row stays as-is and carries no `chunkIndex`, and deep search runs the leg on the ORIGINAL leg only. | P1, P2 |
 | P4 | Answer path (retrieved parts, degrade rule, caps, audit) | P3 |
 | P5 | Eval: ~~Wikipedia corpus fetch script + vendored corpus~~ (✅ #1353) + independent labels + seeder + `--images` axis + ~~shim~~ (✅ #1352, `tools/vl-embedding-shim/` + `docs/runbooks/vl-embedding-dev.md`) + runbook; measurement report | P2 (corpus/labels can start earlier) |
 | P6 | Diagram/ADR/CLAUDE.md sweep, #1100/#1115 close-out | all |

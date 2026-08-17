@@ -22,6 +22,7 @@ sequenceDiagram
     participant CACHE as llm-cache (Redis)
     participant PROV as chat provider<br/>(resolveUsecase('chat'))
     participant PROV2 as rerank provider<br/>(resolveRerankUsecase — null = stage off)
+    participant PROV3 as VL provider<br/>(resolveImageEmbeddingUsecase — null = image leg off)
     participant CONV as llm_conversations
 
     FE->>BE: POST /api/llm/ask<br/>{ question, model, conversationId,<br/>  includeSubPages, externalUrls, searchWeb, deepSearch }
@@ -42,7 +43,7 @@ sequenceDiagram
     BE->>RBAC: getUserAccessibleSpacesMemoized(userId)
     RBAC-->>BE: readableSpaceKeys[] (request-scoped)
     note right of BE: per-leg stage limit = fetch width (#35;1103)<br/>admin_settings 'rag_fetch_width' (default 10),<br/>floored at topK (+ 1.5x topK under EE ACL)
-    par vector + keyword
+    par vector + keyword + image
         BE->>RAG: vectorSearch(userId, q_vector, stageLimit)
         RAG->>PG: WHERE cp.space_key = ANY(readableSpaceKeys) ...
         PG-->>RAG: top fetch-width chunks
@@ -50,6 +51,19 @@ sequenceDiagram
         BE->>RAG: keywordSearch(userId, question, stageLimit)
         RAG->>PG: tsvector search (websearch_to_tsquery) WHERE same space filter
         PG-->>RAG: matches
+    and
+        note right of BE: IMAGE LEG (#35;1115 P3) — GATED#59; no embed, no kNN, no row when shut:<br/>imageLeg option not false, admin_settings 'rag_image_leg_enabled'<br/>(default on), image_embedding use case ASSIGNED (never inherits),<br/>and page_image_embeddings NON-EMPTY (uncached EXISTS per request —<br/>the answer flips on the first embed and on a rebuild's TRUNCATE)
+        BE->>RAG: searchImageLeg(userId, question, stageLimit)
+        RAG->>PROV3: POST /v1/embeddings — vLLM chat-embeddings shape,<br/>VL_QUERY_INSTRUCTION as system message, ONE call, 3s budget
+        PROV3-->>RAG: q_image_vector[M] (MRL width from admin_settings)
+        RAG->>PG: kNN over page_image_embeddings JOIN pages<br/>SAME visiblePagesPredicate as the vector leg + SET LOCAL hnsw.ef_search
+        PG-->>RAG: image rows -> page-denominated: a page's BEST image ranks it ONCE
+        note right of BE: ANY failure (timeout, open breaker, no assignment mid-flight,<br/>a gate READ that threw, kNN error) = leg BYPASSED, results identical<br/>to leg-off, degraded_reason 'image_leg_unavailable' — recorded only<br/>when the TEXT side is healthy (one column, worst outage wins)
+    end
+    opt image leg reached a page NO text leg did
+        BE->>PG: ONE batched SELECT chunk_index 0 for those pages
+        PG-->>BE: lede rows (no chunk 0 = chunkText synthesised from the TITLE,<br/>flagged imageTextSynthesized)
+        note right of BE: this is how an image-only page becomes retrievable at all#59;<br/>the row is imageOnly and is EXCLUDED from #35;1105's confidence<br/>sample — cross-modal scores share no scale with text cosines.<br/>If THIS query throws the image-only pages drop and the same<br/>degraded_reason is recorded — a partial bypass is still a bypass
     end
     RAG-->>BE: merged + deduped + ranked (fetch-width wide)
     opt RAG_PERMISSION_ENFORCEMENT (EE)
@@ -143,6 +157,7 @@ to a user.
 | `score` | whatever the producer used | cosine from `vectorSearch`, `ts_rank` from `keywordSearch`, RRF fusion from `reciprocalRankFusion` | **No** — ordering only |
 | `vectorScore` | cosine similarity, `[-1,1]` | the vector leg; `null` when the page was matched only by full-text | **Yes**, with care |
 | `keywordRank` | raw `ts_rank`, unbounded | the keyword leg; `null` when matched only by vector | No — corpus-dependent |
+| `imageHits[].similarity` | **cross-modal** cosine, `[-1,1]` | the image leg (#1115 P3); absent when the leg did not reach this page | **No** — see "The image leg" below |
 
 RRF fusion previously *overwrote* `score` with the fusion value and discarded
 the cosine. That value is ~0.016 for a single rank in one leg and ~0.033 for
@@ -155,8 +170,16 @@ defaults:
 
 | Path | topK | stage limit | worst-case fusion score |
 |---|---|---|---|
-| every path since #1106 | any | any (pool sizing only) | **~0.0328** (`rrfWorstCase(true)` = 2/61) — width-invariant |
+| every path since #1106, two text legs | any | any (pool sizing only) | **~0.0328** (`rrfWorstCase(true)` = 2/61) — width-invariant |
+| with #1115 P3's image leg live (assigned + non-empty index) | any | any (pool sizing only) | **~0.0492** (`rrfWorstCase(true, 60, true)` = 3/61) — width-invariant |
 | *historical rows (pre-#1106 summed scale)* | | | *chat ~0.169; rerank pool assigned ~0.419; `/api/search`@20 ~0.302; past 1.0 at the width cap* |
+
+The image row raises the ceiling by a whole leg and nothing else: the leg is
+page-denominated from the start, so like the other two it contributes exactly
+`1/(k+1)` at rank 1 and the figure still does not track any width. `max_score`
+rows straddling the moment a VL model is first assigned are loosely comparable
+in the same way #1106's and #1103's straddling rows are — one band apart, in
+the growing direction.
 
 Since #1106 the vector leg is page-denominated (the stage limit counts
 distinct pages; the leg fetches `min(4 × stageLimit, 500)` raw CHUNK rows)
@@ -213,6 +236,7 @@ own `rerank_score` column instead of ever overloading this one:
 | `hybrid_rerank` | RRF fusion value (`rerank_score` carries the rerank scale) | `hybridSearch` with a live #1104 rerank stage |
 | `hybrid_multi_query` | **summed weighted** multi-leg RRF value (≈ up to 0.036) — near the single-query ceiling and NOT comparable with it | `multiQuerySearch` (#1112), one row per gesture; the legs record none |
 | `keyword_fallback` | RRF fusion value (keyword-only leg) | `hybridSearch` (rag-service) |
+| — | *(the image leg adds no `search_type`)* | see "The image leg" — `searchTypeFinal` is unchanged, because whether an answer's pages came from two legs or three is not a different KIND of search |
 | `semantic` | cosine similarity | `/api/search` semantic mode |
 | `keyword` | raw `ts_rank` | `/api/search` keyword mode |
 | `faceted` | NULL | `POST /api/search/log` |
@@ -225,6 +249,209 @@ never what was attempted. Note the admin analytics
 routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
 threshold across all rows regardless of unit — a pre-existing defect this
 table documents but #1117 did not change.
+
+## The image leg (#1115 P3)
+
+A page whose only answer to "what does the turbine assembly look like" is a
+photograph is invisible to both text legs — the picture is not in `body_text`
+and its `alt` is usually empty. #1115 embeds page images into their own index
+(`page_image_embeddings`, filled by P2) and P3 makes that index **retrievable**
+as a third RRF leg, in `domains/llm/services/image-leg-search.ts`.
+
+**Dual space, fused by RANK.** The images are embedded by a vision-language
+model into a different vector space from the text (ADR-025 D1), and the query
+is embedded a second time by that same model for this leg only. The two spaces
+are never mixed: fusion is reciprocal-rank, so the absolute similarity band
+never has to be compared across modalities. That is not tidiness — the
+published worked examples put text→image similarities at 0.46–0.72 against
+text↔text ones as high as 0.81, with **no gap** between the bands (ADR-025 §8),
+so no scalar separates them and a threshold tuned on one is undefined on the
+other.
+
+**The gate, in this order, and it does no RETRIEVAL work when shut** — no
+query embed, no kNN, no row. In THIS order and deliberately not cheapest-first
+(the paragraph after next is why the resolver goes in front of the `EXISTS`
+even though it costs more). All four must hold:
+`HybridSearchOptions.imageLeg` is not `false`; `rag_image_leg_enabled`
+(default on, skipped when the option forces `true`); the `image_embedding` use
+case is **assigned** (it never inherits — ADR-021's rule for the non-inheriting
+use cases, so unassigned means off, never "borrow the text embedder"); and
+`page_image_embeddings` is non-empty. The last is an uncached
+`SELECT EXISTS(...)` per request, deliberately: emptiness flips at the two
+moments the answer matters most — the first page the worker embeds, and a
+model change's `TRUNCATE` — and a 60-second cache would leave the leg dark for
+a minute after the index starts filling, or lit for a minute against a column
+whose type has just changed.
+
+It is not literally free, and the standing cost is worth naming because every
+`/llm/ask`, every `/api/search?mode=hybrid` and deep search's original leg pays
+it on **every** deployment: one cached boolean, then
+`resolveImageEmbeddingUsecase`'s **uncached** two-table lookup. On the majority
+deployment — no VL model — that lookup answers `null` and returns, so the
+`EXISTS` above is not reached at all until a model is assigned. The resolver
+sits in front of it rather than behind it because the two verdicts are not
+interchangeable: a resolver THROW is a degradation this leg records (below),
+and an empty index short-circuiting ahead of it would report a broken
+assignment as "off". The extra round-trip is paid in exactly one state —
+assigned and not yet indexed.
+
+**One VL call per request, bounded at 3s** (`IMAGE_LEG_TIMEOUT_MS`, covering
+queue wait). Shorter than the rerank stage's and the reformulation's 5s
+because this leg runs in PARALLEL with the two text legs rather than in series
+after them: everything it spends past their few hundred milliseconds is added
+to every question, including the overwhelming majority no picture was going to
+answer. Deep search runs it on the **original question only** — see that
+section.
+
+**And one kNN, bounded separately at 2s** (`IMAGE_LEG_KNN_TIMEOUT_MS`, a `SET
+LOCAL statement_timeout` inside the transaction the leg already opens). The two
+budgets are separate numbers that COMPOSE — the leg's worst case is ~5s, not
+3 — and the second one is not belt-and-braces: the gate has no `indexed`
+condition, and above 4000 dimensions `ensureImageEmbeddingColumn` deliberately
+builds no HNSW index, so the leg legitimately runs a sequential scan of
+`page_image_embeddings` that `hybridSearchInner` awaits between the text legs
+and fusion. A lock wait reaches the same place, since the statement takes
+ACCESS SHARE on the table a rebuild holds ACCESS EXCLUSIVE on. Unbounded, an
+OPTIONAL leg could stall every answer on the instance; bounded, it becomes the
+ordinary `image_leg_unavailable` bypass. The text vector leg has no equivalent
+because its bypass is not equivalent — that one is `embedding_failed`, which
+`/llm/ask` refuses the turn on.
+
+**Also one extra vector-pool connection per hybrid search.** The leg is started
+so its transaction overlaps `vectorSearch`'s, so a request holds two of
+`PG_VECTOR_POOL_MAX` (default 5) rather than one and the pool's effective
+request concurrency roughly halves when the leg is live. The asymmetry above
+applies here too: losing the acquisition costs the image leg a bypass and the
+text leg a refused turn, so `PG_VECTOR_POOL_MAX` should be raised when the leg
+is enabled on a busy instance (`docs/runbooks/image-index.md` §6).
+
+**Page-denominated, like the other two (#1106).** The kNN is over image ROWS;
+a page's BEST image decides its rank and counts once. Without that, a page
+carrying five near-identical screenshots would occupy five of the leg's ranks
+and out-score a page whose single image matches better — image COUNT beating
+image QUALITY, the same head dilution best-chunk-only fusion exists to prevent.
+Up to three hits per page ride along on the `SearchResult` for the answer's
+source list; they buy no extra rank.
+
+Being page-denominated is also why the **stable head** (#1103) cannot take a
+plain prefix of this leg. The pages were denominated FROM a raw image-row
+stream, so a narrower request would have read only `imageRawLimit(rankWidth)`
+raw rows — 40 at the default width, which two pages carrying
+`rag_images_per_page_max` pictures fill between them. Each page therefore
+carries the raw position of its best image (`bestRawIndex`), and
+`fuseWithStableHead` reconstructs the narrow leg by filtering on that window
+before capping at `rankWidth` — the exact analogue of the
+`truncateAtDistinctPages(… vectorRawLimit(rankWidth) …)` the vector leg does
+one line above.
+
+**Visibility is the shared fragment, never a copy.** The kNN joins `pages` and
+applies the same `visiblePagesPredicate` the vector leg does, plus
+`deleted_at IS NULL` and the optional `spaceKey` narrow. An image row carries
+no ACL of its own, so that JOIN is the whole protection; the EE per-page ACL
+post-filter then runs over the fused set exactly as it does for the text legs.
+The vector cast is deliberately **absent** — the `<=>` operand type resolves
+from the column, so the parameter follows `ensureImageEmbeddingColumn`'s
+`vector`/`halfvec` tiering with nothing to keep in step.
+
+**An image-only page gets a text row, and P3 owns what that costs.** Every
+stage after fusion reads `chunkText`, so a page no text leg reached needs one:
+it takes its `chunk_index 0` row (one batched query for all such pages), or —
+when the page has no chunk at all, which is the image-only page below the
+20-character floor that this leg makes retrievable in the first place — its
+TITLE, flagged `imageTextSynthesized`. That text is what the cross-encoder
+scores and what MMR diffs, so a title-only row ranks poorly under rerank and
+looks maximally distinct under MMR. Both are accepted. Nothing else changes:
+rerank, the ranking prior, MMR, sibling assembly and the #1107 pin all keep
+scoring `chunkText`, and a `page_image_embeddings` row never becomes a
+`SearchResult`. The row carries no `chunkIndex`, because that field means "the
+chunk the vector leg matched" and is the sibling-assembly anchor — an
+image-reached page has no measured anchor.
+
+**The image similarity never feeds the confidence number (#1105), and an
+image-only row is excluded from the sample entirely.** ADR-025 §5 left P3 the
+ruling on whether a synthesised row may carry a `rerankScore` into
+`computeRetrievalConfidence`. It may not, in both directions: a rerank score
+over text no leg matched is a measurement of the wrong thing and could refuse a
+turn, and an UNRERANKED image-only row would flip `allReranked` false and
+silently demote a fully reranked set to the similarity basis. It cannot lift
+the number either — it carries no `vectorScore`, so it could only displace a
+measured row from position 0 and make a vector-led set unmeasurable. A set of
+nothing but image hits is therefore `basis: 'none'`, score `null` — the same
+verdict a keyword-only set gets, and **not** the empty-corpus `score: 0` that a
+threshold would refuse.
+
+**The arm of #1105 the leg DOES move is `no_context`, and that is the trade
+being made** (review r3). That refusal fires on `searchResults.length === 0`,
+so a page this leg made retrievable stands it down: a question that returned an
+honest refusal before P3 can now return an answer. It is intended — an
+image-only hit set never refuses, ADR-025 §5's ruling — and it is the leg
+working, not a leak in the gate. What it costs is worth stating plainly rather
+than leaving to be discovered: until P4 the chat model receives that page's
+TEXT (its chunk 0, or the synthesised title) and **never the picture**, so on
+the sub-`MIN_EMBEDDABLE_TEXT_CHARS` page this leg exists for, the grounding
+behind the answer is a title. That is thin evidence, not absent evidence, which
+is the distinction `no_context` draws — and the `kind: 'image'` source on the
+wire is what puts the evidence the model could not read in front of the reader.
+An operator who would rather those questions kept refusing turns the leg off;
+it is a retrieval decision, not a confidence one. `llm-ask.test.ts` pins the
+answering behaviour with both knobs at 0, so it cannot be confused with the
+`weak_match` cases beside it.
+
+**Failure is a bypass, and it is recorded.** A timeout, an open breaker, an
+assignment pulled mid-flight, an assignment READ that threw, a non-empty PROBE
+that threw, or a kNN error all leave the leg out and everything else
+byte-identical to leg-off, with
+`degraded_reason = 'image_leg_unavailable'` on the analytics row. Unlike a
+rerank bypass it is recorded because it changes which PAGES come back, not
+merely their order. **A resolver `null` is not a failure** — that is
+"unassigned", which is off — and the two exits from that one call have their
+own paired tests, because folding the `catch` away is what makes a real outage
+invisible in `search_analytics`. Note what a throw is: `loadProviderFromRow`
+runs `decryptSafe`, so an undecryptable `api_key` yields a null key rather than
+an exception; what throws here is the database. **The `EXISTS` probe has the
+same shape and its own catch** (review r2): an unanswerable probe is not an
+empty index — the statement needs ACCESS SHARE on `page_image_embeddings`,
+which `ensureImageEmbeddingColumn`'s retype holds ACCESS EXCLUSIVE on — and
+outside a catch it also broke `searchImageLeg`'s "never throws" contract, after
+which the caller's own `.catch` recorded a live outage as a healthy search with
+the leg merely "off". **The LEDE fetch counts too**: when the one batched
+chunk-0 query throws, the leg has run but every image-ONLY page is dropped —
+exactly the pages it exists to make retrievable — so that partial bypass is
+OR'd into the same reason rather than writing a healthy row. **Precedence: a text-side reason always wins** — there is
+one column, and during an embedding outage `embedding_failed` is the value an
+operator needs; an image leg that also fell over in the same second is a
+footnote. `searchTypeFinal` is unchanged: two legs or three is not a different
+kind of search. The warn line carries the failure CATEGORY and never the
+provider's body (#1184's rule).
+
+**How to tell it ran.** `rag.image_pages` and `rag.image_only_pages` are on the
+`rag.hybrid_search` span, and are ABSENT (not zero) when the leg did not run at
+all — a trace has to separate "found nothing" from "there is no leg here". The
+per-leg span is `rag.image_leg`, whose `rag.image_leg` attribute is one of
+`disabled` / `unassigned` / `empty_index` / `ran` / `failed`.
+
+**Surfaces.** Every `hybridSearch` caller gets it: `/llm/ask`, deep search's
+original leg, and `/api/search?mode=hybrid` (whose wire shape is unchanged —
+page rows; the leg changes RANKING, not the response). `mode=semantic` is
+text-only *structurally*: that branch calls `vectorSearch` directly and never
+reaches `hybridSearch`, which is also the right answer — the mode names the
+text vector index.
+
+**On the wire, `/llm/ask` only.** `sources[]` gains `kind: 'image'` entries
+`{kind, pageId, pageTitle, spaceKey, attachmentUrl, similarity: null, score}`,
+best image first across the returned pages, capped at `MAX_IMAGE_SOURCES` = 4
+per answer and appended after the page and web entries (the model cites
+`[Source N]` from `buildRagContext`, so inserting in the middle would renumber
+sources an answer already referred to). `similarity` is always `null` — see the
+band argument above; `score` is the PAGE's fused value, like every other entry.
+The page and web shapes are untouched, so the frontend's `url`-keyed
+page-vs-web discriminator (#1125) is unchanged and an absent `kind` still means
+"a knowledge-base page". `attachmentUrl` is built by
+`buildPageImageUrl` in `core/services/image-references.ts`, the exact inverse
+of the enumerator that parses `<img src>` out of a page body, so the URL the
+browser gets is one the authenticated attachment routes really serve.
+
+**Not in P3:** the chat model still receives no retrieved images. That is P4.
 
 ## Multi-query expansion — "deep search" (#1112)
 
@@ -247,6 +474,18 @@ at the call site.
 **The original query is always a leg**, which is what makes the feature
 unable to lose on a lexically perfect query: the worst case is paraphrases
 that contribute nothing while the original's evidence carries the merge.
+
+**The image leg runs on the original leg only (#1115 P3)** — the paraphrase
+legs pass `imageLeg: false`, so one deep search costs exactly ONE VL call. Two
+reasons. Paraphrasing is a TEXT technique, so three calls would buy three
+near-identical query vectors at three times the latency against one
+`IMAGE_LEG_TIMEOUT_MS`. And because this merge SUMS weighted per-leg ranks, the
+same image evidence fed to all three legs would enter at 1 + 0.6 + 0.6 = 2.2 —
+as if three phrasings had independently agreed, when agreement across phrasings
+is precisely the signal this merge exists to read. On the original leg it
+enters once at weight 1, like that leg's text evidence, and the merged row
+keeps its `imageHits` because the merge keeps the object from the earliest leg
+a page appeared in.
 
 **The merge SUMS each page's weighted reciprocal rank across the legs** —
 original 1.0, each paraphrase 0.6. Concatenating and de-duplicating by

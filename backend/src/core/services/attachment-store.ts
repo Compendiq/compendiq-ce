@@ -73,6 +73,7 @@ import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sniffImageFormat } from './image-validator.js';
 import { canStoreLocalFilename, localAttachmentsDir } from './local-attachment-service.js';
+import { confluenceAttachmentDirKey } from './image-references.js';
 import type { ImageFormat, PageSource } from '@compendiq/contracts';
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
@@ -311,31 +312,19 @@ export async function readCachedAttachmentFile(
 export type AttachmentStoreSource = 'confluence' | 'local';
 
 /**
- * The Confluence-tree directory key for a page: its `confluence_id` when the
- * page is Confluence-sourced, its numeric id as text otherwise.
+ * The Confluence-tree directory key for a page — {@link
+ * confluenceAttachmentDirKey}, imported rather than restated.
  *
- * Deliberately the same rule as `parentKeyFor`
- * (`domains/knowledge/services/page-relocate-service.ts:140-142`) and the
- * paste/import writer (`routes/knowledge/pages-crud.ts:2723-2728`), restated
- * here rather than imported because `core` may not import a domain
- * (`backend/eslint.config.js:50-53`). If any of the three changes, all three
- * must — a reader keying differently from the writer reads the wrong
- * directory, and this module answers `null` for it, silently.
- *
- * The two writers are not byte-identical: `parentKeyFor` branches on
- * truthiness, the paste/import writer on `?? String(page.id)`, so they differ
- * on an **empty-string** `confluence_id` — writer targets `''`, this reader
- * `String(pageId)`. No writer can produce that state: `validatePageId('')`
- * throws, so a write under `''` fails before it lands, and sync never sets an
- * empty id. This mirrors `parentKeyFor` (the truthiness form) deliberately.
+ * It used to be a private copy here. #1115 P3 needs the same rule to build the
+ * `<img src>` an image source points at, and a third definition of "which
+ * directory holds this page's bytes" is how a reader and a writer start
+ * disagreeing silently: this module answers `null` for a mis-keyed directory,
+ * and a mis-keyed URL 404s in a source chip. `image-references.ts` is where it
+ * lives now, beside the enumerator that parses the same URLs back apart, and
+ * its JSDoc carries the reasoning (including why `pageSource` is required and
+ * why the empty-string case matches `parentKeyFor`).
  */
-function confluenceTreeKey(
-  pageSource: PageSource,
-  pageId: number,
-  confluenceId: string | null | undefined,
-): string {
-  return pageSource === 'confluence' && confluenceId ? confluenceId : String(pageId);
-}
+const confluenceTreeKey = confluenceAttachmentDirKey;
 
 export interface ResolveAttachmentBytesInput {
   /** `pages.id` — the numeric PK, also the local store's directory key. */

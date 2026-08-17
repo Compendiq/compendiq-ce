@@ -38,6 +38,8 @@ import {
   getRagImagesPerPageMax,
   getRagImageIndexExternal,
   invalidateRagImageIntakeCache,
+  getRagImageLegEnabled,
+  invalidateRagImageLegCache,
   RAG_IMAGES_PER_PAGE_MAX_DEFAULT,
 } from './admin-settings-service.js';
 
@@ -475,6 +477,42 @@ describe('image-index intake knobs (#1115 P2)', () => {
     });
     expect(await getRagImagesPerPageMax()).toBe(7);
     expect(await getRagImageIndexExternal()).toBe(false);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('rag_image_leg_enabled (#1115 P3)', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    invalidateRagImageLegCache();
+  });
+
+  it('defaults ON when absent, and on DB failure', async () => {
+    // Soft-fail must not narrow retrieval: an operator looking at a result set
+    // that silently lost its image leg cannot tell a DB hiccup from a corpus
+    // with no matching pictures. Same direction as the intake knobs.
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await getRagImageLegEnabled()).toBe(true);
+    invalidateRagImageLegCache();
+    mockQuery.mockRejectedValue(new Error('down'));
+    expect(await getRagImageLegEnabled()).toBe(true);
+  });
+
+  it("the literal '0'/'false'/'off' disables; anything else stays on", async () => {
+    for (const [raw, expected] of [
+      ['0', false], ['false', false], ['off', false], ['FALSE', false],
+      ['1', true], ['yes', true], ['', true],
+    ] as Array<[string, boolean]>) {
+      invalidateRagImageLegCache();
+      mockQuery.mockResolvedValue({ rows: [{ setting_value: raw }] });
+      expect(await getRagImageLegEnabled()).toBe(expected);
+    }
+  });
+
+  it('is cached, so the per-request gate costs no round-trip inside the TTL', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ setting_value: 'off' }] });
+    expect(await getRagImageLegEnabled()).toBe(false);
+    expect(await getRagImageLegEnabled()).toBe(false);
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 });

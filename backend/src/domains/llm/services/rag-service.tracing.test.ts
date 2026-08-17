@@ -44,6 +44,13 @@ vi.mock('./llm-provider-resolver.js', () => ({
     },
     model: 'stub',
   })),
+  // #1115 P3 — the image leg resolves its own use case, and this is a CLOSED
+  // stub. `null` is the ordinary deployment state (no VL model assigned), so
+  // the leg stays off and these spans describe the two text legs exactly as
+  // they did before it existed. Omitting it made the leg report a resolver
+  // FAILURE, which is the right verdict for a real one and the wrong one for
+  // a stub that simply had not been extended.
+  resolveImageEmbeddingUsecase: vi.fn(async () => null),
 }));
 
 const { hybridSearch, flushSearchAnalytics, RETRIEVAL_STAGE_DURATION_METRIC } = await import(

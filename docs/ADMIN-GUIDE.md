@@ -391,6 +391,18 @@ panel writes the same `admin_settings` rows.
 | MMR diversity narrow | `rag_mmr_enabled` | off | on / off |
 | MMR λ | `rag_mmr_lambda` | 0.7 | 0–1 |
 | Ranking prior weight | `rag_ranking_prior_weight` | 0 (off) | 0–0.05 |
+| Image leg (#1115 P3) | `rag_image_leg_enabled` | on | on / off |
+| Images per page (#1115 P2) | `rag_images_per_page_max` | 20 | 1–200 |
+| Index external images (#1115 P2) | `rag_image_index_external` | on | on / off |
+
+The three image knobs are two halves of one feature. `rag_image_leg_enabled` is
+the QUERY side: it decides whether retrieval fuses a third, image-based leg,
+which costs **one extra embedding call per question**. The other two bound what
+the intake worker takes off a page. Turning the leg off leaves the index being
+built; unassigning the `image_embedding` use case (Settings → AI Models → LLM
+providers) turns off both halves. None of them makes the leg run when no
+vision-language model is assigned or the index is empty. Operations:
+`docs/runbooks/image-index.md`.
 
 Three things worth knowing before you use it.
 

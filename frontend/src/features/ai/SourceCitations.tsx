@@ -4,6 +4,8 @@ import { m, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronRight, ExternalLink, FileText, Globe, Layers } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 import { resolveSourceTarget } from './source-target';
+import { imageSourceFileName, isImageSource } from './image-source';
+import { SourceThumbnail } from './SourceThumbnail';
 
 export interface Source {
   pageTitle: string;
@@ -50,6 +52,29 @@ export interface Source {
    * `rag-service.ts`. Display sites must not assume a percentage in [0,100].
    */
   similarity?: number | null;
+  /**
+   * #1115 P3 — `'image'` marks a picture the image retrieval leg matched on
+   * one of the answer's pages. **Absent means a knowledge-base page**, which
+   * is what every source was before this existed.
+   *
+   * A separate discriminator from the web/page one on purpose: that split is
+   * keyed on `url` (#1125's fix) and the page and web shapes were left
+   * untouched, so nothing that already reads this array changes meaning. An
+   * image source is still a source ABOUT a page — it carries `pageId` and
+   * routes through {@link resolveSourceTarget} exactly like its page — it is
+   * only rendered with the picture beside the title.
+   */
+  kind?: 'image';
+  /**
+   * The authenticated attachment route serving this image
+   * (`/api/attachments/…` or `/api/local-attachments/…`), built server-side by
+   * the same builder that parses the `<img src>` back out of a page body.
+   *
+   * Only ever present with `kind: 'image'`. It is NOT a navigation target —
+   * `resolveSourceTarget` never sees it — because clicking a source must open
+   * the PAGE, not a bare file.
+   */
+  attachmentUrl?: string;
 }
 
 interface SourceCitationsProps {
@@ -89,6 +114,9 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
           >
             {sources.map((source, i) => {
               const target = resolveSourceTarget(source);
+              // `null` on every non-image source, and on an image whose URL
+              // carries no usable final segment.
+              const imageFile = imageSourceFileName(source);
               const motionProps = {
                 initial: { opacity: 0, x: -4 },
                 animate: { opacity: 1, x: 0 },
@@ -102,14 +130,42 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
               );
               const body = (
                 <>
-                  {target.kind === 'external'
-                    ? <Globe size={14} aria-hidden className="mt-0.5 shrink-0 text-primary" />
-                    : <FileText size={14} aria-hidden className="mt-0.5 shrink-0 text-primary" />}
+                  {/* #1115 P3 — an image source shows the picture where the
+                      glyph would be. It renders nothing while loading or on a
+                      failed fetch, and the row degrades to the title-only
+                      shape below rather than to a broken-image box. */}
+                  {isImageSource(source)
+                    ? <SourceThumbnail url={source.attachmentUrl!} size={32} className="mt-0.5" />
+                    : target.kind === 'external'
+                      ? <Globe size={14} aria-hidden className="mt-0.5 shrink-0 text-primary" />
+                      : <FileText size={14} aria-hidden className="mt-0.5 shrink-0 text-primary" />}
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-xs font-medium text-foreground">
                       {source.pageTitle}
                     </p>
                     <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      {/* #1115 P3 — the word, not a colour. An image source is
+                          a CATEGORY (ADR-010), and the label is what still
+                          identifies it when the thumbnail has not loaded, in
+                          forced-colors, and to a screen reader (the picture
+                          itself is decorative).
+                          The filename is the NEXT item in the same row (review
+                          r1), because one page contributes up to three image
+                          sources and every other word here is identical across
+                          them. It is the one item that can be long, so it is
+                          the one that truncates — `min-w-0` is what lets it,
+                          and `shrink-0` on the label above is what stops the
+                          category word being eaten first. The card's
+                          accessible name is its text content, so the full name
+                          is still announced. */}
+                      {isImageSource(source) && (
+                        <span className="shrink-0" data-testid="source-image-label">Image</span>
+                      )}
+                      {imageFile && (
+                        <span className="min-w-0 truncate" data-testid="source-image-file">
+                          {imageFile}
+                        </span>
+                      )}
                       {/* Standalone pages have no space — render nothing rather
                           than an orphaned icon with a blank label. */}
                       {source.spaceKey && (

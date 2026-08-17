@@ -58,6 +58,11 @@ vi.mock('./llm-provider-resolver.js', () => ({
   // #1104: unassigned by default — the rerank stage stays off unless a test
   // configures it.
   resolveRerankUsecase: (...args: unknown[]) => mocks.mockResolveRerank(...args),
+  // #1115 P3: same story for the image leg. `null` is the ordinary
+  // deployment state (no VL model assigned), so the leg does not run and this
+  // unit suite keeps describing the two text legs. Its own behaviour is
+  // `image-leg-search.integration.test.ts`'s subject, against real Postgres.
+  resolveImageEmbeddingUsecase: vi.fn(async () => null),
 }));
 
 // The rerank boundary is stubbed whole so rerank-client's own imports (the
@@ -1042,6 +1047,84 @@ describe('RAG Service', () => {
       const results = [{ ...base, vectorScore: null, keywordRank: 0.5 }];
       expect(computeRetrievalConfidence(results)).toEqual({ score: null, basis: 'none' });
     });
+
+    // ── #1115 P3: the image leg is invisible to this formula ──────────────
+    // ADR-025 §5 left P3 the ruling on whether a synthesised row may carry a
+    // rerankScore in here. It may not, in either direction — see the argument
+    // in `retrieval-confidence.ts`.
+
+    it('an image-ONLY set is unmeasurable, exactly like a keyword-only one', () => {
+      const results = [
+        { ...base, vectorScore: null, keywordRank: null, imageOnly: true as const },
+        { ...base, pageId: 2, vectorScore: null, keywordRank: null, imageOnly: true as const, imageTextSynthesized: true as const },
+      ];
+      // NOT `{score: 0}`: that is the empty-corpus verdict, and a threshold
+      // gate would refuse it. Pages came back; nothing measurable did.
+      expect(computeRetrievalConfidence(results)).toEqual({ score: null, basis: 'none' });
+    });
+
+    it('an image-only row does not LOWER the number of a set beside it', () => {
+      const measured = [{ ...base, vectorScore: 0.72, keywordRank: null }];
+      const withImage = [
+        ...measured,
+        { ...base, pageId: 2, vectorScore: null, keywordRank: null, imageOnly: true as const },
+      ];
+      expect(computeRetrievalConfidence(withImage)).toEqual(
+        computeRetrievalConfidence(measured),
+      );
+    });
+
+    it('an unreranked image-only row does not demote a fully reranked set to similarity', () => {
+      // The sharpest edge: `allReranked` is what picks the rerank basis, and
+      // ONE unscored row flips it. An image-only row that the provider never
+      // saw would silently change which threshold the ask route applies.
+      const reranked = [
+        { ...base, vectorScore: 0.3, keywordRank: null, rerankScore: 0.91 },
+        { ...base, pageId: 2, vectorScore: 0.2, keywordRank: null, rerankScore: 0.44 },
+      ];
+      const withImage = [
+        ...reranked,
+        { ...base, pageId: 3, vectorScore: null, keywordRank: null, imageOnly: true as const },
+      ];
+      expect(computeRetrievalConfidence(reranked)).toEqual({ score: 0.91, basis: 'rerank' });
+      expect(computeRetrievalConfidence(withImage)).toEqual({ score: 0.91, basis: 'rerank' });
+    });
+
+    it('a SCORED image-only row cannot become the rerank basis', () => {
+      // The rerank stage scores `chunkText`, and an image-only row's
+      // chunkText is a lede (or a title) that no leg matched — so a score
+      // over it rates the answer on text retrieval never looked at. Here the
+      // synthesised row scores HIGHER than the real evidence: left in, it
+      // would raise the number past a threshold the real row fails.
+      const results = [
+        { ...base, vectorScore: 0.3, keywordRank: null, rerankScore: 0.2 },
+        { ...base, pageId: 2, vectorScore: null, keywordRank: null, rerankScore: 0.95, imageOnly: true as const, imageTextSynthesized: true as const },
+      ];
+      expect(computeRetrievalConfidence(results)).toEqual({ score: 0.2, basis: 'rerank' });
+    });
+
+    it('an image-only row at position 0 does not make a vector-led set unmeasurable', () => {
+      // The vector-led rule reads the best MEASURABLE row, not `results[0]`:
+      // an image row fusing one rank higher is not evidence the vector leg
+      // failed to lead.
+      const results = [
+        { ...base, vectorScore: null, keywordRank: null, imageOnly: true as const },
+        { ...base, pageId: 2, vectorScore: 0.66, keywordRank: null },
+      ];
+      expect(computeRetrievalConfidence(results)).toEqual({ score: 0.66, basis: 'similarity' });
+    });
+
+    it('a page found by BOTH the image leg and a text leg stays in the sample', () => {
+      // `imageHits` without `imageOnly` is a measured page that happens to
+      // carry pictures. Excluding it would throw away a real cosine.
+      const results = [
+        {
+          ...base, vectorScore: 0.51, keywordRank: null,
+          imageHits: [{ source: 'confluence' as const, key: 'a.png', similarity: 0.6, attachmentUrl: '/api/attachments/1/a.png' }],
+        },
+      ];
+      expect(computeRetrievalConfidence(results)).toEqual({ score: 0.51, basis: 'similarity' });
+    });
   });
 
   describe('rerank stage (#1104)', () => {
@@ -1507,6 +1590,149 @@ describe('RAG Service', () => {
       it('the /api/search and EE ACL pool floors survive — they size the POOL, not the score', () => {
         expect(resolveStageLimit(20, RAG_FETCH_WIDTH_DEFAULT, false)).toBe(20);
         expect(resolveStageLimit(20, RAG_FETCH_WIDTH_DEFAULT, true)).toBe(30);
+      });
+
+      it('#1115 P3 — a third leg raises the ceiling to 3/(k+1), and only when it is passed', () => {
+        // The default is unchanged, so nothing that existed before this leg
+        // reads a different bound; a page all three legs found reaches 3/61.
+        expect(rrfWorstCase(true)).toBeCloseTo(2 / 61, 12);
+        expect(rrfWorstCase(true, 60, true)).toBeCloseTo(3 / 61, 12);
+        expect(rrfWorstCase(false, 60, true)).toBeCloseTo(2 / 61, 12);
+      });
+    });
+
+    describe('the image leg (#1115 P3)', () => {
+      const imageRow = (id: string, overrides?: Partial<SearchResult>): SearchResult =>
+        makeResult(id, `chunk for ${id}`, {
+          vectorScore: null,
+          keywordRank: null,
+          score: 0,
+          imageHits: [{
+            source: 'confluence', key: `${id}.png`, similarity: 0.6,
+            attachmentUrl: `/api/attachments/1/${id}.png`,
+          }],
+          ...overrides,
+        });
+
+      it('adds a third contribution to a page the text legs also found', () => {
+        const combined = reciprocalRankFusion(
+          [makeResult('p1', 'v1')],
+          [makeResult('p1', 'k1', { score: 2, vectorScore: null, keywordRank: 2 })],
+          [imageRow('p1')],
+        );
+        expect(combined).toHaveLength(1);
+        expect(combined[0].score).toBeCloseTo(3 / 61, 12);
+      });
+
+      it('never replaces the row a text leg produced — it only attaches hits', () => {
+        // The vector chunk is purpose-built for LLM context; an image-leg row
+        // carrying a lede must not overwrite it.
+        const combined = reciprocalRankFusion(
+          [makeResult('p1', 'the vector chunk')],
+          [],
+          [imageRow('p1', { chunkText: 'a lede nobody matched', imageOnly: true as const })],
+        );
+        expect(combined[0].chunkText).toBe('the vector chunk');
+        expect(combined[0].vectorScore).toBeCloseTo(0.5, 12);
+        expect(combined[0].imageOnly).toBeUndefined();
+        expect(combined[0].imageHits).toHaveLength(1);
+      });
+
+      it('an image-only page enters the fused set carrying its hits', () => {
+        const combined = reciprocalRankFusion(
+          [makeResult('p1', 'v1')],
+          [],
+          [imageRow('p2', { imageOnly: true as const })],
+        );
+        expect(combined.map((r) => r.confluenceId)).toEqual(['p1', 'p2']);
+        expect(combined[1].imageOnly).toBe(true);
+        expect(combined[1].score).toBeCloseTo(1 / 61, 12);
+        expect(combined[1].vectorScore).toBeNull();
+      });
+
+      it('ties break toward the measured leg — an image-only page never displaces a vector head', () => {
+        // Load-bearing for #1105: `computeRetrievalConfidence` reads the
+        // vector-led property off the best measurable row, and the ORDER here
+        // is what keeps a measured row at the head of the array the ask route
+        // logs, cites and sends.
+        const combined = reciprocalRankFusion(
+          [makeResult('vec', 'v1')],
+          [makeResult('kw', 'k1', { score: 2, vectorScore: null, keywordRank: 2 })],
+          [imageRow('img', { imageOnly: true as const })],
+        );
+        expect(combined.map((r) => r.confluenceId)).toEqual(['vec', 'kw', 'img']);
+        expect(combined.every((r) => Math.abs(r.score - 1 / 61) < 1e-12)).toBe(true);
+      });
+
+      it('is a no-op when omitted — every pre-#1115 caller fuses identically', () => {
+        const v = [makeResult('p1', 'v1'), makeResult('p2', 'v2')];
+        const k = [makeResult('p3', 'k1', { score: 1, vectorScore: null, keywordRank: 1 })];
+        expect(reciprocalRankFusion(v, k, [])).toEqual(reciprocalRankFusion(v, k));
+      });
+
+      it('fuseWithStableHead threads it through both the narrow head and the wide tail', () => {
+        // rankWidth 1: the head is reconstructed from each leg's first page,
+        // and the image leg's own narrow reconstruction is a plain prefix
+        // because it is already one row per page.
+        const v = [makeResult('v1', 'a'), makeResult('v2', 'b')];
+        const i = [imageRow('i1', { imageOnly: true as const }), imageRow('v2', {})];
+        const fused = fuseWithStableHead(v, [], 1, i);
+        // Head = fusion over {v1} and {i1}; the tail appends v2 (which the
+        // wide fusion also credits with an image rank).
+        expect(fused.map((r) => r.confluenceId)).toEqual(['v1', 'i1', 'v2']);
+        expect(fused.find((r) => r.confluenceId === 'v2')!.imageHits).toHaveLength(1);
+      });
+
+      it('reconstructs the narrow image leg from the RAW window, not a plain prefix', () => {
+        // #1103/#1269's guarantee applied to the third leg. The image leg is
+        // page-denominated, but it was denominated FROM a raw image-row
+        // stream — so a narrow request (stage limit = rankWidth) reads only
+        // `imageRawLimit(rankWidth)` raw rows, and on a page-crowded window
+        // (two pages carrying `rag_images_per_page_max` pictures each fill the
+        // default 40-row narrow window between them) the wide result's first
+        // `rankWidth` pages are NOT the pages a narrow request had.
+        //
+        // rankWidth 2 → imageRawLimit(2) = 8, so `iFar` (best image at raw row
+        // 9) is outside a narrow request's window and belongs in the APPENDED
+        // tail, behind `vC` — which the wide fusion credits with two legs
+        // (2/63) against `iFar`'s one (1/62). Put `iFar` in the head instead
+        // and it takes its NARROW rank, jumping ahead of the better-evidenced
+        // page: the head dilution #1103 measured, arriving through the leg
+        // this PR adds.
+        //
+        // Mutation check: restore `imageResults.slice(0, rankWidth)` and the
+        // last two entries swap.
+        const v = [makeResult('vA', 'a'), makeResult('vB', 'b'), makeResult('vC', 'c')];
+        const k = [
+          makeResult('kA', 'x', { score: 2, vectorScore: null, keywordRank: 2 }),
+          makeResult('kB', 'y', { score: 1, vectorScore: null, keywordRank: 1 }),
+          makeResult('vC', 'c', { score: 1, vectorScore: null, keywordRank: 1 }),
+        ];
+        const i = [
+          imageRow('iNear', { imageOnly: true as const, imageRawIndex: 0 }),
+          imageRow('iFar', { imageOnly: true as const, imageRawIndex: 9 }),
+        ];
+        expect(fuseWithStableHead(v, k, 2, i).map((r) => r.confluenceId))
+          .toEqual(['vA', 'kA', 'iNear', 'vB', 'kB', 'vC', 'iFar']);
+      });
+
+      it('falls back to array position when no raw index was recorded', () => {
+        // A hand-built row carries no raw index, and so does any future
+        // producer that is already one row per raw hit — the reconstruction
+        // must then behave as an uncrowded window, i.e. exactly the plain
+        // prefix it replaced.
+        const v = [makeResult('vA', 'a'), makeResult('vB', 'b'), makeResult('vC', 'c')];
+        const k = [
+          makeResult('kA', 'x', { score: 2, vectorScore: null, keywordRank: 2 }),
+          makeResult('kB', 'y', { score: 1, vectorScore: null, keywordRank: 1 }),
+          makeResult('vC', 'c', { score: 1, vectorScore: null, keywordRank: 1 }),
+        ];
+        const i = [
+          imageRow('iNear', { imageOnly: true as const }),
+          imageRow('iFar', { imageOnly: true as const }),
+        ];
+        expect(fuseWithStableHead(v, k, 2, i).map((r) => r.confluenceId))
+          .toEqual(['vA', 'kA', 'iNear', 'vB', 'kB', 'iFar', 'vC']);
       });
     });
 

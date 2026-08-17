@@ -45,6 +45,8 @@ const validReadPayload = {
   // default the reader owns.
   ragImagesPerPageMax: 20,
   ragImageIndexExternal: true,
+  // #1115 P3 — the retrieval half, required on read for the same reason.
+  ragImageLegEnabled: true,
   // #1114 — required on read; both bases null on an instance that has never
   // set a threshold (the 0/0 default).
   ragConfidenceCalibration: { similarity: null, rerank: null },
@@ -477,6 +479,8 @@ describe('retrieval knobs (#1118)', () => {
       // #1115 P2 — the two image-intake knobs join the same contract.
       'ragImagesPerPageMax',
       'ragImageIndexExternal',
+      // #1115 P3 — and the retrieval half.
+      'ragImageLegEnabled',
     ] as const) {
       const { [key]: _dropped, ...without } = validReadPayload;
       expect(() => AdminSettingsSchema.parse(without), `${key} must be required`).toThrow();
@@ -506,6 +510,23 @@ describe('retrieval knobs (#1118)', () => {
       expect(() => UpdateAdminSettingsSchema.parse({ ragImageIndexExternal: 'off' })).toThrow();
       expect(() =>
         AdminSettingsSchema.parse({ ...validReadPayload, ragImageIndexExternal: 'off' }),
+      ).toThrow();
+    });
+  });
+
+  describe('#1115 P3 — the image retrieval leg', () => {
+    it('rag_image_leg_enabled is a boolean on both schemas', () => {
+      expect(
+        UpdateAdminSettingsSchema.parse({ ragImageLegEnabled: false }).ragImageLegEnabled,
+      ).toBe(false);
+      // Not a string, and not 0/1: the backend reader's OFF-list parses
+      // `'true'`/`'false'`, and anything it does not recognise leaves the
+      // default standing — so a value that reaches SQL in another shape would
+      // silently fail to turn the leg off.
+      expect(() => UpdateAdminSettingsSchema.parse({ ragImageLegEnabled: 'off' })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragImageLegEnabled: 0 })).toThrow();
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, ragImageLegEnabled: 'off' }),
       ).toThrow();
     });
   });
