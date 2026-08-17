@@ -1012,13 +1012,15 @@ export interface HybridSearchOptions {
    */
   recordAnalytics?: boolean;
   /**
-   * #1351 — scope both legs (vector + keyword) to one Confluence space,
-   * threaded straight through to `vectorSearch`/`keywordSearch` (see their
-   * matching notes for the narrow-only, standalone-excluding semantics).
-   * Optional and undefined by default, so RAG chat, deep search
-   * (`multi-query-search.ts`) and the eval/benchmark harness — none of which
-   * pass it — see byte-identical behaviour. `/api/search`'s hybrid branch is
-   * the only caller today.
+   * #1351 — scope retrieval to one Confluence space: both fused legs
+   * (vector + keyword, threaded straight through to
+   * `vectorSearch`/`keywordSearch` — see their matching notes for the
+   * narrow-only, standalone-excluding semantics) AND the exact-identifier
+   * pin stage below (post-filtered there rather than in SQL — see its own
+   * `inScope` note). Optional and undefined by default, so RAG chat, deep
+   * search (`multi-query-search.ts`) and the eval/benchmark harness — none
+   * of which pass it — see byte-identical behaviour. `/api/search`'s hybrid
+   * branch is the only caller today.
    */
   spaceKey?: string;
 }
@@ -1807,6 +1809,18 @@ async function hybridSearchInner(
   // At most two pins; the tail shrinks via the same topK slice; the fused
   // order below the pins is never re-sorted. Space-key detections verify
   // nothing here by design — a space is not a page (design of record).
+  //
+  // #1351: `lookupIdentifier`'s SQL is NOT space-scoped — unlike the vector
+  // and keyword legs, it has no `opts.spaceKey` predicate, because its
+  // candidate list already carries `spaceKey` on every row and the ACL
+  // post-filter below is the established pattern for narrowing that list
+  // after the query runs, not inside it. `inScope` applies the same
+  // narrowing the same way. No caller combines `pinIdentifiers` with
+  // `spaceKey` today (`/api/search` never requests pins; `/llm/ask` and deep
+  // search never scope by space), so this is a latent guarantee, not yet an
+  // observable behavior — kept true anyway so a future caller (deep search
+  // already spreads `...opts` into `hybridSearch`) can't silently resurface
+  // an out-of-scope page through this leg while the other two are honored.
   if (opts?.pinIdentifiers && (await getRagPinIdentifiersEnabled())) {
     try {
       const detected = detectIdentifiers(question).filter((d) => d.kind !== 'spaceKey');
@@ -1834,6 +1848,10 @@ async function hybridSearchInner(
             isAccessible = (pageId) => accessible.has(pageId);
           }
         }
+        // #1351: same narrow-only contract as the two legs — a candidate
+        // outside the requested space is never a valid pin, whether or not
+        // it is otherwise accessible.
+        const inScope = (r: SearchResult): boolean => !opts.spaceKey || r.spaceKey === opts.spaceKey;
         // Each detection contributes AT MOST ONE pin, and never a
         // substitute. Sliding past an already-pinned page to the next
         // candidate looks like de-duplication and is not: the second row
@@ -1841,12 +1859,12 @@ async function hybridSearchInner(
         // sharing the title, or another page whose title carries the key —
         // so one user gesture producing two detections of the same page
         // would pin an unrelated one beneath it, labelled a verified exact
-        // match, ahead of every fused result. Take the best accessible
-        // candidate; if it is already pinned, this detection has nothing
-        // left to say.
+        // match, ahead of every fused result. Take the best accessible,
+        // in-scope candidate; if it is already pinned, this detection has
+        // nothing left to say.
         const verified: SearchResult[] = [];
         for (const candidateRows of lookedUp) {
-          const pick = candidateRows.find((c) => isAccessible(c.pageId));
+          const pick = candidateRows.find((c) => isAccessible(c.pageId) && inScope(c));
           if (pick && !verified.some((v) => v.pageId === pick.pageId)) verified.push(pick);
         }
         if (verified.length > 0) {

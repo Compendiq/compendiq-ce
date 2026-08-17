@@ -2512,6 +2512,33 @@ describe('exact-identifier pin stage (#1107)', () => {
     expect(out[0]!.pinned).toBeUndefined();
   });
 
+  // #1351: the pin stage's SQL has no space_key predicate of its own (see
+  // the `inScope` note at its call site) — opts.spaceKey is enforced as a
+  // post-filter on the verified candidate, the same way the ACL check
+  // already is.
+  it('opts.spaceKey refuses to pin a VERIFIED identifier from a different space', async () => {
+    routePinQueries({ page_id: 42, confluence_id: 'inc-page', title: 'INC-2203 postmortem', space_key: 'OPS', excerpt: 'incident details' });
+    const out = await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, {
+      pinIdentifiers: true,
+      spaceKey: 'DEV',
+    });
+    // The out-of-scope match must not surface at all — not pinned, and not
+    // silently admitted into the fused order either (it was never a fused
+    // candidate; vectorSearch/keywordSearch already scoped those legs).
+    expect(out.some((r) => r.pageId === 42)).toBe(false);
+    expect(out.map((r) => r.pageId)).toEqual([1, 2]);
+  });
+
+  it('opts.spaceKey still pins a VERIFIED identifier that IS in the scoped space', async () => {
+    routePinQueries({ page_id: 42, confluence_id: 'inc-page', title: 'INC-2203 postmortem', space_key: 'DEV', excerpt: 'incident details' });
+    const out = await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, {
+      pinIdentifiers: true,
+      spaceKey: 'DEV',
+    });
+    expect(out[0]!.pageId).toBe(42);
+    expect(out[0]!.pinned).toBe(true);
+  });
+
   it('the operator kill switch disables the stage — no detection, no lookup (#1273 M11)', async () => {
     invalidateRagPinIdentifiersCache();
     mocks.mockQuery.mockImplementation(async (sql: string) => {
