@@ -42,6 +42,7 @@ import {
   sendCachedSSE,
   sanitizeLlmInput,
   resolvePageRef,
+  type ResolvedPageRef,
   resolveImagePart,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
@@ -269,6 +270,13 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       ragContext = cleanRag;
     }
 
+    // #1361: the page a dock conversation started from, written at INSERT.
+    // Resolved through resolvePageRef (internal id first, then confluence_id,
+    // int4-safe) and AUTHORISED with userCanAccessPage — the ask route never
+    // gated a bare `pageId` before, and the conversation list will read the
+    // page title back. Reused by the includeSubPages branch below when it ran.
+    let resolvedPageRef: ResolvedPageRef | undefined;
+
     // If includeSubPages is enabled and a pageId is provided, augment the RAG context
     // with the sub-page tree content
     let multiPageSuffix = '';
@@ -285,6 +293,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // this a caller with only the global `llm:query` permission could
       // extract the content of any page in a space they cannot access.
       const resolved = await resolvePageRef(body.pageId);
+      resolvedPageRef = resolved;
       if (resolved && (await userCanAccessPage(userId, resolved.id))) {
         const bodyResult = await query<{ body_html: string }>(
           'SELECT body_html FROM pages WHERE id = $1 AND deleted_at IS NULL',
@@ -509,6 +518,12 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // Returns the id the final frame must carry (null when the row vanished
     // under us) and whether this call INSERTed (PR 3's auto-title trigger).
     const persistedSources = toPersistedSources(sources);
+    const pageRefForInsert = async (): Promise<number | null> => {
+      if (!body.pageId) return null;
+      const resolved = resolvedPageRef ?? (await resolvePageRef(body.pageId));
+      if (!resolved) return null;
+      return (await userCanAccessPage(userId, resolved.id)) ? resolved.id : null;
+    };
     const saveConversation = async (
       answer: string,
       opts?: { refused?: boolean },
@@ -541,10 +556,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         return { id: convId, inserted: false };
       }
 
+      const pageRef = await pageRefForInsert();
       const insertResult = await query<{ id: string }>(
-        `INSERT INTO llm_conversations (user_id, model, title, messages)
-         VALUES ($1, $2, $3, $4) RETURNING id`,
-        [userId, resolvedModel, initialTitleFromQuestion(question), JSON.stringify(newTurns)],
+        `INSERT INTO llm_conversations (user_id, model, title, messages, page_ref)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [userId, resolvedModel, initialTitleFromQuestion(question), JSON.stringify(newTurns), pageRef],
       );
       convId = insertResult.rows[0]!.id;
       return { id: convId, inserted: true };

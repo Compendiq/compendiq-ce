@@ -1142,6 +1142,60 @@ describe('POST /api/llm/ask', () => {
     });
   });
 
+  describe('page_ref at INSERT (#1361)', () => {
+    function armInsertProbe(opts: { pageRow?: { id: number; confluence_id: string | null; title: string } | null; canAccess: boolean }) {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('FROM pages WHERE id = $1')) {
+          return { rows: opts.pageRow ? [opts.pageRow] : [] };
+        }
+        if (typeof sql === 'string' && sql.includes('FROM pages WHERE confluence_id')) {
+          return { rows: [] };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockUserCanAccessPage.mockResolvedValue(opts.canAccess);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('ok'));
+    }
+    function insertParams(): unknown[] {
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      expect(insert[0]).toContain('page_ref');
+      return insert[1] as unknown[];
+    }
+
+    it('writes the resolved internal id when the caller may see the page', async () => {
+      armInsertProbe({ pageRow: { id: 42, confluence_id: '123', title: 'Doc' }, canAccess: true });
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '42' } });
+      expect(insertParams()[4]).toBe(42);
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 42);
+    });
+
+    it('writes NULL when the caller may not see the page (no title oracle through the list)', async () => {
+      armInsertProbe({ pageRow: { id: 42, confluence_id: '123', title: 'Doc' }, canAccess: false });
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '42' } });
+      expect(insertParams()[4]).toBeNull();
+    });
+
+    it('writes NULL for a Confluence-length id that resolves to nothing, and never int-parses it', async () => {
+      armInsertProbe({ pageRow: null, canAccess: true });
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '12345678901' } });
+      expect(response.statusCode).toBe(200);
+      expect(insertParams()[4]).toBeNull();
+      // resolvePageRef skips the int4 lookup for an 11-digit id
+      expect(mockQuery.mock.calls.some((c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('FROM pages WHERE id = $1'))).toBe(false);
+    });
+
+    it('writes NULL when the ask carries no pageId', async () => {
+      armInsertProbe({ pageRow: null, canAccess: true });
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+      expect(insertParams()[4]).toBeNull();
+      expect(mockUserCanAccessPage).not.toHaveBeenCalled();
+    });
+  });
+
   it('should return 400 when question exceeds maximum length', async () => {
     const response = await app.inject({
       method: 'POST',
