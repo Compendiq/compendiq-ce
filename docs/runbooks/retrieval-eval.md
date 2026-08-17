@@ -623,6 +623,44 @@ regularly not the bare name in `Author`, and both are kept because `Artist` is
 often the fuller of the two. It is a test fixture, licensed separately from
 this repository's own **AGPL-3.0** (root `LICENSE`).
 
+### Image fixture (#1115 P5c)
+
+`fixture-de-images.json` labels that corpus: **303 queries over all 65 pages and
+all 187 images**, written by six independent vision-capable agents on a
+different model from the implementer, one disjoint page slice each, blind to the
+retrieval code — the owner's #1102 amendment. It is `query → page AND the image
+on that page that answers it`, so it carries `expectedImages[]` beside
+`expectedFiles[]`, a per-label `lang` (`de` | `en`) and two styles: `image`, and
+`image-negative` for a page whose *text* is about the subject while none of its
+pictures show it. A negative's `expectedImages` is empty, and that is the point
+— without them a leg that returns a picture for every query scores the same as
+one that returns the right picture.
+
+It is a **separate schema and a separate loader** (`ImageFixtureSchema` /
+`loadImageFixture`), never a widened `FixtureSchema`: the two are scored on
+different axes, and every baseline in this runbook is a comparison against the
+text one. `loadImageFixture` throws rather than filtering, exactly as
+`loadFixture` does, and checks the three corpus-relative things a fixture cannot
+check about itself — the page exists, the image exists **on disk**, and the
+image belongs to one of that label's own pages. The last is the one nobody
+eyeballs: `imageHit@K` is scored inside the retrieved page, so an image credited
+to the wrong page is unreachable however good the leg is, and both halves
+individually exist.
+
+`fixture-de-images.test.ts` pins the rest — `corpusManifestSha` against
+`computeCorpusManifestSha([IMAGE_CORPUS_DIR])` (the same contract
+`fixture.json` has: a corpus refresh moves the captions these labels were
+written from), the N ≥ 100 floor, ≥ 20 English, 8–20 negatives, no content shape
+below 15%, every image accounted for by a label or by a `notUsable` entry
+carrying the labeller's reason, and no query that restates a manifest caption
+verbatim. That last one is the corpus's caption-strip rule guarded from the
+other side: a query copied off the manifest hands the leg the match the empty
+alt text was there to deny it.
+
+**Nothing consumes it yet.** P5b adds the `--images` axis; until then the
+fixture is committed data with a guard over it and no runner path, for the same
+reason the corpus is absent from `CORPUS_DIRS`.
+
 ## The `vocabulary-gap` slice (#1112)
 
 Every style above was written by an agent **reading the page**, and that

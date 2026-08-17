@@ -1,0 +1,3910 @@
+{
+  "corpusManifestSha": "1d305046bdd084e59e2bb0cbb3e7206d5e91ec74ac82658ee85e3d403b6323a2",
+  "labeledBy": "six independent claude-sonnet-5 labelers, one page slice each, blind to retrieval code; merged by claude-opus-5 (schema validation, dedupe, coverage) — 2026-08-17. Ids are img-<slice>-<n>: the slice is the labeling agent (00-05), renumbered from the fragments' inconsistent schemes without reordering, so every label traces back to the one agent that wrote it.",
+  "notUsable": [],
+  "labels": [
+    {
+      "id": "img-00-001",
+      "query": "Airbus A380 Boarding über beide Decks gleichzeitig am Flughafen Frankfurt",
+      "lang": "de",
+      "expectedFiles": [
+        "airbus-a380.md"
+      ],
+      "expectedImages": [
+        "images/airbus-a380__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Photo shows the A380's nose at a Frankfurt gate with two boarding bridges stacked for parallel upper- and lower-deck boarding."
+    },
+    {
+      "id": "img-00-002",
+      "query": "Wie sieht die A380 am Gate aus, wenn Passagiere über zwei Decks gleichzeitig einsteigen?",
+      "lang": "de",
+      "expectedFiles": [
+        "airbus-a380.md"
+      ],
+      "expectedImages": [
+        "images/airbus-a380__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same Frankfurt apron photo depicting the double-deck simultaneous boarding infrastructure described in the text next to it."
+    },
+    {
+      "id": "img-00-003",
+      "query": "Zeig mir den Rollout der A380 in der Fertigungshalle mit Publikum",
+      "lang": "de",
+      "expectedFiles": [
+        "airbus-a380.md"
+      ],
+      "expectedImages": [
+        "images/airbus-a380__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Image shows the aircraft's nose in a hangar at night surrounded by a crowd, matching the January 2005 public rollout presentation."
+    },
+    {
+      "id": "img-00-004",
+      "query": "Picture of the A380 rollout ceremony inside the assembly hangar",
+      "lang": "en",
+      "expectedFiles": [
+        "airbus-a380.md"
+      ],
+      "expectedImages": [
+        "images/airbus-a380__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same hangar rollout photo with the crowd of onlookers and photographers."
+    },
+    {
+      "id": "img-00-005",
+      "query": "Foto des Arbeitsplatzes mit Bildschirmen und Ordnern für die Flight Test Engineers im A380",
+      "lang": "de",
+      "expectedFiles": [
+        "airbus-a380.md"
+      ],
+      "expectedImages": [
+        "images/airbus-a380__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Photo shows a bank of monitors and control panels at a desk with binders, the flight-test engineers' console described in the caption."
+    },
+    {
+      "id": "img-00-006",
+      "query": "Frauenkirche Dresden Außenansicht mit Kuppel vom Neumarkt aus fotografiert",
+      "lang": "de",
+      "expectedFiles": [
+        "frauenkirche-dresden.md"
+      ],
+      "expectedImages": [
+        "images/frauenkirche-dresden__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Modern colour photograph of the reconstructed sandstone church with its bell-shaped dome, taken from the square in front of it."
+    },
+    {
+      "id": "img-00-007",
+      "query": "Wie sieht die wiederaufgebaute Frauenkirche in Dresden heute aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "frauenkirche-dresden.md"
+      ],
+      "expectedImages": [
+        "images/frauenkirche-dresden__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same exterior photo is the only image in the corpus showing the present-day building rather than a historical drawing or painting."
+    },
+    {
+      "id": "img-00-008",
+      "query": "Photo of the Frauenkirche's dome and facade in Dresden",
+      "lang": "en",
+      "expectedFiles": [
+        "frauenkirche-dresden.md"
+      ],
+      "expectedImages": [
+        "images/frauenkirche-dresden__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the exterior photograph of the church square view."
+    },
+    {
+      "id": "img-00-009",
+      "query": "Zeig mir die historische Architekturzeichnung von George Bährs Entwurf für die Frauenkirche",
+      "lang": "de",
+      "expectedFiles": [
+        "frauenkirche-dresden.md"
+      ],
+      "expectedImages": [
+        "images/frauenkirche-dresden__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Hand-tinted elevation drawing with handwritten annotations depicting the domed facade design, matching the caption crediting Bähr's design."
+    },
+    {
+      "id": "img-00-010",
+      "query": "alte Bauzeichnung Fassade Frauenkirche Barock Aufriss",
+      "lang": "de",
+      "expectedFiles": [
+        "frauenkirche-dresden.md"
+      ],
+      "expectedImages": [
+        "images/frauenkirche-dresden__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same architectural elevation drawing is the only technical facade plan among the page's three images."
+    },
+    {
+      "id": "img-00-011",
+      "query": "Gemälde vom Dresdner Neumarkt mit Pferdekutschen im 18. Jahrhundert",
+      "lang": "de",
+      "expectedFiles": [
+        "frauenkirche-dresden.md"
+      ],
+      "expectedImages": [
+        "images/frauenkirche-dresden__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Canaletto's oil painting shows the historic Neumarkt square with horse-drawn carriages and figures, the church visible in the background."
+    },
+    {
+      "id": "img-00-012",
+      "query": "Porsche 911 Urmodell 1964 blau Foto Museum",
+      "lang": "de",
+      "expectedFiles": [
+        "porsche-911.md"
+      ],
+      "expectedImages": [
+        "images/porsche-911__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Studio photo of a blue first-generation 911 on a museum turntable with a 1960 timeline placard behind it, matching the 1964 model-year caption."
+    },
+    {
+      "id": "img-00-013",
+      "query": "Wie sah der allererste Porsche 911 aus, der 1964 auf den Markt kam?",
+      "lang": "de",
+      "expectedFiles": [
+        "porsche-911.md"
+      ],
+      "expectedImages": [
+        "images/porsche-911__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same museum photo depicts the original 1964 model-year 911, the only period-correct studio shot of the Urmodell in the set."
+    },
+    {
+      "id": "img-00-014",
+      "query": "Foto vom Porsche 356, dem Vorgängermodell des 911",
+      "lang": "de",
+      "expectedFiles": [
+        "porsche-911.md"
+      ],
+      "expectedImages": [
+        "images/porsche-911__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Cream-coloured coupe parked on a street matches the caption identifying it as the Porsche 356 predecessor of the 911."
+    },
+    {
+      "id": "img-00-015",
+      "query": "Picture of the Porsche 356, the predecessor of the 911",
+      "lang": "en",
+      "expectedFiles": [
+        "porsche-911.md"
+      ],
+      "expectedImages": [
+        "images/porsche-911__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same cream 356 street photo."
+    },
+    {
+      "id": "img-00-016",
+      "query": "Zeig mir einen alten gelben Porsche 911 mit klassischer 1960er-Lackierung",
+      "lang": "de",
+      "expectedFiles": [
+        "porsche-911.md"
+      ],
+      "expectedImages": [
+        "images/porsche-911__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Photo shows a yellow vintage 911 parked among trees, matching the caption about the Urmodell in period-correct 1960s paint."
+    },
+    {
+      "id": "img-00-017",
+      "query": "PDCA-Zyklus für Energiemanagement nach ISO 50001 mit vier Textfeldern",
+      "lang": "de",
+      "expectedFiles": [
+        "demingkreis.md"
+      ],
+      "expectedImages": [
+        "images/demingkreis__1.png"
+      ],
+      "style": "image",
+      "rationale": "Blue four-quadrant circle diagram with detailed bullet lists (Energiepolitik, Energiebeauftragten, Audits) matches the ISO 50001 caption specifically."
+    },
+    {
+      "id": "img-00-018",
+      "query": "Zeig mir die bunte Grafik mit den vier Pfeilen Plan Do Check Act um eine Kugel",
+      "lang": "de",
+      "expectedFiles": [
+        "demingkreis.md"
+      ],
+      "expectedImages": [
+        "images/demingkreis__2.png"
+      ],
+      "style": "image",
+      "rationale": "Colourful curved-arrow graphic with a glowing orange sphere in the centre and Plan/Do/Check/Act labels is visually distinct from the plainer diagrams."
+    },
+    {
+      "id": "img-00-019",
+      "query": "Colorful circular Plan-Do-Check-Act diagram with arrows around a sphere",
+      "lang": "en",
+      "expectedFiles": [
+        "demingkreis.md"
+      ],
+      "expectedImages": [
+        "images/demingkreis__2.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the iconic multicoloured PDCA arrow-wheel graphic."
+    },
+    {
+      "id": "img-00-020",
+      "query": "Diagramm PDCA als Treppe mit steigender Qualität über die Zeit",
+      "lang": "de",
+      "expectedFiles": [
+        "demingkreis.md"
+      ],
+      "expectedImages": [
+        "images/demingkreis__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Staircase-style graphic showing PDCA circles climbing a green upward slope labelled 'Quality Improvement' over 'Time' matches the continuous-improvement application section."
+    },
+    {
+      "id": "img-00-021",
+      "query": "Petri-Netz Diagramm mit vier Kreisen und Rechtecken für die Jahreszeiten",
+      "lang": "de",
+      "expectedFiles": [
+        "petri-netz.md"
+      ],
+      "expectedImages": [
+        "images/petri-netz__1.png"
+      ],
+      "style": "image",
+      "rationale": "Simple net with four circular places (Frühling, Sommer, Herbst, Winter) linked by boxed transitions a-d, matching the introductory four-seasons example."
+    },
+    {
+      "id": "img-00-022",
+      "query": "Wie sieht ein einfaches Petri-Netz-Beispiel mit den vier Jahreszeiten aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "petri-netz.md"
+      ],
+      "expectedImages": [
+        "images/petri-netz__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same base four-seasons net illustrates the mathematical quintuple definition example referenced right before it in the text."
+    },
+    {
+      "id": "img-00-023",
+      "query": "Diagramm das den Markenfluss vor und nach dem Schalten einer Transition mit gewichteten Kanten zeigt",
+      "lang": "de",
+      "expectedFiles": [
+        "petri-netz.md"
+      ],
+      "expectedImages": [
+        "images/petri-netz__2.png"
+      ],
+      "style": "image",
+      "rationale": "Two-part diagram with places s1-s4, a transition t, weighted arrows and dots (tokens) shown before and after firing matches the 'Schalten einer Transition' caption."
+    },
+    {
+      "id": "img-00-024",
+      "query": "Diagram showing token markings on places before and after a transition fires",
+      "lang": "en",
+      "expectedFiles": [
+        "petri-netz.md"
+      ],
+      "expectedImages": [
+        "images/petri-netz__2.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same before/after token-marking transition-firing illustration."
+    },
+    {
+      "id": "img-00-025",
+      "query": "Zeig mir das Petri-Netz-Beispiel mit dem Sack Reis der in China umfällt",
+      "lang": "de",
+      "expectedFiles": [
+        "petri-netz.md"
+      ],
+      "expectedImages": [
+        "images/petri-netz__3.png"
+      ],
+      "style": "image",
+      "rationale": "Extended net repeats the four-seasons cycle plus an independent small net labelled 'In China fällt ein Sack Reis um', matching the caption about the extended example illustrating concurrency."
+    },
+    {
+      "id": "img-00-026",
+      "query": "Liniennetzplan der Münchner U-Bahn schematisch mit farbigen Linien",
+      "lang": "de",
+      "expectedFiles": [
+        "u-bahn-muenchen.md"
+      ],
+      "expectedImages": [
+        "images/u-bahn-muenchen__1.png"
+      ],
+      "style": "image",
+      "rationale": "Schematic, non-geographic transit diagram with coloured U-Bahn lines matches the standard network map at the top of the article."
+    },
+    {
+      "id": "img-00-027",
+      "query": "Wie sieht der offizielle U-Bahn-Netzplan von München aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "u-bahn-muenchen.md"
+      ],
+      "expectedImages": [
+        "images/u-bahn-muenchen__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same stylised schematic network map is the standard official-style U-Bahn plan for Munich."
+    },
+    {
+      "id": "img-00-028",
+      "query": "Topografische Karte des Münchner U-Bahn-Netzes mit echtem Straßenverlauf",
+      "lang": "de",
+      "expectedFiles": [
+        "u-bahn-muenchen.md"
+      ],
+      "expectedImages": [
+        "images/u-bahn-muenchen__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Map overlays the U-Bahn lines onto a realistic street/terrain layout rather than a schematic, matching the 'topografische Darstellung' caption."
+    },
+    {
+      "id": "img-00-029",
+      "query": "Topographic map of the Munich U-Bahn network overlaid on real streets",
+      "lang": "en",
+      "expectedFiles": [
+        "u-bahn-muenchen.md"
+      ],
+      "expectedImages": [
+        "images/u-bahn-muenchen__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same geographically accurate network map."
+    },
+    {
+      "id": "img-00-030",
+      "query": "Zeig mir das rot-orange Signet der U-Bahn-Linie U8 in München",
+      "lang": "de",
+      "expectedFiles": [
+        "u-bahn-muenchen.md"
+      ],
+      "expectedImages": [
+        "images/u-bahn-muenchen__3.png"
+      ],
+      "style": "image",
+      "rationale": "Diagonal red-and-orange badge with a large white 'U8' matches the caption describing the line's signet in the U8 section."
+    },
+    {
+      "id": "img-00-031",
+      "query": "Foto der Erdatmosphäre vom Weltraum aus mit Mond am Horizont",
+      "lang": "de",
+      "expectedFiles": [
+        "erdatmosphaere.md"
+      ],
+      "expectedImages": [
+        "images/erdatmosphaere__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "ISS photo shows Earth's limb with clouds, a blue atmospheric glow and a crescent moon above, matching the 2013 ISS caption."
+    },
+    {
+      "id": "img-00-032",
+      "query": "Wie sieht die Erdatmosphäre aus dem Weltall fotografiert aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "erdatmosphaere.md"
+      ],
+      "expectedImages": [
+        "images/erdatmosphaere__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same ISS limb photograph is the only actual photographic (non-diagram) image of the atmosphere on this page."
+    },
+    {
+      "id": "img-00-033",
+      "query": "Diagramm der Schichten der Erdatmosphäre mit Höhenangaben Troposphäre Stratosphäre Mesosphäre",
+      "lang": "de",
+      "expectedFiles": [
+        "erdatmosphaere.md"
+      ],
+      "expectedImages": [
+        "images/erdatmosphaere__2.png"
+      ],
+      "style": "image",
+      "rationale": "Labelled vertical gradient diagram naming each layer (Troposphäre through Exosphäre) with altitude markers matches the 'Aufbau der Atmosphäre' caption."
+    },
+    {
+      "id": "img-00-034",
+      "query": "Diagram showing the layers of Earth's atmosphere with altitude labels",
+      "lang": "en",
+      "expectedFiles": [
+        "erdatmosphaere.md"
+      ],
+      "expectedImages": [
+        "images/erdatmosphaere__2.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same labelled atmospheric-layer gradient diagram."
+    },
+    {
+      "id": "img-00-035",
+      "query": "Zeig mir das Diagramm zur Entwicklung des Sauerstoffgehalts der Atmosphäre über die letzte Milliarde Jahre",
+      "lang": "de",
+      "expectedFiles": [
+        "erdatmosphaere.md"
+      ],
+      "expectedImages": [
+        "images/erdatmosphaere__3.png"
+      ],
+      "style": "image",
+      "rationale": "Line chart plotting oxygen percentage against millions of years before present matches the caption on O2 development over the last aeon."
+    },
+    {
+      "id": "img-00-036",
+      "query": "vollständiges Periodensystem der Elemente mit Ordnungszahl Atommasse und Elektronegativität pro Kästchen",
+      "lang": "de",
+      "expectedFiles": [
+        "periodensystem.md"
+      ],
+      "expectedImages": [
+        "images/periodensystem__1.png"
+      ],
+      "style": "image",
+      "rationale": "Densely annotated table with a legend box explaining colour-coded categories and multiple numeric values per cell matches the caption's detailed data listing."
+    },
+    {
+      "id": "img-00-037",
+      "query": "Welche Periodensystem-Grafik zeigt für jedes Element Symbol, Dichte und Atommasse?",
+      "lang": "de",
+      "expectedFiles": [
+        "periodensystem.md"
+      ],
+      "expectedImages": [
+        "images/periodensystem__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same fully-annotated table is the version with per-element density/mass/electronegativity data called out in the caption."
+    },
+    {
+      "id": "img-00-038",
+      "query": "Periodensystem in der gebräuchlichen mittellangen Form mit Lanthanoiden und Actinoiden unten angeordnet",
+      "lang": "de",
+      "expectedFiles": [
+        "periodensystem.md"
+      ],
+      "expectedImages": [
+        "images/periodensystem__2.png"
+      ],
+      "style": "image",
+      "rationale": "Simpler colour-block table without the dense per-cell data matches the caption describing the space-saving mittellange Form layout."
+    },
+    {
+      "id": "img-00-039",
+      "query": "Standard medium-long form periodic table image with elements grouped by colour",
+      "lang": "en",
+      "expectedFiles": [
+        "periodensystem.md"
+      ],
+      "expectedImages": [
+        "images/periodensystem__2.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the plainer colour-coded periodic table variant."
+    },
+    {
+      "id": "img-00-040",
+      "query": "Zeig mir das Diagramm der Energieniveaus der Elektronenhülle mit Orbitalen s p d f",
+      "lang": "de",
+      "expectedFiles": [
+        "periodensystem.md"
+      ],
+      "expectedImages": [
+        "images/periodensystem__3.png"
+      ],
+      "style": "image",
+      "rationale": "Colour-coded orbital energy-level ladder with spin-up/spin-down boxes matches the caption describing electron shell energy levels."
+    },
+    {
+      "id": "img-00-041",
+      "query": "Übersichtsgrafik einer eukaryotischen Tierzelle mit allen Organellen beschriftet",
+      "lang": "de",
+      "expectedFiles": [
+        "zellkern.md"
+      ],
+      "expectedImages": [
+        "images/zellkern__1.png"
+      ],
+      "style": "image",
+      "rationale": "3D-style illustration of a whole cell with 14 numbered organelles (nucleus, mitochondria, Golgi, ER, ribosomes) matches the overview caption."
+    },
+    {
+      "id": "img-00-042",
+      "query": "Wie sieht der Aufbau einer Zelle mit Zellkern, Mitochondrien und Golgi-Apparat aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "zellkern.md"
+      ],
+      "expectedImages": [
+        "images/zellkern__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same whole-cell diagram is the only image showing organelles beyond the nucleus itself, including mitochondria and Golgi apparatus."
+    },
+    {
+      "id": "img-00-043",
+      "query": "Schema des Zellkerns mit Kernhülle, Nucleolus und Chromatin beschriftet",
+      "lang": "de",
+      "expectedFiles": [
+        "zellkern.md"
+      ],
+      "expectedImages": [
+        "images/zellkern__2.png"
+      ],
+      "style": "image",
+      "rationale": "Orange sphere diagram labelled 1/1a/1b through 6 for envelope, nucleolus, karyoplasm and chromatin matches the caption listing those exact structures."
+    },
+    {
+      "id": "img-00-044",
+      "query": "Diagram of the cell nucleus showing the nuclear envelope, nucleolus and chromatin",
+      "lang": "en",
+      "expectedFiles": [
+        "zellkern.md"
+      ],
+      "expectedImages": [
+        "images/zellkern__2.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same numbered nucleus cross-section diagram."
+    },
+    {
+      "id": "img-00-045",
+      "query": "Zeig mir das Diagramm mit PML-Körpern, Cajal-Körpern und Speckles im Zellkern",
+      "lang": "de",
+      "expectedFiles": [
+        "zellkern.md"
+      ],
+      "expectedImages": [
+        "images/zellkern__3.png"
+      ],
+      "style": "image",
+      "rationale": "Detailed blue vertebrate-nucleus diagram with a legend naming PML-Körper, Cajal-Körper, Speckles and Polycomb-Körper matches the Nukleärkörper section."
+    },
+    {
+      "id": "img-00-046",
+      "query": "Aufbau einer Glasfaser mit Kern, Mantel, Beschichtung und Hülle beschriftet",
+      "lang": "de",
+      "expectedFiles": [
+        "lichtwellenleiter.md"
+      ],
+      "expectedImages": [
+        "images/lichtwellenleiter__1.png"
+      ],
+      "style": "image",
+      "rationale": "Nested-cylinder diagram numbered 1-4 for core, cladding, coating and jacket exactly matches the caption's typical fibre structure listing."
+    },
+    {
+      "id": "img-00-047",
+      "query": "Wie ist eine Lichtwellenleiter-Faser aus Kern und Mantel schichtweise aufgebaut?",
+      "lang": "de",
+      "expectedFiles": [
+        "lichtwellenleiter.md"
+      ],
+      "expectedImages": [
+        "images/lichtwellenleiter__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same nested-layer diagram is the only image showing the four concentric fibre layers rather than a size comparison or ray diagram."
+    },
+    {
+      "id": "img-00-048",
+      "query": "Vergleich der Kerndurchmesser verschiedener Glasfasertypen Multimode und POF",
+      "lang": "de",
+      "expectedFiles": [
+        "lichtwellenleiter.md"
+      ],
+      "expectedImages": [
+        "images/lichtwellenleiter__2.png"
+      ],
+      "style": "image",
+      "rationale": "Set of circles at different scales labelled 50µm, 200µm PCS, 400µm and 980µm POF with a core/cladding/coating legend matches the size-comparison caption."
+    },
+    {
+      "id": "img-00-049",
+      "query": "Diagram comparing the core diameters of different optical fiber types",
+      "lang": "en",
+      "expectedFiles": [
+        "lichtwellenleiter.md"
+      ],
+      "expectedImages": [
+        "images/lichtwellenleiter__2.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same set of scaled fibre-diameter circles."
+    },
+    {
+      "id": "img-00-050",
+      "query": "Zeig mir den Akzeptanzkegel und die Totalreflexion der Lichtstrahlen in einer Glasfaser",
+      "lang": "de",
+      "expectedFiles": [
+        "lichtwellenleiter.md"
+      ],
+      "expectedImages": [
+        "images/lichtwellenleiter__3.png"
+      ],
+      "style": "image",
+      "rationale": "Ray-tracing diagram of light bouncing between core and cladding with a cone of incoming rays matches the acceptance-cone/total-reflection caption."
+    },
+    {
+      "id": "img-00-051",
+      "query": "Abgasturbolader im Schnitt Modell mit Turbine und Verdichter",
+      "lang": "de",
+      "expectedFiles": [
+        "turbolader.md"
+      ],
+      "expectedImages": [
+        "images/turbolader__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Colourful cutaway model photo showing the turbine side and compressor side on a shared shaft matches the intro caption exactly."
+    },
+    {
+      "id": "img-00-052",
+      "query": "Wie sieht ein aufgeschnittener Turbolader von innen aus, mit Turbinen- und Verdichterrad?",
+      "lang": "de",
+      "expectedFiles": [
+        "turbolader.md"
+      ],
+      "expectedImages": [
+        "images/turbolader__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same cutaway display model is the only image in the corpus showing the turbocharger's internal turbine and compressor wheels."
+    },
+    {
+      "id": "img-00-053",
+      "query": "Schema eines Zweitakt-Dieselmotors mit gesteuertem Auslassventil und Längsspülung",
+      "lang": "de",
+      "expectedFiles": [
+        "turbolader.md"
+      ],
+      "expectedImages": [
+        "images/turbolader__2.png"
+      ],
+      "style": "image",
+      "rationale": "Cylinder cross-section with cyan arrows showing intake ports and an exhaust valve at top matches the two-stroke uniflow-scavenging caption."
+    },
+    {
+      "id": "img-00-054",
+      "query": "Diagram of a two-stroke diesel engine with controlled exhaust valve scavenging airflow",
+      "lang": "en",
+      "expectedFiles": [
+        "turbolader.md"
+      ],
+      "expectedImages": [
+        "images/turbolader__2.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same uniflow-scavenging cylinder diagram with airflow arrows."
+    },
+    {
+      "id": "img-00-055",
+      "query": "Zeig mir ein Foto einer Diesellokomotive mit schwarzer Rauchwolke beim Beschleunigen",
+      "lang": "de",
+      "expectedFiles": [
+        "turbolader.md"
+      ],
+      "expectedImages": [
+        "images/turbolader__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Photo of an Indian train hauled by a diesel locomotive belching thick black smoke matches the caption illustrating turbo lag."
+    },
+    {
+      "id": "img-00-056",
+      "query": "Wie viele Fahrgäste nutzten die Münchner U-Bahn im Jahr 2024?",
+      "lang": "de",
+      "expectedFiles": [
+        "u-bahn-muenchen.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "The 452-million-riders figure is a plain statistic stated only in body text; neither network map nor the U8 logo depicts ridership numbers."
+    },
+    {
+      "id": "img-00-057",
+      "query": "Wie viele Passagiere kann der Airbus A380 maximal befördern?",
+      "lang": "de",
+      "expectedFiles": [
+        "airbus-a380.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "The 853-passenger maximum capacity is a textual spec; the boarding photo, rollout photo and test-console photo show none of it."
+    },
+    {
+      "id": "img-00-058",
+      "query": "Wer hat das Petri-Netz erfunden und in welchem Jahrzehnt?",
+      "lang": "de",
+      "expectedFiles": [
+        "petri-netz.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Carl Adam Petri's authorship and the 1960s origin are historical facts stated in prose; none of the three abstract net diagrams answer an attribution/date question."
+    },
+    {
+      "id": "img-01-001",
+      "query": "Foto vom Berliner Fernsehturm mit der Weltzeituhr am Alexanderplatz",
+      "lang": "de",
+      "expectedFiles": [
+        "berliner-fernsehturm.md"
+      ],
+      "expectedImages": [
+        "images/berliner-fernsehturm__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "The image is a daytime street-level photo of the tower rising behind the round Urania World Clock at Alexanderplatz."
+    },
+    {
+      "id": "img-01-002",
+      "query": "Wie sieht der Fernsehturm vom Alexanderplatz aus gesehen aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "berliner-fernsehturm.md"
+      ],
+      "expectedImages": [
+        "images/berliner-fernsehturm__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Shows the full tower shaft and sphere framed against blue sky as seen from the Alexanderplatz square below."
+    },
+    {
+      "id": "img-01-003",
+      "query": "Photo of the Berlin TV tower next to the World Clock at Alexanderplatz",
+      "lang": "en",
+      "expectedFiles": [
+        "berliner-fernsehturm.md"
+      ],
+      "expectedImages": [
+        "images/berliner-fernsehturm__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "English cross-lingual case for the same street photo pairing the tower with the World Clock."
+    },
+    {
+      "id": "img-01-004",
+      "query": "Bild vom ehemaligen Fernsehzentrum Adlershof mit dem alten Richtfunkturm",
+      "lang": "de",
+      "expectedFiles": [
+        "berliner-fernsehturm.md"
+      ],
+      "expectedImages": [
+        "images/berliner-fernsehturm__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Depicts a beige multi-storey building with a small rooftop antenna structure, framed by trees and a park path, matching the Adlershof relay-tower site."
+    },
+    {
+      "id": "img-01-005",
+      "query": "Foto von Walter Ulbricht bei einer Rede am Rednerpult",
+      "lang": "de",
+      "expectedFiles": [
+        "berliner-fernsehturm.md"
+      ],
+      "expectedImages": [
+        "images/berliner-fernsehturm__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Black-and-white photo of a bespectacled man in a suit speaking behind a bank of microphones at a lectern, a banner visible above him."
+    },
+    {
+      "id": "img-01-006",
+      "query": "Zeig mir ein historisches Schwarzweißfoto von einer Wahlkundgebung mit vielen Mikrofonen",
+      "lang": "de",
+      "expectedFiles": [
+        "berliner-fernsehturm.md"
+      ],
+      "expectedImages": [
+        "images/berliner-fernsehturm__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "The dense cluster of microphones on the podium and grainy monochrome tone are the distinguishing visual cues of this rally photo."
+    },
+    {
+      "id": "img-01-007",
+      "query": "Foto der Golden Gate Bridge von Battery East aus gesehen",
+      "lang": "de",
+      "expectedFiles": [
+        "golden-gate-bridge.md"
+      ],
+      "expectedImages": [
+        "images/golden-gate-bridge__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Wide colour photo of the full red-orange suspension bridge spanning the bay under a clear sky, the classic postcard view."
+    },
+    {
+      "id": "img-01-008",
+      "query": "picture of the Golden Gate Bridge with clear blue sky and the bay",
+      "lang": "en",
+      "expectedFiles": [
+        "golden-gate-bridge.md"
+      ],
+      "expectedImages": [
+        "images/golden-gate-bridge__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "English cross-lingual case for the same wide bridge-and-bay photo with visible towers and cables."
+    },
+    {
+      "id": "img-01-009",
+      "query": "Technisches Schwarzweißfoto vom Kabelsattel auf einem Pylon der Golden Gate Bridge",
+      "lang": "de",
+      "expectedFiles": [
+        "golden-gate-bridge.md"
+      ],
+      "expectedImages": [
+        "images/golden-gate-bridge__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Monochrome close-up looking up the tower cables to the metal cable-seat saddle structure at the top of a pylon, an engineering-survey style photo."
+    },
+    {
+      "id": "img-01-010",
+      "query": "Foto vom dichten Autoverkehr auf der Golden Gate Bridge",
+      "lang": "de",
+      "expectedFiles": [
+        "golden-gate-bridge.md"
+      ],
+      "expectedImages": [
+        "images/golden-gate-bridge__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Shows multiple lanes of cars driving toward the camera on the bridge deck with the towers and cables overhead."
+    },
+    {
+      "id": "img-01-011",
+      "query": "Wie sieht die Fahrbahn der Golden Gate Bridge mit mehreren Spuren aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "golden-gate-bridge.md"
+      ],
+      "expectedImages": [
+        "images/golden-gate-bridge__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "The photo is taken from the roadway itself, showing lane markings, streetlights and dense traffic converging toward the tower."
+    },
+    {
+      "id": "img-01-012",
+      "query": "Foto vom provisorischen Reichstagsgebäude in der Leipziger Straße um 1898",
+      "lang": "de",
+      "expectedFiles": [
+        "reichstagsgebaeude.md"
+      ],
+      "expectedImages": [
+        "images/reichstagsgebaeude__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Sepia street photo of a plain multi-storey stone building with arched windows and pedestrians on the sidewalk, matching the described interim Reichstag quarters."
+    },
+    {
+      "id": "img-01-013",
+      "query": "Historische Ansicht des Königsplatzes in Berlin um 1880",
+      "lang": "de",
+      "expectedFiles": [
+        "reichstagsgebaeude.md"
+      ],
+      "expectedImages": [
+        "images/reichstagsgebaeude__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "An elevated panoramic sepia view over a park-like square with scattered buildings and rooftops stretching to the horizon, fitting an 1880s cityscape."
+    },
+    {
+      "id": "img-01-014",
+      "query": "Zeig mir den Wettbewerbsentwurf von Ludwig Bohnstedt für das Reichstagsgebäude",
+      "lang": "de",
+      "expectedFiles": [
+        "reichstagsgebaeude.md"
+      ],
+      "expectedImages": [
+        "images/reichstagsgebaeude__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "An ornate engraved rendering of a grand domed palace with a central arched entrance, colonnade wings and a statue atop the dome, the hallmark of an architectural competition drawing."
+    },
+    {
+      "id": "img-01-015",
+      "query": "architectural drawing of Bohnstedt's 1872 competition design for the Reichstag",
+      "lang": "en",
+      "expectedFiles": [
+        "reichstagsgebaeude.md"
+      ],
+      "expectedImages": [
+        "images/reichstagsgebaeude__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "English cross-lingual case for the same ornate rendered building design with dome and colonnades."
+    },
+    {
+      "id": "img-01-016",
+      "query": "Diagramm zur Generalisierung und Spezialisierung im Entity-Relationship-Modell",
+      "lang": "de",
+      "expectedFiles": [
+        "entity-relationship-modell.md"
+      ],
+      "expectedImages": [
+        "images/entity-relationship-modell__1.png"
+      ],
+      "style": "image",
+      "rationale": "A boxed diagram links PARTNER to LIEFERANT, KUNDE and MITARBEITER via 'ist ein' arrows, the textbook illustration of generalization/specialization."
+    },
+    {
+      "id": "img-01-017",
+      "query": "Zeig mir ein Beispiel für is-a-Beziehungen mit Lieferant, Kunde und Mitarbeiter",
+      "lang": "de",
+      "expectedFiles": [
+        "entity-relationship-modell.md"
+      ],
+      "expectedImages": [
+        "images/entity-relationship-modell__1.png"
+      ],
+      "style": "image",
+      "rationale": "The diagram literally labels the boxes LIEFERANT, KUNDE and MITARBEITER connected upward to PARTNER by 'ist ein' relationships."
+    },
+    {
+      "id": "img-01-018",
+      "query": "Vergleich verschiedener ER-Diagramm-Notationen wie Chen und Krähenfuß",
+      "lang": "de",
+      "expectedFiles": [
+        "entity-relationship-modell.md"
+      ],
+      "expectedImages": [
+        "images/entity-relationship-modell__2.png"
+      ],
+      "style": "image",
+      "rationale": "A stacked table draws the same Person-Geburtsort-Ort relationship six times in the Chen, IDEF1X, Bachman, Martin/IE/Krähenfuß, Min-Max/ISO and UML notations."
+    },
+    {
+      "id": "img-01-019",
+      "query": "comparison chart of different entity relationship diagram notations",
+      "lang": "en",
+      "expectedFiles": [
+        "entity-relationship-modell.md"
+      ],
+      "expectedImages": [
+        "images/entity-relationship-modell__2.png"
+      ],
+      "style": "image",
+      "rationale": "English cross-lingual case for the same six-row notation comparison table."
+    },
+    {
+      "id": "img-01-020",
+      "query": "Beispiel für ein Flussdiagramm mit Start, Zählschleife und Stop",
+      "lang": "de",
+      "expectedFiles": [
+        "programmablaufplan.md"
+      ],
+      "expectedImages": [
+        "images/programmablaufplan__1.png"
+      ],
+      "style": "image",
+      "rationale": "A green rounded Start box leads through an assignment, an output parallelogram and two diamond decisions back around a loop to a green Stop box."
+    },
+    {
+      "id": "img-01-021",
+      "query": "Wie sieht ein Programmablaufplan mit einer Verzweigung und Schleife aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "programmablaufplan.md"
+      ],
+      "expectedImages": [
+        "images/programmablaufplan__1.png"
+      ],
+      "style": "image",
+      "rationale": "The pink diamond shapes with checkmark/cross arrows show the conditional branches and the loop-back line typical of a flowchart with a counting loop."
+    },
+    {
+      "id": "img-01-022",
+      "query": "Foto einer historischen Zeichenschablone für Programmablaufpläne",
+      "lang": "de",
+      "expectedFiles": [
+        "programmablaufplan.md"
+      ],
+      "expectedImages": [
+        "images/programmablaufplan__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "A worn yellow-green plastic stencil sheet with cut-out flowchart shapes (ovals, trapezoids, diamonds) photographed at an angle, an artefact rather than a diagram."
+    },
+    {
+      "id": "img-01-023",
+      "query": "Zeitleiste der Entstehungsgeschichte von UML und objektorientierten Methoden",
+      "lang": "de",
+      "expectedFiles": [
+        "unified-modeling-language.md"
+      ],
+      "expectedImages": [
+        "images/unified-modeling-language__1.png"
+      ],
+      "style": "image",
+      "rationale": "A shaded timeline chart from 1990 to 2005 traces yellow boxes such as Booch, OMT, UML 0.9 through UML 2.2, exactly the version-history illustration."
+    },
+    {
+      "id": "img-01-024",
+      "query": "timeline chart of UML version history from 1990 to 2008",
+      "lang": "en",
+      "expectedFiles": [
+        "unified-modeling-language.md"
+      ],
+      "expectedImages": [
+        "images/unified-modeling-language__1.png"
+      ],
+      "style": "image",
+      "rationale": "English cross-lingual case for the same shaded era-by-era UML methods timeline."
+    },
+    {
+      "id": "img-01-025",
+      "query": "Diagramm der UML-Metamodellhierarchie von M0 bis M3",
+      "lang": "de",
+      "expectedFiles": [
+        "unified-modeling-language.md"
+      ],
+      "expectedImages": [
+        "images/unified-modeling-language__2.png"
+      ],
+      "style": "image",
+      "rationale": "Four stacked blue boxes labeled M3: MOF down to M0: Laufzeitinstanzen connect Class/Generalization/Attribute down to a concrete DVD 'The Big Lebowski' instance via instanceOf arrows."
+    },
+    {
+      "id": "img-01-026",
+      "query": "Zeig mir ein Beispiel für eine UML-Aktion mit Eingabe- und Ausgabepins",
+      "lang": "de",
+      "expectedFiles": [
+        "unified-modeling-language.md"
+      ],
+      "expectedImages": [
+        "images/unified-modeling-language__3.png"
+      ],
+      "style": "image",
+      "rationale": "A rounded rectangle labeled 'Suppe kochen' has two small square input pins (Gemüse, Wasser) on the left and one output pin (Suppe) on the right, the canonical action-with-pins notation."
+    },
+    {
+      "id": "img-01-027",
+      "query": "Wie stellt man eine Aktion mit Ein- und Ausgabeparametern in UML dar?",
+      "lang": "de",
+      "expectedFiles": [
+        "unified-modeling-language.md"
+      ],
+      "expectedImages": [
+        "images/unified-modeling-language__3.png"
+      ],
+      "style": "image",
+      "rationale": "The same soup-cooking action box is the minimal notation example for how UML draws pins as small squares on an action's border."
+    },
+    {
+      "id": "img-01-028",
+      "query": "Schema des zweikammrigen Fischherzens",
+      "lang": "de",
+      "expectedFiles": [
+        "herz.md"
+      ],
+      "expectedImages": [
+        "images/herz__1.png"
+      ],
+      "style": "image",
+      "rationale": "A simplified tan-and-red illustration shows a single S-shaped chamber pathway with arrows for blood flow, the two-chamber fish-heart schematic."
+    },
+    {
+      "id": "img-01-029",
+      "query": "Beschriftetes Diagramm des menschlichen Herzens mit Vorhöfen und Kammern",
+      "lang": "de",
+      "expectedFiles": [
+        "herz.md"
+      ],
+      "expectedImages": [
+        "images/herz__2.png"
+      ],
+      "style": "image",
+      "rationale": "A colourful cross-section labels rechter/linker Vorhof, rechte/linke Kammer, Aorta and the Hohlvenen with pointer lines, the standard anatomical heart diagram."
+    },
+    {
+      "id": "img-01-030",
+      "query": "Zeig mir eine Grafik mit den Herzklappen und den großen Blutgefäßen",
+      "lang": "de",
+      "expectedFiles": [
+        "herz.md"
+      ],
+      "expectedImages": [
+        "images/herz__2.png"
+      ],
+      "style": "image",
+      "rationale": "The same diagram explicitly labels Mitralklappe, Aortenklappe, Pulmonalklappe and Trikuspidalklappe alongside the aorta and pulmonary vessels."
+    },
+    {
+      "id": "img-01-031",
+      "query": "labeled diagram of the human heart chambers and valves",
+      "lang": "en",
+      "expectedFiles": [
+        "herz.md"
+      ],
+      "expectedImages": [
+        "images/herz__2.png"
+      ],
+      "style": "image",
+      "rationale": "English cross-lingual case for the same labeled anatomical cross-section of the human heart."
+    },
+    {
+      "id": "img-01-032",
+      "query": "Wiggers-Diagramm mit Druck-, Volumen- und EKG-Kurven des Herzzyklus",
+      "lang": "de",
+      "expectedFiles": [
+        "herz.md"
+      ],
+      "expectedImages": [
+        "images/herz__3.png"
+      ],
+      "style": "image",
+      "rationale": "A multi-line chart stacks Aortendruck, Vorhofdruck, Kammerdruck, Kammervolumen, EKG and Herztöne curves over two cardiac cycles, the classic Wiggers diagram layout."
+    },
+    {
+      "id": "img-01-033",
+      "query": "Diagramm der Absorptionsspektren von Chlorophyll a, b und Carotin",
+      "lang": "de",
+      "expectedFiles": [
+        "photosynthese.md"
+      ],
+      "expectedImages": [
+        "images/photosynthese__1.png"
+      ],
+      "style": "image",
+      "rationale": "The upper chart plots coloured absorption curves labeled Chlorophyll a, Chlorophyll b and Beta-Carotin against wavelength, over a visible-spectrum colour bar."
+    },
+    {
+      "id": "img-01-034",
+      "query": "Zeig mir den Engelmannschen Bakterienversuch zur Photosynthese",
+      "lang": "de",
+      "expectedFiles": [
+        "photosynthese.md"
+      ],
+      "expectedImages": [
+        "images/photosynthese__1.png"
+      ],
+      "style": "image",
+      "rationale": "The lower half of the same image shows green algae segments with clustered red dots (bacteria) concentrated at the ends, the schematic Engelmann bacterium experiment."
+    },
+    {
+      "id": "img-01-035",
+      "query": "Grafik des Lichtsammelkomplexes mit einfallenden Photonen",
+      "lang": "de",
+      "expectedFiles": [
+        "photosynthese.md"
+      ],
+      "expectedImages": [
+        "images/photosynthese__2.png"
+      ],
+      "style": "image",
+      "rationale": "A hexagonal cluster of green and yellow circles (pigment molecules) is struck from multiple directions by wavy arrows labeled hv, representing absorbed photons."
+    },
+    {
+      "id": "img-01-036",
+      "query": "diagram of a photosynthetic light-harvesting complex absorbing photons",
+      "lang": "en",
+      "expectedFiles": [
+        "photosynthese.md"
+      ],
+      "expectedImages": [
+        "images/photosynthese__2.png"
+      ],
+      "style": "image",
+      "rationale": "English cross-lingual case for the same hexagonal pigment cluster with incoming hv photon arrows."
+    },
+    {
+      "id": "img-01-037",
+      "query": "Schema der Thylakoidmembran mit Photosystem II, Cytochrom b6f und ATP-Synthase",
+      "lang": "de",
+      "expectedFiles": [
+        "photosynthese.md"
+      ],
+      "expectedImages": [
+        "images/photosynthese__3.png"
+      ],
+      "style": "image",
+      "rationale": "A horizontal membrane cross-section shows the labeled protein complexes PS II, Cyt b6f, PS I and ATP-Synthase side by side with proton and electron flow arrows."
+    },
+    {
+      "id": "img-01-038",
+      "query": "Grafik einer elektromagnetischen Welle mit elektrischem und magnetischem Feld",
+      "lang": "de",
+      "expectedFiles": [
+        "antenne.md"
+      ],
+      "expectedImages": [
+        "images/antenne__1.png"
+      ],
+      "style": "image",
+      "rationale": "A 3D plot shows a blue sinusoidal E-field and a perpendicular red B-field propagating together along an x-axis, the far-field wave illustration."
+    },
+    {
+      "id": "img-01-039",
+      "query": "Wie sieht das Fernfeld einer linear polarisierten elektromagnetischen Welle aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "antenne.md"
+      ],
+      "expectedImages": [
+        "images/antenne__1.png"
+      ],
+      "style": "image",
+      "rationale": "The same wave diagram labels the wavelength lambda and the perpendicular E and B vectors, matching a linearly polarized far-field wave."
+    },
+    {
+      "id": "img-01-040",
+      "query": "Schaltungssymbole für verschiedene Antennenanschlüsse",
+      "lang": "de",
+      "expectedFiles": [
+        "antenne.md"
+      ],
+      "expectedImages": [
+        "images/antenne__2.png"
+      ],
+      "style": "image",
+      "rationale": "A row of simple line-drawn circuit symbols (an arrow, a triangle, an L-shape and a T-shape, each over a small circle) depicts the standard antenna connection symbols."
+    },
+    {
+      "id": "img-01-041",
+      "query": "Ersatzschaltbild der Antennenimpedanz mit Widerstand und Blindanteil",
+      "lang": "de",
+      "expectedFiles": [
+        "antenne.md"
+      ],
+      "expectedImages": [
+        "images/antenne__3.png"
+      ],
+      "style": "image",
+      "rationale": "A small circuit diagram stacks two resistor boxes labeled Rs and Rv beside a black reactance block labeled jX between two wire rails, an antenna's equivalent impedance circuit."
+    },
+    {
+      "id": "img-01-042",
+      "query": "Diagramm der Kommunikation zwischen den OSI-Schichten 3 bis 5",
+      "lang": "de",
+      "expectedFiles": [
+        "osi-modell.md"
+      ],
+      "expectedImages": [
+        "images/osi-modell__1.png"
+      ],
+      "style": "image",
+      "rationale": "Three stacked boxes labeled Schicht 3 to Schicht 5 each show two 'Instanz' peers linked by a horizontal 'Protokoll' line, illustrating peer-layer communication."
+    },
+    {
+      "id": "img-01-043",
+      "query": "Zeig mir das OSI-7-Schichten-Modell als Grafik",
+      "lang": "de",
+      "expectedFiles": [
+        "osi-modell.md"
+      ],
+      "expectedImages": [
+        "images/osi-modell__2.png"
+      ],
+      "style": "image",
+      "rationale": "Two coloured stacks of seven labeled bands, from Bitübertragungsschicht up to Anwendungsschicht, sit atop a yellow 'Übertragungsmedium' bar, the canonical OSI stack chart."
+    },
+    {
+      "id": "img-01-044",
+      "query": "diagram of the OSI seven layer model",
+      "lang": "en",
+      "expectedFiles": [
+        "osi-modell.md"
+      ],
+      "expectedImages": [
+        "images/osi-modell__2.png"
+      ],
+      "style": "image",
+      "rationale": "English cross-lingual case for the same seven-band coloured layer stack chart."
+    },
+    {
+      "id": "img-01-045",
+      "query": "Animation eines Viertaktmotors im Ansaugtakt",
+      "lang": "de",
+      "expectedFiles": [
+        "viertaktmotor.md"
+      ],
+      "expectedImages": [
+        "images/viertaktmotor__1.png"
+      ],
+      "style": "image",
+      "rationale": "A colourful engine cross-section labeled '1' shows a yellow intake-air path flowing in through an open valve toward the piston, the intake-stroke animation frame."
+    },
+    {
+      "id": "img-01-046",
+      "query": "Schnittzeichnung eines Viertaktmotors mit farbig markierten Bauteilen",
+      "lang": "de",
+      "expectedFiles": [
+        "viertaktmotor.md"
+      ],
+      "expectedImages": [
+        "images/viertaktmotor__2.png"
+      ],
+      "style": "image",
+      "rationale": "A smaller companion cross-section, marked '4' and showing an exhaust path, colour-codes the piston, valves and crankshaft in the same rendered engine style."
+    },
+    {
+      "id": "img-01-047",
+      "query": "Foto eines aufgeschnittenen Motorradmotors mit sichtbarem Kolben",
+      "lang": "de",
+      "expectedFiles": [
+        "viertaktmotor.md"
+      ],
+      "expectedImages": [
+        "images/viertaktmotor__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "A real photograph of a disassembled motorcycle engine on an orange gasket shows the bare metal piston sitting in its cylinder bore, cables and hoses around it."
+    },
+    {
+      "id": "img-01-048",
+      "query": "photo of a cutaway motorcycle engine showing the piston",
+      "lang": "en",
+      "expectedFiles": [
+        "viertaktmotor.md"
+      ],
+      "expectedImages": [
+        "images/viertaktmotor__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "English cross-lingual case for the same real-world teardown photo of a Yamaha-badged motorcycle engine with the piston exposed."
+    },
+    {
+      "id": "img-01-049",
+      "query": "Wer hat den Reichstag 1933 in Brand gesteckt?",
+      "lang": "de",
+      "expectedFiles": [
+        "reichstagsgebaeude.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "The Reichstagsbrand and its perpetrator are a historical-narrative fact covered only in prose; the three vendored images are a 1898 street photo, an 1880 square panorama and an 1872 competition drawing, none showing the 1933 fire or any person."
+    },
+    {
+      "id": "img-01-050",
+      "query": "Wie viele Menschen haben sich seit der Eröffnung von der Golden Gate Bridge in den Tod gestürzt?",
+      "lang": "de",
+      "expectedFiles": [
+        "golden-gate-bridge.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Suicide statistics are a textual figure from the 'Suizide' section; the three images are a scenic bridge view, a cable-seat engineering photo and a traffic shot, none of which visualizes this count."
+    },
+    {
+      "id": "img-01-051",
+      "query": "Wie überführt man ein Entity-Relationship-Modell in ein relationales Datenbankschema?",
+      "lang": "de",
+      "expectedFiles": [
+        "entity-relationship-modell.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "The relational-mapping transformation is described only in prose; the two vendored images show generalization/specialization boxes and a notation-comparison table, not the ER-to-relational conversion steps."
+    },
+    {
+      "id": "img-02-001",
+      "query": "Foto des Boeing-747-Prototyps beim Erstflug über dem Puget Sound",
+      "lang": "de",
+      "expectedFiles": [
+        "boeing-747.md"
+      ],
+      "expectedImages": [
+        "images/boeing-747__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Schwarz-Weiß-Luftaufnahme zeigt zwei 747-Prototypen im Formationsflug über Wald und Küste, passend zum Erstflug über dem Puget Sound."
+    },
+    {
+      "id": "img-02-002",
+      "query": "Zeig mir ein Schwarz-Weiß-Bild von zwei Jumbojets im Formationsflug",
+      "lang": "de",
+      "expectedFiles": [
+        "boeing-747.md"
+      ],
+      "expectedImages": [
+        "images/boeing-747__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Das Bild ist eine s/w-Aufnahme zweier 747 im Formationsflug über einer ländlichen Landschaft."
+    },
+    {
+      "id": "img-02-003",
+      "query": "Nahaufnahme der Bugsektion der '747 City of Everett' im Museum",
+      "lang": "de",
+      "expectedFiles": [
+        "boeing-747.md"
+      ],
+      "expectedImages": [
+        "images/boeing-747__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Zeigt die Nase des ausgestellten ersten Prototyps mit Schriftzug 'CITY OF EVERETT' und Museumstreppe."
+    },
+    {
+      "id": "img-02-004",
+      "query": "Wie sieht die rote Kabinenstreifen-Lackierung an der Nase einer frühen 747 aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "boeing-747.md"
+      ],
+      "expectedImages": [
+        "images/boeing-747__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Nahaufnahme der Bugsektion mit dem charakteristischen roten Längsstreifen entlang der Fensterreihe."
+    },
+    {
+      "id": "img-02-005",
+      "query": "Foto einer Pan-Am-Boeing-747 auf der Startbahn",
+      "lang": "de",
+      "expectedFiles": [
+        "boeing-747.md"
+      ],
+      "expectedImages": [
+        "images/boeing-747__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Farbfoto zeigt eine weiße 747-100 in klassischer Pan-Am-Lackierung mit blauem Globus-Logo auf dem Rollfeld."
+    },
+    {
+      "id": "img-02-006",
+      "query": "picture of a Pan Am 747 on the runway",
+      "lang": "en",
+      "expectedFiles": [
+        "boeing-747.md"
+      ],
+      "expectedImages": [
+        "images/boeing-747__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same photo of a Pan Am liveried Boeing 747-100 taxiing on an airfield."
+    },
+    {
+      "id": "img-02-007",
+      "query": "Welche schweren Zwischenfälle und Abstürze gab es mit der Boeing 747?",
+      "lang": "de",
+      "expectedFiles": [
+        "boeing-747.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Die drei vorhandenen Bilder zeigen unbeschädigte Flugzeuge (Erstflug, Museumsexponat, rollende Pan-Am-Maschine); keines bildet einen Zwischenfall oder Absturz ab, der nur im Fliess text behandelt wird."
+    },
+    {
+      "id": "img-02-008",
+      "query": "Historischer Kupferstich des alten Rathauses an der Trostbrücke in Hamburg",
+      "lang": "de",
+      "expectedFiles": [
+        "hamburger-rathaus.md"
+      ],
+      "expectedImages": [
+        "images/hamburger-rathaus__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Der Stich 'Das Raht-Haus zu Hamburg' zeigt das mittelalterliche Rathausgebäude mit Turm und Marktszene davor."
+    },
+    {
+      "id": "img-02-009",
+      "query": "Wie sah das Hamburger Rathaus aus, bevor es beim großen Brand zerstört wurde?",
+      "lang": "de",
+      "expectedFiles": [
+        "hamburger-rathaus.md"
+      ],
+      "expectedImages": [
+        "images/hamburger-rathaus__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Zeigt das Vorgängergebäude an der Trostbrücke im Zustand um 1700, also vor dem Großen Brand von 1842."
+    },
+    {
+      "id": "img-02-010",
+      "query": "Kolorierte Ansicht des Hamburger Rathauses aus der Franzosenzeit",
+      "lang": "de",
+      "expectedFiles": [
+        "hamburger-rathaus.md"
+      ],
+      "expectedImages": [
+        "images/hamburger-rathaus__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Kolorierter Stich zeigt das während der französischen Besatzung (1811-1814) als Rathaus genutzte Gebäude mit Flagge und Säulenfassade."
+    },
+    {
+      "id": "img-02-011",
+      "query": "colored engraving of Hamburg's town hall during the French occupation period",
+      "lang": "en",
+      "expectedFiles": [
+        "hamburger-rathaus.md"
+      ],
+      "expectedImages": [
+        "images/hamburger-rathaus__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same colored print of the building used as town hall (Mairie) in the 1811-1814 French period."
+    },
+    {
+      "id": "img-02-012",
+      "query": "Bild des ehemaligen Waisenhauses, das als provisorisches Rathaus diente",
+      "lang": "de",
+      "expectedFiles": [
+        "hamburger-rathaus.md"
+      ],
+      "expectedImages": [
+        "images/hamburger-rathaus__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Zeigt das alte Waisenhaus in der Admiralitätstraße, das 1842-1897 als Interims-Rathaus genutzt wurde, mit Kutschen auf der Straße davor."
+    },
+    {
+      "id": "img-02-013",
+      "query": "Was ist auf dem Hygieia-Brunnen im Innenhof des Hamburger Rathauses dargestellt?",
+      "lang": "de",
+      "expectedFiles": [
+        "hamburger-rathaus.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Alle drei vorhandenen Bilder sind historische Außenansichten früherer Rathausgebäude; keines zeigt den Ehrenhof oder den im Text beschriebenen Hygieia-Brunnen."
+    },
+    {
+      "id": "img-02-014",
+      "query": "Zeichnung der Burgruine auf dem Felsen vor dem Bau von Schloss Neuschwanstein",
+      "lang": "de",
+      "expectedFiles": [
+        "schloss-neuschwanstein.md"
+      ],
+      "expectedImages": [
+        "images/schloss-neuschwanstein__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Zeigt die 1846 gezeichnete Ruine Vorderhohenschwangau auf bewaldetem Felsen, dem späteren Baugrund des Schlosses."
+    },
+    {
+      "id": "img-02-015",
+      "query": "Wie sah der Burgfelsen von Neuschwanstein im 19. Jahrhundert aus, bevor das Schloss stand?",
+      "lang": "de",
+      "expectedFiles": [
+        "schloss-neuschwanstein.md"
+      ],
+      "expectedImages": [
+        "images/schloss-neuschwanstein__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Zeigt denselben Felsen mit den Ruinen der Vorgängerburg vor dem Neubau."
+    },
+    {
+      "id": "img-02-016",
+      "query": "Foto von Schloss Pierrefonds bei Compiègne, dem Vorbild für Neuschwanstein",
+      "lang": "de",
+      "expectedFiles": [
+        "schloss-neuschwanstein.md"
+      ],
+      "expectedImages": [
+        "images/schloss-neuschwanstein__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Fotografie des französischen Schlosses Pierrefonds mit runden Türmen, das laut Bildunterschrift als architektonisches Vorbild diente."
+    },
+    {
+      "id": "img-02-017",
+      "query": "photo of Pierrefonds castle in France, the architectural inspiration for Neuschwanstein",
+      "lang": "en",
+      "expectedFiles": [
+        "schloss-neuschwanstein.md"
+      ],
+      "expectedImages": [
+        "images/schloss-neuschwanstein__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same photograph of Château de Pierrefonds with its round corner towers under a cloudy sky."
+    },
+    {
+      "id": "img-02-018",
+      "query": "Erste Entwurfszeichnung von Christian Jank für Schloss Neuschwanstein von 1869",
+      "lang": "de",
+      "expectedFiles": [
+        "schloss-neuschwanstein.md"
+      ],
+      "expectedImages": [
+        "images/schloss-neuschwanstein__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Gemalter Entwurf von Christian Jank zeigt das fantasievolle Schlosskonzept von 1869 mit Türmen und Zinnen."
+    },
+    {
+      "id": "img-02-019",
+      "query": "Einfaches Beispieldiagramm einer ereignisgesteuerten Prozesskette mit Funktionen und Ereignissen",
+      "lang": "de",
+      "expectedFiles": [
+        "ereignisgesteuerte-prozesskette.md"
+      ],
+      "expectedImages": [
+        "images/ereignisgesteuerte-prozesskette__1.png"
+      ],
+      "style": "image",
+      "rationale": "Zeigt die klassische Kette aus abwechselnden Funktions- (abgerundet) und Ereignis-Symbolen (Sechseck), z.B. 'Auftrag annehmen' -> 'Auftrag ist angenommen'."
+    },
+    {
+      "id": "img-02-020",
+      "query": "Zeig mir eine EPK mit den Symbolen für Funktion und Ereignis im Wechsel",
+      "lang": "de",
+      "expectedFiles": [
+        "ereignisgesteuerte-prozesskette.md"
+      ],
+      "expectedImages": [
+        "images/ereignisgesteuerte-prozesskette__1.png"
+      ],
+      "style": "image",
+      "rationale": "Das einfache Beispiel zeigt genau diesen alternierenden Aufbau aus Funktions- und Ereignis-Boxen."
+    },
+    {
+      "id": "img-02-021",
+      "query": "Komplexes eEPK-Modell mit Rollen, Systemen und XOR-Verknüpfungen",
+      "lang": "de",
+      "expectedFiles": [
+        "ereignisgesteuerte-prozesskette.md"
+      ],
+      "expectedImages": [
+        "images/ereignisgesteuerte-prozesskette__2.png"
+      ],
+      "style": "image",
+      "rationale": "Zeigt ein erweitertes eEPK-Diagramm mit Rollen (Schlichter, Fahrpersonal), einem IT-System (BFS) und XOR-Konnektoren für Verzweigungen."
+    },
+    {
+      "id": "img-02-022",
+      "query": "diagram of a complex extended event-driven process chain with XOR gateways",
+      "lang": "en",
+      "expectedFiles": [
+        "ereignisgesteuerte-prozesskette.md"
+      ],
+      "expectedImages": [
+        "images/ereignisgesteuerte-prozesskette__2.png"
+      ],
+      "style": "image",
+      "rationale": "Same complex eEPK diagram, which includes XOR logic connectors and organizational/system objects."
+    },
+    {
+      "id": "img-02-023",
+      "query": "Kreisdiagramm der vier Scrum-Ereignisse Sprint Planning, Daily Scrum, Review und Retrospektive",
+      "lang": "de",
+      "expectedFiles": [
+        "scrum.md"
+      ],
+      "expectedImages": [
+        "images/scrum__1.png"
+      ],
+      "style": "image",
+      "rationale": "Kreisgrafik in vier Segmente geteilt, benannt nach genau diesen vier Scrum-Events."
+    },
+    {
+      "id": "img-02-024",
+      "query": "Welche Grafik zeigt Backlog Refinement neben den vier Scrum-Events?",
+      "lang": "de",
+      "expectedFiles": [
+        "scrum.md"
+      ],
+      "expectedImages": [
+        "images/scrum__1.png"
+      ],
+      "style": "image",
+      "rationale": "Dieselbe Kreisgrafik hat eine gestrichelte 'Backlog refinement'-Box neben dem Vier-Felder-Kreis."
+    },
+    {
+      "id": "img-02-025",
+      "query": "Flussdiagramm vom Produkt-Backlog über Sprint-Backlog zum fertigen Produktinkrement",
+      "lang": "de",
+      "expectedFiles": [
+        "scrum.md"
+      ],
+      "expectedImages": [
+        "images/scrum__2.png"
+      ],
+      "style": "image",
+      "rationale": "Pfeildiagramm führt von Produkt-Backlog über Sprint-Backlog und den Sprint (24h/30 Tage) zur lauffähigen, inkrementell verbesserten Software."
+    },
+    {
+      "id": "img-02-026",
+      "query": "flowchart showing product backlog, sprint backlog and sprint cycle in Scrum",
+      "lang": "en",
+      "expectedFiles": [
+        "scrum.md"
+      ],
+      "expectedImages": [
+        "images/scrum__2.png"
+      ],
+      "style": "image",
+      "rationale": "Same arrow diagram tracing backlog items through the sprint cycle to working software."
+    },
+    {
+      "id": "img-02-027",
+      "query": "Screenshot eines Sprint-Burndown-Charts mit Ist- und Soll-Linie",
+      "lang": "de",
+      "expectedFiles": [
+        "scrum.md"
+      ],
+      "expectedImages": [
+        "images/scrum__3.png"
+      ],
+      "style": "image",
+      "rationale": "Tool-Screenshot 'Sprint Burndown Chart' zeigt Ideal-, Ist- und Trendlinie über die Sprinttage."
+    },
+    {
+      "id": "img-02-028",
+      "query": "V-förmiges Diagramm der Entwicklungsphasen von der Systemanforderungsanalyse bis zur Abnahme",
+      "lang": "de",
+      "expectedFiles": [
+        "v-modell.md"
+      ],
+      "expectedImages": [
+        "images/v-modell__1.png"
+      ],
+      "style": "image",
+      "rationale": "Boxen bilden ein V von Systemanforderungsanalyse über Software-Entwurf zurück hoch bis Abnahme und Nutzung."
+    },
+    {
+      "id": "img-02-029",
+      "query": "Wie sieht das V-Modell mit den Achsen Zeit und Detaillierungsgrad aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "v-modell.md"
+      ],
+      "expectedImages": [
+        "images/v-modell__1.png"
+      ],
+      "style": "image",
+      "rationale": "Dasselbe Diagramm beschriftet die horizontale Achse mit 'Zeit' und die vertikale mit 'Detaillierung'."
+    },
+    {
+      "id": "img-02-030",
+      "query": "Farbige V-Modell-Grafik nach VDI/VDE 2206 mit Verifikation und Validierung",
+      "lang": "de",
+      "expectedFiles": [
+        "v-modell.md"
+      ],
+      "expectedImages": [
+        "images/v-modell__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Bunte V-Grafik nach VDI/VDE 2206 (2021) mit Pfeilen für Verifikation/Validierung und einem Ausschnitt zu Systemelementen."
+    },
+    {
+      "id": "img-02-031",
+      "query": "colorful V-model diagram according to VDI/VDE 2206 standard",
+      "lang": "en",
+      "expectedFiles": [
+        "v-modell.md"
+      ],
+      "expectedImages": [
+        "images/v-modell__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same blue/orange/yellow V-shaped diagram labeled per the VDI/VDE 2206 mechatronics standard."
+    },
+    {
+      "id": "img-02-032",
+      "query": "3D-Illustration des Kohlenstoffkreislaufs mit Atmosphäre, Vegetation, Meer und fossilen Brennstoffen",
+      "lang": "de",
+      "expectedFiles": [
+        "kohlenstoffkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/kohlenstoffkreislauf__1.png"
+      ],
+      "style": "image",
+      "rationale": "Gerenderte Szene zeigt Sonne, Atmosphären-CO2, Vegetation, Ozeanschichten und eine Fabrik für fossile Brennstoffe, verbunden durch Flusspfeile mit Gt-C-Werten."
+    },
+    {
+      "id": "img-02-033",
+      "query": "Wie viel Kohlenstoff wird laut Diagramm jährlich zwischen Atmosphäre und Meeresoberfläche ausgetauscht?",
+      "lang": "de",
+      "expectedFiles": [
+        "kohlenstoffkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/kohlenstoffkreislauf__1.png"
+      ],
+      "style": "image",
+      "rationale": "Dieselbe Illustration zeigt Zahlenwerte (z.B. 92, 90 GtC/Jahr) für den Austausch zwischen Atmosphäre und Meeresoberfläche."
+    },
+    {
+      "id": "img-02-034",
+      "query": "Schematische Darstellung von Speicher, Vorrat, Quelle und Senke in einem Systemmodell",
+      "lang": "de",
+      "expectedFiles": [
+        "kohlenstoffkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/kohlenstoffkreislauf__2.png"
+      ],
+      "style": "image",
+      "rationale": "Abstraktes Zwei-Boxen-Diagramm mit Speicher/Reservoir S1/S2, Vorrat, Kapazität und Flusspfeilen F1/F2, die Quelle und Senke definieren."
+    },
+    {
+      "id": "img-02-035",
+      "query": "Zeig mir ein einfaches Blockdiagramm, das die Begriffe Fluss, Quelle und Senke erklärt",
+      "lang": "de",
+      "expectedFiles": [
+        "kohlenstoffkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/kohlenstoffkreislauf__2.png"
+      ],
+      "style": "image",
+      "rationale": "Dasselbe Schema beschriftet explizit 'Quelle (F1 > F2)' und 'Senke (F2 < F1)'."
+    },
+    {
+      "id": "img-02-036",
+      "query": "Grafik zum CO2-Gehalt der Atmosphäre während der letzten Eiszeiten",
+      "lang": "de",
+      "expectedFiles": [
+        "kohlenstoffkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/kohlenstoffkreislauf__3.png"
+      ],
+      "style": "image",
+      "rationale": "Diagramm 'Carbon Dioxide Variations' zeigt den CO2-Gehalt in ppmv über 400.000 Jahre mit Eiszeitzyklen und einem Insert zum industriellen Anstieg."
+    },
+    {
+      "id": "img-02-037",
+      "query": "chart of CO2 concentration over the past 400,000 years showing ice age cycles",
+      "lang": "en",
+      "expectedFiles": [
+        "kohlenstoffkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/kohlenstoffkreislauf__3.png"
+      ],
+      "style": "image",
+      "rationale": "Same chart, explicitly labeled 'Ice Age Cycles' with CO2 ppmv on the y-axis."
+    },
+    {
+      "id": "img-02-038",
+      "query": "Karte der fossilen Verbreitungsgebiete von Mesosaurus und Glossopteris als Beleg für Gondwana",
+      "lang": "de",
+      "expectedFiles": [
+        "plattentektonik.md"
+      ],
+      "expectedImages": [
+        "images/plattentektonik__1.png"
+      ],
+      "style": "image",
+      "rationale": "Karte der wiederzusammengesetzten Gondwana-Kontinente mit farbigen Fossilverbreitungsbändern von Cynognathus, Mesosaurus, Glossopteris und Lystrosaurus."
+    },
+    {
+      "id": "img-02-039",
+      "query": "Welches Bild zeigt die frühere Verbindung von Südamerika, Afrika, Indien und Antarktika?",
+      "lang": "de",
+      "expectedFiles": [
+        "plattentektonik.md"
+      ],
+      "expectedImages": [
+        "images/plattentektonik__1.png"
+      ],
+      "style": "image",
+      "rationale": "Dieselbe Karte zeigt die genannten Südkontinente vor der Kontinentaldrift als zusammenhängenden Landblock."
+    },
+    {
+      "id": "img-02-040",
+      "query": "Diagramm der magnetischen Streifenmuster am mittelozeanischen Rücken über die Zeit",
+      "lang": "de",
+      "expectedFiles": [
+        "plattentektonik.md"
+      ],
+      "expectedImages": [
+        "images/plattentektonik__2.png"
+      ],
+      "style": "image",
+      "rationale": "Dreistufiges Blockdiagramm (a/b/c) zeigt abwechselnd normal/revers magnetisierte Krustenstreifen, die beim Auseinanderdriften vom mittelozeanischen Rücken entstehen."
+    },
+    {
+      "id": "img-02-041",
+      "query": "diagram showing seafloor spreading and magnetic polarity stripes over time",
+      "lang": "en",
+      "expectedFiles": [
+        "plattentektonik.md"
+      ],
+      "expectedImages": [
+        "images/plattentektonik__2.png"
+      ],
+      "style": "image",
+      "rationale": "Same three-panel block diagram illustrating normal/reversed magnetic polarity stripes forming as the seafloor spreads."
+    },
+    {
+      "id": "img-02-042",
+      "query": "Karte der Wanderung der Indischen Platte Richtung Himalaya über Millionen Jahre",
+      "lang": "de",
+      "expectedFiles": [
+        "plattentektonik.md"
+      ],
+      "expectedImages": [
+        "images/plattentektonik__3.png"
+      ],
+      "style": "image",
+      "rationale": "Karte mit Pfeil zeichnet die Nordwanderung der Indischen Platte über Zeitmarken von -71 Mio. Jahren bis heute Richtung Himalaya nach."
+    },
+    {
+      "id": "img-02-043",
+      "query": "Foto eines Portalmasts mit Bahnstrom-Oberleitung",
+      "lang": "de",
+      "expectedFiles": [
+        "bahnstrom.md"
+      ],
+      "expectedImages": [
+        "images/bahnstrom__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Fotografie zeigt eine stählerne Fahrleitungs-Portalkonstruktion mit mehreren Fahrdrähten vor blauem Himmel."
+    },
+    {
+      "id": "img-02-044",
+      "query": "Wie sieht eine Fahrleitungskonstruktion bei der Schweizerischen Bundesbahn aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "bahnstrom.md"
+      ],
+      "expectedImages": [
+        "images/bahnstrom__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Dieselbe Aufnahme ist laut Bildunterschrift ein SBB-Portalmast mit Oberleitung."
+    },
+    {
+      "id": "img-02-045",
+      "query": "Karte der unterschiedlichen Bahnstromsysteme und Spannungen in Europa",
+      "lang": "de",
+      "expectedFiles": [
+        "bahnstrom.md"
+      ],
+      "expectedImages": [
+        "images/bahnstrom__2.png"
+      ],
+      "style": "image",
+      "rationale": "Farblich codierte Europakarte zeigt Zonen mit 750V, 1,5kV, 3kV, 15kV~ und 25kV~ Bahnstromsystemen."
+    },
+    {
+      "id": "img-02-046",
+      "query": "map of European railway electrification voltage systems",
+      "lang": "en",
+      "expectedFiles": [
+        "bahnstrom.md"
+      ],
+      "expectedImages": [
+        "images/bahnstrom__2.png"
+      ],
+      "style": "image",
+      "rationale": "Same color-coded map of Europe distinguishing the different traction power voltage/frequency systems by country."
+    },
+    {
+      "id": "img-02-047",
+      "query": "Kreisdiagramm zum Strommix des Bahnstroms der Deutschen Bahn 2022",
+      "lang": "de",
+      "expectedFiles": [
+        "bahnstrom.md"
+      ],
+      "expectedImages": [
+        "images/bahnstrom__3.png"
+      ],
+      "style": "image",
+      "rationale": "Tortendiagramm schlüsselt den DB-Bahnstrommix auf: Erneuerbare Energien 65,2%, Atomenergie, Steinkohle, Braunkohle, Erdgas, Sonstige."
+    },
+    {
+      "id": "img-02-048",
+      "query": "Schema des Funktionsprinzips einer Dünnschicht-Solarzelle mit nummerierten Schichten",
+      "lang": "de",
+      "expectedFiles": [
+        "photovoltaik.md"
+      ],
+      "expectedImages": [
+        "images/photovoltaik__1.png"
+      ],
+      "style": "image",
+      "rationale": "Querschnittsdiagramm einer Dünnschicht-Solarzelle mit Sonnenstrahlen und nummerierten Bauteilen 1-7, angeschlossen an Voltmeter und Widerstand."
+    },
+    {
+      "id": "img-02-049",
+      "query": "Wie wandelt eine Solarzelle laut Diagramm Sonnenlicht in elektrischen Strom um?",
+      "lang": "de",
+      "expectedFiles": [
+        "photovoltaik.md"
+      ],
+      "expectedImages": [
+        "images/photovoltaik__1.png"
+      ],
+      "style": "image",
+      "rationale": "Dasselbe Schema zeigt einfallende Photonen, Ladungstrennung in der Zelle und den resultierenden Stromkreis mit V und R."
+    },
+    {
+      "id": "img-02-050",
+      "query": "Balkendiagramm der Stromgestehungskosten verschiedener Energieträger in Deutschland 2024",
+      "lang": "de",
+      "expectedFiles": [
+        "photovoltaik.md"
+      ],
+      "expectedImages": [
+        "images/photovoltaik__2.png"
+      ],
+      "style": "image",
+      "rationale": "Horizontales Balkendiagramm 'Stromgestehungskosten in Deutschland im Jahr 2024' vergleicht ct/kWh für PV, Wind, Biogas, Kohle, Gas und Kernkraft."
+    },
+    {
+      "id": "img-02-051",
+      "query": "bar chart comparing levelized cost of electricity for different power sources in Germany",
+      "lang": "en",
+      "expectedFiles": [
+        "photovoltaik.md"
+      ],
+      "expectedImages": [
+        "images/photovoltaik__2.png"
+      ],
+      "style": "image",
+      "rationale": "Same chart comparing ct/kWh generation costs across PV, wind, biomass, coal, gas turbine and nuclear."
+    },
+    {
+      "id": "img-02-052",
+      "query": "Säulendiagramm der installierten Photovoltaik-Gesamtleistung in Deutschland nach Jahr",
+      "lang": "de",
+      "expectedFiles": [
+        "photovoltaik.md"
+      ],
+      "expectedImages": [
+        "images/photovoltaik__3.png"
+      ],
+      "style": "image",
+      "rationale": "Balkendiagramm 'PV-Gesamtleistung Deutschland in GW peak' zeigt jährliche Werte von 2000 bis 2025 plus den jährlichen Zubau."
+    },
+    {
+      "id": "img-02-053",
+      "query": "3D-Explosionszeichnung eines Rillenkugellagers mit Innenring, Käfig und Wälzkörpern",
+      "lang": "de",
+      "expectedFiles": [
+        "waelzlager.md"
+      ],
+      "expectedImages": [
+        "images/waelzlager__1.png"
+      ],
+      "style": "image",
+      "rationale": "Gerenderte Explosionsansicht eines Rillenkugellagers mit nummerierten Teilen (Innenring, Käfig, Dichtscheibe, Wälzkörper, Außenring)."
+    },
+    {
+      "id": "img-02-054",
+      "query": "Wie sind die Bauteile eines Kugellagers nach DIN 625 benannt und angeordnet?",
+      "lang": "de",
+      "expectedFiles": [
+        "waelzlager.md"
+      ],
+      "expectedImages": [
+        "images/waelzlager__1.png"
+      ],
+      "style": "image",
+      "rationale": "Dieselbe Zeichnung benennt die fünf Komponenten explizit gemäß DIN 625 laut Bildunterschrift."
+    },
+    {
+      "id": "img-02-055",
+      "query": "Explosionsdarstellung eines Kugellagers mit sechs einzeln sichtbaren Bauteilen",
+      "lang": "de",
+      "expectedFiles": [
+        "waelzlager.md"
+      ],
+      "expectedImages": [
+        "images/waelzlager__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Gerenderte Explosionsansicht trennt Außenring, Käfig, Kugeln und Innenring in sechs einzeln nummerierte Teile vor grauem Hintergrund."
+    },
+    {
+      "id": "img-02-056",
+      "query": "exploded view diagram of a ball bearing with labeled components",
+      "lang": "en",
+      "expectedFiles": [
+        "waelzlager.md"
+      ],
+      "expectedImages": [
+        "images/waelzlager__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same rendered exploded-view image with six numbered bearing parts."
+    },
+    {
+      "id": "img-02-057",
+      "query": "Zeichnung eines Zylinderrollenlagers vom Typ NU mit herausziehbarem Innenring",
+      "lang": "de",
+      "expectedFiles": [
+        "waelzlager.md"
+      ],
+      "expectedImages": [
+        "images/waelzlager__3.png"
+      ],
+      "style": "image",
+      "rationale": "Technische Zeichnung zeigt ein Zylinderrollenlager (Typ NU) mit sichtbarem Käfig und beidseitig abziehbarem Innenring."
+    },
+    {
+      "id": "img-02-058",
+      "query": "Wie berechnet man die Lebensdauer eines Wälzlagers nach ISO 281?",
+      "lang": "de",
+      "expectedFiles": [
+        "waelzlager.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Die drei Bilder sind Explosions-/Baugruppenzeichnungen von Lagerbauformen; die im Text beschriebene Lebensdauerberechnung nach ISO 281 mit Formeln und Rechenbeispiel wird in keinem Bild dargestellt."
+    },
+    {
+      "id": "img-03-001",
+      "query": "Wie sieht das Brandenburger Tor heute mit Touristen davor aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "brandenburger-tor.md"
+      ],
+      "expectedImages": [
+        "images/brandenburger-tor__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Zeigt die moderne Tagesansicht des Tors von der Straße des 17. Juni mit Passanten im Vordergrund."
+    },
+    {
+      "id": "img-03-002",
+      "query": "Foto vom Brandenburger Tor während der Berliner Mauer mit Graffiti auf der Mauer",
+      "lang": "de",
+      "expectedFiles": [
+        "brandenburger-tor.md"
+      ],
+      "expectedImages": [
+        "images/brandenburger-tor__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Zeigt das Tor von Westen aus 1985 hinter der bemalten, mit 'West-Berlin'-Warnschild versehenen Mauer."
+    },
+    {
+      "id": "img-03-003",
+      "query": "Historische Schwarzweißaufnahme des Brandenburger Tors aus dem 19. Jahrhundert",
+      "lang": "de",
+      "expectedFiles": [
+        "brandenburger-tor.md"
+      ],
+      "expectedImages": [
+        "images/brandenburger-tor__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Sepiafarbene Fotografie um 1855 mit leerem Vorplatz und Pferdefuhrwerken zeigt den historischen Zustand des Tors."
+    },
+    {
+      "id": "img-03-004",
+      "query": "photo of the Brandenburg Gate today with tourists in front of it",
+      "lang": "en",
+      "expectedFiles": [
+        "brandenburger-tor.md"
+      ],
+      "expectedImages": [
+        "images/brandenburger-tor__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Modern daylight photo of the gate from the Pariser Platz side with people walking in front of the columns."
+    },
+    {
+      "id": "img-03-005",
+      "query": "Wie sieht ein ICE 4 am Bahnsteig von außen aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "ice-4.md"
+      ],
+      "expectedImages": [
+        "images/ice-4__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Zeigt den kompletten weiß-roten Zug an einem Bahnsteig vor Hochhauskulisse, die typische Außenansicht eines ICE 4."
+    },
+    {
+      "id": "img-03-006",
+      "query": "Foto vom offenen Einstiegsbereich eines ICE 4 mit geöffneter Tür",
+      "lang": "de",
+      "expectedFiles": [
+        "ice-4.md"
+      ],
+      "expectedImages": [
+        "images/ice-4__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Nahaufnahme des Wagenendes mit geöffneter Einstiegstür und Trittstufe eines ICE 4."
+    },
+    {
+      "id": "img-03-007",
+      "query": "Zeig mir das Bordrestaurant im Innenraum eines ICE 4",
+      "lang": "de",
+      "expectedFiles": [
+        "ice-4.md"
+      ],
+      "expectedImages": [
+        "images/ice-4__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Innenaufnahme des Speisewagens mit gepolsterten Sitzgruppen und gedeckten Tischen zeigt das Bordrestaurant."
+    },
+    {
+      "id": "img-03-008",
+      "query": "Luftaufnahme der Zugspitze aus einem Flugzeugfenster mit Turbine im Bild",
+      "lang": "de",
+      "expectedFiles": [
+        "zugspitze.md"
+      ],
+      "expectedImages": [
+        "images/zugspitze__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Foto aus 10.000 Metern Höhe mit Flugzeugtragfläche und Triebwerk im Vordergrund, Gipfel per Pfeil markiert 'Zugspitze'."
+    },
+    {
+      "id": "img-03-009",
+      "query": "Foto vom schneebedeckten Zugspitzgipfel mit Gletscher, von einem Nachbarberg aus gesehen",
+      "lang": "de",
+      "expectedFiles": [
+        "zugspitze.md"
+      ],
+      "expectedImages": [
+        "images/zugspitze__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Blick von der Alpspitze auf den felsigen Zugspitzgipfel mit dem Höllentalferner-Gletscher im Kar darunter."
+    },
+    {
+      "id": "img-03-010",
+      "query": "Beschriftetes Luftbild des Zugspitzmassivs mit den Namen der umliegenden Gipfel",
+      "lang": "de",
+      "expectedFiles": [
+        "zugspitze.md"
+      ],
+      "expectedImages": [
+        "images/zugspitze__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Luftaufnahme mit eingezeichneten gelben und blauen Beschriftungen für Nebengipfel wie Wetterspitzen und Riffelwandkamm."
+    },
+    {
+      "id": "img-03-011",
+      "query": "photo of the snow-covered Zugspitze summit with a glacier, seen from a neighboring peak",
+      "lang": "en",
+      "expectedFiles": [
+        "zugspitze.md"
+      ],
+      "expectedImages": [
+        "images/zugspitze__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Ground-level mountain photo showing the rocky summit ridge and the glacier field below it under a blue sky."
+    },
+    {
+      "id": "img-03-012",
+      "query": "Kreisdiagramm zum Lebenszyklus von Extreme Programming",
+      "lang": "de",
+      "expectedFiles": [
+        "extreme-programming.md"
+      ],
+      "expectedImages": [
+        "images/extreme-programming__1.png"
+      ],
+      "style": "image",
+      "rationale": "Konzentrische Kreise mit den Stufen Start, Lifecycle, Entwicklung, Integration, Testen und Iteration um ein zentrales 'XP'."
+    },
+    {
+      "id": "img-03-013",
+      "query": "Grafik zur Kostenkurve von Änderungen bei Extreme Programming im Vergleich zum klassischen Vorgehen",
+      "lang": "de",
+      "expectedFiles": [
+        "extreme-programming.md"
+      ],
+      "expectedImages": [
+        "images/extreme-programming__2.png"
+      ],
+      "style": "image",
+      "rationale": "Liniendiagramm zeigt die steil ansteigende 'Konventionelle Annahme' gegen die flache gestrichelte 'ExtremeProgramming'-Linie über die Zeit."
+    },
+    {
+      "id": "img-03-014",
+      "query": "Diagramm der Planungs- und Feedback-Schleifen von Release Plan bis Code",
+      "lang": "de",
+      "expectedFiles": [
+        "extreme-programming.md"
+      ],
+      "expectedImages": [
+        "images/extreme-programming__3.png"
+      ],
+      "style": "image",
+      "rationale": "Verschachtelte Pfeilbögen verbinden Release Plan, Iteration Plan, Acceptance Test bis hinunter zu Pair Programming und Code."
+    },
+    {
+      "id": "img-03-015",
+      "query": "chart comparing the cost of change over time in Extreme Programming versus traditional methods",
+      "lang": "en",
+      "expectedFiles": [
+        "extreme-programming.md"
+      ],
+      "expectedImages": [
+        "images/extreme-programming__2.png"
+      ],
+      "style": "image",
+      "rationale": "Line chart labeled 'Kosten' vs 'Zeit' plotting a rising conventional cost curve against a flat Extreme Programming curve."
+    },
+    {
+      "id": "img-03-016",
+      "query": "Kreisdiagramm des DMAIC-Zyklus mit den fünf Phasen Define bis Control",
+      "lang": "de",
+      "expectedFiles": [
+        "six-sigma.md"
+      ],
+      "expectedImages": [
+        "images/six-sigma__1.png"
+      ],
+      "style": "image",
+      "rationale": "Kreisförmiges Diagramm unterteilt in Define, Measure, Analyze, Improve und Control mit Leitfragen in jedem Segment."
+    },
+    {
+      "id": "img-03-017",
+      "query": "Glockenkurve der Normalverteilung mit den Toleranzgrenzen USL und LSL",
+      "lang": "de",
+      "expectedFiles": [
+        "six-sigma.md"
+      ],
+      "expectedImages": [
+        "images/six-sigma__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Zeigt die klassische Glockenkurve mit Mittelwert µ, Standardabweichung σ und den pinken Grenzlinien LSL/USL."
+    },
+    {
+      "id": "img-03-018",
+      "query": "Zeig mir eine Sehprobentafel zur Prüfung der Sehschärfe",
+      "lang": "de",
+      "expectedFiles": [
+        "auge.md"
+      ],
+      "expectedImages": [
+        "images/auge__1.png"
+      ],
+      "style": "image",
+      "rationale": "Klassische Snellen-Tafel mit abnehmend großen schwarzen Buchstabenreihen und Visus-Werten wie 20/200 bis 20/20."
+    },
+    {
+      "id": "img-03-019",
+      "query": "Balkendiagramm des sichtbaren Lichtspektrums von Violett bis Rot",
+      "lang": "de",
+      "expectedFiles": [
+        "auge.md"
+      ],
+      "expectedImages": [
+        "images/auge__2.png"
+      ],
+      "style": "image",
+      "rationale": "Horizontaler Farbverlauf von Violett über Blau, Grün, Gelb, Orange bis Rot mit Wellenlängenangaben in Nanometern."
+    },
+    {
+      "id": "img-03-020",
+      "query": "Schematische Zeichnung von Euglena mit Photorezeptor und Augenfleck",
+      "lang": "de",
+      "expectedFiles": [
+        "auge.md"
+      ],
+      "expectedImages": [
+        "images/auge__3.png"
+      ],
+      "style": "image",
+      "rationale": "Umrisszeichnung des Einzellers mit nummerierten Strukturen, darunter der rot markierte Augenfleck (9) und Photorezeptor (8)."
+    },
+    {
+      "id": "img-03-021",
+      "query": "picture of a Snellen eye chart used for vision tests",
+      "lang": "en",
+      "expectedFiles": [
+        "auge.md"
+      ],
+      "expectedImages": [
+        "images/auge__1.png"
+      ],
+      "style": "image",
+      "rationale": "Standard black-on-white optotype chart with rows of letters shrinking from top to bottom, the classic vision test image."
+    },
+    {
+      "id": "img-03-022",
+      "query": "Übersichtsdiagramm aller Mitosephasen von Interphase bis Telophase",
+      "lang": "de",
+      "expectedFiles": [
+        "mitose.md"
+      ],
+      "expectedImages": [
+        "images/mitose__1.png"
+      ],
+      "style": "image",
+      "rationale": "Kreisförmige Bilderfolge mit beschrifteten Zellen für jede Phase von Interphase über Prophase, Metaphase bis Telophase."
+    },
+    {
+      "id": "img-03-023",
+      "query": "Vereinfachtes Schema der Mitose mit zwei roten und blauen Chromosomen, die sich verdoppeln",
+      "lang": "de",
+      "expectedFiles": [
+        "mitose.md"
+      ],
+      "expectedImages": [
+        "images/mitose__2.png"
+      ],
+      "style": "image",
+      "rationale": "Reduzierte Grafik zeigt DNA-Replikation und Spindelapparat, endend in zwei identischen Tochterzellen mit je einem roten und blauen Chromosom."
+    },
+    {
+      "id": "img-03-024",
+      "query": "Wie sieht der Spindelapparat mit den Chromosomen während der Zellteilung aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "mitose.md"
+      ],
+      "expectedImages": [
+        "images/mitose__3.png"
+      ],
+      "style": "image",
+      "rationale": "Detaillierte Zellillustration mit blauen Spindelfasern, die von zwei orangen Polen ausgehend die roten X-förmigen Chromosomen in der Mitte halten."
+    },
+    {
+      "id": "img-03-025",
+      "query": "Diagramm der Umlaufbahnen von Merkur, Venus, Erde und Mars",
+      "lang": "de",
+      "expectedFiles": [
+        "sonnensystem.md"
+      ],
+      "expectedImages": [
+        "images/sonnensystem__1.png"
+      ],
+      "style": "image",
+      "rationale": "Konzentrische Kreisbahnen um die Sonne mit beschrifteten Punkten für Merkur, Venus, Erde und Mars."
+    },
+    {
+      "id": "img-03-026",
+      "query": "Grafik zum äußeren Sonnensystem mit Kuipergürtel, Oortscher Wolke und der Sedna-Bahn",
+      "lang": "de",
+      "expectedFiles": [
+        "sonnensystem.md"
+      ],
+      "expectedImages": [
+        "images/sonnensystem__2.png"
+      ],
+      "style": "image",
+      "rationale": "Vierteiliges Bild zoomt von den Asteroiden über Uranus/Saturn/Kuipergürtel bis zur Oortschen Wolke und Sednas Ellipsenbahn."
+    },
+    {
+      "id": "img-03-027",
+      "query": "Sternkarte der Lokalen Blase mit den Namen benachbarter Sterne",
+      "lang": "de",
+      "expectedFiles": [
+        "sonnensystem.md"
+      ],
+      "expectedImages": [
+        "images/sonnensystem__3.png"
+      ],
+      "style": "image",
+      "rationale": "Blau-gelbe Kartendarstellung mit vielen benannten Sternen wie Sirius, Wega und Alpha Centauri innerhalb der Lokalen Blase/Flocke."
+    },
+    {
+      "id": "img-03-028",
+      "query": "Foto einer Methanol-Brennstoffzelle in einem durchsichtigen Gehäuse",
+      "lang": "de",
+      "expectedFiles": [
+        "brennstoffzelle.md"
+      ],
+      "expectedImages": [
+        "images/brennstoffzelle__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Fotografie eines Demonstrationsmodells mit sichtbarem schwarzem Zellstapel, Lüfter und Schläuchen in einem Glasgehäuse."
+    },
+    {
+      "id": "img-03-029",
+      "query": "Schaltbild einer PEM-Brennstoffzelle mit Anode, Kathode und Elektrolytmembran",
+      "lang": "de",
+      "expectedFiles": [
+        "brennstoffzelle.md"
+      ],
+      "expectedImages": [
+        "images/brennstoffzelle__2.png"
+      ],
+      "style": "image",
+      "rationale": "Diagramm zeigt H2-Zufuhr an der Anode, O2/Luft an der Kathode, die gelbe Membran dazwischen und Wasser als Reaktionsprodukt."
+    },
+    {
+      "id": "img-03-030",
+      "query": "Skizze einer alkalischen Brennstoffzelle mit Diaphragma zwischen den Elektroden",
+      "lang": "de",
+      "expectedFiles": [
+        "brennstoffzelle.md"
+      ],
+      "expectedImages": [
+        "images/brennstoffzelle__3.png"
+      ],
+      "style": "image",
+      "rationale": "Schematischer Behälter mit zwei Elektroden, mittigem Diaphragma sowie H2- und O2-Zufuhr von unten in wässriger Lösung."
+    },
+    {
+      "id": "img-03-031",
+      "query": "diagram of how a proton exchange membrane fuel cell works",
+      "lang": "en",
+      "expectedFiles": [
+        "brennstoffzelle.md"
+      ],
+      "expectedImages": [
+        "images/brennstoffzelle__2.png"
+      ],
+      "style": "image",
+      "rationale": "Labeled schematic showing hydrogen entering the anode, oxygen entering the cathode, and the ion-exchange membrane producing water."
+    },
+    {
+      "id": "img-03-032",
+      "query": "Wie sieht das klassische Router-Symbol mit den vier Pfeilen aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "router.md"
+      ],
+      "expectedImages": [
+        "images/router__1.png"
+      ],
+      "style": "image",
+      "rationale": "Abstraktes blaugraues Zylindersymbol mit vier weißen Pfeilen, das typische Cisco-Schaltsymbol für einen Router."
+    },
+    {
+      "id": "img-03-033",
+      "query": "Foto von großen Hochleistungsroutern und Switches im Rechenzentrum",
+      "lang": "de",
+      "expectedFiles": [
+        "router.md"
+      ],
+      "expectedImages": [
+        "images/router__2.png"
+      ],
+      "style": "image",
+      "rationale": "Produktfoto mehrerer großer Rack-Geräte unterschiedlicher Bauform, wie sie im Kernnetz eingesetzt werden."
+    },
+    {
+      "id": "img-03-034",
+      "query": "Bild eines Core-Routers im Backbone-Netz eines Telekommunikationsanbieters",
+      "lang": "de",
+      "expectedFiles": [
+        "router.md"
+      ],
+      "expectedImages": [
+        "images/router__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Foto eines eingebauten Cisco-Rackgeräts mit vielen Glasfaseranschlüssen und Kabeln im Serverschrank."
+    },
+    {
+      "id": "img-03-035",
+      "query": "photo of carrier-class high-performance routers and switches",
+      "lang": "en",
+      "expectedFiles": [
+        "router.md"
+      ],
+      "expectedImages": [
+        "images/router__2.png"
+      ],
+      "style": "image",
+      "rationale": "Product photo showing a lineup of large rack-mounted Juniper routing and switching chassis of different sizes."
+    },
+    {
+      "id": "img-03-036",
+      "query": "Schema einer Wärmepumpenanlage mit Erdwärmesonden, Fußbodenheizung und Heizkörper",
+      "lang": "de",
+      "expectedFiles": [
+        "waermepumpe.md"
+      ],
+      "expectedImages": [
+        "images/waermepumpe__1.png"
+      ],
+      "style": "image",
+      "rationale": "Hausquerschnitt mit Verdichter, Wärmetauscher, Fußbodenheizung und Heizkörper links, verbunden mit vertikalen Erdwärmesonden im Boden rechts."
+    },
+    {
+      "id": "img-03-037",
+      "query": "Zeig mir die Arbeitsphasen eines Scrollverdichters als Spiraldiagramm",
+      "lang": "de",
+      "expectedFiles": [
+        "waermepumpe.md"
+      ],
+      "expectedImages": [
+        "images/waermepumpe__2.png"
+      ],
+      "style": "image",
+      "rationale": "Vier aufeinanderfolgende Spiralgrafiken zeigen den fortschreitenden Kompressionsschritt des Scrollverdichters von blau bis rot."
+    },
+    {
+      "id": "img-03-038",
+      "query": "Grafik zur Leistungsbilanz einer Wärmepumpe mit Anergie, Nutzwärme und elektrischer Leistung",
+      "lang": "de",
+      "expectedFiles": [
+        "waermepumpe.md"
+      ],
+      "expectedImages": [
+        "images/waermepumpe__3.png"
+      ],
+      "style": "image",
+      "rationale": "Bilanzgrafik mit rotem Balken für nutzbare Wärme, grünem Balken für aufgenommene Anergie und gelbem Pfeil für elektrische Leistung."
+    },
+    {
+      "id": "img-03-039",
+      "query": "Was ist Pair-Programming und wie funktioniert der Rollentausch zwischen Driver und Partner?",
+      "lang": "de",
+      "expectedFiles": [
+        "extreme-programming.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Die drei vorhandenen Bilder sind ein Lebenszyklus-Kreisdiagramm, eine Kostenkurve und ein Feedback-Schleifen-Diagramm; keines zeigt zwei Programmierer an einem Rechner."
+    },
+    {
+      "id": "img-03-040",
+      "query": "Worin unterscheidet sich die Meiose von der Mitose bei der Kernteilung?",
+      "lang": "de",
+      "expectedFiles": [
+        "mitose.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Alle drei vorhandenen Bilder illustrieren ausschließlich Phasen der Mitose; keines zeigt die Reduktionsteilung oder haploide Keimzellen der Meiose."
+    },
+    {
+      "id": "img-03-041",
+      "query": "Welche Sicherheitsmaßnahmen wie WPA3 sollte man bei einem WLAN-Router aktivieren?",
+      "lang": "de",
+      "expectedFiles": [
+        "router.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Die drei Bilder zeigen ein Router-Symbol sowie Fotos von Rack-Hardware; keines zeigt eine Konfigurationsoberfläche oder WLAN-Sicherheitseinstellungen."
+    },
+    {
+      "id": "img-04-001",
+      "query": "Foto vom Eiffelturm mit blauem Himmel und grüner Wiese davor",
+      "lang": "de",
+      "expectedFiles": [
+        "eiffelturm.md"
+      ],
+      "expectedImages": [
+        "images/eiffelturm__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "The image is the classic full-height photograph of the tower against a clear blue sky with the Champ de Mars lawn in the foreground."
+    },
+    {
+      "id": "img-04-002",
+      "query": "wie sieht der Eiffelturm heute aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "eiffelturm.md"
+      ],
+      "expectedImages": [
+        "images/eiffelturm__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same iconic modern colour photo answers a general 'what does it look like today' question, as opposed to the two historical design sketches on the page."
+    },
+    {
+      "id": "img-04-003",
+      "query": "alte Stahlstich-Illustration eines geplanten Turms neben Pyramiden und einer Kuppelkirche",
+      "lang": "de",
+      "expectedFiles": [
+        "eiffelturm.md"
+      ],
+      "expectedImages": [
+        "images/eiffelturm__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "The 19th-century engraving shows an unbuilt American 'Centennial Tower' needle rising among illustrated pyramids, a dome and a church spire drawn for scale comparison."
+    },
+    {
+      "id": "img-04-004",
+      "query": "handgezeichneter Originalentwurf des Eiffelturms mit Höhenvergleich zu anderen Bauwerken",
+      "lang": "de",
+      "expectedFiles": [
+        "eiffelturm.md"
+      ],
+      "expectedImages": [
+        "images/eiffelturm__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "The sepia-toned technical drawing is the original Koechlin/Nouguier/Sauvestre design sketch, including small comparison silhouettes of other tall buildings and a Notre-Dame outline."
+    },
+    {
+      "id": "img-04-005",
+      "query": "original 19th century engineering sketch of the Eiffel Tower design",
+      "lang": "en",
+      "expectedFiles": [
+        "eiffelturm.md"
+      ],
+      "expectedImages": [
+        "images/eiffelturm__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same technical blueprint drawing, requested in English with a focus on it being an engineering sketch rather than a finished-building photo."
+    },
+    {
+      "id": "img-04-006",
+      "query": "Nachtaufnahme des beleuchteten Kölner Doms vom Rheinufer aus",
+      "lang": "de",
+      "expectedFiles": [
+        "koelner-dom.md"
+      ],
+      "expectedImages": [
+        "images/koelner-dom__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "The night photograph shows the cathedral's twin spires brightly floodlit against a dark sky, shot from across the Rhine at Deutz."
+    },
+    {
+      "id": "img-04-007",
+      "query": "Luftbild vom Kölner Dom neben Hauptbahnhof und Hohenzollernbrücke",
+      "lang": "de",
+      "expectedFiles": [
+        "koelner-dom.md"
+      ],
+      "expectedImages": [
+        "images/koelner-dom__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "The aerial photo shows the cathedral together with the adjacent train station, the blue-roofed Musical Dome and the railway bridge over the Rhine."
+    },
+    {
+      "id": "img-04-008",
+      "query": "wie sieht der Kölner Dom aus der Vogelperspektive neben dem Bahnhof aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "koelner-dom.md"
+      ],
+      "expectedImages": [
+        "images/koelner-dom__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same bird's-eye photo, phrased as a natural question about the cathedral's setting next to the station rather than a keyword search."
+    },
+    {
+      "id": "img-04-009",
+      "query": "wie sieht das freigelegte römische Taufbecken unter dem Kölner Dom aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "koelner-dom.md"
+      ],
+      "expectedImages": [
+        "images/koelner-dom__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "The photo shows the excavated brick-lined baptistery basin (Piscina) beneath the cathedral, the site's oldest archaeological remnant."
+    },
+    {
+      "id": "img-04-010",
+      "query": "Strategy Map mit Pfeilen zwischen Kunden-, Finanz- und Prozesszielen",
+      "lang": "de",
+      "expectedFiles": [
+        "balanced-scorecard.md"
+      ],
+      "expectedImages": [
+        "images/balanced-scorecard__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "The chart is an English-language 'Corporate Strategy Map' with ovals for each perspective connected by cause-and-effect arrows."
+    },
+    {
+      "id": "img-04-011",
+      "query": "Diagramm der vier BSC-Perspektiven um Vision und Strategie angeordnet",
+      "lang": "de",
+      "expectedFiles": [
+        "balanced-scorecard.md"
+      ],
+      "expectedImages": [
+        "images/balanced-scorecard__2.png"
+      ],
+      "style": "image",
+      "rationale": "The diagram shows Finanz-, Kunden-, Prozess- and Potenzialperspektive as four boxes surrounding a central red 'Vision und Strategie' circle."
+    },
+    {
+      "id": "img-04-012",
+      "query": "diagram showing the four balanced scorecard perspectives around vision and strategy",
+      "lang": "en",
+      "expectedFiles": [
+        "balanced-scorecard.md"
+      ],
+      "expectedImages": [
+        "images/balanced-scorecard__2.png"
+      ],
+      "style": "image",
+      "rationale": "Same four-perspective diagram, requested in English."
+    },
+    {
+      "id": "img-04-013",
+      "query": "Grafik zum Unterschied zwischen Technology Push und Market Pull",
+      "lang": "de",
+      "expectedFiles": [
+        "balanced-scorecard.md"
+      ],
+      "expectedImages": [
+        "images/balanced-scorecard__3.png"
+      ],
+      "style": "image",
+      "rationale": "The two-panel diagram contrasts a 'Technology push' flow (Research→Production→Marketing→Need?) with a 'Market pull' flow that has a feedback loop back to research."
+    },
+    {
+      "id": "img-04-014",
+      "query": "Struktogramm für eine einfache Ja-Nein-Verzweigung",
+      "lang": "de",
+      "expectedFiles": [
+        "nassi-shneiderman-diagramm.md"
+      ],
+      "expectedImages": [
+        "images/nassi-shneiderman-diagramm__1.png"
+      ],
+      "style": "image",
+      "rationale": "The small diagram shows a single triangular decision split into 'ja' and 'nein' over one instruction block, the simplest selection structogram on the page."
+    },
+    {
+      "id": "img-04-015",
+      "query": "Nassi-Shneiderman-Diagramm mit zwei Anweisungsblöcken für ja und nein",
+      "lang": "de",
+      "expectedFiles": [
+        "nassi-shneiderman-diagramm.md"
+      ],
+      "expectedImages": [
+        "images/nassi-shneiderman-diagramm__2.png"
+      ],
+      "style": "image",
+      "rationale": "The diagram shows the same decision shape but now with two separate instruction blocks, one under 'ja' and one under 'nein'."
+    },
+    {
+      "id": "img-04-016",
+      "query": "Struktogramm Beispiel mit zwei Blöcken je nach ja und nein",
+      "lang": "de",
+      "expectedFiles": [
+        "nassi-shneiderman-diagramm.md"
+      ],
+      "expectedImages": [
+        "images/nassi-shneiderman-diagramm__2.png"
+      ],
+      "style": "image",
+      "rationale": "Same two-block if-then-else structogram, phrased as a short keyword search instead of a section-title paraphrase."
+    },
+    {
+      "id": "img-04-017",
+      "query": "zeig mir ein Struktogramm mit verschachtelten Bedingungen und drei Blöcken",
+      "lang": "de",
+      "expectedFiles": [
+        "nassi-shneiderman-diagramm.md"
+      ],
+      "expectedImages": [
+        "images/nassi-shneiderman-diagramm__3.png"
+      ],
+      "style": "image",
+      "rationale": "The diagram nests a second decision triangle inside the 'ja' branch of the first, producing three separate instruction blocks — the 'Mehrfachauswahl' example."
+    },
+    {
+      "id": "img-04-018",
+      "query": "Foto eines Frachtflugzeugs von Etihad Cargo auf dem Rollfeld",
+      "lang": "de",
+      "expectedFiles": [
+        "supply-chain-management.md"
+      ],
+      "expectedImages": [
+        "images/supply-chain-management__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "The photograph shows a large Etihad Cargo widebody freighter taxiing on an airport runway, illustrating international air freight in the supply chain."
+    },
+    {
+      "id": "img-04-019",
+      "query": "Netzwerkdiagramm einer Lieferkette vom Rohstofflieferant bis zum Endkunden",
+      "lang": "de",
+      "expectedFiles": [
+        "supply-chain-management.md"
+      ],
+      "expectedImages": [
+        "images/supply-chain-management__2.png"
+      ],
+      "style": "image",
+      "rationale": "The flowchart traces a laptop's supply chain from raw-material and plastic-granulate suppliers through tier-1/tier-2 suppliers, wholesale and retail to the end customer."
+    },
+    {
+      "id": "img-04-020",
+      "query": "supply chain network diagram from raw material supplier to end customer for a laptop",
+      "lang": "en",
+      "expectedFiles": [
+        "supply-chain-management.md"
+      ],
+      "expectedImages": [
+        "images/supply-chain-management__2.png"
+      ],
+      "style": "image",
+      "rationale": "Same laptop supply-chain network diagram, requested in English."
+    },
+    {
+      "id": "img-04-021",
+      "query": "Illustration einer Peitsche zur Veranschaulichung des Peitscheneffekts",
+      "lang": "de",
+      "expectedFiles": [
+        "supply-chain-management.md"
+      ],
+      "expectedImages": [
+        "images/supply-chain-management__3.png"
+      ],
+      "style": "image",
+      "rationale": "The icon shows a person cracking a whip whose wave amplitude grows the further it travels from the hand, a visual metaphor for the bullwhip effect in supply chains."
+    },
+    {
+      "id": "img-04-022",
+      "query": "Vergleichsschema der Blutkreisläufe von Gliederfüßern, Fischen, Reptilien und Säugetieren",
+      "lang": "de",
+      "expectedFiles": [
+        "blutkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/blutkreislauf__1.png"
+      ],
+      "style": "image",
+      "rationale": "The four-panel diagram compares open and closed circulatory loops with heart, gills/lungs and body across the four animal groups named."
+    },
+    {
+      "id": "img-04-023",
+      "query": "comparison diagram of open and closed circulatory systems in different animal groups",
+      "lang": "en",
+      "expectedFiles": [
+        "blutkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/blutkreislauf__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same four-panel circulatory-system comparison diagram, requested in English."
+    },
+    {
+      "id": "img-04-024",
+      "query": "einfaches Schema eines offenen Kreislaufsystems mit Herz und Gewebe",
+      "lang": "de",
+      "expectedFiles": [
+        "blutkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/blutkreislauf__2.png"
+      ],
+      "style": "image",
+      "rationale": "The minimal diagram shows Herz, Arterien and Gewebe with open-ended arrows illustrating hemolymph flowing out into body cavities rather than through closed vessels."
+    },
+    {
+      "id": "img-04-025",
+      "query": "beschriftete Anatomie-Zeichnung eines Insekts mit nummerierten Organen",
+      "lang": "de",
+      "expectedFiles": [
+        "blutkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/blutkreislauf__3.png"
+      ],
+      "style": "image",
+      "rationale": "The illustration is a full insect body plan with parts numbered 1-32, including the dorsal heart and aorta marked as number 7."
+    },
+    {
+      "id": "img-04-026",
+      "query": "beschriftetes Bild einer Nervenzelle mit Zellkörper, Dendriten und Axon",
+      "lang": "de",
+      "expectedFiles": [
+        "nervenzelle.md"
+      ],
+      "expectedImages": [
+        "images/nervenzelle__1.png"
+      ],
+      "style": "image",
+      "rationale": "The large labeled illustration shows the full neuron with soma, dendrites, axon, myelin sheath and two synapse close-up insets."
+    },
+    {
+      "id": "img-04-027",
+      "query": "labeled diagram of a neuron showing dendrites, nucleus and myelin sheath",
+      "lang": "en",
+      "expectedFiles": [
+        "nervenzelle.md"
+      ],
+      "expectedImages": [
+        "images/nervenzelle__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same full neuron diagram, requested in English."
+    },
+    {
+      "id": "img-04-028",
+      "query": "Aufbau einer Nervenzelle Bild mit allen Bestandteilen",
+      "lang": "de",
+      "expectedFiles": [
+        "nervenzelle.md"
+      ],
+      "expectedImages": [
+        "images/nervenzelle__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same neuron overview image, phrased as a short keyword query instead of a full sentence."
+    },
+    {
+      "id": "img-04-029",
+      "query": "Schema einer chemischen Synapse mit Vesikeln und Neurotransmittern zwischen zwei Zellen",
+      "lang": "de",
+      "expectedFiles": [
+        "nervenzelle.md"
+      ],
+      "expectedImages": [
+        "images/nervenzelle__2.png"
+      ],
+      "style": "image",
+      "rationale": "The close-up diagram shows presynaptic cell A releasing numbered vesicle contents across the synaptic cleft to receptors on postsynaptic cell B."
+    },
+    {
+      "id": "img-04-030",
+      "query": "Kurvendiagramm des Aktionspotentials mit Depolarisation und Repolarisation",
+      "lang": "de",
+      "expectedFiles": [
+        "nervenzelle.md"
+      ],
+      "expectedImages": [
+        "images/nervenzelle__3.png"
+      ],
+      "style": "image",
+      "rationale": "The graph plots membrane voltage over time, showing the threshold, the depolarization spike, repolarization and hyperpolarization phases."
+    },
+    {
+      "id": "img-04-031",
+      "query": "graph showing a neuron's action potential over time with threshold voltage",
+      "lang": "en",
+      "expectedFiles": [
+        "nervenzelle.md"
+      ],
+      "expectedImages": [
+        "images/nervenzelle__3.png"
+      ],
+      "style": "image",
+      "rationale": "Same voltage-over-time action potential graph, requested in English."
+    },
+    {
+      "id": "img-04-032",
+      "query": "Diagramm des Stickstoffkreislaufs mit Bakterien, Ammonium und Nitrat",
+      "lang": "de",
+      "expectedFiles": [
+        "stickstoffkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/stickstoffkreislauf__1.png"
+      ],
+      "style": "image",
+      "rationale": "The illustration traces atmospheric nitrogen through plants, decomposers, ammonium, nitrite and nitrate with the responsible bacteria labeled at each step."
+    },
+    {
+      "id": "img-04-033",
+      "query": "wie läuft der Stickstoffkreislauf mit Nitrifikation und Denitrifikation ab?",
+      "lang": "de",
+      "expectedFiles": [
+        "stickstoffkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/stickstoffkreislauf__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same nitrogen-cycle diagram, phrased as a natural process question rather than a keyword description."
+    },
+    {
+      "id": "img-04-034",
+      "query": "Karte von Europa mit Stickstoffüberschuss nach Region eingefärbt",
+      "lang": "de",
+      "expectedFiles": [
+        "stickstoffkreislauf.md"
+      ],
+      "expectedImages": [
+        "images/stickstoffkreislauf__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "The color-coded map shows estimated nitrogen surplus per hectare across European regions for 2005, from white/yellow (low) to dark purple (high)."
+    },
+    {
+      "id": "img-04-035",
+      "query": "einfaches Schema des Viertaktprinzips beim Dieselmotor",
+      "lang": "de",
+      "expectedFiles": [
+        "dieselmotor.md"
+      ],
+      "expectedImages": [
+        "images/dieselmotor__1.png"
+      ],
+      "style": "image",
+      "rationale": "The colored cutaway icon shows a single cylinder with piston, connecting rod, valves and injector representing the four-stroke diesel cycle."
+    },
+    {
+      "id": "img-04-036",
+      "query": "Foto eines aufgeschnittenen Common-Rail-Dieselmotors mit Einspritzdüsen",
+      "lang": "de",
+      "expectedFiles": [
+        "dieselmotor.md"
+      ],
+      "expectedImages": [
+        "images/dieselmotor__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "The photo shows a real engine block cut open to expose the injectors, cylinder head and pistons of an undivided common-rail combustion chamber."
+    },
+    {
+      "id": "img-04-037",
+      "query": "photo of a diesel engine cutaway showing common rail injectors and pistons",
+      "lang": "en",
+      "expectedFiles": [
+        "dieselmotor.md"
+      ],
+      "expectedImages": [
+        "images/dieselmotor__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Same cutaway common-rail engine photo, requested in English."
+    },
+    {
+      "id": "img-04-038",
+      "query": "Balkendiagramm zum Anteil von Diesel- und Benzin-Pkw in Deutschland 2004 bis 2017",
+      "lang": "de",
+      "expectedFiles": [
+        "dieselmotor.md"
+      ],
+      "expectedImages": [
+        "images/dieselmotor__3.png"
+      ],
+      "style": "image",
+      "rationale": "The stacked bar chart shows the yearly percentage split of the German passenger-car fleet by fuel type (Benzin, Diesel, sonstige) from 2004 to 2017."
+    },
+    {
+      "id": "img-04-039",
+      "query": "Schaltbild eines npn-Transistors mit Basis, Emitter und Kollektor",
+      "lang": "de",
+      "expectedFiles": [
+        "transistor.md"
+      ],
+      "expectedImages": [
+        "images/transistor__1.png"
+      ],
+      "style": "image",
+      "rationale": "The diagram shows the layered n++/p/n+ structure of an npn transistor with labeled electron and hole flow and the recombination point at the base."
+    },
+    {
+      "id": "img-04-040",
+      "query": "diagram of an npn transistor showing electron and hole flow",
+      "lang": "en",
+      "expectedFiles": [
+        "transistor.md"
+      ],
+      "expectedImages": [
+        "images/transistor__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same npn transistor schematic, requested in English."
+    },
+    {
+      "id": "img-04-041",
+      "query": "Tabelle mit Schaltsymbolen für n-Kanal und p-Kanal MOSFETs",
+      "lang": "de",
+      "expectedFiles": [
+        "transistor.md"
+      ],
+      "expectedImages": [
+        "images/transistor__2.png"
+      ],
+      "style": "image",
+      "rationale": "The 2x2 grid shows the standard circuit symbols for self-conducting and self-blocking n-channel and p-channel MOSFETs."
+    },
+    {
+      "id": "img-04-042",
+      "query": "Querschnittszeichnung eines MOSFETs mit Source, Gate, Drain und Kanal",
+      "lang": "de",
+      "expectedFiles": [
+        "transistor.md"
+      ],
+      "expectedImages": [
+        "images/transistor__3.png"
+      ],
+      "style": "image",
+      "rationale": "The 3D cutaway diagram shows the Source/Gate/Drain terminals, the polysilicon gate over silicon dioxide, and the n+ regions forming the channel in the p-substrate."
+    },
+    {
+      "id": "img-04-043",
+      "query": "Zeichnung eines unrunden Zahnrads bzw. Ellipsenrads im Eingriff",
+      "lang": "de",
+      "expectedFiles": [
+        "zahnrad.md"
+      ],
+      "expectedImages": [
+        "images/zahnrad__1.png"
+      ],
+      "style": "image",
+      "rationale": "The schematic shows two irregularly-shaped, non-circular toothed wheels meshing, with their pitch circles drawn in red, illustrating a non-round 'Ellipsenrad' example."
+    },
+    {
+      "id": "img-04-044",
+      "query": "Bild eines Hypoidgetriebes mit großem Tellerrad und Ritzel",
+      "lang": "de",
+      "expectedFiles": [
+        "zahnrad.md"
+      ],
+      "expectedImages": [
+        "images/zahnrad__2.png"
+      ],
+      "style": "image",
+      "rationale": "The gold-toned illustration shows a large spiral-toothed ring gear meshing with a smaller offset pinion, the classic hypoid gear arrangement."
+    },
+    {
+      "id": "img-04-045",
+      "query": "illustration of a hypoid gear set with a spiral bevel ring gear and pinion",
+      "lang": "en",
+      "expectedFiles": [
+        "zahnrad.md"
+      ],
+      "expectedImages": [
+        "images/zahnrad__2.png"
+      ],
+      "style": "image",
+      "rationale": "Same hypoid gear illustration, requested in English."
+    },
+    {
+      "id": "img-04-046",
+      "query": "geometrische Konstruktion einer Evolventenverzahnung am Zahnrad",
+      "lang": "de",
+      "expectedFiles": [
+        "zahnrad.md"
+      ],
+      "expectedImages": [
+        "images/zahnrad__3.png"
+      ],
+      "style": "image",
+      "rationale": "The line drawing constructs the involute tooth flank geometrically from a base circle with labeled points A, B, C, O and radius r."
+    },
+    {
+      "id": "img-04-047",
+      "query": "Wann wurde der Eiffelturm eröffnet und wie viele Besucher kamen 1889 zur Weltausstellung?",
+      "lang": "de",
+      "expectedFiles": [
+        "eiffelturm.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "This asks for an opening date and a visitor count, a textual fact from the running history text; none of the page's three images (a modern photo and two historical design sketches) depict dates or visitor numbers."
+    },
+    {
+      "id": "img-04-048",
+      "query": "Wer erfand 1947 den ersten funktionierenden Transistor und bei welchem Unternehmen?",
+      "lang": "de",
+      "expectedFiles": [
+        "transistor.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "This asks for historical inventors and a company name; the page's three images are all abstract circuit schematics with no people, dates or company references shown."
+    },
+    {
+      "id": "img-04-049",
+      "query": "Wie viele Verzahnungsqualitäten gibt es nach DIN 3961 und welche Fertigungsverfahren erreichen sie?",
+      "lang": "de",
+      "expectedFiles": [
+        "zahnrad.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "This asks about a DIN standard's numeric quality grades and which manufacturing processes achieve them, a text-only table topic; none of the page's three geometric diagrams depict quality grades or machining methods."
+    },
+    {
+      "id": "img-05-001",
+      "query": "Foto der Elbphilharmonie von der Elbe aus bei Abendlicht",
+      "lang": "de",
+      "expectedFiles": [
+        "elbphilharmonie.md"
+      ],
+      "expectedImages": [
+        "images/elbphilharmonie__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Shows the building's wave-shaped glass facade and red-brick base photographed from across the water under a clear evening sky."
+    },
+    {
+      "id": "img-05-002",
+      "query": "wie sieht die geschwungene Glasfassade der Elbphilharmonie von außen aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "elbphilharmonie.md"
+      ],
+      "expectedImages": [
+        "images/elbphilharmonie__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "The wave-patterned glass elements with their curved white shading discs are the dominant visual feature of this exterior shot."
+    },
+    {
+      "id": "img-05-003",
+      "query": "Luftaufnahme der Elbphilharmonie-Baustelle mit der Hamburger Altstadt und der Alster",
+      "lang": "de",
+      "expectedFiles": [
+        "elbphilharmonie.md"
+      ],
+      "expectedImages": [
+        "images/elbphilharmonie__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Aerial photo showing red construction cranes on the unfinished building, with the Alster lake and Hamburg's old town visible in the background."
+    },
+    {
+      "id": "img-05-004",
+      "query": "aerial photo of the Elbphilharmonie construction site in Hamburg's HafenCity with the Alster lake visible",
+      "lang": "en",
+      "expectedFiles": [
+        "elbphilharmonie.md"
+      ],
+      "expectedImages": [
+        "images/elbphilharmonie__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same 2010 aerial construction-site photo showing cranes, HafenCity and the distant Alster."
+    },
+    {
+      "id": "img-05-005",
+      "query": "Nahaufnahme der einzelnen Glaselemente der Fassade neben einem roten Baukran",
+      "lang": "de",
+      "expectedFiles": [
+        "elbphilharmonie.md"
+      ],
+      "expectedImages": [
+        "images/elbphilharmonie__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Close-up crop of the curved glass panels beside a bright red tower crane rising alongside the facade."
+    },
+    {
+      "id": "img-05-006",
+      "query": "historische Illustration der Nürburgring-Rennstrecke aus der Vogelperspektive",
+      "lang": "de",
+      "expectedFiles": [
+        "nuerburgring.md"
+      ],
+      "expectedImages": [
+        "images/nuerburgring__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "A painted 1927 bird's-eye-view map of the circuit with the red track line traced through the hilly Eifel landscape, not a photograph."
+    },
+    {
+      "id": "img-05-007",
+      "query": "old illustrated bird's-eye view map of the Nürburgring race track",
+      "lang": "en",
+      "expectedFiles": [
+        "nuerburgring.md"
+      ],
+      "expectedImages": [
+        "images/nuerburgring__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same hand-painted panoramic map showing the full circuit layout in red."
+    },
+    {
+      "id": "img-05-008",
+      "query": "Foto vom Gedenkstein zur Grundsteinlegung des Nürburgrings 1925",
+      "lang": "de",
+      "expectedFiles": [
+        "nuerburgring.md"
+      ],
+      "expectedImages": [
+        "images/nuerburgring__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "Photo of an engraved stone marker commemorating the 27 September 1925 foundation ceremony for Landrat Otto Creutz."
+    },
+    {
+      "id": "img-05-009",
+      "query": "wie sieht die Burgruine Nürburg aus, nach der die Rennstrecke benannt wurde?",
+      "lang": "de",
+      "expectedFiles": [
+        "nuerburgring.md"
+      ],
+      "expectedImages": [
+        "images/nuerburgring__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Photo of the hilltop castle ruin with its round tower rising above the trees, the namesake of the track rather than the track itself."
+    },
+    {
+      "id": "img-05-010",
+      "query": "Beispieldiagramm eines Geschäftsprozesses in BPMN-Notation",
+      "lang": "de",
+      "expectedFiles": [
+        "business-process-model-and-notation.md"
+      ],
+      "expectedImages": [
+        "images/business-process-model-and-notation__1.png"
+      ],
+      "style": "image",
+      "rationale": "A simple swimlane diagram with a start clock, three connected task boxes and an end circle, the canonical BPMN example."
+    },
+    {
+      "id": "img-05-011",
+      "query": "zeig mir ein BPMN-Ablaufdiagramm für den Prozess in einer Bäckerei",
+      "lang": "de",
+      "expectedFiles": [
+        "business-process-model-and-notation.md"
+      ],
+      "expectedImages": [
+        "images/business-process-model-and-notation__1.png"
+      ],
+      "style": "image",
+      "rationale": "The diagram literally depicts a bakery lane with 'Brötchen backen', 'Brötchen verkaufen' and 'Kasse abrechnen' steps."
+    },
+    {
+      "id": "img-05-012",
+      "query": "grafische Darstellung von Task und Subprocess in der BPMN",
+      "lang": "de",
+      "expectedFiles": [
+        "business-process-model-and-notation.md"
+      ],
+      "expectedImages": [
+        "images/business-process-model-and-notation__2.png"
+      ],
+      "style": "image",
+      "rationale": "Shows a plain task box next to a collapsed subprocess (marked with a plus) and its expanded internal flow, labeled accordingly."
+    },
+    {
+      "id": "img-05-013",
+      "query": "welche Symbole gibt es für die verschiedenen Gateway-Typen in BPMN?",
+      "lang": "de",
+      "expectedFiles": [
+        "business-process-model-and-notation.md"
+      ],
+      "expectedImages": [
+        "images/business-process-model-and-notation__3.png"
+      ],
+      "style": "image",
+      "rationale": "Displays the four diamond gateway shapes labeled exklusives, inklusives, paralleles and ereignisbasiertes Gateway."
+    },
+    {
+      "id": "img-05-014",
+      "query": "diagram of BPMN gateway symbols exclusive inclusive parallel and event-based",
+      "lang": "en",
+      "expectedFiles": [
+        "business-process-model-and-notation.md"
+      ],
+      "expectedImages": [
+        "images/business-process-model-and-notation__3.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same row of four labeled diamond gateway icons."
+    },
+    {
+      "id": "img-05-015",
+      "query": "Wie übersetzt man ein BPMN-Modell in BPEL zur Ausführung durch Software?",
+      "lang": "de",
+      "expectedFiles": [
+        "business-process-model-and-notation.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "The BPMN-to-BPEL execution mapping is discussed only in prose ('Verbindung zu Ausführungssprachen'); none of the three vendored images (bakery example, activities, gateways) illustrate that translation."
+    },
+    {
+      "id": "img-05-016",
+      "query": "Legende der Symbole, die in einem Organigramm verwendet werden",
+      "lang": "de",
+      "expectedFiles": [
+        "organigramm.md"
+      ],
+      "expectedImages": [
+        "images/organigramm__1.png"
+      ],
+      "style": "image",
+      "rationale": "A key explaining the rectangle (Ausführungsstelle), circle (Leitungshilfestelle), solid and dashed connecting lines used in org charts."
+    },
+    {
+      "id": "img-05-017",
+      "query": "Beispiel für ein Organigramm mit Geschäftsführung, Abteilungen und Gruppen",
+      "lang": "de",
+      "expectedFiles": [
+        "organigramm.md"
+      ],
+      "expectedImages": [
+        "images/organigramm__2.png"
+      ],
+      "style": "image",
+      "rationale": "A worked-out chart running from Geschäftsführung down through Entwicklung/Fertigung/Verkauf to Abteilungen and Gruppen across five levels."
+    },
+    {
+      "id": "img-05-018",
+      "query": "wie ist ein typisches Organigramm mit mehreren Hierarchieebenen aufgebaut?",
+      "lang": "de",
+      "expectedFiles": [
+        "organigramm.md"
+      ],
+      "expectedImages": [
+        "images/organigramm__2.png"
+      ],
+      "style": "image",
+      "rationale": "Same multi-level example chart, framed as a how-does-this-look question rather than a keyword search."
+    },
+    {
+      "id": "img-05-019",
+      "query": "Karte zur historischen Entwicklung des Berliner U-Bahn-Netzes",
+      "lang": "de",
+      "expectedFiles": [
+        "u-bahn-berlin.md"
+      ],
+      "expectedImages": [
+        "images/u-bahn-berlin__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "A city map with lines color-coded by the decade they opened, from 1902 up to planned extensions, matching a network-growth query."
+    },
+    {
+      "id": "img-05-020",
+      "query": "zeig mir den aktuellen Streckenplan der Berliner U-Bahn-Linien",
+      "lang": "de",
+      "expectedFiles": [
+        "u-bahn-berlin.md"
+      ],
+      "expectedImages": [
+        "images/u-bahn-berlin__2.png"
+      ],
+      "style": "image",
+      "rationale": "The familiar schematic network diagram with each U-Bahn line drawn in its own color and station dots, valid since December 2020."
+    },
+    {
+      "id": "img-05-021",
+      "query": "map of the Berlin U-Bahn subway network lines",
+      "lang": "en",
+      "expectedFiles": [
+        "u-bahn-berlin.md"
+      ],
+      "expectedImages": [
+        "images/u-bahn-berlin__2.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same color-coded schematic line map."
+    },
+    {
+      "id": "img-05-022",
+      "query": "Foto eines Bahnsteigschilds mit Liniennummer in der Berliner U-Bahn",
+      "lang": "de",
+      "expectedFiles": [
+        "u-bahn-berlin.md"
+      ],
+      "expectedImages": [
+        "images/u-bahn-berlin__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Photo of an illuminated overhead sign reading 'Linie 7' above a yellow train standing at the platform."
+    },
+    {
+      "id": "img-05-023",
+      "query": "Strukturformel eines DNA-Abschnitts mit den vier Basen Adenin Thymin Guanin Cytosin",
+      "lang": "de",
+      "expectedFiles": [
+        "desoxyribonukleinsaeure.md"
+      ],
+      "expectedImages": [
+        "images/desoxyribonukleinsaeure__1.png"
+      ],
+      "style": "image",
+      "rationale": "A labeled chemical diagram showing the paired bases Adenine/Thymine and Guanine/Cytosine on the sugar-phosphate backbone."
+    },
+    {
+      "id": "img-05-024",
+      "query": "wie sieht das Zucker-Phosphat-Rückgrat der DNA chemisch dargestellt aus?",
+      "lang": "de",
+      "expectedFiles": [
+        "desoxyribonukleinsaeure.md"
+      ],
+      "expectedImages": [
+        "images/desoxyribonukleinsaeure__1.png"
+      ],
+      "style": "image",
+      "rationale": "The same structural formula explicitly labels the 'Phosphate-desoxyribose backbone' running along both strand edges."
+    },
+    {
+      "id": "img-05-025",
+      "query": "Zeichnung von rechtsgängiger und linksgängiger DNA-Doppelhelix im Vergleich",
+      "lang": "de",
+      "expectedFiles": [
+        "desoxyribonukleinsaeure.md"
+      ],
+      "expectedImages": [
+        "images/desoxyribonukleinsaeure__2.png"
+      ],
+      "style": "image",
+      "rationale": "Two ribbon drawings labeled a) and b) side by side, with arrows showing the strands twisting in opposite handedness."
+    },
+    {
+      "id": "img-05-026",
+      "query": "Diagramm zur Verdopplung des DNA-Doppelstrangs bei der Replikation",
+      "lang": "de",
+      "expectedFiles": [
+        "desoxyribonukleinsaeure.md"
+      ],
+      "expectedImages": [
+        "images/desoxyribonukleinsaeure__3.png"
+      ],
+      "style": "image",
+      "rationale": "Shows the double helix opening into two separated, base-lettered strands, illustrating the replication process."
+    },
+    {
+      "id": "img-05-027",
+      "query": "diagram showing DNA replication with the double helix splitting into two strands",
+      "lang": "en",
+      "expectedFiles": [
+        "desoxyribonukleinsaeure.md"
+      ],
+      "expectedImages": [
+        "images/desoxyribonukleinsaeure__3.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same unwinding double-helix illustration used to explain replication."
+    },
+    {
+      "id": "img-05-028",
+      "query": "Foto von einem Korallenriff als Beispiel für ein Ökosystem",
+      "lang": "de",
+      "expectedFiles": [
+        "oekosystem.md"
+      ],
+      "expectedImages": [
+        "images/oekosystem__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Underwater photo of a coral reef with orange fish and a blue starfish, used to illustrate a marine ecosystem."
+    },
+    {
+      "id": "img-05-029",
+      "query": "underwater photo of a coral reef ecosystem with tropical fish",
+      "lang": "en",
+      "expectedFiles": [
+        "oekosystem.md"
+      ],
+      "expectedImages": [
+        "images/oekosystem__1.jpg"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same reef photo with visible coral formations and small orange fish."
+    },
+    {
+      "id": "img-05-030",
+      "query": "Diagramm zum Stoffkreislauf zwischen Produzenten, Konsumenten und Destruenten",
+      "lang": "de",
+      "expectedFiles": [
+        "oekosystem.md"
+      ],
+      "expectedImages": [
+        "images/oekosystem__2.png"
+      ],
+      "style": "image",
+      "rationale": "A boxed flow diagram connecting anorganische Stoffe, Produzenten, tote organische Materie, Destruenten and Konsumenten with labeled arrows."
+    },
+    {
+      "id": "img-05-031",
+      "query": "Balkendiagramm zur Kohlenstoffspeicherung in verschiedenen Waldökosystemen",
+      "lang": "de",
+      "expectedFiles": [
+        "oekosystem.md"
+      ],
+      "expectedImages": [
+        "images/oekosystem__3.png"
+      ],
+      "style": "image",
+      "rationale": "A bar chart comparing organic carbon stored in topsoil, subsoil and phytomass across biome types from tropical wet to boreal forest."
+    },
+    {
+      "id": "img-05-032",
+      "query": "Was versteht man unter Resilienz bei der Stabilität von Ökosystemen?",
+      "lang": "de",
+      "expectedFiles": [
+        "oekosystem.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "The Persistenz/Resilienz/Resistenz stability terminology (citing Grimm and Wissel, Pimm 1984) is explained only in text; none of the three images (reef photo, nutrient-cycle diagram, carbon bar chart) depict it."
+    },
+    {
+      "id": "img-05-033",
+      "query": "Schemazeichnung, wie ein Vulkan über einem Hotspot entsteht",
+      "lang": "de",
+      "expectedFiles": [
+        "vulkan.md"
+      ],
+      "expectedImages": [
+        "images/vulkan__1.png"
+      ],
+      "style": "image",
+      "rationale": "Two stacked cross-section schematics show a fixed magma source forming a chain of volcanoes as the plate above it moves left."
+    },
+    {
+      "id": "img-05-034",
+      "query": "Weltkarte der bekanntesten vulkanischen Hotspots wie Hawaii und Yellowstone",
+      "lang": "de",
+      "expectedFiles": [
+        "vulkan.md"
+      ],
+      "expectedImages": [
+        "images/vulkan__2.png"
+      ],
+      "style": "image",
+      "rationale": "A world map marking Hawaii, Yellowstone, Iceland, Azores, Galapagos and Afar as orange dots alongside tectonic plate boundaries."
+    },
+    {
+      "id": "img-05-035",
+      "query": "world map showing famous volcanic hotspots like Hawaii and Iceland",
+      "lang": "en",
+      "expectedFiles": [
+        "vulkan.md"
+      ],
+      "expectedImages": [
+        "images/vulkan__2.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same annotated world hotspot map."
+    },
+    {
+      "id": "img-05-036",
+      "query": "zeig mir eine Grafik zur Vulkanentstehung an einer Subduktionszone",
+      "lang": "de",
+      "expectedFiles": [
+        "vulkan.md"
+      ],
+      "expectedImages": [
+        "images/vulkan__3.png"
+      ],
+      "style": "image",
+      "rationale": "A labeled block diagram explicitly captioned 'Subduktionszone' showing an oceanic plate diving under a continent and feeding a volcano."
+    },
+    {
+      "id": "img-05-037",
+      "query": "Schaltbild eines Gleichstrommotors mit Nord- und Südpol-Magneten",
+      "lang": "de",
+      "expectedFiles": [
+        "elektromotor.md"
+      ],
+      "expectedImages": [
+        "images/elektromotor__1.png"
+      ],
+      "style": "image",
+      "rationale": "Schematic with red N and green S stator poles surrounding a wound rotor, red and blue leads showing current direction."
+    },
+    {
+      "id": "img-05-038",
+      "query": "wie funktioniert die Magnetfeldpolung im Rotor eines Gleichstrommotors?",
+      "lang": "de",
+      "expectedFiles": [
+        "elektromotor.md"
+      ],
+      "expectedImages": [
+        "images/elektromotor__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same N/S pole schematic is the article's illustration of how the rotor's field is polarized relative to the permanent-magnet stator."
+    },
+    {
+      "id": "img-05-039",
+      "query": "beschriftetes Foto eines Ankers mit Kommutator und Kugellager",
+      "lang": "de",
+      "expectedFiles": [
+        "elektromotor.md"
+      ],
+      "expectedImages": [
+        "images/elektromotor__2.jpg"
+      ],
+      "style": "image",
+      "rationale": "A photo of a bare rotor with pointer labels for Welle, Ankerblechstapel, Ankerwicklungen, Kommutator and Kugellager."
+    },
+    {
+      "id": "img-05-040",
+      "query": "Foto eines zerlegten Drehstrommotors mit Rotor und Stator",
+      "lang": "de",
+      "expectedFiles": [
+        "elektromotor.md"
+      ],
+      "expectedImages": [
+        "images/elektromotor__3.jpg"
+      ],
+      "style": "image",
+      "rationale": "Photo of a disassembled three-phase induction motor with the cylindrical rotor pulled out beside its finned stator housing."
+    },
+    {
+      "id": "img-05-041",
+      "query": "Diagramm des TCP Drei-Wege-Handshakes zwischen Client und Server",
+      "lang": "de",
+      "expectedFiles": [
+        "transmission-control-protocol.md"
+      ],
+      "expectedImages": [
+        "images/transmission-control-protocol__1.png"
+      ],
+      "style": "image",
+      "rationale": "Sequence diagram with arrows labeled SYN, SYN-ACK and ACK crossing between a Client and Server column."
+    },
+    {
+      "id": "img-05-042",
+      "query": "wie läuft der SYN SYN-ACK ACK Handschlag bei TCP ab?",
+      "lang": "de",
+      "expectedFiles": [
+        "transmission-control-protocol.md"
+      ],
+      "expectedImages": [
+        "images/transmission-control-protocol__1.png"
+      ],
+      "style": "image",
+      "rationale": "Same handshake sequence diagram, matching a how-does-this-work phrasing of the query."
+    },
+    {
+      "id": "img-05-043",
+      "query": "Aufbau des TCP-Headers als Grafik mit allen Feldern",
+      "lang": "de",
+      "expectedFiles": [
+        "transmission-control-protocol.md"
+      ],
+      "expectedImages": [
+        "images/transmission-control-protocol__2.png"
+      ],
+      "style": "image",
+      "rationale": "A bit-field grid laying out source/destination port, sequence number, flags and window exactly as a TCP header diagram."
+    },
+    {
+      "id": "img-05-044",
+      "query": "diagram of the TCP header fields including sequence number and flags",
+      "lang": "en",
+      "expectedFiles": [
+        "transmission-control-protocol.md"
+      ],
+      "expectedImages": [
+        "images/transmission-control-protocol__2.png"
+      ],
+      "style": "image",
+      "rationale": "Cross-lingual match for the same 32-bit-row header field grid."
+    },
+    {
+      "id": "img-05-045",
+      "query": "Grafik zur Segmentierung der Nutzdaten zwischen Sender und Empfänger bei TCP",
+      "lang": "de",
+      "expectedFiles": [
+        "transmission-control-protocol.md"
+      ],
+      "expectedImages": [
+        "images/transmission-control-protocol__3.png"
+      ],
+      "style": "image",
+      "rationale": "Shows a sender-side buffer splitting a data block into numbered segments that travel to a receiver-side buffer and reassemble."
+    },
+    {
+      "id": "img-05-046",
+      "query": "Wie funktioniert der Slow-Start-Algorithmus bei der TCP-Überlaststeuerung?",
+      "lang": "de",
+      "expectedFiles": [
+        "transmission-control-protocol.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Slow start, congestion avoidance, fast retransmit and fast recovery are explained only in prose; the three vendored images cover the handshake, header layout and buffering, not congestion control."
+    }
+  ]
+}

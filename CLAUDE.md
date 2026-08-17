@@ -153,7 +153,27 @@ later on a missing `fixture-de-images.json`, which is luck, not a guard. Its
 page bodies carry `![](images/…)` with an **empty alt and no caption** — a page
 that captions its own figures is answerable from text alone, so an image leg
 measured on it scores a win it did not earn; the captions live in the manifest,
-for P5c's independent labeller. And it is the **first vendored content whose own
+for P5c's independent labeller. **P5c's labels are now committed
+(`fixture-de-images.json`, 303 queries over all 65 pages and all 187 images) and
+still nothing consumes them** — P5b remains the PR that wires the axis. They get
+their **own** schema and loader (`ImageFixtureSchema` / `loadImageFixture`),
+never a widened `FixtureSchema`: the two fixtures are scored on different axes,
+and adding `lang` / `expectedImages` / two more styles to the shipped schema
+would have left every existing text label validating with the image leg's only
+metric silently absent. `loadImageFixture` throws rather than filters
+(`loadFixture`'s precedent) and checks the three things a fixture cannot check
+about itself — the page exists, the image exists *on disk*, and the image
+belongs to one of that label's own pages. The last is the one nobody eyeballs:
+`imageHit@K` is scored inside the retrieved page, so an image credited to the
+wrong page is unreachable however good the leg is, while the page and the image
+each exist. `fixture-de-images.test.ts` pins the sha, N ≥ 100, ≥ 20 English
+(the cross-lingual case the text leg cannot serve), 8–20 `image-negative`
+distractors with EMPTY `expectedImages` (without them a leg that answers with a
+picture every time scores like one that answers correctly), no content shape
+below 15%, every image accounted for by a label or a `notUsable` reason, and
+**no query that restates a manifest caption verbatim** — the caption-strip rule
+guarded from the other side, since a query copied off the manifest hands the leg
+the match the empty alt text exists to deny it. And it is the **first vendored content whose own
 licence is not MIT** (the English corpus is MIT documentation; this repository
 itself is **AGPL-3.0**): page text is CC BY-SA 4.0 (adapted) and images are
 filtered to CC0 / public domain / CC BY x / CC BY-SA x with a **named** author
