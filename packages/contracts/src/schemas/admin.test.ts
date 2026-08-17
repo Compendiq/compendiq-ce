@@ -40,6 +40,11 @@ const validReadPayload = {
   ragMmrEnabled: false,
   ragMmrLambda: 0.7,
   ragRankingPriorWeight: 0,
+  // #1115 P2 — the image-index intake knobs, required on read like the nine
+  // above and for the same reason: the panel must never have to restate a
+  // default the reader owns.
+  ragImagesPerPageMax: 20,
+  ragImageIndexExternal: true,
   // #1114 — required on read; both bases null on an instance that has never
   // set a threshold (the 0/0 default).
   ragConfidenceCalibration: { similarity: null, rerank: null },
@@ -469,10 +474,40 @@ describe('retrieval knobs (#1118)', () => {
       'ragMmrEnabled',
       'ragMmrLambda',
       'ragRankingPriorWeight',
+      // #1115 P2 — the two image-intake knobs join the same contract.
+      'ragImagesPerPageMax',
+      'ragImageIndexExternal',
     ] as const) {
       const { [key]: _dropped, ...without } = validReadPayload;
       expect(() => AdminSettingsSchema.parse(without), `${key} must be required`).toThrow();
     }
+  });
+
+  describe('#1115 P2 — image-index intake knobs mirror their readers', () => {
+    it('rag_images_per_page_max accepts [1, 200] integers', () => {
+      expect(UpdateAdminSettingsSchema.parse({ ragImagesPerPageMax: 1 }).ragImagesPerPageMax).toBe(1);
+      expect(UpdateAdminSettingsSchema.parse({ ragImagesPerPageMax: 200 }).ragImagesPerPageMax).toBe(
+        200,
+      );
+    });
+
+    it('rag_images_per_page_max rejects 0, 201 and a fractional cap', () => {
+      // 0 is not "unlimited" and not "off" — the leg is switched off by
+      // unassigning the use case, which is ADR-021's rule for it.
+      expect(() => UpdateAdminSettingsSchema.parse({ ragImagesPerPageMax: 0 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragImagesPerPageMax: 201 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragImagesPerPageMax: 20.5 })).toThrow();
+    });
+
+    it('rag_image_index_external is a boolean on both schemas', () => {
+      expect(
+        UpdateAdminSettingsSchema.parse({ ragImageIndexExternal: false }).ragImageIndexExternal,
+      ).toBe(false);
+      expect(() => UpdateAdminSettingsSchema.parse({ ragImageIndexExternal: 'off' })).toThrow();
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, ragImageIndexExternal: 'off' }),
+      ).toThrow();
+    });
   });
 
   it('treats every knob as omit-to-leave-unchanged on update', () => {

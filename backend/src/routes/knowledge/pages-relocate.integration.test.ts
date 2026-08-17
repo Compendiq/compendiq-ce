@@ -1261,4 +1261,63 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(aces.rowCount).toBe(1);
     });
   });
+
+  /**
+   * #1115 P2 (review r1) — a relocate REKEYS every image.
+   *
+   * The persisted body has its `img src` attributes rewritten onto the other
+   * store's prefix, so every `(source, attachment_key)` in
+   * `page_image_embeddings` now names a row this page no longer references —
+   * and `extractImageReferencesFromHtml` reads exactly that prefix. Only a
+   * re-scan reconciles it, and the flag is what schedules one. Both directions
+   * were deletable with every suite green.
+   */
+  describe('image_embedding_dirty across a relocate (#1115 P2)', () => {
+    async function imageDirty(id: number): Promise<boolean> {
+      const r = await query<{ image_embedding_dirty: boolean }>(
+        'SELECT image_embedding_dirty FROM pages WHERE id = $1', [id],
+      );
+      return r.rows[0]!.image_embedding_dirty;
+    }
+
+    it('raises it on local → Confluence', async () => {
+      const id = await createPage({ title: 'Moving up', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
+      await query('UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1', [id]);
+      h.client.createPage.mockResolvedValue(createdPage('900910'));
+
+      expect((await toConfluence(id)).statusCode).toBe(200);
+
+      expect(await imageDirty(id)).toBe(true);
+    });
+
+    it('raises it on Confluence → local', async () => {
+      const id = await createPage({
+        title: 'Moving down', source: 'confluence', confluenceId: '700910', spaceKey: 'CONF',
+      });
+      await query('UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1', [id]);
+      h.client.deletePage.mockResolvedValue(undefined);
+
+      expect((await toLocal(id, '700910')).statusCode).toBe(200);
+
+      expect(await imageDirty(id)).toBe(true);
+    });
+
+    it('restores it when the move is compensated', async () => {
+      // The snapshot's own rule: every column the move WRITES must be
+      // captured, or a rollback leaves the moved value behind. This one is
+      // cheap to get wrong — a page left dirty by a move that never happened
+      // just re-scans — and the rule is the thing that keeps the next, less
+      // cheap column from being forgotten.
+      const id = await createPage({
+        title: 'Reverted', source: 'confluence', confluenceId: '700911', spaceKey: 'CONF',
+      });
+      await query('UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1', [id]);
+      h.client.deletePage.mockRejectedValue(new ConfluenceError('server error', 500));
+      h.client.getPage.mockResolvedValue({ id: '700911', status: 'current' });
+
+      expect((await toLocal(id, '700911')).statusCode).toBe(500);
+
+      expect(await imageDirty(id)).toBe(false);
+    });
+  });
 });

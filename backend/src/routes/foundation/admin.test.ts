@@ -80,6 +80,11 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   getRagPinIdentifiersEnabled: vi.fn().mockResolvedValue(true),
   getRagMmrConfig: vi.fn().mockResolvedValue({ enabled: false, lambda: 0.7 }),
   getRagRankingPriorWeight: vi.fn().mockResolvedValue(0),
+  // #1115 P2 — the image-index intake knobs, at their reader defaults for the
+  // same reason as the nine above.
+  getRagImagesPerPageMax: vi.fn().mockResolvedValue(20),
+  getRagImageIndexExternal: vi.fn().mockResolvedValue(true),
+  invalidateRagImageIntakeCache: vi.fn(),
   invalidateRagFetchWidthCache: vi.fn(),
   invalidateRagRerankCandidatesCache: vi.fn(),
   invalidateRagConfidenceThresholdCache: vi.fn(),

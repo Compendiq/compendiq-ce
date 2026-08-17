@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { toUserFacingEmbeddingError, EmbeddingDimensionMismatchError } from './embedding-error-message.js';
+import {
+  toUserFacingEmbeddingError,
+  EmbeddingDimensionMismatchError,
+  ImageEmbeddingDimensionMismatchError,
+} from './embedding-error-message.js';
 import { LlmHttpError } from './llm-http-error.js';
 
 describe('toUserFacingEmbeddingError', () => {
@@ -124,6 +128,45 @@ describe('toUserFacingEmbeddingError', () => {
       expect(err.message).toContain('1024');
       expect(err.expected).toBe(1024);
       expect(err.received).toBe(2560);
+    });
+  });
+
+  /**
+   * #1115 P2 (review r1) — the IMAGE index's version of the same mismatch.
+   *
+   * Its own type and its own sentence because the remedy is different: the
+   * image index has no shadow-swap path, it rebuilds from Re-check on the
+   * Image embedding row (ADR-025 D7). Reusing the text branch would have sent
+   * the operator to a zero-downtime re-embed that does not exist for it.
+   */
+  describe('ImageEmbeddingDimensionMismatchError', () => {
+    it('names the image index and Re-check, not the text re-embed', () => {
+      const result = toUserFacingEmbeddingError(
+        new ImageEmbeddingDimensionMismatchError('Qwen/Qwen3-VL-Embedding-8B', 2048, 4096),
+      );
+      expect(result).not.toBe('Embedding failed due to a provider error. See server logs for details.');
+      expect(result).toContain('image index');
+      expect(result).toContain('Re-check');
+      expect(result).not.toContain('zero-downtime');
+    });
+
+    it('keeps the model name and both widths out of the user-facing string', () => {
+      // Same rule as every other branch: a fixed constant. This one reaches an
+      // admin card, so #1184's rule about what an admin read may echo applies.
+      const result = toUserFacingEmbeddingError(
+        new ImageEmbeddingDimensionMismatchError('Qwen/Qwen3-VL-Embedding-8B', 2048, 4096),
+      );
+      expect(result).not.toContain('Qwen/Qwen3-VL-Embedding-8B');
+      expect(result).not.toContain('4096');
+    });
+
+    it('still carries the diagnostic detail on the error itself', () => {
+      const err = new ImageEmbeddingDimensionMismatchError('Qwen/Qwen3-VL-Embedding-8B', 2048, 4096);
+      expect(err.message).toContain('Qwen/Qwen3-VL-Embedding-8B');
+      expect(err.message).toContain('2048');
+      expect(err.message).toContain('4096');
+      expect(err.expected).toBe(2048);
+      expect(err.received).toBe(4096);
     });
   });
 });

@@ -1431,20 +1431,20 @@ describe('LlmTab', () => {
   });
 
   /**
-   * Review round 2 — P1 types the column, builds the index and dirties every
-   * page, and then nothing happens until P2's worker exists. The description
-   * beside it says "for image search" and a successful Re-check says
-   * "confirmed"; both read as "assigned ⇒ it works". #1119's rule: the caveat
-   * is on screen, at rest.
+   * P1's "nothing is indexed yet" sentence was true while no worker consumed
+   * the assignment. P2 ships one, so the row must stop saying it — a caveat
+   * that has become false is worse than none — and must instead point at the
+   * surface that reports the index (#1115 P2).
    */
-  it('says on screen that nothing is indexed yet in this release', async () => {
+  it('points at the Embeddings tab for index status, and no longer claims nothing is indexed', async () => {
     const Wrapper = createWrapper();
     mockRoutes();
     render(<LlmTab />, { wrapper: Wrapper });
     const row = await screen.findByTestId('usecase-row-image_embedding');
-    const note = within(row).getByTestId('image-embedding-inert-note');
-    expect(note.textContent).toMatch(/not indexed yet/i);
-    expect(note.textContent).toMatch(/later release/i);
+    const note = within(row).getByTestId('image-embedding-index-pointer');
+    expect(note.textContent).toMatch(/Embeddings tab/i);
+    expect(row.textContent).not.toMatch(/not indexed yet/i);
+    expect(within(row).queryByTestId('image-embedding-inert-note')).toBeNull();
   });
 
   /**

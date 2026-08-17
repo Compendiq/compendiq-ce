@@ -122,6 +122,24 @@ const RagMmrLambdaSchema = z.number().min(0).max(1);
  * start outranking retrieval itself.
  */
 const RagRankingPriorWeightSchema = z.number().min(0).max(0.05);
+/**
+ * `rag_images_per_page_max` (#1115 P2) — how many of a page's images the
+ * image-embedding worker takes. Default 20, [1, 200].
+ *
+ * **0 is not a value.** The image leg is switched off by unassigning the
+ * `image_embedding` use case (ADR-021's rule for the non-inheriting use
+ * cases); a cap of zero would be a second, quieter off switch whose effect —
+ * a corpus that reconciles every row away on the next scan — reads as an
+ * indexing bug rather than a setting.
+ */
+const RagImagesPerPageMaxSchema = z.number().int().min(1).max(200);
+/**
+ * `rag_image_index_external` (#1115 P2) — whether images a Confluence body
+ * pulled from an external URL (`external-<12 hex>` in the cache) are indexed.
+ * Default ON: they are page content like any other, and the knob is for
+ * deployments that would rather not embed third-party imagery at all.
+ */
+const RagImageIndexExternalSchema = z.boolean();
 
 /**
  * #1115 — `image_embedding_target_dimensions`, the MRL truncation width the
@@ -387,6 +405,14 @@ export const AdminSettingsSchema = z.object({
   ragMmrLambda: RagMmrLambdaSchema,
   ragRankingPriorWeight: RagRankingPriorWeightSchema,
   /**
+   * #1115 P2 — the image-index intake knobs, required on read for the same
+   * reason as the nine above: the GET resolves them through their own reader,
+   * so an absent row answers with the value the worker is using and no panel
+   * has to restate a default.
+   */
+  ragImagesPerPageMax: RagImagesPerPageMaxSchema,
+  ragImageIndexExternal: RagImageIndexExternalSchema,
+  /**
    * #1114 — read-only, and deliberately absent from the update schema below.
    * The server resolves the pair itself when it writes a threshold; a client
    * that could assert this could also assert "still calibrated" for a
@@ -461,6 +487,14 @@ export const UpdateAdminSettingsSchema = z.object({
   ragMmrEnabled: RagMmrEnabledSchema.optional(),
   ragMmrLambda: RagMmrLambdaSchema.optional(),
   ragRankingPriorWeight: RagRankingPriorWeightSchema.optional(),
+  /**
+   * #1115 P2 — optional on update, same omit-to-leave-unchanged rule. The
+   * Retrieval tab gains the controls in P3; the schema and the backend
+   * read/write land here so the worker's knobs are settable from the moment
+   * the worker exists.
+   */
+  ragImagesPerPageMax: RagImagesPerPageMaxSchema.optional(),
+  ragImageIndexExternal: RagImageIndexExternalSchema.optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;

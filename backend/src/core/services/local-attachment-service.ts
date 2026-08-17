@@ -18,6 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { markPageImagesDirty } from './image-embedding-dirty.js';
 
 /** Sub-directory under ATTACHMENTS_DIR reserved for local-page files. */
 const LOCAL_SUBDIR = 'local';
@@ -210,6 +211,10 @@ export async function putLocalAttachment(opts: {
                created_by, created_at, updated_at`,
     [opts.pageId, path.basename(opts.filename), opts.contentType, opts.data.length, sha, opts.userId],
   );
+  // #1115 P2 — the local store is the other half of what `body_html` can point
+  // at (`/api/local-attachments/<page id>/<file>`), and this is its one writer:
+  // the draw.io save on a standalone page, and every relocated page's images.
+  await markPageImagesDirty(opts.pageId);
   logger.info(
     { pageId: opts.pageId, filename: opts.filename, size: opts.data.length, userId: opts.userId },
     'local-attachment-service: wrote local attachment',

@@ -35,6 +35,10 @@ import {
   initLlmQueueSettings,
   invalidateRagConfidenceThresholdCache,
   _resetLlmQueueSettingsForTests,
+  getRagImagesPerPageMax,
+  getRagImageIndexExternal,
+  invalidateRagImageIntakeCache,
+  RAG_IMAGES_PER_PAGE_MAX_DEFAULT,
 } from './admin-settings-service.js';
 
 describe('getAdminAccessDeniedRetentionDays (#264)', () => {
@@ -404,5 +408,73 @@ describe('rag_pin_identifiers kill switch (#1107 / #1273 M11)', () => {
       mockQuery.mockResolvedValue({ rows: [{ setting_value: raw }] });
       expect(await getRagPinIdentifiersEnabled()).toBe(expected);
     }
+  });
+});
+
+describe('image-index intake knobs (#1115 P2)', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    invalidateRagImageIntakeCache();
+  });
+
+  it('caps images per page at the default when the row is absent or the DB is down', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await getRagImagesPerPageMax()).toBe(RAG_IMAGES_PER_PAGE_MAX_DEFAULT);
+    invalidateRagImageIntakeCache();
+    mockQuery.mockRejectedValue(new Error('down'));
+    expect(await getRagImagesPerPageMax()).toBe(RAG_IMAGES_PER_PAGE_MAX_DEFAULT);
+  });
+
+  it('clamps the cap into [1, 200] and refuses a malformed value', async () => {
+    for (const [raw, expected] of [
+      ['5', 5],
+      ['200', 200],
+      // Above the ceiling clamps; below the floor and unparseable fall back to
+      // the default, which is `safeIntOr`'s semantics on every sibling knob
+      // (`'1e3'` parses as 1 and must not silently become a cap of one).
+      ['500', 200],
+      ['0', RAG_IMAGES_PER_PAGE_MAX_DEFAULT],
+      ['1e3', RAG_IMAGES_PER_PAGE_MAX_DEFAULT],
+      ['nonsense', RAG_IMAGES_PER_PAGE_MAX_DEFAULT],
+    ] as Array<[string, number]>) {
+      invalidateRagImageIntakeCache();
+      mockQuery.mockResolvedValue({ rows: [{ setting_key: 'rag_images_per_page_max', setting_value: raw }] });
+      expect(await getRagImagesPerPageMax()).toBe(expected);
+    }
+  });
+
+  it('indexes externally-fetched images by default, and on a DB failure', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await getRagImageIndexExternal()).toBe(true);
+    invalidateRagImageIntakeCache();
+    mockQuery.mockRejectedValue(new Error('down'));
+    expect(await getRagImageIndexExternal()).toBe(true);
+  });
+
+  it("only the literal '0'/'false'/'off' excludes external images", async () => {
+    for (const [raw, expected] of [
+      ['0', false],
+      ['false', false],
+      ['off', false],
+      ['1', true],
+      ['yes', true],
+      ['', true],
+    ] as Array<[string, boolean]>) {
+      invalidateRagImageIntakeCache();
+      mockQuery.mockResolvedValue({ rows: [{ setting_key: 'rag_image_index_external', setting_value: raw }] });
+      expect(await getRagImageIndexExternal()).toBe(expected);
+    }
+  });
+
+  it('reads both knobs in ONE query, so a per-page read costs one round-trip', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [
+        { setting_key: 'rag_images_per_page_max', setting_value: '7' },
+        { setting_key: 'rag_image_index_external', setting_value: '0' },
+      ],
+    });
+    expect(await getRagImagesPerPageMax()).toBe(7);
+    expect(await getRagImageIndexExternal()).toBe(false);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 });

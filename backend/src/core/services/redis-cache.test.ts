@@ -22,6 +22,8 @@ import {
   RedisCache,
   acquireWorkerLock,
   releaseWorkerLock,
+  refreshWorkerLock,
+  isWorkerLocked,
 } from './redis-cache.js';
 
 /**
@@ -683,6 +685,99 @@ describe('redis-cache embedding lock', () => {
       mockRedis.eval.mockRejectedValue(new Error('Redis timeout'));
 
       await expect(releaseWorkerLock('test-worker', 'token')).resolves.toBeUndefined();
+    });
+  });
+
+  /**
+   * #1115 P2 (review r1) — the renewal half of the worker lock.
+   *
+   * `acquireWorkerLock`'s TTL is a hard expiry, so a corpus-wide scan that
+   * outlives it loses the key mid-run and a second scan starts on the same
+   * backlog. These pin the three behaviours the image worker's guard depends
+   * on: the TTL slides only for the owner, the CURRENT holder comes back
+   * either way (which is what lets a de-throned run abort), and a Redis-less
+   * deployment is not aborted on every tick.
+   */
+  describe('refreshWorkerLock', () => {
+    it('slides the TTL and returns the caller token when the caller still owns it', async () => {
+      mockRedis.eval.mockResolvedValue('token-abc');
+
+      const holder = await refreshWorkerLock('image-embedding-index', 'token-abc', 600);
+
+      expect(holder).toBe('token-abc');
+      const [script, opts] = mockRedis.eval.mock.calls[0];
+      // Ownership-checked EXPIRE, never a bare one: renewing a lock somebody
+      // else re-acquired keeps a second scan alive on this run's clock.
+      expect(script).toEqual(expect.stringContaining('redis.call("get", KEYS[1])'));
+      expect(script).toEqual(expect.stringContaining('expire'));
+      expect(opts).toEqual({
+        keys: ['worker:lock:image-embedding-index'],
+        arguments: ['token-abc', '600'],
+      });
+    });
+
+    it('returns the OTHER holder when the lock moved, so the caller can abort', async () => {
+      // The Lua returns the current value whether or not it matched, and the
+      // EXPIRE is skipped — the two halves of "you no longer own this".
+      mockRedis.eval.mockResolvedValue('someone-else');
+
+      const holder = await refreshWorkerLock('image-embedding-index', 'token-abc', 600);
+
+      expect(holder).toBe('someone-else');
+      expect(holder).not.toBe('token-abc');
+    });
+
+    it('returns null when the key is gone entirely', async () => {
+      mockRedis.eval.mockResolvedValue(null);
+
+      await expect(refreshWorkerLock('image-embedding-index', 'token-abc')).resolves.toBeNull();
+    });
+
+    it("hands back the caller's own token when Redis is absent", async () => {
+      // Matching `acquireWorkerLock`'s single-node fallback. Answering null
+      // would make every guarded loop abort on a Redis-less deployment.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRedisClient(null as any);
+
+      await expect(refreshWorkerLock('image-embedding-index', 'token-abc')).resolves.toBe(
+        'token-abc',
+      );
+    });
+
+    it('propagates a Redis failure rather than reporting a lost lock', async () => {
+      // A failed READ is not evidence the lock moved; the caller's guard logs
+      // and continues. Swallowing it here as `null` would abort every scan on
+      // one transient timeout.
+      mockRedis.eval.mockRejectedValue(new Error('Redis timeout'));
+
+      await expect(refreshWorkerLock('image-embedding-index', 'token-abc')).rejects.toThrow(
+        'Redis timeout',
+      );
+    });
+  });
+
+  describe('isWorkerLocked', () => {
+    it('reads the worker-lock key and reports it held', async () => {
+      mockRedis.get.mockResolvedValue('token-abc');
+
+      await expect(isWorkerLocked('image-embedding-index')).resolves.toBe(true);
+      expect(mockRedis.get).toHaveBeenCalledWith('worker:lock:image-embedding-index');
+    });
+
+    it('reports not held when the key is absent', async () => {
+      mockRedis.get.mockResolvedValue(null);
+
+      await expect(isWorkerLocked('image-embedding-index')).resolves.toBe(false);
+    });
+
+    it('answers false without Redis and does not throw when Redis does', async () => {
+      // Advisory only — it drives a "Scanning…" label, never a gate.
+      mockRedis.get.mockRejectedValue(new Error('Redis down'));
+      await expect(isWorkerLocked('image-embedding-index')).resolves.toBe(false);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRedisClient(null as any);
+      await expect(isWorkerLocked('image-embedding-index')).resolves.toBe(false);
     });
   });
 });

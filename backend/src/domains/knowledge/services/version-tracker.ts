@@ -214,6 +214,20 @@ export async function restoreVersion(
       `UPDATE pages SET
          title = $2, body_html = $3, body_text = $4,
          version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
+         -- #1115 P2 (review r2) — a restore is a BODY writer, and the one whose
+         -- whole purpose is to swap the body for a different one, so it
+         -- routinely adds and removes <img> elements. It performs no attachment
+         -- write, so nothing in image-embedding-dirty.ts fires, and neither
+         -- source self-heals: a standalone page is never touched by sync, and a
+         -- Confluence page's restore is pushed upstream and the returned version
+         -- written back, so the next syncPage takes the version-unchanged branch
+         -- and never reaches the conflict-policy update. Gated on body_html
+         -- alone, exactly like its four siblings in pages-crud.ts — that is
+         -- where the src attributes are.
+         image_embedding_dirty = CASE
+           WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+           ELSE image_embedding_dirty
+         END,
          embedding_status = 'not_embedded', embedded_at = NULL,
          local_modified_at = NOW()
        WHERE id = $1`,

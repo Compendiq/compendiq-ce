@@ -6,6 +6,7 @@ import { apiFetch } from '../../../shared/lib/api';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 import { ActiveEmbeddingLocksBanner } from './ActiveEmbeddingLocksBanner';
 import { EmbeddingModelBenchmarks } from './EmbeddingModelBenchmarks';
+import { ImageIndexCard } from './ImageIndexCard';
 
 export function EmbeddingTab() {
   const queryClient = useQueryClient();
@@ -97,6 +98,14 @@ export function EmbeddingTab() {
         material, not a setting, and it must not crowd the controls above it.
       */}
       <EmbeddingModelBenchmarks />
+
+      {/*
+        #1115 P2 — the image index's status and its two actions. It sits on
+        this tab rather than beside the assignment row because the assignment
+        is a CHOICE and this is a PIPELINE: it belongs with the chunking knobs
+        and the re-embed controls that describe the same kind of work.
+      */}
+      <ImageIndexCard />
 
       <div className="nm-card border-warning/30 p-3 text-sm text-warning">
         These settings are shared across all users. Changing chunk settings will trigger re-embedding of all pages, which may take several minutes.
