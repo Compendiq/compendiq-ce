@@ -44,6 +44,24 @@ export type EvalAxis = typeof IMAGE_AXIS | typeof TEXT_AXIS;
 /** The image corpus's language. Not a choice: the pages are German Wikipedia. */
 export const IMAGE_AXIS_LANGUAGE = 'de';
 
+/**
+ * What an `--images` run writes into `admin_settings.eval_corpus_language`.
+ *
+ * DELIBERATELY not `de` (review r1). That row exists so #1114's latency
+ * benchmark can refuse `--lang de` against a database seeded with a different
+ * corpus, and the image corpus is a different corpus: 65 German Wikipedia
+ * articles, not the ~200-page German text corpus `fixture-de.json`'s questions
+ * are written against. Writing plain `de` made the two indistinguishable and
+ * turned that refusal off for exactly the state it was added to catch — the
+ * benchmark would time German text questions against the image corpus and
+ * publish the result as a `de` measurement.
+ *
+ * It is not a `--lang` value either, and `checkCorpusLanguage` names it as such
+ * rather than offering it as the remedy: `corpusDirsForLanguage` throws on any
+ * language whose directory resolves onto `corpus-de-images/`.
+ */
+export const IMAGE_AXIS_CORPUS_CLAIM = 'de-images';
+
 /** The fixture beside that corpus, loaded by `loadImageFixture`. */
 export const IMAGE_AXIS_FIXTURE_FILE = 'fixture-de-images.json';
 

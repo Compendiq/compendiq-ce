@@ -33,7 +33,12 @@
  *    `oversized`, `tooLarge`, `capped` and `external` are all zero on a healthy
  *    run — and a run that quietly indexed 170 of 187 would report a leg
  *    measured against a corpus whose pictures are partly absent. The seeder
- *    therefore refuses rather than counting.
+ *    therefore refuses rather than counting, and it does so against TWO counts:
+ *    per page against the body it stored (which is what `embedPageImages` can
+ *    fairly be judged against) and once at the end against the MANIFEST. The
+ *    second is not redundant — the first is derived from this seeder's own
+ *    output, so a picture lost on the way in shrinks the expectation in step
+ *    with the result and every page passes at a smaller count.
  */
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -418,6 +423,27 @@ export async function seedImageCorpus(
     }
   }
   const imageEmbedWallClockMs = performance.now() - started;
+
+  // The per-page expectation is read off the STORED BODY, because that is the
+  // only number `embedPageImages` can fairly be judged against — but it is a
+  // number this seeder produced, so an `<img>` lost between the manifest and
+  // the body shrinks the expectation in step with the result and every page
+  // passes its own check at a smaller count (review r1). `rewriteImageSources`
+  // does not see that either: an element dropped outright leaves no
+  // `src="images/` behind to find. The MANIFEST is the independent count, and
+  // this is the assertion the module header has always claimed — 170 of 187
+  // indexed is a leg measured against a corpus whose pictures are partly
+  // absent, and it must be a refusal rather than a smaller measurement.
+  const expectedTotal = pages.reduce((n, page) => n + page.images.length, 0);
+  if (imagesEmbedded + imagesReused !== expectedTotal) {
+    throw new ImageIntakeError(
+      `Indexed ${imagesEmbedded + imagesReused} of the ${expectedTotal} images the manifest lists for ` +
+        `these ${pages.length} pages. Every page's own intake was clean, so the loss is between the ` +
+        'manifest and the stored body — an `<img>` the Markdown conversion or the sanitiser dropped is ' +
+        'never enumerated, never resolved and never counted as a skip. Re-run the corpus builder, or ' +
+        'check markdownToHtml against the manifest srcs.',
+    );
+  }
 
   if (skipped.unsupported > 0) {
     logger.warn({ skipped }, 'Image intake reported unsupported files — the corpus should contain none');

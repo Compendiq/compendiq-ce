@@ -223,11 +223,35 @@ describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
     expect(seed).toBeGreaterThan(prepare);
   });
 
-  it('certifies the FTS configuration and records the corpus language on this axis too', () => {
+  it('certifies the FTS configuration and records a DISTINCT corpus claim on this axis', () => {
     // Both are properties of the SEEDED corpus, and the image axis seeds one.
     const seed = raw.indexOf('await seedImageCorpus(');
     expect(raw.indexOf('await assertSeededFtsLanguage(ftsLanguage)', seed)).toBeGreaterThan(seed);
-    expect(raw.indexOf('await recordCorpusLanguage(language)', seed)).toBeGreaterThan(seed);
+    // …and the claim is NOT `language` (review r1). It reads 'de' on this
+    // axis, which is exactly what the German TEXT corpus writes — so the row
+    // #1114 added to let benchmark-query-latency.ts refuse a question set
+    // aimed at the wrong corpus could no longer tell the two apart, and the
+    // refusal switched off for the state it exists to catch.
+    expect(raw.indexOf('await recordCorpusLanguage(IMAGE_AXIS_CORPUS_CLAIM)', seed)).toBeGreaterThan(seed);
+    // One call each, so the image axis cannot quietly go back to writing the
+    // language while the constant sits unused beside it.
+    expect(raw.match(/recordCorpusLanguage\(language\)/g)).toHaveLength(1);
+    expect(raw.match(/recordCorpusLanguage\(IMAGE_AXIS_CORPUS_CLAIM\)/g)).toHaveLength(1);
+    expect(raw.indexOf('await recordCorpusLanguage(language)')).toBeLessThan(seed);
+  });
+
+  it('publishes MEASURED participation counts, per query and from the leg-on arm', () => {
+    // Zero is a refusal condition on the text gate (`runner.ts` throws when an
+    // assembly-on run assembled nothing), so a hardcoded 0 in these fields
+    // asserts the broken state the harness refuses to publish. And the counts
+    // are the ON arm's, never a sum over both: `queries` is the label count, so
+    // an arm-query total prints participation above 100% (review r1).
+    expect(flat).toContain('assemblyParticipatingQueries: run.assemblyParticipatingQueries.on');
+    expect(flat).toContain('pinParticipatingQueries: run.pinParticipatingQueries.on');
+    expect(flat).toContain('expansionParticipatingQueries: run.expansionParticipatingQueries.on');
+    expect(flat).toContain('expansionSkippedQueries: run.expansionSkippedQueries.on');
+    expect(flat).not.toContain('assemblyParticipatingQueries: 0');
+    expect(flat).not.toContain('pinParticipatingQueries: 0');
   });
 
   it('runs the paired runner over the seeded page map', () => {

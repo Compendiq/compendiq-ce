@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
@@ -216,6 +217,43 @@ describe.skipIf(!dbAvailable)('image corpus seeder (#1115 P5b)', () => {
 
     await expect(seedImageCorpus(USER, { maxPages: 1 })).rejects.toBeInstanceOf(ImageIntakeError);
     vl.failWith(null);
+  }, 120_000);
+
+  it('REFUSES a corpus whose stored bodies carry fewer images than the manifest lists', async () => {
+    // The per-page check compares the intake against the body THIS SEEDER
+    // wrote, so a picture lost on the way in shrinks the expectation in step
+    // with the result and each page passes its own check at a smaller count —
+    // and `rewriteImageSources` cannot see it either, because an element
+    // dropped outright leaves no `src="images/` behind to find. Latent against
+    // the committed corpus (markdownToHtml emits all 187 srcs today); this
+    // builds the state that makes it live, which is the only way to test a
+    // guard whose subject is a disagreement between two producers.
+    const page = seededPages.find((p) => p.images.length >= 2)!;
+    const dir = await mkdtemp(join(tmpdir(), 'compendiq-eval-corpus-'));
+    try {
+      await mkdir(join(dir, 'images'), { recursive: true });
+      for (const image of page.images) {
+        await writeFile(join(dir, image.file), readFileSync(join(IMAGE_CORPUS_DIR, image.file)));
+      }
+      const markdown = readFileSync(join(IMAGE_CORPUS_DIR, page.file), 'utf8');
+      // Removed from the BODY only — the manifest entry is copied verbatim, so
+      // the corpus still claims every one of its images.
+      const dropped = page.images[0]!.file;
+      await writeFile(join(dir, page.file), markdown.split(`![](${dropped})`).join(''));
+      await writeFile(
+        join(dir, 'MANIFEST.json'),
+        JSON.stringify({ generatedBy: 'test', purpose: 'test', pages: [page] }),
+      );
+
+      const boom = seedImageCorpus(USER, { corpusDir: dir });
+      await expect(boom).rejects.toBeInstanceOf(ImageIntakeError);
+      await expect(boom).rejects.toThrow(/manifest lists/i);
+      await expect(boom).rejects.toThrow(
+        new RegExp(`Indexed ${page.images.length - 1} of the ${page.images.length} images`),
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }, 120_000);
 
   it('REFUSES the run when the image use case is unassigned, rather than seeding an empty index', async () => {

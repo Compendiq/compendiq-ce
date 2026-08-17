@@ -61,7 +61,7 @@ import { seedImageCorpus, prepareImageIndex, stageEvalAttachmentsDir } from '../
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
 import { assertKnownFlags, flagValue, wantsHelp, EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS } from '../src/domains/llm/eval/cli-flags.js';
 import { parseFtsLanguageArg, assertComparableFtsLanguage } from '../src/domains/llm/eval/fts-config.js';
-import { IMAGE_AXIS, TEXT_AXIS, assertComparableAxis, parseImageAxisLanguage, readImageAxisEnv, wantsImageAxis, type EvalAxis, type ImageAxisEnv } from '../src/domains/llm/eval/images-axis.js';
+import { IMAGE_AXIS, IMAGE_AXIS_CORPUS_CLAIM, TEXT_AXIS, assertComparableAxis, parseImageAxisLanguage, readImageAxisEnv, wantsImageAxis, type EvalAxis, type ImageAxisEnv } from '../src/domains/llm/eval/images-axis.js';
 import { runEval } from '../src/domains/llm/eval/runner.js';
 import { runImageEval } from '../src/domains/llm/eval/runner-images.js';
 import { armRuns } from '../src/domains/llm/eval/images-metrics.js';
@@ -541,7 +541,12 @@ async function measureImageAxis(ctx: AxisContext, imageEnv: ImageAxisEnv): Promi
     `(${seeded.throughputImagesPerSec.toFixed(2)} images/s)`,
   );
   await assertSeededFtsLanguage(ftsLanguage);
-  await recordCorpusLanguage(language);
+  // NOT `language` (review r1). That row is what #1114's latency benchmark
+  // refuses a mismatched question set against, and this corpus is a different
+  // corpus from the German TEXT one — writing plain 'de' here made the two
+  // indistinguishable and switched the refusal off for the very state it
+  // exists to catch. `checkCorpusLanguage` knows this claim by name.
+  await recordCorpusLanguage(IMAGE_AXIS_CORPUS_CLAIM);
 
   console.log(`running ${fixture.labels.length} queries, twice each (leg off, leg on)…`);
   const flags = stageFlags();
@@ -579,15 +584,19 @@ async function measureImageAxis(ctx: AxisContext, imageEnv: ImageAxisEnv): Promi
     corpusManifestSha: fixture.corpusManifestSha,
     corpusPages: seeded.pages,
     assembleContext: flags.assembleContext,
-    // Not tracked on this axis: the paired runner scores page ids, and
-    // assembly/pinning are provably invisible to that. Reported as 0 rather
-    // than omitted so the field never reads as a measurement.
-    assemblyParticipatingQueries: 0,
+    // Every participation figure below is the LEG-ON arm's, matching the
+    // top-level scores and matching `queries` — one label, one query. A count
+    // summed over both arms would be a count of ARM-queries reported against N
+    // labels, which prints participation above 100% (review r1). Both stages
+    // really run on this axis, so these are measured, never a hardcoded 0: a
+    // zero here is a refusal condition on the text gate, and writing one by
+    // hand asserts the broken state the harness refuses to publish.
+    assemblyParticipatingQueries: run.assemblyParticipatingQueries.on,
     pinIdentifiers: flags.pinIdentifiers,
-    pinParticipatingQueries: 0,
+    pinParticipatingQueries: run.pinParticipatingQueries.on,
     deepSearch: flags.deepSearch,
-    expansionParticipatingQueries: run.expansionParticipatingQueries,
-    expansionSkippedQueries: run.expansionSkippedQueries,
+    expansionParticipatingQueries: run.expansionParticipatingQueries.on,
+    expansionSkippedQueries: run.expansionSkippedQueries.on,
     queries: run.totalQueries,
     vectorParticipatingQueries: run.vectorParticipatingQueries.on,
     rerank: flags.rerank,

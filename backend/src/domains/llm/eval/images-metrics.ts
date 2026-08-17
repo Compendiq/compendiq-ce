@@ -75,6 +75,17 @@ export interface ImageQueryPair {
    * an `image-negative`, and that is the point — see `imageHitAtK`.
    */
   expectedImageKeys: string[];
+  /**
+   * Which arm of this pair ran FIRST — the runner alternates it on the label
+   * index (review r1).
+   *
+   * Recorded rather than assumed because it is the one thing `ms` cannot be
+   * read without: whichever arm goes first pays this query's first-touch cost
+   * (its heap and index pages, its chunk rows), so a rig that always ran the
+   * off arm first would charge all of that to the off arm and publish the
+   * difference as the leg's cost, understating it.
+   */
+  offFirst: boolean;
   off: ImageArmRun;
   on: ImageArmRun;
 }

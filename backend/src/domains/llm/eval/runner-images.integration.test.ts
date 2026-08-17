@@ -57,6 +57,7 @@ const { seedImageCorpus, prepareImageIndex, stageEvalAttachmentsDir, imageAttach
 const { ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus } = await import('./seed.js');
 const { loadImageCorpusManifest, IMAGE_CORPUS_DIR } = await import('./corpus-images.js');
 const { runImageEval, ImageLegSilentError } = await import('./runner-images.js');
+const { flushSearchAnalytics } = await import('../services/rag-service.js');
 const { imageHitAtK } = await import('./images-metrics.js');
 type ImageFixture = import('./fixture.js').ImageFixture;
 type ImageFixtureLabel = import('./fixture.js').ImageFixtureLabel;
@@ -164,6 +165,61 @@ describe.skipIf(!dbAvailable)('paired image runner (#1115 P5b)', () => {
     // per-lang slices are computed over a partition nobody set.
     expect(result.pairs[1]!.lang).toBe('en');
     expect(result.pairs[0]!.expectedImageKeys).toEqual([imageAttachmentKey(targetImage.file)]);
+    // Both stages really run on both arms, so both are counted rather than
+    // published as a hardcoded zero — which on the text gate is the state
+    // `runner.ts` REFUSES to publish (review r1).
+    expect(result.assemblyParticipatingQueries.on).toBe(2);
+    expect(result.assemblyParticipatingQueries.off).toBe(2);
+    // Per arm, never summed: the report denominates these by the label count,
+    // so an arm-query total would print participation above 100%.
+    expect(result.expansionParticipatingQueries).toEqual({ off: 0, on: 0 });
+    expect(result.expansionSkippedQueries).toEqual({ off: 0, on: 0 });
+  }, 120_000);
+
+  it('interleaves the two arms per query and alternates which one goes first', async () => {
+    // Two properties, both invisible in the pairs alone and both load-bearing
+    // for `queryCostMs` (review r1). A BLOCK design — every off arm, then every
+    // on arm — passes every other assertion in this file, and a fixed off-first
+    // order charges each query's first-touch cost to the off arm and publishes
+    // the difference as the leg's cost. The text embedder is the observable:
+    // each arm embeds its question once, so an interleaved run reads
+    // q1,q1,q2,q2 and a block run q1,q2,q1,q2.
+    const fixture = fixtureOf([
+      label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] }),
+      label({ id: 'q2', query: 'Zweite Frage zum selben Korpus' }),
+      label({ id: 'q3', query: 'Dritte Frage zum selben Korpus' }),
+    ]);
+    generateEmbeddingMock.mockClear();
+
+    const result = await runImageEval(fixture, { userId: USER, pageIdByFile, topK: 10 });
+
+    const embedded = generateEmbeddingMock.mock.calls.map((call) => String(call[2]));
+    expect(embedded).toHaveLength(6);
+    expect(embedded[0]).toBe(embedded[1]);
+    expect(embedded[2]).toBe(embedded[3]);
+    expect(embedded[4]).toBe(embedded[5]);
+    expect(new Set(embedded).size).toBe(3);
+    // …and the order inside each pair alternates deterministically on the
+    // label index, so the warm-up cost lands on both arms rather than one.
+    expect(result.pairs.map((p) => p.offFirst)).toEqual([true, false, true]);
+  }, 120_000);
+
+  it('records no search_analytics row: each question is asked twice and nobody asked either', async () => {
+    // `recordAnalytics: false` on both arms. Without it every image-axis
+    // question is filed twice, once as a leg-off variant nobody typed, in the
+    // table the product's own search analytics are read out of.
+    const fixture = fixtureOf([
+      label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] }),
+      label({ id: 'q2', query: 'Zweite Frage zum selben Korpus' }),
+    ]);
+
+    await runImageEval(fixture, { userId: USER, pageIdByFile, topK: 10 });
+
+    // The writes are fire-and-forget, so a count taken without draining them
+    // passes whether or not they were requested.
+    await flushSearchAnalytics();
+    const rows = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM search_analytics`);
+    expect(rows.rows[0]!.n).toBe(0);
   }, 120_000);
 
   it('embeds the question exactly ONCE on the leg-on arm and not at all on the leg-off arm', async () => {

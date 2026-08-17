@@ -292,15 +292,35 @@ spells a URL), then `embedPage` *and* `embedPageImages`. A seeder that INSERTed
 into `page_image_embeddings` would measure its own fixture: a mis-keyed
 directory and a mis-encoded filename both resolve to the same silent `null` as
 a deleted file. The page id has to exist before the body can name it, because a
-standalone page's Confluence-tree key IS its numeric PK. (2) **Both arms in one
-process on one seeded database, interleaved per query**, forced with
+standalone page's Confluence-tree key IS its numeric PK. The image count is
+checked **twice**, and the second check is the one that is not circular: per
+page against the body the seeder itself stored, and once at the end against the
+MANIFEST — an `<img>` lost between the two (a converter or sanitiser change)
+shrinks the per-page expectation in step with the result and every page passes
+at a smaller count, which is 170 of 187 indexed under a report that says
+nothing happened. (2) **Both arms in one process on one seeded database,
+interleaved per query and alternating which arm goes first**, forced with
 `HybridSearchOptions.imageLeg` and never by writing
 `admin_settings.rag_image_leg_enabled` — pairing is McNemar's precondition, a
 global setting would change what every other request on the instance retrieves
-for the duration of the run, and a block design (all-off then all-on) would
-hand the rig's whole warm-up cost to whichever arm went first and publish it as
-the leg's latency. Both arms run `recordAnalytics: false`: each question is
-asked twice and only one of the two is a question anybody asked. (3) **Its VL
+for the duration of the run, a block design (all-off then all-on) would hand
+the rig's whole warm-up cost to whichever arm went first and publish it as the
+leg's latency, and a fixed off-then-on order inside each pair does the same
+thing one query at a time: every query's own first touch is paid by the arm
+that runs first, so `queryCostMs` came out biased toward UNDERSTATING the leg.
+The alternation is deterministic on the label index (re-runs stay comparable)
+and each pair records it. Both arms run `recordAnalytics: false`: each question
+is asked twice and only one of the two is a question anybody asked. Everything
+the report publishes per query — vector, rerank, assembly, pin and expansion
+participation — is the **leg-on arm's** count, never a sum over both arms,
+which is a count of arm-queries and prints above 100% against N labels; and
+none of them is hardcoded, because a zero in the assembly field is a state the
+text gate REFUSES to publish. The seed's `eval_corpus_language` claim is
+`de-images`, **not** `de`: that row exists so `benchmark-query-latency.ts` can
+refuse a question set aimed at the wrong corpus, and 65 image pages are not the
+German text corpus its `--lang de` questions are written against — recorded as
+`de` the two were indistinguishable and the refusal switched off for exactly
+that state. (3) **Its VL
 endpoint is its own pair of variables** (`EVAL_IMAGE_EMBEDDING_BASE_URL` /
 `_MODEL`, plus optional `_DIMENSIONS` for MRL and `_BACKEND` as a recorded
 provenance label) and **never falls back to `EVAL_EMBEDDING_*`** — that

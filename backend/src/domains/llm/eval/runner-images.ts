@@ -12,13 +12,22 @@
  *
  * ── Four decisions ────────────────────────────────────────────────────────
  *
- * 1. **INTERLEAVED per query, off then on** — never off-for-everything and
- *    then on-for-everything. The rig warms up: `admin-settings-service`'s TTL
- *    caches, `getUserAccessibleSpacesMemoized`, the vector pool's connections
- *    and Postgres's own buffer cache all fill during the first handful of
- *    queries. A block design hands that entire warm-up cost to whichever arm
- *    runs first and then publishes the difference as the leg's query cost.
- *    Interleaving spreads it across both arms, where it cancels.
+ * 1. **INTERLEAVED per query, and the arm that goes FIRST alternates** — never
+ *    off-for-everything and then on-for-everything, and never off-first every
+ *    time. The rig warms up: `admin-settings-service`'s TTL caches,
+ *    `getUserAccessibleSpacesMemoized`, the vector pool's connections and
+ *    Postgres's own buffer cache all fill during the first handful of queries,
+ *    and each query then pays its own first-touch cost — its heap and index
+ *    pages, its chunk rows — on whichever arm reaches it first. A block design
+ *    hands the whole of that to whichever arm runs first and then publishes the
+ *    difference as the leg's query cost. Interleaving fixes the block half;
+ *    alternating (`offFirst = index % 2 === 0`) is what fixes the rest, because
+ *    a fixed off-then-on order assigns 100% of every query's first touch to the
+ *    off arm and biases `queryCostMs` toward UNDERSTATING the leg — the one
+ *    direction a rig measuring a feature must never be biased in. The
+ *    alternation is deterministic on the label index, so a re-run's per-query
+ *    numbers stay comparable, and each pair records the order it was measured
+ *    in (`ImageQueryPair.offFirst`).
  * 2. **`imageLeg` is FORCED on both arms**, never toggled through
  *    `admin_settings.rag_image_leg_enabled`. Writing the global setting per
  *    query would change what every other request on the instance retrieves for
@@ -98,10 +107,23 @@ export interface ImageEvalResult {
   vectorParticipatingQueries: { off: number; on: number };
   /** #1104: queries where each arm carried a rerank score. */
   rerankParticipatingQueries: { off: number; on: number };
-  /** #1112: expansions that produced paraphrase legs, summed over both arms. */
-  expansionParticipatingQueries: number;
-  /** #1112: expansions that stood down BY DESIGN, summed over both arms. */
-  expansionSkippedQueries: number;
+  /** #1106: queries where each arm's sibling assembly produced context text. */
+  assemblyParticipatingQueries: { off: number; on: number };
+  /** #1107: queries each arm led with a verified identifier pin. */
+  pinParticipatingQueries: { off: number; on: number };
+  /**
+   * #1112: expansions that produced paraphrase legs, PER ARM.
+   *
+   * Per arm rather than summed, because the report denominates every
+   * participation figure it publishes by `totalQueries` — one label, one query.
+   * A sum over both arms is a count of ARM-queries, and reporting it against N
+   * labels prints participation above 100% on a `--deep-search --images` run
+   * (review r1). The refusal below still reads both arms, where the unit is
+   * arm-queries and says so.
+   */
+  expansionParticipatingQueries: { off: number; on: number };
+  /** #1112: expansions that stood down BY DESIGN, per arm and for that reason. */
+  expansionSkippedQueries: { off: number; on: number };
 }
 
 /**
@@ -120,9 +142,16 @@ export interface ImageEvalResult {
 interface ArmCounters {
   vector: number;
   rerank: number;
-  /** #1112, summed across the pair — both arms expand, and both are real work. */
+  /** #1106 / #1107: both stages really run on this axis, so both are counted. */
+  assembly: number;
+  pin: number;
+  /** #1112 — both arms expand, and both are real work. */
   expanded: number;
   expansionSkipped: number;
+}
+
+function emptyCounters(): ArmCounters {
+  return { vector: 0, rerank: 0, assembly: 0, pin: 0, expanded: 0, expansionSkipped: 0 };
 }
 
 /**
@@ -178,6 +207,14 @@ async function runArm(
 
   if (results.some((r) => r.vectorScore !== null)) counters.vector++;
   if (results.some((r) => r.rerankScore != null)) counters.rerank++;
+  // Counted, never hardcoded (review r1). Both stages really run here —
+  // `assembleContext` and `pinIdentifiers` are passed into every arm above —
+  // and the report publishes these two in fields whose ZERO is a refusal
+  // condition on the text gate (`runner.ts`'s assembly guard). Publishing a
+  // constant 0 there asserts, in the harness's own vocabulary, the broken
+  // state the harness refuses to publish.
+  if (results.some((r) => r.contextText !== undefined)) counters.assembly++;
+  if (results.some((r) => r.pinned === true)) counters.pin++;
 
   const imageHits: ImageHitRecord[] = results.flatMap((result) =>
     (result.imageHits ?? []).map((hit) => ({
@@ -211,21 +248,29 @@ export async function runImageEval(
   }
 
   const pairs: ImageQueryPair[] = [];
-  const off: ArmCounters = { vector: 0, rerank: 0, expanded: 0, expansionSkipped: 0 };
-  const on: ArmCounters = { vector: 0, rerank: 0, expanded: 0, expansionSkipped: 0 };
+  const off = emptyCounters();
+  const on = emptyCounters();
   let imageLegParticipatingQueries = 0;
   let dirtyOffArm = 0;
   let completed = 0;
 
-  for (const label of fixture.labels) {
+  for (const [index, label] of fixture.labels.entries()) {
     const expected = expectedPageIds(label.expectedFiles, opts.pageIdByFile);
-    // Interleaved, off first — see decision 1. The order within a pair is
-    // fixed rather than alternated: a page's rows are already in Postgres's
-    // buffer cache after the first arm either way, so alternating would only
-    // move which arm pays the miss, and a fixed order keeps a re-run's
-    // per-query numbers comparable.
-    const offArm = await runArm(label.query, opts._forceOffArmLegOn === true, opts, off);
-    const onArm = await runArm(label.query, true, opts, on);
+    // Interleaved AND alternating — see decision 1. Whichever arm runs first
+    // pays this query's first-touch cost, so a fixed order would charge all of
+    // it to one arm and publish the difference as the leg's; the alternation is
+    // on the label index rather than random so two runs of the same fixture
+    // charge the same queries to the same arms.
+    const offFirst = index % 2 === 0;
+    let offArm: ImageArmRun;
+    let onArm: ImageArmRun;
+    if (offFirst) {
+      offArm = await runArm(label.query, opts._forceOffArmLegOn === true, opts, off);
+      onArm = await runArm(label.query, true, opts, on);
+    } else {
+      onArm = await runArm(label.query, true, opts, on);
+      offArm = await runArm(label.query, opts._forceOffArmLegOn === true, opts, off);
+    }
 
     if (offArm.imageHits.length > 0) dirtyOffArm++;
     if (onArm.imageHits.length > 0) imageLegParticipatingQueries++;
@@ -236,6 +281,7 @@ export async function runImageEval(
       lang: label.lang,
       expected,
       expectedImageKeys: label.expectedImages.map(imageAttachmentKey),
+      offFirst,
       off: offArm,
       on: onArm,
     });
@@ -288,6 +334,17 @@ export async function runImageEval(
           'fused order, so this run would report a confident score for a pipeline it does not name.',
       );
     }
+    // `runner.ts`'s assembly guard, unchanged in substance and applied per arm.
+    // The report publishes this count, so a stage that never assembled is a
+    // chunk-level run wearing an assembly-on label — and on this axis it would
+    // be published as a zero in a field the text gate refuses to write.
+    if (opts.assembleContext !== false && total > 0 && counters.assembly === 0) {
+      throw new VectorLegSilentError(
+        `An assembly-on run was requested but the sibling-assembly stage participated in 0 queries on ` +
+          `the ${arm} arm — check rag_context_chars_per_page and the page_embeddings sibling fetch ` +
+          'before trusting this measurement.',
+      );
+    }
   }
 
   // #1112's guard, unchanged in substance: expansion is soft-fail, so a
@@ -310,7 +367,9 @@ export async function runImageEval(
     imageLegParticipatingQueries,
     vectorParticipatingQueries: { off: off.vector, on: on.vector },
     rerankParticipatingQueries: { off: off.rerank, on: on.rerank },
-    expansionParticipatingQueries: expanded,
-    expansionSkippedQueries: expansionSkipped,
+    assemblyParticipatingQueries: { off: off.assembly, on: on.assembly },
+    pinParticipatingQueries: { off: off.pin, on: on.pin },
+    expansionParticipatingQueries: { off: off.expanded, on: on.expanded },
+    expansionSkippedQueries: { off: off.expansionSkipped, on: on.expansionSkipped },
   };
 }

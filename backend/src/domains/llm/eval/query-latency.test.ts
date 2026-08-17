@@ -226,6 +226,20 @@ describe('checkCorpusLanguage (#1114)', () => {
     expect(boom).toThrow(/run-retrieval-eval\.ts --lang de/);
   });
 
+  it('refuses the #1115 image corpus by name, and does not offer it as a --lang value', () => {
+    // `--images` seeds 65 German Wikipedia articles — a different corpus from
+    // the German TEXT one `fixture-de.json` is written against. Recorded as
+    // plain 'de' it was indistinguishable from that corpus and this guard
+    // passed, so the benchmark timed German text questions against pictures
+    // and published the result as a 'de' measurement (review r1).
+    const boom = () => checkCorpusLanguage('de-images', 'de');
+    expect(boom).toThrow(/image corpus/i);
+    expect(boom).toThrow(/run-retrieval-eval\.ts --lang de\b/);
+    // The generic branch's remedy would be `--lang de-images`, which
+    // corpusDirsForLanguage throws on — so this branch says so instead.
+    expect(boom).toThrow(/"de-images" is not a --lang value/);
+  });
+
   it('warns rather than refuses when the seeding predates the record', () => {
     // Refusing would make the benchmark unusable against every existing
     // seeding until an hour of re-embedding had run.

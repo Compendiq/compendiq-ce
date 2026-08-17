@@ -29,6 +29,7 @@ function pair(over: Partial<ImageQueryPair> & { queryId: string }): ImageQueryPa
     lang: 'de',
     expected: [1],
     expectedImageKeys: [],
+    offFirst: true,
     off: { retrieved: [], ms: 0, imageHits: [] },
     on: { retrieved: [], ms: 0, imageHits: [] },
     ...over,

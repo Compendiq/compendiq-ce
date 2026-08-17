@@ -744,14 +744,20 @@ endpoint (`eval/vl-stub-server.ts`); the numbers come from a run you start.
    `page_image_embeddings` — the same sha-reuse, the same reconcile, the same
    write transaction the worker runs. Nothing inserts a vector directly, so a
    wrong directory key or a mis-encoded filename fails the run instead of
-   quietly measuring an empty index.
+   quietly measuring an empty index. The count is checked twice: per page
+   against the body that was stored, and once at the end against the
+   **manifest** — a picture lost between the two shrinks the per-page
+   expectation in step with the result, so only the manifest can catch it.
 2. **Runs every fixture query TWICE, in one process, on that one database** —
-   `imageLeg: false`, then `imageLeg: true`, interleaved per query. Both arms
-   are the same rows, the same vectors, the same fused text legs, which is the
-   precondition the paired test needs. Interleaved rather than one arm then the
-   other, because the rig warms up (TTL caches, the vector pool, Postgres's
-   buffer cache) and a block design hands that entire cost to whichever arm
-   goes first and then publishes it as the leg's latency.
+   `imageLeg: false` and `imageLeg: true`, interleaved per query, with the arm
+   that goes first alternating on the label index. Both arms are the same rows,
+   the same vectors, the same fused text legs, which is the precondition the
+   paired test needs. Interleaved rather than one arm then the other, because
+   the rig warms up (TTL caches, the vector pool, Postgres's buffer cache) and
+   a block design hands that entire cost to whichever arm goes first and then
+   publishes it as the leg's latency; alternating is the rest of the same
+   argument, since each query's own first touch would otherwise always be paid
+   by the off arm and `queryCostMs` would understate the leg.
 3. **Scores the pair**: page Recall@{1,3,5,10} and MRR for both arms, the
    paired delta with a bootstrap interval and **McNemar exact** — the harness's
    own gate — overall, per `style` and per label language, plus `imageHit@K`,
@@ -806,14 +812,25 @@ export POSTGRES_URL=postgresql://kb_user:pw@localhost:5433/kb_eval
 export EVAL_EMBEDDING_BASE_URL=http://localhost:11434/v1
 export EVAL_EMBEDDING_MODEL=nomic-embed-text
 export EVAL_IMAGE_EMBEDDING_BASE_URL=http://127.0.0.1:8011/v1
-export EVAL_IMAGE_EMBEDDING_MODEL=$(curl -s localhost:8011/v1/models | jq -r '.data[0].id')
 ```
 
+**Re-read `EVAL_IMAGE_EMBEDDING_MODEL` from `/v1/models` every time you restart
+the shim on a different backend** — which is why the export below sits *inside*
+each block rather than once above them. The shim does not validate the `model`
+field: it type-checks the string and answers from whatever checkpoint is
+loaded, and the eval records the value it **requested** as `imageModel` and in
+`imageIndexIdentity`. A stale id therefore produces a report labelled with the
+checkpoint that did not produce its vectors — and with both runs at 2048
+dimensions, nothing else in the file contradicts it. Same failure class as
+`vl-embedding-dev.md`'s "`EVAL_EMBEDDING_MODEL` is not a label".
+
 **2B, MLX backend, native 2048 dimensions** (the recommended default — no
-truncation, and 2048 is on pgvector's indexed `vector` tier):
+truncation, and 2048 is indexable: it is on pgvector's `halfvec` HNSW tier,
+since plain `vector` caps at 2000 — ADR-025 D5):
 
 ```bash
 # shim: ./.venv/bin/python -m vl_embedding_shim --backend mlx
+export EVAL_IMAGE_EMBEDDING_MODEL=$(curl -s localhost:8011/v1/models | jq -r '.data[0].id')
 EVAL_IMAGE_EMBEDDING_BACKEND=mlx \
 npx tsx scripts/run-retrieval-eval.ts --images --out /tmp/images-2b.json
 ```
@@ -825,6 +842,7 @@ scan. Ask for less:
 
 ```bash
 # shim: ./scripts/run-llama-server.sh && ./.venv/bin/python -m vl_embedding_shim --backend llama
+export EVAL_IMAGE_EMBEDDING_MODEL=$(curl -s localhost:8011/v1/models | jq -r '.data[0].id')
 EVAL_IMAGE_EMBEDDING_BACKEND=llama \
 EVAL_IMAGE_EMBEDDING_DIMENSIONS=2048 \
 npx tsx scripts/run-retrieval-eval.ts --images --out /tmp/images-8b.json
@@ -855,11 +873,20 @@ constant so the only difference between the arms is the leg.
 | `delta.perStyle` / `delta.perLang` | the same verdict at Recall@5 over each slice, each carrying its own `n` |
 | `imageHitAtK` | did the leg return the *right picture* |
 | `imageNegativeLeakAtK` | did it drag a wrong page in |
-| `queryCostMs` | p50/p95 per arm; the difference is the leg's cost |
+| `queryCostMs` | p50/p95 per arm; the difference is the leg's cost. The two arms of a query run back to back and which one goes **first alternates** on the label index, so each query's first-touch cost lands on both arms rather than all on the off one |
 | `runsOff` / `runsOn` | both arms' per-query results, so a same-axis `--baseline` compares each |
 
 The top-level `recallAtK` / `mrr` / `runs` carry the **leg-on** arm, because
-that is the shipped configuration (`rag_image_leg_enabled` defaults true).
+that is the shipped configuration (`rag_image_leg_enabled` defaults true). So
+do the top-level participation counters — `vectorParticipatingQueries`,
+`rerankParticipatingQueries`, `assemblyParticipatingQueries`,
+`pinParticipatingQueries`, `expansionParticipatingQueries`,
+`expansionSkippedQueries`. Every one of them is **measured on this axis too**
+(both stages really run on both arms) and every one is denominated by
+`queries`, which is the label count: one label, one query, the leg-on arm's
+count. The leg-off arm's own counters are not published — a run in which either
+arm's vector leg, rerank stage or assembly stage went quiet is refused rather
+than reported, per arm.
 
 **`imageHit@K` and the paired page delta answer different questions, and the
 interesting runs are the ones where they disagree.** The page delta is what
@@ -894,6 +921,14 @@ A run leaves its per-run `ATTACHMENTS_DIR` behind on purpose (the path is
 printed at the top). It is ~6 MB and holds the exact bytes the intake read,
 which is the first thing to look at if a run reports a missing or skipped
 image. Delete it yourself.
+
+**It also leaves the database holding the image corpus, and
+`benchmark-query-latency.ts` will refuse to run against it.** The seed records
+`eval_corpus_language = de-images` — deliberately not `de`, which is what the
+German *text* corpus writes — so `--lang de` there throws rather than timing
+`fixture-de.json`'s questions against 65 pages they were never written for.
+`de-images` is not a `--lang` value; re-seed the text corpus
+(`run-retrieval-eval.ts --lang de`) before timing anything.
 
 ### What a local number is worth
 
