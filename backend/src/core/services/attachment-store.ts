@@ -321,6 +321,13 @@ export type AttachmentStoreSource = 'confluence' | 'local';
  * (`backend/eslint.config.js:50-53`). If any of the three changes, all three
  * must — a reader keying differently from the writer reads the wrong
  * directory, and this module answers `null` for it, silently.
+ *
+ * The two writers are not byte-identical: `parentKeyFor` branches on
+ * truthiness, the paste/import writer on `?? String(page.id)`, so they differ
+ * on an **empty-string** `confluence_id` — writer targets `''`, this reader
+ * `String(pageId)`. No writer can produce that state: `validatePageId('')`
+ * throws, so a write under `''` fails before it lands, and sync never sets an
+ * empty id. This mirrors `parentKeyFor` (the truthiness form) deliberately.
  */
 function confluenceTreeKey(
   pageSource: PageSource,
@@ -410,10 +417,16 @@ function isDirectChildKey(key: string): boolean {
  * an absence.
  *
  * Note it reads the EXACT key and does not run `readAttachment`'s `.xref-`
- * fallback. The key comes from the same `body_html` the sync wrote when it
- * named the file, so a miss here means the file genuinely is not cached — and
- * for an index, skipping (and counting) is the right answer, where for a route
- * serving a page the fallback is worth the extra `readdir`.
+ * fallback. Normally the key IS the on-disk name: it comes out of the same
+ * `body_html` the converter wrote when the sync named the file. But not
+ * always — `readAttachment`'s fallback exists precisely because a legacy or
+ * stale `body_html` can still name the pre-xref filename for a file stored
+ * with an `.xref-{hash}` suffix (see its docstring above), and this reader
+ * answers `null` for that case. That is the accepted trade: the image is
+ * skipped and counted, never read as the wrong bytes, and an index pays no
+ * per-image `readdir` for a name the next sync rewrites anyway — where a
+ * route serving one page to a waiting user does find the extra `readdir`
+ * worth it.
  *
  * "Exact" includes the encoding: this does NOT `decodeURIComponent` the key,
  * and must not start to. The key is the on-disk name (see

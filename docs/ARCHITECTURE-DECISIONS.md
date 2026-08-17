@@ -2236,10 +2236,12 @@ and `rag_image_leg_enabled` is on — otherwise no query embed and no cost. It
 kNN-searches `page_image_embeddings` under the same visibility predicate as the
 other legs and fuses as a **third RRF leg**, page-denominated like #1106. Rank,
 not score: the published worked examples put text→image around 0.46–0.72 and
-text↔text as high as 0.75–0.81 (`arXiv:2601.04720v2` Appendix C, Table 9 and
-Table 8), and they are not cleanly separable — Table 8's AG News pairs score
-0.55 and 0.57 — so a cutoff tuned on text has no defined meaning on a
-cross-modal score. For the same
+text↔text as high as 0.75–0.81 (`arXiv:2601.04720v2` Appendix C: Table 9's MS
+COCO rows are 0.46 and 0.52, Table 8's SQuAD rows 0.75 and 0.81; the model
+card's own matrix scores a matching text query 0.7155 against an image document
+and 0.8160 against a text one), and they are not cleanly separable — Table 8's
+AG News pairs score 0.55 and 0.57 — so a cutoff tuned on text has no defined
+meaning on a cross-modal score. For the same
 reason **the image similarity never feeds the confidence number** (#1105):
 image hits carry no `vectorScore`, so they cannot establish the `similarity`
 basis. That is deliberately narrower than "an image-only set never refuses" —

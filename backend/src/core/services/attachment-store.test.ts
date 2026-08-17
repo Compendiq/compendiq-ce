@@ -319,6 +319,10 @@ describe('the record agrees with the code about where the bytes are', () => {
     'docs/ARCHITECTURE-DECISIONS.md',
     'docs/architecture/03-backend-domains.md',
     'docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md',
+    // Last, and the one that matters most: CLAUDE.md is loaded every session
+    // and the ADR is not, so a P2/P3 implementer reads whatever this file says
+    // about the prefix before reading anything else.
+    'CLAUDE.md',
   ];
 
   /** The two phrasings the retired claim shipped in, and nothing broader. */
