@@ -315,12 +315,23 @@ export function NewPagePage() {
           sticks. Shrinking the sticky box to just the toolbar is what makes
           Create Page and the formatting controls reachable while scrolling a
           long draft, matching the article editor.
-          The before:: pseudo-element masks the scroll-container padding gap
-          that would otherwise expose scrolled content above the stuck bar. */}
+          `-top-5`/`-mt-5`/`isolate` plus the under-mask below are the same
+          fix #1186 gave PageViewPage's edit toolbar: a sticky box does not
+          reach the scrollport's top edge when its scroll container has top
+          padding (AppLayout's `pt-5`), so without this the bar stuck one
+          padding step too low and content scrolled up through the gap in
+          full view. The under-mask fills `bg-card`, not `bg-background` — on
+          this route the main column IS the pane, so a chassis-coloured mask
+          painted a grey band across the white document above the toolbar. */}
       <div
         data-testid="new-page-sticky-header"
-        className="sticky top-0 z-30 relative before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:-left-[14px] before:-right-[14px] sm:before:-left-[22px] sm:before:-right-[22px] before:bg-background"
+        className="sticky -top-5 z-30 isolate -mt-5"
       >
+        <div
+          aria-hidden
+          data-testid="new-page-toolbar-mask"
+          className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-card"
+        />
         <div className="-mx-4 border-b border-border bg-card sm:-mx-6 relative">
           {editorInstance && (
             <div className="mx-auto max-w-[1248px] px-4 sm:px-16">
