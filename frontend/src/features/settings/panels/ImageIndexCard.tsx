@@ -18,7 +18,10 @@ import { formatRelativeTime } from '../../../shared/lib/format-relative-time';
  *    and its probe said "confirmed". P3 landed the retrieval leg, so that
  *    sentence became false and is now a pointer at the switch that turns the
  *    leg on. The rule it satisfies is unchanged (#1119: on screen, at rest,
- *    not in a tooltip) — what changed is which fact is true.
+ *    not in a tooltip) — what changed is which fact is true. It names the FULL
+ *    panel chain (review r2), not a bare "under Retrieval": that is the
+ *    spelling `settings-wayfinding.test.ts` can police, and a naked tab name
+ *    is unfollowable from a panel that has no such tab.
  *  - **Re-scan's consequence** — it marks every page. That sounds expensive,
  *    and the half that makes it cheap (content-hash reuse) is invisible unless
  *    stated.
@@ -337,7 +340,7 @@ export function ImageIndexCard() {
       </p>
 
       <p className="text-muted-foreground text-xs" data-testid="image-index-not-live-note">
-        Image search runs as a third retrieval leg when enabled under Retrieval.
+        Image search runs as a third retrieval leg when enabled under Settings → AI Models → Retrieval.
       </p>
     </div>
   );

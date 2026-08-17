@@ -7,7 +7,7 @@ import {
   teardownTestDb,
   isDbAvailable,
 } from '../../../test-db-helper.js';
-import { query } from '../../../core/db/postgres.js';
+import { query, getPool } from '../../../core/db/postgres.js';
 import {
   invalidateRagImageLegCache,
 } from '../../../core/services/admin-settings-service.js';
@@ -49,6 +49,11 @@ let srv: Server;
 let baseUrl: string;
 /** Every body the mock server received, in order. */
 let calls: Array<{ kind: 'text' | 'vl'; body: Record<string, unknown> }> = [];
+/**
+ * Responses deliberately left unanswered (the latency-budget case), released
+ * in `afterEach` so `srv.close()` in `afterAll` is not waiting on a socket.
+ */
+const heldResponses: ServerResponse[] = [];
 /** Overridable per test — a VL failure is how the degraded path is exercised. */
 let vlRespond: (res: ServerResponse) => void = (res) => {
   res.writeHead(200, { 'content-type': 'application/json' });
@@ -194,6 +199,38 @@ async function setSetting(key: string, value: string): Promise<void> {
   invalidateRagImageLegCache();
 }
 
+/**
+ * Make ONE statement fail and leave every other statement on real Postgres.
+ *
+ * The two reads this exercises — the gate's `EXISTS` and the lede fetch for
+ * image-only pages — fail on facts about the DATABASE (a `lock_timeout`
+ * against a concurrent rebuild's ACCESS EXCLUSIVE on `page_image_embeddings`,
+ * a pool-level error), and neither has a SQL-level trigger a test can pull
+ * without collateral: renaming a table breaks the text legs in the same
+ * request, and every column the lede fetch reads is read by the vector leg
+ * too — which would flip `degraded_reason` to `embedding_failed` and prove
+ * nothing about this leg. So the fault goes in at the DRIVER, for the one
+ * statement that matches, spied through to the real pool for everything else.
+ * That is the `vi.spyOn` passthrough the route tests use, one layer down;
+ * `vi.restoreAllMocks()` in `afterEach` takes it out again.
+ */
+function failStatementsMatching(needle: string): void {
+  const pool = getPool();
+  const original = pool.query.bind(pool) as (...args: unknown[]) => unknown;
+  vi.spyOn(pool, 'query').mockImplementation(((...args: unknown[]) => {
+    const text = args[0];
+    if (typeof text === 'string' && text.includes(needle)) {
+      return Promise.reject(new Error('injected: statement could not be executed'));
+    }
+    return original(...args);
+  }) as unknown as typeof pool.query);
+}
+
+/** The gate's fourth condition, verbatim enough to match only itself. */
+const INDEX_PROBE_SQL = 'EXISTS(SELECT 1 FROM page_image_embeddings)';
+/** The lede fetch for image-only pages — the only `LEFT JOIN` on chunk 0. */
+const LEDE_FETCH_SQL = 'LEFT JOIN page_embeddings pe ON pe.page_id = cp.id AND pe.chunk_index = 0';
+
 const { hybridSearch, flushSearchAnalytics } = await import('./rag-service.js');
 const { searchImageLeg } = await import('./image-leg-search.js');
 
@@ -298,6 +335,10 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
   afterEach(() => {
     invalidateRagImageLegCache();
     vi.restoreAllMocks();
+    while (heldResponses.length > 0) {
+      const res = heldResponses.pop()!;
+      if (!res.writableEnded) res.destroy();
+    }
   });
 
   // ── The gate ────────────────────────────────────────────────────────────
@@ -593,6 +634,63 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
       expect((await searchImageLeg(USER, 'turbine', { limit: 10 })).failed).toBe(true);
     });
 
+    it('reports failed (not "off") when the non-empty PROBE itself cannot be answered', async () => {
+      // Review r2. The gate's fourth condition is a DB read, and an
+      // unanswerable read is not evidence of an empty index — the same
+      // throw-vs-null distinction the resolver above it is built around. Left
+      // outside the catch it also rejected, breaking the "never throws"
+      // contract, and the caller's `.catch` then recorded a live outage as a
+      // healthy search with the leg simply "off".
+      await assignProviders();
+      const page = await seedPage({ title: 'Turbine' });
+      await seedImage(page, 'turbine.png', 0);
+      failStatementsMatching(INDEX_PROBE_SQL);
+
+      const out = await searchImageLeg(USER, 'turbine', { limit: 10 });
+
+      expect(out).toEqual({ ran: false, failed: true, pages: [] });
+      // The gate is still a gate: a probe that never answered buys no embed.
+      expect(vlCalls()).toHaveLength(0);
+    });
+
+    it('records image_leg_unavailable when the probe fails, rather than nothing', async () => {
+      await assignProviders();
+      const page = await seedPage({ title: 'Written up', chunkAxis: 3 });
+      await seedImage(page, 'p.png', 0);
+      failStatementsMatching(INDEX_PROBE_SQL);
+
+      const results = await hybridSearch(USER, 'zzzqqq', 5);
+
+      // The text side is untouched, which is the whole point of a bypass.
+      expect(results.map((r) => r.pageId)).toEqual([page]);
+      expect((await lastAnalytics()).degraded_reason).toBe('image_leg_unavailable');
+    });
+
+    it('bounds the query embed at IMAGE_LEG_TIMEOUT_MS rather than the queue deadline', async () => {
+      // Review r2. Deleting `timeoutMs` from the `embedTextsVl` call leaves
+      // the whole suite green while removing the AbortSignal entirely — the
+      // client builds a deadline only when the field is present — so the leg
+      // falls back to the shared LLM queue's own 300s on a request that runs
+      // in parallel with the text legs on EVERY question. This pins the
+      // BOUND, not the number: the endpoint accepts the connection and never
+      // answers, and the leg has to give up on its own.
+      await assignProviders();
+      const page = await seedPage({ title: 'Turbine' });
+      await seedImage(page, 'turbine.png', 0);
+      vlRespond = (res) => {
+        heldResponses.push(res);
+      };
+
+      const started = Date.now();
+      const out = await searchImageLeg(USER, 'turbine', { limit: 10 });
+      const elapsed = Date.now() - started;
+
+      expect(out).toEqual({ ran: false, failed: true, pages: [] });
+      // Comfortably above the 3s budget and far below the queue's 300s, so
+      // the assertion cannot pass on a lucky fast failure or on no bound.
+      expect(elapsed).toBeLessThan(10_000);
+    }, 20_000);
+
     it('never logs the provider body', async () => {
       await assignProviders();
       const page = await seedPage({ title: 'Turbine' });
@@ -731,6 +829,30 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
       expect(row.degraded_reason).toBe('image_leg_unavailable');
       // The label says what HAPPENED on the text side, and nothing changed there.
       expect(row.search_type).toBe('hybrid');
+    });
+
+    it('records image_leg_unavailable when the LEDE fetch drops the image-only pages', async () => {
+      // Review r2. The leg ran and the VL endpoint was fine; what failed is
+      // the one batched query that turns its image-only pages into rows. Those
+      // pages then vanish — the pages this leg exists to make retrievable —
+      // while the pages the text legs also found keep their rank contribution
+      // and their hits. It is a PARTIAL bypass, and by this leg's own
+      // criterion (it changes which PAGES come back) it is recorded rather
+      // than left to write a healthy row.
+      await assignProviders();
+      const textPage = await seedPage({ title: 'Written up', chunkAxis: 3 });
+      const imageOnly = await seedPage({ title: 'Picture only', bodyText: 'zz' });
+      await seedImage(imageOnly, 'p.png', 0);
+      await seedImage(textPage, 'q.png', 0);
+      failStatementsMatching(LEDE_FETCH_SQL);
+
+      const results = await hybridSearch(USER, 'zzzqqq', 5);
+
+      expect(results.map((r) => r.pageId)).toEqual([textPage]);
+      // The half that survived really did survive — otherwise this would be
+      // indistinguishable from the leg failing outright.
+      expect(results[0]!.imageHits).toHaveLength(1);
+      expect((await lastAnalytics()).degraded_reason).toBe('image_leg_unavailable');
     });
 
     it('lets a TEXT-side reason win: the column records the worse outage', async () => {

@@ -52,18 +52,18 @@ sequenceDiagram
         RAG->>PG: tsvector search (websearch_to_tsquery) WHERE same space filter
         PG-->>RAG: matches
     and
-        note right of BE: IMAGE LEG (#35;1115 P3) — GATED; no embed, no kNN, no row when shut:<br/>imageLeg option not false, admin_settings 'rag_image_leg_enabled'<br/>(default on), image_embedding use case ASSIGNED (never inherits),<br/>and page_image_embeddings NON-EMPTY (uncached EXISTS per request —<br/>the answer flips on the first embed and on a rebuild's TRUNCATE)
+        note right of BE: IMAGE LEG (#35;1115 P3) — GATED#59; no embed, no kNN, no row when shut:<br/>imageLeg option not false, admin_settings 'rag_image_leg_enabled'<br/>(default on), image_embedding use case ASSIGNED (never inherits),<br/>and page_image_embeddings NON-EMPTY (uncached EXISTS per request —<br/>the answer flips on the first embed and on a rebuild's TRUNCATE)
         BE->>RAG: searchImageLeg(userId, question, stageLimit)
         RAG->>PROV3: POST /v1/embeddings — vLLM chat-embeddings shape,<br/>VL_QUERY_INSTRUCTION as system message, ONE call, 3s budget
         PROV3-->>RAG: q_image_vector[M] (MRL width from admin_settings)
         RAG->>PG: kNN over page_image_embeddings JOIN pages<br/>SAME visiblePagesPredicate as the vector leg + SET LOCAL hnsw.ef_search
         PG-->>RAG: image rows -> page-denominated: a page's BEST image ranks it ONCE
-        note right of BE: ANY failure (timeout, open breaker, no assignment mid-flight,<br/>kNN error) = leg BYPASSED, results identical to leg-off,<br/>degraded_reason 'image_leg_unavailable' — recorded only when<br/>the TEXT side is healthy (one column, worst outage wins)
+        note right of BE: ANY failure (timeout, open breaker, no assignment mid-flight,<br/>a gate READ that threw, kNN error) = leg BYPASSED, results identical<br/>to leg-off, degraded_reason 'image_leg_unavailable' — recorded only<br/>when the TEXT side is healthy (one column, worst outage wins)
     end
     opt image leg reached a page NO text leg did
         BE->>PG: ONE batched SELECT chunk_index 0 for those pages
         PG-->>BE: lede rows (no chunk 0 = chunkText synthesised from the TITLE,<br/>flagged imageTextSynthesized)
-        note right of BE: this is how an image-only page becomes retrievable at all#59;<br/>the row is imageOnly and is EXCLUDED from #35;1105's confidence<br/>sample — cross-modal scores share no scale with text cosines
+        note right of BE: this is how an image-only page becomes retrievable at all#59;<br/>the row is imageOnly and is EXCLUDED from #35;1105's confidence<br/>sample — cross-modal scores share no scale with text cosines.<br/>If THIS query throws the image-only pages drop and the same<br/>degraded_reason is recorded — a partial bypass is still a bypass
     end
     RAG-->>BE: merged + deduped + ranked (fetch-width wide)
     opt RAG_PERMISSION_ENFORCEMENT (EE)
@@ -268,8 +268,10 @@ text↔text ones as high as 0.81, with **no gap** between the bands (ADR-025 §8
 so no scalar separates them and a threshold tuned on one is undefined on the
 other.
 
-**The gate, cheapest first, and it does no RETRIEVAL work when shut** — no
-query embed, no kNN, no row. All four must hold:
+**The gate, in this order, and it does no RETRIEVAL work when shut** — no
+query embed, no kNN, no row. In THIS order and deliberately not cheapest-first
+(the paragraph after next is why the resolver goes in front of the `EXISTS`
+even though it costs more). All four must hold:
 `HybridSearchOptions.imageLeg` is not `false`; `rag_image_leg_enabled`
 (default on, skipped when the option forces `true`); the `image_embedding` use
 case is **assigned** (it never inherits — ADR-021's rule for the non-inheriting
@@ -357,8 +359,9 @@ verdict a keyword-only set gets, and **not** the empty-corpus `score: 0` that a
 threshold would refuse.
 
 **Failure is a bypass, and it is recorded.** A timeout, an open breaker, an
-assignment pulled mid-flight, an assignment READ that threw, or a kNN error
-all leave the leg out and everything else byte-identical to leg-off, with
+assignment pulled mid-flight, an assignment READ that threw, a non-empty PROBE
+that threw, or a kNN error all leave the leg out and everything else
+byte-identical to leg-off, with
 `degraded_reason = 'image_leg_unavailable'` on the analytics row. Unlike a
 rerank bypass it is recorded because it changes which PAGES come back, not
 merely their order. **A resolver `null` is not a failure** — that is
@@ -366,7 +369,16 @@ merely their order. **A resolver `null` is not a failure** — that is
 own paired tests, because folding the `catch` away is what makes a real outage
 invisible in `search_analytics`. Note what a throw is: `loadProviderFromRow`
 runs `decryptSafe`, so an undecryptable `api_key` yields a null key rather than
-an exception; what throws here is the database. **Precedence: a text-side reason always wins** — there is
+an exception; what throws here is the database. **The `EXISTS` probe has the
+same shape and its own catch** (review r2): an unanswerable probe is not an
+empty index — the statement needs ACCESS SHARE on `page_image_embeddings`,
+which `ensureImageEmbeddingColumn`'s retype holds ACCESS EXCLUSIVE on — and
+outside a catch it also broke `searchImageLeg`'s "never throws" contract, after
+which the caller's own `.catch` recorded a live outage as a healthy search with
+the leg merely "off". **The LEDE fetch counts too**: when the one batched
+chunk-0 query throws, the leg has run but every image-ONLY page is dropped —
+exactly the pages it exists to make retrievable — so that partial bypass is
+OR'd into the same reason rather than writing a healthy row. **Precedence: a text-side reason always wins** — there is
 one column, and during an embedding outage `embedding_failed` is the value an
 operator needs; an image leg that also fell over in the same second is a
 footnote. `searchTypeFinal` is unchanged: two legs or three is not a different

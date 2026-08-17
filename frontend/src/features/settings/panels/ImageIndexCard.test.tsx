@@ -183,7 +183,11 @@ describe('ImageIndexCard (#1115 P2)', () => {
     renderCard();
     const note = await screen.findByTestId('image-index-not-live-note');
     expect(note.textContent).toMatch(/third retrieval leg/i);
-    expect(note.textContent).toMatch(/Retrieval/);
+    // The FULL panel chain, not a bare "under Retrieval" (review r2):
+    // `settings-wayfinding.test.ts` only polices a pointer that starts
+    // `Settings →`, so a naked tab name is a signpost no guard can check and
+    // no reader can follow from another panel.
+    expect(note.textContent).toMatch(/Settings → AI Models → Retrieval/);
     expect(note.textContent).not.toMatch(/not live yet/i);
   });
 

@@ -1484,6 +1484,22 @@ async function lookupIdentifier(
   }));
 }
 
+interface ImageLegRows {
+  results: SearchResult[];
+  /**
+   * The lede fetch threw, so every image-ONLY page was dropped.
+   *
+   * It is OR'd into `deriveDegradedReason`'s image argument by the caller,
+   * under this leg's own criterion: a bypass is recorded when it changes
+   * which PAGES come back, and this one deletes exactly the pages the leg
+   * exists to make retrievable. The leg still ran, so the pages the text legs
+   * also found keep both their rank contribution and their `imageHits` — it
+   * is a PARTIAL bypass, and `image_leg_unavailable` is the honest value for
+   * it because the column has one slot and no finer vocabulary.
+   */
+  textFetchFailed: boolean;
+}
+
 /**
  * #1115 P3 — turn the image leg's page list into `SearchResult`s so the fusion
  * has one shape to work with.
@@ -1523,8 +1539,8 @@ async function buildImageLegResults(
   pages: ImageLegPage[],
   vectorResults: SearchResult[],
   keywordResults: SearchResult[],
-): Promise<SearchResult[]> {
-  if (pages.length === 0) return [];
+): Promise<ImageLegRows> {
+  if (pages.length === 0) return { results: [], textFetchFailed: false };
   // Vector rows first — they arrive distance-ordered, so a page's first
   // occurrence is its best chunk, and a purpose-built chunk beats a keyword
   // body excerpt (the preference `reciprocalRankFusion` already states).
@@ -1535,6 +1551,7 @@ async function buildImageLegResults(
 
   const missing = pages.filter((p) => !byPage.has(p.pageId)).map((p) => p.pageId);
   const synthesized = new Map<number, SearchResult>();
+  let textFetchFailed = false;
   if (missing.length > 0) {
     try {
       const rows = await query<{
@@ -1582,7 +1599,17 @@ async function buildImageLegResults(
       // Soft-fail like every neighbouring stage — but note what it costs: the
       // pages that DO have a text row still fuse, and only the image-only ones
       // drop out. A retrieval is never worth failing over a lede fetch.
-      logger.warn({ err }, 'Image-only text fetch failed — those pages are dropped from the image leg');
+      //
+      // It is REPORTED, though, and that is not the same call as soft-failing.
+      // Dropping the image-only pages changes which pages come back, which is
+      // the exact criterion this leg records a bypass on at all — leaving it
+      // silent wrote a healthy analytics row for a request that lost every
+      // newly-retrievable page.
+      textFetchFailed = true;
+      logger.warn(
+        { err },
+        'Image-only text fetch failed — those pages are dropped from the image leg (degraded_reason: image_leg_unavailable)',
+      );
     }
   }
 
@@ -1594,7 +1621,7 @@ async function buildImageLegResults(
     // reconstruction alone; see its JSDoc on `SearchResult`.
     out.push({ ...base, imageHits: page.hits, imageRawIndex: page.bestRawIndex });
   }
-  return out;
+  return { results: out, textFetchFailed };
 }
 
 async function hybridSearchInner(
@@ -1769,10 +1796,15 @@ async function hybridSearchInner(
   // downstream needs an image-specific branch (ADR-025 §5): rerank, the
   // ranking prior, MMR, sibling assembly and the pin stage all keep scoring
   // `chunkText` exactly as they do today.
-  const imageResults = await buildImageLegResults(
+  const { results: imageResults, textFetchFailed } = await buildImageLegResults(
     imageLegOutcome.pages, vectorResults, keywordResults,
   );
-  const degradedReason = deriveDegradedReason(embeddingFailed, coverage, imageLegOutcome.failed);
+  // Two ways the leg can fail to deliver its pages, one column: the leg itself
+  // (embed, kNN or a gate read that threw) and the lede fetch that turns its
+  // image-only pages into rows. Both change which pages come back.
+  const degradedReason = deriveDegradedReason(
+    embeddingFailed, coverage, imageLegOutcome.failed || textFetchFailed,
+  );
   const analyticsExtras: SearchAnalyticsExtras = {
     degradedReason,
     embeddingCoverage: coverage?.coverage ?? null,

@@ -68,6 +68,19 @@ type RefusalReason = 'semantic_index_unavailable' | 'no_context' | 'weak_match';
  * gallery, and it is the whole-answer cap — `MAX_IMAGE_HITS_PER_PAGE` (3)
  * bounds any single page's contribution underneath it.
  *
+ * **It bounds requests, and the BYTES behind them are worth stating** (review
+ * r2), because the citation chips render on every answer rather than behind
+ * the card list's disclosure. What comes back is the FULL attachment — there
+ * is no thumbnail route and ADR-025 deliberately adds no server-side
+ * resize — so the ceiling is four times `MAX_IMAGE_BYTES` (5 MB), the intake
+ * cap that bounds what can be in the index at all, to paint squares of 14px
+ * (chip) and 32px (card). Two things keep that a worst case rather than a
+ * per-render one: both attachment routes answer `max-age=3600`, so a
+ * re-render, a reopened thread and a second citation of the same picture are
+ * cache hits; and a real corpus's screenshots are two orders of magnitude
+ * under the cap. Lowering this number is the lever if that stops being true —
+ * a resize endpoint is a different decision with its own ACL surface.
+ *
  * Note this is a DISPLAY cap. P4's answer-path cap (`rag_answer_max_images`,
  * default 2) is a different number bounding a different cost — bytes sent to
  * a vision model — and the two must not be collapsed.

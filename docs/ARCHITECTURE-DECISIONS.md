@@ -2430,7 +2430,12 @@ title-synthesised one flagged `imageTextSynthesized`.
 **Failure is a bypass and is recorded.** `degraded_reason =
 'image_leg_unavailable'`, but only when the text side is healthy: there is one
 column, and the value that belongs in it is the outage that hurt the answer
-most. `searchTypeFinal` is unchanged. Deep search runs the leg on the ORIGINAL
+most. `searchTypeFinal` is unchanged. **Every read that can throw is a failure,
+not a verdict** (review r2): the resolver's throw-vs-`null` distinction is the
+one the module is built around, and the gate's `EXISTS` probe and the image-only
+lede fetch each got their own catch for the same reason — an unanswerable probe
+is not an empty index, and a lede fetch that throws silently deletes exactly the
+pages this leg exists to make retrievable while the analytics row claims health. Deep search runs the leg on the ORIGINAL
 question only (`imageLeg: false` on the paraphrase legs) — one VL call per
 gesture, and it keeps the image evidence at weight 1 instead of the 1 + 0.6 +
 0.6 a merge that sums weighted per-leg ranks would give the same evidence

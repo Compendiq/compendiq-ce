@@ -59,6 +59,13 @@
  * a bypass is RECORDED — `degraded_reason = 'image_leg_unavailable'` — because
  * unlike a rerank bypass it changes which PAGES come back, not merely their
  * order.
+ *
+ * **Both DB reads in the gate are failures, not verdicts, when they throw.**
+ * The resolver's throw-vs-null distinction is the one this module was written
+ * around, and the `EXISTS` above has exactly the same shape: an unanswerable
+ * probe is not an empty index. Each therefore has its own catch, so a broken
+ * gate is recorded as a degradation instead of reported as "off" — which is
+ * what a single try around the retrieval work alone gave it.
  */
 import pgvector from 'pgvector';
 import { query, getVectorPool } from '../../../core/db/postgres.js';
@@ -267,7 +274,23 @@ export async function searchImageLeg(
       return OFF;
     }
 
-    if (!(await imageIndexHasRows())) {
+    let hasRows: boolean;
+    try {
+      hasRows = await imageIndexHasRows();
+    } catch (err) {
+      // The resolver's argument one rung down, and the reason this probe is
+      // not inside the try below: an EXISTS that could not be ANSWERED is not
+      // evidence of an empty index. The statement needs ACCESS SHARE on
+      // `page_image_embeddings`, which a concurrent rebuild holds ACCESS
+      // EXCLUSIVE on, so a `lock_timeout` — or any pool-level error — reaches
+      // here on a deployment whose leg is configured, assigned and full. Left
+      // to propagate it also broke this function's "never throws" contract,
+      // and the caller's `.catch` then recorded a live outage as "off".
+      logger.warn({ err }, 'Image leg bypassed — the image index could not be probed (degraded_reason: image_leg_unavailable)');
+      span?.setAttribute('rag.image_leg', 'failed');
+      return { ran: false, failed: true, pages: [] };
+    }
+    if (!hasRows) {
       span?.setAttribute('rag.image_leg', 'empty_index');
       return OFF;
     }

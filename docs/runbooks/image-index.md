@@ -503,6 +503,17 @@ expected reading, not evidence the leg is healthy. What does record is a read
 of the assignment that ERRORED — a database problem, not a credential one (an
 undecryptable `api_key` yields a null key and the call proceeds).
 
+The same distinction applies one line further down the gate: an **`EXISTS`
+probe that could not be answered** is a degradation, not an empty index. It
+takes ACCESS SHARE on `page_image_embeddings`, which a rebuild's retype holds
+ACCESS EXCLUSIVE on, so the realistic trigger is a `lock_timeout` against a
+model change happening at the same moment — the leg goes quiet for those
+requests and says so. And the **lede fetch** counts as well: the leg can run
+successfully and still lose every image-ONLY page if the one batched chunk-0
+query fails, so that partial bypass writes the same reason rather than a
+healthy row. If you see `image_leg_unavailable` while the VL endpoint is
+demonstrably fine, look at the database before the model.
+
 ## 7. Changing the model (or the provider)
 
 **It empties the image index and re-scans. There is no shadow swap here, and
