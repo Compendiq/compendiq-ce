@@ -954,6 +954,26 @@ describe('POST /api/llm/ask', () => {
     });
   });
 
+  describe('stale conversationId (#1361)', () => {
+    it('answers 404 before retrieval or any SSE header when the conversation is not the caller\'s', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [] };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'follow-up', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(response.statusCode).toBe(404);
+      expect(response.headers['content-type']).toContain('application/json');
+      expect(JSON.parse(response.body).message).toContain('Conversation not found');
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+  });
+
   it('should return 400 when question exceeds maximum length', async () => {
     const response = await app.inject({
       method: 'POST',

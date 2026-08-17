@@ -175,9 +175,13 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         'SELECT messages FROM llm_conversations WHERE id = $1 AND user_id = $2',
         [convId, userId],
       );
-      if (conv.rows.length > 0) {
-        conversationHistory = conv.rows[0]!.messages;
+      // #1361: a stale or foreign id is a 404 BEFORE retrieval and before any
+      // SSE header, never a silent 0-row UPDATE later. Foreign ids get the
+      // same answer — do not reveal existence.
+      if (conv.rows.length === 0) {
+        throw fastify.httpErrors.notFound('Conversation not found');
       }
+      conversationHistory = conv.rows[0]!.messages;
     }
 
     // Perform hybrid RAG search — falls back to keyword-only if embedding fails
