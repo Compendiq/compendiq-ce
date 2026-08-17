@@ -140,7 +140,7 @@ class LlamaBackend:
         marker = self._media_marker()
         try:
             return self._embed_one(item, marker)
-        except BackendError:
+        except BackendError as original:
             # The marker is randomised per llama-server PROCESS, and restarting
             # it (onto another GGUF, a bigger batch, an added --mmproj) is this
             # tool's main dev loop. A marker cached for the life of the shim
@@ -150,7 +150,13 @@ class LlamaBackend:
             # Re-read once: the marker is the only thing that can have changed
             # behind an unchanged base URL. If it did not change, nothing was
             # learned and the original error stands rather than being doubled.
-            fresh = self._media_marker(refresh=True)
+            try:
+                fresh = self._media_marker(refresh=True)
+            except BackendError:
+                # The re-read is diagnostics, not the request. A server that
+                # died between the two calls would otherwise be reported as a
+                # /props failure, hiding what the embed itself actually said.
+                raise original from None
             if fresh == marker:
                 raise
             log.warning(

@@ -255,6 +255,22 @@ class TestARestartedLlamaServer:
             be.embed([ResolvedItem(text='x', instruction=None, images=(b'\x01',))])
         assert len(rec.embed_bodies()) == 1
 
+    def test_the_embed_error_survives_a_props_read_that_also_fails(self):
+        # A server that died between the two calls must be reported by what the
+        # embed said, not by the diagnostic re-read that came after it.
+        class DyingRecorder(Recorder):
+            def handler(self, request: httpx.Request) -> httpx.Response:
+                self.requests.append(request)
+                if request.url.path == '/props':
+                    if any(r.url.path == '/embedding' for r in self.requests):
+                        return httpx.Response(503, text='service unavailable')
+                    return httpx.Response(200, json=PROPS)
+                return httpx.Response(500, text='mtmd_tokenize: error: number of media markers')
+
+        rec = DyingRecorder()
+        with pytest.raises(BackendError, match='mtmd_tokenize'):
+            backend(rec).embed([ResolvedItem(text='x', instruction=None, images=(b'\x01',))])
+
     def test_a_text_only_request_is_never_retried(self):
         # It carries no marker, so a re-read cannot change anything about it.
         rec = Recorder(status=500, body='boom')
