@@ -181,7 +181,7 @@ describe('ImageIndexCard (#1115 P2)', () => {
     // on rather than denying it exists.
     mockApi(ASSIGNED);
     renderCard();
-    const note = await screen.findByTestId('image-index-not-live-note');
+    const note = await screen.findByTestId('image-index-retrieval-note');
     expect(note.textContent).toMatch(/third retrieval leg/i);
     // The FULL panel chain, not a bare "under Retrieval" (review r2):
     // `settings-wayfinding.test.ts` only polices a pointer that starts

@@ -339,7 +339,7 @@ export function ImageIndexCard() {
         Changing the image model empties and rebuilds this index; text search is unaffected.
       </p>
 
-      <p className="text-muted-foreground text-xs" data-testid="image-index-not-live-note">
+      <p className="text-muted-foreground text-xs" data-testid="image-index-retrieval-note">
         Image search runs as a third retrieval leg when enabled under Settings → AI Models → Retrieval.
       </p>
     </div>
