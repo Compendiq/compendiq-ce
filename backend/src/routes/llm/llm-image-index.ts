@@ -37,11 +37,14 @@ const ADMIN_RATE_LIMIT = {
  * assignment saved and the `ALTER` did not — the one state where the width on
  * screen belongs to a different model than the name beside it.
  *
- * Both actions are **fire-and-forget**. A corpus-wide scan runs for as long as
- * the corpus takes, and awaiting it inside the request would hold a connection
- * open past every proxy timeout in the path and then report a failure the work
- * did not have. The card polls `GET` for `running` instead — which is also why
- * `running` is read from the worker lock rather than inferred from
+ * **The SCAN is fire-and-forget on both actions; Re-scan's marking is not.** A
+ * corpus-wide scan runs for as long as the corpus takes, and awaiting it inside
+ * the request would hold a connection open past every proxy timeout in the path
+ * and then report a failure the work did not have. Re-scan's `UPDATE pages`
+ * *is* awaited, deliberately: it is one bounded statement, and `marked` is the
+ * number the toast quotes — detaching it would make the response report a
+ * count it had not computed. The card polls `GET` for `running` instead — which
+ * is also why `running` is read from the worker lock rather than inferred from
  * `pagesDirty`, a number that is non-zero for as long as any page is queued
  * whether or not anything is working through it.
  */

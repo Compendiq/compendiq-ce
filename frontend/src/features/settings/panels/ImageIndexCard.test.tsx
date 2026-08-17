@@ -378,6 +378,12 @@ describe('ImageIndexCard (#1115 P2)', () => {
     const note = await screen.findByTestId('image-index-identity-mismatch');
     expect(note.textContent).toMatch(/different model or endpoint/i);
     expect(note.textContent).toMatch(/Re-check/);
+    // …and WHERE that control lives (review r4). This card is on the Embeddings
+    // tab and the Re-check button is on another panel entirely, so naming the
+    // control without naming the panel leaves the operator hunting; the
+    // not-assigned line one paragraph up already spells the same chain, and
+    // `settings-wayfinding.test.ts` fails if either stops matching the rail.
+    expect(note.textContent).toMatch(/Settings → AI Models → LLM providers/);
     // The third attention state, pinned for its colour like the other two
     // (review r2: it was the one of the three with no colour assertion).
     expect(note.className).toMatch(/text-warning/);

@@ -210,6 +210,12 @@ export function ImageIndexCard() {
         an `ALTER` that failed leaves the new pair live against the old column
         — amber, because nothing else on screen says so and the backlog simply
         stops draining.
+
+        The remedy names WHERE the row is (review r4): Re-check lives on a
+        different panel from this card, and the not-assigned line above already
+        spells the same chain. `settings-wayfinding.test.ts` holds both to the
+        live rail, so a renamed panel fails here rather than sending an admin
+        to a page that does not exist.
       */}
       {data?.identityMatchesAssignment === false && (
         <p
@@ -218,7 +224,8 @@ export function ImageIndexCard() {
         >
           <AlertTriangle size={12} aria-hidden="true" />
           The index was built for a different model or endpoint than the one assigned now. Press
-          Re-check on the Image embedding row to rebuild it.
+          Re-check on the Image embedding row under Settings → AI Models → LLM providers to rebuild
+          it.
         </p>
       )}
 

@@ -371,13 +371,15 @@ one nothing would.
 - **Images embedded** — rows in `page_image_embeddings`. Expect it to be *lower*
   than the number of pictures in the corpus; the skip table above is why.
 - **Pages pending** — `image_embedding_dirty` over live non-folder pages. On a
-  settled instance this is 0. If it is not falling, there are three causes and
-  the card distinguishes them: the leg is **unassigned** (it says so); the last
-  run **failed** (an amber line, and `failed`/`pagesFailed` name which kind);
-  or **nothing has kicked the worker** — its automatic cadence rides `syncUser`,
-  which only runs for users with a configured Confluence URL and PAT, so a
-  local-only instance fills the index from **Process now** / **Re-scan all** and
-  nothing else.
+  settled instance this is 0. If it is not falling, there are three causes; the
+  card distinguishes the first two, and the third is what is left. The leg is
+  **unassigned** (it says so); the last run **failed** (an amber line, and
+  `failed`/`pagesFailed` name which kind); or **nothing has kicked the worker**
+  — for which the card renders nothing at all, because "no scan has run" and "a
+  scan ran and found nothing to do" leave identical state. Its automatic cadence
+  rides `syncUser`, which only runs for users with a configured Confluence URL
+  and PAT, so a local-only instance fills the index from **Process now** /
+  **Re-scan all** and nothing else.
 - **Last run** — pages visited, embedded, reused, removed, and skipped by
   reason. `removed` counts rows reconciled away, which is the expected outcome
   of a page that lost an image — including one whose `<img>` was deleted in the

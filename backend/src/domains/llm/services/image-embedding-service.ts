@@ -366,7 +366,18 @@ export async function embedPageImages(pageId: number): Promise<ImageEmbedOutcome
   //    knob is a statement about what the index should contain.
   const keep = new Set(refs.map((ref) => `${ref.source}:${ref.key}`));
   const written = await writeImageRows(pageId, prepared, keep, identityBefore, failed === 0);
-  if (written === 'stale') return emptyOutcome('stale');
+  if (written === 'stale') {
+    // Not a bare `emptyOutcome` (review r4): only `embedded` and `removed` are
+    // undone by the ROLLBACK. `reused`, the skip counters and any VL failure
+    // are facts the pass really observed — an image whose row survived
+    // unchanged, a file that is missing, a format nothing can read — and the
+    // page's flag is still set, so they are the same facts the operator sees
+    // on the card for a `failed` page. Zeroing them made a rebuild landing
+    // mid-scan silently subtract a page's worth of skips from the run summary
+    // that exists to explain why the row count is lower than the picture count.
+    // `status` stays `stale`, so the worker's own branching is unchanged.
+    return { ...emptyOutcome('stale'), reused, failed, skipped, ...(error ? { error } : {}) };
+  }
 
   const outcome: ImageEmbedOutcome = {
     status: failed > 0 ? 'failed' : 'ok',
@@ -686,6 +697,21 @@ export async function processDirtyPageImages(
           await sleep(INTER_PAGE_DELAY_MS);
           continue;
         }
+        if (outcome.status === 'unassigned') {
+          // The assignment was removed mid-scan. Every remaining page would
+          // answer the same way, and each answer leaves its flag set.
+          //
+          // Checked BEFORE the counter fold (review r4): the page was not
+          // visited in any sense — nothing was read, nothing was decided, its
+          // flag is untouched — and `totals.pages` is what arms
+          // `recordImageIndexRun`. Counting it let a trigger that did no work
+          // at all persist `pages: 1` and six zeroes over the last real run's
+          // counters, which is exactly what that function's "no-op trigger"
+          // rule exists to prevent, on the card that explains the row count.
+          aborted = true;
+          break;
+        }
+
         totals.pages++;
         totals.embedded += outcome.embedded;
         totals.reused += outcome.reused;
@@ -695,12 +721,6 @@ export async function processDirtyPageImages(
           totals.skipped[reason] += outcome.skipped[reason];
         }
 
-        if (outcome.status === 'unassigned') {
-          // The assignment was removed mid-scan. Every remaining page would
-          // answer the same way, and each answer leaves its flag set.
-          aborted = true;
-          break;
-        }
         if (outcome.status === 'ok') {
           consecutiveFailures = 0;
         } else {

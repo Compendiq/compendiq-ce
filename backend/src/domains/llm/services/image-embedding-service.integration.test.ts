@@ -506,6 +506,53 @@ describe.skipIf(!dbAvailable)('embedPageImages (#1115 P2)', () => {
     expect(await isDirty(pageId)).toBe(true);
   });
 
+  it('a stale outcome still reports the reuses and skips the pass observed', async () => {
+    // Review r4. The ROLLBACK undoes the WRITE — `embedded` and `removed` — and
+    // nothing else. A row reused by content hash and a file that is missing are
+    // facts about this page that a rebuild landing mid-scan does not change,
+    // and the worker folds every outcome into the run summary that exists to
+    // explain why the row count is lower than the picture count. Returning a
+    // bare `emptyOutcome('stale')` subtracted a whole page's worth of them.
+    await assignImageEmbedding();
+    const pageId = await seedPage({
+      bodyHtml:
+        '<img src="/api/attachments/1/keep.png">' +
+        '<img src="/api/attachments/1/gone.png">' +
+        '<img src="/api/attachments/1/moved.png">',
+    });
+    await writeConfluenceAttachment(String(pageId), 'keep.png', png(4, 4));
+    await writeConfluenceAttachment(String(pageId), 'moved.png', png(5, 5));
+
+    // First pass: two rows, one missing file.
+    const first = await embedPageImages(pageId);
+    expect(first.status).toBe('ok');
+    expect(first.embedded).toBe(2);
+
+    // `moved.png` changes, so it is the ONE image that costs a request on the
+    // second pass — and that request is when the rebuild lands.
+    await writeConfluenceAttachment(String(pageId), 'moved.png', png(6, 6));
+    await query(`UPDATE pages SET image_embedding_dirty = TRUE WHERE id = $1`, [pageId]);
+    respond = (res) => {
+      void query(
+        `UPDATE admin_settings SET setting_value = 'someone-else' WHERE setting_key = $1`,
+        [IMAGE_EMBEDDING_INDEX_MODEL_KEY],
+      ).then(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ embedding: [1, 0, 0, 0] }] }));
+      });
+    };
+
+    const outcome = await embedPageImages(pageId);
+
+    expect(outcome.status).toBe('stale');
+    expect(outcome.reused).toBe(1);
+    expect(outcome.skipped.missing).toBe(1);
+    // …and the two the rollback really did undo stay zero.
+    expect(outcome.embedded).toBe(0);
+    expect(outcome.removed).toBe(0);
+    expect(await isDirty(pageId)).toBe(true);
+  });
+
   it('skips a folder, a soft-deleted page and a page that is gone', async () => {
     await assignImageEmbedding();
     const folder = await seedPage({ bodyHtml: null, pageType: 'folder' });

@@ -125,7 +125,7 @@ CREATE INDEX pages_image_embedding_dirty_idx ON pages(id) WHERE image_embedding_
 | `domains/llm/services/rag-service.ts` | llm | Image leg in `hybridSearch` (§5, P3). |
 | `routes/llm/llm-ask.ts` | routes | Retrieved-image parts (§6, P4). |
 | `routes/llm/llm-usecases.ts`, `routes/foundation/admin.ts` | routes | Assignment + probe endpoints, and the two intake knobs on `PUT /admin/settings` (`requireAdmin`). |
-| `routes/llm/llm-image-index.ts` **(new, P2 — shipped)** | routes | The index's own surface, `requireAdmin`: `GET /admin/embedding/image-index` (assignment, identity, whether the recorded identity still matches the assigned pair, rows, pages dirty/total, `running` read from the worker lock, last run), `POST …/rescan`, `POST …/process`. Both actions are fire-and-forget and report `alreadyRunning` from the lock rather than claiming a start. |
+| `routes/llm/llm-image-index.ts` **(new, P2 — shipped)** | routes | The index's own surface, `requireAdmin`: `GET /admin/embedding/image-index` (assignment, identity, whether the recorded identity still matches the assigned pair, rows, pages dirty/total, `running` read from the worker lock, last run), `POST …/rescan`, `POST …/process`. The SCAN is fire-and-forget on both, and both report `alreadyRunning` from the lock rather than claiming a start; Re-scan's corpus-wide marking is awaited inside the request, because `marked` is the number the toast quotes. |
 
 **One correction found while planning, carried into P1 — shipped.**
 `wantsInstructionPrefix` (#1329) matches `qwen3` +

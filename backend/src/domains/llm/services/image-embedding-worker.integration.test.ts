@@ -476,6 +476,50 @@ describe.skipIf(!dbAvailable)('processDirtyPageImages (#1115 P2)', () => {
     expect(await readImageIndexLastRun()).toMatchObject({ pages: 1, embedded: 1 });
   });
 
+  it('does not record a run whose only page answered "unassigned"', async () => {
+    // Review r4. A page answering `unassigned` mid-scan was folded into
+    // `totals` before the check that aborts on it, and `totals.pages > 0` is
+    // the sole gate on `recordImageIndexRun`. So a scan that read nothing,
+    // wrote nothing and decided nothing about a single page still overwrote
+    // the last real run's counters with `pages: 1` and six zeroes — the exact
+    // failure the "no-op trigger" rule beside that function exists to prevent,
+    // on the one surface that explains why the row count looks low.
+    await assign();
+    await seedPageWithImage('done', '2026-08-01T00:00:00Z');
+    await processDirtyPageImages();
+    expect(await readImageIndexLastRun()).toMatchObject({ pages: 1, embedded: 1 });
+
+    // The leg is switched off, and a page is queued behind it. The worker's
+    // pre-lock fast path is not the branch under test — it is reached only
+    // when the assignment is already gone at the top of the run — so the row
+    // is deleted from INSIDE the scan, on the first page's request.
+    await seedPageWithImage('queued', '2026-08-02T00:00:00Z');
+    await seedPageWithImage('behind', '2026-08-01T12:00:00Z');
+    respond = (res) => {
+      void query(`DELETE FROM llm_usecase_assignments WHERE usecase = 'image_embedding'`).then(
+        () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ data: [{ embedding: [1, 0, 0, 0] }] }));
+        },
+      );
+    };
+
+    const result = await processDirtyPageImages();
+
+    // The first page really was visited; the second answered `unassigned` and
+    // stood the run down without being counted.
+    expect(result.pages).toBe(1);
+    expect(result.embedded).toBe(1);
+    // …and the run it did do is the one on record, not a phantom extra page.
+    expect(await readImageIndexLastRun()).toMatchObject({ pages: 1, embedded: 1 });
+    // Both of the pages it did not finish keep their flag — the flag is the
+    // queue, and nothing was decided about them.
+    const stillDirty = await query<{ title: string }>(
+      `SELECT title FROM pages WHERE image_embedding_dirty ORDER BY title`,
+    );
+    expect(stillDirty.rows.map((r) => r.title)).toEqual(['behind']);
+  });
+
   it('ignores an unreadable last-run row rather than half-rendering it', async () => {
     await query(
       `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('image_index_last_run', '{"pages":1}')`,
