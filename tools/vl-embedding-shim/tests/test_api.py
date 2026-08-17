@@ -275,6 +275,37 @@ class TestImages:
         assert '2048' in res.json()['error']['message']
         assert backend.seen == [], 'an over-size fetch reached the backend'
 
+    def test_a_chunked_remote_image_is_counted_as_it_streams(self):
+        # The sibling above declares a `content-length`, so it only exercises
+        # the cheap pre-read check; a chunked response declares nothing, which
+        # is why the fetcher counts the bytes as they arrive. Without this case
+        # the streaming half was covered by nothing (review r3) and deleting it
+        # would silently restore the unbounded fetch r2 measured at 200 MB. The
+        # inbound body has exactly this pair of tests already.
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            def chunks():
+                for _ in range(4):
+                    yield b'x' * 2048
+
+            res = httpx.Response(200, content=chunks())
+            assert 'content-length' not in res.headers, 'the response declared its size'
+            return res
+
+        fetcher = httpx.Client(transport=httpx.MockTransport(handler))
+        c, backend = client(
+            allow_remote_images=True, image_client=fetcher, max_body_bytes=2048,
+        )
+        res = c.post('/v1/embeddings', json=chat(
+            {'role': 'user', 'content': [
+                {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/chunked.png'}},
+            ]},
+        ))
+        assert res.status_code == 400
+        assert '2048' in res.json()['error']['message']
+        assert backend.seen == [], 'an over-size chunked fetch reached the backend'
+
     def test_a_remote_image_under_the_ceiling_is_served(self):
         import httpx
 

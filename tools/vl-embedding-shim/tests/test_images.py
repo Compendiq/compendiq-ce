@@ -75,9 +75,21 @@ class TestRemoteUrl:
         with pytest.raises(ImageError, match='remote'):
             resolve_image(ImageRef('https://example.invalid/a.png'), fetcher=None)
 
-    def test_refuses_a_scheme_that_is_neither_data_nor_http(self):
-        with pytest.raises(ImageError, match='file'):
-            resolve_image(ImageRef('file:///etc/passwd'), fetcher=lambda url: b'')
+    @pytest.mark.parametrize('url', ['file:///etc/passwd', 'gopher://example.invalid/a.png'])
+    def test_refuses_a_scheme_that_is_neither_data_nor_http(self, url):
+        # Matched on the REFUSAL's wording, not on a substring of the URL
+        # (review r3). `match='file'` was satisfied by any error echoing
+        # `file:///etc/passwd`, so opening the allow-list to every scheme left
+        # this green: the URL reached the fetcher, which returned nothing, and
+        # the "returned no bytes" error carried the word `file` too. The
+        # `gopher` row cannot be matched by accident from the message's own
+        # vocabulary, and the fetcher returns real bytes so a URL that reaches
+        # it fails loudly rather than being refused for the wrong reason.
+        def fetcher(_url: str) -> bytes:
+            return PNG_1PX
+
+        with pytest.raises(ImageError, match='unsupported image URL scheme'):
+            resolve_image(ImageRef(url), fetcher=fetcher)
 
 
 class TestPixelGuard:

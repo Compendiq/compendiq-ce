@@ -1,12 +1,20 @@
 """Resolving an image reference to bytes, and the optional pixel guard.
 
 **The shim does not resize.** The design's D10 says v1 does no server-side pixel
-processing, and the model server does its own resizing to the trained budget of
-1,310,720 px (≈1280 visual tokens — `preprocessor_config.json`'s `max_pixels`,
-which the paper confirms is what training saw). Sending more is not an error,
-it is merely wasted: the paper's granularity study reports a *regression* at the
-highest resource levels, so an over-budget image is plausibly worse than a
-resized one, not just slower.
+processing; the model server does its own. :data:`TRAINED_MAX_PIXELS` is the
+**checkpoint's** budget — 1,310,720 px, ≈1280 visual tokens,
+`preprocessor_config.json`'s `max_pixels`, which the paper confirms is what
+training saw. Sending more is not an error, it is merely wasted: the paper's
+granularity study reports a *regression* at the highest resource levels, so an
+over-budget image is plausibly worse than a resized one, not just slower.
+
+**It is the checkpoint's number, not a promise about either server** (review
+r3). The `mlx` backend is *held* to it — `mlx-embeddings` 0.1.0 would otherwise
+default to the reference script's permissive 1,843,200, so
+`backends.mlx._pin_pixel_budget` sets the field after the load. On `llama` the
+bytes go to llama-server, which applies whatever preprocessing its `mmproj`
+carries; `/props` reports nothing about pixels (verified on build b10450), so
+the shim can neither set nor read it there.
 
 `--max-pixels` therefore exists as a **guard, not a resizer**: set it and an
 over-budget image is refused with both numbers named, so a caller finds out
@@ -31,8 +39,9 @@ from urllib.parse import urlsplit
 
 from .request import ImageRef
 
-#: The trained pixel budget: 1280 visual tokens x 32x32 px per token. Exposed as
-#: a constant so the README, the CLI help and the runbook quote one number.
+#: The checkpoint's trained pixel budget: 1280 visual tokens x 32x32 px per
+#: token. Exposed as a constant so the README, the CLI help, the runbook and
+#: `backends.mlx` quote — and pin — one number.
 TRAINED_MAX_PIXELS = 1_310_720
 
 Fetcher = Callable[[str], bytes]

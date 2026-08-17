@@ -66,12 +66,20 @@ class FakeModel:
 
 
 class FakeProcessor:
-    pass
+    """Carries the two fields `mlx_embeddings.Processor` stamps onto an image.
+
+    The values are the library's own 0.1.0 defaults, so a backend that leaves
+    them alone is visible as the number it left behind.
+    """
+
+    def __init__(self):
+        self.min_pixels = 4096
+        self.max_pixels = 1_843_200
 
 
-def make(rows=None, **kwargs):
+def make(rows=None, processor=None, **kwargs):
     model = FakeModel(rows)
-    processor = FakeProcessor()
+    processor = FakeProcessor() if processor is None else processor
     loads = []
 
     def loader(path):
@@ -153,6 +161,25 @@ class TestInputBuilding:
         assert isinstance(images[0], Image.Image)
         assert images[0].size == (8, 4)
 
+    def test_a_palette_image_is_converted_to_rgb(self):
+        # The case above builds an already-RGB PNG, so the conversion branch
+        # never ran and deleting it left the suite green (review r3). A palette
+        # or CMYK source reaching the vision tower with the wrong channel count
+        # is what the branch exists to prevent, and only a non-RGB source can
+        # show that it does.
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new('RGB', (8, 4), (1, 2, 3)).convert('P').save(buf, format='PNG')
+        palette_png = buf.getvalue()
+        assert Image.open(io.BytesIO(palette_png)).mode == 'P', 'fixture is not a palette image'
+
+        be, model, _ = make()
+        be.embed([ResolvedItem(text='caption', instruction=None, images=(palette_png,))])
+        image = model.calls[0]['inputs'][0]['image'][0]
+        assert image.mode == 'RGB'
+        assert image.size == (8, 4)
+
     def test_no_images_means_no_image_key(self):
         be, model, _ = make()
         be.embed([ResolvedItem(text='x', instruction=None)])
@@ -172,6 +199,55 @@ class TestInputBuilding:
         be, _model, _ = make()
         with pytest.raises(BackendError, match='decode'):
             be.embed([ResolvedItem(text='', instruction=None, images=(b'not an image',))])
+
+
+class TestThePixelBudget:
+    """The two backends must cost an image the same, and only one of them can be told to.
+
+    `mlx_embeddings` 0.1.0 stamps its `Processor.max_pixels` onto every image
+    content block, and `from_pretrained` fills that field from the library's own
+    `MAX_PIXELS = 1800 * 32 * 32 = 1_843_200` — the reference *script*'s
+    permissive runtime default, 1.41x the 1_310_720 the checkpoint declares and
+    the paper says training saw. Research §5.1: the higher one is plausibly
+    *worse*, not merely slower. The field is pinned after the load rather than
+    passed through `load(tokenizer_config=…)`, so it stays on the `Loader` seam
+    these tests drive and a library that stopped honouring the kwarg could not
+    ignore it silently (review r3).
+    """
+
+    def test_the_checkpoints_budget_replaces_the_librarys_default(self):
+        processor = FakeProcessor()
+        assert processor.max_pixels == 1_843_200, 'fixture no longer models the library'
+        be, _model, _ = make(processor=processor)
+        be.embed([ResolvedItem(text='x', instruction=None)])
+        assert processor.max_pixels == 1_310_720
+
+    def test_the_floor_is_left_alone(self):
+        # `MIN_PIXELS = 4 * 32 * 32` already equals the checkpoint's, so there
+        # is nothing to correct and nothing to pin a second value against.
+        processor = FakeProcessor()
+        be, _model, _ = make(processor=processor)
+        be.embed([ResolvedItem(text='x', instruction=None)])
+        assert processor.min_pixels == 4096
+
+    def test_a_processor_without_the_field_is_not_a_crash(self):
+        # A future release that renames or drops it must degrade to the
+        # library's budget, not to a 502 on every request.
+        class Bare:
+            pass
+
+        processor = Bare()
+        be, _model, _ = make(processor=processor)
+        assert be.embed([ResolvedItem(text='x', instruction=None)]) == [[0.6, 0.8]]
+        assert not hasattr(processor, 'max_pixels'), 'the field was invented rather than set'
+
+    def test_it_is_pinned_once_at_load_not_per_request(self):
+        processor = FakeProcessor()
+        be, _model, _ = make(processor=processor)
+        be.embed([ResolvedItem(text='a', instruction=None)])
+        processor.max_pixels = 999  # a caller reaching past the shim
+        be.embed([ResolvedItem(text='b', instruction=None)])
+        assert processor.max_pixels == 999
 
 
 class TestPositionIdCacheReset:

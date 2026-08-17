@@ -304,3 +304,81 @@ class TestFailures:
         be = LlamaBackend('http://127.0.0.1:8090', client=client)
         with pytest.raises(BackendError, match='refused|connect'):
             be.embed([ResolvedItem(text='x', instruction=None)])
+
+
+class TestANonJsonBody:
+    """A 200 that is not JSON is a backend failure, not a crash (review r3).
+
+    `res.json()` raises `json.JSONDecodeError`, which is a **ValueError** and
+    not an `httpx.HTTPError`, so it used to escape both handlers in this module
+    and surface as an unhandled exception: `/healthz` answered 500 instead of
+    the documented 503 `{status: degraded, reason: …}` and `/v1/embeddings`
+    answered 500 instead of 502. Pointing `--llama-base-url` at something that
+    serves HTML with a 200 — an nginx/SPA, a proxy error page — is the single
+    most likely spelling of the operator error the runbook has a troubleshooting
+    row for, and the row promised a reason the shim could not produce.
+
+    LM Studio on :1234 answers 404 to `/props`, which `raise_for_status`
+    already caught, which is why this went unnoticed.
+    """
+
+    HTML = '<html><body><h1>404 Not Found</h1></body></html>'
+
+    def _client(self, *, bad_path: str) -> httpx.Client:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == bad_path:
+                return httpx.Response(
+                    200, text=self.HTML, headers={'content-type': 'text/html'},
+                )
+            if request.url.path == '/props':
+                return httpx.Response(200, json=PROPS)
+            return httpx.Response(200, json=[{'index': 0, 'embedding': [[0.6, 0.8]]}])
+
+        return httpx.Client(
+            transport=httpx.MockTransport(handler), base_url='http://127.0.0.1:8090',
+        )
+
+    def _service(self, *, bad_path: str):
+        from vl_embedding_shim.config import Settings
+        from vl_embedding_shim.service import EmbeddingService
+
+        be = LlamaBackend('http://127.0.0.1:8090', client=self._client(bad_path=bad_path))
+        return EmbeddingService(be, Settings(backend='llama'))
+
+    def test_props_answering_html_is_a_backend_error(self):
+        be = LlamaBackend('http://127.0.0.1:8090', client=self._client(bad_path='/props'))
+        with pytest.raises(BackendError, match='/props') as exc:
+            be.info()
+        # The body, not just the parser's `Expecting value: line 1 column 1`,
+        # which on its own tells an operator nothing about what answered.
+        assert '404 Not Found' in str(exc.value)
+
+    def test_embedding_answering_html_is_a_backend_error(self):
+        be = LlamaBackend('http://127.0.0.1:8090', client=self._client(bad_path='/embedding'))
+        with pytest.raises(BackendError, match='JSON|json'):
+            be.embed([ResolvedItem(text='x', instruction=None)])
+
+    def test_healthz_reports_degraded_rather_than_crashing(self):
+        from fastapi.testclient import TestClient
+
+        from vl_embedding_shim.app import create_app
+
+        client = TestClient(
+            create_app(self._service(bad_path='/props')), raise_server_exceptions=False,
+        )
+        res = client.get('/healthz')
+        assert res.status_code == 503
+        assert res.json()['status'] == 'degraded'
+        assert '/props' in res.json()['reason']
+
+    def test_embeddings_reports_502_rather_than_crashing(self):
+        from fastapi.testclient import TestClient
+
+        from vl_embedding_shim.app import create_app
+
+        client = TestClient(
+            create_app(self._service(bad_path='/embedding')), raise_server_exceptions=False,
+        )
+        res = client.post('/v1/embeddings', json={'model': 'm', 'input': 'hallo'})
+        assert res.status_code == 502
+        assert res.json()['error']['type'] == 'backend_error'

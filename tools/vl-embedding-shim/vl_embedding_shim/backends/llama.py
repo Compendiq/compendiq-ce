@@ -79,10 +79,28 @@ class LlamaBackend:
             try:
                 res = self._client.get(f'{self._base_url}/props', timeout=self._props_timeout)
                 res.raise_for_status()
-                payload = res.json()
             except httpx.HTTPError as exc:
                 raise BackendError(
                     f'could not read {self._base_url}/props from llama-server: {exc}'
+                ) from exc
+            # The parse gets its own handler, because `res.json()` raises
+            # `json.JSONDecodeError` — a **ValueError**, not an
+            # `httpx.HTTPError` — so it escaped the one above entirely and
+            # `/healthz` answered 500 instead of the documented 503 with a
+            # reason (review r3). A base URL pointed at something that answers
+            # 200 with HTML (an SPA, an nginx or proxy error page) is the
+            # likeliest spelling of the wrong-`--llama-base-url` mistake the
+            # runbook has a row for; LM Studio's 404 was caught by
+            # `raise_for_status` above, which is why this went unnoticed. The
+            # message quotes the body, because `Expecting value: line 1 column
+            # 1` on its own tells an operator nothing about what answered.
+            try:
+                payload = res.json()
+            except ValueError as exc:
+                raise BackendError(
+                    f'could not read {self._base_url}/props from llama-server: it answered '
+                    f'HTTP {res.status_code} but not JSON ({exc}); the body starts '
+                    f'{res.text[:200]!r} — is --llama-base-url pointed at llama-server?'
                 ) from exc
             if not isinstance(payload, dict):
                 raise BackendError(f'{self._base_url}/props did not answer a JSON object')
@@ -191,7 +209,17 @@ class LlamaBackend:
                 f'llama-server /embedding answered HTTP {res.status_code}: {res.text[:500]}'
             )
 
-        return _unwrap_embedding(res.json())
+        try:
+            payload = res.json()
+        except ValueError as exc:
+            # Same door as `props()` above: a 200 that is not JSON must be a
+            # 502 with a reason, not an unhandled JSONDecodeError and a 500.
+            raise BackendError(
+                f'llama-server /embedding answered HTTP {res.status_code} but not JSON '
+                f'({exc}); the body starts {res.text[:200]!r} — is --llama-base-url '
+                'pointed at llama-server?'
+            ) from exc
+        return _unwrap_embedding(payload)
 
 
 def _unwrap_embedding(payload: Any) -> list[float]:
