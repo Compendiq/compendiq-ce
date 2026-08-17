@@ -2045,4 +2045,26 @@ describe('RetrievalTab — images shown to the model (#1115 P4)', () => {
     expect(group.textContent).toMatch(/Text-only chat models never receive images/i);
     expect(group.textContent).toMatch(/0 turns this off/i);
   });
+
+  it('points at the row where that verdict is shown, instead of leaving it unanswerable', async () => {
+    // Review r2. The sentence above is the only surface stating the vision
+    // dependency, and without a destination it leaves the reader at "can
+    // mine?" — while the verdict, and #1184's Re-check that corrects a wrong
+    // one, sit on the chat row two clicks away. The unassigned notice at the
+    // top of this same Section already links there; the copy that depends on
+    // the answer should too.
+    // Assigned, so the Section's unassigned notice — which carries its own
+    // link to the same route — is not rendered: this asserts the link inside
+    // the helper copy itself, on the deployment where an operator is actually
+    // reading this control.
+    mockApi({ imageEmbedding: assignedImageEmbedding() });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+    expect(screen.queryByTestId('retrieval-image-unassigned')).not.toBeInTheDocument();
+
+    const helper = screen.getByText(/Text-only chat models never receive images/i);
+    const link = within(helper).getByRole('link', { name: /LLM providers/i });
+    expect(link.getAttribute('href')).toContain('?sub=llm');
+  });
 });

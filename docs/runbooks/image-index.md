@@ -681,10 +681,17 @@ the reason this line fires on a request that sent nothing: D8 forbids any
 user-visible signal and the audit fields are absent when nothing was sent, so
 the log is the only place it shows up.
 
-`skipped.invalid` is the interesting counter: it means the leg ranked a page on
-a picture the answer path then refused — most often draw.io's XML behind a
-`.png` name, which the intake skips too (§5), or an image past the dimension
-ceiling. `missing` means the bytes are not in the store the reference names
+`skipped.invalid` is the interesting counter, and it names one thing: **the
+bytes on disk are no longer the bytes that were indexed.** The intake applies
+the identical gate before it writes a row — same sniff, same `MAX_IMAGE_BYTES`,
+same `MAX_IMAGE_DIMENSION`, over bytes read through the same store (§5) — so a
+picture the leg can rank has already passed it once. Seeing it refused here is
+the tell that the attachment was replaced since the last scan (or, rarely, that
+an upgrade moved one of those ceilings under an index built before it). The
+remedy is a re-read: **Process now**, or **Re-scan all** if it is not just the
+one page, on the Embeddings tab.
+
+`missing` means the bytes are not in the store the reference names
 (deleted, or never downloaded — a lazy fetch is the recovery path, §5),
 `overBudget` that the request was already full, and `duplicate` that the same
 picture had already been attached from another page.
@@ -699,11 +706,13 @@ dropped.
 **By hand.** Ask a question that only a picture answers on a page with no
 prose. With the gate open the answer describes the picture; with it shut the
 answer is about the title. The refusal above is the sharpest signal of all —
-if you see it, condition (1), (3) or (4) is the one that failed, and the log
-line's `skipped` counters separate the third from the first two: all-zero
-counters mean the pick never ran (the cap is 0, or the model cannot see
-images), while a non-zero one means it ran and could not use anything it
-found.
+if you see it, condition (1), (3) or (4) is the one that failed, and the pick
+line separates the third from the first two: **no `#1115 P4: retrieved-image
+pick` line at all** means the pick never ran (the cap is 0, or the model cannot
+see images), while a line carrying a non-zero `skipped` counter means it ran
+and could not use anything it found. There is no third shape to look for — the
+line is only emitted when the pick attached or refused something, so on a
+refused turn it is either absent or carries a non-zero counter.
 
 ### What it does not do
 

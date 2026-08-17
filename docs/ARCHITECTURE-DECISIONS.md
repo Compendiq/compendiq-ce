@@ -2118,7 +2118,7 @@ Multi-replica deployments sit behind a load balancer. `trustProxy` MUST be set t
 
 **Date:** 2026-08-17
 **Status:** Accepted (owner interview, 2026-08-17). **Partially implemented:**
-P0, P1 and P2 have shipped. P0: this ADR, migration `093` (the
+P0 through P4 have shipped. P0: this ADR, migration `093` (the
 `page_image_embeddings` table, `pages.image_embedding_dirty`, the widened
 use-case CHECK) and the core `attachment-store` hoist. P1: the
 `image_embedding` use case end to end — `vl-embedding-client.ts`,

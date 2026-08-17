@@ -1015,10 +1015,22 @@ export function RetrievalTab() {
             answer, in the sources or in the announcement says a picture was
             withheld — so an operator whose chat model cannot see images has
             no other way to find out that this control does nothing for them.
+
+            Which is exactly why the third sentence has to point somewhere
+            (review r2): stating a dependency with no way to check it leaves
+            the reader stuck at "can mine?". The verdict — and #1184's
+            Re-check, which is how a wrong one is corrected — is the chat
+            row's `VisionBadge`, on the same route the unassigned notice at
+            the top of this Section already links to.
           */}
           <p>
             Up to this many retrieved images are attached to the question when the chat model can
-            see images; 0 turns this off. Text-only chat models never receive images.
+            see images; 0 turns this off. Text-only chat models never receive images. Whether
+            yours can is shown on the chat row under{' '}
+            <Link className="underline underline-offset-2 hover:text-foreground" to={LLM_PROVIDERS_PATH}>
+              {SETTINGS_PANELS.models.label} → LLM providers
+            </Link>
+            .
           </p>
         </NumberRow>
 

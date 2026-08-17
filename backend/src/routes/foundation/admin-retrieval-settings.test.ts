@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
+import { AdminSettingsSchema } from '@compendiq/contracts';
 import { adminRoutes, FTS_REBUILD_LOCK_TIMEOUT_MS } from './admin.js';
 
 /**
@@ -836,6 +837,30 @@ describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () 
     await expect(getRagAnswerMaxImages()).resolves.toBe(5);
     await put({ ragAnswerMaxImages: 1 });
     await expect(getRagAnswerMaxImages()).resolves.toBe(1);
+  });
+
+  it('answers the saved cap on the READ half, so the panel does not render its own default back', async () => {
+    // Review r2. Only the write half was pinned, and nothing types the gap
+    // shut: the handler returns a bare object literal with no
+    // `satisfies AdminSettings` and no Fastify response schema, so dropping
+    // the field from the response compiled and passed. The operator-visible
+    // effect is the #1118 failure one layer along — an admin who saved 0 or 5
+    // reopens Settings → AI Models → Retrieval and sees the client's default
+    // of 2, i.e. a control that reports a value the answer path is not using.
+    //
+    // Parsed through `AdminSettingsSchema` rather than asserted key by key,
+    // because the same gap is open on P2's two intake knobs and P3's leg
+    // toggle — the schema requires all four, so one parse holds the whole
+    // Image retrieval group to the contract.
+    await put({ ragAnswerMaxImages: 5, ragImagesPerPageMax: 40, ragImageLegEnabled: false });
+
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+
+    expect(res.statusCode).toBe(200);
+    const settings = AdminSettingsSchema.parse(res.json());
+    expect(settings.ragAnswerMaxImages).toBe(5);
+    expect(settings.ragImagesPerPageMax).toBe(40);
+    expect(settings.ragImageLegEnabled).toBe(false);
   });
 
   it('rejects a cap outside the reader range, rather than saving a lie', async () => {

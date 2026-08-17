@@ -481,7 +481,12 @@ page-vs-web discriminator (#1125) is unchanged and an absent `kind` still means
 of the enumerator that parses `<img src>` out of a page body, so the URL the
 browser gets is one the authenticated attachment routes really serve.
 
-**Not in P3:** the chat model still receives no retrieved images. That is P4.
+**What P3 did not do, and P4 does:** the chat model now receives up to
+`rag_answer_max_images` of the matched pictures as `image_url` parts on the
+user turn, when the resolved chat pair has probed vision-capable — see
+["Answer path — retrieved images as model input (#1115 P4)"](#answer-path--retrieved-images-as-model-input-1115-p4)
+below. Everything above is unchanged by it: the sources, the fusion, the
+confidence exclusion and the `no_context` arm are all P3's and all still hold.
 
 ## Multi-query expansion — "deep search" (#1112)
 

@@ -258,6 +258,27 @@ describe('pickRetrievedImages — skip and count', () => {
     expect(picked.skipped.missing).toBe(1);
   });
 
+  it('answers empty when the identity lookup itself FAILS, rather than throwing', async () => {
+    // Review r2. The docstring promises "never throws: an answer must not
+    // fail because a picture could not be read", and this is the one path in
+    // the function that can — every other failure is already a value (`null`
+    // bytes, a `validateImage` throw caught beside it). Nothing made
+    // `mockQuery` reject, so turning the soft-fail into a rethrow left this
+    // file and `llm-ask.test.ts` green, and the blast radius is not a missing
+    // picture: the pick runs before the SSE headers are written, so the
+    // rejection leaves the handler and Fastify answers 500 — a transient DB
+    // error would fail the whole ask instead of degrading it to text-only.
+    mockQuery.mockRejectedValue(new Error('connection terminated'));
+
+    await expect(
+      pickRetrievedImages([page(1, [hit('a.png', 0.9)])], { max: 2 }),
+    ).resolves.toEqual({
+      parts: [],
+      used: [],
+      skipped: { missing: 0, invalid: 0, overBudget: 0, duplicate: 0 },
+    });
+  });
+
   it('counts bytes a vision encoder cannot read — SVG, or draw.io XML behind a .png', async () => {
     pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
     await writeConfluenceFile('c1', 'chart.png', Buffer.from('<mxfile host="app"></mxfile>'));

@@ -1790,6 +1790,33 @@ describe('POST /api/llm/ask', () => {
       info.mockRestore();
     });
 
+    it('still answers, text-only, when the page-identity lookup fails outright', async () => {
+      // Review r2, the route half of `retrieved-images.test.ts`'s "never
+      // throws". The pick runs BEFORE the SSE headers are written, so a
+      // rejection propagating out of it does not degrade the answer — it
+      // leaves the handler and Fastify answers 500, failing the whole ask
+      // over a picture. The soft-fail is what keeps a transient DB error a
+      // text-only answer.
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (PAGE_IDENTITY_SQL.test(String(sql))) throw new Error('connection terminated');
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockHybridSearch.mockResolvedValue([
+        pageWithFiles(65, [{ key: 'l1.png', similarity: 0.9, bytes: PNG }]),
+      ]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q', model: 'llama3' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      expect(typeof sentUserContent()).toBe('string');
+      expect(sentSystemPrompt()).not.toContain('images from the knowledge base');
+    });
+
     it('does not let a retrieved image avert a weak_match refusal, and reads no bytes for it', async () => {
       // #1105's `otherGrounding` counts grounding the USER supplied or the
       // request assembled — a sub-page tree, a fetched URL, their own
@@ -1817,9 +1844,18 @@ describe('POST /api/llm/ask', () => {
       expect(readAnyImageBytes()).toBe(false);
     });
 
-    it('records what it SENT on the audit entry, and only then', async () => {
+    it('records what it SENT on the audit entry — not what it picked or considered', async () => {
+      // Review r2: the fixture is MIXED on purpose. With one candidate and no
+      // skips, folding `skipped` into the count is indistinguishable from
+      // reporting `used`, and the distinction is the whole contract of these
+      // two fields — the EE consumer reads them as an attestation of what the
+      // model actually received, so a candidate the route refused belongs in
+      // the log line, never here. `gone.png` has no bytes on disk.
       mockHybridSearch.mockResolvedValue([
-        pageWithFiles(61, [{ key: 'h1.png', similarity: 0.9, bytes: PNG }]),
+        pageWithFiles(61, [
+          { key: 'h1.png', similarity: 0.9, bytes: PNG },
+          { key: 'gone.png', similarity: 0.8 },
+        ]),
       ]);
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
 
@@ -2021,6 +2057,42 @@ describe('POST /api/llm/ask', () => {
         expect((final.sources as Array<Record<string, unknown>>).some((s) => s.kind === 'image')).toBe(true);
       });
     }
+
+    it('REFUSES with image_only_context when the pick RAN and could not use one candidate', async () => {
+      // Review r2 — the third documented arm, and the only one where the pick
+      // really runs: vision stays `true` and the cap stays at its default, so
+      // the route resolves the identity row and reaches for bytes that are
+      // not on disk. Both cases above arrange the GATE instead, so narrowing
+      // the condition to `cap === 0 || vision !== true` deleted this arm with
+      // the whole suite green — and under that mutation an image-only page
+      // whose one picture cannot be read ANSWERS, from a synthesised title,
+      // which is the guess-wearing-a-source-list the rule exists to refuse.
+      // It is also the arm the r1 `break`→`continue` fix was justified by.
+      const info = vi.spyOn(logger, 'info');
+      mockHybridSearch.mockResolvedValue([synthesizedPage(77, 'sheet.png', false)]);
+      mockBuildRagContext.mockReturnValue('[Source 1: Untranscribed schematic]');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does the schematic show' },
+      });
+
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBe(true);
+      expect(final.refusalReason).toBe('image_only_context');
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      // What separates this arm from the other two, and the assertion that
+      // fails under the mutation: the pick was not gated away — it really did
+      // read the identity row and try the bytes.
+      expect(readAnyImageBytes()).toBe(true);
+      // …and the runbook's §7 debugging step is true of it: the counters on
+      // the pick line are what tell an operator this arm apart from a gate
+      // that never let the pick run at all.
+      const line = info.mock.calls.find((c) => String(c[1]).includes('#1115 P4'));
+      expect((line![0] as { skipped: Record<string, number> }).skipped.missing).toBe(1);
+      info.mockRestore();
+    });
 
     it('leaks no image bytes into the audit — a refusal writes no audit row at all', async () => {
       mockGetVisionCapability.mockResolvedValue(false);
