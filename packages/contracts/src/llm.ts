@@ -3,7 +3,14 @@ import { z } from 'zod';
 // ─── Use-cases (#1104 adds 'rerank' — see ADR-021 amendment: it targets a
 // /v1/rerank endpoint via a dedicated client, and UNASSIGNED means the
 // rerank stage is disabled, never inherit-the-default-provider) ──────────
-export const LlmUsecaseSchema = z.enum(['chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank']);
+//
+// #1115 adds 'image_embedding' under the SAME non-inheriting rule, one rung
+// stronger: a default text embedder handed the VL request answers the plain
+// `{model, input}` shape with a well-formed vector that is simply wrong, and
+// wrong vectors are indistinguishable from bad retrieval. See ADR-025.
+export const LlmUsecaseSchema = z.enum([
+  'chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank', 'image_embedding',
+]);
 export type LlmUsecase = z.infer<typeof LlmUsecaseSchema>;
 
 // ─── Provider ────────────────────────────────────────────────────────────
@@ -59,6 +66,9 @@ export const UsecaseAssignmentsSchema = z.object({
   // `resolved` reports what WOULD serve if assigned; the rerank stage itself
   // only runs on an explicit assignment (resolveRerankUsecase).
   rerank: UsecaseAssignmentSchema,
+  // #1115 — same story as rerank: `resolved` is informational, the image leg
+  // runs only on an explicit assignment (resolveImageEmbeddingUsecase).
+  image_embedding: UsecaseAssignmentSchema,
 });
 export type UsecaseAssignments = z.infer<typeof UsecaseAssignmentsSchema>;
 
@@ -73,6 +83,7 @@ export const UpdateUsecaseAssignmentsInputSchema = z.object({
   auto_tag: UpdateUsecaseAssignmentInputSchema.optional(),
   embedding: UpdateUsecaseAssignmentInputSchema.optional(),
   rerank: UpdateUsecaseAssignmentInputSchema.optional(),
+  image_embedding: UpdateUsecaseAssignmentInputSchema.optional(),
 });
 export type UpdateUsecaseAssignmentsInput = z.infer<typeof UpdateUsecaseAssignmentsInputSchema>;
 
@@ -124,6 +135,45 @@ export const VisionCapabilityDetailSchema = z.object({
   probeError: z.string().nullable(),
 });
 export type VisionCapabilityDetail = z.infer<typeof VisionCapabilityDetailSchema>;
+
+// ─── Admin-only image-embedding probe result (#1115) ─────────────────────
+/**
+ * pgvector's index tiers, as the probed width picks them: `vector` +
+ * `vector_cosine_ops` HNSW up to 2000 dims, `halfvec` + `halfvec_cosine_ops`
+ * HNSW to 4000, and above that a `vector` column with **no index at all** —
+ * correct but sequentially scanned, which is why the UI states it rather than
+ * leaving the operator to discover it from query latency.
+ */
+export const VectorIndexTierSchema = z.enum(['vector', 'halfvec', 'unindexed']);
+export type VectorIndexTier = z.infer<typeof VectorIndexTierSchema>;
+
+/**
+ * Shape returned by `GET /admin/llm-usecases/image_embedding/probe` and by
+ * `POST /admin/llm-usecases/image_embedding/reprobe` — the last probe of the
+ * pair `resolveImageEmbeddingUsecase()` resolves.
+ *
+ * **Admin-only, deliberately**, for exactly the reason `VisionCapabilityDetail`
+ * is: `error` folds in the provider's own response body, which
+ * `llm-http-error.ts` keeps off client-visible paths because it can echo
+ * request fragments and internal topology. It is truncated at
+ * `PROBE_ERROR_MAX_CHARS` on the way out and rendered as plain JSX text.
+ * `UsecaseDefaultSchema` must never gain it.
+ *
+ * `dimensions` and `tier` are null together on a failed probe: a probe that
+ * did not return a vector has no width, and nullable-rather-than-optional
+ * stops a caller reading "absent" as "zero-dimensional".
+ */
+export const ImageEmbeddingProbeSchema = z.object({
+  providerId: z.string().uuid(),
+  model: z.string(),
+  /** Vector width the model answered with. Bounded like every other pgvector width. */
+  dimensions: z.number().int().min(1).max(16_000).nullable(),
+  tier: VectorIndexTierSchema.nullable(),
+  /** ISO-8601. Null when this pair has never been probed. */
+  probedAt: z.string().nullable(),
+  error: z.string().nullable(),
+});
+export type ImageEmbeddingProbe = z.infer<typeof ImageEmbeddingProbeSchema>;
 
 // ─── DEPRECATED: old two-slot enum kept for transitional typing only ──────
 /** @deprecated use `LlmProvider.id` (uuid). Removed after Task 36. */

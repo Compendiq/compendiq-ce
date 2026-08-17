@@ -1,8 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { LlmTab } from './LlmTab';
 import { useAuthStore } from '../../../stores/auth-store';
+
+// #1115 — a refused `image_embedding` assignment is reported as an error
+// toast, and the reason it carries is the thing under test.
+vi.mock('sonner', () => ({
+  toast: { error: vi.fn(), success: vi.fn(), message: vi.fn() },
+}));
 
 function createWrapper() {
   const qc = new QueryClient({
@@ -83,14 +90,28 @@ const assignments = {
     model: null,
     resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
   },
+  // #1115: same non-inheriting rule as rerank.
+  image_embedding: {
+    providerId: providerB.id,
+    model: 'Qwen/Qwen3-VL-Embedding-2B',
+    resolved: { providerId: providerB.id, providerName: 'OpenAI', model: 'Qwen/Qwen3-VL-Embedding-2B' },
+  },
 };
+
+/** #1115 — the last record a re-probe wrote, so GET reflects it (see below). */
+let lastImageProbe: Record<string, unknown> | null = null;
 
 function mockRoutes(options?: {
   concurrentStreamsCap?: number;
   /** `null` → field omitted from the settings payload (legacy backend). */
   embeddingDimensions?: number | null;
   probeDimensions?: number;
+  /** #1115 — the stored image-embedding probe, or `null` for a 404. */
+  imageProbe?: Record<string, unknown> | null;
+  /** #1115 — make the assignments PUT fail with this 422 body. */
+  putError?: string;
 }) {
+  lastImageProbe = null;
   const cap = options?.concurrentStreamsCap ?? 3;
   const settingsBody: Record<string, unknown> = {
     ftsLanguage: 'simple',
@@ -115,7 +136,49 @@ function mockRoutes(options?: {
       });
     }
     if (url.endsWith('/admin/llm-usecases') && (init as RequestInit).method === 'PUT') {
+      if (options?.putError) {
+        return new Response(JSON.stringify({ error: options.putError, statusCode: 422 }), {
+          status: 422,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       return new Response(JSON.stringify(assignments), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    // #1115 — the admin-only image-embedding probe detail + its Re-check.
+    // Stateful, because the server is: a successful re-probe overwrites the
+    // stored record, so the invalidation the component fires must see the NEW
+    // verdict rather than the old one.
+    if (url.endsWith('/admin/llm-usecases/image_embedding/probe')) {
+      if (options?.imageProbe === null) {
+        return new Response(JSON.stringify({ error: 'unassigned' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify(lastImageProbe ?? options?.imageProbe ?? {
+          providerId: providerB.id,
+          model: 'Qwen/Qwen3-VL-Embedding-2B',
+          dimensions: 2048,
+          tier: 'halfvec',
+          probedAt: '2026-08-17T10:00:00.000Z',
+          error: null,
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url.endsWith('/admin/llm-usecases/image_embedding/reprobe')) {
+      lastImageProbe = {
+        providerId: providerB.id,
+        model: 'Qwen/Qwen3-VL-Embedding-2B',
+        dimensions: 1024,
+        tier: 'vector',
+        probedAt: '2026-08-17T11:00:00.000Z',
+        error: null,
+      };
+      return new Response(JSON.stringify(lastImageProbe), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -777,5 +840,121 @@ describe('LlmTab', () => {
     });
     fireEvent.click(await screen.findByRole('button', { name: /probe/i }));
     await screen.findByText(/dimension stays at 1024/i);
+  });
+
+  // ── #1115: the image-embedding row ──────────────────────────────────────
+  //
+  // A seventh use case that never inherits the default provider. Everything an
+  // admin needs to judge it has to be ON SCREEN, not in a hover tooltip: the
+  // non-support list is the difference between "this will work" and "this
+  // silently indexes garbage", and a caveat reachable only by hover is
+  // unreachable by touch, keyboard and screen readers (#1119's rule).
+
+  it('renders the Image embedding row with its scope copy and the non-support note', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    const row = await screen.findByTestId('usecase-row-image_embedding');
+    expect(within(row).getByText('Image embedding')).toBeTruthy();
+    expect(within(row).getByText(/never inherits the default provider/i)).toBeTruthy();
+    expect(within(row).getByText(/unassigned means image search is off/i)).toBeTruthy();
+    const note = within(row).getByTestId('image-embedding-support-note');
+    expect(note.textContent).toMatch(/Ollama, LM Studio and TEI do not/i);
+    // "Disabled", not "Inherit default" — the select must not offer a fallback
+    // that does not exist.
+    const select = within(row).getByTestId('usecase-image_embedding-provider') as HTMLSelectElement;
+    expect(select.options[0]!.text).toMatch(/disabled/i);
+  });
+
+  it('shows the probed width and index tier', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const status = await screen.findByTestId('image-embedding-probe-status');
+    await waitFor(() => expect(status.textContent).toMatch(/2048-dim/));
+    expect(status.textContent).toMatch(/halfvec HNSW/);
+  });
+
+  it('states that an unindexed width is sequentially scanned', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      imageProbe: {
+        providerId: providerB.id,
+        model: 'Qwen/Qwen3-VL-Embedding-8B',
+        dimensions: 4096,
+        tier: 'unindexed',
+        probedAt: '2026-08-17T10:00:00.000Z',
+        error: null,
+      },
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    const status = await screen.findByTestId('image-embedding-probe-status');
+    await waitFor(() => expect(status.textContent).toMatch(/4096-dim/));
+    expect(status.textContent).toMatch(/no index/i);
+    expect(await screen.findByTestId('image-embedding-unindexed-note')).toBeTruthy();
+  });
+
+  it('keeps the provider body behind a disclosure, as plain text', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      imageProbe: {
+        providerId: providerB.id,
+        model: 'nomic-embed-text',
+        dimensions: null,
+        tier: null,
+        probedAt: '2026-08-17T10:00:00.000Z',
+        error: 'vlEmbedding HTTP 422: Extra inputs are not permitted: messages',
+      },
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    const details = await screen.findByTestId('image-embedding-probe-error');
+    expect(details.tagName).toBe('DETAILS');
+    expect(
+      within(details).getByTestId('image-embedding-probe-error-text').textContent,
+    ).toContain('Extra inputs are not permitted');
+  });
+
+  it('Re-check posts to the reprobe route and renders the new verdict', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByTestId('image-embedding-probe-status');
+
+    fireEvent.click(screen.getByTestId('image-embedding-recheck'));
+
+    await waitFor(() => {
+      const posted = spy.mock.calls.filter(([input, init]) => {
+        const url = typeof input === 'string' ? input : (input as URL).toString();
+        return url.endsWith('/admin/llm-usecases/image_embedding/reprobe')
+          && (init as RequestInit | undefined)?.method === 'POST';
+      });
+      expect(posted).toHaveLength(1);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('image-embedding-probe-status').textContent).toMatch(/1024-dim/);
+    });
+  });
+
+  it('surfaces the refusal reason when the probe blocks the assignment', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({
+      putError:
+        "This endpoint refused the request. Image embedding needs a server that accepts vLLM's chat-embeddings shape on /v1/embeddings — Ollama, LM Studio and TEI do not.",
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-image_embedding-provider'), {
+      target: { value: providerA.id },
+    });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        expect.stringContaining('chat-embeddings shape'),
+      );
+    });
   });
 });

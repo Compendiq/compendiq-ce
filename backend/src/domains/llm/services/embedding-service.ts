@@ -1,5 +1,6 @@
 import type { Job } from 'bullmq';
 import { query, getPool } from '../../../core/db/postgres.js';
+import { columnTypeFor, HNSW_PARAMS } from '../../../core/db/vector-column-tier.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
 import { LlmHttpError } from './llm-http-error.js';
@@ -1659,33 +1660,20 @@ export async function enqueueReembedAll(
         `refused dimension change to non-integer or out-of-range value: ${opts.newDimensions}`,
       );
     }
-    // pgvector index tiers (pgvector 0.8+):
-    //   HNSW on vector:  max 2000 dims — best recall, fastest, full float32
-    //   HNSW on halfvec: max 4000 dims — float16 storage, ~50% smaller, ~equivalent recall
-    //   no index:        > 4000 dims — sequential scan; correct but slower on large KBs
-    // Large open-source models like qwen3-embedding:4b (2560) or :8b (4096) can't fit
-    // HNSW on plain vector; falling back to halfvec or seq-scan keeps them usable.
-    let columnType: string;
-    let indexSql: string | null;
+    // pgvector index tiers, from the one shared statement of the rule
+    // (`core/db/vector-column-tier.ts`, hoisted in #1115). Large open-source
+    // models like qwen3-embedding:4b (2560) or :8b (4096) can't fit HNSW on
+    // plain vector; falling back to halfvec or seq-scan keeps them usable.
+    const { columnType, opclass } = columnTypeFor(n);
     // pages.page_avg_embedding (#919) must stay the same type/dimension as
     // page_embeddings.embedding so embedPage's `AVG(embedding)` assigns cleanly,
     // and its HNSW index uses the matching opclass.
-    let avgIndexSql: string | null;
-    // HNSW tuning parameters match migration 011 and 048 (m=16, ef_construction=200).
-    const HNSW_PARAMS = `WITH (m = 16, ef_construction = 200)`;
-    if (n <= 2000) {
-      columnType = `vector(${n})`;
-      indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops) ${HNSW_PARAMS}`;
-      avgIndexSql = `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding vector_cosine_ops) ${HNSW_PARAMS}`;
-    } else if (n <= 4000) {
-      columnType = `halfvec(${n})`;
-      indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding halfvec_cosine_ops) ${HNSW_PARAMS}`;
-      avgIndexSql = `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding halfvec_cosine_ops) ${HNSW_PARAMS}`;
-    } else {
-      columnType = `vector(${n})`;
-      indexSql = null;
-      avgIndexSql = null;
-    }
+    const indexSql = opclass
+      ? `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding ${opclass}) ${HNSW_PARAMS}`
+      : null;
+    const avgIndexSql = opclass
+      ? `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding ${opclass}) ${HNSW_PARAMS}`
+      : null;
     const client = await getPool().connect();
     try {
       await client.query('BEGIN');

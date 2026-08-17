@@ -5,15 +5,26 @@ import {
   UpdateUsecaseAssignmentsInputSchema,
   UsecaseDefaultSchema,
   VisionCapabilityDetailSchema,
+  ImageEmbeddingProbeSchema,
   type LlmUsecase,
 } from '@compendiq/contracts';
 import { query, getPool } from '../../core/db/postgres.js';
 import {
   resolveUsecase,
   resolveRerankUsecase,
+  resolveImageEmbeddingUsecase,
   resolveConfidenceBasisPair,
+  loadProviderConfig,
   type ConfidenceBasisResolution,
 } from '../../domains/llm/services/llm-provider-resolver.js';
+import {
+  probeImageEmbedding,
+  persistImageEmbeddingProbe,
+  readImageEmbeddingProbe,
+  type ImageEmbeddingProbeResult,
+  type ImageProbeFailureReason,
+} from '../../domains/llm/services/image-embedding-probe.js';
+import { ensureImageEmbeddingColumn } from '../../domains/llm/services/image-embedding-index.js';
 import {
   warnThresholdOutlivedItsModel,
   type CalibrationPair,
@@ -34,11 +45,46 @@ const ADMIN_LIMIT = {
   config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
 };
 
-const USECASES: readonly LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank'] as const;
+const USECASES: readonly LlmUsecase[] = [
+  'chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank', 'image_embedding',
+] as const;
+
+/**
+ * The two ADR-021 use cases that never inherit the default provider. Spelled
+ * once, so the three places that special-case them (`GET /llm/usecase-default`,
+ * the admin grid, and the resolver behind both) cannot disagree.
+ */
+const NON_INHERITING: ReadonlySet<LlmUsecase> = new Set<LlmUsecase>(['rerank', 'image_embedding']);
+
+function resolveNonInheriting(usecase: LlmUsecase) {
+  return usecase === 'rerank' ? resolveRerankUsecase() : resolveImageEmbeddingUsecase();
+}
 
 /** #1184 — shared by the capability read and the manual re-probe. */
 const NO_CHAT_PROVIDER =
   'No provider resolved for use case "chat". Configure one in Settings → AI Models.';
+
+/** #1115 — the same sentence for the image leg's own detail routes. */
+const NO_IMAGE_EMBEDDING_PROVIDER =
+  'No provider is assigned to image embedding, so the image leg is off. Assign one in Settings → AI Models.';
+
+/**
+ * What a refused assignment says. **The category, never the provider's body**
+ * (#1184's rule): the raw body can echo request fragments and internal
+ * topology, and it lands in an admin toast from here. It stays reachable on
+ * `GET /admin/llm-usecases/image_embedding/probe`, which is `requireAdmin` and
+ * which an admin has to go looking for.
+ */
+const PROBE_REFUSAL_MESSAGE: Record<ImageProbeFailureReason, string> = {
+  shape_rejected:
+    'This endpoint refused the request. Image embedding needs a server that accepts vLLM\'s chat-embeddings shape (a `messages` array) on /v1/embeddings — Ollama, LM Studio and TEI do not. See the probe detail for the provider\'s own answer.',
+  unreachable:
+    'The provider could not be reached for the probe. Check the base URL, the credentials and that the model server is running, then try again.',
+  width_mismatch:
+    'This endpoint returned different vector widths for an image and for a text, so image and text vectors would not be comparable. It is likely applying the chat template to only one of the two.',
+  unusable_width:
+    'This endpoint returned a vector width Postgres cannot index. Serve the model at 4000 dimensions or fewer (its `dimensions` / MRL parameter).',
+};
 
 /**
  * #1114 — the two use cases whose model sets the scale a confidence threshold
@@ -78,8 +124,12 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
     try {
       // Rerank never inherits the default provider — unassigned means the
       // stage is disabled (#1104), which this route reports as 404 rather
-      // than pretending the default provider serves /v1/rerank.
-      resolved = usecase === 'rerank' ? await resolveRerankUsecase() : await resolveUsecase(usecase);
+      // than pretending the default provider serves /v1/rerank. #1115's
+      // `image_embedding` is the same rule; `resolveUsecase` throws for both,
+      // so this branch is what keeps the route from 500ing on them.
+      resolved = NON_INHERITING.has(usecase)
+        ? await resolveNonInheriting(usecase)
+        : await resolveUsecase(usecase);
     } catch {
       resolved = null;
     }
@@ -120,12 +170,12 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       const raw = new Map(rawRows.rows.map(r => [r.usecase, r]));
       const out: Record<string, unknown> = {};
       for (const u of USECASES) {
-        // Rerank never falls back to the default provider — unassigned means
-        // the stage is DISABLED (#1104), and showing the default here would
-        // imply it serves rerank traffic. The empty sentinel renders as
-        // "unset" in the settings grid.
-        const resolved = u === 'rerank'
-          ? await resolveRerankUsecase().catch(() => null)
+        // Rerank and image embedding never fall back to the default provider —
+        // unassigned means the stage is DISABLED (#1104, #1115), and showing
+        // the default here would imply it serves that traffic. The empty
+        // sentinel renders as "unset" in the settings grid.
+        const resolved = NON_INHERITING.has(u)
+          ? await resolveNonInheriting(u).catch(() => null)
           : await resolveUsecase(u).catch(() => null);
         out[u] = {
           providerId: raw.get(u)?.provider_id ?? null,
@@ -171,6 +221,82 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       // #1154: whether this save actually moved the `chat` assignment. Saving
       // only, say, `embedding` must not fire a vision probe.
       let chatAssignmentChanged = false;
+
+      // ── #1115: the image leg is probe-gated, BEFORE the transaction ──────
+      //
+      // A leg that cannot embed must not be assignable. Unlike the vision
+      // probe (fire-and-forget after the save, because a wrong verdict only
+      // disables an optional composer control), a wrong `image_embedding`
+      // assignment is silent and expensive: the default text provider ANSWERS
+      // the request in the plain shape with a well-formed vector, and an index
+      // built from those is indistinguishable from bad retrieval. So this is
+      // BLOCKING and it REFUSES — the admin waits on one round-trip, once, at
+      // the moment they chose the endpoint.
+      //
+      // Unassigning is not probed: there is nothing to probe, and the leg
+      // simply goes off (`resolveImageEmbeddingUsecase` answers null).
+      const imagePatch = updates.image_embedding;
+      let imageAssignment: { providerId: string; model: string; probe: ImageEmbeddingProbeResult } | null = null;
+      if (
+        imagePatch
+        && (Object.prototype.hasOwnProperty.call(imagePatch, 'providerId')
+          || Object.prototype.hasOwnProperty.call(imagePatch, 'model'))
+      ) {
+        const existing = await query<{ provider_id: string | null; model: string | null }>(
+          `SELECT provider_id, model FROM llm_usecase_assignments WHERE usecase = 'image_embedding'`,
+        );
+        const prev = existing.rows[0];
+        const nextProviderId = Object.prototype.hasOwnProperty.call(imagePatch, 'providerId')
+          ? (imagePatch.providerId ?? null)
+          : (prev?.provider_id ?? null);
+        const nextModel = Object.prototype.hasOwnProperty.call(imagePatch, 'model')
+          ? (imagePatch.model ?? null)
+          : (prev?.model ?? null);
+
+        if (nextProviderId) {
+          // Resolve the pair the assignment WOULD produce, the same way
+          // `resolveImageEmbeddingUsecase` will: an unpinned model inherits the
+          // provider's `default_model`, and neither existing means the leg
+          // could never run.
+          let cfg;
+          try {
+            cfg = await loadProviderConfig(nextProviderId);
+          } catch {
+            return reply.code(422).send({
+              error: 'That provider no longer exists. Reload Settings → AI Models and pick another.',
+              statusCode: 422,
+            });
+          }
+          const model = nextModel || cfg.defaultModel || '';
+          if (!model) {
+            return reply.code(422).send({
+              error:
+                'No model resolves for image embedding. Pick a model, or set a default model on the provider.',
+              statusCode: 422,
+            });
+          }
+          const probe = await probeImageEmbedding(cfg, model);
+          // A FAILED probe of a pair that is not the live one must not
+          // overwrite the record — the assignment is being refused, so the live
+          // leg is unchanged, and clobbering its stored verdict would replace a
+          // true "2048-dim · halfvec HNSW" with "Not established" for an
+          // endpoint that is still working. The refusal category in the 422 is
+          // the feedback for the pair that failed, and `probeImageEmbedding`
+          // logs the provider's own answer.
+          const samePairAsLive =
+            prev?.provider_id === nextProviderId && (prev?.model ?? null) === (nextModel ?? null);
+          if (!probe.reason || samePairAsLive) {
+            await persistImageEmbeddingProbe(nextProviderId, model, probe);
+          }
+          if (probe.reason) {
+            return reply.code(422).send({
+              error: PROBE_REFUSAL_MESSAGE[probe.reason],
+              statusCode: 422,
+            });
+          }
+          imageAssignment = { providerId: nextProviderId, model, probe };
+        }
+      }
 
       // #1114 — the pair each confidence basis resolved to BEFORE the save.
       // Read through the resolver, not the raw row, because inheritance and
@@ -221,6 +347,18 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
         client.release();
       }
       await bumpProviderCacheVersion();
+
+      // #1115 — the column follows the probe, and only once the assignment
+      // has actually landed. `ensureImageEmbeddingColumn` is a no-op beyond
+      // "create the index if it is missing" when the width and the pair are
+      // unchanged, so a re-save of the same assignment costs nothing; a
+      // changed model truncates and re-dirties (ADR-025 D7).
+      if (imageAssignment && imageAssignment.probe.dimensions !== null) {
+        await ensureImageEmbeddingColumn(imageAssignment.probe.dimensions, {
+          providerId: imageAssignment.providerId,
+          model: imageAssignment.model,
+        });
+      }
 
       // #1114 — the quiet counterpart of the shadow swap's warning: no
       // migration, no runbook, just an admin picking a different model in a
@@ -338,6 +476,94 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
         vision: detail.vision,
         probedAt: detail.probedAt,
         probeError: detail.probeError,
+      });
+    },
+  );
+
+  // ─── #1115: image-embedding probe detail + manual re-probe ───────────────
+  //
+  // Mirrors the #1184 pair above, for the same reasons and with the same
+  // gating. `error` is the provider's own body, so both are `requireAdmin` and
+  // `UsecaseDefaultSchema` — served to every authenticated user — must never
+  // gain it.
+  //
+  // Spelled into the path rather than taken as a `:usecase` parameter, exactly
+  // as the vision pair is: only `image_embedding` resolves to an endpoint that
+  // speaks the chat-embeddings shape, and probing anything else with it would
+  // post an image at a text embedder and record a meaningless verdict.
+
+  // GET — the LAST stored probe, never a fresh one. Read on every paint of
+  // Settings → AI Models, so it must not cost a provider round-trip.
+  fastify.get(
+    '/admin/llm-usecases/image_embedding/probe',
+    { preHandler: fastify.requireAdmin, ...ADMIN_LIMIT },
+    async (_req, reply) => {
+      const resolved = await resolveImageEmbeddingUsecase().catch(() => null);
+      if (!resolved) return reply.code(404).send({ error: NO_IMAGE_EMBEDDING_PROVIDER });
+
+      const stored = await readImageEmbeddingProbe();
+      // A stored probe for a DIFFERENT pair describes an endpoint that is no
+      // longer assigned. Answering with nulls says "never probed", which is
+      // true of the live pair and is what the panel's Re-check exists for.
+      const matches =
+        stored?.providerId === resolved.config.providerId && stored?.model === resolved.model;
+      return ImageEmbeddingProbeSchema.parse({
+        providerId: resolved.config.providerId,
+        model: resolved.model,
+        dimensions: matches ? stored!.dimensions : null,
+        tier: matches ? stored!.tier : null,
+        probedAt: matches ? stored!.probedAt : null,
+        error: matches ? stored!.error : null,
+      });
+    },
+  );
+
+  // POST — force a fresh probe of the resolved pair and answer with it.
+  //
+  // Blocking, like the vision re-probe: the admin clicked a button and is
+  // waiting. It goes through the queue and the per-provider breaker, and an
+  // image prompt is 10–25x a short text one, so the client must not assume a
+  // sub-second response.
+  //
+  // A SUCCESSFUL re-probe also re-runs `ensureImageEmbeddingColumn`. That is
+  // the remedy for the case this control exists for — an operator restarted
+  // the model server at a different width or with a different `--hf-overrides`
+  // — and it is why the re-check is not merely diagnostic. A FAILED one leaves
+  // the column exactly as it is: an unreachable endpoint is not evidence that
+  // the existing index is wrong.
+  fastify.post(
+    '/admin/llm-usecases/image_embedding/reprobe',
+    { preHandler: fastify.requireAdmin, ...ADMIN_LIMIT },
+    async (req, reply) => {
+      const resolved = await resolveImageEmbeddingUsecase().catch(() => null);
+      if (!resolved) return reply.code(404).send({ error: NO_IMAGE_EMBEDDING_PROVIDER });
+
+      const probe = await probeImageEmbedding(resolved.config, resolved.model);
+      await persistImageEmbeddingProbe(resolved.config.providerId, resolved.model, probe);
+      if (probe.dimensions !== null) {
+        await ensureImageEmbeddingColumn(probe.dimensions, {
+          providerId: resolved.config.providerId,
+          model: resolved.model,
+        });
+      }
+      emitLlmAudit({
+        event: 'llm_image_embedding_reprobed',
+        userId: req.userId,
+        metadata: {
+          providerId: resolved.config.providerId,
+          model: resolved.model,
+          dimensions: probe.dimensions,
+          reason: probe.reason,
+        },
+      });
+      const stored = await readImageEmbeddingProbe();
+      return ImageEmbeddingProbeSchema.parse({
+        providerId: resolved.config.providerId,
+        model: resolved.model,
+        dimensions: probe.dimensions,
+        tier: probe.tier,
+        probedAt: stored?.probedAt ?? null,
+        error: probe.error,
       });
     },
   );

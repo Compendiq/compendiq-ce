@@ -1813,7 +1813,8 @@ writer; `max_score` keeps the fusion unit.
 
 ADR-021 gains a **seventh** use case, `image_embedding` (ADR-025). Migration
 `093` widened the `llm_usecase_assignments` CHECK in **P0**; the resolver, the
-client, the probe and the settings row land in **P1**.
+client, the probe and the settings row shipped in **P1**. Nothing embeds a page
+image yet — that is P2.
 
 **It is the `rerank` rule, one rung stronger.** `resolveImageEmbeddingUsecase()`
 returns `null` when unassigned and the image leg is simply off; `resolveUsecase('image_embedding')`
@@ -1847,12 +1848,29 @@ hand-built template and a per-server random media marker), and the plain
 ≥ 0.14.0 with `--runner pooling`**, pinned by version because a bump changes the
 vector space (ADR-025 D12).
 
-**The probe follows `vision-probe.ts`, and records a width.** On assignment, P1
-embeds a known image *and* a text through the client, refuses the pair if the
-endpoint rejects the `messages` shape or returns mismatched widths, and stores
-the resulting dimension — which then picks the column type and index tier for
+**The probe follows `vision-probe.ts`, and records a width.**
+`probeImageEmbedding` embeds a known image *and* a text through the client and
+refuses the pair if the endpoint rejects the `messages` shape, never answers, or
+returns **mismatched widths** — the third is not paranoia: `mlx_vlm.server`
+applies the chat template to images and skips it for text, which puts two vector
+spaces into one column, and a width disagreement is the only symptom reachable
+from here. The width it records picks the column type and index tier for
 `page_image_embeddings`, the same probe-then-DDL pattern the text column already
 uses. Capability is established by asking, never by declaration.
+
+**The probe GATES the assignment, unlike the vision probe.** #1154's vision
+probe is fire-and-forget after the save, because a wrong verdict only disables an
+optional composer control. Here the probe is **blocking** and a failure is a
+**422 that refuses the assignment**: a leg that cannot embed must not be
+assignable, and the failure it prevents is silent — the default text provider
+*answers* the request in the plain shape with a well-formed vector. The 422
+carries the failure **category** (`shape_rejected`, `unreachable`,
+`width_mismatch`, `unusable_width`), never the provider's body, which stays on
+`GET /admin/llm-usecases/image_embedding/probe` beside
+`POST …/reprobe` — both `requireAdmin`, both mirroring the #1184 pair, and
+`UsecaseDefaultSchema` must never gain either. Clearing the assignment is not
+probed: the leg simply goes off, and the index is left in place so re-assigning
+the same pair costs nothing.
 
 ## ADR-022: RAG retrieval honours per-user space permissions
 
@@ -2060,12 +2078,16 @@ Multi-replica deployments sit behind a load balancer. `trustProxy` MUST be set t
 
 **Date:** 2026-08-17
 **Status:** Accepted (owner interview, 2026-08-17). **Partially implemented:**
-P0 has shipped — this ADR, migration `093` (the `page_image_embeddings` table,
-`pages.image_embedding_dirty`, the widened use-case CHECK) and the core
-`attachment-store` hoist. The client, the probe, the index writer, the
-retrieval leg and the answer path land in **P1–P4**, and every paragraph below
-that describes unshipped behaviour says which PR owns it. Nothing in Compendiq
-embeds or retrieves an image today.
+P0 and P1 have shipped. P0: this ADR, migration `093` (the
+`page_image_embeddings` table, `pages.image_embedding_dirty`, the widened
+use-case CHECK) and the core `attachment-store` hoist. P1: the
+`image_embedding` use case end to end — `vl-embedding-client.ts`,
+`resolveImageEmbeddingUsecase`, `image-embedding-probe.ts`, the probe-time
+runtime DDL `ensureImageEmbeddingColumn`, the probe-gated assignment routes and
+the Settings row. The page-embedding worker, the retrieval leg and the answer
+path land in **P2–P4**, and every paragraph below that describes unshipped
+behaviour says which PR owns it. **Nothing embeds or retrieves an image yet**:
+P1 makes the leg configurable and provable, not live.
 **Design of record:** `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`
 (issue #1115, epic #1100 Phase 2).
 
@@ -2113,8 +2135,8 @@ that index only. Two citations decide it:
 schedule; #1115 adds an index beside it. The epic's "mutually exclusive"
 paragraph is superseded.
 
-**D3 — A new ADR-021 use case, `image_embedding`, modelled on `rerank` (P1).**
-It never inherits the default provider, it has its own resolver
+**D3 — A new ADR-021 use case, `image_embedding`, modelled on `rerank` (P1,
+shipped).** It never inherits the default provider, it has its own resolver
 (`resolveImageEmbeddingUsecase`, returning `null` when unassigned) and its own
 client, and **unassigned means the image leg is disabled**. Same argument that
 made `rerank` non-inheriting in #1104, one rung stronger: a chat provider cannot
@@ -2123,7 +2145,8 @@ plain-`input` shape with a plausible vector that is simply wrong. Silent
 garbage is worse than a 404.
 
 **D4 — The request shape is vLLM's chat-embeddings extension, never plain
-`input` (P1).** `POST /v1/embeddings` with a `messages` array — system message
+`input` (P1, shipped in `vl-embedding-client.ts`).** `POST /v1/embeddings` with
+a `messages` array — system message
 carrying the instruction, user message carrying the image and/or text, and a
 trailing **empty `assistant` message** with `continue_final_message: true`:
 
@@ -2172,10 +2195,21 @@ than by everyone remembering a `WHERE`. It is also the only shape that can hold
 two different widths from two different models at once.
 
 **D7 — Changing the image model truncates the index and re-scans. No shadow
-swap (P1/P2).** #1116's shadow path exists because a text re-embed degrades live
-search for hours; here the leg is simply *disabled* while the index is empty, so
-text retrieval is untouched. Images are far cheaper to redo: only referenced
-files, content-addressed by sha256, and typically a handful per page.
+swap (P1 shipped the truncate; P2 does the re-scan).** #1116's shadow path
+exists because a text re-embed degrades live search for hours; here the leg is
+simply *disabled* while the index is empty, so text retrieval is untouched.
+Images are far cheaper to redo: only referenced files, content-addressed by
+sha256, and typically a handful per page. `ensureImageEmbeddingColumn(dims,
+{providerId, model})` is D7 in code: it rebuilds when the probed **width**
+differs from the live column **or** when the recorded
+`admin_settings.image_embedding_index_model` differs from the newly assigned
+`provider:model` — the second half matters because two different models at the
+same width are two incompatible spaces that a column type cannot tell apart, and
+because the provider row carries the base URL, which is the only signal D12's
+version pin can see. A rebuild TRUNCATEs, retypes, rebuilds the HNSW index for
+the new tier and marks every non-folder page `image_embedding_dirty`;
+`embedding_dirty` is deliberately untouched, which is why migration 093 gave the
+two flags separate columns.
 
 **D8 — The answer path degrades to text-only when the chat model's vision
 verdict is not `true`, and retrieved images never count as grounding (P4).**
@@ -2324,12 +2358,23 @@ nobody reads the numbers above as if they were ours:
 - **`resolveAttachmentBytes` is a system read with no ACL** (D9). Its safety is
   a boundary, not a check: routes must keep using the gated readers, and the
   test that walks `src/routes` is what keeps that true as new routes appear.
-- **The instruction matcher must learn about `vl` (P1).** `wantsInstructionPrefix`
-  (#1329) matches `qwen3` + `embed`, so a Qwen3-**VL**-Embedding id would get the
-  flat `Instruct:/Query:` text-side prefix — the wrong format for this family.
-  The VL client owns its own formatting and the text-side matcher excludes `vl`,
-  so an operator who ever points the *text* `embedding` assignment at a VL model
-  gets a bare query rather than a garbled one.
+- **The instruction matcher learned about `vl` (P1, shipped).**
+  `wantsInstructionPrefix` (#1329) matches `qwen3` + `embed`, so a
+  Qwen3-**VL**-Embedding id would have got the flat `Instruct:/Query:` text-side
+  prefix — the wrong format for this family. The VL client owns its own
+  formatting and the text-side matcher now excludes any id containing `vl`, so
+  an operator who points the *text* `embedding` assignment at a VL model gets a
+  bare query rather than a garbled one. The exclusion is a bare substring on
+  purpose: ids arrive in at least four spellings, and over-matching costs a bare
+  query while under-matching corrupts every query vector.
+- **The tiering rule and the bounded-lock DDL transaction now have one
+  definition each (P1).** `columnTypeFor` lived in
+  `shadow-migration-service.ts`, `embedding-service.ts` and `eval/seed.ts`; the
+  image index would have been a fourth. It is
+  `core/db/vector-column-tier.ts`, and `withLockRetry` is
+  `core/db/with-lock-retry.ts`. A private copy is how the rule drifts, and it
+  drifts quietly — a `halfvec` column indexed with `vector_cosine_ops` fails
+  loudly, but an index that is simply never created shows up only as latency.
 - **Prompt injection rendered as pixels remains unmitigated** and is now
   reachable without a user attaching anything: a synced page can carry an image
   containing instructions. `sanitizeLlmInput` cannot inspect pixels (ADR-021's

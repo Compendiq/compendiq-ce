@@ -129,6 +129,40 @@ export async function loadProviderConfig(
  * rather than sending an empty model name to a rerank endpoint.
  */
 export async function resolveRerankUsecase(): Promise<Resolved | null> {
+  return resolveExplicitOnlyUsecase('rerank');
+}
+
+/**
+ * The same non-inheriting resolution for `image_embedding` (#1115, ADR-025 D3)
+ * — the rerank rule, one rung stronger.
+ *
+ * Rerank's argument for refusing inheritance was that the default provider
+ * handed `/v1/rerank` traffic ERRORS, which is loud and immediate. Here the
+ * failure would be silent: the default text embedder answers the plain
+ * `{model, input}` shape with a perfectly well-formed vector — bypassing the
+ * chat template, pooling a different position — and an index built from those
+ * is indistinguishable from bad retrieval. So an unassigned row means the image
+ * leg is OFF, and there is no fallback anywhere in this function.
+ *
+ * The Enterprise usecase override does not apply, for the same reason it does
+ * not apply to rerank: the org-policy override routes chat-shaped calls.
+ */
+export async function resolveImageEmbeddingUsecase(): Promise<Resolved | null> {
+  return resolveExplicitOnlyUsecase('image_embedding');
+}
+
+/**
+ * Shared body of the two ADR-021 use cases that NEVER inherit. One function
+ * rather than two, so a future third cannot quietly gain a fallback that the
+ * others refuse — the `usecase` is the only difference between them.
+ *
+ * A model must resolve too: an assignment without a model falls back to the
+ * provider's `default_model`, and if neither exists the stage stays disabled
+ * rather than posting an empty model name at a non-OpenAI-shaped endpoint.
+ */
+async function resolveExplicitOnlyUsecase(
+  usecase: 'rerank' | 'image_embedding',
+): Promise<Resolved | null> {
   const rows = await query<ResolveRow>(
     `SELECT
        a.provider_id  AS usecase_provider_id,
@@ -143,7 +177,8 @@ export async function resolveRerankUsecase(): Promise<Resolved | null> {
        p.is_default   AS provider_is_default
      FROM llm_usecase_assignments a
      JOIN llm_providers p ON p.id = a.provider_id
-     WHERE a.usecase = 'rerank'`,
+     WHERE a.usecase = $1`,
+    [usecase],
   );
   const row = rows.rows[0];
   if (!row) return null;
@@ -162,6 +197,14 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   if (usecase === 'rerank') {
     throw new Error(
       "resolveUsecase must not resolve 'rerank' — use resolveRerankUsecase (unassigned = stage disabled)",
+    );
+  }
+  // #1115: the same invariant for the image leg, and the failure it prevents is
+  // quieter — the default provider would ANSWER an image-embedding request, in
+  // the wrong shape, with a plausible vector.
+  if (usecase === 'image_embedding') {
+    throw new Error(
+      "resolveUsecase must not resolve 'image_embedding' — use resolveImageEmbeddingUsecase (unassigned = image leg disabled)",
     );
   }
   // Enterprise override: when org LLM policy is enabled, EE returns the

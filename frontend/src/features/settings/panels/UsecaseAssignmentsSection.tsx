@@ -3,6 +3,7 @@ import type { LlmProvider, LlmUsecase, UsecaseAssignments, UsecaseDefault } from
 import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ChatVisionCapability } from './ChatVisionCapability';
+import { ImageEmbeddingCapability } from './ImageEmbeddingCapability';
 
 const USECASE_LABELS: Record<LlmUsecase, string> = {
   chat: 'Chat',
@@ -11,8 +12,19 @@ const USECASE_LABELS: Record<LlmUsecase, string> = {
   auto_tag: 'Auto-tag',
   embedding: 'Embedding',
   rerank: 'Rerank',
+  image_embedding: 'Image embedding',
 };
 const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
+
+/**
+ * The use cases that never inherit the default provider (#1104, #1115). Their
+ * "unset" option says **Disabled**, because there is no fallback behind it —
+ * offering "Inherit default" would name a resolution that does not happen.
+ */
+const NON_INHERITING: Record<string, string> = {
+  rerank: 'Disabled (no reranking)',
+  image_embedding: 'Disabled (no image search)',
+};
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -58,9 +70,11 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
         // #1104: assigned-but-unresolvable — a provider is chosen but the
         // server could not resolve a model for the stage (rerank with no
         // model anywhere). Without this, the row looks configured while the
-        // stage is silently disabled.
+        // stage is silently disabled. #1115's image leg has the same state,
+        // for the same reason: neither inherits, so neither has a fallback to
+        // fall back to.
         const assignedButUnresolvable =
-          u === 'rerank' && row.providerId !== null && row.resolved.providerId === NIL_UUID;
+          u in NON_INHERITING && row.providerId !== null && row.resolved.providerId === NIL_UUID;
         return (
           <div key={u} data-testid={`usecase-row-${u}`} className="space-y-1.5">
             <div className="grid grid-cols-[140px_180px_1fr_auto] items-center gap-2">
@@ -87,7 +101,7 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
                 onChange={(e) => update(u, { providerId: e.target.value || null })}
                 data-testid={`usecase-${u}-provider`}
               >
-                <option value="">{u === 'rerank' ? 'Disabled (no reranking)' : 'Inherit default'}</option>
+                <option value="">{NON_INHERITING[u] ?? 'Inherit default'}</option>
                 {providers.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
@@ -108,9 +122,9 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
               </span>
             </div>
             {assignedButUnresolvable && (
-              <p className="text-status-syncing text-xs" data-testid="usecase-rerank-unresolvable">
-                Assigned, but no model resolves — the rerank stage is disabled. Pick a model, or
-                set a default model on the provider.
+              <p className="text-status-syncing text-xs" data-testid={`usecase-${u}-unresolvable`}>
+                Assigned, but no model resolves — {USECASE_LABELS[u].toLowerCase()} is disabled.
+                Pick a model, or set a default model on the provider.
               </p>
             )}
             {/*
@@ -121,6 +135,15 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
               use cases share.
             */}
             {u === 'chat' && chatDefault && <ChatVisionCapability vision={chatDefault.vision} />}
+            {/*
+              #1115: the image leg's strip is always rendered, not only when
+              assigned — its two sentences are what tell an operator whether
+              this row is even usable on their stack, and the probe status
+              inside it is gated on the assignment instead.
+            */}
+            {u === 'image_embedding' && (
+              <ImageEmbeddingCapability assigned={row.providerId !== null} />
+            )}
           </div>
         );
       })}

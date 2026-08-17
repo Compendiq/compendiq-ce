@@ -5,7 +5,12 @@
 **Status:** **APPROVED 2026-08-17** (owner interview; the rulings are folded
 into the sections they affect and recorded verbatim at the end). P0 —
 this spec, ADR-025, migration `093` and the core `attachment-store` hoist —
-has landed. P1–P6 are not implemented.
+has landed. **P1 has landed**: the `image_embedding` use case end to end —
+`vl-embedding-client.ts`, `resolveImageEmbeddingUsecase`,
+`image-embedding-probe.ts`, `ensureImageEmbeddingColumn`, the probe-gated
+assignment routes, the Settings row, and the `vl` exclusion in #1329's
+text-side matcher. Nothing embeds a page image or retrieves one yet.
+P2–P6 are not implemented.
 
 Written against `dev @ 94a4ad41` and two verified fact-bases (codebase +
 external research). Every claim that drives a decision carries its source, and
@@ -75,16 +80,21 @@ CREATE INDEX pages_image_embedding_dirty_idx ON pages(id) WHERE image_embedding_
 -- widen the use-case CHECK (same shape as 090_rerank_usecase.sql) to admit 'image_embedding'
 ```
 
-- **Runtime DDL** `ensureImageEmbeddingColumn(dims)` (P1): same tiering the text
-  column uses (≤2000 `vector` + HNSW, ≤4000 `halfvec` + HNSW, else unindexed
-  with a WARN and a UI notice). That tiering exists in three places today —
-  `embedding-service.ts:1662-1688` (the live destructive path),
-  `shadow-migration-service.ts:103-107` and `eval/seed.ts:39-43` — and the image
-  path is a fourth; it is deliberately a *copy of the rule*, not a shared
-  helper, until someone unifies all four. When the probed dimension differs
-  from the live column: `TRUNCATE page_image_embeddings; ALTER COLUMN … TYPE …;`
-  rebuild HNSW; mark every non-folder page image-dirty. Records
-  `admin_settings.image_embedding_dimensions`. This is D7 in code.
+- **Runtime DDL** `ensureImageEmbeddingColumn(dims, {providerId, model})`
+  (P1, shipped): same tiering the text column uses (≤2000 `vector` + HNSW,
+  ≤4000 `halfvec` + HNSW, else unindexed with a WARN and a UI notice). That
+  tiering existed in three places when this was written —
+  `embedding-service.ts` (the live destructive path),
+  `shadow-migration-service.ts` and `eval/seed.ts` — and the image path would
+  have been a fourth. **P1 unified all four instead of copying the rule a fourth
+  time**: it is `core/db/vector-column-tier.ts` now, and `withLockRetry` came
+  out of `shadow-migration-service.ts` into `core/db/with-lock-retry.ts`
+  alongside it. When the probed dimension differs from the live column **or**
+  the recorded `provider:model` differs from the newly assigned one:
+  `TRUNCATE page_image_embeddings; ALTER COLUMN … TYPE …;` rebuild HNSW; mark
+  every non-folder page image-dirty. Records
+  `admin_settings.image_embedding_dimensions` and `…_index_model`. This is D7
+  in code.
 - `pages.image_embedding_dirty` is set by (P2): the full page upsert in sync
   (beside `embedding_dirty`), `writeAttachmentCache`, `putLocalAttachment`,
   `syncImageAttachments` / `syncDrawioAttachments` — which closes the
@@ -98,22 +108,23 @@ CREATE INDEX pages_image_embedding_dirty_idx ON pages(id) WHERE image_embedding_
 |--------|--------|------|
 | `core/services/attachment-store.ts` **(new, hoisted — shipped in P0)** | core | `resolveAttachmentBytes({pageId, confluenceId, pageSource, source, key})` → `{bytes, sniffedFormat} \| null`; branches the Confluence-style tree (`<ATTACHMENTS_DIR>/<confluence_id \| numeric id>/`) vs the local store (`local/<page_id>/`). `pageSource` is `pages.source` and is **required**, because the Confluence-tree directory key is `parentKeyFor`'s rule (`source === 'confluence' && confluenceId ? confluenceId : String(id)`), not `confluenceId ?? id`. `attachment-handler.ts` re-exports the moved names so its six importers do not move. **System read, no ACL** — a test walks `src/routes` and fails if any route file names it. |
 | `core/services/image-references.ts` (existing) | core | Enumeration for the **stored** shape. `body_html` carries **both** attachment prefixes: `<img src="/api/attachments/<key>/<file>">` (the Confluence cache) and `<img src="/api/local-attachments/<page_id>/<file>">` (the local store, persisted by `relocateToLocal` — `page-relocate-service.ts:692-696`, `:729-752` — not rewritten at render time). So `source` follows the **URL prefix**, never `pages.confluence_id IS NULL`: a relocated page is `confluence_id IS NULL` with its bytes in the *local* store, and one page can carry both prefixes (pasted images land in the Confluence-style tree under the numeric PK even on a standalone page). `attachment_key` is `decodeURIComponent(basename(src))` — the `<img src>` is percent-encoded (`content-converter.ts:366`, `pages-crud.ts:2730`) while the bytes are on disk under the raw name, and a mis-encoded key resolves to the same silent `null` as an absent file. Gains `extractImageReferencesFromHtml` — today it only parses Confluence **storage** format (`extractImageReferences(bodyStorage)`), which standalone pages do not have, and which a relocated page still carries verbatim describing attachments its body no longer points at. |
-| `domains/llm/services/vl-embedding-client.ts` **(new, P1)** | llm | `embedImages(cfg, model, items: Array<{image: Buffer, format}>, opts?: {dimensions})` and `embedQueryForImages(cfg, model, text, opts?)`. Builds the D4 `messages` body; re-normalises after MRL truncation; inherits `enqueue`, the per-provider breaker and the TLS dispatcher (the `rerank-client.ts` precedent). Documents its **non-support list**: TEI, LM Studio `/v1/embeddings`, llama-server `/embedding`, plain `input`. |
-| `domains/llm/services/llm-provider-resolver.ts` | llm | `resolveImageEmbeddingUsecase()` → `null` when unassigned; `resolveUsecase('image_embedding')` throws (same invariant as `rerank`). |
-| `domains/llm/services/image-embedding-probe.ts` **(new, P1)** | llm | On assignment: embeds a known 3-colour-band PNG **and** a text through the client; refuses the pair if the endpoint rejects the `messages` shape or returns mismatched widths; records dims. Precedent: `vision-probe.ts`. |
+| `domains/llm/services/vl-embedding-client.ts` **(new, P1 — shipped)** | llm | Shipped as `embedImagesVl(cfg, model, items: Array<{bytes: Buffer, format}>, opts?: {dimensions})` and `embedTextsVl(cfg, model, texts, instruction, opts?)` — the text half takes the instruction explicitly rather than defaulting, because the whole point of the text side is the query/corpus asymmetry and a default would make the wrong one the quiet option. Builds the D4 `messages` body; ONE request per input (the `messages` path has no batch form); re-normalises after MRL truncation and warns on a non-unit full-width vector; refuses an image over `MAX_IMAGE_BYTES` before base64-encoding it; inherits `enqueue`, the per-provider breaker and the TLS dispatcher (the `rerank-client.ts` precedent). Documents its **non-support list**: TEI, LM Studio `/v1/embeddings`, llama-server `/embedding`, plain `input`. |
+| `domains/llm/services/llm-provider-resolver.ts` | llm | **Shipped (P1).** `resolveImageEmbeddingUsecase()` → `null` when unassigned; `resolveUsecase('image_embedding')` throws (same invariant as `rerank`). Both non-inheriting use cases now share one private body, so a third cannot quietly gain a fallback the others refuse. |
+| `domains/llm/services/image-embedding-probe.ts` **(new, P1 — shipped)** | llm | On assignment: embeds a known 3-colour-band PNG **and** a text through the client; refuses the pair if the endpoint rejects the `messages` shape, never answers, or returns mismatched widths; records dims, tier and the (admin-only, truncated) provider body in `admin_settings.image_embedding_probe`. Unlike #1154's vision probe it runs **blocking** and its failure **refuses the assignment** with a 422 naming the category. Precedent: `vision-probe.ts`. |
+| `domains/llm/services/image-embedding-index.ts` **(new, P1 — shipped)** | llm | `ensureImageEmbeddingColumn` — the probe-time DDL described above. |
 | `domains/llm/services/image-embedding-service.ts` **(new, P2)** | llm | `embedPageImages(pageId)`: enumerate → resolve bytes → `sniffImageFormat` → `validateImage` → sha256 skip → cap `rag_images_per_page_max` → batch embed → upsert; reconcile (delete rows whose key is no longer referenced); counters for skipped/oversized/unsupported. `processDirtyPageImages()` driven from the same worker cadence as `processDirtyPages`. |
 | `domains/llm/services/rag-service.ts` | llm | Image leg in `hybridSearch` (§5, P3). |
 | `routes/llm/llm-ask.ts` | routes | Retrieved-image parts (§6, P4). |
 | `routes/llm/llm-usecases.ts`, `routes/foundation/admin.ts` | routes | Assignment + probe + status + re-scan endpoints (`requireAdmin`). |
 
-**One correction found while planning, carried into P1.**
-`isInstructionAwareModel` / `wantsInstructionPrefix` (#1329) matches `qwen3` +
-`embed`, so a Qwen3-**VL**-Embedding model id would receive the flat
+**One correction found while planning, carried into P1 — shipped.**
+`wantsInstructionPrefix` (#1329) matches `qwen3` +
+`embed`, so a Qwen3-**VL**-Embedding model id would have received the flat
 `Instruct:/Query:` prefix — the wrong format for the VL family, which wants the
 chat template with the instruction as a system message. The VL client owns its
-own formatting, **and the text-side matcher must exclude `vl`**, so that an
-operator who ever points the *text* `embedding` assignment at a VL model gets a
-bare query rather than a garbled one.
+own formatting, **and the text-side matcher now excludes any id containing
+`vl`**, so that an operator who points the *text* `embedding` assignment at a VL
+model gets a bare query rather than a garbled one.
 
 ## 5. Retrieval (P3)
 
@@ -262,8 +273,8 @@ prod can prove).
 
 | PR | Content | Depends on |
 |----|---------|------------|
-| P0 | This spec + ADR-025 + amendments; migration `093` (table, dirty flag, CHECK widening; **no HNSW**); core `attachment-store.ts` hoist + `resolveAttachmentBytes`; diagrams 03 / 06 / README. **No contracts change, no behaviour change.** | owner approval |
-| P1 | `vl-embedding-client.ts` + resolver + probe + `ensureImageEmbeddingColumn` + assignment UI/routes + the `image_embedding` contracts enum + the `vl` exclusion in the text-side instruction matcher | P0 |
+| P0 ✅ | This spec + ADR-025 + amendments; migration `093` (table, dirty flag, CHECK widening; **no HNSW**); core `attachment-store.ts` hoist + `resolveAttachmentBytes`; diagrams 03 / 06 / README. **No contracts change, no behaviour change.** | owner approval |
+| P1 ✅ | `vl-embedding-client.ts` + resolver + probe + `ensureImageEmbeddingColumn` + assignment UI/routes + the `image_embedding` contracts enum + the `vl` exclusion in the text-side instruction matcher. Landed with two hoists the plan did not anticipate: `columnTypeFor` and `withLockRetry` into `core/db`. | P0 |
 | P2 | `image-embedding-service.ts` + dirty-flag wiring (sync, uploads, local attachments) + worker + Embeddings-tab card + re-scan | P1 |
 | P3 | Retrieval leg + fusion + analytics + wire shape (`sources.kind`) + Retrieval-tab knobs + frontend source rendering | P1, P2 |
 | P4 | Answer path (retrieved parts, degrade rule, caps, audit) | P3 |

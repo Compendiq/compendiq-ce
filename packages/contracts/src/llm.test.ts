@@ -5,6 +5,7 @@ import {
   UsecaseAssignmentsSchema,
   UsecaseDefaultSchema,
   VisionCapabilityDetailSchema,
+  ImageEmbeddingProbeSchema,
 } from './llm.js';
 import {
   AskRequestSchema,
@@ -21,6 +22,11 @@ describe('LlmUsecaseSchema', () => {
   });
   it('rejects unknown use cases', () => {
     expect(() => LlmUsecaseSchema.parse('bogus')).toThrow();
+  });
+  // #1115 P1 — the seventh use case. Migration 093 widened the DB CHECK in P0;
+  // the enum is what makes the assignment row reachable from the API.
+  it('accepts image_embedding (#1115)', () => {
+    expect(() => LlmUsecaseSchema.parse('image_embedding')).not.toThrow();
   });
 });
 
@@ -106,8 +112,59 @@ describe('UsecaseAssignmentsSchema', () => {
       auto_tag: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       embedding: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       rerank: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
+      image_embedding: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
     });
     expect(parsed.embedding).toBeDefined();
+    expect(parsed.image_embedding).toBeDefined();
+  });
+});
+
+/**
+ * #1115 — the image-embedding probe result, an ADMIN-ONLY shape.
+ *
+ * `error` is the provider's own error body (see `llm-http-error.ts`), so it
+ * lives here rather than on `UsecaseDefaultSchema`, exactly as #1184 kept
+ * `probeError` off the non-admin read.
+ */
+describe('ImageEmbeddingProbeSchema (#1115)', () => {
+  const base = {
+    providerId: '00000000-0000-4000-8000-000000000001',
+    model: 'Qwen/Qwen3-VL-Embedding-2B',
+    dimensions: 2048,
+    tier: 'halfvec' as const,
+    probedAt: '2026-08-17T12:00:00.000Z',
+    error: null,
+  };
+
+  it.each(['vector', 'halfvec', 'unindexed'])('accepts tier %s', (tier) => {
+    expect(() => ImageEmbeddingProbeSchema.parse({ ...base, tier })).not.toThrow();
+  });
+
+  it('rejects an unknown tier', () => {
+    expect(() => ImageEmbeddingProbeSchema.parse({ ...base, tier: 'ivfflat' })).toThrow();
+  });
+
+  // A failed probe has no width. Nullable rather than optional, so a caller
+  // cannot read "absent" as "zero-dimensional".
+  it('accepts a failed probe (null dimensions, an error string)', () => {
+    const parsed = ImageEmbeddingProbeSchema.parse({
+      ...base,
+      dimensions: null,
+      tier: null,
+      error: 'generateEmbedding HTTP 400: messages field not recognised',
+    });
+    expect(parsed.dimensions).toBeNull();
+    expect(parsed.error).toContain('400');
+  });
+
+  it('rejects error being absent', () => {
+    const { error: _omitted, ...withoutError } = base;
+    expect(() => ImageEmbeddingProbeSchema.parse(withoutError)).toThrow();
+  });
+
+  it('refuses an implausible width', () => {
+    expect(() => ImageEmbeddingProbeSchema.parse({ ...base, dimensions: 0 })).toThrow();
+    expect(() => ImageEmbeddingProbeSchema.parse({ ...base, dimensions: 16_001 })).toThrow();
   });
 });
 

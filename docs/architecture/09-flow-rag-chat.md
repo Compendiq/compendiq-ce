@@ -1163,6 +1163,70 @@ the per-user mitigation, with `OOM` on the `SET` arriving only once BullMQ is
 already blocked. ADR-021's `#1183` paragraphs carry the reasoning; `.env.example`
 states the condition where an operator will meet it.
 
+## Image retrieval leg — configuration and probe (#1115, P1)
+
+**Nothing in this section retrieves anything yet.** P1 lands the leg's
+configuration and the proof that a configured endpoint can serve it; the
+page-embedding worker is P2 and the third RRF leg is P3. Design of record:
+ADR-025 and `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`.
+
+```
+Settings → AI Models → "Image embedding" row
+  |
+  |  PUT /api/admin/llm-usecases  { image_embedding: { providerId, model? } }
+  v
+resolve the pair the assignment WOULD produce
+  (assignment model, else provider.default_model, else refuse)
+  |
+  v
+probeImageEmbedding(cfg, model)          <- BLOCKING, before the row is written
+  |  embedImagesVl(...)  the known 3-colour-band PNG
+  |  embedTextsVl(...)   one text, VL_QUERY_INSTRUCTION
+  |  require: both widths equal, 1..16000
+  |
+  +-- failure --> persist the probe, answer 422 with the CATEGORY
+  |               (shape_rejected | unreachable | width_mismatch | unusable_width)
+  |               ...and write NO assignment row
+  |
+  +-- success --> persist the probe
+                  write the assignment row
+                  ensureImageEmbeddingColumn(dims, { providerId, model })
+                    width or provider:model changed?
+                      yes -> DROP INDEX; TRUNCATE; ALTER TYPE; CREATE INDEX;
+                             record dims + provider:model;
+                             mark every non-folder page image_embedding_dirty
+                      no  -> ensure the index exists, touch nothing else
+```
+
+Five things are load-bearing.
+
+1. **`image_embedding` never inherits** (`resolveImageEmbeddingUsecase`;
+   `resolveUsecase('image_embedding')` throws, exactly as it does for
+   `rerank`). Unassigned means the image leg is off. The reason is sharper than
+   rerank's: a default text embedder handed this request does not error, it
+   answers the plain `{model, input}` shape with a well-formed vector from the
+   wrong pooling position.
+2. **The probe gates the assignment**, unlike #1154's vision probe, which is
+   fire-and-forget after the save. A wrong vision verdict disables an optional
+   composer control; a wrong `image_embedding` assignment silently fills an
+   index with garbage. So it blocks, and a failure refuses.
+3. **The 422 names the category, never the provider's body.** The body can echo
+   request fragments and internal topology; it stays on
+   `GET /admin/llm-usecases/image_embedding/probe` (`requireAdmin`, truncated at
+   `PROBE_ERROR_MAX_CHARS`, rendered as plain JSX). `UsecaseDefaultSchema` —
+   authenticated but not admin-gated — must never gain it. Same rule as #1184.
+4. **Mismatched widths are a refusal, not a curiosity.** `mlx_vlm.server`
+   applies the chat template to images and skips it for text, which would put
+   two vector spaces into one column; a width disagreement is the only symptom
+   reachable from a client.
+5. **Unassigning is not probed and destroys nothing.** The leg goes off, and the
+   column and index survive, so re-assigning the same pair costs nothing.
+   `POST …/reprobe` re-runs the probe and, on success only, re-runs
+   `ensureImageEmbeddingColumn` — which is the remedy for an operator who
+   restarted the model server at a different width. A failed re-probe leaves the
+   column alone: an unreachable endpoint is not evidence that the existing index
+   is wrong.
+
 ## Retrieval details
 
 - **Query-instruction prefix (#1114).** Qwen3's embedding models are trained
@@ -1221,6 +1285,19 @@ states the condition where an operator will meet it.
   `embed` and is deliberately narrow: prefixing a model not trained for it
   corrupts every query vector, while failing to prefix one that was merely
   gives up some accuracy, so unknown models fall to the safe side.
+  **It also excludes any id containing `vl` (#1115).** `Qwen3-VL-Embedding`
+  satisfies both needles and wants an entirely different format — the
+  instruction as a **system message inside a chat template**, terminated by
+  `<|im_start|>assistant\n`, not the flat `Instruct:/Query:` string. The two
+  conventions are unrelated and share no characters. VL formatting lives in
+  `vl-embedding-client.ts` and reaches a model only through the
+  `image_embedding` use case, never through `generateEmbedding`; the exclusion
+  here is for the operator who points the *text* `embedding` assignment at a VL
+  id by hand, which the model picker allows because it lists whatever the
+  provider serves. It is a bare substring rather than a `-vl-` boundary match,
+  because ids arrive in at least four spellings and the asymmetry above applies
+  to the exclusion too: over-matching costs a bare query, under-matching
+  corrupts every query vector.
 - **Vector search** uses pgvector's `<=>` cosine distance against an HNSW
   index on `page_embeddings.embedding`. `ef_search` is set per request for
   a recall/latency trade-off.

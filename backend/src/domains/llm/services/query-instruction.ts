@@ -45,6 +45,20 @@
  *    matcher is therefore deliberately narrow: it demands BOTH `qwen3` and
  *    `embed`, so `qwen3` the chat model and a future `qwen4-embedding` both fall
  *    through to the safe side rather than being guessed at.
+ *
+ * 4. **The VL family is excluded (#1115).** `Qwen3-VL-Embedding` satisfies both
+ *    needles above and wants an entirely different format: the instruction is a
+ *    **system message inside a chat template**, terminated by
+ *    `<|im_start|>assistant\n`, not the flat `Instruct:/Query:` string. The two
+ *    conventions are unrelated — the paper's own template and
+ *    `Qwen3-Embedding`'s `get_detailed_instruct` disagree in every character —
+ *    so applying this one to a VL model is property 3's expensive direction.
+ *    VL formatting lives in `vl-embedding-client.ts` and reaches the model
+ *    through the `image_embedding` use case, never through `generateEmbedding`.
+ *    This exclusion exists for the case where an operator points the *text*
+ *    `embedding` assignment at a VL id by hand — the model picker lists
+ *    whatever the provider serves — which then gets a bare query rather than a
+ *    garbled one.
  */
 
 /**
@@ -67,6 +81,14 @@ export const RETRIEVAL_TASK =
 export function wantsInstructionPrefix(model: string | null | undefined): boolean {
   if (!model) return false;
   const m = model.toLowerCase();
+  // #1115: `vl` anywhere in the id disqualifies, before the needles are even
+  // consulted. Deliberately a bare substring rather than a `-vl-` boundary
+  // match: ids arrive in at least four spellings (`Qwen/Qwen3-VL-Embedding-8B`,
+  // `qwen3-vl-embedding:2b`, a quantised GGUF filename, an operator's own
+  // `--served-model-name`), and over-matching costs a bare query while
+  // under-matching corrupts every query vector — property 3, applied to the
+  // exclusion as well as to the rule.
+  if (m.includes('vl')) return false;
   // Both needles, because `qwen3` alone also names the chat models — which are
   // never resolved here today, but the `embedding` use case is repointable by
   // hand and a chat model in that slot must not additionally get a preamble.
