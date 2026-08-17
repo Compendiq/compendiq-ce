@@ -170,11 +170,16 @@ describe('corpus-de-images — images', () => {
       const format = sniffImageFormat(bytes);
       expect(format, `${image.file} (${page.file}) does not sniff as a supported image`).not.toBeNull();
       expect(
+        ['png', 'jpeg', 'webp'],
+        `${image.file} sniffs as ${format}. SVG and GIF are out — the design vendors SVG figures ` +
+          "as Wikimedia's PNG thumbnail rendering precisely so the bytes are raster, and the " +
+          'product refuses SVG outright (script/XXE).',
+      ).toContain(format);
+      expect(
         format,
-        `${image.file}: SVG and GIF are out — the design vendors SVG figures as Wikimedia's PNG ` +
-          'thumbnail rendering precisely so the bytes are raster.',
+        `${image.file}: the manifest declares ${image.format} and the bytes are ${format}. ` +
+          'The manifest is what the labeller and P5b read; the bytes are what a model sees.',
       ).toBe(image.format);
-      expect(['png', 'jpeg', 'webp']).toContain(format);
 
       const dims = readImageDimensions(bytes, format!);
       expect(dims, `${image.file}: dimensions unreadable`).not.toBeNull();
@@ -230,14 +235,54 @@ describe('corpus-de-images — images', () => {
     }
   });
 
-  it('names every image <page-slug>__<n>.<ext>', () => {
+  it('names every image after the page that carries it', () => {
     const offenders = allImages
-      .map(({ image }) => image.file)
-      .filter((file) => !IMAGE_FILE_NAME.test(file));
+      .filter(({ page, image }) => {
+        // Shape AND ownership. The shape alone would let a manifest edit hang
+        // `koelner-dom__1.jpg` off `scrum.md` — still referenced from exactly
+        // one page, so every other check here passes.
+        const slug = page.file.replace(/\.md$/, '');
+        return !IMAGE_FILE_NAME.test(image.file) || !image.file.startsWith(`images/${slug}__`);
+      })
+      .map(({ page, image }) => `${image.file} on ${page.file}`);
     expect(
       offenders,
       'The name is what ties an image to exactly one page and makes the "referenced from one ' +
         'page" check mechanical rather than a lookup.',
+    ).toEqual([]);
+  });
+});
+
+describe('corpus-de-images — the attribution file covers what is committed', () => {
+  const attribution = readFileSync(join(IMAGE_CORPUS_DIR, 'LICENSE-ATTRIBUTION.md'), 'utf8');
+
+  it('names every page, its revision and its licence', () => {
+    const missing = pages
+      .filter((page) => !attribution.includes(page.title) || !attribution.includes(String(page.revid)))
+      .map((page) => page.file);
+    expect(
+      missing,
+      'CC BY-SA 4.0 obliges attribution to the article, and the revision is what makes the ' +
+        '"adapted from" claim checkable. A page in the corpus but not in the notices file is an ' +
+        'obligation the repository is not meeting.',
+    ).toEqual([]);
+  });
+
+  it('names every image with its Commons file, author and licence', () => {
+    const missing = allImages
+      .filter(
+        ({ image }) =>
+          !attribution.includes(image.file) ||
+          !attribution.includes(image.sourceTitle) ||
+          !attribution.includes(image.author) ||
+          !attribution.includes(image.license),
+      )
+      .map(({ image }) => image.file);
+    expect(
+      missing,
+      'Every CC BY and CC BY-SA image requires its author credit to travel with it. This file is ' +
+        'where that credit lives, and it is generated — a drift means the manifest and the ' +
+        'notices came from different builds.',
     ).toEqual([]);
   });
 });
