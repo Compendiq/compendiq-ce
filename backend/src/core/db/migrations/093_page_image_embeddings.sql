@@ -38,9 +38,19 @@ CREATE TABLE IF NOT EXISTS page_image_embeddings (
   id             BIGSERIAL   PRIMARY KEY,
   page_id        INTEGER     NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
   -- Which of the two attachment stores `attachment_key` resolves in:
-  -- 'confluence' = the Confluence cache tree (keyed by confluence_id, or by the
-  -- numeric page id for pasted images on standalone pages), 'local' =
-  -- `local_attachments` under `<ATTACHMENTS_DIR>/local/<page_id>/`.
+  -- 'confluence' = the Confluence cache tree, keyed by confluence_id when
+  -- pages.source = 'confluence' and by the numeric page id otherwise (pasted
+  -- images on a standalone page land there); 'local' = `local_attachments`
+  -- under `<ATTACHMENTS_DIR>/local/<page_id>/`.
+  --
+  -- P2 derives this from the URL PREFIX in body_html — `/api/attachments/` =>
+  -- 'confluence', `/api/local-attachments/` => 'local' — and NEVER from
+  -- `confluence_id IS NULL`. `relocateToLocal` moves a detached page's bytes
+  -- into the local store and PERSISTS the rewritten body
+  -- (page-relocate-service.ts:672-684, :692-696, :729-752), so that page is
+  -- `confluence_id IS NULL` with its images in the *local* tree, and one page
+  -- can carry both prefixes at once. That is why `source` is part of the key
+  -- below rather than a derived column.
   source         TEXT        NOT NULL CHECK (source IN ('confluence', 'local')),
   -- Filename inside that store, as it is ON DISK — the basename of the
   -- `<img src>` in `body_html`, URL-DECODED. The converter and the paste route

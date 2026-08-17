@@ -17,16 +17,40 @@
  * ── The two trees ─────────────────────────────────────────────────────────
  *
  *   <ATTACHMENTS_DIR>/<confluence_id | numeric page id>/<filename>
- *       The Confluence cache. Keyed by `pages.confluence_id`, EXCEPT for
- *       standalone pages, where the paste/import routes write pasted images
- *       under the numeric PK (`pages-crud.ts:2723-2728`) and hand the editor
- *       that URL. A storage fact, not a rendering one: the
- *       `/api/local-attachments` prefix the browser shows for a standalone
- *       page is a render-time rewrite and never appears in `body_html`.
+ *       The Confluence cache. Keyed by `pages.confluence_id` for a
+ *       Confluence-sourced page, and by the numeric PK otherwise — the
+ *       paste/import routes write pasted images under the PK on a standalone
+ *       page (`pages-crud.ts:2723-2728`) and hand the editor that URL.
+ *       Referenced in `body_html` as `/api/attachments/<key>/<file>`.
  *
  *   <ATTACHMENTS_DIR>/local/<page_id>/<filename>
  *       The local store (#302 Gap 4), whose metadata rows live in
  *       `local_attachments`. Layout owned by `local-attachment-service.ts`.
+ *       Referenced in `body_html` as `/api/local-attachments/<page_id>/<file>`.
+ *
+ * **BOTH prefixes really occur in `body_html`, and one page can carry both.**
+ * `relocateToLocal` copies every cached Confluence attachment into the local
+ * store (`page-relocate-service.ts:672-684`), rewrites the body to
+ * `/api/local-attachments/<page.id>/` (`:692-696`) and PERSISTS that body in
+ * the same UPDATE that nulls `confluence_id` (`:729-752`), then deletes the old
+ * cache directory (`:820`). The output shape is pinned by
+ * `page-relocate-refs.test.ts:92-95`, and `rewriteAttachmentRefs`' own JSDoc
+ * (`:214-218`) has said so all along. Nothing rewrites an `<img src>` at render
+ * time — `ArticleViewer` fetches whichever of the two prefixes it finds.
+ *
+ * So the store an enumerator (P2) must ask for follows the URL PREFIX, never
+ * `pages.confluence_id IS NULL`:
+ *
+ *   /api/attachments/…        ⇒ source: 'confluence'
+ *   /api/local-attachments/…  ⇒ source: 'local'
+ *
+ * A relocated page has `confluence_id IS NULL` and its bytes in the LOCAL
+ * store, so deriving the store from that column sends the read at
+ * `<ATTACHMENTS_DIR>/<page_id>/`, where they have never been — and this
+ * function answers `null`, which is indistinguishable from "no such
+ * attachment". A page pasted into after the relocate then carries a
+ * `/api/attachments/<page_id>/…` reference beside the local ones, which is why
+ * `source` is part of `page_image_embeddings`' unique key.
  *
  * ── Authorisation ─────────────────────────────────────────────────────────
  *
@@ -49,7 +73,7 @@ import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sniffImageFormat } from './image-validator.js';
 import { canStoreLocalFilename, localAttachmentsDir } from './local-attachment-service.js';
-import type { ImageFormat } from '@compendiq/contracts';
+import type { ImageFormat, PageSource } from '@compendiq/contracts';
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
 const ATTACHMENTS_BASE_RESOLVED = path.resolve(ATTACHMENTS_BASE);
@@ -286,11 +310,49 @@ export async function readCachedAttachmentFile(
 /** Which store an `attachment_key` resolves in — mirrors `page_image_embeddings.source`. */
 export type AttachmentStoreSource = 'confluence' | 'local';
 
+/**
+ * The Confluence-tree directory key for a page: its `confluence_id` when the
+ * page is Confluence-sourced, its numeric id as text otherwise.
+ *
+ * Deliberately the same rule as `parentKeyFor`
+ * (`domains/knowledge/services/page-relocate-service.ts:140-142`) and the
+ * paste/import writer (`routes/knowledge/pages-crud.ts:2723-2728`), restated
+ * here rather than imported because `core` may not import a domain
+ * (`backend/eslint.config.js:50-53`). If any of the three changes, all three
+ * must — a reader keying differently from the writer reads the wrong
+ * directory, and this module answers `null` for it, silently.
+ */
+function confluenceTreeKey(
+  pageSource: PageSource,
+  pageId: number,
+  confluenceId: string | null | undefined,
+): string {
+  return pageSource === 'confluence' && confluenceId ? confluenceId : String(pageId);
+}
+
 export interface ResolveAttachmentBytesInput {
   /** `pages.id` — the numeric PK, also the local store's directory key. */
   pageId: number;
   /** `pages.confluence_id`, or null/undefined for a standalone page. */
   confluenceId?: string | null;
+  /**
+   * `pages.source` — `'confluence' | 'standalone'`. Required, and NOT the same
+   * field as {@link ResolveAttachmentBytesInput.source} below, which names a
+   * STORE and whose values are `'confluence' | 'local'`.
+   *
+   * It is what decides the Confluence-tree directory key, and it is required
+   * so that decision cannot be inferred from `confluenceId` alone. Two places
+   * already own this derivation and both branch on `pages.source`:
+   * `pages-crud.ts:2723-2728` (the paste/import writer) and `parentKeyFor` in
+   * `page-relocate-service.ts:140-142`. `confluenceId ?? pageId` agrees with
+   * them on every row a writer can currently produce and disagrees on
+   * `source = 'standalone'` with a non-null `confluence_id` — so a caller doing
+   * the obvious `SELECT id, confluence_id FROM pages` would read a different
+   * page's directory the day such a row exists. Ignored when `source` is
+   * `'local'`, whose key is always the numeric PK.
+   */
+  pageSource: PageSource;
+  /** Which STORE the key resolves in — see {@link AttachmentStoreSource}. */
   source: AttachmentStoreSource;
   /**
    * Filename inside that store, as it is ON DISK: the basename of the
@@ -362,7 +424,7 @@ function isDirectChildKey(key: string): boolean {
 export async function resolveAttachmentBytes(
   input: ResolveAttachmentBytesInput,
 ): Promise<ResolvedAttachmentBytes | null> {
-  const { pageId, confluenceId, source, key } = input;
+  const { pageId, confluenceId, pageSource, source, key } = input;
 
   if (!isDirectChildKey(key)) {
     logger.warn({ pageId, source, key }, 'attachment-store: refused an attachment key that is not a plain filename');
@@ -372,10 +434,7 @@ export async function resolveAttachmentBytes(
   try {
     const bytes = source === 'local'
       ? await readLocalStoreFile(pageId, key)
-      // Standalone pages have no `confluence_id`; the paste/import routes
-      // write their images into the same tree under the numeric PK, and that
-      // is the URL the editor persists into `body_html`.
-      : await readCachedAttachmentFile(String(confluenceId ?? pageId), key);
+      : await readCachedAttachmentFile(confluenceTreeKey(pageSource, pageId, confluenceId), key);
 
     if (bytes === null) return null;
     return { bytes, sniffedFormat: sniffImageFormat(bytes) };

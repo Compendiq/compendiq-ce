@@ -210,7 +210,7 @@ to embedding input is still whatever alt text it carries.
 
 What changes (ADR-025, landing in **P2**) is that the attachment's **bytes**
 become a second, parallel index — `page_image_embeddings`, embedded by a
-vision-language model, fused as a third retrieval leg. Four consequences are
+vision-language model, fused as a third retrieval leg. Five consequences are
 worth stating here, where a reader of the pipeline will look for them:
 
 - **Images never join the pipeline above.** They stay bytes from disk to model,
@@ -228,12 +228,27 @@ worth stating here, where a reader of the pipeline will look for them:
   an absent file and a mis-encoded key both answer `null`. (The attachment
   route never trips over this because Fastify decodes its `:filename` param
   for it; an enumerator walking HTML has no such decoder in front of it.)
-  The id is `confluence_id`, or the numeric page id for pasted images on
-  standalone pages — a **storage** fact, not a display one: the upload route
-  writes those bytes into the same Confluence-style tree under the numeric PK
-  (`pages-crud.ts:2723-2728`). The `/api/local-attachments` prefix a reader
-  sees in the browser is a separate, render-time rewrite that never appears in
-  `body_html`.
+  The id is `confluence_id` when `pages.source = 'confluence'` and the numeric
+  page id otherwise — the derivation `pages-crud.ts:2723-2728` and
+  `parentKeyFor` (`page-relocate-service.ts:140-142`) both use, and which the
+  hoisted reader restates rather than inferring from a null `confluence_id`.
+- **`body_html` carries BOTH attachment prefixes, and the store follows the
+  PREFIX.** `/api/attachments/<key>/<file>` is the Confluence cache;
+  `/api/local-attachments/<page_id>/<file>` is the local store, and it is
+  persisted, not rendered: `relocateToLocal` copies every cached attachment
+  into the local store (`page-relocate-service.ts:672-684`), rewrites the body
+  (`:692-696`) and writes it in the same UPDATE that nulls `confluence_id`
+  (`:729-752`), then deletes the old cache directory (`:820`). Nothing rewrites
+  an `<img src>` at render time. So the enumerator reads
+  `/api/attachments/` ⇒ `source: 'confluence'` and `/api/local-attachments/`
+  ⇒ `source: 'local'` — **never** `pages.confluence_id IS NULL`, which names
+  the Confluence tree for precisely the pages whose bytes were moved out of it
+  and produces the same silent `null` as an absent file. A relocated page that
+  is then pasted into carries both prefixes at once, which is why `source` is
+  part of `page_image_embeddings`' unique key. It also keeps the enumerator on
+  **HTML**: a relocated page's `body_storage` is deliberately left verbatim
+  (`page-relocate-service.ts:698-700`), so it still describes the Confluence
+  attachments the body no longer points at.
 - **draw.io PNGs are indexed only where they are really rasters.** Confluence's
   export is sometimes `<mxfile>` XML behind a `.png` name (ADR-013); magic-byte
   sniffing refuses it and the file is skipped and counted, never guessed at from
@@ -1305,12 +1320,17 @@ there is no query embed and no added latency.
 
 Three properties keep it from disturbing what is already here:
 
-1. **It fuses by RANK, never by score.** Published cross-modal similarities sit
-   in a different absolute band than text↔text ones (roughly 0.46–0.72 vs
-   0.75–0.81 in the model card's own tables), so any score-space arithmetic
-   across the two — a weighted blend, a shared cutoff — is meaningless. RRF only
-   ever sees positions. Page-denominated like #1106: a page's best image rank
-   counts once.
+1. **It fuses by RANK, never by score.** A text-tuned scalar cutoff has no
+   defined meaning on a cross-modal score. The published worked examples sit in
+   different absolute bands — text→image around 0.46–0.72, text↔text as high as
+   0.75–0.81 (`arXiv:2601.04720v2` Appendix C: Table 9's MS COCO rows are 0.46
+   and 0.52, Table 8's SQuAD rows 0.75 and 0.81; the model card's own matrix
+   scores a matching text query 0.7155 against an image document and 0.8160
+   against a text one). The bands are **not** claimed to be disjoint — Table 8's
+   own AG News pairs score 0.55 and 0.57 — which is the point: there is no
+   threshold that separates them, so any score-space arithmetic across the two
+   (a weighted blend, a shared cutoff) is meaningless. RRF only ever sees
+   positions. Page-denominated like #1106: a page's best image rank counts once.
 2. **The image SIMILARITY never feeds the confidence number.**
    `retrieval-confidence.ts` compares an operator-tuned scalar against a
    text-cosine distribution; an image similarity on that scale is a different
@@ -2215,9 +2235,11 @@ The image leg runs only when the use case is assigned, the table is non-empty
 and `rag_image_leg_enabled` is on — otherwise no query embed and no cost. It
 kNN-searches `page_image_embeddings` under the same visibility predicate as the
 other legs and fuses as a **third RRF leg**, page-denominated like #1106. Rank,
-not score: published cross-modal similarities sit in a different absolute band
-than text↔text ones (roughly 0.46–0.72 vs 0.75–0.81 in the model card's own
-tables), so any threshold tuned on text misbehaves on images. For the same
+not score: the published worked examples put text→image around 0.46–0.72 and
+text↔text as high as 0.75–0.81 (`arXiv:2601.04720v2` Appendix C, Table 9 and
+Table 8), and they are not cleanly separable — Table 8's AG News pairs score
+0.55 and 0.57 — so a cutoff tuned on text has no defined meaning on a
+cross-modal score. For the same
 reason **the image similarity never feeds the confidence number** (#1105):
 image hits carry no `vectorScore`, so they cannot establish the `similarity`
 basis. That is deliberately narrower than "an image-only set never refuses" —

@@ -70,6 +70,7 @@ describe('resolveAttachmentBytes (#1115)', () => {
     const found = await store.resolveAttachmentBytes({
       pageId: 12,
       confluenceId: '44556677',
+      pageSource: 'confluence',
       source: 'confluence',
       key: 'diagram.png',
     });
@@ -91,11 +92,40 @@ describe('resolveAttachmentBytes (#1115)', () => {
     const found = await store.resolveAttachmentBytes({
       pageId: 12,
       confluenceId: null,
+      pageSource: 'standalone',
       source: 'confluence',
       key: 'pasted-1.png',
     });
 
     expect(found!.sniffedFormat).toBe('png');
+  });
+
+  it('keys the Confluence tree off pages.source, not off "is confluence_id null"', async () => {
+    // Review r3. Two places already own this derivation and BOTH branch on
+    // `pages.source`: `pages-crud.ts:2723-2728` (the paste/import writer) and
+    // `parentKeyFor` (`page-relocate-service.ts:140-142`). `confluenceId ??
+    // pageId` is a THIRD predicate, and it disagrees with them on exactly one
+    // row shape — `source = 'standalone'` with a non-null `confluence_id`.
+    //
+    // No writer produces that shape today (both relocate directions set the
+    // two columns in one UPDATE), so this is latent rather than live. It is
+    // pinned anyway because the failure is the bad kind: the reader lands in
+    // ANOTHER page's directory, and a same-named file there returns the wrong
+    // bytes under the right key rather than an honest miss. The two files
+    // below share a name for that reason.
+    await writeFileAt(path.join('30303030', 'shared-name.png'), pngBytes());
+    await writeFileAt(path.join('61', 'shared-name.png'), webpBytes());
+
+    const found = await store.resolveAttachmentBytes({
+      pageId: 61,
+      confluenceId: '30303030',
+      pageSource: 'standalone',
+      source: 'confluence',
+      key: 'shared-name.png',
+    });
+
+    // The numeric PK's file (webp), never the confluence_id's (png).
+    expect(found!.sniffedFormat).toBe('webp');
   });
 
   it('reads the key EXACTLY: a percent-encoded name resolves nothing, and a literal one still does', async () => {
@@ -114,7 +144,12 @@ describe('resolveAttachmentBytes (#1115)', () => {
     // this file's key.
     await writeFileAt(path.join('44556677', 'a%20b.png'), webpBytes());
 
-    const identity = { pageId: 12, confluenceId: '44556677', source: 'confluence' as const };
+    const identity = {
+      pageId: 12,
+      confluenceId: '44556677',
+      pageSource: 'confluence' as const,
+      source: 'confluence' as const,
+    };
 
     expect(await store.resolveAttachmentBytes({ ...identity, key: 'Screen%20shot.png' })).toBeNull();
 
@@ -131,6 +166,7 @@ describe('resolveAttachmentBytes (#1115)', () => {
     const found = await store.resolveAttachmentBytes({
       pageId: 31,
       confluenceId: null,
+      pageSource: 'standalone',
       source: 'local',
       key: 'photo.webp',
     });
@@ -150,6 +186,7 @@ describe('resolveAttachmentBytes (#1115)', () => {
     const found = await store.resolveAttachmentBytes({
       pageId: 99,
       confluenceId: null,
+      pageSource: 'standalone',
       source: 'local',
       key: 'no-row.png',
     });
@@ -168,6 +205,7 @@ describe('resolveAttachmentBytes (#1115)', () => {
     const found = await store.resolveAttachmentBytes({
       pageId: 12,
       confluenceId: '44556677',
+      pageSource: 'confluence',
       source: 'confluence',
       key: 'flow.png',
     });
@@ -188,6 +226,7 @@ describe('resolveAttachmentBytes (#1115)', () => {
       const found = await store.resolveAttachmentBytes({
         pageId: 12,
         confluenceId: '44556677',
+        pageSource: 'confluence',
         source: 'confluence',
         key,
       });
@@ -201,6 +240,7 @@ describe('resolveAttachmentBytes (#1115)', () => {
     const found = await store.resolveAttachmentBytes({
       pageId: 31,
       confluenceId: null,
+      pageSource: 'standalone',
       source: 'local',
       key: '../other.png',
     });
@@ -212,6 +252,7 @@ describe('resolveAttachmentBytes (#1115)', () => {
     const found = await store.resolveAttachmentBytes({
       pageId: 12,
       confluenceId: '../../etc',
+      pageSource: 'confluence',
       source: 'confluence',
       key: 'passwd',
     });
@@ -220,15 +261,15 @@ describe('resolveAttachmentBytes (#1115)', () => {
 
   it('answers null for a missing file and a missing directory', async () => {
     expect(await store.resolveAttachmentBytes({
-      pageId: 12, confluenceId: '44556677', source: 'confluence', key: 'absent.png',
+      pageId: 12, confluenceId: '44556677', pageSource: 'confluence', source: 'confluence', key: 'absent.png',
     })).toBeNull();
 
     expect(await store.resolveAttachmentBytes({
-      pageId: 777, confluenceId: '99887766', source: 'confluence', key: 'absent.png',
+      pageId: 777, confluenceId: '99887766', pageSource: 'confluence', source: 'confluence', key: 'absent.png',
     })).toBeNull();
 
     expect(await store.resolveAttachmentBytes({
-      pageId: 777, confluenceId: null, source: 'local', key: 'absent.png',
+      pageId: 777, confluenceId: null, pageSource: 'standalone', source: 'local', key: 'absent.png',
     })).toBeNull();
   });
 });
@@ -247,6 +288,66 @@ describe('the hoist is a move, not a copy', () => {
     expect(handler.getMimeType).toBe(store.getMimeType);
     expect(handler.attachmentCacheDir).toBe(store.attachmentCacheDir);
     expect(handler.isStorableAttachmentFilename).toBe(store.isStorableAttachmentFilename);
+  });
+});
+
+describe('the record agrees with the code about where the bytes are', () => {
+  /**
+   * Review r3, and the same class of defect as the round-2 `attachment_key`
+   * encoding fix one level up: this PR ships no behaviour, so its record IS the
+   * deliverable, and P2 builds its enumerator from it. Three shipped statements
+   * claimed the `/api/local-attachments` prefix was "a render-time rewrite that
+   * never appears in `body_html`" and concluded that a backend consumer should
+   * branch on `pages.confluence_id IS NULL`.
+   *
+   * `relocateToLocal` does the opposite: it copies the cached Confluence
+   * attachments into the LOCAL store, rewrites the body to
+   * `/api/local-attachments/<page.id>/` and persists that body in the same
+   * UPDATE that nulls `confluence_id`. So the `confluence_id IS NULL` rule
+   * sends the read at the Confluence tree for exactly the pages whose bytes
+   * were moved out of it — a silent miss, since a wrong key and an absent file
+   * both answer `null`.
+   *
+   * Two anchors, so this fails from either side: the code half (the destination
+   * prefix `relocateToLocal` writes, whose output shape
+   * `page-relocate-refs.test.ts` pins) and the record half (the retired claim).
+   */
+  const repoRoot = path.join(__dirname, '..', '..', '..', '..');
+  const recordFiles = [
+    'backend/src/core/services/attachment-store.ts',
+    'backend/src/core/db/migrations/093_page_image_embeddings.sql',
+    'docs/ARCHITECTURE-DECISIONS.md',
+    'docs/architecture/03-backend-domains.md',
+    'docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md',
+  ];
+
+  /** The two phrasings the retired claim shipped in, and nothing broader. */
+  const RETIRED_CLAIM = /never appears in|render-?time (only|rewrite)/;
+
+  it('relocateToLocal still writes the local prefix into the body it persists', () => {
+    const src = readFileSync(
+      path.join(repoRoot, 'backend/src/domains/knowledge/services/page-relocate-service.ts'),
+      'utf8',
+    );
+    expect(src).toContain('`/api/local-attachments/${page.id}/`');
+  });
+
+  it('no shipped record calls the local prefix render-time or absent from body_html', () => {
+    for (const rel of recordFiles) {
+      const text = readFileSync(path.join(repoRoot, rel), 'utf8');
+      // Sentence-scoped, so an unrelated "render-time" elsewhere in a 2000-line
+      // ADR file cannot trip it.
+      for (const sentence of text.split(/(?<=[.;])\s+/)) {
+        if (!/local-attachments/.test(sentence)) continue;
+        expect(
+          RETIRED_CLAIM.test(sentence),
+          `${rel}: "${sentence.trim().slice(0, 160)}" — ` +
+            'relocateToLocal persists `/api/local-attachments/<page_id>/` into ' +
+            'pages.body_html (page-relocate-service.ts:692-696, :729-752). The ' +
+            'store follows the URL PREFIX, never `confluence_id IS NULL`.',
+        ).toBe(false);
+      }
+    }
   });
 });
 

@@ -165,10 +165,16 @@ also the only legal one: `core → confluence` is forbidden, `confluence → cor
 is what the domain already does.
 
 **`resolveAttachmentBytes` is a SYSTEM read — no ACL, and that is a boundary,
-not an omission.** It resolves either store from a page's identity (the
-Confluence cache keyed by `confluence_id`, or by the numeric PK for a standalone
-page's pasted images; `local/<page_id>/` for the local store) and answers bytes
-plus the sniffed format. It exists for the embedding worker, which runs outside
+not an omission.** It resolves either store from a page's identity and answers
+bytes plus the sniffed format. Which store is the CALLER's decision and follows
+the URL prefix in `body_html` — `/api/attachments/` is the Confluence cache,
+`/api/local-attachments/` the local store, and both really occur there, because
+`relocateToLocal` moves the bytes into the local store and persists the
+rewritten body. Inside the Confluence cache the directory key is
+`pages.source === 'confluence' && confluence_id ? confluence_id : String(id)`,
+the same rule `parentKeyFor` and the paste/import writer use, which is why
+`pageSource` is a required input rather than something inferred from a null
+`confluence_id`. It exists for the embedding worker, which runs outside
 any request, and for the answer path *after* retrieval has applied the
 visibility predicate. Routes must keep using the gated readers —
 `getLocalAttachment` (which calls `assertLocalPageAccess`) or `readAttachment`

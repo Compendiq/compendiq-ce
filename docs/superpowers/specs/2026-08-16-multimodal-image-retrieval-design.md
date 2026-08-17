@@ -56,7 +56,7 @@ CREATE TABLE page_image_embeddings (
   id             BIGSERIAL PRIMARY KEY,
   page_id        INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
   source         TEXT    NOT NULL CHECK (source IN ('confluence','local')),  -- which store the key resolves in
-  attachment_key TEXT    NOT NULL,   -- filename inside that store (the converter's URL basename)
+  attachment_key TEXT    NOT NULL,   -- filename inside that store, as it is ON DISK: decodeURIComponent(basename(<img src>))
   sha256         TEXT    NOT NULL,   -- content address of the bytes that were embedded
   format         TEXT    NOT NULL,   -- sniffed: png|jpeg|webp|gif
   width          INTEGER, height INTEGER,
@@ -96,8 +96,8 @@ CREATE INDEX pages_image_embedding_dirty_idx ON pages(id) WHERE image_embedding_
 
 | Module | Domain | Role |
 |--------|--------|------|
-| `core/services/attachment-store.ts` **(new, hoisted — shipped in P0)** | core | `resolveAttachmentBytes({pageId, confluenceId, source, key})` → `{bytes, sniffedFormat} \| null`; branches the Confluence-style tree (`<ATTACHMENTS_DIR>/<confluence_id \| numeric id>/`) vs the local store (`local/<page_id>/`). `attachment-handler.ts` re-exports the moved names so its six importers do not move. **System read, no ACL** — a test walks `src/routes` and fails if any route file names it. |
-| `core/services/image-references.ts` (existing) | core | Enumeration for the **stored** shape: `<img src="/api/attachments/<id>/<file>">` in `body_html` (the `/api/local-attachments` rewrite is render-time only, so a backend consumer must branch on `pages.confluence_id IS NULL`, and even then pasted images on standalone pages live in the Confluence tree keyed by the numeric PK). Gains `extractImageReferencesFromHtml` — today it only parses Confluence **storage** format (`extractImageReferences(bodyStorage)`), which standalone pages do not have. |
+| `core/services/attachment-store.ts` **(new, hoisted — shipped in P0)** | core | `resolveAttachmentBytes({pageId, confluenceId, pageSource, source, key})` → `{bytes, sniffedFormat} \| null`; branches the Confluence-style tree (`<ATTACHMENTS_DIR>/<confluence_id \| numeric id>/`) vs the local store (`local/<page_id>/`). `pageSource` is `pages.source` and is **required**, because the Confluence-tree directory key is `parentKeyFor`'s rule (`source === 'confluence' && confluenceId ? confluenceId : String(id)`), not `confluenceId ?? id`. `attachment-handler.ts` re-exports the moved names so its six importers do not move. **System read, no ACL** — a test walks `src/routes` and fails if any route file names it. |
+| `core/services/image-references.ts` (existing) | core | Enumeration for the **stored** shape. `body_html` carries **both** attachment prefixes: `<img src="/api/attachments/<key>/<file>">` (the Confluence cache) and `<img src="/api/local-attachments/<page_id>/<file>">` (the local store, persisted by `relocateToLocal` — `page-relocate-service.ts:692-696`, `:729-752` — not rewritten at render time). So `source` follows the **URL prefix**, never `pages.confluence_id IS NULL`: a relocated page is `confluence_id IS NULL` with its bytes in the *local* store, and one page can carry both prefixes (pasted images land in the Confluence-style tree under the numeric PK even on a standalone page). `attachment_key` is `decodeURIComponent(basename(src))` — the `<img src>` is percent-encoded (`content-converter.ts:366`, `pages-crud.ts:2730`) while the bytes are on disk under the raw name, and a mis-encoded key resolves to the same silent `null` as an absent file. Gains `extractImageReferencesFromHtml` — today it only parses Confluence **storage** format (`extractImageReferences(bodyStorage)`), which standalone pages do not have, and which a relocated page still carries verbatim describing attachments its body no longer points at. |
 | `domains/llm/services/vl-embedding-client.ts` **(new, P1)** | llm | `embedImages(cfg, model, items: Array<{image: Buffer, format}>, opts?: {dimensions})` and `embedQueryForImages(cfg, model, text, opts?)`. Builds the D4 `messages` body; re-normalises after MRL truncation; inherits `enqueue`, the per-provider breaker and the TLS dispatcher (the `rerank-client.ts` precedent). Documents its **non-support list**: TEI, LM Studio `/v1/embeddings`, llama-server `/embedding`, plain `input`. |
 | `domains/llm/services/llm-provider-resolver.ts` | llm | `resolveImageEmbeddingUsecase()` → `null` when unassigned; `resolveUsecase('image_embedding')` throws (same invariant as `rerank`). |
 | `domains/llm/services/image-embedding-probe.ts` **(new, P1)** | llm | On assignment: embeds a known 3-colour-band PNG **and** a text through the client; refuses the pair if the endpoint rejects the `messages` shape or returns mismatched widths; records dims. Precedent: `vision-probe.ts`. |
@@ -230,10 +230,15 @@ bare query rather than a garbled one.
   and recorded in ADR-025 beside the published MMTEB figures.
 - **Where it runs**: locally through the D11 shim (plumbing, ranked lists) and on
   the prod stack for the numbers that decide (the D11 caveat). Not in CI.
-- **Calibration warning that shapes §5**: published cross-modal similarities sit
-  in a different absolute band than text↔text ones (0.46–0.72 vs 0.75–0.81 in
-  the model card's own tables). Any fixed similarity cutoff tuned on text
-  misbehaves on images — which is why the image leg fuses by **rank** and why
+- **Calibration warning that shapes §5**: the published worked examples put
+  text→image similarities around 0.46–0.72 and text↔text ones as high as
+  0.75–0.81 — `arXiv:2601.04720v2` Appendix C, Table 9 (MS COCO: 0.46, 0.52)
+  and Table 8 (SQuAD: 0.75, 0.81); the model card's own matrix scores a
+  matching text query 0.7155 against an image document and 0.8160 against a
+  text one. Not disjoint bands — Table 8's AG News pairs are 0.55 and 0.57 —
+  and that is the point: no scalar separates them, so a cutoff tuned on text
+  has no defined meaning on a cross-modal score. Which is why the image leg
+  fuses by **rank** and why
   an image similarity never reaches `retrieval-confidence.ts` (§5: that is
   narrower than "the leg never feeds the number").
 
