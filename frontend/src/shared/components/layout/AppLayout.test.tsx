@@ -392,7 +392,7 @@ describe('AppLayout', () => {
     expect(document.activeElement).toBe(main);
   });
 
-  it('does not render a layout preset selector', () => {
+  it('does not render a layout preset selector in the shell', () => {
     render(
       <AppLayout>
         <div>article</div>
@@ -400,6 +400,16 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/pages/123') },
     );
     expect(screen.queryByRole('button', { name: 'Layout presets' })).not.toBeInTheDocument();
+  });
+
+  it('does not treat the create form as an existing article', () => {
+    render(
+      <AppLayout>
+        <div>new page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/new') },
+    );
+    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
   });
 
   it('temporarily compacts the tree beside an expanded inspector at intermediate widths', () => {

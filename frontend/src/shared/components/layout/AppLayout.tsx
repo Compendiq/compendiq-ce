@@ -22,8 +22,11 @@ import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { Logo } from '../Logo';
 import { AppHeaderMain } from './header-slot';
 import { PageTransition } from './PageTransition';
+import { type LayoutPreset } from './LayoutPresetMenu';
+import { ArticleLayoutControlsProvider } from './article-layout-controls';
 import { useMediaQuery, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
+import { isExistingArticlePath } from '../../lib/article-route';
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
@@ -35,18 +38,22 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const setPendingSequence = useKeyboardShortcutsStore((s) => s.setPendingSequence);
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const toggleArticleSidebar = useUiStore((s) => s.toggleArticleSidebar);
+  const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
   const articleSidebarCollapsed = useUiStore((s) => s.articleSidebarCollapsed);
+  const setTreeSidebarCollapsed = useUiStore((s) => s.setTreeSidebarCollapsed);
   const setArticleSidebarCollapsed = useUiStore((s) => s.setArticleSidebarCollapsed);
   const singleKeyShortcutsEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
   const dockOpen = useAiDockStore((s) => s.open);
+  const openDock = useAiDockStore((s) => s.openDock);
   const closeDock = useAiDockStore((s) => s.closeDock);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [activeLayoutPreset, setActiveLayoutPreset] = useState<LayoutPreset | null>(null);
   const [inspectorViewRequest, setInspectorViewRequest] = useState<InspectorViewRequest | null>(null);
   const [midWidthTreeExpandedOverride, setMidWidthTreeExpandedOverride] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const mobileSidebarRef = useRef<HTMLDivElement>(null);
   const previousLayoutPathRef = useRef(location.pathname);
-  const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
+  const isArticleRoute = isExistingArticlePath(location.pathname);
   const isInspectorCompactLayout = useMediaQuery('(min-width: 768px) and (max-width: 1439px)');
   const isMobileLayout = useIsMobileLayout();
   // On /settings* we swap the Pages tree for a Settings-specific sidebar so
@@ -64,9 +71,57 @@ export function AppLayout({ children }: { children: ReactNode }) {
     }));
   }, []);
 
-  // "Show me the assistant" is raised as `openDock()` from two places: Alt+I
-  // in PageViewPage and the inspector's own rail button. Below `md` that still
-  // means the bottom sheet, which is all `AiDock`
+  const applyLayoutPreset = useCallback((preset: LayoutPreset) => {
+    setActiveLayoutPreset(preset);
+
+    if (preset === 'reading') {
+      setTreeSidebarCollapsed(true);
+      setArticleSidebarCollapsed(false);
+      closeDock();
+      requestInspectorView('outline');
+      setMidWidthTreeExpandedOverride(false);
+      return;
+    }
+
+    if (preset === 'editing') {
+      setTreeSidebarCollapsed(false);
+      setArticleSidebarCollapsed(false);
+      closeDock();
+      requestInspectorView('details');
+      // Editing intentionally keeps navigation available even where the
+      // inspector would normally compact it for reading room.
+      setMidWidthTreeExpandedOverride(true);
+      return;
+    }
+
+    if (preset === 'focus') {
+      setTreeSidebarCollapsed(true);
+      setArticleSidebarCollapsed(true);
+      closeDock();
+      setMidWidthTreeExpandedOverride(false);
+      return;
+    }
+
+    // The AI preset. `setArticleSidebarCollapsed(true)` here was correct when
+    // the assistant was its own column and the inspector had to step aside for
+    // it; now the assistant IS a tab in that inspector, so collapsing it hid
+    // the very thing the preset asks for. The effect below turns `openDock()`
+    // into the tab selection on every layout that has an inspector.
+    setTreeSidebarCollapsed(false);
+    setArticleSidebarCollapsed(false);
+    openDock();
+    setMidWidthTreeExpandedOverride(false);
+  }, [
+    closeDock,
+    openDock,
+    requestInspectorView,
+    setArticleSidebarCollapsed,
+    setTreeSidebarCollapsed,
+  ]);
+
+  // "Show me the assistant" is raised as `openDock()` from three places: Alt+I
+  // in PageViewPage, the AI layout preset above, and the inspector's own rail
+  // button. Below `md` that still means the bottom sheet, which is all `AiDock`
   // renders now.
   //
   // At `md` and above it can no longer mean "open the dock", because there is
@@ -124,9 +179,26 @@ export function AppLayout({ children }: { children: ReactNode }) {
     midWidthTreeExpandedOverride,
   ]);
 
+  // A manual panel change means the last command is no longer an exact preset.
+  useEffect(() => {
+    if (!activeLayoutPreset) return;
+    const matches = {
+      reading: treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
+      editing: !treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
+      focus: treeSidebarCollapsed && articleSidebarCollapsed && !dockOpen,
+      // Research asks for the assistant tab. The dock-open effect below
+      // immediately turns `openDock()` into an expanded inspector, so the
+      // live match is tree + inspector, same as editing. The request is what
+      // distinguishes them; a later manual panel change still clears.
+      research: !treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
+    }[activeLayoutPreset];
+    if (!matches) setActiveLayoutPreset(null);
+  }, [activeLayoutPreset, articleSidebarCollapsed, dockOpen, treeSidebarCollapsed]);
+
   useEffect(() => {
     if (previousLayoutPathRef.current === location.pathname) return;
     previousLayoutPathRef.current = location.pathname;
+    setActiveLayoutPreset(null);
     setMidWidthTreeExpandedOverride(false);
   }, [location.pathname]);
 
@@ -343,6 +415,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
     // the page that started it. It is inert until an AI surface mounts and
     // registers as a consumer — see `retainAi` in AiContext.
     <AiProvider>
+    <ArticleLayoutControlsProvider
+      value={isArticleRoute
+        ? { activePreset: activeLayoutPreset, applyPreset: applyLayoutPreset }
+        : null}
+    >
     {/* `app-backdrop` (index.css) paints the gradient chassis rather than a flat
         --color-background. It must not be swapped back to a `bg-*` utility:
         those set background-color, which cannot express the gradient. */}
@@ -580,6 +657,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         )}
       </AnimatePresence>
     </div>
+    </ArticleLayoutControlsProvider>
     </AiProvider>
   );
 }
