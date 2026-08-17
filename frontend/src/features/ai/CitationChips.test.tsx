@@ -264,6 +264,24 @@ describe('CitationChips', () => {
       expect(new Set(labels).size).toBe(2);
     });
 
+    it('degrades to the ordinary numbered chip when kind says image but no URL arrived', () => {
+      // Review r3. `isImageSource` requires the URL as well as the
+      // discriminator. Untested, the guard could be reduced to `kind ===
+      // 'image'` with the whole frontend suite green — after which a
+      // malformed frame renders an empty `<img>`, takes an `aria-label`
+      // promising a picture on a chip that has none, and
+      // `imageSourceFileName` THROWS on `undefined.split` mid-render.
+      const { kind, pageTitle, pageId } = imageSource;
+      render(<CitationChips sources={[{ kind, pageTitle, pageId } as Source]} />, { wrapper: Wrapper });
+
+      const chip = screen.getByTestId('citation-chip-1');
+      expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
+      expect(chip).not.toHaveAttribute('aria-label');
+      expect(chip).toHaveTextContent('1');
+      fireEvent.click(chip);
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
+
     it('keeps the unqualified name when the URL carries no filename', () => {
       // A placeholder would be worse than nothing: the plain label is already
       // the correct name for a page contributing one picture.

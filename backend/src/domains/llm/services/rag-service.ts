@@ -1709,11 +1709,25 @@ async function hybridSearchInner(
   // Started HERE, beside the keyword leg and before the text embed, so its
   // one VL request overlaps the two text legs instead of adding to them: the
   // cost a question pays is `max(text, image) - text`, not the image leg's
-  // whole latency. Its own budget (IMAGE_LEG_TIMEOUT_MS) bounds the worst
-  // case, and the gate inside it means a deployment with no VL model spends
-  // one cached boolean and one indexed assignment lookup on this line — the
-  // non-empty-index EXISTS is BEHIND that lookup and is never reached until a
-  // model is assigned (see the gate's own header for the order and why).
+  // whole latency. BOTH of its stages carry a budget, and they are separate
+  // numbers rather than one — `IMAGE_LEG_TIMEOUT_MS` (3s) on the embed and
+  // `IMAGE_LEG_KNN_TIMEOUT_MS` (2s, a `SET LOCAL statement_timeout`) on the
+  // kNN, which compose to a ~5s worst case for this await. The kNN needs its
+  // own because it is not always cheap: above 4000 dimensions the index is
+  // deliberately absent and the scan is sequential. The gate inside it means
+  // a deployment with no VL model spends one cached boolean and one indexed
+  // assignment lookup on this line — the non-empty-index EXISTS is BEHIND
+  // that lookup and is never reached until a model is assigned (see the
+  // gate's own header for the order and why).
+  //
+  // What it also spends, on every hybrid search that reaches the kNN, is a
+  // SECOND concurrent connection from the vector pool (`PG_VECTOR_POOL_MAX`,
+  // default 5) — the leg is started HERE precisely so its transaction overlaps
+  // `vectorSearch`'s. That halves the pool's effective per-request headroom,
+  // and the two legs are not equally forgiving about losing the race: a
+  // connect timeout inside the image leg is a bypass, while one inside the try
+  // below sets `embeddingFailed` and `/llm/ask` refuses the turn. Raise
+  // `PG_VECTOR_POOL_MAX` when enabling the leg on a busy instance (runbook §6).
   //
   // `searchImageLeg` never rejects — every failure is a bypass it reports on
   // the outcome. The `.catch` covers the chain in FRONT of it (`stageLimit`

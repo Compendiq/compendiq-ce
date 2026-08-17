@@ -567,6 +567,59 @@ describe('POST /api/llm/ask', () => {
       expect((final.sources as Array<Record<string, unknown>>).some((s) => s.kind === 'image')).toBe(true);
     });
 
+    it('#1115 P3 — an image-only result set ANSWERS: it stands `no_context` down, deliberately', async () => {
+      // Review r3 raised this as the one arm of #1105 the leg really does
+      // move, and it is worth pinning rather than inheriting. `no_context`
+      // fires on `searchResults.length === 0`; the image leg's whole purpose
+      // is to make a page with no matchable text retrievable, so on exactly
+      // the corpus it exists for — a page below `MIN_EMBEDDABLE_TEXT_CHARS`,
+      // where both text legs return nothing — the set is no longer empty and
+      // that arm stands down.
+      //
+      // The ruling is that this is CORRECT, and it is ADR-025's: an image-only
+      // hit set never refuses. Retrieval found a page, the answer cites it,
+      // and the wire carries the picture as a `kind: 'image'` source the
+      // reader can open. What the model receives until P4 is that page's TEXT
+      // — its chunk 0, or the synthesised title below — and never the picture,
+      // so the grounding here is genuinely thin. It is thin evidence, not
+      // absent evidence, which is the distinction that arm draws.
+      //
+      // Both knobs at 0, so `weak_match` cannot fire and this measures the
+      // empty-set arm alone; no `rerankScore`, so it is not the sibling case
+      // above wearing different numbers.
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockConfidenceThresholdRerank.mockResolvedValue(0);
+      mockHybridSearch.mockResolvedValue([
+        {
+          pageId: 94, confluenceId: null,
+          chunkText: 'Untranscribed schematic',
+          pageTitle: 'Untranscribed schematic',
+          sectionTitle: 'Untranscribed schematic',
+          spaceKey: 'ENG', score: 0.0164, vectorScore: null, keywordRank: null,
+          imageOnly: true, imageTextSynthesized: true,
+          imageHits: [{
+            source: 'confluence', key: 'sheet.png', similarity: 0.68,
+            attachmentUrl: '/api/attachments/94/sheet.png',
+          }],
+        },
+      ]);
+      mockBuildRagContext.mockReturnValue('[Source 1: Untranscribed schematic]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('It is the intake manifold.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does the schematic show' },
+      });
+
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBeFalsy();
+      expect(final.refusalReason).toBeFalsy();
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      // The reader gets the picture even though the model did not.
+      expect((final.sources as Array<Record<string, unknown>>).some((s) => s.kind === 'image')).toBe(true);
+    });
+
     it('#1115 P3 — an unreranked image-only row does not demote a measured set into a refusal', async () => {
       // The other direction, and the sharper one: `allReranked` picks the
       // basis, so ONE unscored row flips a fully-reranked set onto the

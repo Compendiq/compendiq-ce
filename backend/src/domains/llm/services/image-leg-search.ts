@@ -109,6 +109,39 @@ import type { PageSource } from '@compendiq/contracts';
 export const IMAGE_LEG_TIMEOUT_MS = 3_000;
 
 /**
+ * Latency budget for the kNN, as a `SET LOCAL statement_timeout` inside the
+ * transaction it already opens.
+ *
+ * The constant above bounds the query EMBED and nothing else, and the two
+ * halves of this leg are not the same kind of risk. On an indexed column the
+ * kNN is single-digit milliseconds; on the **unindexed tier** it is not a
+ * fault but a shipped configuration — `ensureImageEmbeddingColumn` deliberately
+ * builds no HNSW index above 4000 dimensions (there is no opclass), and the
+ * gate here has no `indexed` condition, so the leg runs against a SEQUENTIAL
+ * SCAN of `page_image_embeddings` that grows with the corpus. `hybridSearch`
+ * awaits this between the text legs and fusion, so with no bound an optional
+ * leg can stall every `/llm/ask`, every deep search and every
+ * `/api/search?mode=hybrid` on the instance. The same is reachable with an
+ * index, for a different reason: the statement takes ACCESS SHARE on a table a
+ * concurrent rebuild holds ACCESS EXCLUSIVE on, and a lock wait counts as
+ * statement time.
+ *
+ * **2s, and deliberately not the embed's 3.** There is no queue in front of
+ * this one and no remote hop — it is a local index probe with three orders of
+ * magnitude of headroom at 2s — while the leg has already been allowed to
+ * spend 3s upstream, so the two compose to a ~5s worst case rather than
+ * doubling the larger number. A timeout throws into the same catch every other
+ * failure here lands in and becomes the ordinary `image_leg_unavailable`
+ * bypass.
+ *
+ * The two GATE reads are still unbounded by this leg: they run through the
+ * shared `query()` helper on the main pool, which carries whatever
+ * `PG_STATEMENT_TIMEOUT` the deployment set. Only the statement this module
+ * opens its own transaction for can carry its own budget.
+ */
+export const IMAGE_LEG_KNN_TIMEOUT_MS = 2_000;
+
+/**
  * How many image hits one page carries onto its `SearchResult`.
  *
  * The wire cap (`MAX_IMAGE_SOURCES` in `llm-ask.ts`) is the one a user sees;
@@ -123,11 +156,30 @@ export const MAX_IMAGE_HITS_PER_PAGE = 3;
  * Raw-row over-fetch for the page-denominated leg — `PAGE_FANOUT`'s argument
  * from `rag-service.ts`, applied to images.
  *
- * The kNN is over IMAGE rows and the leg is denominated in PAGES, so a page
- * carrying twenty pictures (`rag_images_per_page_max`'s default cap) could
- * otherwise consume the whole window and leave the leg reporting one page. The
- * cap keeps `2 x rawLimit` inside pgvector's `ef_search` ceiling of 1000 at
- * every reachable stage limit, exactly as `VECTOR_RAW_LIMIT_CAP` does.
+ * The kNN is over IMAGE rows and the leg is denominated in PAGES, so without
+ * an over-fetch a page carrying several pictures consumes ranks its single
+ * best image should have cost one of, and the leg reports fewer pages than the
+ * caller asked for.
+ *
+ * **4 is PROVISIONAL, by analogy, and not the measured constant its neighbour
+ * is** (review r3). `PAGE_FANOUT`'s 4 comes from the observed chunk-per-page
+ * density near the top of the post-#1265 ranking, with the eval rig as the
+ * arbiter of any retune; the image axis has no such measurement, because
+ * #1115 P5b — the `--images` axis that would produce one — is not wired yet.
+ * And the density it is guessing at is an ADMIN KNOB here, not a property of
+ * the chunker: `rag_images_per_page_max` defaults to 20, so at the default
+ * stage limit of 10 the raw window is 40 rows and two galleries can fill it
+ * between them, leaving the leg reporting two pages where ten were asked for.
+ * That shortfall is reachable at shipped defaults. It is bounded — a page
+ * cannot take more of the window than it has images — and it degrades the leg
+ * rather than the search, so it is left as a number for P5b's axis to retune
+ * rather than mitigated here with an untested second mechanism. Do not read it
+ * as measured.
+ *
+ * {@link IMAGE_RAW_LIMIT_CAP} is a separate argument and mitigates something
+ * else entirely: it keeps `2 x rawLimit` inside pgvector's `ef_search` ceiling
+ * of 1000 at every reachable stage limit, exactly as `VECTOR_RAW_LIMIT_CAP`
+ * does. It says nothing about fan-out.
  */
 export const IMAGE_PAGE_FANOUT = 4;
 export const IMAGE_RAW_LIMIT_CAP = 500;
@@ -372,6 +424,17 @@ async function imageKnn(
   const rawLimit = imageRawLimit(opts.limit);
   // The dedicated vector pool, like `vectorSearch`: a similarity scan must not
   // starve the main pool the CRUD routes share.
+  //
+  // It is worth stating what that costs, because it is a cost this leg ADDS
+  // and no default was raised for it: a hybrid search that reaches here holds
+  // TWO of the pool's connections at once (`PG_VECTOR_POOL_MAX`, default 5),
+  // since `rag-service` starts this leg specifically so its transaction
+  // overlaps `vectorSearch`'s. Effective per-request headroom on that pool
+  // therefore roughly halves when the leg is live, and the two sides are not
+  // symmetric about losing the race — a `connectionTimeoutMillis` here is a
+  // bypass, while the same failure in the vector leg is `embedding_failed`,
+  // which `/llm/ask` refuses the turn on. Raise `PG_VECTOR_POOL_MAX` when
+  // enabling the leg on a busy instance; the runbook's §6 cost section says so.
   const client = await getVectorPool().connect();
   try {
     await client.query('BEGIN');
@@ -379,6 +442,12 @@ async function imageKnn(
     // rows, so a LIMIT above it silently plateaus. 2x for graph-walk headroom;
     // `efSearchFor` clamps to pgvector's [1, 1000].
     await client.query(`SET LOCAL hnsw.ef_search = ${efSearchFor(rawLimit)}`);
+    // …and the leg's own budget for the scan below (see the constant). The
+    // vector leg has no equivalent because a bypass there is not equivalent:
+    // it sets `embeddingFailed`, which `/llm/ask` refuses the turn on. This
+    // leg is an ADDITION, so giving up on it costs an ordinary answer nothing
+    // and stalling on it costs every answer on the instance.
+    await client.query(`SET LOCAL statement_timeout = ${IMAGE_LEG_KNN_TIMEOUT_MS}`);
     const result = await client.query<{
       page_id: number;
       source: string;

@@ -753,9 +753,11 @@ describe('Search Routes', () => {
     it('semantic mode runs no image leg at all — it never reaches hybridSearch', async () => {
       // The narrower, structural guarantee: `mode=semantic` calls
       // `vectorSearch` directly, so there is no option to pass and no way for
-      // the leg to appear here. A future refactor that routed this branch
-      // through `hybridSearch` would have to pass `imageLeg: false`
-      // explicitly, and this fails until it does.
+      // the leg to appear here. This is a STOP SIGN, not a constraint on
+      // where a refactor lands — it goes red on any routing through
+      // `hybridSearch`, correct or not, which is what brings the refactorer
+      // back to the comment in `search.ts`. Re-pointing it at
+      // `toMatchObject({ imageLeg: false })` is then part of that refactor.
       mockQueryFn.mockResolvedValue({ rows: [] });
       mockVectorSearch.mockResolvedValue([makeSearchResult(1, 'Result')]);
       mockHybridSearch.mockClear();

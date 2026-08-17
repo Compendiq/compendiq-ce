@@ -215,8 +215,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
     // so there is nothing to switch off. That is the right answer as well as
     // the accidental one — `mode=semantic` means "the text vector index",
     // and fusing a second, cross-modal ranking into it would make the mode
-    // name a lie. A refactor that ever routes this through `hybridSearch`
-    // must pass `imageLeg: false`; `search.test.ts` fails until it does.
+    // name a lie. `search.test.ts` pins the STRUCTURAL fact — this branch
+    // must never reach `hybridSearch` — so any refactor that routes it there
+    // turns that test red, whether or not it also passes `imageLeg: false`.
+    // The test is a stop sign rather than a constraint on the destination:
+    // a refactor that genuinely needs `hybridSearch` here has to pass
+    // `imageLeg: false` AND re-point that test at the option instead.
     if (effectiveMode === 'semantic') {
       const questionEmbedding = await generateSearchEmbedding(request, q, 'semantic', reply);
       if (!questionEmbedding) return;

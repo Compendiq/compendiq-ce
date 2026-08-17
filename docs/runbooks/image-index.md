@@ -89,7 +89,7 @@ Two consequences worth knowing before you set it:
   `shape_rejected`, and the refusal names the override.
 - **Changing it is a rebuild.** It is part of the recorded identity
   (`provider:model@baseUrl#dims`), so saving a new width empties the image index
-  and re-dirties every page — see §6.
+  and re-dirties every page — see §7.
 - **The width is saved even when the probe that follows it fails.** It has to
   be: the probe sends it, so it is written first. A refusal therefore leaves the
   new width stored, the assignment and the column exactly as they were, and the
@@ -121,7 +121,7 @@ reported as `vllm#33954`. A corpus embedded on one version and queried on
 another is silently degraded, and nothing in Compendiq can detect it.
 
 So: pin the served version, and when you change it, treat it exactly like
-changing the model — see §6.
+changing the model — see §7.
 
 What Compendiq can see for you, and what it cannot:
 
@@ -206,7 +206,7 @@ different width. A *failed* re-check leaves the column alone and is reported as
 an error, not a success.
 
 **Re-check is not read-only.** If the width or the endpoint changed, re-applying
-the column type is the destructive rebuild in §6: the image index is emptied and
+the column type is the destructive rebuild in §7: the image index is emptied and
 every non-folder page is queued for a re-scan. The toast says so, naming the
 page count, when that is what happened.
 
@@ -255,7 +255,7 @@ the backlog.
 | A draw.io diagram is saved on a local page | `putLocalAttachment` |
 | A page is relocated between Confluence and local | both directions, unconditionally — the move rewrites every `<img src>` |
 | A page's cached attachments are cleared (a new version, an unsync) | `cleanPageAttachments` — this re-queues the page so the next scan **re-reads** it; it does not shrink the index (see below) |
-| **Re-scan all** | the Embeddings-tab action, and the model-change rebuild in §6 |
+| **Re-scan all** | the Embeddings-tab action, and the model-change rebuild in §7 |
 
 The worker runs **off the sync cadence** — fire-and-forget beside
 `processDirtyPages`, which is how the text embedder is scheduled too — plus the
@@ -280,7 +280,7 @@ pasted into after that move carries both prefixes at once.
 
 An image whose bytes are unchanged since its last embed — same sha256, same
 model — **keeps its row and costs no request at all**. That is what makes
-Re-scan cheap, and it is why the model-change rebuild in §6 is affordable.
+Re-scan cheap, and it is why the model-change rebuild in §7 is affordable.
 
 ### What removes a row
 
@@ -298,7 +298,7 @@ So an unsync, or any other clearing of cached attachment files, does **not**
 shrink the index. Rows go away when the body stops pointing at the image,
 when the knobs below exclude it, or when the `pages` row itself is purged
 (`ON DELETE CASCADE`) — and the whole table is emptied by the model-change
-rebuild in §6.
+rebuild in §7.
 
 ### What is skipped, and why
 
@@ -320,7 +320,7 @@ A **failure** is different, and it has two causes:
   breaker, a timeout. Retrying is automatic: the page keeps its
   `image_embedding_dirty` flag and the next scan tries it again.
 - The model answered at a **width the column is not typed for**. This is the
-  guarded-DDL state §6 describes — the assignment saved and the `ALTER` did
+  guarded-DDL state §7 describes — the assignment saved and the `ALTER` did
   not — and the check happens *before* the INSERT, so it lands here rather than
   taking the page's write down with it. The automatic retry will keep failing
   until you press **Re-check** on the Image embedding row, which re-applies the
@@ -356,7 +356,7 @@ and both return immediately — the scan runs detached, and the card polls.
 - **Process now** works through the pages that are *already* queued. It is what
   you press after fixing a provider outage.
 - **Re-scan all** marks **every** live non-folder page first. It is what you
-  press after upgrading the model server in place (§6 — no signal in the app can
+  press after upgrading the model server in place (§7 — no signal in the app can
   see that), or when you suspect the index has drifted from the corpus. It is
   affordable because unchanged bytes reuse their rows by content hash: a re-scan
   of a settled corpus costs one file read per image and no requests.
@@ -430,6 +430,26 @@ short text through the chat template is well under a second. A persistently
 slow or dead endpoint trips the per-provider breaker and the leg self-disables
 for the cool-down instead of costing 3s on every question.
 
+**One extra kNN, bounded separately at 2 seconds** (`SET LOCAL
+statement_timeout` inside the leg's own transaction). The two budgets are
+separate numbers and they compose: the leg's worst case is about five seconds,
+not three. The kNN needs its own bound because it is not always an index probe
+— above 4000 dimensions no HNSW index exists (§2), so the leg scans the table
+sequentially, and the answer path *waits* for it. A statement that runs out of
+budget is the ordinary `image_leg_unavailable` bypass, not an error to the
+user; if you see those on an unindexed instance, that is the tier's cost
+arriving, and the remedy is the MRL truncation width in §2 or the knob above.
+
+**One extra connection from the vector pool, per hybrid search.** The leg's
+transaction deliberately overlaps the text vector leg's, so a request holds two
+of `PG_VECTOR_POOL_MAX` (default 5) rather than one, and the pool's effective
+request concurrency roughly halves when the leg is live. The two sides are not
+symmetric about losing that race: a connect timeout in the image leg is a
+bypass, while the same failure in the *text* vector leg is `embedding_failed`,
+which `/llm/ask` refuses the turn on. **Raise `PG_VECTOR_POOL_MAX` when you
+enable the leg on a busy instance**; leaving it at 5 lets an optional leg cost
+answers the mandatory one would have grounded.
+
 The knob in (2) exists precisely so an operator can stop paying that while
 leaving the index being **built**. Unassigning the use case instead turns off
 *both* halves and lets `image_embedding_dirty` accumulate corpus-wide.
@@ -454,10 +474,21 @@ Page RANKING, and on `/llm/ask` the answer's `sources[]`.
   They carry `similarity: null` deliberately: a cross-modal score shares no
   scale with the text cosines beside it, so it must never join the confidence
   average.
-- The **confidence gate (#1105) is unaffected**. An image hit establishes no
-  measurable basis, and a page reached only by the image leg is excluded from
-  the sample entirely, so it can neither lift the number nor trigger a
-  `weak_match` refusal.
+- The **confidence NUMBER and the `weak_match` verdict are unaffected**. An
+  image hit establishes no measurable basis, and a page reached only by the
+  image leg is excluded from the sample entirely, so it can neither lift the
+  number nor trigger a `weak_match` refusal.
+- The **`no_context` refusal is affected, and that is the intended trade**.
+  That arm fires when retrieval returned *nothing*; a page this leg made
+  retrievable is something, so a question that used to return an honest "I
+  found nothing" can now return an answer. On the corpus the leg exists for —
+  a page below the embeddable text floor, which neither text leg can reach —
+  the model receives that page's TEXT (its first chunk, or its title) and
+  **never the picture**, because P4 has not shipped. So the grounding behind
+  such an answer is genuinely thin, and the `kind: 'image'` source is what
+  lets the reader see the evidence the model could not. If you would rather
+  those questions kept refusing, turn the leg off with the knob in (2); it is
+  a retrieval decision, not a confidence one.
 
 ### How to tell it ran
 

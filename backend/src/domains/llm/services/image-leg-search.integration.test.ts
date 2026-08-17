@@ -156,6 +156,16 @@ async function seedImage(pageId: number, key: string, axis: number, source: 'con
   );
 }
 
+/** The same, at an arbitrary vector — for fixtures that need a rank ORDER. */
+async function seedImageVec(pageId: number, key: string, vec: number[]): Promise<void> {
+  await query(
+    `INSERT INTO page_image_embeddings
+       (page_id, source, attachment_key, sha256, format, model, embedding)
+     VALUES ($1, 'confluence', $2, 's', 'png', $4, $3)`,
+    [pageId, key, pgvector.toSql(vec), VL_MODEL],
+  );
+}
+
 async function assignProviders(opts: { vl?: boolean; rerank?: boolean } = {}): Promise<void> {
   const textProv = await query<{ id: string }>(
     `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, default_model, is_default)
@@ -232,7 +242,7 @@ const INDEX_PROBE_SQL = 'EXISTS(SELECT 1 FROM page_image_embeddings)';
 const LEDE_FETCH_SQL = 'LEFT JOIN page_embeddings pe ON pe.page_id = cp.id AND pe.chunk_index = 0';
 
 const { hybridSearch, flushSearchAnalytics } = await import('./rag-service.js');
-const { searchImageLeg } = await import('./image-leg-search.js');
+const { searchImageLeg, IMAGE_LEG_KNN_TIMEOUT_MS } = await import('./image-leg-search.js');
 
 async function lastAnalytics(): Promise<{ search_type: string; degraded_reason: string | null }> {
   await flushSearchAnalytics();
@@ -551,6 +561,33 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
     expect(out.pages.map((p) => p.bestRawIndex)).toEqual([0, 1]);
   });
 
+  it('OVER-FETCHES raw rows so one gallery cannot eat the page window', async () => {
+    // Review r3. `imageRawLimit` was deletable with the suite green: every
+    // existing fixture ran at `limit: 10`, a window wide enough to hold all
+    // its rows either way. The leg is denominated in PAGES over a kNN of
+    // IMAGE rows, so at a small stage limit a page carrying several pictures
+    // fills the raw window on its own and the leg answers with one page where
+    // two were asked for. `imageRawLimit(2)` is 8, which reaches past the six
+    // images below to the seventh row.
+    //
+    // Mutation check: `const rawLimit = opts.limit;` and this returns [gallery]
+    // alone. It is also the window `fuseWithStableHead` assumes the kNN read,
+    // so removing it makes the narrow reconstruction wrong by 4x as well.
+    await assignProviders();
+    const gallery = await seedPage({ title: 'Gallery' });
+    const single = await seedPage({ title: 'Single' });
+    for (let i = 0; i < 6; i++) {
+      await seedImageVec(gallery, `g${i}.png`, [1, i * 0.01, 0, 0]);
+    }
+    // Comfortably behind all six, so the ORDER is not what this measures.
+    await seedImageVec(single, 's.png', [1, 0.5, 0, 0]);
+
+    const out = await searchImageLeg(USER, 'gallery', { limit: 2 });
+
+    expect(out.pages.map((p) => p.pageId)).toEqual([gallery, single]);
+    expect(out.pages[1]!.bestRawIndex).toBe(6);
+  });
+
   it('caps the hits it carries per page at MAX_IMAGE_HITS_PER_PAGE', async () => {
     await assignProviders();
     const page = await seedPage({ title: 'Gallery' });
@@ -691,6 +728,46 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
       expect(elapsed).toBeLessThan(10_000);
     }, 20_000);
 
+    it('bounds the kNN as well as the embed — a blocked scan bypasses instead of stalling', async () => {
+      // Review r3. `IMAGE_LEG_TIMEOUT_MS` covers the query EMBED and nothing
+      // else, so the kNN ran on the vector pool's session default of 0. That
+      // is not a hypothetical tier: `ensureImageEmbeddingColumn` builds no
+      // HNSW index above 4000 dimensions and this gate has no `indexed`
+      // condition, so the leg really does run a sequential scan there — and
+      // `hybridSearchInner` awaits it between the text legs and fusion, so an
+      // optional leg with no budget stalls every answer on the instance.
+      //
+      // `LOCK TABLE pages` is the cheapest way to make the scan take forever
+      // without touching the SQL: the kNN JOINs `pages`, and nothing earlier
+      // in the leg reads it, so the gate still opens and the embed still
+      // returns. Without `SET LOCAL statement_timeout` this never settles and
+      // the race below reports `done: false`.
+      await assignProviders();
+      const page = await seedPage({ title: 'Turbine' });
+      await seedImage(page, 'turbine.png', 0);
+
+      const holder = await getPool().connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('LOCK TABLE pages IN ACCESS EXCLUSIVE MODE');
+
+        const raced = await Promise.race([
+          searchImageLeg(USER, 'turbine', { limit: 10 }).then((o) => ({ done: true as const, out: o })),
+          new Promise<{ done: false }>((r) =>
+            setTimeout(() => r({ done: false }), IMAGE_LEG_KNN_TIMEOUT_MS + 8_000),
+          ),
+        ]);
+
+        expect(raced.done).toBe(true);
+        // …and it is a BYPASS, the temperament every other failure here has:
+        // recorded as a degradation, never thrown at the caller.
+        expect(raced.done && raced.out).toEqual({ ran: false, failed: true, pages: [] });
+      } finally {
+        await holder.query('ROLLBACK').catch(() => {});
+        holder.release();
+      }
+    }, 30_000);
+
     it('never logs the provider body', async () => {
       await assignProviders();
       const page = await seedPage({ title: 'Turbine' });
@@ -757,6 +834,40 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
       expect(row.chunkText).toBe('Untranscribed schematic');
       expect(row.imageOnly).toBe(true);
       expect(row.imageTextSynthesized).toBe(true);
+    });
+
+    it('carries each page\'s RAW image index from the leg onto the fused row', async () => {
+      // Review r3. `fuseWithStableHead` reconstructs a narrower request's
+      // image leg by filtering on `SearchResult.imageRawIndex`, and its
+      // fallback is `r.imageRawIndex ?? i` — deliberately silent, so a row
+      // that arrives WITHOUT the field reverts the whole mechanism to the
+      // plain prefix it replaced and puts the #1103 head dilution (R@1 0.3889
+      // → 0.2222) back with nothing red.
+      //
+      // The producer had a test (`bestRawIndex` on the leg's own output) and
+      // the consumer had one (hand-built rows carrying `imageRawIndex`); the
+      // HANDOFF between them had none, so deleting `imageRawIndex:
+      // page.bestRawIndex` from `buildImageLegResults` left the suite green.
+      // This asserts the leg's own number reaches the fused row.
+      await assignProviders();
+      const better = await seedPage({ title: 'Better', bodyText: 'zz' });
+      const crowded = await seedPage({ title: 'Crowded', bodyText: 'zz' });
+      await seedImage(better, 'b1.png', 0);
+      await seedImageVec(crowded, 'c1.png', [0.9, 0.436, 0, 0]);
+      await seedImageVec(crowded, 'c2.png', [0.85, 0.527, 0, 0]);
+
+      // What the leg produced…
+      const leg = await searchImageLeg(USER, 'zzzqqq', { limit: 5 });
+      expect(leg.pages.map((p) => [p.pageId, p.bestRawIndex])).toEqual([
+        [better, 0],
+        [crowded, 1],
+      ]);
+
+      // …and what the consumer receives, for the same fixture.
+      const results = await hybridSearch(USER, 'zzzqqq', 5);
+      const byId = new Map(results.map((r) => [r.pageId, r]));
+      expect(byId.get(better)!.imageRawIndex).toBe(0);
+      expect(byId.get(crowded)!.imageRawIndex).toBe(1);
     });
 
     it('attaches hits to a page the text legs also found, keeping its measured row', async () => {

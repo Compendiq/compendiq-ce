@@ -2398,7 +2398,11 @@ non-empty check runs). The last condition is re-read per request rather than cac
 it flips on the first embed and on a rebuild's `TRUNCATE`. It embeds the query
 ONCE through `embedTextsVl` under `VL_QUERY_INSTRUCTION`, bounded at 3s
 (shorter than the rerank stage's 5s because it runs in PARALLEL with the text
-legs, so everything past them is added to every question), kNN-searches
+legs, so everything past them is added to every question), gives the kNN its
+own 2s `SET LOCAL statement_timeout` — a second budget, not a restatement of
+the first: the gate has no `indexed` condition, and above 4000 dimensions no
+HNSW index is built, so the leg legitimately scans sequentially while the
+answer path waits (review r3) — kNN-searches
 `page_image_embeddings` under the same `visiblePagesPredicate` the vector leg
 uses — the shared fragment, never a copy, since an image row carries no ACL of
 its own — and fuses as a **third RRF leg**, page-denominated like #1106 (a
@@ -2421,7 +2425,17 @@ demote a fully reranked set to the similarity basis; and the row carries no
 `vectorScore`, so left in it could only displace a measured row from position 0
 and make a vector-led set unmeasurable. A set of nothing but image hits is
 `basis: 'none'` with score `null` — the keyword-only verdict, not the
-empty-corpus `score: 0` a threshold would refuse. Rerank, the ranking prior,
+empty-corpus `score: 0` a threshold would refuse. **The one arm of #1105 the
+leg does move is `no_context`** (review r3): it fires on an EMPTY result set,
+so a page the leg made retrievable stands it down and a question that used to
+refuse honestly now answers. That follows from the ruling above rather than
+contradicting it, and the cost is named rather than hidden — until P4 the model
+receives that page's chunk-0 text or its synthesised title and never the
+picture, so on the sub-`MIN_EMBEDDABLE_TEXT_CHARS` page the leg exists for, the
+grounding is a title. Thin evidence is not absent evidence, which is the
+distinction that arm draws; the `kind: 'image'` source is what puts the
+evidence the model could not read in front of the reader, and an operator who
+disagrees turns the leg off. Rerank, the ranking prior,
 MMR, sibling assembly and the #1107 pin need no image-specific branch, because
 a `page_image_embeddings` row never becomes a `SearchResult`: an image-reached
 page enters them as its `chunk_index 0` row, or (with no chunk at all) as a

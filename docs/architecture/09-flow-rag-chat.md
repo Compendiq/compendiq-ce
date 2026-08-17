@@ -303,6 +303,28 @@ to every question, including the overwhelming majority no picture was going to
 answer. Deep search runs it on the **original question only** — see that
 section.
 
+**And one kNN, bounded separately at 2s** (`IMAGE_LEG_KNN_TIMEOUT_MS`, a `SET
+LOCAL statement_timeout` inside the transaction the leg already opens). The two
+budgets are separate numbers that COMPOSE — the leg's worst case is ~5s, not
+3 — and the second one is not belt-and-braces: the gate has no `indexed`
+condition, and above 4000 dimensions `ensureImageEmbeddingColumn` deliberately
+builds no HNSW index, so the leg legitimately runs a sequential scan of
+`page_image_embeddings` that `hybridSearchInner` awaits between the text legs
+and fusion. A lock wait reaches the same place, since the statement takes
+ACCESS SHARE on the table a rebuild holds ACCESS EXCLUSIVE on. Unbounded, an
+OPTIONAL leg could stall every answer on the instance; bounded, it becomes the
+ordinary `image_leg_unavailable` bypass. The text vector leg has no equivalent
+because its bypass is not equivalent — that one is `embedding_failed`, which
+`/llm/ask` refuses the turn on.
+
+**Also one extra vector-pool connection per hybrid search.** The leg is started
+so its transaction overlaps `vectorSearch`'s, so a request holds two of
+`PG_VECTOR_POOL_MAX` (default 5) rather than one and the pool's effective
+request concurrency roughly halves when the leg is live. The asymmetry above
+applies here too: losing the acquisition costs the image leg a bypass and the
+text leg a refused turn, so `PG_VECTOR_POOL_MAX` should be raised when the leg
+is enabled on a busy instance (`docs/runbooks/image-index.md` §6).
+
 **Page-denominated, like the other two (#1106).** The kNN is over image ROWS;
 a page's BEST image decides its rank and counts once. Without that, a page
 carrying five near-identical screenshots would occupy five of the leg's ranks
@@ -357,6 +379,23 @@ measured row from position 0 and make a vector-led set unmeasurable. A set of
 nothing but image hits is therefore `basis: 'none'`, score `null` — the same
 verdict a keyword-only set gets, and **not** the empty-corpus `score: 0` that a
 threshold would refuse.
+
+**The arm of #1105 the leg DOES move is `no_context`, and that is the trade
+being made** (review r3). That refusal fires on `searchResults.length === 0`,
+so a page this leg made retrievable stands it down: a question that returned an
+honest refusal before P3 can now return an answer. It is intended — an
+image-only hit set never refuses, ADR-025 §5's ruling — and it is the leg
+working, not a leak in the gate. What it costs is worth stating plainly rather
+than leaving to be discovered: until P4 the chat model receives that page's
+TEXT (its chunk 0, or the synthesised title) and **never the picture**, so on
+the sub-`MIN_EMBEDDABLE_TEXT_CHARS` page this leg exists for, the grounding
+behind the answer is a title. That is thin evidence, not absent evidence, which
+is the distinction `no_context` draws — and the `kind: 'image'` source on the
+wire is what puts the evidence the model could not read in front of the reader.
+An operator who would rather those questions kept refusing turns the leg off;
+it is a retrieval decision, not a confidence one. `llm-ask.test.ts` pins the
+answering behaviour with both knobs at 0, so it cannot be confused with the
+`weak_match` cases beside it.
 
 **Failure is a bypass, and it is recorded.** A timeout, an open breaker, an
 assignment pulled mid-flight, an assignment READ that threw, a non-empty PROBE

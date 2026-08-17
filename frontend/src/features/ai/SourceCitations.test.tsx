@@ -298,5 +298,28 @@ describe('SourceCitations', () => {
       expect(screen.getByTestId('source-image-label')).toHaveTextContent('Image');
       expect(screen.queryByTestId('source-image-file')).not.toBeInTheDocument();
     });
+
+    it('degrades to the ordinary page card when kind says image but no URL arrived', () => {
+      // Review r3. `isImageSource` requires the URL as well as the
+      // discriminator, and the guard was untested: with it removed the card
+      // takes the image branch with nothing to render, and
+      // `imageSourceFileName` reaches `.split` on `undefined` and THROWS
+      // during render, taking the whole message list with it. The check and
+      // the thing it unlocks have to be the same fact.
+      const { kind, pageTitle, pageId } = imageSource;
+      render(
+        <SourceCitations sources={[{ kind, pageTitle, pageId } as Source]} />,
+        { wrapper: Wrapper },
+      );
+      fireEvent.click(screen.getByText('Sources (1)'));
+
+      expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('source-image-label')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('source-image-file')).not.toBeInTheDocument();
+      // …and it is still a working citation, not a hole.
+      expect(screen.getByText('Turbine assembly')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('source-card-1'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
   });
 });
