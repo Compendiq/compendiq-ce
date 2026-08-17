@@ -103,7 +103,14 @@ export function getLocalFilenameForImageSource(source: ImageReferenceSource): st
  */
 export interface PageImageReference {
   source: 'confluence' | 'local';
-  /** The on-disk filename — the URL-DECODED basename of the `<img src>`. */
+  /**
+   * The on-disk filename — the URL-DECODED **final segment** of a
+   * `/api/(local-)attachments/<dir>/<file>` src.
+   *
+   * Not `basename(src)`: `path.basename('/api/attachments/7/')` is `'7'`, so a
+   * bare directory reference would produce a key naming a file that does not
+   * exist. A bare directory and a nested path are both refused below.
+   */
   key: string;
 }
 

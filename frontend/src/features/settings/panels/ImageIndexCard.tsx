@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { AlertTriangle, Loader2, Play, RefreshCw } from 'lucide-react';
@@ -39,12 +40,13 @@ import { formatRelativeTime } from '../../../shared/lib/format-relative-time';
  * a status read failing is no reason to withhold the buttons that fix things.
  *
  * **Colour follows ADR-010 exactly.** Everything here is a MEASUREMENT and
- * renders neutral — the `QualityScoreBadge` argument. Two exceptions, both
- * genuinely attention-worthy and both requiring the operator to act: a last run
- * that FAILED, and an index built for a model other than the one assigned now
- * (the guarded-DDL branch, whose only other symptom is a backlog that never
- * drains). A failed status READ is neither — it is a failure, so it takes the
- * destructive treatment rather than amber.
+ * renders neutral — the `QualityScoreBadge` argument. Three exceptions, each
+ * genuinely attention-worthy and each requiring the operator to act: a last run
+ * with FAILED images, a run with pages that could not be WRITTEN, and an index
+ * built for a model other than the one assigned now (the guarded-DDL branch,
+ * whose only other symptom is a backlog that never drains). A failed status
+ * READ is none of them — it is a failure, so it takes the destructive treatment
+ * rather than amber.
  */
 
 const STATUS_QUERY_KEY = ['admin', 'image-index'] as const;
@@ -60,6 +62,22 @@ const STATUS_QUERY_KEY = ['admin', 'image-index'] as const;
  * freezes on stale counters with both buttons disabled and no error shown.
  */
 const POLL_MS = 5_000;
+
+/**
+ * How long the card keeps polling after a kick, whatever the payload says.
+ *
+ * `running` is read server-side from the worker LOCK, and the POST answers
+ * before the detached scan has taken it: `processDirtyPageImages` awaits the
+ * resolver and then `acquireWorkerLock`. If the one post-kick refetch is served
+ * inside that window it caches `running: false`, the interval never arms and
+ * nothing re-arms it — on Re-scan all that leaves `Pages pending` frozen at the
+ * whole corpus, indefinitely, while the scan is in fact running (review r2).
+ *
+ * A warm-up window costs at most four extra reads of a route the card already
+ * polls at this cadence, and it self-cancels the moment a payload reports the
+ * lock — which is why this is a floor on polling rather than a second timer.
+ */
+const KICK_WARMUP_MS = 20_000;
 
 const TIER_LABEL: Record<NonNullable<NonNullable<ImageIndexStatus['identity']>['tier']>, string> = {
   vector: 'vector HNSW',
@@ -85,32 +103,55 @@ const SKIP_LABEL: Record<keyof NonNullable<ImageIndexStatus['lastRun']>['skipped
 
 export function ImageIndexCard() {
   const qc = useQueryClient();
+  const [kickedAt, setKickedAt] = useState<number | null>(null);
 
   const { data, isPending, isError } = useQuery<ImageIndexStatus>({
     queryKey: STATUS_QUERY_KEY,
     queryFn: () => apiFetch<ImageIndexStatus>('/admin/embedding/image-index'),
     retry: false,
-    // Polls only while a scan holds the worker lock. Not gated on
-    // `pagesDirty`, which is non-zero for as long as anything is queued —
-    // including on an instance where the leg is unassigned and nothing will
-    // ever work through it, which would poll for the life of the page.
-    refetchInterval: (q) => (q.state.data?.running ? POLL_MS : false),
+    // Polls while a scan holds the worker lock, and for a warm-up window after
+    // a kick — the lock is taken after the POST has answered, so the payload
+    // alone cannot arm the interval. Not gated on `pagesDirty`, which is
+    // non-zero for as long as anything is queued — including on an instance
+    // where the leg is unassigned and nothing will ever work through it, which
+    // would poll for the life of the page.
+    refetchInterval: (q) => {
+      if (q.state.data?.running) return POLL_MS;
+      if (kickedAt !== null && Date.now() - kickedAt < KICK_WARMUP_MS) return POLL_MS;
+      return false;
+    },
   });
 
   const kick = useMutation({
     mutationFn: (action: 'process' | 'rescan') =>
-      apiFetch<{ marked?: number; started: boolean }>(
+      apiFetch<{ marked?: number; started: boolean; alreadyRunning?: boolean }>(
         `/admin/embedding/image-index/${action}`,
         { method: 'POST' },
       ),
     onSuccess: (result, action) => {
-      // The scan runs detached from the request, so the honest report is that
-      // it STARTED. The counters arrive through the poll below.
-      toast.success(
-        action === 'rescan'
-          ? `Re-scan started for ${result.marked ?? 0} page${result.marked === 1 ? '' : 's'}.`
-          : 'Image index scan started.',
-      );
+      const pages = (n: number) => `${n} page${n === 1 ? '' : 's'}`;
+      if (result.alreadyRunning) {
+        // Neither a success nor a failure: the press was a no-op against a scan
+        // that already holds the lock (`ActiveEmbeddingLocksBanner`'s neutral
+        // precedent). Re-scan's half that DID happen is named, together with
+        // the reason the second press is needed — the running scan walks a
+        // LIMIT/OFFSET window over a result set the marking just grew, so pages
+        // inserted ahead of its offset are not visited by it.
+        toast.message(
+          action === 'rescan'
+            ? `Marked ${pages(result.marked ?? 0)}. A scan is already running and may not reach them — press Process now once it finishes.`
+            : 'A scan is already running.',
+        );
+      } else {
+        // The scan runs detached from the request, so the honest report is that
+        // it STARTED. The counters arrive through the poll above.
+        toast.success(
+          action === 'rescan'
+            ? `Re-scan started for ${pages(result.marked ?? 0)}.`
+            : 'Image index scan started.',
+        );
+      }
+      setKickedAt(Date.now());
       void qc.invalidateQueries({ queryKey: STATUS_QUERY_KEY });
     },
     onError: (err: Error) => toast.error(err.message),

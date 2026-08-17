@@ -384,6 +384,30 @@ describe.skipIf(!dbAvailable)('embedPageImages (#1115 P2)', () => {
     expect(await rowsFor(pageId)).toEqual([expect.objectContaining({ attachment_key: 'a.png' })]);
   });
 
+  it("reconciles a page's LAST image away, leaving no rows behind", async () => {
+    // The single case that exercises the DELETE with an EMPTY keep set, and
+    // therefore `<> ALL` over an empty `unnest` — which is TRUE in SQL, so
+    // every row goes. The two-images-to-one test above can never reach it.
+    // Two plausible rewrites invert this with the suite otherwise green: an
+    // early `if (keep.size === 0) skip the DELETE` "optimisation", and a
+    // switch to `NOT IN` phrasing.
+    await assignImageEmbedding();
+    const pageId = await seedPage({ bodyHtml: '<img src="/api/attachments/1/only.png">' });
+    await writeConfluenceAttachment(String(pageId), 'only.png', png(4, 4));
+    await embedPageImages(pageId);
+    expect(await rowsFor(pageId)).toHaveLength(1);
+
+    await query(
+      `UPDATE pages SET body_html = '<p>text only</p>', image_embedding_dirty = TRUE WHERE id = $1`,
+      [pageId],
+    );
+    const outcome = await embedPageImages(pageId);
+
+    expect(outcome.removed).toBe(1);
+    expect(await rowsFor(pageId)).toEqual([]);
+    expect(await isDirty(pageId)).toBe(false);
+  });
+
   it('keeps the row of a still-referenced image whose file went missing', async () => {
     // `resolveAttachmentBytes` answers the same null for "gone" and for "the
     // read failed", so deleting on a miss lets one bad disk moment empty a

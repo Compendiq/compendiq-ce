@@ -234,9 +234,56 @@ describe('#1115 P2 image-index routes', () => {
     const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/image-index/rescan' });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ marked: 87, started: true });
+    expect(res.json()).toEqual({ marked: 87, started: true, alreadyRunning: false });
     expect(svc.markAll).toHaveBeenCalledTimes(1);
     expect(svc.process).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Review r2 — `started: true` was answered whether or not anything started.
+   *
+   * `kickScan` is fire-and-forget, so the route never observed the worker's own
+   * `alreadyRunning` verdict, and the card toasted "scan started" for a trigger
+   * that did nothing. The second half is the one with a lasting effect: the
+   * in-flight run advances its OFFSET over a result set that a Re-scan just
+   * grew, so pages marked ahead of that offset are never visited by it and stay
+   * dirty until something kicks the worker again — which on a local-only
+   * instance is only these two buttons.
+   */
+  describe('a trigger that lands on a running scan', () => {
+    it('rescan says so instead of claiming a scan started', async () => {
+      redis.locked.mockResolvedValue(true);
+      svc.markAll.mockResolvedValue(12);
+      svc.process.mockResolvedValue({ pages: 0, alreadyRunning: true });
+
+      const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/image-index/rescan' });
+
+      expect(res.statusCode).toBe(200);
+      // The pages really were marked — that half always happens.
+      expect(res.json()).toEqual({ marked: 12, started: false, alreadyRunning: true });
+      expect(svc.markAll).toHaveBeenCalledTimes(1);
+    });
+
+    it('process says so instead of claiming a scan started', async () => {
+      redis.locked.mockResolvedValue(true);
+      svc.process.mockResolvedValue({ pages: 0, alreadyRunning: true });
+
+      const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/image-index/process' });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ started: false, alreadyRunning: true });
+    });
+
+    it('still kicks, because the lock can be released between the read and the kick', async () => {
+      // Reported pessimistically and kicked anyway: the alternative is a window
+      // in which the lock frees right after the check and nothing runs at all.
+      redis.locked.mockResolvedValue(true);
+      svc.process.mockResolvedValue({ pages: 0, alreadyRunning: true });
+
+      await app.inject({ method: 'POST', url: '/api/admin/embedding/image-index/process' });
+
+      expect(svc.process).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('POST process kicks the worker without marking anything', async () => {
@@ -245,7 +292,7 @@ describe('#1115 P2 image-index routes', () => {
     const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/image-index/process' });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ started: true });
+    expect(res.json()).toEqual({ started: true, alreadyRunning: false });
     expect(svc.markAll).not.toHaveBeenCalled();
     expect(svc.process).toHaveBeenCalledTimes(1);
   });

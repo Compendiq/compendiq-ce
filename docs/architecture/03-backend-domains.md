@@ -196,12 +196,17 @@ attachment writers, `fetchAndCachePageImage`, `writeAttachmentCache`,
 `cleanPageAttachments` (all `domains/confluence`) and `putLocalAttachment`
 (`core`) — which is why it is in `core`: `core` may not import a domain, and one
 of its callers lives there. The **body** writers do not go through it; each is
-already issuing an UPDATE on the row and raises the column inline as one more
-clause, gated on `body_html IS DISTINCT FROM $n` so a title-only save costs
-nothing: the sync upsert and the conflict-policy update (`sync-service.ts`),
-both relocate directions (`page-relocate-service.ts`) and the four `body_html`
-writers in `routes/knowledge/pages-crud.ts`. Audit the column, not this module's
-importers. And
+already issuing an UPDATE (or INSERT) on the row and raises the column inline as
+one more clause. **Unconditionally** where the statement is rewriting the body
+wholesale and has nothing to diff against: the sync upsert (`sync-service.ts`),
+both relocate directions (`page-relocate-service.ts`) and both create arms in
+`routes/knowledge/pages-crud.ts`. **Gated on `body_html IS DISTINCT FROM $n`**,
+so a title-only save costs nothing, on the edit paths: the conflict-policy
+update (`sync-service.ts`), the four `body_html` writers in
+`routes/knowledge/pages-crud.ts`, `restoreVersion`
+(`domains/knowledge/services/version-tracker.ts`) and both branches of
+`POST /llm/improvements/apply` (`routes/llm/llm-conversations.ts`). Audit the
+column, not this module's importers. And
 `core/services/image-references.ts` gained `extractImageReferencesFromHtml`,
 which reads the STORED body rather than Confluence's storage format, because a
 standalone page has no `body_storage` and a relocated one still carries a stale

@@ -15,14 +15,22 @@
  *    `syncDrawioAttachments`, `fetchAndCachePageImage`, `writeAttachmentCache`
  *    and `cleanPageAttachments` in `domains/confluence`, plus
  *    `putLocalAttachment` here in `core`.
- *  - A **body** write already owns an UPDATE on the very row, so it raises the
- *    column inline as one more clause: the sync upsert and the conflict-policy
- *    update (`sync-service.ts`), both relocate directions
- *    (`page-relocate-service.ts`) and the four `body_html` writers in
- *    `routes/knowledge/pages-crud.ts`. Routing those through a second
- *    statement would cost a round trip per page of a full sync and could not
- *    be gated on `body_html IS DISTINCT FROM $n`, which is what keeps a
- *    title-only save from re-scanning a page's pictures.
+ *  - A **body** write already owns a statement against the very row, so it
+ *    raises the column inline as one more clause. Routing those through a
+ *    second statement would cost a round trip per page of a full sync and
+ *    could not be gated on `body_html IS DISTINCT FROM $n`, which is what
+ *    keeps a title-only save from re-scanning a page's pictures. They come in
+ *    two flavours:
+ *      - **Unconditional**, where the statement rewrites the body wholesale
+ *        and has nothing to diff against: the sync upsert
+ *        (`sync-service.ts`), both relocate directions
+ *        (`page-relocate-service.ts`) and both `INSERT INTO pages` arms in
+ *        `routes/knowledge/pages-crud.ts`.
+ *      - **Gated on `body_html`**: the conflict-policy update
+ *        (`sync-service.ts`), the four `body_html` writers in
+ *        `routes/knowledge/pages-crud.ts`, `restoreVersion`
+ *        (`domains/knowledge/services/version-tracker.ts`) and both branches
+ *        of `POST /llm/improvements/apply` (`routes/llm/llm-conversations.ts`).
  *
  * So do not read this module's importers as the audit list — grep the column.
  *
@@ -83,7 +91,17 @@ const PG_INT4_MAX = 2_147_483_647;
  * runs thousands of times. `confluence_id = $1 OR id::text = $1` looks tidier
  * and is a sequential scan of `pages` every time, because the cast makes the
  * second half unusable by the primary key. So: the indexed lookup first, and
- * the id lookup only when it matched nothing.
+ * the id lookup only when NO page carries that `confluence_id` at all.
+ *
+ * **The fallback is decided by EXISTENCE, not by the first statement's
+ * rowCount** (review r2). The UPDATE excludes soft-deleted and folder pages, so
+ * it reports `0` for a Confluence page that exists and is merely out of scope —
+ * and Confluence DC ids sit squarely inside `pages.id`'s range, so falling
+ * through on that number marks an unrelated *standalone* page whose primary key
+ * happens to equal the key. That is a write aimed at the wrong row, which is the
+ * same class of mistake `String(parsed) === key` already refuses below. The
+ * `EXISTS` rides the same `confluence_id` index in the same round trip; a
+ * data-modifying CTE always executes, referenced or not.
  *
  * **The numeric parse happens in JS, deliberately.** `$1::int` throws on a
  * non-numeric key — the fixtures here use `page-1`, and Confluence ids are not
@@ -95,14 +113,18 @@ const PG_INT4_MAX = 2_147_483_647;
 export async function markPageImagesDirtyByAttachmentKey(attachmentKey: string): Promise<void> {
   if (!attachmentKey) return;
   try {
-    const byConfluenceId = await query(
-      `UPDATE pages SET image_embedding_dirty = TRUE
-        WHERE confluence_id = $1
-          AND deleted_at IS NULL
-          AND COALESCE(page_type, 'page') != 'folder'`,
+    const byConfluenceId = await query<{ existed: boolean }>(
+      `WITH marked AS (
+         UPDATE pages SET image_embedding_dirty = TRUE
+           WHERE confluence_id = $1
+             AND deleted_at IS NULL
+             AND COALESCE(page_type, 'page') != 'folder'
+        RETURNING 1
+       )
+       SELECT EXISTS (SELECT 1 FROM pages WHERE confluence_id = $1) AS existed`,
       [attachmentKey],
     );
-    if ((byConfluenceId.rowCount ?? 0) > 0) return;
+    if (byConfluenceId.rows[0]?.existed) return;
 
     const asId = Number(attachmentKey);
     if (

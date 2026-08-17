@@ -240,14 +240,17 @@ the backlog.
 
 | Event | Where |
 |---|---|
-| A page is created or updated by sync | the sync upsert, beside `embedding_dirty` |
+| A page is created or updated by sync | the sync upsert, beside `embedding_dirty`, unconditionally — it is rewriting the body anyway |
 | A page's body changes on a conflict-policy update | gated on `body_html` alone — `body_text` cannot move an `<img>` |
-| A page is edited **in the app** | all four `body_html` writers in `pages-crud.ts` — the editor save on a local page, the app-side Confluence push, publish-draft and the bulk refresh — each gated on `body_html`. This is the only trigger for an image that was **deleted**: that writes no attachment at all |
+| A page is created **in the app** | both `INSERT INTO pages` arms in `pages-crud.ts`, unconditionally for a non-folder page (there is no previous body to diff against). The Confluence arm's `ON CONFLICT … DO UPDATE` re-writes `body_html` on a row that may already carry index rows |
+| A page is edited **in the app** | all four `body_html` writers in `pages-crud.ts` — the editor save on a local page, the app-side Confluence push, publish-draft and the bulk refresh — each gated on `body_html`. With the two below, this is the only trigger for an image that was **deleted**: that writes no attachment at all |
+| A version is **restored** | `restoreVersion` (`version-tracker.ts`), gated on `body_html`. Swapping the body for an older one is exactly how an `<img>` comes back or goes, and neither source self-heals: a standalone page is never touched by sync, and a Confluence restore is pushed upstream and the returned version written back, so the next `syncPage` takes the version-unchanged branch |
+| An AI improvement is **applied** | both branches of `POST /llm/improvements/apply`, gated on `body_html`. `protectMedia`/`restoreMedia` and #723's drop-guard keep the `img` set intact across the markdown round trip, so in practice every row is reused by content hash — the flag is raised anyway rather than resting on an invariant that lives in another module |
 | A new or changed attachment is downloaded under an **unchanged** page version | `syncImageAttachments` / `syncDrawioAttachments`, on a real download only |
 | An image is fetched lazily on a cache miss while viewing a page | `fetchAndCachePageImage` — the recovery path for a `missing` skip |
 | An image is pasted, or imported from an external URL | `writeAttachmentCache` |
 | A draw.io diagram is saved on a local page | `putLocalAttachment` |
-| A page is relocated between Confluence and local | both directions — the move rewrites every `<img src>` |
+| A page is relocated between Confluence and local | both directions, unconditionally — the move rewrites every `<img src>` |
 | A page's cached attachments are cleared (a new version, an unsync) | `cleanPageAttachments` — the rows are now unresolvable and reconcile deletes them |
 | **Re-scan all** | the Embeddings-tab action, and the model-change rebuild in §6 |
 
@@ -327,6 +330,14 @@ and both return immediately — the scan runs detached, and the card polls.
   see that), or when you suspect the index has drifted from the corpus. It is
   affordable because unchanged bytes reuse their rows by content hash: a re-scan
   of a settled corpus costs one file read per image and no requests.
+
+**Pressing either while a scan is already running is a no-op, and the card says
+so** rather than reporting a start. Re-scan's marking half still happens — but
+the running scan walks a `LIMIT`/`OFFSET` window over `last_modified_at DESC`,
+so pages the marking inserted *ahead* of its current offset are not visited by
+it. They stay queued. Press **Process now** once the running scan finishes; on a
+Confluence instance the next `syncUser` would also pick them up, on a local-only
+one nothing would.
 
 ### Reading the card
 

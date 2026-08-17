@@ -642,14 +642,15 @@ embeds. A new embedding path can no longer inherit a policy by omission.
 ## The image index rides this cadence (#1115 P2)
 
 The image worker has **no repeatable job of its own**. It is kicked
-fire-and-forget from `syncSpace`'s tail, beside `processDirtyPages` and not
+fire-and-forget from `syncUser`'s tail, beside `processDirtyPages` and not
 after it — the two share no lock, no table and no provider, and chaining them
 would make an image scan wait out a text re-embed of the corpus. That mirrors
 how the text embedder is scheduled: `queue-service.ts` schedules the SYNC, and
 the embedding pass runs off its tail.
 
-Three properties keep that cheap and safe on the instances that will never use
-it:
+Several properties keep that cheap and safe on the instances that will never use
+it — deliberately unnumbered, because the count was wrong the first time the
+list grew and a reader who trusts it stops at the wrong bullet:
 
 - **A no-op fast path before the lock.** `resolveImageEmbeddingUsecase()` is
   consulted first, so an unassigned leg — the default, and ADR-021's "the leg is
@@ -688,15 +689,18 @@ the same rule, because it is the recovery path for a `missing` skip: a skip is
 terminal (the page still clears its flag), so nothing else would re-queue the
 page once the bytes finally land.
 
-**Page-body writes raise it too, and not through that module.** The sync upsert,
-the conflict-policy update, both relocate directions and the four `body_html`
-writers in `routes/knowledge/pages-crud.ts` (the editor save, the app-side
-Confluence push, publish-draft, the bulk refresh) each set the column inline in
-an UPDATE they already own, gated on `body_html IS DISTINCT FROM $n`. That gate
-is the whole point: `body_text` alone cannot move an `img src`, and the editor
-path is the *only* trigger for a page whose image was DELETED — that writes no
-attachment at all, so without it the index keeps a row for a picture the page no
-longer shows.
+**Page-body writes raise it too, and not through that module.** Each sets the
+column inline in an UPDATE (or INSERT) it already owns, in two flavours. The
+sync upsert, both relocate directions and both `pages-crud.ts` create arms raise
+it **unconditionally** — each is writing the body wholesale and there is nothing
+to diff against. The conflict-policy update, the four `body_html` writers in
+`routes/knowledge/pages-crud.ts` (the editor save, the app-side Confluence push,
+publish-draft, the bulk refresh), `restoreVersion` and both branches of
+`POST /llm/improvements/apply` are **gated on `body_html IS DISTINCT FROM $n`**.
+That gate is the whole point on the edit paths: `body_text` alone cannot move an
+`img src`, and those paths are the *only* trigger for a page whose image was
+DELETED — that writes no attachment at all, so without them the index keeps a
+row for a picture the page no longer shows.
 
 ## Content pipeline hand-off
 

@@ -225,6 +225,16 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         `UPDATE pages SET
            title = $2, body_html = $3, body_text = $4,
            version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
+           -- #1115 P2 (review r2) — Apply rewrites the body, so it queues the
+           -- image index like every other body writer. It is safe today only
+           -- through protectMedia/restoreMedia and #723's drop-guard keeping
+           -- the img set intact across the markdown round trip — an invariant
+           -- of a different module that nothing on either side pins. One
+           -- reconcile pass per Apply, every row reused by content hash.
+           image_embedding_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+             ELSE image_embedding_dirty
+           END,
            embedding_status = 'not_embedded', embedded_at = NULL,
            -- Stamp local-edit markers (#305): chat write-back is a local
            -- AI edit. Previously the write was invisible to sync, which
@@ -259,6 +269,12 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         `UPDATE pages SET
            title = $2, body_storage = $3, body_html = $4, body_text = $5,
            version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+           -- #1115 P2 (review r2) — see the standalone branch above. Gated on
+           -- body_html alone: that is where the src attributes are.
+           image_embedding_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+             ELSE image_embedding_dirty
+           END,
            embedding_status = 'not_embedded', embedded_at = NULL,
            -- Clear local-edit markers (#305): the Confluence push for
            -- the AI-improved content has succeeded, so the local state

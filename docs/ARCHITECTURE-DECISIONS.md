@@ -2329,14 +2329,20 @@ real download (which closes the "attachment changed under an unchanged page
 version" hole), `fetchAndCachePageImage` (the lazy per-request fetch — the
 recovery path for a `missing` skip, which is terminal and would otherwise never
 re-queue), `writeAttachmentCache`, `putLocalAttachment` and
-`cleanPageAttachments`. **Body** writes raise the column inline in the UPDATE
-they already own, gated on `body_html` alone: the sync upsert, the
-conflict-policy update, both relocate directions (also a `RELOCATABLE_COLUMNS`
-snapshot entry, or a compensated move keeps the moved value), and the four
-`body_html` writers in `routes/knowledge/pages-crud.ts` — the editor save, the
-app-side Confluence push, publish-draft and the bulk refresh. That last group is
-the reconcile's only trigger for a locally-edited page: deleting an `<img>` in
-the editor writes no attachment at all. Plus the Embeddings-tab **Re-scan all**.
+`cleanPageAttachments`. **Body** writes raise the column inline in the statement
+they already own, in two flavours. **Unconditionally**, where the statement is
+rewriting the body wholesale and has nothing to diff against: the sync upsert,
+both relocate directions (also a `RELOCATABLE_COLUMNS` snapshot entry, or a
+compensated move keeps the moved value) and both create arms in
+`routes/knowledge/pages-crud.ts`. **Gated on `body_html` alone** — never
+`body_text`, which cannot move an `img src` — on the edit paths: the
+conflict-policy update, the four `body_html` writers in
+`routes/knowledge/pages-crud.ts` (the editor save, the app-side Confluence push,
+publish-draft and the bulk refresh), `restoreVersion` and both branches of
+`POST /llm/improvements/apply`. That second group is the reconcile's only
+trigger for a locally-edited page: deleting an `<img>` in the editor, or
+restoring a version that never had it, writes no attachment at all. Plus the
+Embeddings-tab **Re-scan all**.
 The worker runs off the sync cadence (fire-and-forget beside
 `processDirtyPages`, which is how the text embedder is scheduled) plus the two
 admin routes, under its own `worker:lock:` key rather than the per-user

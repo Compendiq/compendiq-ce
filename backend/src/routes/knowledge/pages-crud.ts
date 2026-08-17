@@ -1116,12 +1116,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
 
       const result = await query<{ id: number; title: string; version: number }>(
+        // #1115 P2 (review r2) — a create is a body writer, so it queues the
+        // image index too. Bound to the SAME `!isFolder` parameter as
+        // `embedding_dirty`: a folder is excluded by the image worker's own
+        // WHERE, so flagging one is a backlog entry no scan can ever clear.
+        // Unconditional rather than gated: there is no previous body to diff
+        // against, and a create with no image costs one scan that enumerates
+        // nothing and clears the flag.
         `INSERT INTO pages
            (title, body_html, body_text, body_storage, source, created_by_user_id,
             visibility, version, space_key, confluence_id, parent_id,
-            page_type, embedding_dirty, embedding_status, last_synced, labels)
+            page_type, embedding_dirty, image_embedding_dirty, embedding_status, last_synced, labels)
          VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
-                 $8, $9, 'not_embedded', NOW(), $10)
+                 $8, $9, $9, 'not_embedded', NOW(), $10)
          RETURNING id, title, version`,
         [body.title, effectiveBodyHtml, bodyText, userId,
          visibility, spaceKey, body.parentId ?? null,
@@ -1214,13 +1221,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Store in local cache (shared table, no user_id)
     await query(
+      // #1115 P2 (review r2) — confluenceToHtml emits /api/attachments/<id>/<file>
+      // for any <ac:image><ri:attachment> the created storage carries, so this
+      // body really can reference images. The DO UPDATE arm re-writes body_html
+      // on a row that may already carry index entries, which is the reconcile's
+      // trigger, so it raises the flag as well.
       `INSERT INTO pages
          (confluence_id, space_key, title, body_storage, body_html, body_text,
-          version, parent_id, source, embedding_dirty, embedding_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, 'not_embedded')
+          version, parent_id, source, embedding_dirty, image_embedding_dirty, embedding_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded')
        ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
          title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
-         body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW()`,
+         body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW(),
+         image_embedding_dirty = TRUE`,
       // #1123: bind the RESOLVED `confluenceParentId`, not the raw
       // `body.parentId`. A Confluence-sourced child must store its parent's
       // `confluence_id` — binding the frontend's internal numeric id wrote the

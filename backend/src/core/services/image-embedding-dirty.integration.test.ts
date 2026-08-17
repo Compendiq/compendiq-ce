@@ -189,6 +189,45 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
       expect((await flags(pageId)).image).toBe(false);
     });
 
+    /**
+     * Review r2 — the fallback is decided by EXISTENCE, not by the first
+     * statement's rowCount.
+     *
+     * The Confluence lookup filters out soft-deleted and folder pages, so it
+     * reports `0` for a page that exists and is merely excluded. Falling
+     * through on that number then reads the key as a page id — and Confluence
+     * DC ids sit squarely inside `pages.id`'s range — so an unrelated
+     * standalone page is marked for a write aimed at a different row entirely.
+     */
+    it('does not mark an innocent page when the Confluence page exists but is excluded', async () => {
+      const innocent = await seed({ title: 'Innocent standalone' });
+      // Same string: one page's numeric id is the other's confluence_id.
+      await seed({
+        title: 'Deleted confluence',
+        source: 'confluence',
+        confluenceId: String(innocent),
+        deleted: true,
+      });
+
+      await markPageImagesDirtyByAttachmentKey(String(innocent));
+
+      expect((await flags(innocent)).image).toBe(false);
+    });
+
+    it('does not mark an innocent page when the Confluence page is a folder', async () => {
+      const innocent = await seed({ title: 'Innocent standalone 2' });
+      await seed({
+        title: 'Confluence folder',
+        source: 'confluence',
+        confluenceId: String(innocent),
+        pageType: 'folder',
+      });
+
+      await markPageImagesDirtyByAttachmentKey(String(innocent));
+
+      expect((await flags(innocent)).image).toBe(false);
+    });
+
     it('does not match a CONFLUENCE page by its numeric primary key', async () => {
       // The Confluence tree keys those pages by `confluence_id`; their numeric
       // id names a directory nothing writes to.

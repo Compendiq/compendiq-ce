@@ -119,8 +119,8 @@ export async function llmImageIndexRoutes(fastify: FastifyInstance) {
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async () => {
       const marked = await markAllPagesImageDirty();
-      kickScan();
-      return { marked, started: true };
+      const alreadyRunning = await kickScan();
+      return { marked, started: !alreadyRunning, alreadyRunning };
     },
   );
 
@@ -128,8 +128,8 @@ export async function llmImageIndexRoutes(fastify: FastifyInstance) {
     '/admin/embedding/image-index/process',
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async () => {
-      kickScan();
-      return { started: true };
+      const alreadyRunning = await kickScan();
+      return { started: !alreadyRunning, alreadyRunning };
     },
   );
 }
@@ -154,14 +154,31 @@ function tierFor(dimensions: number | null): NonNullable<ImageIndexStatus['ident
 
 /**
  * Start a scan without waiting for it, and without letting its failure become
- * the request's.
+ * the request's. Answers whether a scan was ALREADY running when it was called.
  *
- * A rejection here is already logged by the worker with its own context; this
+ * A rejection here is already logged by the worker with its own context; the
  * catch exists so an unhandled rejection cannot take the process down on the
  * strength of a provider being briefly unreachable.
+ *
+ * **The verdict is read from the lock, not from the worker** (review r2). The
+ * run is detached, so its own `alreadyRunning` arrives long after the response
+ * has been sent — and answering `started: true` regardless made the card toast
+ * "scan started" for a trigger that did nothing. That matters beyond the
+ * wording: an in-flight run advances its OFFSET over a result set a Re-scan
+ * just grew, so pages marked ahead of that offset are not visited by it and
+ * stay queued until the next trigger.
+ *
+ * It still kicks when the lock is held. The read and the kick are not atomic,
+ * so a lock released in between would otherwise leave nothing running at all;
+ * a kick that finds the lock still taken costs one Redis round trip and logs
+ * its own line. The report is therefore pessimistic by construction — never
+ * "started" for a scan that did not, sometimes "already running" for one that
+ * then did.
  */
-function kickScan(): void {
+async function kickScan(): Promise<boolean> {
+  const alreadyRunning = await isWorkerLocked(IMAGE_INDEX_WORKER_LOCK);
   void processDirtyPageImages().catch((err) => {
     logger.error({ err }, 'Image index scan failed after an admin trigger');
   });
+  return alreadyRunning;
 }

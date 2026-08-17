@@ -1,18 +1,28 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import type { ImageIndexStatus } from '@compendiq/contracts';
 import { ImageIndexCard } from './ImageIndexCard';
 import { useAuthStore } from '../../../stores/auth-store';
+
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), message: vi.fn() },
+}));
 
 /**
  * #1115 P2 — the Embeddings-tab card.
  *
  * Fetch is mocked at the network boundary; the card runs its real logic. What
  * is pinned here is the copy that carries a CONSEQUENCE — re-scan, the model
- * change, and "this is not searchable yet" — plus the ADR-010 colour rule: a
- * failed last run is the only thing on this card allowed to be amber, because
- * it is the only thing that is genuinely attention-worthy.
+ * change, and "this is not searchable yet" — plus the ADR-010 colour rule.
+ *
+ * That rule is THREE attention states, not one (review r2): a run with failed
+ * images, a run with pages that could not be written, and an index whose
+ * recorded identity is not the assigned pair. Each is something an operator has
+ * to act on; everything else on the card is a measurement and renders neutral.
+ * Each of the three is pinned for its colour as well as its words, because a
+ * de-coloured amber and an absent one are the same assertion to a text test.
  */
 
 let queryClient: QueryClient;
@@ -48,6 +58,11 @@ function mockApi(
   status: ImageIndexStatus,
   capture?: Array<{ url: string; method: string }>,
   sequence?: ImageIndexStatus[],
+  kickResult: { marked?: number; started: boolean; alreadyRunning: boolean } = {
+    marked: 120,
+    started: true,
+    alreadyRunning: false,
+  },
 ) {
   let call = 0;
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -60,7 +75,7 @@ function mockApi(
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    return new Response(JSON.stringify({ marked: 120, started: true }), {
+    return new Response(JSON.stringify(kickResult), {
       headers: { 'Content-Type': 'application/json' },
     });
   });
@@ -101,6 +116,9 @@ async function awaitLoaded(): Promise<void> {
 }
 
 beforeEach(() => {
+  // The `sonner` mock is module-level, so its call history outlives a test and
+  // a "did not toast X" assertion would pass or fail on what ran before it.
+  vi.clearAllMocks();
   useAuthStore.getState().setAuth('t', { id: '1', username: 'admin', role: 'admin' });
 });
 afterEach(() => {
@@ -360,6 +378,9 @@ describe('ImageIndexCard (#1115 P2)', () => {
     const note = await screen.findByTestId('image-index-identity-mismatch');
     expect(note.textContent).toMatch(/different model or endpoint/i);
     expect(note.textContent).toMatch(/Re-check/);
+    // The third attention state, pinned for its colour like the other two
+    // (review r2: it was the one of the three with no colour assertion).
+    expect(note.className).toMatch(/text-warning/);
   });
 
   it('says nothing about the identity when it matches', async () => {
@@ -403,6 +424,109 @@ describe('ImageIndexCard (#1115 P2)', () => {
     const pages = screen.getByTestId('image-index-last-run-pages-failed');
     expect(pages.textContent).toContain('6');
     expect(pages.textContent).toMatch(/stay queued/i);
+    // Amber, and pinned as amber: this is the second of the card's three
+    // attention states, and a text-only assertion cannot tell a de-coloured
+    // one from a missing one.
+    expect(pages.className).toMatch(/text-warning/);
+  });
+
+  /**
+   * Review r2 — the card must not report a scan that did not start.
+   *
+   * The POST answers `alreadyRunning` when the worker lock is already held.
+   * Toasting "scan started" then is wrong twice: nothing started, and the
+   * running scan walks a LIMIT/OFFSET window over a result set the Re-scan just
+   * grew, so the pages it marked may need a second press.
+   */
+  describe('a trigger that lands on a running scan', () => {
+    it('does not claim a Re-scan started, and names the second press', async () => {
+      mockApi(ASSIGNED, undefined, undefined, { marked: 40, started: false, alreadyRunning: true });
+      renderCard();
+      await awaitLoaded();
+
+      fireEvent.click(screen.getByTestId('image-index-rescan'));
+
+      await waitFor(() => expect(vi.mocked(toast.message)).toHaveBeenCalled());
+      const said = vi.mocked(toast.message).mock.calls.at(-1)?.[0] as string;
+      // The half that DID happen is still reported…
+      expect(said).toMatch(/40 pages/);
+      // …and so is the reason it may not be enough.
+      expect(said).toMatch(/already running/i);
+      expect(said).toMatch(/Process now/);
+      expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+    });
+
+    it('does not claim a Process now started', async () => {
+      mockApi(ASSIGNED, undefined, undefined, { started: false, alreadyRunning: true });
+      renderCard();
+      await awaitLoaded();
+
+      fireEvent.click(screen.getByTestId('image-index-process'));
+
+      await waitFor(() =>
+        expect(vi.mocked(toast.message)).toHaveBeenCalledWith(
+          expect.stringMatching(/already running/i),
+        ),
+      );
+      expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+    });
+
+    it('still reports a real start as a success', async () => {
+      // The pin that keeps the two above honest: a card that never toasts a
+      // success passes them without ever having distinguished the two answers.
+      mockApi(ASSIGNED);
+      renderCard();
+      await awaitLoaded();
+
+      fireEvent.click(screen.getByTestId('image-index-process'));
+
+      await waitFor(() =>
+        expect(vi.mocked(toast.success)).toHaveBeenCalledWith(expect.stringMatching(/started/i)),
+      );
+      expect(vi.mocked(toast.message)).not.toHaveBeenCalled();
+    });
+  });
+
+  it('keeps polling after a kick even when the lock is not held yet', async () => {
+    // `running` is read from the worker lock, and the POST answers BEFORE the
+    // detached scan takes it. Arming the interval solely from the one post-kick
+    // refetch therefore loses a race the client cannot see: the card freezes on
+    // pre-scan counters, with both buttons live, until a remount.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls: Array<{ url: string; method: string }> = [];
+    // Every GET says the lock is free — the exact payload that used to stop
+    // the card polling for good.
+    mockApi({ ...ASSIGNED, running: false }, calls);
+    renderCard();
+    await awaitLoaded();
+
+    fireEvent.click(screen.getByTestId('image-index-process'));
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === 'POST')).toBe(true),
+    );
+    const afterKick = calls.filter((c) => c.method === 'GET').length;
+
+    await vi.advanceTimersByTimeAsync(11_000);
+
+    expect(calls.filter((c) => c.method === 'GET').length).toBeGreaterThan(afterKick);
+  });
+
+  it('stops the warm-up polling rather than running forever', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi({ ...ASSIGNED, running: false }, calls);
+    renderCard();
+    await awaitLoaded();
+
+    fireEvent.click(screen.getByTestId('image-index-process'));
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true));
+
+    // Past the warm-up window, with every payload still reporting a free lock.
+    await vi.advanceTimersByTimeAsync(30_000);
+    const settled = calls.filter((c) => c.method === 'GET').length;
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(calls.filter((c) => c.method === 'GET').length).toBe(settled);
   });
 
   it('polls no faster than the admin rate limit allows', async () => {
