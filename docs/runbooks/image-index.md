@@ -399,8 +399,8 @@ Design of record: `docs/architecture/09-flow-rag-chat.md`, "The image leg".
 
 ### When it runs
 
-All four, checked in this order, and it costs **nothing** when any fails — no
-embedding call, no kNN, no row:
+All four, checked in this order. When any fails the leg does **no retrieval
+work** — no embedding call, no kNN, no row:
 
 1. the caller did not force it off (`/api/search?mode=semantic` never reaches
    it at all; deep search's paraphrase legs force it off — see below);
@@ -412,6 +412,14 @@ embedding call, no kNN, no row:
 
 (4) is re-checked on every request rather than cached, because it flips on the
 first page the worker embeds and again when a model change truncates the table.
+
+A shut gate is not literally free, and it is worth knowing what it is: one
+cached boolean for (2), then one small indexed lookup of the assignment for
+(3). On an instance with no VL model that lookup answers "unassigned" and the
+request stops there — (4) is never reached — so the standing cost of having
+this feature compiled in is a single indexed round-trip per hybrid search. If
+you are auditing query counts, that is the row to expect; the `EXISTS` in (4)
+appears only once a model is assigned.
 
 ### What it costs
 
@@ -487,6 +495,13 @@ above in order; the Embeddings-tab card (§5) answers (4).
 Every failure is a **bypass**: the answer is exactly what it would have been
 with the leg off, plus the analytics row above. Nothing about a VL outage can
 fail an ask, empty a result set, or change a refusal verdict.
+
+One case reads like a failure and is not: a use case that is simply
+**unassigned** is *off*, not degraded, and writes no `degraded_reason`. So an
+empty `image_leg_unavailable` count on an instance with no VL model is the
+expected reading, not evidence the leg is healthy. What does record is a read
+of the assignment that ERRORED — a database problem, not a credential one (an
+undecryptable `api_key` yields a null key and the call proceeds).
 
 ## 7. Changing the model (or the provider)
 

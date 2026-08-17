@@ -11,8 +11,8 @@
  *
  * ── The gate ─────────────────────────────────────────────────────────────
  *
- * Four conditions, checked cheapest-first, and the leg costs NOTHING when any
- * of them fails — no query embed, no kNN, no row:
+ * Four conditions, in this order, and when any of them fails the leg does no
+ * RETRIEVAL work — no query embed, no kNN, no row:
  *
  *  1. `opts.imageLeg !== false`. `undefined` follows the admin setting;
  *     `true`/`false` FORCE it. The forcing form is what lets the P5b eval run
@@ -27,14 +27,29 @@
  *     different spaces and the cosine between them is noise.
  *  4. `page_image_embeddings` is non-empty.
  *
+ * A shut gate is not literally FREE, and the standing cost is worth naming
+ * because every `/llm/ask`, every `/api/search?mode=hybrid` and deep search's
+ * original leg pays it on EVERY deployment: one cached boolean for (2), then
+ * (3)'s uncached two-table lookup — which on the majority deployment, no VL
+ * model, answers `null` and stops there. So it is one indexed round-trip per
+ * hybrid search, and (4) is not reached at all until a model IS assigned.
+ *
  * (4) is a `SELECT EXISTS(...)` **per request, deliberately uncached**. The
  * table's emptiness is exactly the thing that flips at the two moments the
  * answer matters most: the first page the worker embeds, and a rebuild's
  * `TRUNCATE`. A 60-second cache would leave the leg dark for a minute after
  * the index starts filling, and — worse — leave it LIT for a minute after a
  * model change emptied the table, running a kNN against a column whose type
- * has just changed. It is an index-only existence probe on a primary key; the
- * knob above it is cached, so the cheap read is the one that repeats.
+ * has just changed. It is an index-only existence probe on a primary key, and
+ * it is reached only on a deployment that has already assigned a VL model —
+ * the resolver above it answers `null` and returns first everywhere else.
+ *
+ * The ORDER is resolver-before-EXISTS rather than the other way round because
+ * the two verdicts are not interchangeable: a resolver THROW is a degradation
+ * this leg must record (see below), and an empty index short-circuiting in
+ * front of it would report a broken assignment as "off". It costs one extra
+ * round-trip in exactly one state — assigned, index empty — which is the
+ * minutes between assigning a model and the worker's first write.
  *
  * ── Failure ──────────────────────────────────────────────────────────────
  *
@@ -152,6 +167,24 @@ export interface ImageLegPage {
   pageId: number;
   /** Best-first, capped at {@link MAX_IMAGE_HITS_PER_PAGE}. */
   hits: ImageHit[];
+  /**
+   * Position of this page's BEST image in the distance-ordered RAW row stream,
+   * before `groupByPage` collapsed it.
+   *
+   * It is not a rank — the page's rank is its position in the returned array —
+   * and the leg itself never reads it. It exists so `fuseWithStableHead` can
+   * reconstruct what a NARROWER request's image leg would have contained
+   * (#1103/#1269): a narrow request reads only `imageRawLimit(rankWidth)` raw
+   * rows, so on a page-crowded window (two pages carrying
+   * `rag_images_per_page_max` pictures each fill the whole default 40-row
+   * narrow window) a plain prefix of the wide result reports pages the narrow
+   * request never reached, and those pages then dilute the stable head. The
+   * vector leg redoes exactly this arithmetic with
+   * `truncateAtDistinctPages(… slice(0, vectorRawLimit(rankWidth)) …)`; it can
+   * do it on the rows themselves because its raw stream IS its result, and
+   * this leg's is not, so the position has to be carried.
+   */
+  bestRawIndex: number;
 }
 
 export interface ImageLegOutcome {
@@ -207,10 +240,12 @@ export async function searchImageLeg(
   if (!trimmed) return OFF;
 
   return withSpan('rag.image_leg', async (span) => {
-    // Cheapest first — a cached boolean before a DB round-trip, and both
-    // before anything that costs an HTTP request. A forced `true` skips the
-    // knob (that is what forcing means) but never the two conditions below,
-    // which are facts about the deployment rather than preferences.
+    // The cached boolean first, then two DB reads, and all three before
+    // anything that costs an HTTP request. A forced `true` skips the knob
+    // (that is what forcing means) but never the two conditions below, which
+    // are facts about the deployment rather than preferences. The two DB reads
+    // are NOT ordered by cost — see the header for why the resolver goes
+    // first.
     if (opts.imageLeg !== true && !(await getRagImageLegEnabled())) {
       span?.setAttribute('rag.image_leg', 'disabled');
       return OFF;
@@ -380,7 +415,7 @@ async function imageKnn(
  */
 export function groupByPage(rows: ImageRow[], limit: number): ImageLegPage[] {
   const byPage = new Map<number, ImageLegPage>();
-  for (const row of rows) {
+  for (const [rawIndex, row] of rows.entries()) {
     const hit: ImageHit = {
       source: row.source,
       key: row.key,
@@ -393,7 +428,7 @@ export function groupByPage(rows: ImageRow[], limit: number): ImageLegPage[] {
       continue;
     }
     if (byPage.size >= Math.max(0, limit)) continue;
-    byPage.set(row.pageId, { pageId: row.pageId, hits: [hit] });
+    byPage.set(row.pageId, { pageId: row.pageId, hits: [hit], bestRawIndex: rawIndex });
   }
   return [...byPage.values()];
 }

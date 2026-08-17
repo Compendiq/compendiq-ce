@@ -198,8 +198,9 @@ describe('CitationChips', () => {
       const chip = screen.getByTestId('citation-chip-1');
       // The number stays — the answer text refers to it by position.
       expect(chip).toHaveTextContent('1');
-      // The picture is decorative, so the CONTROL carries the name.
-      expect(chip).toHaveAttribute('aria-label', 'Turbine assembly — image');
+      // The picture is decorative, so the CONTROL carries the name — page
+      // first, then the picture, because one page can contribute three.
+      expect(chip).toHaveAttribute('aria-label', 'Turbine assembly — image: turbine.png');
 
       await waitFor(() => expect(fetchMock).toHaveBeenCalled());
       expect(fetchMock.mock.calls[0]![0]).toBe('/api/attachments/77/turbine.png');
@@ -224,7 +225,7 @@ describe('CitationChips', () => {
       );
       const chip = screen.getByTestId('citation-chip-1');
       expect(chip).toHaveTextContent('1');
-      expect(chip).toHaveAttribute('aria-label', 'Turbine assembly — image');
+      expect(chip).toHaveAttribute('aria-label', 'Turbine assembly — image: turbine.png');
       fireEvent.click(chip);
       expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
     });
@@ -233,6 +234,46 @@ describe('CitationChips', () => {
       render(<CitationChips sources={[mockSources[0]]} />, { wrapper: Wrapper });
       expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
       expect(screen.getByTestId('citation-chip-1')).not.toHaveAttribute('aria-label');
+    });
+
+    it('tells two pictures from the SAME page apart (review r1)', () => {
+      // `MAX_IMAGE_HITS_PER_PAGE` is 3, so one page really does contribute
+      // several entries, and every other field on them is identical — same
+      // title, same space, same destination — while the thumbnails are
+      // deliberately decorative. Without the filename these announce as three
+      // copies of one name over the surface whose subject IS the pictures.
+      mockAttachmentFetch();
+      render(
+        <CitationChips
+          sources={[
+            imageSource,
+            { ...imageSource, attachmentUrl: '/api/attachments/77/rotor%20detail.png' },
+          ]}
+        />,
+        { wrapper: Wrapper },
+      );
+
+      const labels = [1, 2].map((n) =>
+        screen.getByTestId(`citation-chip-${n}`).getAttribute('aria-label'),
+      );
+      expect(labels).toEqual([
+        'Turbine assembly — image: turbine.png',
+        // Percent-encoded on the wire, readable in the name.
+        'Turbine assembly — image: rotor detail.png',
+      ]);
+      expect(new Set(labels).size).toBe(2);
+    });
+
+    it('keeps the unqualified name when the URL carries no filename', () => {
+      // A placeholder would be worse than nothing: the plain label is already
+      // the correct name for a page contributing one picture.
+      mockAttachmentFetch();
+      render(
+        <CitationChips sources={[{ ...imageSource, attachmentUrl: '/api/attachments/77/' }]} />,
+        { wrapper: Wrapper },
+      );
+      expect(screen.getByTestId('citation-chip-1'))
+        .toHaveAttribute('aria-label', 'Turbine assembly — image');
     });
   });
 });

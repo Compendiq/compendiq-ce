@@ -19,7 +19,7 @@ flowchart LR
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service"]
     end
 
@@ -220,6 +220,17 @@ vLLM parameter, so this is what makes the ≤ 4000 remedy the settings row and t
 422 both name actually performable — and one reader is what keeps the probe, the
 column type, the image embedder (P2) and — from P3 — the query side sending the
 same number.
+
+**`image-leg-search.ts` (P3)** is the reader the index had been waiting for:
+the gate, one VL query embed and one kNN over `page_image_embeddings`,
+answering a page-denominated hit list that `rag-service.ts` fuses as a third
+RRF leg. It is a sibling of `rag-service.ts` rather than part of it only
+because `hybridSearch` is already the longest function in the backend — every
+FUSION decision (how the ranks combine, what an image-only page gets as text,
+what the stable head reconstructs) stayed in `rag-service.ts`, beside the other
+two legs' ranking rules. Its visibility predicate is
+`core/services/page-visibility.ts`'s shared fragment, the same one the vector
+leg uses; an image row carries no ACL of its own.
 
 `core/db/vector-column-tier.ts` (`columnTypeFor`, `HNSW_PARAMS`) and
 `core/db/with-lock-retry.ts` are **moves, not additions**: the tiering rule was

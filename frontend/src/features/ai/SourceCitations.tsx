@@ -4,7 +4,7 @@ import { m, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronRight, ExternalLink, FileText, Globe, Layers } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 import { resolveSourceTarget } from './source-target';
-import { isImageSource } from './image-source';
+import { imageSourceFileName, isImageSource } from './image-source';
 import { SourceThumbnail } from './SourceThumbnail';
 
 export interface Source {
@@ -114,6 +114,9 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
           >
             {sources.map((source, i) => {
               const target = resolveSourceTarget(source);
+              // `null` on every non-image source, and on an image whose URL
+              // carries no usable final segment.
+              const imageFile = imageSourceFileName(source);
               const motionProps = {
                 initial: { opacity: 0, x: -4 },
                 animate: { opacity: 1, x: 0 },
@@ -145,9 +148,23 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
                           a CATEGORY (ADR-010), and the label is what still
                           identifies it when the thumbnail has not loaded, in
                           forced-colors, and to a screen reader (the picture
-                          itself is decorative). */}
+                          itself is decorative).
+                          The filename is the NEXT item in the same row (review
+                          r1), because one page contributes up to three image
+                          sources and every other word here is identical across
+                          them. It is the one item that can be long, so it is
+                          the one that truncates — `min-w-0` is what lets it,
+                          and `shrink-0` on the label above is what stops the
+                          category word being eaten first. The card's
+                          accessible name is its text content, so the full name
+                          is still announced. */}
                       {isImageSource(source) && (
-                        <span data-testid="source-image-label">Image</span>
+                        <span className="shrink-0" data-testid="source-image-label">Image</span>
+                      )}
+                      {imageFile && (
+                        <span className="min-w-0 truncate" data-testid="source-image-file">
+                          {imageFile}
+                        </span>
                       )}
                       {/* Standalone pages have no space — render nothing rather
                           than an orphaned icon with a blank label. */}

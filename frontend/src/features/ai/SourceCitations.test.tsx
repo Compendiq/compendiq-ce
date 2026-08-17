@@ -260,6 +260,43 @@ describe('SourceCitations', () => {
       fireEvent.click(screen.getByText('Sources (1)'));
       expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
       expect(screen.queryByTestId('source-image-label')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('source-image-file')).not.toBeInTheDocument();
+    });
+
+    it('names the picture, so two hits on one page are distinguishable (review r1)', () => {
+      // One page contributes up to `MAX_IMAGE_HITS_PER_PAGE` (3) entries, and
+      // the title, the space and the destination are identical on all of them
+      // — with the thumbnail decorative by design, these cards were three
+      // visually and programmatically identical citations.
+      mockAttachmentFetch();
+      render(
+        <SourceCitations
+          sources={[
+            imageSource,
+            { ...imageSource, attachmentUrl: '/api/attachments/77/rotor%20detail.png' },
+          ]}
+        />,
+        { wrapper: Wrapper },
+      );
+      fireEvent.click(screen.getByText('Sources (2)'));
+
+      expect(screen.getAllByTestId('source-image-file').map((n) => n.textContent))
+        .toEqual(['turbine.png', 'rotor detail.png']);
+      // …and the cards' own accessible names differ, since the name comes
+      // from their content.
+      const names = [1, 2].map((n) => screen.getByTestId(`source-card-${n}`).textContent);
+      expect(new Set(names).size).toBe(2);
+    });
+
+    it('keeps the category label alone when the URL carries no filename', () => {
+      mockAttachmentFetch();
+      render(
+        <SourceCitations sources={[{ ...imageSource, attachmentUrl: '/api/attachments/77/' }]} />,
+        { wrapper: Wrapper },
+      );
+      fireEvent.click(screen.getByText('Sources (1)'));
+      expect(screen.getByTestId('source-image-label')).toHaveTextContent('Image');
+      expect(screen.queryByTestId('source-image-file')).not.toBeInTheDocument();
     });
   });
 });

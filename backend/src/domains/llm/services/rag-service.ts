@@ -36,6 +36,7 @@ import { RAG_EF_SEARCH, efSearchFor } from './hnsw-ef-search.js';
 import { formatQueryForEmbedding } from './query-instruction.js';
 import {
   searchImageLeg,
+  imageRawLimit,
   type ImageHit,
   type ImageLegOutcome,
   type ImageLegPage,
@@ -110,11 +111,16 @@ interface SearchResult {
    *
    * The fusion value is ~0.016 for a single rank in one leg and ~0.033 for
    * the common two-leg case — and since #1106's best-chunk-only rule that
-   * two-leg figure IS the ceiling: a page's vector contribution is its best
-   * chunk's reciprocal rank only (per-chunk summing measurably crushed the
-   * head — see reciprocalRankFusion), so `rrfWorstCase(true)` ≈ 0.0328
-   * bounds every path at every fetch width, rerank pool and raw chunk
-   * window alike. A test pins the figure rather than leaving it as prose.
+   * two-leg figure IS the ceiling wherever the two TEXT legs are all there
+   * is: a page's vector contribution is its best chunk's reciprocal rank only
+   * (per-chunk summing measurably crushed the head — see
+   * reciprocalRankFusion), so `rrfWorstCase(true)` ≈ 0.0328 bounds those paths
+   * at every fetch width, rerank pool and raw chunk window alike. Where
+   * #1115 P3's image leg also runs — a deployment with an `image_embedding`
+   * assignment and a non-empty index — the bound is one leg higher,
+   * `rrfWorstCase(true, 60, true)` = 3/61 ≈ 0.0492, and it is still
+   * width-invariant. A test pins both figures rather than leaving them as
+   * prose.
    *
    * The straddle caveat runs the other way now: `max_score` analytics rows
    * written BEFORE the #1106 deploy carry the old summed scale — up to
@@ -240,6 +246,17 @@ interface SearchResult {
    * does not contain.
    */
   imageTextSynthesized?: true;
+  /**
+   * #1115 P3 — where this page's best image sat in the image leg's RAW row
+   * stream ({@link ImageLegPage.bestRawIndex}). Internal to fusion: it is read
+   * only by {@link fuseWithStableHead}'s narrow reconstruction and never
+   * reaches a wire shape (`/api/search` and `/llm/ask` both map explicitly).
+   *
+   * Absent on every row the two text legs produced, and absent on an image row
+   * a test builds by hand — the reconstruction then falls back to the row's
+   * array position, which is what an uncrowded raw window would give.
+   */
+  imageRawIndex?: number;
 }
 
 /**
@@ -542,27 +559,30 @@ export async function keywordSearch(
 
 /**
  * Largest RRF score a single page can reach: its best vector chunk at leg
- * rank 1, optionally plus the top keyword slot — 1/(k+1) per leg. Bounded
- * and WIDTH-INVARIANT since #1106's best-chunk-only rule: per-chunk summing
- * is gone (see reciprocalRankFusion), so neither the fetch width, the
- * rerank pool, nor the raw chunk window moves this ceiling — 2/61 ≈ 0.0328
- * at k=60, full stop.
+ * rank 1, optionally plus the top keyword slot and (#1115 P3) the top image
+ * slot — 1/(k+1) per leg. So **2/61 ≈ 0.0328 with the two text legs, and
+ * 3/61 ≈ 0.0492 where the image leg also participates**.
+ *
+ * The ceiling is WIDTH-INVARIANT either way, which is the property #1106's
+ * best-chunk-only rule bought: per-chunk summing is gone (see
+ * reciprocalRankFusion) and the image leg is page-denominated from the start,
+ * so neither the fetch width, the rerank pool, nor the raw chunk window moves
+ * it. What moves it is the LEG COUNT, and only that.
  *
  * Exported for the test that pins `SearchResult.score`'s documented bounds.
  * The prose version of this has been wrong three times, in both directions,
  * while the per-CHUNK vector leg let one page's contributions sum — the
  * history matters for analytics: `max_score` rows written before the #1106
  * deploy carry the old SUMMED scale (up to ~0.17 chat / ~0.42 with a rerank
- * pool assigned) and are only loosely comparable with new bounded ones.
+ * pool assigned) and are only loosely comparable with new bounded ones. Rows
+ * straddling the moment a VL model is first assigned are the same loose class
+ * one band lower, between the 2/61 and 3/61 ceilings.
  */
 function rrfWorstCase(withKeywordHit = false, k = 60, withImageHit = false): number {
-  // #1115 P3 added a third term. It is OPTIONAL and defaults false so every
+  // #1115 P3 added the third term. It is OPTIONAL and defaults false so every
   // existing caller (and the test that pins the two-leg figure) is unchanged:
   // the image leg does not exist on a deployment with no `image_embedding`
-  // assignment, and where it does, a page found by all three legs reaches
-  // 3/61 ≈ 0.0492 rather than 2/61 ≈ 0.0328. Analytics rows straddling the
-  // moment a VL model is first assigned are the same loose-comparability
-  // class as rows straddling a fetch-width change.
+  // assignment.
   return (1 + (withKeywordHit ? 1 : 0) + (withImageHit ? 1 : 0)) / (k + 1);
 }
 
@@ -777,9 +797,20 @@ export function fuseWithStableHead(
   // residual is graph-walk noise, not a reordering rule.
   const narrowV = truncateAtDistinctPages(vectorResults.slice(0, vectorRawLimit(rankWidth)), rankWidth);
   const narrowK = truncateAtDistinctPages(keywordResults, rankWidth);
-  // #1115 P3: the image leg is already one row per page, so its narrow
-  // reconstruction is a plain prefix — no raw-window arithmetic to redo.
-  const narrowI = imageResults.slice(0, rankWidth);
+  // #1115 P3: the image leg arrives one row per page, but it was DENOMINATED
+  // that way from a raw stream of image rows — so a plain prefix is NOT what a
+  // narrow request would have had, for exactly the reason the vector leg redoes
+  // its own raw-window arithmetic one line above. A narrow request reads
+  // `imageRawLimit(rankWidth)` raw rows (40 at the default width), and two
+  // pages carrying `rag_images_per_page_max` pictures each fill that window
+  // between them — so its leg would report two pages where `slice(0, rankWidth)`
+  // reports ten, and the eight extras dilute the head #1103 measured. The page
+  // cap is reapplied after the window, because `groupByPage(rows, rankWidth)`
+  // applies both.
+  const imageNarrowRaw = imageRawLimit(rankWidth);
+  const narrowI = imageResults
+    .filter((r, i) => (r.imageRawIndex ?? i) < imageNarrowRaw)
+    .slice(0, rankWidth);
   if (
     narrowV.length === vectorResults.length
     && narrowK.length === keywordResults.length
@@ -1559,7 +1590,9 @@ async function buildImageLegResults(
   for (const page of pages) {
     const base = byPage.get(page.pageId) ?? synthesized.get(page.pageId);
     if (!base) continue;
-    out.push({ ...base, imageHits: page.hits });
+    // `imageRawIndex` rides along for `fuseWithStableHead`'s narrow
+    // reconstruction alone; see its JSDoc on `SearchResult`.
+    out.push({ ...base, imageHits: page.hits, imageRawIndex: page.bestRawIndex });
   }
   return out;
 }
@@ -1651,7 +1684,9 @@ async function hybridSearchInner(
   // cost a question pays is `max(text, image) - text`, not the image leg's
   // whole latency. Its own budget (IMAGE_LEG_TIMEOUT_MS) bounds the worst
   // case, and the gate inside it means a deployment with no VL model spends
-  // one cached boolean and one indexed EXISTS on this line.
+  // one cached boolean and one indexed assignment lookup on this line — the
+  // non-empty-index EXISTS is BEHIND that lookup and is never reached until a
+  // model is assigned (see the gate's own header for the order and why).
   //
   // `searchImageLeg` never rejects — every failure is a bypass it reports on
   // the outcome. The `.catch` covers the chain in FRONT of it (`stageLimit`

@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { cn } from '../../shared/lib/cn';
 import type { Source } from './SourceCitations';
-import { isImageSource } from './image-source';
+import { imageSourceFileName, isImageSource } from './image-source';
 import { resolveSourceTarget } from './source-target';
 import { SourceThumbnail } from './SourceThumbnail';
 
@@ -41,7 +41,16 @@ export function CitationChips({ sources, className }: CitationChipsProps) {
         // says it is an image, the way the external chip above names its new
         // tab. On a failed or pending fetch `SourceThumbnail` renders nothing
         // and this degrades to the ordinary numbered chip.
-        const imageLabel = `${source.pageTitle} — image`;
+        //
+        // It names the PICTURE too when there is a filename to name it with
+        // (review r1): one page contributes up to three image sources, all
+        // with the same title and the same destination, and without this they
+        // are three identical announcements over the surface whose whole
+        // subject is which picture matched.
+        const imageFile = imageSourceFileName(source);
+        const imageLabel = imageFile
+          ? `${source.pageTitle} — image: ${imageFile}`
+          : `${source.pageTitle} — image`;
 
         if (target.kind === 'internal' && isImageSource(source)) {
           return (

@@ -1317,7 +1317,10 @@ alongside the vector leg over `page_embeddings` and the keyword leg over
 table, embedded by a separate vision-language model, under the same visibility
 predicate as the other two. It runs only when the `image_embedding` use case is
 assigned, the table is non-empty and `rag_image_leg_enabled` is on; otherwise
-there is no query embed and no added latency.
+there is no query embed, no kNN and no row. The gate itself is not free — a
+cached boolean plus one indexed read of the assignment, which on an unassigned
+instance answers first and never reaches the non-empty check — but that is a
+round-trip, not a model call.
 
 Three properties keep it from disturbing what is already here:
 
@@ -1331,7 +1334,11 @@ Three properties keep it from disturbing what is already here:
    own AG News pairs score 0.55 and 0.57 — which is the point: there is no
    threshold that separates them, so any score-space arithmetic across the two
    (a weighted blend, a shared cutoff) is meaningless. RRF only ever sees
-   positions. Page-denominated like #1106: a page's best image rank counts once.
+   positions. Page-denominated like #1106: a page's best image rank counts once
+   — and, because those pages were denominated from a raw image-row stream,
+   each carries the raw position of its best image so #1103's stable head can
+   reconstruct what a narrower request's leg held rather than taking a plain
+   prefix of a page-crowded window.
 2. **The image SIMILARITY never feeds the confidence number.**
    `retrieval-confidence.ts` compares an operator-tuned scalar against a
    text-cosine distribution; an image similarity on that scale is a different
@@ -2384,8 +2391,10 @@ renew during the one page slow enough to need it.
 
 The image leg (`domains/llm/services/image-leg-search.ts`) runs only when the
 caller has not forced it off, `rag_image_leg_enabled` is on (default true), the
-use case is assigned and the table is non-empty — otherwise no query embed and
-no cost. The last condition is re-read per request rather than cached, because
+use case is assigned and the table is non-empty — otherwise no query embed, no
+kNN and no row (the gate's own cost is a cached boolean plus one indexed
+assignment read, which on an unassigned instance returns before the
+non-empty check runs). The last condition is re-read per request rather than cached, because
 it flips on the first embed and on a rebuild's `TRUNCATE`. It embeds the query
 ONCE through `embedTextsVl` under `VL_QUERY_INSTRUCTION`, bounded at 3s
 (shorter than the rerank stage's 5s because it runs in PARALLEL with the text

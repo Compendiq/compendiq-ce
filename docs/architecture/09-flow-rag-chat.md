@@ -52,7 +52,7 @@ sequenceDiagram
         RAG->>PG: tsvector search (websearch_to_tsquery) WHERE same space filter
         PG-->>RAG: matches
     and
-        note right of BE: IMAGE LEG (#35;1115 P3) — GATED, and costs NOTHING when shut:<br/>imageLeg option not false, admin_settings 'rag_image_leg_enabled'<br/>(default on), image_embedding use case ASSIGNED (never inherits),<br/>and page_image_embeddings NON-EMPTY (uncached EXISTS per request —<br/>the answer flips on the first embed and on a rebuild's TRUNCATE)
+        note right of BE: IMAGE LEG (#35;1115 P3) — GATED; no embed, no kNN, no row when shut:<br/>imageLeg option not false, admin_settings 'rag_image_leg_enabled'<br/>(default on), image_embedding use case ASSIGNED (never inherits),<br/>and page_image_embeddings NON-EMPTY (uncached EXISTS per request —<br/>the answer flips on the first embed and on a rebuild's TRUNCATE)
         BE->>RAG: searchImageLeg(userId, question, stageLimit)
         RAG->>PROV3: POST /v1/embeddings — vLLM chat-embeddings shape,<br/>VL_QUERY_INSTRUCTION as system message, ONE call, 3s budget
         PROV3-->>RAG: q_image_vector[M] (MRL width from admin_settings)
@@ -170,8 +170,16 @@ defaults:
 
 | Path | topK | stage limit | worst-case fusion score |
 |---|---|---|---|
-| every path since #1106 | any | any (pool sizing only) | **~0.0328** (`rrfWorstCase(true)` = 2/61) — width-invariant |
+| every path since #1106, two text legs | any | any (pool sizing only) | **~0.0328** (`rrfWorstCase(true)` = 2/61) — width-invariant |
+| with #1115 P3's image leg live (assigned + non-empty index) | any | any (pool sizing only) | **~0.0492** (`rrfWorstCase(true, 60, true)` = 3/61) — width-invariant |
 | *historical rows (pre-#1106 summed scale)* | | | *chat ~0.169; rerank pool assigned ~0.419; `/api/search`@20 ~0.302; past 1.0 at the width cap* |
+
+The image row raises the ceiling by a whole leg and nothing else: the leg is
+page-denominated from the start, so like the other two it contributes exactly
+`1/(k+1)` at rank 1 and the figure still does not track any width. `max_score`
+rows straddling the moment a VL model is first assigned are loosely comparable
+in the same way #1106's and #1103's straddling rows are — one band apart, in
+the growing direction.
 
 Since #1106 the vector leg is page-denominated (the stage limit counts
 distinct pages; the leg fetches `min(4 × stageLimit, 500)` raw CHUNK rows)
@@ -260,8 +268,9 @@ text↔text ones as high as 0.81, with **no gap** between the bands (ADR-025 §8
 so no scalar separates them and a threshold tuned on one is undefined on the
 other.
 
-**The gate, cheapest first, and it costs nothing when shut.** All four must
-hold: `HybridSearchOptions.imageLeg` is not `false`; `rag_image_leg_enabled`
+**The gate, cheapest first, and it does no RETRIEVAL work when shut** — no
+query embed, no kNN, no row. All four must hold:
+`HybridSearchOptions.imageLeg` is not `false`; `rag_image_leg_enabled`
 (default on, skipped when the option forces `true`); the `image_embedding` use
 case is **assigned** (it never inherits — ADR-021's rule for the non-inheriting
 use cases, so unassigned means off, never "borrow the text embedder"); and
@@ -271,6 +280,18 @@ moments the answer matters most — the first page the worker embeds, and a
 model change's `TRUNCATE` — and a 60-second cache would leave the leg dark for
 a minute after the index starts filling, or lit for a minute against a column
 whose type has just changed.
+
+It is not literally free, and the standing cost is worth naming because every
+`/llm/ask`, every `/api/search?mode=hybrid` and deep search's original leg pays
+it on **every** deployment: one cached boolean, then
+`resolveImageEmbeddingUsecase`'s **uncached** two-table lookup. On the majority
+deployment — no VL model — that lookup answers `null` and returns, so the
+`EXISTS` above is not reached at all until a model is assigned. The resolver
+sits in front of it rather than behind it because the two verdicts are not
+interchangeable: a resolver THROW is a degradation this leg records (below),
+and an empty index short-circuiting ahead of it would report a broken
+assignment as "off". The extra round-trip is paid in exactly one state —
+assigned and not yet indexed.
 
 **One VL call per request, bounded at 3s** (`IMAGE_LEG_TIMEOUT_MS`, covering
 queue wait). Shorter than the rerank stage's and the reformulation's 5s
@@ -287,6 +308,17 @@ and out-score a page whose single image matches better — image COUNT beating
 image QUALITY, the same head dilution best-chunk-only fusion exists to prevent.
 Up to three hits per page ride along on the `SearchResult` for the answer's
 source list; they buy no extra rank.
+
+Being page-denominated is also why the **stable head** (#1103) cannot take a
+plain prefix of this leg. The pages were denominated FROM a raw image-row
+stream, so a narrower request would have read only `imageRawLimit(rankWidth)`
+raw rows — 40 at the default width, which two pages carrying
+`rag_images_per_page_max` pictures fill between them. Each page therefore
+carries the raw position of its best image (`bestRawIndex`), and
+`fuseWithStableHead` reconstructs the narrow leg by filtering on that window
+before capping at `rankWidth` — the exact analogue of the
+`truncateAtDistinctPages(… vectorRawLimit(rankWidth) …)` the vector leg does
+one line above.
 
 **Visibility is the shared fragment, never a copy.** The kNN joins `pages` and
 applies the same `visiblePagesPredicate` the vector leg does, plus
@@ -325,11 +357,16 @@ verdict a keyword-only set gets, and **not** the empty-corpus `score: 0` that a
 threshold would refuse.
 
 **Failure is a bypass, and it is recorded.** A timeout, an open breaker, an
-assignment pulled mid-flight, an unreadable provider row or a kNN error all
-leave the leg out and everything else byte-identical to leg-off, with
+assignment pulled mid-flight, an assignment READ that threw, or a kNN error
+all leave the leg out and everything else byte-identical to leg-off, with
 `degraded_reason = 'image_leg_unavailable'` on the analytics row. Unlike a
 rerank bypass it is recorded because it changes which PAGES come back, not
-merely their order. **Precedence: a text-side reason always wins** — there is
+merely their order. **A resolver `null` is not a failure** — that is
+"unassigned", which is off — and the two exits from that one call have their
+own paired tests, because folding the `catch` away is what makes a real outage
+invisible in `search_analytics`. Note what a throw is: `loadProviderFromRow`
+runs `decryptSafe`, so an undecryptable `api_key` yields a null key rather than
+an exception; what throws here is the database. **Precedence: a text-side reason always wins** — there is
 one column, and during an embedding outage `embedding_failed` is the value an
 operator needs; an image leg that also fell over in the same second is a
 footnote. `searchTypeFinal` is unchanged: two legs or three is not a different

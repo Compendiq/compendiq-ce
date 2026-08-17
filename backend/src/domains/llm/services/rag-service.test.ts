@@ -1682,6 +1682,58 @@ describe('RAG Service', () => {
         expect(fused.map((r) => r.confluenceId)).toEqual(['v1', 'i1', 'v2']);
         expect(fused.find((r) => r.confluenceId === 'v2')!.imageHits).toHaveLength(1);
       });
+
+      it('reconstructs the narrow image leg from the RAW window, not a plain prefix', () => {
+        // #1103/#1269's guarantee applied to the third leg. The image leg is
+        // page-denominated, but it was denominated FROM a raw image-row
+        // stream — so a narrow request (stage limit = rankWidth) reads only
+        // `imageRawLimit(rankWidth)` raw rows, and on a page-crowded window
+        // (two pages carrying `rag_images_per_page_max` pictures each fill the
+        // default 40-row narrow window between them) the wide result's first
+        // `rankWidth` pages are NOT the pages a narrow request had.
+        //
+        // rankWidth 2 → imageRawLimit(2) = 8, so `iFar` (best image at raw row
+        // 9) is outside a narrow request's window and belongs in the APPENDED
+        // tail, behind `vC` — which the wide fusion credits with two legs
+        // (2/63) against `iFar`'s one (1/62). Put `iFar` in the head instead
+        // and it takes its NARROW rank, jumping ahead of the better-evidenced
+        // page: the head dilution #1103 measured, arriving through the leg
+        // this PR adds.
+        //
+        // Mutation check: restore `imageResults.slice(0, rankWidth)` and the
+        // last two entries swap.
+        const v = [makeResult('vA', 'a'), makeResult('vB', 'b'), makeResult('vC', 'c')];
+        const k = [
+          makeResult('kA', 'x', { score: 2, vectorScore: null, keywordRank: 2 }),
+          makeResult('kB', 'y', { score: 1, vectorScore: null, keywordRank: 1 }),
+          makeResult('vC', 'c', { score: 1, vectorScore: null, keywordRank: 1 }),
+        ];
+        const i = [
+          imageRow('iNear', { imageOnly: true as const, imageRawIndex: 0 }),
+          imageRow('iFar', { imageOnly: true as const, imageRawIndex: 9 }),
+        ];
+        expect(fuseWithStableHead(v, k, 2, i).map((r) => r.confluenceId))
+          .toEqual(['vA', 'kA', 'iNear', 'vB', 'kB', 'vC', 'iFar']);
+      });
+
+      it('falls back to array position when no raw index was recorded', () => {
+        // A hand-built row carries no raw index, and so does any future
+        // producer that is already one row per raw hit — the reconstruction
+        // must then behave as an uncrowded window, i.e. exactly the plain
+        // prefix it replaced.
+        const v = [makeResult('vA', 'a'), makeResult('vB', 'b'), makeResult('vC', 'c')];
+        const k = [
+          makeResult('kA', 'x', { score: 2, vectorScore: null, keywordRank: 2 }),
+          makeResult('kB', 'y', { score: 1, vectorScore: null, keywordRank: 1 }),
+          makeResult('vC', 'c', { score: 1, vectorScore: null, keywordRank: 1 }),
+        ];
+        const i = [
+          imageRow('iNear', { imageOnly: true as const }),
+          imageRow('iFar', { imageOnly: true as const }),
+        ];
+        expect(fuseWithStableHead(v, k, 2, i).map((r) => r.confluenceId))
+          .toEqual(['vA', 'kA', 'iNear', 'vB', 'kB', 'iFar', 'vC']);
+      });
     });
 
     describe('page-denominated vector fetch (#1106 PR 1)', () => {

@@ -30,11 +30,16 @@ vi.mock('./openai-compatible-client.js', async () => {
     generateEmbedding: generateEmbeddingMock,
   };
 });
+// #1115 P3 — the image leg's own resolver. `null` = no VL model assigned, the
+// ordinary deployment state, which keeps every degraded-reason assertion below
+// about the TEXT side. Hoisted rather than inlined because two cases here make
+// it REJECT: an unreadable assignment is a degradation and an absent one is
+// not, and the pair is the only test of that branch.
+const resolveImageEmbeddingUsecaseMock = vi.hoisted(() =>
+  vi.fn<() => Promise<null>>(async () => null),
+);
 vi.mock('./llm-provider-resolver.js', () => ({
-  // #1115 P3 — a closed stub, so the image leg's own resolver has to appear
-  // here too. `null` = no VL model assigned, the ordinary deployment state,
-  // which keeps every degraded-reason assertion below about the TEXT side.
-  resolveImageEmbeddingUsecase: vi.fn(async () => null),
+  resolveImageEmbeddingUsecase: resolveImageEmbeddingUsecaseMock,
   resolveUsecase: vi.fn(async () => ({
     config: {
       providerId: 'stub',
@@ -194,6 +199,10 @@ describe.skipIf(!dbAvailable)('#1117 degraded-retrieval signal', () => {
     await seedSpaceForUser(USER, SPACE);
     generateEmbeddingMock.mockClear();
     generateEmbeddingMock.mockImplementation(async () => [fakeVec(7)]);
+    // Reset rather than clear: a `…Once` rejection a test queued but never
+    // reached would otherwise fire inside the NEXT test's search.
+    resolveImageEmbeddingUsecaseMock.mockReset();
+    resolveImageEmbeddingUsecaseMock.mockImplementation(async () => null);
     ragPermissionEnforcementEnabled = false;
   });
   afterEach(async () => {
@@ -371,6 +380,56 @@ describe.skipIf(!dbAvailable)('#1117 degraded-retrieval signal', () => {
       expect(row.degraded_reason).toBe('embedding_failed');
       // Coverage was still measured — the corpus itself is fine.
       expect(row.embedding_coverage).toBe(1);
+    });
+
+    // ── #1115 P3: the image leg's resolver, unassigned vs unreadable ──────
+    //
+    // CLAUDE.md pins the distinction as load-bearing and it is the one branch
+    // of the gate with two very different verdicts behind one call: `null` is
+    // "no VL model is assigned", which is a CONFIGURATION and stays silent,
+    // while a THROW is the assignment read itself failing — the database, not
+    // a decrypt (`loadProviderFromRow` runs `decryptSafe`, so an undecryptable
+    // `api_key` yields a null key and no exception). Only the second is
+    // recorded, and folding the `catch` away is the obvious tidy that makes a
+    // real outage invisible in `search_analytics`.
+    it('records image_leg_unavailable when the image_embedding assignment cannot be READ', async () => {
+      await seedPage({ title: 'Runbook', embedded: true });
+      resolveImageEmbeddingUsecaseMock.mockRejectedValueOnce(
+        new Error('assignment read failed'),
+      );
+
+      const results = await hybridSearch(USER, 'Runbook body');
+
+      // A bypass, not a failure: the text side is untouched and still answers.
+      expect(results.length).toBeGreaterThan(0);
+      const row = await lastAnalyticsRow();
+      expect(row.search_type).toBe('hybrid');
+      expect(row.degraded_reason).toBe('image_leg_unavailable');
+      expect(row.embedding_coverage).toBe(1);
+    });
+
+    it('stays silent when the use case is merely UNASSIGNED — off is not degraded', async () => {
+      // The default stub already answers `null`; naming it here is the point
+      // of the pair, since one call site produces both verdicts.
+      await seedPage({ title: 'Runbook', embedded: true });
+
+      await hybridSearch(USER, 'Runbook body');
+
+      expect(resolveImageEmbeddingUsecaseMock).toHaveBeenCalled();
+      expect((await lastAnalyticsRow()).degraded_reason).toBeNull();
+    });
+
+    it('lets a text-side reason win over an unreadable image assignment', async () => {
+      // One column, and the value that belongs in it is the outage that hurt
+      // the answer most (#1115 P3 rule 7).
+      await seedPage({ title: 'Runbook', embedded: false });
+      resolveImageEmbeddingUsecaseMock.mockRejectedValueOnce(
+        new Error('assignment read failed'),
+      );
+
+      await hybridSearch(USER, 'Runbook body');
+
+      expect((await lastAnalyticsRow()).degraded_reason).toBe('no_embeddings');
     });
   });
 });

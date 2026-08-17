@@ -38,6 +38,7 @@ const dbAvailable = await isDbAvailable();
 const DIMS = 4;
 const TEXT_MODEL = 'text-embed';
 const VL_MODEL = 'Qwen/Qwen3-VL-Embedding-2B';
+const RERANK_MODEL = 'bge-reranker-v2-m3';
 
 const USER = 'eeeeeeee-1115-4000-8000-000000000001';
 const OTHER = 'eeeeeeee-1115-4000-8000-000000000002';
@@ -150,7 +151,7 @@ async function seedImage(pageId: number, key: string, axis: number, source: 'con
   );
 }
 
-async function assignProviders(opts: { vl?: boolean } = {}): Promise<void> {
+async function assignProviders(opts: { vl?: boolean; rerank?: boolean } = {}): Promise<void> {
   const textProv = await query<{ id: string }>(
     `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, default_model, is_default)
      VALUES ('text-box', $1, 'none', TRUE, $2, TRUE) RETURNING id`,
@@ -169,6 +170,17 @@ async function assignProviders(opts: { vl?: boolean } = {}): Promise<void> {
     await query(
       `INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('image_embedding', $1, $2)`,
       [vlProv.rows[0]!.id, VL_MODEL],
+    );
+  }
+  if (opts.rerank) {
+    const rrProv = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, default_model)
+       VALUES ('rerank-box', $1, 'none', TRUE, $2) RETURNING id`,
+      [baseUrl, RERANK_MODEL],
+    );
+    await query(
+      `INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('rerank', $1, $2)`,
+      [rrProv.rows[0]!.id, RERANK_MODEL],
     );
   }
 }
@@ -205,6 +217,25 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(JSON.stringify({
             choices: [{ message: { content: 'servicing the turbine\nturbine maintenance steps' } }],
+          }));
+        });
+        return;
+      }
+      // …and a FOURTH for the rerank stage, which the image leg has to survive
+      // (it is the recommended production configuration, #1104). It rescores
+      // in reverse so the reranked branch is provably the one that ran.
+      if (req.url === '/v1/rerank' && req.method === 'POST') {
+        let rerankRaw = '';
+        req.on('data', (c) => (rerankRaw += c));
+        req.on('end', () => {
+          const body = JSON.parse(rerankRaw) as { documents?: string[] };
+          const n = body.documents?.length ?? 0;
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({
+            results: Array.from({ length: n }, (_, i) => ({
+              index: n - 1 - i,
+              relevance_score: 1 - i * 0.1,
+            })),
           }));
         });
         return;
@@ -472,6 +503,11 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
     // The crowded page keeps its extra hits for the source list, best-first,
     // but they buy it no rank.
     expect(out.pages[1]!.hits.map((h) => h.key)).toEqual(['c1.png', 'c2.png', 'c3.png']);
+    // The RAW position of each page's best image survives the collapse —
+    // `fuseWithStableHead` reconstructs a narrower request's image leg from it,
+    // and a page whose best picture sits past the narrow raw window must not
+    // enter the stable head. `better` is raw row 0 and `crowded` raw row 1.
+    expect(out.pages.map((p) => p.bestRawIndex)).toEqual([0, 1]);
   });
 
   it('caps the hits it carries per page at MAX_IMAGE_HITS_PER_PAGE', async () => {
@@ -639,6 +675,44 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
       expect(row.imageOnly).toBeUndefined();
       expect(row.chunkText).toBe('the vector chunk');
       expect(row.imageHits).toHaveLength(1);
+    });
+
+    it('carries the hits through the RERANK stage — the recommended production config', async () => {
+      // The feature's whole wire output (`kind: 'image'` sources) hangs off
+      // `SearchResult.imageHits`, and every post-fusion stage rebuilds rows:
+      // rerank spreads into new objects, MMR and the ranking prior re-map,
+      // sibling assembly and the pin stage re-spread. Rerank is the one that
+      // runs on the RECOMMENDED configuration (#1104) and the one with a
+      // hand-written object literal, so a `{ ...rest }` that forgot the field
+      // would delete every image source from `/llm/ask` silently.
+      //
+      // Mutation check: destructure `imageHits` out of `scoredEntries` in
+      // rag-service's rerank stage and this fails; nothing else in the suite
+      // does, because no other case has BOTH an assigned reranker and a
+      // non-empty image index.
+      await assignProviders({ rerank: true });
+      const textPage = await seedPage({
+        title: 'Written up', chunkAxis: 3, chunkText: 'the vector chunk',
+      });
+      const imageOnly = await seedPage({ title: 'Untranscribed schematic', bodyText: 'zz' });
+      await seedImage(imageOnly, 'sheet.png', 0);
+      await seedImage(textPage, 'pic.png', 0);
+
+      const results = await hybridSearch(USER, 'zzzqqq', 5, undefined, { rerank: true });
+
+      // The reranked branch really ran (a bypass records plain `hybrid`).
+      expect((await lastAnalytics()).search_type).toBe('hybrid_rerank');
+      expect(results.every((r) => r.rerankScore != null)).toBe(true);
+      const image = results.find((r) => r.pageId === imageOnly);
+      expect(image).toBeDefined();
+      expect(image!.imageHits).toEqual([
+        expect.objectContaining({ source: 'confluence', key: 'sheet.png' }),
+      ]);
+      // The image-only markers survive too — P4 and the confidence exclusion
+      // both read them after this stage.
+      expect(image!.imageOnly).toBe(true);
+      expect(image!.imageTextSynthesized).toBe(true);
+      expect(results.find((r) => r.pageId === textPage)!.imageHits).toHaveLength(1);
     });
 
     it('records image_leg_unavailable when the leg fails and the text side is healthy', async () => {
