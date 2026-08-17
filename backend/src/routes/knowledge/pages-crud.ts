@@ -1116,12 +1116,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
 
       const result = await query<{ id: number; title: string; version: number }>(
+        // #1115 P2 (review r2) — a create is a body writer, so it queues the
+        // image index too. Bound to the SAME `!isFolder` parameter as
+        // `embedding_dirty`: a folder is excluded by the image worker's own
+        // WHERE, so flagging one is a backlog entry no scan can ever clear.
+        // Unconditional rather than gated: there is no previous body to diff
+        // against, and a create with no image costs one scan that enumerates
+        // nothing and clears the flag.
         `INSERT INTO pages
            (title, body_html, body_text, body_storage, source, created_by_user_id,
             visibility, version, space_key, confluence_id, parent_id,
-            page_type, embedding_dirty, embedding_status, last_synced, labels)
+            page_type, embedding_dirty, image_embedding_dirty, embedding_status, last_synced, labels)
          VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
-                 $8, $9, 'not_embedded', NOW(), $10)
+                 $8, $9, $9, 'not_embedded', NOW(), $10)
          RETURNING id, title, version`,
         [body.title, effectiveBodyHtml, bodyText, userId,
          visibility, spaceKey, body.parentId ?? null,
@@ -1214,13 +1221,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Store in local cache (shared table, no user_id)
     await query(
+      // #1115 P2 (review r2) — confluenceToHtml emits /api/attachments/<id>/<file>
+      // for any <ac:image><ri:attachment> the created storage carries, so this
+      // body really can reference images. The DO UPDATE arm re-writes body_html
+      // on a row that may already carry index entries, which is the reconcile's
+      // trigger, so it raises the flag as well.
       `INSERT INTO pages
          (confluence_id, space_key, title, body_storage, body_html, body_text,
-          version, parent_id, source, embedding_dirty, embedding_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, 'not_embedded')
+          version, parent_id, source, embedding_dirty, image_embedding_dirty, embedding_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded')
        ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
          title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
-         body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW()`,
+         body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW(),
+         image_embedding_dirty = TRUE`,
       // #1123: bind the RESOLVED `confluenceParentId`, not the raw
       // `body.parentId`. A Confluence-sourced child must store its parent's
       // `confluence_id` — binding the frontend's internal numeric id wrote the
@@ -1339,6 +1352,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         `UPDATE pages SET
            title = $2, body_html = $3, body_text = $4,
            version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
+           -- #1115 P2 (review r1) — the editor is a body writer, so it can add
+           -- an <img> (paste stages the bytes BEFORE this save lands, so the
+           -- attachment-side flag can be cleared against the old body) and it
+           -- can remove one, which nothing else notices: no attachment write
+           -- happens on a delete, so without this the index keeps a row for a
+           -- picture the page no longer shows. Gated on body_html alone —
+           -- that is where the src attributes are, and a title-only save
+           -- cannot move an image.
+           image_embedding_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+             ELSE image_embedding_dirty
+           END,
            embedding_status = 'not_embedded', embedded_at = NULL,
            -- #828: the content changed, so re-queue the summary and quality
            -- workers. Reset both status AND retry_count — a page that had
@@ -1433,6 +1458,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       `UPDATE pages SET
          title = $2, body_storage = $3, body_html = $4, body_text = $5,
          version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+         -- #1115 P2 (review r1) — and this path especially: the comment below
+         -- notes the follow-up sync short-circuits on an already-current
+         -- version, so syncPage's own image flag never runs for it.
+         image_embedding_dirty = CASE
+           WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+           ELSE image_embedding_dirty
+         END,
          embedding_status = 'not_embedded', embedded_at = NULL,
          -- #828: content changed on this app-side Confluence push, so re-queue
          -- the summary/quality workers (reset status + retry_count so a
@@ -1805,6 +1837,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           body_html = draft_body_html, body_text = draft_body_text,
           body_storage = COALESCE(draft_body_storage, body_storage),
           version = version + 1, embedding_dirty = TRUE,
+          -- #1115 P2 (review r1) — publishing a draft is the moment its body
+          -- becomes the live one, so this is the first point at which an
+          -- <img> the draft added or dropped is real. Both sides of the
+          -- comparison read the OLD row, which is what makes the gate work.
+          image_embedding_dirty = CASE
+            WHEN body_html IS DISTINCT FROM draft_body_html THEN TRUE
+            ELSE image_embedding_dirty
+          END,
           embedding_status = 'not_embedded', embedded_at = NULL,
           last_modified_at = NOW(),
           -- Stamp local-edit markers (#305): publishing a draft is a local
@@ -2181,6 +2221,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             `UPDATE pages SET
                title = $2, body_storage = $3, body_html = $4, body_text = $5,
                version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+               -- #1115 P2 (review r1) — a bulk refresh rewrites body_html
+               -- from upstream, which is exactly what can move an image.
+               image_embedding_dirty = CASE
+                 WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+                 ELSE image_embedding_dirty
+               END,
                embedding_status = 'not_embedded', embedded_at = NULL,
                -- Clear local-edit markers (#305): this is a bulk
                -- refresh-from-Confluence path (sync-side).

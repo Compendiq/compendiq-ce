@@ -219,6 +219,61 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
       expect(v2still.rows).toHaveLength(1);
     });
 
+    /**
+     * #1115 P2 (review r2) — restoring is a BODY write, so it moves images.
+     *
+     * A restore is the one app action whose entire purpose is to swap the body
+     * for a different one, so it routinely adds and removes `<img>` elements —
+     * and it performs no attachment write, so none of `image-embedding-dirty.ts`'s
+     * callers fires either. Neither source recovers on the success path: a
+     * standalone page is never touched by sync at all, and for a Confluence page
+     * `pages-versions.ts` pushes the restored body upstream and writes back the
+     * version Confluence returned, so the next `syncPage` takes the
+     * version-unchanged branch and only the conflict-policy update (which needs
+     * `htmlChanged`) would raise the flag — which after a clean
+     * `htmlToConfluence`/`confluenceToHtml` round trip it does not.
+     */
+    it('raises image_embedding_dirty when the restore changes the body', async () => {
+      await query(
+        `UPDATE pages SET version = 3, body_html = '<p>a</p><img src="/api/attachments/1/pic.png">',
+                          image_embedding_dirty = FALSE
+           WHERE id = $1`,
+        [pageId],
+      );
+      // The restored body drops the image — the case nothing else notices.
+      await saveVersionSnapshotByPageId(pageId, 2, 'Test Page', '<p>a</p>', 'a');
+
+      await restoreVersion(pageId, 2);
+
+      const r = await query<{ image_embedding_dirty: boolean }>(
+        'SELECT image_embedding_dirty FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(r.rows[0]!.image_embedding_dirty).toBe(true);
+    });
+
+    it('leaves image_embedding_dirty alone for a title-only restore', async () => {
+      // Gated on `body_html` alone: the `src` attributes live in the HTML, so a
+      // restore that only moves the title cannot move an image, and re-scanning
+      // its pictures is pure cost.
+      await query(
+        `UPDATE pages SET version = 3, title = 'Now', body_html = '<p>same</p>', body_text = 'same',
+                          image_embedding_dirty = FALSE
+           WHERE id = $1`,
+        [pageId],
+      );
+      await saveVersionSnapshotByPageId(pageId, 2, 'Then', '<p>same</p>', 'same');
+
+      await restoreVersion(pageId, 2);
+
+      const r = await query<{ image_embedding_dirty: boolean; title: string }>(
+        'SELECT image_embedding_dirty, title FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(r.rows[0]!.title).toBe('Then');
+      expect(r.rows[0]!.image_embedding_dirty).toBe(false);
+    });
+
     it('derives body_text from body_html when the snapshot lacks body_text', async () => {
       await query(`UPDATE pages SET version = 2 WHERE id = $1`, [pageId]);
       await saveVersionSnapshotByPageId(pageId, 1, 'HTML Only', '<p>Hello <strong>world</strong></p>', null);

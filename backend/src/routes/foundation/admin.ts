@@ -33,6 +33,9 @@ import {
   invalidateRagPinIdentifiersCache,
   invalidateRagMmrCache,
   invalidateRagRankingPriorCache,
+  getRagImagesPerPageMax,
+  getRagImageIndexExternal,
+  invalidateRagImageIntakeCache,
 } from '../../core/services/admin-settings-service.js';
 import {
   computeCalibrationStatus,
@@ -353,6 +356,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragPinIdentifiers,
       ragMmr,
       ragRankingPriorWeight,
+      ragImagesPerPageMax,
+      ragImageIndexExternal,
       imageEmbeddingTargetDimensions,
     ] = await Promise.all([
       getEmbeddingDimensions(),
@@ -386,6 +391,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
       getRagPinIdentifiersEnabled(),
       getRagMmrConfig(),
       getRagRankingPriorWeight(),
+      // #1115 P2 — the image-index intake knobs, through their own reader for
+      // the same reason as the nine above. The Retrieval tab gains the
+      // controls in P3; this makes the values readable (and settable, below)
+      // from the release the worker ships in.
+      getRagImagesPerPageMax(),
+      getRagImageIndexExternal(),
       // #1115 — uncached, like `getFtsLanguage`: it is read a handful of times
       // per admin action, and a stale one would let a probe fired seconds after
       // the width was saved measure the OLD width and type the column to it.
@@ -493,6 +504,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragMmrEnabled: ragMmr.enabled,
       ragMmrLambda: ragMmr.lambda,
       ragRankingPriorWeight,
+      // #1115 P2 — the image-index intake knobs.
+      ragImagesPerPageMax,
+      ragImageIndexExternal,
       // #1114 — which model each threshold was tuned against, and whether it
       // is still the live one. Provider id + model name only: this payload is
       // the settings document, not the provider document.
@@ -694,6 +708,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
         body.ragRankingPriorWeight !== undefined
           ? toFixedDecimalString(body.ragRankingPriorWeight)
           : undefined,
+      ],
+      // #1115 P2 — the image-index intake knobs. Both readers share one cache,
+      // so both entries invalidate the same one; the boolean is serialised as
+      // `'true'`/`'false'`, the one pair that satisfies the OFF-list parser
+      // above it (`'yes'` and `''` would read as "leave the default").
+      [
+        'rag_images_per_page_max',
+        invalidateRagImageIntakeCache,
+        body.ragImagesPerPageMax !== undefined ? String(body.ragImagesPerPageMax) : undefined,
+      ],
+      [
+        'rag_image_index_external',
+        invalidateRagImageIntakeCache,
+        body.ragImageIndexExternal !== undefined ? String(body.ragImageIndexExternal) : undefined,
       ],
     ];
     const invalidateFor = new Map<string, () => void>();

@@ -401,6 +401,72 @@ describe('POST /api/llm/improvements/apply', () => {
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
   });
 
+  /**
+   * #1115 P2 (review r2) — Apply is a `body_html` writer, so it queues the
+   * image index.
+   *
+   * It happens not to rot the index today, because `protectMedia`'s
+   * `MEDIA_SELECTOR` lists `img` first and the #723 drop-guard re-appends
+   * anything the markdown round trip lost, so the set of `(source, key)` pairs
+   * survives a wholesale rewrite. But that is an invariant of a DIFFERENT
+   * module, stated nowhere on this path and absent from the writer tables this
+   * feature ships — if `img` ever leaves `MEDIA_SELECTOR` the index rots
+   * silently with every suite green. Raising the flag costs one reconcile pass
+   * per Apply, on which every row is reused by content hash, and makes the
+   * writer list true rather than lucky.
+   */
+  describe('queues the image index after an Apply (#1115 P2)', () => {
+    function updatePagesSql(marker: string): string {
+      const call = (mockQuery.mock.calls as unknown[][]).find(
+        (args) =>
+          typeof args[0] === 'string' &&
+          (args[0] as string).includes('UPDATE pages SET') &&
+          (args[0] as string).includes(marker),
+      );
+      if (!call) throw new Error(`no UPDATE pages call containing ${marker}`);
+      return call[0] as string;
+    }
+
+    it('raises image_embedding_dirty on the Confluence push, gated on body_html', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/improvements/apply',
+        payload: { pageId: 'page-1', improvedMarkdown: '## Better', version: 5 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(updatePagesSql('body_storage')).toMatch(
+        /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/,
+      );
+    });
+
+    it('raises image_embedding_dirty on the standalone write, gated on body_html', async () => {
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
+          return Promise.resolve({
+            rows: [{
+              id: 42, version: 5, title: 'My Article', space_key: 'NOTES',
+              source: 'standalone', confluence_id: null, body_html: '<p>Old content</p>',
+              visibility: 'shared',
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/improvements/apply',
+        payload: { pageId: '42', improvedMarkdown: '## Better', version: 5 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(updatePagesSql('local_modified_by')).toMatch(
+        /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/,
+      );
+    });
+  });
+
   it('preserves drawio + image through improve→apply even if the LLM only kept the tokens (#723)', async () => {
     const drawio = '<div class="confluence-drawio" data-diagram-name="Arch"><img src="/api/attachments/42/Arch.png"></div>';
     const img = '<img src="/api/attachments/42/p.png" data-confluence-filename="p.png" data-confluence-image-source="attachment">';

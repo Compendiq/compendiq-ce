@@ -19,7 +19,7 @@ flowchart LR
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service"]
     end
 
@@ -27,7 +27,7 @@ flowchart LR
         direction TB
         cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry"]
         cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>image-embedding-dirty"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -145,10 +145,10 @@ The guard it exports the other way round, `assertNoShadowMigration` /
 `routes/llm` — the same `routes/* → domains/llm` composition those files
 already do for `processDirtyPages`.
 
-## The image-embedding leg (#1115 P1)
+## The image-embedding leg (#1115 P1–P2)
 
-Three new modules in `domains/llm/services`, and two rules hoisted into
-`core/db`:
+Four modules in `domains/llm/services`, two in `core/services`, and two rules
+hoisted into `core/db`:
 
 - **`vl-embedding-client.ts`** — the only thing in the tree that speaks vLLM's
   chat-embeddings extension: `POST {baseUrl}/embeddings` with a `messages`
@@ -178,6 +178,39 @@ Three new modules in `domains/llm/services`, and two rules hoisted into
   **resolved** one, which `llm-usecases.ts` pins into
   `llm_usecase_assignments.model` at probe time so it cannot drift with
   `provider.default_model`.
+- **`image-embedding-service.ts` (P2)** — the consumer for all three.
+  `embedPageImages(pageId)` enumerates the page's `body_html`, resolves each
+  image's bytes through `core/services/attachment-store.ts`, skips-and-counts
+  what it cannot embed, reuses an unchanged file's row by sha256, upserts the
+  rest and reconciles away the rows the body no longer references — in one
+  transaction that re-reads the index identity after its DELETE, mirroring
+  `embedPage`'s shadow-epoch recheck. `processDirtyPageImages()` drives that
+  over the `image_embedding_dirty` backlog under its own
+  `worker:lock:image-embedding-index` — **not** the per-user
+  `embedding:lock:*`, whose holders `processDirtyPages` backs off from, so
+  borrowing it would have made an image scan block every text embed.
+
+Two `core` modules complete the P2 half. `core/services/image-embedding-dirty.ts`
+raises `pages.image_embedding_dirty` for the ATTACHMENT writers — the two sync
+attachment writers, `fetchAndCachePageImage`, `writeAttachmentCache`,
+`cleanPageAttachments` (all `domains/confluence`) and `putLocalAttachment`
+(`core`) — which is why it is in `core`: `core` may not import a domain, and one
+of its callers lives there. The **body** writers do not go through it; each is
+already issuing an UPDATE (or INSERT) on the row and raises the column inline as
+one more clause. **Unconditionally** where the statement is rewriting the body
+wholesale and has nothing to diff against: the sync upsert (`sync-service.ts`),
+both relocate directions (`page-relocate-service.ts`) and both create arms in
+`routes/knowledge/pages-crud.ts`. **Gated on `body_html IS DISTINCT FROM $n`**,
+so a title-only save costs nothing, on the edit paths: the conflict-policy
+update (`sync-service.ts`), the four `body_html` writers in
+`routes/knowledge/pages-crud.ts`, `restoreVersion`
+(`domains/knowledge/services/version-tracker.ts`) and both branches of
+`POST /llm/improvements/apply` (`routes/llm/llm-conversations.ts`). Audit the
+column, not this module's importers. And
+`core/services/image-references.ts` gained `extractImageReferencesFromHtml`,
+which reads the STORED body rather than Confluence's storage format, because a
+standalone page has no `body_storage` and a relocated one still carries a stale
+copy describing attachments its body no longer points at.
 
 `core/services/image-embedding-target-dimensions.ts` holds the MRL truncation
 width (`admin_settings.image_embedding_target_dimensions`), in `core` because
@@ -185,8 +218,8 @@ width (`admin_settings.image_embedding_target_dimensions`), in `core` because
 `routes/foundation` may not import a domain. `dimensions` is a **per-request**
 vLLM parameter, so this is what makes the ≤ 4000 remedy the settings row and the
 422 both name actually performable — and one reader is what keeps the probe, the
-column type and (from P2) the image embedder and the query side sending the same
-number.
+column type, the image embedder (P2) and — from P3 — the query side sending the
+same number.
 
 `core/db/vector-column-tier.ts` (`columnTypeFor`, `HNSW_PARAMS`) and
 `core/db/with-lock-retry.ts` are **moves, not additions**: the tiering rule was
@@ -196,10 +229,14 @@ those. Both are now imported by all their callers, image path included. They are
 in `core/db` because they are facts about Postgres and pgvector, not about LLMs,
 and because `domains/llm` may import `core` and nothing else.
 
-All arrows stay inside `llm → core`. `routes/llm/llm-usecases.ts` is the admin
-surface: the probe-gated assignment PUT plus `GET`/`POST`
-`/admin/llm-usecases/image_embedding/probe` / `…/reprobe`, `requireAdmin` on
-all of them.
+All arrows stay inside `llm → core`. Two admin surfaces, both `requireAdmin`
+throughout: `routes/llm/llm-usecases.ts` owns the leg's CONFIGURATION (the
+probe-gated assignment PUT plus `GET`/`POST`
+`/admin/llm-usecases/image_embedding/probe` / `…/reprobe`), and
+`routes/llm/llm-image-index.ts` owns its WORK (`GET
+/admin/embedding/image-index` for the status the Embeddings-tab card renders,
+plus `…/rescan` and `…/process`, both of which start a detached scan and answer
+immediately — a corpus-wide run outlives every proxy timeout in the path).
 
 ## Attachment bytes: one reader in `core`, the writers in `confluence` (#1115)
 

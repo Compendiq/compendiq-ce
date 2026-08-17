@@ -53,21 +53,13 @@ describe('KPICards', () => {
     );
   });
 
-  // The strip reads left to right and Last Sync is the only segment carrying a
-  // next step, so it takes the remaining width and finishes the row. This
-  // replaces an assertion on `sm:col-span-2`, which pinned the retired
-  // four-column tile grid rather than the intent.
-  it('lets Last Sync take the remaining width so the action ends the strip', () => {
+  it('renders Last Sync as the final segment of the KPI strip', () => {
     render(
       <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} />,
       { wrapper: Wrapper },
     );
 
     const lastSync = screen.getByTestId('kpi-last-sync');
-    // Own line on mobile (it carries a button), remaining width from sm up.
-    expect(lastSync.className).toContain('basis-full');
-    expect(lastSync.className).toContain('sm:flex-1');
-
     const segments = Array.from(screen.getByTestId('kpi-cards').children);
     expect(segments.indexOf(lastSync)).toBe(segments.length - 1);
   });
@@ -344,7 +336,6 @@ describe('KPICards', () => {
     // segments own no pane styling", which the loop below is what actually
     // tests.
     const strip = screen.getByTestId('kpi-cards');
-    expect(strip.className).toContain('border-b');
     expect(strip.className).not.toContain('bg-card');
 
     for (const testId of ['kpi-total-articles', 'kpi-embedded-pages', 'kpi-last-sync']) {

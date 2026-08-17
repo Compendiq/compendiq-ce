@@ -39,11 +39,12 @@ import { clampImageEmbeddingTargetDimensions } from './image-embedding-target-di
  *     column DDL failed answers 200 with a warning and leaves the column at its
  *     previous width — and a chip claiming to describe the index would then
  *     state a width the column does not have.
- *  4. **P1 indexes nothing, and says so.** Assigning the leg types the column,
- *     builds the index and dirties every page — and then nothing happens, until
- *     P2's worker exists. That sentence lived only in the PR body, ADR-025 and
- *     the runbook; the panel an admin actually reads carries it too. Delete it
- *     in P2/P3.
+ *  4. **The row does not report the index.** P1's "nothing is indexed yet"
+ *     sentence was true while no worker consumed the assignment; P2 ships one,
+ *     so it is a POINTER now (`IMAGE_EMBEDDING_INDEX_POINTER`). Row counts, a
+ *     last run and the two actions belong together on the Embeddings tab, and
+ *     the caveat that nothing SEARCHES the index yet belongs beside those
+ *     numbers rather than beside an assignment dropdown.
  */
 
 const PROBE_QUERY_KEY = ['llm-usecases', 'image_embedding', 'probe'] as const;
@@ -61,17 +62,22 @@ export const IMAGE_EMBEDDING_SUPPORT_NOTE =
   "Needs an endpoint that accepts vLLM's chat-template embeddings shape — Ollama, LM Studio and TEI do not.";
 
 /**
- * What assigning the leg does *today*, in one sentence (review round 2).
+ * Where the leg's WORK is reported (#1115 P2).
  *
- * The description above reads "…for image search", and a successful Re-check
- * says "confirmed at N dimensions" — both of which promise a working feature.
- * In this release the assignment types the column, builds its index and marks
- * every page for a re-scan that no worker consumes yet. #1119's rule: the
- * caveat belongs on screen, at rest, not in a `title` and not only in a
- * runbook.
+ * P1 shipped a sentence here saying page images were not indexed yet, because
+ * the row's own description promises image search and a successful Re-check
+ * says "confirmed" — both of which read as "assigned ⇒ it works" while nothing
+ * consumed the assignment. P2 gives it a worker, so the sentence would now be
+ * false; it is replaced by a POINTER, because the honest answer to "is it
+ * working?" is a row count and a last run, and those live on the Embeddings
+ * tab. The remaining caveat — that nothing SEARCHES the index yet — belongs
+ * beside those numbers, not here, and `ImageIndexCard` carries it.
+ *
+ * This row keeps its own scope: what the leg is, what it needs, and what the
+ * last probe found.
  */
-export const IMAGE_EMBEDDING_INERT_NOTE =
-  'Page images are not indexed yet in this release — assigning prepares the index and proves the endpoint; indexing and image search arrive in a later release.';
+export const IMAGE_EMBEDDING_INDEX_POINTER =
+  'Index status — images embedded, pages pending and the last run — is on the Embeddings tab.';
 
 const TIER_LABEL: Record<NonNullable<ImageEmbeddingProbe['tier']>, string> = {
   vector: 'vector HNSW',
@@ -160,8 +166,8 @@ export function ImageEmbeddingCapability({
         <p className="text-muted-foreground text-xs" data-testid="image-embedding-support-note">
           {IMAGE_EMBEDDING_SUPPORT_NOTE}
         </p>
-        <p className="text-muted-foreground text-xs" data-testid="image-embedding-inert-note">
-          {IMAGE_EMBEDDING_INERT_NOTE}
+        <p className="text-muted-foreground text-xs" data-testid="image-embedding-index-pointer">
+          {IMAGE_EMBEDDING_INDEX_POINTER}
         </p>
 
         {/*

@@ -465,6 +465,102 @@ export function invalidateRagRankingPriorCache(): void {
 }
 
 /**
+ * #1115 P2 — the two knobs that bound what the image-embedding worker takes
+ * off a page. Both read in ONE query and share one TTL cache, because the
+ * worker reads them per page and they are always wanted together.
+ *
+ * `rag_images_per_page_max` — default **20**, clamped to [1, 200]. It is a
+ * COST bound, not a quality one: every image past it is one VL request, one
+ * base64-inflated body through the shared LLM queue and one row. A page with
+ * ninety screenshots is real, and letting it spend ninety requests while the
+ * rest of the corpus waits is how a re-scan stops finishing. Images past the
+ * cap are skipped and COUNTED (`skipped.capped`), never silently dropped —
+ * the Embeddings-tab card is where an operator finds out the cap is biting.
+ *
+ * `rag_image_index_external` — default **on**. `syncImageAttachments` caches
+ * images a Confluence body pulled from an external URL under
+ * `external-<12 hex>` names (`core/services/image-references.ts`), and those
+ * are page content like any other. The knob exists for deployments that would
+ * rather not embed third-party imagery at all; turning it off is a policy
+ * decision, so the default is the one that indexes what the page shows.
+ *
+ * Soft-fail is "index normally": a failed `admin_settings` read must degrade
+ * the tuning, never quietly narrow the index — an operator reading "12 rows"
+ * cannot tell a DB hiccup from a corpus with twelve images.
+ */
+export const RAG_IMAGES_PER_PAGE_MAX_DEFAULT = 20;
+export const RAG_IMAGES_PER_PAGE_MAX_MIN = 1;
+export const RAG_IMAGES_PER_PAGE_MAX_MAX = 200;
+
+const RAG_IMAGE_INTAKE_TTL_MS = 60_000;
+let ragImageIntakeCache:
+  | { imagesPerPageMax: number; indexExternal: boolean; expiresAt: number }
+  | null = null;
+
+async function getRagImageIntake(): Promise<{ imagesPerPageMax: number; indexExternal: boolean }> {
+  if (ragImageIntakeCache && Date.now() < ragImageIntakeCache.expiresAt) {
+    return {
+      imagesPerPageMax: ragImageIntakeCache.imagesPerPageMax,
+      indexExternal: ragImageIntakeCache.indexExternal,
+    };
+  }
+  let imagesPerPageMax = RAG_IMAGES_PER_PAGE_MAX_DEFAULT;
+  let indexExternal = true;
+  try {
+    const r = await query<{ setting_key: string; setting_value: string }>(
+      `SELECT setting_key, setting_value FROM admin_settings
+        WHERE setting_key IN ('rag_images_per_page_max', 'rag_image_index_external')`,
+    );
+    for (const row of r.rows) {
+      if (row.setting_key === 'rag_images_per_page_max') {
+        // A STRICT shape, not `safeIntOr` — and the difference is load-bearing
+        // *here* in a way it is not on `rag_fetch_width`. That knob's floor is
+        // its default, so `parseInt`'s truncations (`'1e3'` → 1) land below it
+        // and fall back. This one's floor is genuinely 1, so the same typo
+        // would parse as a legal cap of ONE image per page and quietly index a
+        // fraction of the corpus. Refusing the shape outright is the only way
+        // to tell "the operator asked for one" from "the operator fat-fingered
+        // a thousand".
+        const raw = (row.setting_value ?? '').trim();
+        if (/^\d+$/.test(raw)) {
+          const n = Number(raw);
+          if (n >= RAG_IMAGES_PER_PAGE_MAX_MIN) {
+            imagesPerPageMax = Math.min(n, RAG_IMAGES_PER_PAGE_MAX_MAX);
+          }
+        }
+      } else {
+        // An OFF-list, like `rag_pin_identifiers`: anything else leaves the
+        // default (on) standing, so a half-written row cannot narrow the index.
+        const raw = (row.setting_value ?? '').trim().toLowerCase();
+        if (raw === '0' || raw === 'false' || raw === 'off') indexExternal = false;
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to resolve the image-index intake knobs — using defaults');
+  }
+  ragImageIntakeCache = {
+    imagesPerPageMax,
+    indexExternal,
+    expiresAt: Date.now() + RAG_IMAGE_INTAKE_TTL_MS,
+  };
+  return { imagesPerPageMax, indexExternal };
+}
+
+/** Cap on images embedded per page (`rag_images_per_page_max`). */
+export async function getRagImagesPerPageMax(): Promise<number> {
+  return (await getRagImageIntake()).imagesPerPageMax;
+}
+
+/** Whether externally-fetched page images are indexed (`rag_image_index_external`). */
+export async function getRagImageIndexExternal(): Promise<boolean> {
+  return (await getRagImageIntake()).indexExternal;
+}
+
+export function invalidateRagImageIntakeCache(): void {
+  ragImageIntakeCache = null;
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].

@@ -19,7 +19,7 @@ erDiagram
 
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
-    pages ||--o{ page_image_embeddings : "images indexed as (#1115, P0 schema, P1 typing)"
+    pages ||--o{ page_image_embeddings : "images indexed as (#1115, P0 schema, P1 typing, P2 rows)"
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
@@ -74,7 +74,7 @@ erDiagram
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
-        bool image_embedding_dirty "attachments changed; re-embed IMAGES only (#1115, written from P2)"
+        bool image_embedding_dirty "attachments changed; re-embed IMAGES only (#1115, written in P2)"
         vector page_avg_embedding "materialized avg of chunk vectors, HNSW-indexed (#919)"
         timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
         uuid local_modified_by FK "who last edited locally (#305)"
@@ -422,9 +422,14 @@ together, which matters most for #1114's query-side prefix.
   time in P1, populated from P2`.** `page_image_embeddings` holds one vector per
   referenced image per page, produced by a *different* model from a *different*
   ADR-021 use case (`image_embedding`), and `pages.image_embedding_dirty` is its
-  own dirty flag. Migration `093` ships the shape and P1 gives it its real type
-  and index; **nothing writes or reads a row yet**. Four properties are
-  deliberate:
+  own dirty flag. Migration `093` ships the shape, P1 gives it its real type and
+  index, and **P2 fills it**: `image-embedding-service.ts` upserts one row per
+  image the page's `body_html` references, keyed `(page_id, source,
+  attachment_key)` — where `source` follows the URL PREFIX in that body, never
+  `confluence_id IS NULL`, because a relocated page has no `confluence_id` and
+  its bytes in the local store. `sha256` is what makes a re-scan cheap: an
+  unchanged file keeps its row and costs no request. **Nothing READS a row yet**
+  — that is P3. Four properties are deliberate:
   - **Not rows in `page_embeddings`.** A `kind` discriminator would have made
     `embedPage`'s `DELETE`, its `AVG(embedding)` for `page_avg_embedding`, the
     `(page_id, chunk_index)` uniqueness, #1116's shadow columns, MMR, rerank and
@@ -459,7 +464,16 @@ together, which matters most for #1114's query-side prefix.
   - **`image_embedding_dirty` is separate from `embedding_dirty` on purpose.**
     An attachment can change under an unchanged page version — sync's
     version-unchanged branch is exactly that case — and then the images must be
-    re-embedded and the text must not. Design of record: ADR-025.
+    re-embedded and the text must not. P2 raises it at every write that can move
+    an image, in two shapes: the ATTACHMENT writers call
+    `core/services/image-embedding-dirty.ts` (the two sync attachment writers,
+    `fetchAndCachePageImage`, `writeAttachmentCache`, `putLocalAttachment`,
+    `cleanPageAttachments`), while the BODY writers raise the column inline in
+    the UPDATE they already own, gated on `body_html` alone (the sync upsert,
+    the conflict-policy update, both relocate directions, and the four
+    `body_html` writers in `routes/knowledge/pages-crud.ts`). It is CLEARED only
+    by a page whose scan had no failure, so the flag is the retry queue as well
+    as the work queue. Design of record: ADR-025.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
   page's average chunk vector, written by `embedPage` inside the same
   transaction as the chunk inserts, with its own HNSW index

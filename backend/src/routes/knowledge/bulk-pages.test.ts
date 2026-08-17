@@ -489,6 +489,25 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(response.statusCode).toBe(400);
     });
 
+    it('re-queues the image index when the refresh rewrites body_html (#1115 P2)', async () => {
+      // A bulk refresh overwrites `body_html` from upstream, which is exactly
+      // what can move an image — and this path never reaches `syncPage`, so
+      // nothing else raises the flag for it.
+      await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/sync',
+        payload: { ids: ['page-1'] },
+      });
+
+      const update = mockQueryFn.mock.calls
+        .map((c) => c[0] as string)
+        .find((sql) => typeof sql === 'string' && sql.includes('UPDATE pages SET') && sql.includes('body_storage'));
+      expect(update).toBeDefined();
+      expect(update).toMatch(
+        /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/,
+      );
+    });
+
     it('should report not-found pages in sync', async () => {
       // Batch query returns only page-1 (page-999 not found)
       mockQueryFn.mockResolvedValueOnce({

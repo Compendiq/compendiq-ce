@@ -53,7 +53,7 @@ export const IMAGE_EMBEDDING_DIMENSIONS_KEY = 'image_embedding_dimensions';
 /**
  * `<providerId>:<model>@<baseUrl>#<requestedDims|native>` the live index was
  * built for — all four parts, because a width change and an endpoint change are
- * each a different vector space in the same column (`identityOf`).
+ * each a different vector space in the same column (`imageIndexIdentityFor`).
  */
 export const IMAGE_EMBEDDING_INDEX_MODEL_KEY = 'image_embedding_index_model';
 /** The one HNSW index over `page_image_embeddings.embedding`. */
@@ -85,8 +85,59 @@ export interface EnsureImageIndexResult {
   dirtiedPages: number;
 }
 
-function identityOf(pair: ImageIndexPair): string {
+/**
+ * The identity string a rebuild records for one pair.
+ *
+ * Exported since #1115 P2's review r1: the admin status route has to answer
+ * whether the recorded identity is the one the LIVE assignment would produce,
+ * and re-spelling the format there is how the two drift into disagreeing about
+ * what counts as the same vector space.
+ */
+export function imageIndexIdentityFor(pair: ImageIndexPair): string {
   return `${pair.providerId}:${pair.model}@${pair.baseUrl}#${pair.targetDimensions ?? 'native'}`;
+}
+
+/**
+ * The identity the live index was built for, read through an arbitrary client
+ * (#1115 P2 — `shadowEpochFromClient`'s shape, and its job).
+ *
+ * P2's embedder snapshots this before it embeds and re-reads it INSIDE its
+ * write transaction: a rebuild that lands in between has TRUNCATEd the table
+ * for a different vector space, and committing vectors produced for the old
+ * one would refill a freshly-emptied index with values nothing can compare.
+ * The client parameter is what lets the recheck run on the transaction's own
+ * connection — a pooled `query()` would read outside it and see a state the
+ * transaction cannot rely on.
+ *
+ * `null` means no rebuild has ever recorded one (a fresh install, before any
+ * probe). It compares equal to itself, so an un-probed instance is not treated
+ * as perpetually racing.
+ */
+export async function imageIndexIdentityFromClient(client: {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<{ setting_value?: string }> }>;
+}): Promise<string | null> {
+  const r = await client.query(
+    `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+    [IMAGE_EMBEDDING_INDEX_MODEL_KEY],
+  );
+  return r.rows[0]?.setting_value ?? null;
+}
+
+/** {@link imageIndexIdentityFromClient} on a pooled connection. */
+export async function readImageIndexIdentity(): Promise<string | null> {
+  return imageIndexIdentityFromClient({ query: (sql, params) => query(sql, params) });
+}
+
+/** The width the image column is typed to, as the last rebuild recorded it. */
+export async function readImageIndexDimensions(): Promise<number | null> {
+  const r = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+    [IMAGE_EMBEDDING_DIMENSIONS_KEY],
+  );
+  const raw = r.rows[0]?.setting_value;
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 /**
@@ -133,7 +184,7 @@ export async function ensureImageEmbeddingColumn(
   // Throws on a non-integer or out-of-range width, BEFORE any DDL: pgvector
   // type arguments cannot be bound, so `columnType` is interpolated.
   const { columnType, opclass, tier } = columnTypeFor(dimensions);
-  const identity = identityOf(pair);
+  const identity = imageIndexIdentityFor(pair);
 
   if (!opclass) {
     logger.warn(
