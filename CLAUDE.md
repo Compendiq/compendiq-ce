@@ -137,6 +137,88 @@ And `resetEvalCorpus` drops the
 *no* claim rather than the previous run's — absent routes the benchmark to its
 warning, which is the safe verdict for "unknown".
 
+**A third corpus exists and nothing consumes it yet (#1115 P5a).**
+`eval/corpus-de-images/` is 65 German Wikipedia articles carrying 187 vendored
+images, for the image retrieval leg — built by `tools/eval-corpus-images/`
+(Python; Pillow does the re-encoding the backend deliberately has no dependency
+for). Three rules are load-bearing. It is **absent from `CORPUS_DIRS` and
+`corpusDirsForLanguage`** until P5b adds the `--images` axis:
+`computeCorpusManifestSha` covers every directory in that list, so wiring it in
+invalidates every recorded baseline at once, and that is a cost to pay
+deliberately rather than in the PR that only vendors the bytes. It sits inside
+the `corpus-<lang>` namespace without being a language, so `translatedCorpusDirs`
+**throws** on a `lang` whose directory resolves onto it — `--lang de-images`
+otherwise handed the image corpus back as a translation and only died a step
+later on a missing `fixture-de-images.json`, which is luck, not a guard. Its
+page bodies carry `![](images/…)` with an **empty alt and no caption** — a page
+that captions its own figures is answerable from text alone, so an image leg
+measured on it scores a win it did not earn; the captions live in the manifest,
+for P5c's independent labeller. And it is the **first vendored content whose own
+licence is not MIT** (the English corpus is MIT documentation; this repository
+itself is **AGPL-3.0**): page text is CC BY-SA 4.0 (adapted) and images are
+filtered to CC0 / public domain / CC BY x / CC BY-SA x with a **named** author
+each, with the ShareAlike and attribution obligations stated per page and per
+image in that directory's `LICENSE-ATTRIBUTION.md`. "Named" is the half that is
+easy to fake and was: Commons' `Credit` is the *Source* field, not an author
+(reading it as one credited a photograph to "Eigenes Werk"), the unknown-author
+templates arrive **localised** from de.wikipedia ("Autor/-in unbekannt Unknown
+author"), so an equality test against `"unknown"` reads them as a name, they
+also arrive **mistyped** (`author=` is free text: `unbekant`, a bare `selbst`),
+and a flat character cap on a credit shipped `AxelScheithauer` as `AxelSch`
+with a third contributor missing — a credit past 400 chars is abbreviated on a
+word boundary and marked. **`Artist` is not the whole obligation either**:
+where Commons records an `Attribution` with `AttributionRequired`, that string
+is the credit line the licensor specified (CC BY-SA 4.0 §3(a)(1)(A)(i)) and it
+is regularly not the bare name — `Bundesarchiv, Bild 183-85770-0002 / Junge,
+Peter Heinz / CC-BY-SA 3.0`, `© Raimond Spekking / CC BY-SA 4.0 (via Wikimedia
+Commons)`. It is recorded as `requiredCredit` and printed verbatim in its own
+notices column, **beside** `author` rather than replacing it, because `Artist`
+is regularly the fuller of the two (`Madprime (original) Woudloper (rotated
+image)` against a credit line of `I, Madprime`), so preferring either alone
+loses a contributor. `corpus-de-images.test.ts` fails on any of these — the
+wiring, a caption leaking into a page, a licence outside the allow-list, an
+unnamed or silently-cut author, a required credit absent from the notices, a
+page body whose sha256 no longer matches, a raw `<img>`, an orphaned footnote
+marker — and on a manifest hand-edited away from the files beside it. Its
+notices assertions are anchored to the page section, then to the image's ROW,
+and then to the **cell**: four whole-file `includes()` calls passed with two
+photographs credited to each other's photographers, and a row-anchored
+`includes()` still passed a `CC BY-SA 3.0 DE` shortened to `CC BY-SA 3.0` and a
+credit truncated to its first contributor, because both are prefixes. It also
+pins the notices file's obligations *paragraph*, which the rows are evidence
+for and which could be deleted whole with the suite green. And
+`namesAnAuthor` / `isAllowedImageLicense` carry table-driven unit tests of their
+own, because a predicate exercised only as a filter over bytes that already
+satisfy it has no test that fails when the predicate is wrong — which is how
+`unbekant` shipped green. **The builder is the only writer, and it never half-writes**:
+it stages the whole corpus into a sibling directory and swaps it in only once
+every article has succeeded, `--only`/`--articles` are refused without
+`--probe` (both subset the list, and a subset written over the corpus deletes
+the other articles' revision pins). **A revid is one pin of four, and on its
+own it over-claims**: `action=parse&oldid=` renders a fixed *wikitext* revision
+through the CURRENT template set and parser, so an upstream template edit or a
+MediaWiki release moves the prose of a page nobody edited — this builder already
+carries a branch for one (1.43's `<div class="mw-heading">`). So each page
+records a `textSha256`, each image the upstream Commons `sha1` (a revision id
+never pinned the pictures), and a pinned run also **diffs its own inventory
+against the committed manifest**, because no digest covers whether a figure is
+still *usable*: Commons metadata is live, so a licence retagged or an author
+blanked upstream turns a 3-image page into a 2-image one on a run advertising
+itself as a reproduction, and the Vitest guard cannot see it — four category
+counts of 17 pass exactly as four counts of 18 do. All three write their bytes
+and exit non-zero, because an inspectable diff beats a refusal. **The caption
+strip has a second half the guard is structurally blind to**: only 187 of 1073
+captioned figures are vendored, so a caption belonging to a figure the builder
+*dropped* has no manifest entry to be compared against — a panorama
+(`.thumbinner` with no `.thumb`), a `.dewiki-gallery` title and a `.gallerytext`
+each shipped one as body prose, one of them the München U-Bahn network diagram
+restated in words. Caption *containers* are swept, not only `figure, .thumb`.
+Same class, different source: anything the article renders `display:none` is
+dropped (a `{{Infobox Berg}}` maintenance link opened `zugspitze.md` on `pd5`),
+and a footnote box whose table was stripped goes with it. It does not reach the
+runtime image: the Dockerfile copies `backend/dist/`, and `tsc` emits no
+markdown.
+
 **Query-time latency is measured OUTSIDE `eval/`**, by
 `backend/scripts/benchmark-query-latency.ts` — `runner.ts`'s participation
 floors assume exactly one sequential hit per query, so a concurrency flag does

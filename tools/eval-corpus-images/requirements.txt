@@ -1,0 +1,25 @@
+# Pinned to what the committed corpus was built with. Pillow's encoders are the
+# reason: a different major can change JPEG/PNG output bytes for identical input,
+# which would make a "reproduce the pinned revisions" rebuild produce a diff.
+requests==2.34.2
+Pillow==12.3.0
+markdownify==1.2.3
+beautifulsoup4==4.15.0
+PyYAML==6.0.3
+
+# Transitive, and pinned for the same reason as Pillow rather than left to
+# resolve: both of these decide what the page markdown says.
+#
+# `soupsieve` is the CSS-selector engine behind every `select()` in the builder
+# — the 24-entry DROP_SELECTORS sweep, the boxed-figure hoist and the figure
+# collection — so a change in selector semantics silently changes which nodes
+# are dropped, on the one tool whose entire contract is byte reproduction.
+# `six` is markdownify's, and markdownify is the HTML -> Markdown converter.
+soupsieve==2.9.2
+six==1.17.0
+
+# Deliberately NOT pinned: `certifi`, `urllib3`, `idna`, `charset-normalizer`
+# and `typing_extensions`. They are requests' network and typing plumbing, they
+# cannot reach the output bytes, and pinning `certifi` in particular freezes a
+# CA bundle — a build tool that stops trusting Wikimedia's certificate is a
+# worse failure than a floating transitive.

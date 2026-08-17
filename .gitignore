@@ -98,3 +98,8 @@ backend/src/domains/llm/eval/corpus-*/.queries.json
 # these by name (pr-check.yml). Pass --out for a report worth keeping.
 backend/retrieval-eval.json
 backend/query-latency.json
+
+# #1115: tools/eval-corpus-images/build.py stages the whole image corpus here
+# and swaps it over the real directory only when the run succeeds. A failed run
+# leaves it standing on purpose, for inspection — never to be committed.
+backend/src/domains/llm/eval/corpus-*.staging/

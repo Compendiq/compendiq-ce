@@ -1,0 +1,90 @@
+# Erdatmosphäre
+
+![](images/erdatmosphaere__1.jpg)
+
+Die **Atmosphäre** der Erde, auch **Erdatmosphäre** (von altgriechisch ἀτμός atmós, deutsch ‚Dampf‘ und σφαῖρα sphaira, deutsch ‚Kugel‘) ist die gas­förmige Hülle der Erdoberfläche und eine der sogenannten Erdsphären. Sie hat einen hohen Anteil an Stickstoff und Sauerstoff und somit oxidierende Verhältnisse.
+
+Ihre vertikale Gliederung ist durch unterschiedliche Temperaturen bedingt. Das Wettergeschehen findet in den unteren etwa 10 Kilometern statt, der Troposphäre. Die höheren Schichten haben keinen großen Einfluss mehr.
+
+## Zusammensetzung
+
+→ *Hauptartikel: Luft*
+
+Die bodennahen Schichten bis in etwa 90 km Höhe (Kármán-Linie der Raumfahrt) haben eine recht gleichförmige Zusammensetzung, weshalb man auch von Homosphäre spricht. Was als Luft bezeichnet wird, besteht im Wesentlichen bei Außerachtlassen des wechselnden Wasserdampfgehalts (d. h. in Volumenprozent trockener, wasserdampffreier Luft) aus:
+78,08 % Stickstoff (N2), 20,95 % Sauerstoff (O2) und 0,93 % Argon (Ar), dazu Aerosole und Spurengase, darunter Kohlenstoffdioxid (CO2, mit derzeit 0,04 %, nach Wasserdampf der wichtigste Verursacher des Treibhauseffekts), ferner Methan (CH4), Ozon (O3), Fluorchlorkohlenwasserstoffe, Schwefeldioxid (SO2) und Stickstoff­verbindungen.
+
+Siehe auch: Kohlenstoffdioxid in der Erdatmosphäre
+
+Für die Entstehung des **Wetters** ist neben der Energie­zufuhr durch die Sonnenstrahlung und ihrer tages- und jahreszeitlichen Schwankung hauptsächlich der Gehalt an Wasserdampf verantwortlich. Dieser kommt in wechselnder Konzentration von 0 % Vol. bis etwa 4 % Vol. in der Luft vor, siehe Luftfeuchtigkeit. Die regionale Sonneneinstrahlung hängt über den Gehalt an Aerosolen auch von der Transparenz der Atmosphäre ab.
+
+Die Hochatmosphäre ist ein bereits sehr dünnes Gas, in das auch hochenergetische Anteile der Sonnenstrahlung noch eindringen können. Durch kurzwelliges UV-Licht werden die Moleküle dissoziiert und teilweise ionisiert. Ferner kommt es in Höhen über etwa 100 km auch zu einer Entmischung der Bestandteile nach ihrer unterschiedlichen molaren Masse, weshalb dieser Abschnitt auch Heterosphäre genannt wird. Mit wachsender Höhe nehmen daher die Anteile leichterer Teilchen wie Wasserstoffatome und Helium zu. Diese beiden Elemente entweichen thermisch bedingt allmählich in den Weltraum.
+
+## Aufbau
+
+![](images/erdatmosphaere__2.png)
+
+### Schichtung
+
+Die Atmosphäre weist eine Masse von etwa 5,15 · 1018 kg auf (5,15 Billiarden Tonnen), also knapp ein Millionstel der Erdmasse. Sie besteht hinsichtlich ihres vertikalen Temperaturverlaufs, insbesondere dessen Gradienten, aus mehreren Schichten:
+
+- Troposphäre von der Erdoberfläche bis zur Tropopause in Höhen zwischen 7 km (Polargebiete) und 17 km (Tropen)
+- Stratosphäre bis zur Stratopause in 50 km Höhe
+- Mesosphäre bis zur Mesopause in 80 bis 85 km Höhe
+- Thermosphäre (siehe auch unten, Ionosphäre)
+- Exosphäre darüber.
+
+Die Troposphäre wird auch als *untere Atmosphäre* bezeichnet, Stratosphäre und Mesosphäre gemeinsam als *mittlere Atmosphäre* und die Thermosphäre als *obere Atmosphäre*.
+
+Vor allem in der Troposphäre – der Wettersphäre – zeigt sich eine Dynamik innerhalb der Temperaturschichtung und des Gehalts an Wasserdampf, weshalb dort auch die jeweilige Schichtungsstabilität eine große Rolle spielt.
+Außer nach dem Temperaturverlauf lässt sich die Lufthülle auch nach anderen Gesichtspunkten einteilen:
+
+Nach dem aerodynamischen Zustand
+
+- Prandtl-Schicht (etwa 0–50 m)
+- Ekman-Schicht (etwa 50–1000 m)
+- Prandtl-Schicht + Ekman-Schicht = planetare Grenzschicht = Peplosphäre
+- Freie Atmosphäre (>1 km)
+
+Nach dem Durchmischungsgrad
+
+- Die Homosphäre ist turbulent durchmischt und reicht bis zur Homopause in etwa 100 km Höhe.
+- Darüber beginnt die Heterosphäre. Hier trennen sich die Teilchen nach ihrer Molmasse, da die molekulare Diffusion dominiert.
+
+Nach dem radio-physikalischen Zustand der Atmosphäre
+
+- Neutrosphäre (Gase überwiegend im neutralen, also nichtionisierten Zustand)
+- Ionosphäre (ionisierte Gase, in der Thermosphäre eingelagert, >80 km)
+- Plasmasphäre (vollständige Ionisation aller Teilchen, >1000 km)
+- Magnetosphäre
+
+Nach chemischen Gesichtspunkten lassen sich außerdem die Ozonosphäre (Ozonschicht in 16–50 km Höhe) und eine Chemosphäre (20–600 km) abgrenzen.
+
+### Grenze zum Weltraum
+
+Der Übergang zwischen Exosphäre und Weltraum ist kontinuierlich, man kann keine scharfe Obergrenze der Atmosphäre ziehen. In der Exosphäre (oberhalb der Exobase in ~600 km Höhe) ist die mittlere freie Weglänge so groß, dass Teilchen entweichen können, wenn sie die Fluchtgeschwindigkeit erreichen können. Einzelnen Wasserstoffteilchen wird das durch Zusammenstöße bereits bei mittleren Geschwindigkeiten von 3–4 km/s möglich.
+
+Seitens der Fédération Aéronautique Internationale wird die Homopause bzw. eine Höhe von rund 100 km (Kármán-Linie) als Grenze angesehen. Diese Definition ist international weitestgehend anerkannt, wenn sie auch keine uneingeschränkte Gültigkeit besitzt. So wird zum Beispiel von der NASA die Mesopause (etwa 80 km) als Grenze definiert.
+
+## Erforschung
+
+Die untere Atmosphäre, insbesondere die Troposphäre, ist das Forschungsfeld der Meteorologie, wohingegen die mittlere und obere Atmosphäre (Stratosphäre, Mesosphäre) in den Bereich der Aerologie gehören.
+
+Messungen erfolgen in Bodennähe mit dem vollen Spektrum der meteorologischen Messgeräte. In der Höhe, besonders in Bezug auf Höhenprofile, stellen Radiosonden, meteorologische Raketen, Lidars, Radars und Wetter- beziehungsweise Umweltsatelliten die wichtigsten Messverfahren dar. In der Zukunft werden voraussichtlich auch Höhenplattformen wie das High Altitude and Long Range Research Aircraft eine größere Rolle spielen.
+
+## Entwicklung
+
+→ *Hauptartikel: Entwicklung der Erdatmosphäre*
+
+Die Entwicklung der Atmosphäre ist ein Teil der chemischen Evolution der Erde und zudem ein wichtiges Element der Klimageschichte. Sie wird heute in vier wesentliche Entwicklungsstufen unterschieden.
+
+Am Anfang stand die Entstehung der Erde vor etwa 4,56 Milliarden Jahren. Dabei verfügte sie schon sehr früh über eine vermutlich aus Wasserstoff (H2) und Helium (He) bestehende Gashülle, die jedoch wieder verloren ging.
+
+Durch die langsame Abkühlung der Erde und den dabei auftretenden Vulkanismus kam es zu einer umfangreichen Ausgasung aus dem Erdinneren. Die dadurch erzeugte Atmosphäre bestand zu etwa 80 % aus Wasserdampf (H2O), zu 10 % aus Kohlendioxid (CO2) und zu 5 bis 7 % aus Schwefelwasserstoff. Dabei handelt es sich um die Produkte des Vulkanismus, die auch heute noch beobachtet werden können. Der hohe Anteil des Wasserdampfs erklärt sich dadurch, dass die Atmosphäre zu diesem Zeitpunkt noch zu warm war, um Niederschläge bilden zu können. Es gab also noch keine Gewässer auf der Erde. Der eigentliche Ursprung des Wassers ist umstritten.
+
+Nachdem die Temperatur der Atmosphäre unter den Siedepunkt des Wassers gefallen war, kam es zu einem extrem langen Dauerregen, nach dessen Ende sich die Ozeane gebildet hatten und dementsprechend die anderen Atmosphärengase sich relativ zum Wasserdampf angereichert.
+
+Die hohe UV-Einstrahlung bedingte eine photochemische Zerlegung der Wasser-, Methan- und Ammoniakmoleküle, wodurch sich Kohlenstoffdioxid und Stickstoff relativ anreicherten. Die leichten Gase wie Wasserstoff oder Helium verflüchtigten sich in den Weltraum. Kohlenstoffdioxid wurde in großen Mengen in den Ozeanen gelöst und von C-autotrophen Mikroorganismen zum Teil verbraucht. Unverändert blieb der inerte Stickstoff. Dieser wurde mit der Zeit weiter relativ angereichert und bildete vor etwa 3,4 Milliarden Jahren den Hauptbestandteil der Atmosphäre.
+
+![](images/erdatmosphaere__3.png)
+
+Der Sauerstoff O2 spielt die Hauptrolle bei der weiteren Entwicklung zur heutigen Atmosphäre. Cyanobakterien mit oxygener Photosynthese führten als C-Autotrophe zu einem weiteren Absinken der Kohlenstoffdioxidkonzentration, bildeten aber vor allem (möglicherweise schon vor etwa 3,5 Milliarden Jahren beginnend) Sauerstoff. Die Sauerstoffkonzentration der Atmosphäre blieb jedoch zunächst gering, weil der gebildete Sauerstoff in den Ozeanen bei der Oxidation von Eisen(II)-Ionen und Schwefelwasserstoff verbraucht wurde. Erst vor etwa zwei Milliarden Jahren begann Sauerstoff in die Atmosphäre zu entweichen, als die mit Sauerstoff reagierenden Stoffe knapp wurden. Vor einer Milliarde Jahren überstieg die Sauerstoffkonzentration der Atmosphäre drei Prozent, wodurch sich im Verlauf der nächsten 400 Millionen Jahre allmählich eine erste Ozonschicht bilden konnte. Vor 500–600 Millionen Jahren stieg der Sauerstoffgehalt, bedingt durch das erste massenhafte Auftreten von Landpflanzen, rapide an und erreichte vor 350 Millionen Jahren erstmals das heutige Niveau. Nach mehreren starken Schwankungen während des Erdmittelalters erreichte der Luftsauerstoffgehalt schließlich den heutigen Wert von 21 %.
