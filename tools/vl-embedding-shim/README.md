@@ -14,9 +14,10 @@ two interchangeable local backends:
 | `llama` | proxy to a `llama-server` you started | `llama-server` with `--mmproj`, a GGUF + its vision projector |
 
 Both build the identical prompt (with one named exception — an explicitly empty
-system message, under rule 1 below), so a vector from one is comparable to a
-vector from the other **within one model** — not across models, and not against
-production (see [Fidelity](#fidelity-what-these-vectors-are-and-are-not)).
+system message, under rule 1 below) and both encode an image at the same pixel
+budget (rule 5), so a vector from one is comparable to a vector from the other
+**within one model** — not across models, and not against production (see
+[Fidelity](#fidelity-what-these-vectors-are-and-are-not)).
 
 ---
 
@@ -113,7 +114,9 @@ Both at once is refused, because transformers refuses that pair outright. A
 trailing assistant with non-empty content is refused too — it is a continuation
 point, not a turn, and its content would be silently dropped. **The shim is
 deliberately stricter than vLLM here**, in the safe direction: every body it
-accepts renders identically on vLLM.
+accepts renders identically on vLLM *apart from two client-side normalisations
+the shim performs and vLLM does not* — see
+[Fidelity](#fidelity-what-these-vectors-are-and-are-not).
 
 `add_special_tokens` is **accepted in either polarity and ignored**: the shim
 hands a prompt *string* to a backend that tokenizes it, so there is no
@@ -209,7 +212,10 @@ wants it passes it as the system message. Applying it by default would put a
 query instruction on every document too, destroying the asymmetry the official
 examples exist to create. Instructions are written in **English even for a
 non-English corpus** (model-card guidance). An instruction that does not end in
-punctuation gets a period appended, matching the reference embedder. An
+punctuation gets a period appended, matching the reference embedder — **vLLM
+does not do this** and it is worth up to cos 0.95, so a production client has to
+append it itself; see [Fidelity](#fidelity-what-these-vectors-are-and-are-not).
+An
 **explicitly empty** system message is the one thing that is not the default: it
 is a system message the caller wrote, `chat_template.jinja` renders it as
 `<|im_start|>system\n<|im_end|>\n`, and filling the default in there would be
@@ -248,12 +254,23 @@ llama-server's `--embd-normalize 2` both do it; the shim re-does it so a backend
 that forgets cannot ship a vector whose "cosine" is a dot product.
 
 **(5) The shim does not resize images.** Over-budget images are passed through
-in v1 — the model server resizes to its own trained budget of **1,310,720 px**
-(≈1280 visual tokens; `preprocessor_config.json`'s `max_pixels`, which the paper
-confirms is what training saw). Bigger is not better past that point: the
-paper's granularity study reports a slight *regression* at the highest resource
-levels. `--max-pixels 1310720` turns the budget into a **guard** — an oversized
-image is refused with both numbers named — but there is still no resizer.
+in v1 and the model server does its own resizing. The **checkpoint's** budget is
+**1,310,720 px** (≈1280 visual tokens; `preprocessor_config.json`'s
+`max_pixels`, which the paper confirms is what training saw), and bigger is not
+better past that point: the paper's granularity study reports a slight
+*regression* at the highest resource levels. `--max-pixels 1310720` turns that
+number into a **guard** — an oversized image is refused with both numbers named
+— but there is still no resizer.
+
+That number is the checkpoint's, **not a promise about either server**. On `mlx`
+the shim *holds* the library to it: `mlx-embeddings` 0.1.0 stamps its own
+`max_pixels` onto every image and defaults it to the reference script's
+permissive **1,843,200** (1800 visual tokens), 1.41× the trained budget and the
+figure the research pack warns is plausibly *worse* rather than merely slower,
+so the field is re-pinned after the model loads. On `llama` the bytes go to
+llama-server, which applies whatever preprocessing its `mmproj` carries; `/props`
+reports nothing about pixels (checked on build b10450), so the shim can neither
+set nor read it there.
 Unset (the default) that *guard* decodes nothing — which is not "the shim
 decodes nothing": `llama` forwards the bytes to llama-server untouched, while
 `mlx` always opens them with Pillow and converts to RGB, so a format Pillow
@@ -315,6 +332,13 @@ redirect answers 200 with the metadata body and no redirect left to catch.
 Port choices: **8011** for the shim and **8090** for llama-server, because 1234
 is LM Studio's and 8081 is the app's.
 
+**`--model-id` is not a free-form label when the retrieval eval is downstream.**
+The served id becomes `EVAL_EMBEDDING_MODEL`, which the app stores as the
+resolved embedding model — and `wantsInstructionPrefix` (#1329) only prefixes a
+query when that id contains **both `qwen3` and `embed`**. Both backends' own
+answers do; `--model-id vl-shim` does not, and the run then silently measures
+the un-prefixed query path. See the runbook's eval section.
+
 ---
 
 ## Tests
@@ -370,8 +394,11 @@ shifts sit between here and there:
 So: never mix vectors from two of these paths in one index, and never quote a
 retrieval metric measured here as if it were a production number.
 
-**And three things about the request shape are not identical to vLLM's**, which
-matters for a client developed against this server rather than for the vectors:
+**And five things about the request shape are not identical to vLLM's**, which
+matters for a client developed against this server rather than for the vectors.
+The first three are refusals; the last two are the shim silently *normalising*
+something vLLM renders verbatim, so they are the ones a client author has to
+handle in their own code:
 
 * `add_special_tokens` is accepted and **ignored** (the shim does not tokenize),
   so conformance to that one field is the thing this server cannot check for
@@ -383,8 +410,28 @@ matters for a client developed against this server rather than for the vectors:
   format it did not encode.
 * Content parts are refused where vLLM would merely render them differently:
   **a text part before an image part** is a 400 here and an interleaved prompt
-  there. Every body the shim accepts renders identically in both places, which
-  is the direction this tool is stricter in.
+  there. That refusal is the direction this tool is stricter in.
+* **An instruction that does not end in punctuation gets a period** (rule 1) —
+  the reference *embedder* does that, `chat_template.jinja` does not, and vLLM
+  runs the template over your messages rather than the embedder. Measured on the
+  8B over 12 instruction × query pairs, the period is worth **cos 0.950–0.995**
+  (`Find images matching this description` + `Wie hoch ist der Turm?` is the
+  0.9502 end) — overlapping the **0.881–0.988** the missing-continuation body
+  costs across those same 12 pairs, and that is a body this shim refuses
+  outright. A client whose instruction already ends in punctuation is
+  unaffected, and every canonical instruction in the research pack's §1.6 does
+  — but the app's own `RETRIEVAL_TASK` (#1329) does **not**, and it is the
+  0.9945 end of that range.
+* **A user turn that comes out empty becomes the literal `NULL`** (the
+  reference embedder's substitution; the jinja renders an empty user turn).
+  Measured on the 8B at **cos 0.554** — the largest divergence on this page.
+  Every accepted spelling of empty reaches it: `content: []`, `content: ""`,
+  `{"type": "text"}` with no `text`, `{"type": "text", "text": ""}`, and
+  `input: ""` on the plain shape.
+
+Both of those last two are the reference embedder's own behaviour, which is
+what a production client should reproduce — but *it* has to reproduce them,
+because vLLM will not.
 
 ### Known upstream problems this shim works around or refuses
 
@@ -411,6 +458,15 @@ matters for a client developed against this server rather than for the vectors:
   cache itself only for image requests. The shim clears it before every call —
   which is also semantically right: each embedding request is an independent
   forward pass.
+* **`mlx-embeddings` 0.1.0 encodes images at 1,843,200 px, not the checkpoint's
+  1,310,720.** `Processor.from_pretrained` fills `max_pixels` from the library's
+  own `MAX_PIXELS = 1800 * 32 * 32` — the reference script's permissive default,
+  above what training saw — and stamps it onto every image content block.
+  The shim sets the field on the loaded processor (`_pin_pixel_budget`) rather
+  than passing `load(tokenizer_config={'max_pixels': …})`, so a release that
+  stopped honouring that kwarg could not ignore it in silence. Without the pin,
+  an image between the two figures is encoded differently on the two backends —
+  exactly the comparability this page claims at the top.
 * **`mlx-embeddings` needs `torchvision`.** Its processor loads the *slow*
   `AutoImageProcessor` (`use_fast=False`), and transformers 5 requires
   torchvision for that path. It is not in the library's declared dependencies,

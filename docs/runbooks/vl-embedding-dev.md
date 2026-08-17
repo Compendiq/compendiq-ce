@@ -153,8 +153,20 @@ npx tsx scripts/run-retrieval-eval.ts --out /tmp/vl-2b.json
 
 Spell the base URL with the `/v1` on it, exactly as a provider row would be —
 the request goes to `<base-url>/embeddings` and nothing guesses a prefix for you.
-`EVAL_EMBEDDING_MODEL` can be any string the shim will echo; reading it from
-`/v1/models` keeps the report naming what actually served the run.
+
+**`EVAL_EMBEDDING_MODEL` is not a label — it decides what gets sent.** The seed
+writes it into `llm_usecase_assignments.model`, so it *is* the app's resolved
+embedding model, and `wantsInstructionPrefix` (#1329,
+`domains/llm/services/query-instruction.ts`) prefixes a query only when that id
+contains **both** `qwen3` and `embed`. Read it from `/v1/models` as above and do
+not substitute a placeholder: both served ids qualify
+(`Qwen3-VL-Embedding-8B-Q6_K.gguf`, `mlx-community/Qwen3-VL-Embedding-2B-8bit`)
+while `EVAL_EMBEDDING_MODEL=m` does not — the flat form is then never emitted,
+the conversion below never fires, its log line never appears, and every query is
+embedded under the *default* instruction instead of `system={RETRIEVAL_TASK}`.
+The run still completes and the report still looks fine, which is the whole
+problem. `--model-id` on the shim renames the served id and breaks it the same
+way.
 
 Two things this run gets right that a naive one would not:
 
@@ -203,7 +215,7 @@ image leg is measured on the prod stack (design §8).
 
 | symptom | cause |
 |---|---|
-| `healthz` 503, `reason` names `/props` | llama-server is not running, or not on `--llama-base-url` |
+| `healthz` 503, `reason` names `/props` | llama-server is not running, or not on `--llama-base-url` — including the case where *something else* answers there: a 200 carrying HTML is reported as degraded, not as a crash |
 | `"vision": false` | llama-server started without `--mmproj` |
 | 502 `…reports no vision capability…` | same, and you sent an image |
 | 502 `/props reported no media_marker` | a llama.cpp build too old for randomised markers |
