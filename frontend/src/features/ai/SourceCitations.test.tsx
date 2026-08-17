@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { SourceCitations, type Source } from './SourceCitations';
@@ -190,5 +190,76 @@ describe('SourceCitations', () => {
   it('handles single source', () => {
     render(<SourceCitations sources={[mockSources[0]]} />, { wrapper: Wrapper });
     expect(screen.getByText('Sources (1)')).toBeInTheDocument();
+  });
+
+  // ── Image sources (#1115 P3) ─────────────────────────────────────────────
+
+  describe('image sources', () => {
+    const imageSource: Source = {
+      kind: 'image',
+      pageTitle: 'Turbine assembly',
+      spaceKey: 'ENG',
+      pageId: 77,
+      attachmentUrl: '/api/attachments/77/turbine.png',
+      similarity: null,
+    };
+
+    beforeEach(() => {
+      vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:thumb');
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    });
+
+    function mockAttachmentFetch(ok = true) {
+      const fetchMock = vi.fn(async () =>
+        ok
+          ? ({ ok: true, status: 200, blob: async () => new Blob(['x']) } as unknown as Response)
+          : ({ ok: false, status: 404, blob: async () => new Blob() } as unknown as Response),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      return fetchMock;
+    }
+
+    it('renders the thumbnail, the category label and a link to the PAGE', async () => {
+      const fetchMock = mockAttachmentFetch();
+      render(<SourceCitations sources={[imageSource]} />, { wrapper: Wrapper });
+      fireEvent.click(screen.getByText('Sources (1)'));
+
+      // The picture is fetched through the authenticated route, not set as a
+      // bare `src` (which would 401).
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(fetchMock.mock.calls[0]![0]).toBe('/api/attachments/77/turbine.png');
+      const thumb = await screen.findByTestId('source-thumbnail');
+      // Decorative: the title beside it is the accessible name.
+      expect(thumb).toHaveAttribute('alt', '');
+      expect(thumb).toHaveAttribute('aria-hidden', 'true');
+
+      expect(screen.getByTestId('source-image-label')).toHaveTextContent('Image');
+      expect(screen.getByText('Turbine assembly')).toBeInTheDocument();
+
+      // The control navigates to the page, never to the attachment.
+      fireEvent.click(screen.getByTestId('source-card-1'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
+
+    it('degrades to the title-only card when the thumbnail cannot be loaded', async () => {
+      mockAttachmentFetch(false);
+      render(<SourceCitations sources={[imageSource]} />, { wrapper: Wrapper });
+      fireEvent.click(screen.getByText('Sources (1)'));
+
+      await waitFor(() =>
+        expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument(),
+      );
+      // Still a complete, operable citation — the label and the link survive.
+      expect(screen.getByTestId('source-image-label')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('source-card-1'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
+
+    it('leaves an ordinary page source alone — no thumbnail, no label', () => {
+      render(<SourceCitations sources={[mockSources[0]]} />, { wrapper: Wrapper });
+      fireEvent.click(screen.getByText('Sources (1)'));
+      expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('source-image-label')).not.toBeInTheDocument();
+    });
   });
 });

@@ -58,6 +58,23 @@ import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
 type RefusalReason = 'semantic_index_unavailable' | 'no_context' | 'weak_match';
 
 /**
+ * #1115 P3 — how many `kind: 'image'` entries one answer's `sources[]` may
+ * carry, across all of its pages.
+ *
+ * A bound rather than a taste: each one is a thumbnail the browser fetches
+ * through the authenticated attachment route, so an answer over five
+ * screenshot-heavy pages would otherwise open fifteen image requests on
+ * render. Four is what fits beside a source list without turning it into a
+ * gallery, and it is the whole-answer cap — `MAX_IMAGE_HITS_PER_PAGE` (3)
+ * bounds any single page's contribution underneath it.
+ *
+ * Note this is a DISPLAY cap. P4's answer-path cap (`rag_answer_max_images`,
+ * default 2) is a different number bounding a different cost — bytes sent to
+ * a vision model — and the two must not be collapsed.
+ */
+const MAX_IMAGE_SOURCES = 4;
+
+/**
  * The refusal sentence per reason. `semantic_index_unavailable` must NOT read
  * like `no_context`: one says the knowledge base has nothing on the question,
  * the other says we could not look properly. Telling a user the first when
@@ -492,6 +509,44 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         score: 1,
         similarity: null,
       })),
+      // #1115 P3 — the images the image leg matched on the pages that came
+      // back. Four decisions, all deliberate:
+      //
+      //  - `kind: 'image'` is a NEW discriminator and the page/web entries
+      //    above deliberately do NOT gain one. The frontend reads an absent
+      //    `kind` as a page source and keys web-vs-page on `url` (#1125's
+      //    fix); adding a field to the two existing shapes would churn that
+      //    for no gain.
+      //  - `similarity: null`, always. The hit's own cosine is CROSS-MODAL
+      //    and sits in a different band from the text cosines beside it in
+      //    this array (ADR-025 §8), so putting it here would feed
+      //    `averageSourceSimilarity` two incomparable scales and rate the
+      //    answer on the mixture. `score` is the PAGE's fused ordering value,
+      //    which is what every other entry's `score` already is.
+      //  - APPENDED, after the web sources rather than beside their page.
+      //    The model cites `[Source N]` from `buildRagContext`, whose
+      //    numbering covers the retrieved pages; inserting entries in the
+      //    middle would renumber everything below them against an answer that
+      //    was written before this array existed.
+      //  - Best-first across pages, by the hit's own similarity — the only
+      //    per-IMAGE measure there is; the page order is a fused rank that
+      //    says nothing about which picture matched better.
+      ...searchResults
+        .flatMap((r) =>
+          (r.imageHits ?? []).map((hit) => ({
+            kind: 'image' as const,
+            pageId: r.pageId,
+            pageTitle: r.pageTitle,
+            spaceKey: r.spaceKey,
+            attachmentUrl: hit.attachmentUrl,
+            similarity: null,
+            score: r.score,
+            _rank: hit.similarity,
+          })),
+        )
+        .sort((a, b) => b._rank - a._rank)
+        .slice(0, MAX_IMAGE_SOURCES)
+        .map(({ _rank, ...source }) => source),
     ];
 
     // Helper to save/create conversation from a cached answer or a refusal.

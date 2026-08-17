@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { CitationChips } from './CitationChips';
 import type { Source } from './SourceCitations';
@@ -158,5 +158,81 @@ describe('CitationChips', () => {
     );
     fireEvent.click(screen.getByTestId('citation-chip-1'));
     expect(outerClick).not.toHaveBeenCalled();
+  });
+
+  // ── Image sources (#1115 P3) ─────────────────────────────────────────────
+  //
+  // This component is what the DOCK renders for a message's sources
+  // (`DockPanel` → `CitationChips`), so these cover the article-side assistant
+  // as well as `/ai`'s inline chips.
+
+  describe('image sources', () => {
+    const imageSource: Source = {
+      kind: 'image',
+      pageTitle: 'Turbine assembly',
+      pageId: 77,
+      attachmentUrl: '/api/attachments/77/turbine.png',
+      similarity: null,
+      score: 0.0328,
+    };
+
+    beforeEach(() => {
+      vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:thumb');
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    });
+
+    function mockAttachmentFetch(ok = true) {
+      const fetchMock = vi.fn(async () =>
+        ok
+          ? ({ ok: true, status: 200, blob: async () => new Blob(['x']) } as unknown as Response)
+          : ({ ok: false, status: 404, blob: async () => new Blob() } as unknown as Response),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      return fetchMock;
+    }
+
+    it('renders a thumbnail inside the numbered chip and names the control', async () => {
+      const fetchMock = mockAttachmentFetch();
+      render(<CitationChips sources={[imageSource]} />, { wrapper: Wrapper });
+
+      const chip = screen.getByTestId('citation-chip-1');
+      // The number stays — the answer text refers to it by position.
+      expect(chip).toHaveTextContent('1');
+      // The picture is decorative, so the CONTROL carries the name.
+      expect(chip).toHaveAttribute('aria-label', 'Turbine assembly — image');
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(fetchMock.mock.calls[0]![0]).toBe('/api/attachments/77/turbine.png');
+      const thumb = await screen.findByTestId('source-thumbnail');
+      expect(thumb).toHaveAttribute('alt', '');
+      expect(thumb).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    it('navigates to the PAGE, never to the attachment', async () => {
+      mockAttachmentFetch();
+      render(<CitationChips sources={[imageSource]} />, { wrapper: Wrapper });
+      fireEvent.click(screen.getByTestId('citation-chip-1'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
+
+    it('degrades to the plain numbered chip when the thumbnail cannot be loaded', async () => {
+      mockAttachmentFetch(false);
+      render(<CitationChips sources={[imageSource]} />, { wrapper: Wrapper });
+
+      await waitFor(() =>
+        expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument(),
+      );
+      const chip = screen.getByTestId('citation-chip-1');
+      expect(chip).toHaveTextContent('1');
+      expect(chip).toHaveAttribute('aria-label', 'Turbine assembly — image');
+      fireEvent.click(chip);
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
+
+    it('leaves an ordinary page chip untouched', () => {
+      render(<CitationChips sources={[mockSources[0]]} />, { wrapper: Wrapper });
+      expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
+      expect(screen.getByTestId('citation-chip-1')).not.toHaveAttribute('aria-label');
+    });
   });
 });

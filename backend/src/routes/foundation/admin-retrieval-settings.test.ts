@@ -99,6 +99,7 @@ import {
   invalidateRagRankingPriorCache,
   getRagImagesPerPageMax,
   getRagImageIndexExternal,
+  getRagImageLegEnabled,
   invalidateRagImageIntakeCache,
 } from '../../core/services/admin-settings-service.js';
 
@@ -773,6 +774,34 @@ describe('PUT /api/admin/settings — image-index intake knobs (#1115 P2)', () =
       { ragImagesPerPageMax: 20.5 },
       { ragImageIndexExternal: 'off' },
     ]) {
+      const res = await put(body);
+      expect(res.statusCode, JSON.stringify(body)).toBe(400);
+    }
+    expect(rows).toEqual({});
+  });
+});
+
+describe('PUT /api/admin/settings — the image retrieval leg (#1115 P3)', () => {
+  it('writes rag_image_leg_enabled under its documented key', async () => {
+    const res = await put({ ragImageLegEnabled: false });
+
+    expect(res.statusCode).toBe(200);
+    expect(rows).toEqual({ rag_image_leg_enabled: 'false' });
+  });
+
+  it('makes the NEXT SEARCH see the change — the write goes through the cached path (#1118)', async () => {
+    // The leg reads this per request through a 60-second cache. A write that
+    // did not invalidate would leave the leg running (or dark) for a minute
+    // after an operator turned it off (or on) — the #1118 lesson, restated
+    // for the one knob that costs an outbound request per question.
+    await put({ ragImageLegEnabled: false });
+    await expect(getRagImageLegEnabled()).resolves.toBe(false);
+    await put({ ragImageLegEnabled: true });
+    await expect(getRagImageLegEnabled()).resolves.toBe(true);
+  });
+
+  it('rejects anything that is not a boolean, rather than saving a value the reader ignores', async () => {
+    for (const body of [{ ragImageLegEnabled: 'off' }, { ragImageLegEnabled: 0 }]) {
       const res = await put(body);
       expect(res.statusCode, JSON.stringify(body)).toBe(400);
     }

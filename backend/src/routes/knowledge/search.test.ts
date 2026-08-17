@@ -727,6 +727,45 @@ describe('Search Routes', () => {
       );
     });
 
+    // ── The image leg (#1115 P3) ──────────────────────────────────────────
+
+    it('hybrid mode leaves the image leg to the admin setting, and the wire shape is unchanged', async () => {
+      // `imageLeg` is deliberately ABSENT rather than `true`: `/api/search`
+      // has no per-request opinion, so the leg follows
+      // `rag_image_leg_enabled` exactly as it does on the chat path. Passing
+      // `true` would force it past a switch an operator turned off.
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockHybridSearch.mockResolvedValue([makeSearchResult(1, 'Result')]);
+
+      const response = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=hybrid' });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockHybridSearch.mock.calls[0]![4]).not.toHaveProperty('imageLeg');
+      // Page rows, exactly as before — the leg changes RANKING, never the
+      // shape. No image field leaks onto a search item.
+      const item = response.json().items[0] as Record<string, unknown>;
+      expect(Object.keys(item).sort()).toEqual([
+        'author', 'confluenceId', 'id', 'labels', 'lastModifiedAt', 'rank',
+        'score', 'similarity', 'snippet', 'spaceKey', 'title',
+      ]);
+    });
+
+    it('semantic mode runs no image leg at all — it never reaches hybridSearch', async () => {
+      // The narrower, structural guarantee: `mode=semantic` calls
+      // `vectorSearch` directly, so there is no option to pass and no way for
+      // the leg to appear here. A future refactor that routed this branch
+      // through `hybridSearch` would have to pass `imageLeg: false`
+      // explicitly, and this fails until it does.
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockVectorSearch.mockResolvedValue([makeSearchResult(1, 'Result')]);
+      mockHybridSearch.mockClear();
+
+      const response = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=semantic' });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+    });
+
     // ── Degraded-retrieval signal on the wire (#1117 stage 2) ────────────
 
     it('reports full coverage as healthy: embeddingCoverage 1, no degradedReason', async () => {

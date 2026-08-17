@@ -31,6 +31,10 @@ vi.mock('./openai-compatible-client.js', async () => {
   };
 });
 vi.mock('./llm-provider-resolver.js', () => ({
+  // #1115 P3 — a closed stub, so the image leg's own resolver has to appear
+  // here too. `null` = no VL model assigned, the ordinary deployment state,
+  // which keeps every degraded-reason assertion below about the TEXT side.
+  resolveImageEmbeddingUsecase: vi.fn(async () => null),
   resolveUsecase: vi.fn(async () => ({
     config: {
       providerId: 'stub',

@@ -208,7 +208,7 @@ Markdown stays exactly as specified above, with the same libraries and the same
 macro mapping. An `<img>` still converts to `<img>`, and its *text* contribution
 to embedding input is still whatever alt text it carries.
 
-What changes (ADR-025; the intake shipped in **P2**, retrieval lands in **P3**)
+What changes (ADR-025; the intake shipped in **P2**, retrieval in **P3**)
 is that the attachment's **bytes**
 become a second, parallel index — `page_image_embeddings`, embedded by a
 vision-language model, fused as a third retrieval leg. Five consequences are
@@ -1311,7 +1311,7 @@ query-side prefix paragraph above.
 
 ### #1115 (2026-08-17) — a third retrieval leg, over a separate image index
 
-ADR-025 adds a **third leg** to the fusion described above (landing in **P3**):
+ADR-025 adds a **third leg** to the fusion described above (**shipped in P3**):
 alongside the vector leg over `page_embeddings` and the keyword leg over
 `pages.tsv`, an image leg does kNN over `page_image_embeddings` — a separate
 table, embedded by a separate vision-language model, under the same visibility
@@ -1346,25 +1346,47 @@ Three properties keep it from disturbing what is already here:
    assigned, any fully-reranked set gets `basis: 'rerank'` regardless of which
    leg found it, which is already true of keyword-only sets today. And an
    image-reached page does reach rerank, because it enters the pipeline as an
-   ordinary `SearchResult` (point 3). **P3 must therefore decide explicitly
-   whether a title-synthesised row may carry a `rerankScore` into
-   `computeRetrievalConfidence` — as the code stands it would**, and #1105's
-   gate could then refuse on it.
+   ordinary `SearchResult` (point 3). **P3 ruled: it may not.** A row reached
+   ONLY by the image leg is filtered out of `computeRetrievalConfidence`'s
+   sample entirely (`SearchResult.imageOnly`), in both directions. It could
+   REFUSE a turn — a rerank score over a lede or a title that no leg matched
+   measures the wrong thing, and an *unreranked* image-only row flips
+   `allReranked` false and silently demotes a fully reranked set to the
+   similarity basis. And it could not raise the number honestly either: with no
+   `vectorScore` it can only displace a measured row from position 0 and make a
+   vector-led set unmeasurable, which is why the vector-led test now reads the
+   best MEASURABLE row rather than `results[0]`. A set of nothing but image
+   hits is therefore `basis: 'none'`, score `null` — the keyword-only verdict,
+   and deliberately not the empty-corpus `score: 0` that a threshold refuses. A
+   page found by BOTH an image and a text leg stays in the sample: its cosine
+   is real.
 3. **The stages after fusion see text, never pixels.** A
    `page_image_embeddings` row is never itself a `SearchResult`: the fused
    result for an image-reached page is an ordinary text row — its
    `chunk_index 0` row, or, for a page below the text floor that has no chunk
    at all, one whose `chunkText` is synthesised from the title (design record
    §5). Rerank, the ranking prior, MMR and sibling assembly therefore need no
-   image-specific branch. What they do need from P3 is a judgement on the
-   synthesised row: it carries text the page did not originally have, and that
-   text is what a cross-encoder would score and what MMR's trigram Jaccard
-   would diff.
+   image-specific branch. **P3's judgement on the synthesised row**: it stays,
+   unchanged, and the cost is accepted rather than mitigated. It carries text
+   the page did not originally have, so a title-only row ranks poorly under
+   rerank and looks maximally distinct under MMR — both acceptable, because the
+   row still carries the page, the picture and a title a person can read, and
+   because the alternative (special-casing three stages) puts half a ranking
+   rule in each of them. It is flagged `imageTextSynthesized` so the fact is
+   visible rather than inferred, and it carries no `chunkIndex`: that field
+   means "the chunk the vector leg matched" and is the sibling-assembly anchor,
+   which an image-reached page does not have.
 
 Failure is honest in the shape #1104 established: a VL call that fails, times
 out or meets an open breaker bypasses the leg, records
 `degraded_reason = 'image_leg_unavailable'`, and leaves `searchTypeFinal` and
-the text legs exactly as they were.
+the text legs exactly as they were. **Precedence, added by P3:** that value is
+recorded only when the text side is healthy. There is one `degraded_reason`
+column and the value that belongs in it is the outage that hurt the answer
+most — during an embedding outage an operator needs `embedding_failed`, and an
+image leg that fell over in the same second is a footnote to it. A second
+column would buy a fact nobody has asked a question about at the cost of every
+existing reader's `=` predicate.
 
 ---
 
@@ -1816,7 +1838,10 @@ ADR-021 gains a **seventh** use case, `image_embedding` (ADR-025). Migration
 `093` widened the `llm_usecase_assignments` CHECK in **P0**; the resolver, the
 client, the probe and the settings row shipped in **P1**; **P2 gave it a
 consumer** — `image-embedding-service.ts` embeds every referenced page image
-through it. Nothing retrieves one yet — that is P3.
+through it; **P3 gave it a second** — `image-leg-search.ts` embeds the QUERY
+through the same resolved pair (once per request, `VL_QUERY_INSTRUCTION`, 3s)
+and searches the index it filled. The chat model still receives no retrieved
+image; that is P4.
 
 **It is the `rerank` rule, one rung stronger.** `resolveImageEmbeddingUsecase()`
 returns `null` when unassigned and the image leg is simply off; `resolveUsecase('image_embedding')`
@@ -2090,11 +2115,14 @@ runtime DDL `ensureImageEmbeddingColumn`, the probe-gated assignment routes and
 the Settings row. **P2: the index fills** — `image-embedding-service.ts`
 (`embedPageImages` + `processDirtyPageImages`), the `image_embedding_dirty`
 writers at every place an image can change under a page, the two intake knobs,
-the admin status/re-scan/process routes and the Embeddings-tab card. The
-retrieval leg and the answer path land in **P3–P4**, and every paragraph below
-that describes unshipped behaviour says which PR owns it. **Nothing RETRIEVES
-an image yet**: after P2 the index is populated and read by nothing, which the
-Embeddings-tab card states on screen.
+the admin status/re-scan/process routes and the Embeddings-tab card. **P3: the
+index is read** — `image-leg-search.ts`, the third RRF leg in `hybridSearch`,
+`rag_image_leg_enabled`, `degraded_reason = 'image_leg_unavailable'`, the
+`kind: 'image'` source entries and their thumbnails, and the Retrieval tab's
+Image retrieval group. The answer path lands in **P4**, and every paragraph
+below that describes unshipped behaviour says which PR owns it. **The chat
+model still receives no retrieved image**: after P3 a picture can find a page
+and can appear as a source, and the answer is written from text alone.
 **Design of record:** `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`
 (issue #1115, epic #1100 Phase 2).
 
@@ -2352,30 +2380,57 @@ since one page may spend `rag_images_per_page_max × IMAGE_EMBED_TIMEOUT_MS` and
 neither a page-count cadence nor a time cadence evaluated at a page BOUNDARY can
 renew during the one page slow enough to need it.
 
-### Retrieval, in one paragraph (P3)
+### Retrieval, in one paragraph (P3, shipped)
 
-The image leg runs only when the use case is assigned, the table is non-empty
-and `rag_image_leg_enabled` is on — otherwise no query embed and no cost. It
-kNN-searches `page_image_embeddings` under the same visibility predicate as the
-other legs and fuses as a **third RRF leg**, page-denominated like #1106. Rank,
-not score: the published worked examples put text→image around 0.46–0.72 and
-text↔text as high as 0.75–0.81 (`arXiv:2601.04720v2` Appendix C: Table 9's MS
-COCO rows are 0.46 and 0.52, Table 8's SQuAD rows 0.75 and 0.81; the model
+The image leg (`domains/llm/services/image-leg-search.ts`) runs only when the
+caller has not forced it off, `rag_image_leg_enabled` is on (default true), the
+use case is assigned and the table is non-empty — otherwise no query embed and
+no cost. The last condition is re-read per request rather than cached, because
+it flips on the first embed and on a rebuild's `TRUNCATE`. It embeds the query
+ONCE through `embedTextsVl` under `VL_QUERY_INSTRUCTION`, bounded at 3s
+(shorter than the rerank stage's 5s because it runs in PARALLEL with the text
+legs, so everything past them is added to every question), kNN-searches
+`page_image_embeddings` under the same `visiblePagesPredicate` the vector leg
+uses — the shared fragment, never a copy, since an image row carries no ACL of
+its own — and fuses as a **third RRF leg**, page-denominated like #1106 (a
+page's best image ranks it once, so image COUNT cannot beat image QUALITY).
+Rank, not score: the published worked examples put text→image around 0.46–0.72
+and text↔text as high as 0.75–0.81 (`arXiv:2601.04720v2` Appendix C: Table 9's
+MS COCO rows are 0.46 and 0.52, Table 8's SQuAD rows 0.75 and 0.81; the model
 card's own matrix scores a matching text query 0.7155 against an image document
 and 0.8160 against a text one), and they are not cleanly separable — Table 8's
 AG News pairs score 0.55 and 0.57 — so a cutoff tuned on text has no defined
-meaning on a cross-modal score. For the same
-reason **the image similarity never feeds the confidence number** (#1105):
-image hits carry no `vectorScore`, so they cannot establish the `similarity`
-basis. That is deliberately narrower than "an image-only set never refuses" —
-the `rerank` basis is tested first and has no vector-led precondition
-(`retrieval-confidence.ts:124`), and an image-reached page reaches rerank as an
-ordinary `SearchResult`, so **P3 has to rule on whether such a row may carry a
-`rerankScore` into the gate; as the code stands it would.** Rerank, the ranking
-prior, MMR and sibling assembly still need no image-specific branch, because a
-`page_image_embeddings` row never becomes a `SearchResult`: an image-reached
-page enters them as its `chunk_index 0` row, or as a title-synthesised one
-(see the design record's retrieval section).
+meaning on a cross-modal score.
+
+**P3's ruling on the confidence gate, which P0 left open.** The image
+similarity never feeds the number, and — the part P0 flagged as undecided — an
+image-ONLY row is excluded from `computeRetrievalConfidence`'s sample
+altogether. Both directions matter: a `rerankScore` over a lede or a title that
+no leg matched is a measurement of the wrong thing and could REFUSE a turn,
+while an unreranked image-only row would flip `allReranked` false and silently
+demote a fully reranked set to the similarity basis; and the row carries no
+`vectorScore`, so left in it could only displace a measured row from position 0
+and make a vector-led set unmeasurable. A set of nothing but image hits is
+`basis: 'none'` with score `null` — the keyword-only verdict, not the
+empty-corpus `score: 0` a threshold would refuse. Rerank, the ranking prior,
+MMR, sibling assembly and the #1107 pin need no image-specific branch, because
+a `page_image_embeddings` row never becomes a `SearchResult`: an image-reached
+page enters them as its `chunk_index 0` row, or (with no chunk at all) as a
+title-synthesised one flagged `imageTextSynthesized`.
+
+**Failure is a bypass and is recorded.** `degraded_reason =
+'image_leg_unavailable'`, but only when the text side is healthy: there is one
+column, and the value that belongs in it is the outage that hurt the answer
+most. `searchTypeFinal` is unchanged. Deep search runs the leg on the ORIGINAL
+question only (`imageLeg: false` on the paraphrase legs) — one VL call per
+gesture, and it keeps the image evidence at weight 1 instead of the 1 + 0.6 +
+0.6 a merge that sums weighted per-leg ranks would give the same evidence
+repeated three times. `/api/search?mode=hybrid` gets the leg for ranking with
+its wire shape unchanged; `mode=semantic` never reaches `hybridSearch` at all.
+On `/llm/ask` the wire gains `kind: 'image'` source entries carrying
+`attachmentUrl` (built by the inverse of the `<img src>` enumerator) and
+`similarity: null`, capped at four per answer. The page and web source shapes
+are untouched. Operations: `docs/runbooks/image-index.md` §6.
 
 ### v1 scope fence
 

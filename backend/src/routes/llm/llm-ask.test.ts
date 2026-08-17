@@ -522,6 +522,90 @@ describe('POST /api/llm/ask', () => {
       expect(persistedTurn.refused).toBe(true);
     });
 
+    it('#1115 P3 — a page found ONLY by the image leg never triggers weak_match', async () => {
+      // The exact case ADR-025 §5 flagged as P3's to rule on. With a rerank
+      // provider assigned, an image-only row DOES get scored — over a lede or
+      // a synthesised title that no leg matched — and a low score there would
+      // refuse a turn whose grounding is the picture. Both knobs are set, so
+      // leaving that row in the sample refuses; excluding it answers.
+      mockConfidenceThreshold.mockResolvedValue(0.9);
+      mockConfidenceThresholdRerank.mockResolvedValue(0.9);
+      mockHybridSearch.mockResolvedValue([
+        {
+          pageId: 91,
+          confluenceId: null,
+          chunkText: 'Untranscribed schematic',
+          pageTitle: 'Untranscribed schematic',
+          sectionTitle: 'Untranscribed schematic',
+          spaceKey: 'ENG',
+          score: 0.0164,
+          vectorScore: null,
+          keywordRank: null,
+          // The cross-encoder scored the title we wrote, and scored it badly.
+          rerankScore: 0.08,
+          imageOnly: true,
+          imageTextSynthesized: true,
+          imageHits: [{
+            source: 'confluence', key: 'sheet.png', similarity: 0.68,
+            attachmentUrl: '/api/attachments/91/sheet.png',
+          }],
+        },
+      ]);
+      mockBuildRagContext.mockReturnValue('[Source 1: Untranscribed schematic]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('It is the intake manifold.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does the schematic show' },
+      });
+
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBeFalsy();
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      // …and the image still rides along as a source.
+      expect((final.sources as Array<Record<string, unknown>>).some((s) => s.kind === 'image')).toBe(true);
+    });
+
+    it('#1115 P3 — an unreranked image-only row does not demote a measured set into a refusal', async () => {
+      // The other direction, and the sharper one: `allReranked` picks the
+      // basis, so ONE unscored row flips a fully-reranked set onto the
+      // SIMILARITY knob — where its cosine 0.2 fails the 0.5 gate that the
+      // rerank knob's 0.9 would have cleared at 0.95. An image-only row must
+      // not be able to change which threshold an answer is judged by.
+      mockConfidenceThreshold.mockResolvedValue(0.5);
+      mockConfidenceThresholdRerank.mockResolvedValue(0.9);
+      mockHybridSearch.mockResolvedValue([
+        {
+          pageId: 92, confluenceId: null, chunkText: 'real prose', pageTitle: 'Manifold',
+          sectionTitle: 'Manifold', spaceKey: 'ENG', score: 0.0328,
+          vectorScore: 0.2, keywordRank: null, rerankScore: 0.95,
+        },
+        {
+          pageId: 93, confluenceId: null, chunkText: 'Untranscribed schematic',
+          pageTitle: 'Untranscribed schematic', sectionTitle: 'Untranscribed schematic',
+          spaceKey: 'ENG', score: 0.0164, vectorScore: null, keywordRank: null,
+          imageOnly: true, imageTextSynthesized: true,
+          imageHits: [{
+            source: 'confluence', key: 's.png', similarity: 0.6,
+            attachmentUrl: '/api/attachments/93/s.png',
+          }],
+        },
+      ]);
+      mockBuildRagContext.mockReturnValue('[Source 1: Manifold]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does the schematic show' },
+      });
+
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBeFalsy();
+      expect(mockStreamChatClient).toHaveBeenCalled();
+    });
+
     it('gate ON + rerank basis: gates on the RERANK knob, not the similarity one (#1268 B2)', async () => {
       // Similarity threshold 0.99 would refuse this cosine-0.12 result — but
       // the set is fully reranked, so the rerank knob (0.3) is the one
@@ -1117,6 +1201,154 @@ describe('POST /api/llm/ask', () => {
     expect(sources).toHaveLength(1);
     expect(sources[0].similarity).toBeNull();
     expect(sources[0].score).toBe(1);
+  });
+
+  // ─── Image sources (#1115 P3) ────────────────────────────────────────────
+
+  describe('image sources', () => {
+    function pageWithImages(
+      pageId: number,
+      hits: Array<{ key: string; similarity: number; source?: 'confluence' | 'local' }>,
+      over: Record<string, unknown> = {},
+    ) {
+      return {
+        pageId,
+        confluenceId: `page-${pageId}`,
+        chunkText: 'chunk',
+        pageTitle: `Page ${pageId}`,
+        sectionTitle: 'S',
+        spaceKey: 'OPS',
+        score: 0.0328,
+        vectorScore: 0.5,
+        keywordRank: null,
+        imageHits: hits.map((h) => ({
+          source: h.source ?? 'confluence',
+          key: h.key,
+          similarity: h.similarity,
+          attachmentUrl: `/api/attachments/${pageId}/${encodeURIComponent(h.key)}`,
+        })),
+        ...over,
+      };
+    }
+
+    it('emits kind:image entries with the attachment URL and a NULL similarity', async () => {
+      mockHybridSearch.mockResolvedValue([
+        pageWithImages(42, [{ key: 'Screen shot.png', similarity: 0.71 }]),
+      ]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does the turbine look like', model: 'llama3' },
+      });
+
+      const events = parseSseBody(response.body);
+      const finalEvent = events.find((e: unknown) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
+      const sources = finalEvent.sources as Array<Record<string, unknown>>;
+
+      const images = sources.filter((s) => s.kind === 'image');
+      expect(images).toHaveLength(1);
+      expect(images[0]).toMatchObject({
+        kind: 'image',
+        pageId: 42,
+        pageTitle: 'Page 42',
+        spaceKey: 'OPS',
+        attachmentUrl: '/api/attachments/42/Screen%20shot.png',
+        // The hit's own cosine is CROSS-MODAL and must never join the
+        // ConfidenceBadge's sample beside text cosines (ADR-025 §8).
+        similarity: null,
+        // `score` is the PAGE's fused ordering value, like every other entry.
+        score: 0.0328,
+      });
+      // The internal ordering key never reaches the wire.
+      expect(images[0]!._rank).toBeUndefined();
+    });
+
+    it('leaves the page entry untouched — no `kind` on the shapes the frontend already reads', async () => {
+      mockHybridSearch.mockResolvedValue([
+        pageWithImages(42, [{ key: 'a.png', similarity: 0.7 }]),
+      ]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q', model: 'llama3' },
+      });
+
+      const events = parseSseBody(response.body);
+      const finalEvent = events.find((e: unknown) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
+      const sources = finalEvent.sources as Array<Record<string, unknown>>;
+
+      expect(sources[0].kind).toBeUndefined();
+      expect(sources[0].pageId).toBe(42);
+      expect(sources[0].similarity).toBe(0.5);
+    });
+
+    it('caps the answer at MAX_IMAGE_SOURCES, best image first across pages', async () => {
+      mockHybridSearch.mockResolvedValue([
+        pageWithImages(1, [
+          { key: 'a1.png', similarity: 0.40 },
+          { key: 'a2.png', similarity: 0.35 },
+          { key: 'a3.png', similarity: 0.30 },
+        ]),
+        pageWithImages(2, [
+          { key: 'b1.png', similarity: 0.91 },
+          { key: 'b2.png', similarity: 0.88 },
+        ]),
+      ]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q', model: 'llama3' },
+      });
+
+      const events = parseSseBody(response.body);
+      const finalEvent = events.find((e: unknown) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
+      const sources = finalEvent.sources as Array<Record<string, unknown>>;
+      const images = sources.filter((s) => s.kind === 'image');
+
+      expect(images).toHaveLength(4);
+      expect(images.map((i) => i.attachmentUrl)).toEqual([
+        '/api/attachments/2/b1.png',
+        '/api/attachments/2/b2.png',
+        '/api/attachments/1/a1.png',
+        '/api/attachments/1/a2.png',
+      ]);
+    });
+
+    it('emits nothing when the leg found no images — the array shape is unchanged', async () => {
+      mockHybridSearch.mockResolvedValue([pageWithImages(42, [])]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q', model: 'llama3' },
+      });
+
+      const events = parseSseBody(response.body);
+      const finalEvent = events.find((e: unknown) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
+      const sources = finalEvent.sources as Array<Record<string, unknown>>;
+      expect(sources.every((s) => s.kind === undefined)).toBe(true);
+    });
+
+    it('never persists them — sources are not part of the stored conversation', async () => {
+      mockHybridSearch.mockResolvedValue([
+        pageWithImages(42, [{ key: 'a.png', similarity: 0.7 }]),
+      ]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q', model: 'llama3' },
+      });
+
+      // Nothing written to `llm_conversations` may carry an attachment URL:
+      // the stored shape is `{role, content}` and a replayed conversation
+      // renders no sources at all.
+      const written = JSON.stringify(mockQuery.mock.calls);
+      expect(written).not.toContain('/api/attachments/42/a.png');
+    });
   });
 
   // ─── Citation targets (#1125) ────────────────────────────────────────────

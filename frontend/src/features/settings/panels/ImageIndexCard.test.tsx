@@ -175,12 +175,16 @@ describe('ImageIndexCard (#1115 P2)', () => {
     expect(note.textContent).toMatch(/text search is unaffected/i);
   });
 
-  it('says image search is not live yet in this release', async () => {
-    // P3 has not landed. The card exists to explain an index nothing reads.
+  it('points at the switch that turns the retrieval leg on (#1115 P3)', async () => {
+    // This sentence used to say image search was not live yet. P3 landed the
+    // leg, so that became false — the card now names where the leg is turned
+    // on rather than denying it exists.
     mockApi(ASSIGNED);
     renderCard();
     const note = await screen.findByTestId('image-index-not-live-note');
-    expect(note.textContent).toMatch(/not live yet/i);
+    expect(note.textContent).toMatch(/third retrieval leg/i);
+    expect(note.textContent).toMatch(/Retrieval/);
+    expect(note.textContent).not.toMatch(/not live yet/i);
   });
 
   it('Process now POSTs the process route', async () => {

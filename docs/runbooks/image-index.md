@@ -1,15 +1,18 @@
 # Runbook — the image index (#1115)
 
 Operating the `image_embedding` leg: which server can serve it, how to start
-one, how to assign and probe it, what fills the index, and what changing the
-model costs.
+one, how to assign and probe it, what fills the index, how retrieval reads it,
+and what changing the model costs.
 
-**Scope as of P2.** The leg is *configurable*, *provable* and now *fills*:
-assigning it types the `page_image_embeddings` column, builds its index and
-queues every page, and a worker embeds each page's images into it (§5).
-**No query touches the index yet (P3)** — nothing you can search for will find
-an image, and the Embeddings-tab card says so on screen. Everything below is
-preparation you can do, verify and monitor before that lands.
+**Scope as of P3.** The leg is *configurable*, *provable*, *fills* and is now
+*read*: assigning it types the `page_image_embeddings` column, builds its
+index and queues every page (§4); a worker embeds each page's images into it
+(§5); and hybrid retrieval fuses a third, image-based leg into page ranking
+(§6), with matched images listed as sources on `/llm/ask`.
+
+**What P3 still does NOT do:** the chat model never receives a retrieved
+image. Answers stay text-grounded and the pictures appear as sources only.
+That is P4.
 
 Design of record: ADR-025 in `docs/ARCHITECTURE-DECISIONS.md` and
 `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`.
@@ -389,7 +392,103 @@ one nothing would.
   "not assigned" — that would send an operator whose leg is working to go and
   assign it — and both actions stay live, because they are the recovery.
 
-## 6. Changing the model (or the provider)
+## 6. Retrieval — the image leg (#1115 P3)
+
+The index is read by a **third RRF leg** beside the semantic and keyword ones.
+Design of record: `docs/architecture/09-flow-rag-chat.md`, "The image leg".
+
+### When it runs
+
+All four, checked in this order, and it costs **nothing** when any fails — no
+embedding call, no kNN, no row:
+
+1. the caller did not force it off (`/api/search?mode=semantic` never reaches
+   it at all; deep search's paraphrase legs force it off — see below);
+2. **Settings → AI Models → Retrieval → Image retrieval → Image leg** is on
+   (`admin_settings.rag_image_leg_enabled`, default on);
+3. the `image_embedding` use case is **assigned** — it never inherits, so an
+   unassigned instance never runs the leg and never pays for it;
+4. `page_image_embeddings` is **non-empty**.
+
+(4) is re-checked on every request rather than cached, because it flips on the
+first page the worker embeds and again when a model change truncates the table.
+
+### What it costs
+
+**One extra embedding call per question**, to the VL endpoint, bounded at 3
+seconds including queue wait. It runs in PARALLEL with the two text legs, so
+the added latency is whatever it spends beyond them — on the reference stack a
+short text through the chat template is well under a second. A persistently
+slow or dead endpoint trips the per-provider breaker and the leg self-disables
+for the cool-down instead of costing 3s on every question.
+
+The knob in (2) exists precisely so an operator can stop paying that while
+leaving the index being **built**. Unassigning the use case instead turns off
+*both* halves and lets `image_embedding_dirty` accumulate corpus-wide.
+
+**Deep search runs it once**, on the original question only — the paraphrase
+legs do not embed a second or third query vector.
+
+### What it changes
+
+Page RANKING, and on `/llm/ask` the answer's `sources[]`.
+
+- A page's **best** matching image ranks it once, however many of its images
+  match. Up to three hits per page ride along for the source list.
+- A page **no text leg found** enters the results with its first chunk as text,
+  or — if it has no indexed text at all, which is the image-only page this leg
+  exists to reach — its title. That is what makes such a page retrievable for
+  the first time.
+- `/api/search?mode=hybrid` gets the leg for ranking; its response shape is
+  unchanged (page rows). `mode=semantic` is text-only.
+- `/llm/ask` gains `kind: 'image'` entries in `sources[]` — up to four per
+  answer — which the assistant renders as a thumbnail linking to the page.
+  They carry `similarity: null` deliberately: a cross-modal score shares no
+  scale with the text cosines beside it, so it must never join the confidence
+  average.
+- The **confidence gate (#1105) is unaffected**. An image hit establishes no
+  measurable basis, and a page reached only by the image leg is excluded from
+  the sample entirely, so it can neither lift the number nor trigger a
+  `weak_match` refusal.
+
+### How to tell it ran
+
+**Traces.** `rag.hybrid_search` carries `rag.image_pages` and
+`rag.image_only_pages` **only when the leg ran** — absent means it did not run
+at all, which is a different fact from "found nothing". The leg's own span is
+`rag.image_leg`, whose attribute of the same name is one of `disabled`,
+`unassigned`, `empty_index`, `ran` or `failed`.
+
+**Analytics.** A bypass writes `degraded_reason = 'image_leg_unavailable'`:
+
+```sql
+SELECT created_at, search_type, degraded_reason
+  FROM search_analytics
+ WHERE degraded_reason = 'image_leg_unavailable'
+ ORDER BY created_at DESC LIMIT 20;
+```
+
+Note the **precedence**: the column records the worst outage, so a request in
+which the text embedder ALSO failed records `embedding_failed` and this query
+will not see it. `search_type` is unchanged either way — two legs or three is
+not a different kind of search.
+
+**Logs.** One `warn` per failure, carrying the category and the model, never
+the provider's response body (that reaches admins through the probe
+disclosure, §4).
+
+**By hand.** Ask a question whose answer is only in a picture — the
+image-only page's title with no matching prose is the sharpest test. If the
+page comes back, the leg ran. If it does not, walk the four gate conditions
+above in order; the Embeddings-tab card (§5) answers (4).
+
+### When it fails
+
+Every failure is a **bypass**: the answer is exactly what it would have been
+with the leg off, plus the analytics row above. Nothing about a VL outage can
+fail an ask, empty a result set, or change a refusal verdict.
+
+## 7. Changing the model (or the provider)
 
 **It empties the image index and re-scans. There is no shadow swap here, and
 that is deliberate**: the image leg is simply *off* while its index is empty, so
@@ -424,7 +523,7 @@ separate columns.
 **Unassigning** the use case turns the leg off and destroys nothing: the column
 type and the index survive, so re-assigning the same pair costs nothing.
 
-## 7. Verifying by hand
+## 8. Verifying by hand
 
 ```bash
 curl -s "$BASE_URL/embeddings" -H 'Content-Type: application/json' -d '{

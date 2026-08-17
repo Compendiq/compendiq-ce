@@ -52,6 +52,10 @@ vi.mock('../services/llm-provider-resolver.js', () => ({
   resolveRerankUsecase: vi.fn(async () => {
     throw new Error('no rerank assignment in this eval DB');
   }),
+  // #1115 P3 — the image leg's resolver. `null` (unassigned) keeps the leg
+  // off, which is what every measurement in this file is taken against; P5b
+  // adds the `--images` axis that turns it on deliberately.
+  resolveImageEmbeddingUsecase: vi.fn(async () => null),
 }));
 // rag-service imports this as `rerank as rerankDocuments` — the MOCK must
 // carry the module's own export name.

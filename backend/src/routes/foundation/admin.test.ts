@@ -85,6 +85,9 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   getRagImagesPerPageMax: vi.fn().mockResolvedValue(20),
   getRagImageIndexExternal: vi.fn().mockResolvedValue(true),
   invalidateRagImageIntakeCache: vi.fn(),
+  // #1115 P3 — the retrieval half, likewise at its reader default.
+  getRagImageLegEnabled: vi.fn().mockResolvedValue(true),
+  invalidateRagImageLegCache: vi.fn(),
   invalidateRagFetchWidthCache: vi.fn(),
   invalidateRagRerankCandidatesCache: vi.fn(),
   invalidateRagConfidenceThresholdCache: vi.fn(),

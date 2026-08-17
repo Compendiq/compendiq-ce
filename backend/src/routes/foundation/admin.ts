@@ -36,6 +36,8 @@ import {
   getRagImagesPerPageMax,
   getRagImageIndexExternal,
   invalidateRagImageIntakeCache,
+  getRagImageLegEnabled,
+  invalidateRagImageLegCache,
 } from '../../core/services/admin-settings-service.js';
 import {
   computeCalibrationStatus,
@@ -358,6 +360,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragRankingPriorWeight,
       ragImagesPerPageMax,
       ragImageIndexExternal,
+      ragImageLegEnabled,
       imageEmbeddingTargetDimensions,
     ] = await Promise.all([
       getEmbeddingDimensions(),
@@ -397,6 +400,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // from the release the worker ships in.
       getRagImagesPerPageMax(),
       getRagImageIndexExternal(),
+      // #1115 P3 — the retrieval half. Its own reader and its own cache: it is
+      // read once per hybrid search, where the intake pair is read once per
+      // page scanned, so sharing a cache entry would tie a hot-path read to an
+      // invalidation the worker triggers.
+      getRagImageLegEnabled(),
       // #1115 — uncached, like `getFtsLanguage`: it is read a handful of times
       // per admin action, and a stale one would let a probe fired seconds after
       // the width was saved measure the OLD width and type the column to it.
@@ -507,6 +515,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // #1115 P2 — the image-index intake knobs.
       ragImagesPerPageMax,
       ragImageIndexExternal,
+      // #1115 P3 — the retrieval half.
+      ragImageLegEnabled,
       // #1114 — which model each threshold was tuned against, and whether it
       // is still the live one. Provider id + model name only: this payload is
       // the settings document, not the provider document.
@@ -722,6 +732,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
         'rag_image_index_external',
         invalidateRagImageIntakeCache,
         body.ragImageIndexExternal !== undefined ? String(body.ragImageIndexExternal) : undefined,
+      ],
+      // #1115 P3 — the retrieval half, through the same cached path so the
+      // next hybrid search reads the new value rather than the old one for up
+      // to a minute (#1118's lesson).
+      [
+        'rag_image_leg_enabled',
+        invalidateRagImageLegCache,
+        body.ragImageLegEnabled !== undefined ? String(body.ragImageLegEnabled) : undefined,
       ],
     ];
     const invalidateFor = new Map<string, () => void>();

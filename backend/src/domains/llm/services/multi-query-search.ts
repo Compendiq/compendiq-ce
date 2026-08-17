@@ -479,6 +479,23 @@ export async function multiQuerySearch(
         hybridSearch(userId, p, legTopK, precomputedCoverage, {
           ...legOpts,
           onRetrievalMeta: undefined,
+          // #1115 P3 — the image leg runs on the ORIGINAL question only, and
+          // exactly once per deep search. Two reasons, and the first is the
+          // one that matters at query time: paraphrasing is a TEXT technique
+          // (see the vocabulary-gap premise above), so three VL calls would
+          // buy three near-identical query vectors at 3x the cost and 3x the
+          // chance of blowing IMAGE_LEG_TIMEOUT_MS.
+          //
+          // The second is about ranking rather than cost. This merge SUMS
+          // weighted per-leg ranks, so a page fed to all three legs by the
+          // same image evidence would collect 1 + 0.6 + 0.6 = 2.2 of it —
+          // agreement across phrasings is the signal this feature reads, and
+          // one piece of evidence repeated three times is not agreement. On
+          // the original leg alone it enters once at weight 1, exactly like
+          // the original leg's text evidence, and the merged row keeps its
+          // `imageHits` because `mergeMultiQueryResults` keeps the object from
+          // the earliest leg a page appeared in — which is this one.
+          imageLeg: false,
         }),
       ),
     ]);

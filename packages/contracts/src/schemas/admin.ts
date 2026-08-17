@@ -140,6 +140,18 @@ const RagImagesPerPageMaxSchema = z.number().int().min(1).max(200);
  * deployments that would rather not embed third-party imagery at all.
  */
 const RagImageIndexExternalSchema = z.boolean();
+/**
+ * `rag_image_leg_enabled` (#1115 P3) — whether retrieval fuses a third,
+ * image-based RRF leg. Default ON.
+ *
+ * It is not a second off switch for the feature: with the `image_embedding`
+ * use case unassigned or the index empty the leg does not run at all, whatever
+ * this says. What it buys is the ability to stop paying the leg's one extra
+ * embedding call per question WITHOUT unassigning the use case and thereby
+ * stopping the index being filled — the two halves have different costs and an
+ * operator has to be able to turn off the query-time one on its own.
+ */
+const RagImageLegEnabledSchema = z.boolean();
 
 /**
  * #1115 — `image_embedding_target_dimensions`, the MRL truncation width the
@@ -412,6 +424,8 @@ export const AdminSettingsSchema = z.object({
    */
   ragImagesPerPageMax: RagImagesPerPageMaxSchema,
   ragImageIndexExternal: RagImageIndexExternalSchema,
+  /** #1115 P3 — the retrieval half of the image index. Default ON. */
+  ragImageLegEnabled: RagImageLegEnabledSchema,
   /**
    * #1114 — read-only, and deliberately absent from the update schema below.
    * The server resolves the pair itself when it writes a threshold; a client
@@ -495,6 +509,8 @@ export const UpdateAdminSettingsSchema = z.object({
    */
   ragImagesPerPageMax: RagImagesPerPageMaxSchema.optional(),
   ragImageIndexExternal: RagImageIndexExternalSchema.optional(),
+  /** #1115 P3 — the Retrieval tab's `Image leg` toggle. */
+  ragImageLegEnabled: RagImageLegEnabledSchema.optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;

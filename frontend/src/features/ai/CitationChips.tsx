@@ -1,7 +1,9 @@
 import { useNavigate } from 'react-router-dom';
 import { cn } from '../../shared/lib/cn';
 import type { Source } from './SourceCitations';
+import { isImageSource } from './image-source';
 import { resolveSourceTarget } from './source-target';
+import { SourceThumbnail } from './SourceThumbnail';
 
 interface CitationChipsProps {
   sources: Source[];
@@ -32,6 +34,33 @@ export function CitationChips({ sources, className }: CitationChipsProps) {
       {sources.map((source, i) => {
         const target = resolveSourceTarget(source);
         const testId = `citation-chip-${i + 1}`;
+
+        // #1115 P3 — an image source keeps the number (the answer text refers
+        // to it) and gains the picture beside it. The thumbnail is decorative,
+        // so the CONTROL carries the name: `aria-label` names the page and
+        // says it is an image, the way the external chip above names its new
+        // tab. On a failed or pending fetch `SourceThumbnail` renders nothing
+        // and this degrades to the ordinary numbered chip.
+        const imageLabel = `${source.pageTitle} — image`;
+
+        if (target.kind === 'internal' && isImageSource(source)) {
+          return (
+            <button
+              key={i}
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate(target.path);
+              }}
+              title={imageLabel}
+              aria-label={imageLabel}
+              className={cn(CHIP_CLASS, CHIP_INTERACTIVE, 'gap-1 px-1')}
+              data-testid={testId}
+            >
+              {i + 1}
+              <SourceThumbnail url={source.attachmentUrl!} size={14} className="rounded-[3px]" />
+            </button>
+          );
+        }
 
         if (target.kind === 'external') {
           return (

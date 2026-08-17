@@ -561,6 +561,52 @@ export function invalidateRagImageIntakeCache(): void {
 }
 
 /**
+ * #1115 P3 — `rag_image_leg_enabled`, the RETRIEVAL half of the image index.
+ * Default **on**, cached like `rag_pin_identifiers` and read on the hot path
+ * (once per hybrid search).
+ *
+ * It is deliberately a SEPARATE switch from the `image_embedding` assignment,
+ * and the two are not redundant. Unassigning the use case turns off both
+ * halves: nothing indexes and nothing retrieves, and the index stops being
+ * filled while pages keep accumulating the dirty flag. This knob turns off
+ * only the query-time half — the one extra embedding call every question pays
+ * — and leaves the index being built. An operator who finds the leg too slow,
+ * or who wants a clean A/B, needs exactly that and nothing else.
+ *
+ * It also cannot turn the leg ON: with the use case unassigned or
+ * `page_image_embeddings` empty the leg does not run whatever this says. A
+ * setting that can only subtract is safe to read from a cache.
+ *
+ * Soft-fail is "leg stays enabled", the same direction as its siblings: a DB
+ * hiccup must not silently narrow retrieval, because a result set that lost
+ * its image leg is indistinguishable from a corpus with no matching pictures.
+ */
+const RAG_IMAGE_LEG_TTL_MS = 60_000;
+let ragImageLegCache: { value: boolean; expiresAt: number } | null = null;
+
+export async function getRagImageLegEnabled(): Promise<boolean> {
+  if (ragImageLegCache && Date.now() < ragImageLegCache.expiresAt) return ragImageLegCache.value;
+  let resolved = true;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_image_leg_enabled'`,
+    );
+    // An OFF-list, like `rag_pin_identifiers`: anything unrecognised leaves the
+    // default standing, so a half-written row cannot disable a retrieval leg.
+    const raw = (r.rows[0]?.setting_value ?? '').trim().toLowerCase();
+    if (raw === '0' || raw === 'false' || raw === 'off') resolved = false;
+  } catch (err) {
+    logger.warn({ err }, 'Failed to resolve rag_image_leg_enabled — the image leg stays enabled');
+  }
+  ragImageLegCache = { value: resolved, expiresAt: Date.now() + RAG_IMAGE_LEG_TTL_MS };
+  return resolved;
+}
+
+export function invalidateRagImageLegCache(): void {
+  ragImageLegCache = null;
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].
