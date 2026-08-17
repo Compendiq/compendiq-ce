@@ -2132,8 +2132,9 @@ index is read** — `image-leg-search.ts`, the third RRF leg in `hybridSearch`,
 `rag_image_leg_enabled`, `degraded_reason = 'image_leg_unavailable'`, the
 `kind: 'image'` source entries and their thumbnails, and the Retrieval tab's
 Image retrieval group. **P4: the model sees them** — `retrieved-images.ts`
-(`pickRetrievedImages`, round-robin across pages, `validateImage` unforked, the
-6 MB base64 budget), the vision-gated image parts on the user turn,
+(`pickRetrievedImages`, round-robin across pages with a byte-identity dedupe,
+`validateImage` unforked, the derived base64 budget), the vision-gated image
+parts on the user turn,
 `rag_answer_max_images` and its Retrieval-tab control, the
 `image_only_context` refusal, the two optional audit fields and the
 attached-image component of the answer cache key. Every paragraph below that
@@ -2339,12 +2340,39 @@ and still before any completion.
 (P4, shipped).** The admin knob (default 2, range 0–8, and **0 is a legal
 value** — the honest off switch, since a zero answer cap subtracts nothing
 durable) bounds a thing an operator can reason about. `RETRIEVED_IMAGES_BYTE_BUDGET`
-(6 MB of base64) is not exposed, because a byte ceiling depends on what the
+is not exposed, because a byte ceiling depends on what the
 corpus happens to hold and its failure mode is a provider timing out on a
 request whose size nobody can see. It exists because this path bypasses the LLM
 queue's sizing by design — the queue counts requests, not bytes — so the cap
 alone would admit ~55 MB of base64 into a single prompt at
-`MAX_IMAGE_BYTES` × 8, four concurrent at `LLM_CONCURRENCY=4`.
+`MAX_IMAGE_BYTES` × 8.
+
+The budget is **derived from `MAX_IMAGE_BYTES`** (its base64 length, ~6.7 MB),
+not a literal (review r1). It shipped as a flat 6 MiB described as "roughly one
+`MAX_IMAGE_BYTES` image", which is 14% short of it — so an image between 4.5 MB
+and the 5 MB intake ceiling was indexed, ranked by the leg and shown to the
+reader as a source while being categorically unshowable to the model, a cliff
+with no symptom. Deriving it states the intent (whatever the intake admits, the
+answer path can carry one of) and stops the two drifting apart. The
+concurrency in front of it is the **SSE stream cap**
+(`llm_max_concurrent_streams_per_user`, hard default 3, admin-raisable to 20),
+not `LLM_CONCURRENCY`: the pick runs on the request path, above the LLM queue
+entirely.
+
+Two consequences of the two caps being separate numbers are worth stating
+where an operator meets them, because D8 forbids saying either on an answer.
+**Above 4, the model can be shown a picture the reader has no chip for**:
+`MAX_IMAGE_SOURCES` (4) bounds the source list and `rag_answer_max_images`
+(0–8) bounds the attachments, and the two also select by different rules —
+sources are a flat best-first sort across pages, the pick is round-robin — so
+even below 4 a round-robin slot can land on a page the flat sort has already
+filled past. The page is still cited either way. And **byte-identical pictures
+are attached once**: P2 indexes per page, so one diagram reused across five
+pages is five candidates with the same bytes, the same embedding and therefore
+the same similarity, which sorts them adjacent inside one round; without the
+dedupe the model received one piece of evidence in both default slots, which
+is the count-beats-breadth failure round-robin exists to prevent, reached from
+inside a round.
 
 **D9 — Bytes come from disk, never Redis staging (P0, shipped).**
 `core/services/attachment-store.ts` is the hoisted path-resolution + read half

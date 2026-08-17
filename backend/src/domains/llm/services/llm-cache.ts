@@ -110,10 +110,17 @@ export function buildRagCacheKey(
      * answer to the same question over the same pages would share a key and
      * serve each other for the TTL — as would the same model's answers either
      * side of an admin moving `rag_answer_max_images`, or of a picture being
-     * deleted from one of those pages. `undefined` is deliberately the
-     * no-images spelling: every deployment without a vision model is in that
-     * branch on every ask, and a present-but-empty component would move all
-     * of their keys for a change they take no part in.
+     * deleted from one of those pages.
+     *
+     * `undefined` is the no-images spelling because the absence of images is
+     * not a zero-length set of them — it keeps "no pictures were attached"
+     * unable to collide with some future "0 pictures, deliberately", and
+     * keeps the suffix out of the derivation's own reading below. It does
+     * NOT preserve existing keys, and review r1 corrected the claim that it
+     * did: `hashLlmInputs` writes a `\x00` separator per component, so
+     * passing a 15th component at all moves every pre-P4 digest whether or
+     * not it is empty. Every deployment cold-starts its answer cache once,
+     * for one `LLM_CACHE_TTL`.
      *
      * Distinct from `imageHash`, which is the USER's own attachment. The two
      * are different inputs and both belong in the key.

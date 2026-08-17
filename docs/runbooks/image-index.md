@@ -602,13 +602,30 @@ image before any page contributes a second, ordered within each round by the
 image's own similarity. A page carrying three near-identical screenshots
 therefore cannot take both slots at the default cap and hide the second page.
 
-Two ceilings bound it, and they are different numbers for different costs:
+A picture is attached **once**, however many pages carry it. The intake
+indexes images per page, so one diagram reused across five pages is five
+candidates with byte-identical content — and therefore an identical embedding
+and an identical similarity, which sorts them next to each other inside one
+round. They are deduplicated on the bytes, and the extras are counted under
+`skipped.duplicate`.
+
+Three ceilings bound it, and they are different numbers for different costs:
 
 | | bounds | value |
 |---|---|---|
 | `rag_answer_max_images` | how many pictures the MODEL is shown | 0–8, default 2 |
 | `MAX_IMAGE_SOURCES` | how many source chips the READER gets | 4, fixed |
-| `RETRIEVED_IMAGES_BYTE_BUDGET` | base64 in one chat request | 6 MB, fixed |
+| `RETRIEVED_IMAGES_BYTE_BUDGET` | base64 in one chat request | ~6.7 MB, fixed |
+
+**The first two can diverge, and nothing on the answer says so** (D8 forbids
+it). Above a cap of 4 the model is provably shown at least one picture the
+reader gets no chip for; it can also happen below 4, because the source list
+is a flat best-first sort across pages while the attachments are picked
+round-robin, so a round-robin slot can land on a page the flat sort has
+already filled past. The page is still cited either way — what is missing is
+the chip for that particular picture. At the default cap of 2 it cannot
+happen. If the reader seeing every attached picture matters more to you than
+breadth, keep the cap at 4 or below.
 
 The byte budget is a **constant, not a knob**. A count is something an
 operator can reason about; a byte ceiling depends on what the corpus happens
@@ -616,8 +633,16 @@ to hold, and the symptom of a wrong one is a provider timing out on a request
 whose size nobody can see. It exists because this path bypasses the LLM
 queue's own sizing by design — the queue counts requests, not bytes — so a cap
 of 8 against a 5 MB intake ceiling would otherwise admit ~55 MB of base64 into
-a single prompt, four of them concurrently at `LLM_CONCURRENCY=4`. Reaching it
-drops the remaining pictures and answers anyway.
+a single prompt. The concurrency in front of it is the **SSE stream cap**
+(`admin_settings.llm_max_concurrent_streams_per_user`, hard default 3,
+raisable to 20), not `LLM_CONCURRENCY` — the pick runs on the request path,
+above the LLM queue entirely.
+
+Its value is *derived*: the base64 length of one `MAX_IMAGE_BYTES` image, so
+the largest picture the intake will admit is always attachable and the two
+numbers cannot drift. Reaching the budget skips that picture, counts it and
+keeps going — a smaller one further down the list still gets attached — and
+the answer runs either way.
 
 ### The one refusal it adds
 
@@ -636,21 +661,33 @@ This **supersedes** P3's "an image-only hit set never refuses". That rule was
 justified as thin-evidence-not-absent-evidence *because P4 was going to show
 the model the picture*; where P4 does, the turn answers exactly as P3 said,
 and where it cannot, there is no evidence in the request at all. The remedy is
-an operator one: assign a vision-capable chat model, or raise the cap off 0.
+an operator one: assign a vision-capable chat model, or raise the cap off 0 —
+or, where the pick ran and refused every candidate, fix what the `skipped`
+counters below name.
 
 ### How to tell it ran
 
-**Logs.** One `info` per answer that attached something:
+**Logs.** One `info` per answer where the pick did anything at all — attached
+a picture, or refused one:
 
 ```
-#1115 P4: attached retrieved images to the chat request
-  { attached: 2, bytes: 214_355, skipped: { missing: 0, invalid: 1, overBudget: 0 }, cap: 2 }
+#1115 P4: retrieved-image pick
+  { attached: 2, bytes: 214_355, cap: 2,
+    skipped: { missing: 0, invalid: 1, overBudget: 0, duplicate: 0 } }
 ```
+
+`attached: 0` with a non-zero `skipped` is the state to look for, and it is
+the reason this line fires on a request that sent nothing: D8 forbids any
+user-visible signal and the audit fields are absent when nothing was sent, so
+the log is the only place it shows up.
 
 `skipped.invalid` is the interesting counter: it means the leg ranked a page on
 a picture the answer path then refused — most often draw.io's XML behind a
 `.png` name, which the intake skips too (§5), or an image past the dimension
-ceiling.
+ceiling. `missing` means the bytes are not in the store the reference names
+(deleted, or never downloaded — a lazy fetch is the recovery path, §5),
+`overBudget` that the request was already full, and `duplicate` that the same
+picture had already been attached from another page.
 
 **Audit (EE).** `llm_audit_log` rows for `action: 'ask'` carry
 `retrievedImageCount` and `retrievedImageBytes` — counts and raw byte totals of
@@ -662,7 +699,11 @@ dropped.
 **By hand.** Ask a question that only a picture answers on a page with no
 prose. With the gate open the answer describes the picture; with it shut the
 answer is about the title. The refusal above is the sharpest signal of all —
-if you see it, condition (1) or (3) is the one that failed.
+if you see it, condition (1), (3) or (4) is the one that failed, and the log
+line's `skipped` counters separate the third from the first two: all-zero
+counters mean the pick never ran (the cap is 0, or the model cannot see
+images), while a non-zero one means it ran and could not use anything it
+found.
 
 ### What it does not do
 

@@ -19,6 +19,7 @@ import {
   type RetrievedImagePage,
 } from './retrieved-images.js';
 import { buildPng, buildJpeg, SVG_BYTES } from '../../../core/services/test-image-fixtures.js';
+import { MAX_IMAGE_BYTES } from '../../../core/services/image-validator.js';
 import type { ImageHit } from './image-leg-search.js';
 
 /**
@@ -77,6 +78,20 @@ function page(pageId: number, hits: ImageHit[]): RetrievedImagePage {
   return { pageId, imageHits: hits };
 }
 
+/**
+ * A valid PNG whose bytes are unique to `tag`, at a length that does not
+ * depend on it.
+ *
+ * Selection-order and budget cases need DISTINCT pictures: identical bytes
+ * are one piece of evidence however many pages carry them, and the pick
+ * deliberately attaches such a set once (see the dedupe block below). The
+ * padding rides after `IEND`, which the validator's fixed-offset PNG header
+ * read ignores.
+ */
+function distinctPng(tag: string): Buffer {
+  return Buffer.concat([buildPng(4, 4), Buffer.from(tag.padEnd(8, '.'), 'ascii')]);
+}
+
 describe('pickRetrievedImages — the gate costs nothing when there is nothing to pick', () => {
   it('reads no page row and no byte when max is 0', async () => {
     // The knob's off switch. `rag_answer_max_images = 0` must not merely
@@ -111,10 +126,10 @@ describe('pickRetrievedImages — selection order', () => {
       { id: 1, confluence_id: 'c1', source: 'confluence' },
       { id: 2, confluence_id: 'c2', source: 'confluence' },
     ]);
-    await writeConfluenceFile('c1', 'a1.png', buildPng(4, 4));
-    await writeConfluenceFile('c1', 'a2.png', buildPng(4, 4));
-    await writeConfluenceFile('c1', 'a3.png', buildPng(4, 4));
-    await writeConfluenceFile('c2', 'b1.png', buildPng(4, 4));
+    await writeConfluenceFile('c1', 'a1.png', distinctPng('a1'));
+    await writeConfluenceFile('c1', 'a2.png', distinctPng('a2'));
+    await writeConfluenceFile('c1', 'a3.png', distinctPng('a3'));
+    await writeConfluenceFile('c2', 'b1.png', distinctPng('b1'));
 
     const picked = await pickRetrievedImages(
       [
@@ -132,8 +147,8 @@ describe('pickRetrievedImages — selection order', () => {
       { id: 1, confluence_id: 'c1', source: 'confluence' },
       { id: 2, confluence_id: 'c2', source: 'confluence' },
     ]);
-    await writeConfluenceFile('c1', 'a1.png', buildPng(4, 4));
-    await writeConfluenceFile('c2', 'b1.png', buildPng(4, 4));
+    await writeConfluenceFile('c1', 'a1.png', distinctPng('a1'));
+    await writeConfluenceFile('c2', 'b1.png', distinctPng('b1'));
 
     const picked = await pickRetrievedImages(
       [page(1, [hit('a1.png', 0.40)]), page(2, [hit('b1.png', 0.92)])],
@@ -148,9 +163,9 @@ describe('pickRetrievedImages — selection order', () => {
       { id: 1, confluence_id: 'c1', source: 'confluence' },
       { id: 2, confluence_id: 'c2', source: 'confluence' },
     ]);
-    await writeConfluenceFile('c1', 'a1.png', buildPng(4, 4));
-    await writeConfluenceFile('c1', 'a2.png', buildPng(4, 4));
-    await writeConfluenceFile('c2', 'b1.png', buildPng(4, 4));
+    await writeConfluenceFile('c1', 'a1.png', distinctPng('a1'));
+    await writeConfluenceFile('c1', 'a2.png', distinctPng('a2'));
+    await writeConfluenceFile('c2', 'b1.png', distinctPng('b1'));
 
     const picked = await pickRetrievedImages(
       [page(1, [hit('a1.png', 0.91), hit('a2.png', 0.90)]), page(2, [hit('b1.png', 0.55)])],
@@ -179,7 +194,7 @@ describe('pickRetrievedImages — the parts it builds', () => {
     expect(picked.used).toEqual([
       { pageId: 7, source: 'confluence', attachmentKey: 'shot.png', bytes: jpeg.length },
     ]);
-    expect(picked.skipped).toEqual({ missing: 0, invalid: 0, overBudget: 0 });
+    expect(picked.skipped).toEqual({ missing: 0, invalid: 0, overBudget: 0, duplicate: 0 });
   });
 
   it('reads the LOCAL store when the hit names it', async () => {
@@ -277,12 +292,13 @@ describe('pickRetrievedImages — the byte budget', () => {
       { id: 1, confluence_id: 'c1', source: 'confluence' },
       { id: 2, confluence_id: 'c2', source: 'confluence' },
     ]);
-    const png = buildPng(4, 4);
-    await writeConfluenceFile('c1', 'a1.png', png);
-    await writeConfluenceFile('c2', 'b1.png', png);
+    // Distinct bytes at an identical length, so the budget arithmetic is
+    // clean and the dedupe below is not what is being measured.
+    await writeConfluenceFile('c1', 'a1.png', distinctPng('a1'));
+    await writeConfluenceFile('c2', 'b1.png', distinctPng('b1'));
 
     // Room for exactly one: base64 of one file, plus a byte.
-    const oneFits = Buffer.from(png).toString('base64').length + 1;
+    const oneFits = distinctPng('a1').toString('base64').length + 1;
     const picked = await pickRetrievedImages(
       [page(1, [hit('a1.png', 0.9)]), page(2, [hit('b1.png', 0.8)])],
       { max: 4, byteBudget: oneFits },
@@ -305,13 +321,128 @@ describe('pickRetrievedImages — the byte budget', () => {
     expect(picked.skipped.overBudget).toBe(1);
   });
 
-  it('defaults to 6 MB of base64 — a constant, not a knob', async () => {
+  it('keeps going past an image that did not fit, and takes a smaller one that does', async () => {
+    // Review r1. The loop used to `break` here, on the reasoning that every
+    // further candidate would cost a disk read to reach the same verdict —
+    // which is only true if every remaining candidate is at least as large.
+    // Candidates come from different pages and differ arbitrarily in size, so
+    // a big picture ranked first silently deleted a small one on the NEXT
+    // page that fits with room to spare. On an all-`imageTextSynthesized`
+    // set that is the difference between an answered turn and an
+    // `image_only_context` refusal, on a deployment where a usable picture
+    // was one candidate away.
+    pageRows([
+      { id: 1, confluence_id: 'c1', source: 'confluence' },
+      { id: 2, confluence_id: 'c2', source: 'confluence' },
+    ]);
+    const small = buildPng(4, 4);
+    const big = Buffer.concat([buildPng(8, 8), Buffer.alloc(40_000)]);
+    await writeConfluenceFile('c1', 'big.png', big);
+    await writeConfluenceFile('c2', 'small.png', small);
+
+    const picked = await pickRetrievedImages(
+      [page(1, [hit('big.png', 0.9)]), page(2, [hit('small.png', 0.5)])],
+      { max: 4, byteBudget: small.toString('base64').length + 10 },
+    );
+
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['small.png']);
+    expect(picked.skipped.overBudget).toBe(1);
+  });
+
+  it('counts EVERY candidate that did not fit, not just the first', async () => {
+    pageRows([
+      { id: 1, confluence_id: 'c1', source: 'confluence' },
+      { id: 2, confluence_id: 'c2', source: 'confluence' },
+    ]);
+    await writeConfluenceFile('c1', 'a.png', Buffer.concat([buildPng(4, 4), Buffer.alloc(40_000)]));
+    await writeConfluenceFile('c2', 'b.png', Buffer.concat([buildPng(5, 5), Buffer.alloc(40_000)]));
+
+    const picked = await pickRetrievedImages(
+      [page(1, [hit('a.png', 0.9)]), page(2, [hit('b.png', 0.5)])],
+      { max: 4, byteBudget: 8 },
+    );
+
+    expect(picked.used).toEqual([]);
+    expect(picked.skipped.overBudget).toBe(2);
+  });
+
+  it('APPLIES the default budget — the only bound the production call path has', async () => {
+    // `llm-ask.ts` never passes `byteBudget`, so production rides entirely on
+    // the `?? RETRIEVED_IMAGES_BYTE_BUDGET` fallback. Review r1 mutated that
+    // to `Number.MAX_SAFE_INTEGER` and the whole suite stayed green: the two
+    // behavioural budget cases above each pass an explicit budget, and the
+    // constant's own assertion below reads the value without ever applying
+    // it. This is the case that fails under that mutation.
+    pageRows([
+      { id: 1, confluence_id: 'c1', source: 'confluence' },
+      { id: 2, confluence_id: 'c2', source: 'confluence' },
+    ]);
+    // Two images that are each comfortably under `MAX_IMAGE_BYTES` and whose
+    // base64 together is comfortably over the budget.
+    const fat = (tag: string) => Buffer.concat([distinctPng(tag), Buffer.alloc(4_000_000)]);
+    await writeConfluenceFile('c1', 'a.png', fat('a'));
+    await writeConfluenceFile('c2', 'b.png', fat('b'));
+
+    const picked = await pickRetrievedImages(
+      [page(1, [hit('a.png', 0.9)]), page(2, [hit('b.png', 0.8)])],
+      { max: 4 },
+    );
+
+    expect(picked.used).toHaveLength(1);
+    expect(picked.skipped.overBudget).toBe(1);
+  });
+
+  it('is the base64 of exactly one MAX_IMAGE_BYTES image — derived, so the two cannot drift', async () => {
     // Deliberately not an admin setting: it is the backpressure bound for a
     // path that bypasses the LLM queue's own sizing, and an operator has no
     // way to measure the right value. The cap they DO get
     // (`rag_answer_max_images`) is a count, which is the thing they can
     // reason about. See the module docstring.
-    expect(RETRIEVED_IMAGES_BYTE_BUDGET).toBe(6 * 1024 * 1024);
+    //
+    // Review r1: it used to be a literal 6 MiB, described as "roughly one
+    // `MAX_IMAGE_BYTES` image at ~1.37x inflation" — which is 14% short, so
+    // the largest images P2's intake admits were indexed, ranked and shown as
+    // sources while being categorically unattachable. The assertion is on the
+    // PROPERTY rather than on a number, because the number is the part that
+    // drifted.
+    expect(RETRIEVED_IMAGES_BYTE_BUDGET).toBeGreaterThanOrEqual(
+      Buffer.alloc(MAX_IMAGE_BYTES).toString('base64').length,
+    );
+  });
+});
+
+describe('pickRetrievedImages — byte-identical pictures', () => {
+  it('takes a shared image once, however many pages carry it', async () => {
+    // Review r1. P2 indexes every referenced image per PAGE, so a diagram
+    // reused across three pages is three rows with identical bytes — and
+    // therefore an identical embedding and an identical similarity, which
+    // sorts them adjacent in round 0. At the default cap of 2 the model got
+    // the same picture twice: two slots and double the byte budget for one
+    // piece of evidence, which is exactly the image-COUNT-beats-image-BREADTH
+    // failure the round-robin above exists to prevent, reached from inside a
+    // single round.
+    pageRows([
+      { id: 1, confluence_id: 'c1', source: 'confluence' },
+      { id: 2, confluence_id: 'c2', source: 'confluence' },
+      { id: 3, confluence_id: 'c3', source: 'confluence' },
+    ]);
+    const shared = buildPng(6, 6);
+    const other = buildPng(7, 7);
+    await writeConfluenceFile('c1', 'diagram.png', shared);
+    await writeConfluenceFile('c2', 'diagram.png', shared);
+    await writeConfluenceFile('c3', 'other.png', other);
+
+    const picked = await pickRetrievedImages(
+      [
+        page(1, [hit('diagram.png', 0.90)]),
+        page(2, [hit('diagram.png', 0.90)]),
+        page(3, [hit('other.png', 0.55)]),
+      ],
+      { max: 2 },
+    );
+
+    expect(picked.used.map((u) => u.pageId)).toEqual([1, 3]);
+    expect(picked.skipped.duplicate).toBe(1);
   });
 });
 
@@ -319,10 +450,16 @@ describe('retrievedImagesCacheComponent', () => {
   const use = (pageId: number, attachmentKey: string, bytes = 100) =>
     ({ pageId, source: 'confluence' as const, attachmentKey, bytes });
 
-  it('is undefined when nothing was sent, so a text-only answer keeps today’s key', () => {
+  it('is undefined when nothing was sent — the absence of images is not a 0-length set', () => {
     // Every deployment without a vision model is in this branch on every ask.
-    // A component that was present-but-empty would move every existing key
-    // and cold-start the answer cache for a change none of them took part in.
+    //
+    // Review r1 corrected what this buys: it is NOT key stability.
+    // `hashLlmInputs` writes a `\x00` separator per component, so passing a
+    // 15th component at all moves every pre-P4 key whether or not it is
+    // empty, and every deployment cold-starts its answer cache once for one
+    // `LLM_CACHE_TTL`. What `undefined` buys is that "no images" cannot be
+    // spelled the same way as some future "0 images, deliberately", and that
+    // the component stays absent from the key derivation's own reading.
     expect(retrievedImagesCacheComponent([])).toBeUndefined();
   });
 
@@ -358,9 +495,9 @@ describe('pickRetrievedImages — one lookup, whatever the page count', () => {
       { id: 2, confluence_id: 'c2', source: 'confluence' },
       { id: 3, confluence_id: 'c3', source: 'confluence' },
     ]);
-    await writeConfluenceFile('c1', 'a.png', buildPng(4, 4));
-    await writeConfluenceFile('c2', 'b.png', buildPng(4, 4));
-    await writeConfluenceFile('c3', 'c.png', buildPng(4, 4));
+    await writeConfluenceFile('c1', 'a.png', distinctPng('a'));
+    await writeConfluenceFile('c2', 'b.png', distinctPng('b'));
+    await writeConfluenceFile('c3', 'c.png', distinctPng('c'));
 
     await pickRetrievedImages(
       [page(1, [hit('a.png', 0.9)]), page(2, [hit('b.png', 0.8)]), page(3, [hit('c.png', 0.7)])],

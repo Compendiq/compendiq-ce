@@ -113,7 +113,7 @@ sequenceDiagram
         note right of BE: FOUR gates, cheapest first — a text-only deployment pays<br/>one cached settings read and stops:<br/>rag_answer_max_images > 0 (default 2, range 0-8, 0 IS the off switch)#59;<br/>some returned page carries imageHits#59;<br/>getVisionCapability(chatProvider, chatModel) === true — the STORED<br/>#35;1154 verdict, never a probe on the hot path#59; false and null both<br/>mean text-only#59; and the bytes must pass validateImage
         BE->>PG: ONE batched SELECT id, confluence_id, source<br/>for the candidate pages (pageSource is REQUIRED, never inferred)
         PG-->>BE: page identities
-        BE->>BE: pickRetrievedImages — read bytes off disk (system reader,<br/>post-ACL set only)#59; ROUND-ROBIN: every page's best image before<br/>any page's second#59; validateImage (sniff, 5 MB, 4096px)#59;<br/>skip+count missing / invalid#59; stop at the 6 MB base64 budget
+        BE->>BE: pickRetrievedImages — read bytes off disk (system reader,<br/>post-ACL set only)#59; ROUND-ROBIN: every page's best image before<br/>any page's second#59; validateImage (sniff, 5 MB, 4096px)#59;<br/>skip+count missing / invalid / duplicate bytes / over the base64 budget
         note right of BE: parts order: text, then the USER's own attachment,<br/>then the retrieved ones#59; ONE system sentence, and only when<br/>a picture really was attached#59; any gate failing = text-only and<br/>UNQUALIFIED (D8): no sentence, no caveat, no degradation copy#59;<br/>retrieved images NEVER join otherGrounding — the pick runs AFTER<br/>the refusal decision, so a refused turn reads no bytes
     end
     opt every row is imageTextSynthesized AND nothing was attached (#35;1115 P4)
@@ -1607,15 +1607,36 @@ file to the index on its sniffed format alone, so refusing a badly-named
 attachment would drop a picture the index says is fine. Everything refused is
 skipped and counted, never fatal.
 
-**`RETRIEVED_IMAGES_BYTE_BUDGET` (6 MB of base64) is a constant, not a knob.**
+**`RETRIEVED_IMAGES_BYTE_BUDGET` is a constant, not a knob — and derived.**
 A count is something an operator can reason about; a byte ceiling depends on
 what the corpus holds and its failure mode is a provider timing out on a
 request whose size nobody can see. It is the backpressure bound for a path
 that bypasses the LLM queue's sizing by design — the queue counts requests,
 not bytes — so a cap of 8 against a 5 MB intake ceiling would admit ~55 MB of
-base64 into one prompt, four concurrent at `LLM_CONCURRENCY=4`. Hitting it
-stops the loop rather than skipping onward: every further candidate would cost
-a disk read to reach the same verdict.
+base64 into one prompt. The concurrency in front of it is the **SSE stream
+cap** (`llm_max_concurrent_streams_per_user`, hard default 3, raisable to 20),
+not `LLM_CONCURRENCY`: the pick runs on the request path, above the queue.
+
+Its value is `base64Length(MAX_IMAGE_BYTES)` (~6.7 MB), not a literal. It
+shipped as a flat 6 MiB described as "roughly one `MAX_IMAGE_BYTES` image",
+which is 14% short of it — so an image between 4.5 MB and the 5 MB intake
+ceiling was indexed, ranked by the leg and shown to the reader as a source
+while being categorically unshowable to the model. Hitting the budget **skips
+that candidate and keeps going**, never `break`s: candidates come from
+different pages at arbitrary sizes, so stopping deleted a small picture that
+fits because a larger one outranked it — and on an all-image-only set that
+turned an answerable turn into an `image_only_context` refusal. The projected
+length is computed arithmetically, so a candidate that does not fit costs no
+base64 encode.
+
+**Byte-identical pictures are attached once.** P2 indexes images per page, so
+one diagram reused across five pages is five candidates whose identical bytes
+embed identically and therefore carry the same similarity — which sorts them
+adjacent inside a single round. Without the dedupe the model received one
+piece of evidence in both default slots, which is the count-beats-breadth
+failure the round-robin exists to prevent, reached from inside a round rather
+than across them. The digest is over the bytes, not `(source, key)`: the same
+picture is regularly stored under two names in two directories.
 
 **Part order is text, then the USER's attachment, then the retrieved ones.**
 Ordering is the only signal a chat API gives about which picture the question

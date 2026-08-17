@@ -57,14 +57,19 @@ import {
   resolveAttachmentBytes,
   type AttachmentStoreSource,
 } from '../../../core/services/attachment-store.js';
-import { validateImage } from '../../../core/services/image-validator.js';
+import { validateImage, MAX_IMAGE_BYTES } from '../../../core/services/image-validator.js';
 import type { PageSource } from '@compendiq/contracts';
 import type { ChatContentPart } from './prompts.js';
 import type { ImageHit } from './image-leg-search.js';
 
+/** Exact length of `Buffer#toString('base64')` for `n` raw bytes. */
+function base64Length(rawBytes: number): number {
+  return 4 * Math.ceil(rawBytes / 3);
+}
+
 /**
  * Ceiling on the base64 an answer's retrieved images may add to one chat
- * request. 6 MB.
+ * request — the base64 of exactly one `MAX_IMAGE_BYTES` image, ~6.7 MB.
  *
  * **A constant, not an admin knob, and the difference is deliberate.**
  * `rag_answer_max_images` is a COUNT, which is a thing an operator can reason
@@ -74,18 +79,35 @@ import type { ImageHit } from './image-leg-search.js';
  * the symptom of a too-high one is a provider timing out on a request nobody
  * can see the size of. So the count is theirs and the bound is ours.
  *
- * The number is the backpressure bound for a path that BYPASSES the queue's
- * own sizing by design: `streamChat` wraps the call in the shared LLM queue
- * and the per-provider breaker, but neither of those weighs a request, so a
- * cap of 8 against `MAX_IMAGE_BYTES` (5 MB) would admit 40 MB of raw bytes —
- * ~55 MB base64 — into a single prompt and, at `LLM_CONCURRENCY` 4, four of
- * those in flight at once. 6 MB is roughly one `MAX_IMAGE_BYTES` image at
- * base64's ~1.37x inflation, which is what the intake cap already lets into
- * the index, plus room for the ordinary case of several small screenshots.
- * Reaching it is a skip-and-count, never an error: the answer still runs, with
- * fewer pictures.
+ * It is the backpressure bound for a path that BYPASSES the queue's own
+ * sizing by design: `streamChat` wraps the call in the shared LLM queue and
+ * the per-provider breaker, but neither of those weighs a request, so a cap
+ * of 8 against `MAX_IMAGE_BYTES` (5 MB) would admit 40 MB of raw bytes —
+ * ~55 MB base64 — into a single prompt.
+ *
+ * **DERIVED from `MAX_IMAGE_BYTES`, not a literal** (review r1). It was
+ * `6 * 1024 * 1024`, described as "roughly one `MAX_IMAGE_BYTES` image at
+ * base64's ~1.37x inflation" — which is 14% short of it: 5 MiB encodes to
+ * 6,990,508 bytes against a 6,291,456 ceiling, so nothing over 4.5 MiB raw
+ * could ever be attached. P2's intake admits up to `MAX_IMAGE_BYTES`, so the
+ * top tenth of the admissible size range was indexed, ranked by the leg and
+ * shown to the reader as a source while being categorically unshowable to the
+ * model — a cliff with no symptom. Deriving it states the intent ("whatever
+ * the intake will hold, the answer path can carry one of") and is why the two
+ * numbers cannot drift apart again.
+ *
+ * **The concurrency in front of it is the SSE stream cap, not
+ * `LLM_CONCURRENCY`.** The pick runs on the request path, well above
+ * `streamChat`; the only limiter it sits behind is `acquireStreamSlot`
+ * (`admin_settings.llm_max_concurrent_streams_per_user`, hard default 3,
+ * raisable to 20), so the concurrent-base64 peak scales with in-flight
+ * streams across users rather than with the LLM queue's width — the same
+ * distinction #1183 drew for image staging.
+ *
+ * Reaching it is a skip-and-count, never an error: the answer still runs,
+ * with fewer pictures.
  */
-export const RETRIEVED_IMAGES_BYTE_BUDGET = 6 * 1024 * 1024;
+export const RETRIEVED_IMAGES_BYTE_BUDGET = base64Length(MAX_IMAGE_BYTES);
 
 /**
  * The shape this module needs off a `SearchResult` — its page id and the
@@ -115,15 +137,21 @@ export interface RetrievedImagesSkipped {
   /** Bytes a vision encoder cannot read, or past a #1154 ceiling. */
   invalid: number;
   /**
-   * The image that would have taken the request past
-   * {@link RETRIEVED_IMAGES_BYTE_BUDGET}.
-   *
-   * At most 1, and that is the point rather than a limitation: the loop stops
-   * at the first image that does not fit, so counting the rest would mean
-   * reading bytes precisely to decide not to use them. It reads "at least one
-   * picture was dropped for size", which is the operational fact.
+   * Candidates that would have taken the request past
+   * {@link RETRIEVED_IMAGES_BYTE_BUDGET} — every one of them, not just the
+   * first (review r1).
    */
   overBudget: number;
+  /**
+   * Candidates whose bytes are identical to a picture already attached.
+   *
+   * P2 indexes images per PAGE, so one diagram reused across five pages is
+   * five rows carrying the same bytes, the same embedding and therefore the
+   * same similarity — which sorts them adjacent inside a single round-robin
+   * round. Without this the model got one piece of evidence in both default
+   * slots.
+   */
+  duplicate: number;
 }
 
 export interface RetrievedImagesPick {
@@ -136,7 +164,7 @@ export interface RetrievedImagesPick {
 const EMPTY: RetrievedImagesPick = {
   parts: [],
   used: [],
-  skipped: { missing: 0, invalid: 0, overBudget: 0 },
+  skipped: { missing: 0, invalid: 0, overBudget: 0, duplicate: 0 },
 };
 
 interface Candidate {
@@ -224,7 +252,8 @@ export async function pickRetrievedImages(
   const budget = opts.byteBudget ?? RETRIEVED_IMAGES_BYTE_BUDGET;
   const parts: ChatContentPart[] = [];
   const used: RetrievedImageUse[] = [];
-  const skipped: RetrievedImagesSkipped = { missing: 0, invalid: 0, overBudget: 0 };
+  const skipped: RetrievedImagesSkipped = { missing: 0, invalid: 0, overBudget: 0, duplicate: 0 };
+  const attachedDigests = new Set<string>();
   let base64Total = 0;
 
   for (const candidate of candidates) {
@@ -269,15 +298,35 @@ export async function pickRetrievedImages(
       continue;
     }
 
-    const base64 = resolved.bytes.toString('base64');
-    if (base64Total + base64.length > budget) {
-      // Stop rather than skip-and-continue: every further candidate costs a
-      // disk read to reach the same verdict, and the request is already at
-      // the size this bound exists to hold it to.
-      skipped.overBudget++;
-      break;
+    // Byte-identical to something already attached — one diagram on five
+    // pages is five candidates, and they rank adjacently because identical
+    // bytes embed identically. Hashed rather than compared by `(source,
+    // key)`: the same picture is regularly stored under two names and in two
+    // directories, and the bytes are already in hand so the digest is free.
+    const digest = createHash('sha256').update(resolved.bytes).digest('hex');
+    if (attachedDigests.has(digest)) {
+      skipped.duplicate++;
+      continue;
     }
+
+    // SKIP rather than stop (review r1). "Every further candidate costs a
+    // disk read to reach the same verdict" only holds if every remaining
+    // candidate is at least as large, and they come from different pages at
+    // arbitrary sizes — so stopping silently dropped a small picture that
+    // fits because a big one outranked it, and on an all-image-only set that
+    // turned an answerable turn into an `image_only_context` refusal. The
+    // extra cost is bounded by the candidate list, which the `missing` and
+    // `invalid` skips above already walk to the end.
+    //
+    // The projected length is ARITHMETIC, so a candidate that does not fit
+    // costs no base64 encode — only the disk read it has already paid for.
+    if (base64Total + base64Length(resolved.bytes.length) > budget) {
+      skipped.overBudget++;
+      continue;
+    }
+    const base64 = resolved.bytes.toString('base64');
     base64Total += base64.length;
+    attachedDigests.add(digest);
 
     parts.push({ type: 'image_url', image_url: { url: `data:image/${format};base64,${base64}` } });
     used.push({

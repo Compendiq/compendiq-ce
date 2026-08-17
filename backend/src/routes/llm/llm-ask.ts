@@ -856,8 +856,21 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     const retrievedImages =
       chatVision === true
         ? await pickRetrievedImages(searchResults, { max: answerMaxImages })
-        : { parts: [], used: [], skipped: { missing: 0, invalid: 0, overBudget: 0 } };
-    if (retrievedImages.parts.length > 0 || retrievedImages.skipped.overBudget > 0) {
+        : { parts: [], used: [], skipped: { missing: 0, invalid: 0, overBudget: 0, duplicate: 0 } };
+    // Log whenever the pick DID something — attached a picture, or refused
+    // one. Review r1: gating on `parts.length > 0 || overBudget > 0` left the
+    // most diagnostic state of all silent — every candidate refused as
+    // missing or invalid (draw.io's XML behind a `.png`, an over-dimension
+    // scan, bytes deleted since the index was built). The audit fields are
+    // deliberately absent in that case and D8 forbids any user-visible
+    // signal, so this line is the only place it is observable, and the
+    // runbook's §7 debugging step points straight at these counters.
+    const skippedTotal =
+      retrievedImages.skipped.missing
+      + retrievedImages.skipped.invalid
+      + retrievedImages.skipped.overBudget
+      + retrievedImages.skipped.duplicate;
+    if (retrievedImages.parts.length > 0 || skippedTotal > 0) {
       logger.info(
         {
           userId,
@@ -866,7 +879,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           skipped: retrievedImages.skipped,
           cap: answerMaxImages,
         },
-        '#1115 P4: attached retrieved images to the chat request',
+        // Names the STEP, not one of its outcomes: the line now fires for an
+        // answer that attached nothing because every candidate was refused,
+        // and "attached retrieved images" would be a false claim on exactly
+        // the request an operator is grepping for.
+        '#1115 P4: retrieved-image pick',
       );
     }
 

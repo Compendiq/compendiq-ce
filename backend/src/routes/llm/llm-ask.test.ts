@@ -4,6 +4,7 @@ import sensible from '@fastify/sensible';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
+import { logger } from '../../core/utils/logger.js';
 
 // --- Mock: llm-provider-resolver (resolveUsecase) ---
 const mockResolveUsecase = vi.fn().mockResolvedValue({
@@ -1729,6 +1730,64 @@ describe('POST /api/llm/ask', () => {
         .map((p) => (p.image_url as { url: string }).url);
       expect(urls[0]).toBe(`data:image/webp;base64,${Buffer.from('user-bytes').toString('base64')}`);
       expect(urls[1]).toBe(`data:image/png;base64,${PNG.toString('base64')}`);
+
+      // …and the capability table was read exactly ONCE for the whole
+      // request — by `resolveImagePart`, which has already thrown unless the
+      // verdict was `true`. The P4 gate adds no second read, and that
+      // short-circuit is sound precisely BECAUSE both consult the same
+      // resolved pair, which the next test pins.
+      expect(mockGetVisionCapability).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks the capability table about the RESOLVED chat pair, not the body’s model', async () => {
+      // Review r1. Every other assertion in this block reads the verdict or
+      // the call count, so gating on `body.model` — attacker-controlled free
+      // text, and `undefined` on several of these very requests — would have
+      // read a `llm_model_capabilities` row that generally does not exist,
+      // i.e. a permanent `null`, with the whole suite green. The payload
+      // deliberately sends `llama3` while `resolveUsecase('chat')` resolves
+      // `p1`/`m`.
+      mockHybridSearch.mockResolvedValue([
+        pageWithFiles(61, [{ key: 'h1.png', similarity: 0.9, bytes: PNG }]),
+      ]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q', model: 'llama3' },
+      });
+
+      expect(mockGetVisionCapability).toHaveBeenCalledWith('p1', 'm');
+    });
+
+    it('logs the skip counters when EVERY candidate was refused', async () => {
+      // Review r1. The line used to fire only when something was attached or
+      // the budget was hit, so the one state an operator has to debug — the
+      // leg ranked a page on a picture the answer path then refused — was
+      // observable nowhere: D8 forbids a user-visible signal and the audit
+      // fields are deliberately absent when nothing was sent. The runbook's
+      // §7 "How to tell it ran" points at exactly this counter.
+      const info = vi.spyOn(logger, 'info');
+      mockHybridSearch.mockResolvedValue([
+        pageWithFiles(62, [
+          { key: 'drawio.png', similarity: 0.9, bytes: Buffer.from('<mxfile host="app"/>') },
+          { key: 'deleted.png', similarity: 0.8 },
+        ]),
+      ]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q', model: 'llama3' },
+      });
+
+      const line = info.mock.calls.find((c) => String(c[1]).includes('#1115 P4'));
+      expect(line).toBeDefined();
+      expect((line![0] as { attached: number }).attached).toBe(0);
+      expect((line![0] as { skipped: Record<string, number> }).skipped).toMatchObject({
+        invalid: 1, missing: 1,
+      });
+      info.mockRestore();
     });
 
     it('does not let a retrieved image avert a weak_match refusal, and reads no bytes for it', async () => {
