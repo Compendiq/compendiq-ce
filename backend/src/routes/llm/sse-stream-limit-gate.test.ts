@@ -91,6 +91,13 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   getRagConfidenceThresholdRerank: vi.fn(async () => 0),
   // #1270 m6: the ask route reads the assembly budget into its cache key.
   getRagContextCharsPerPage: vi.fn(async () => 6000),
+  // #1115 P4: the answer-path image cap. The stub is CLOSED, so a getter the
+  // route starts reading has to be added here — which is the point: a missing
+  // one throws rather than silently resolving to `undefined` and turning a
+  // gate into a coin flip. 0 keeps this suite about the stream limiter: the
+  // fixture row carries no `imageHits`, so the value is unreachable either
+  // way, and 0 says so.
+  getRagAnswerMaxImages: vi.fn(async () => 0),
 }));
 
 vi.mock('../../core/db/postgres.js', () => ({

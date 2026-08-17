@@ -31,6 +31,29 @@ export interface LlmAuditEntry {
    * (#307 P0f.)
    */
   sanitized?: boolean;
+  /**
+   * #1115 P4 — how many knowledge-base images the request attached as
+   * `image_url` parts, and their total size in RAW bytes (not base64).
+   *
+   * Both are OPTIONAL and both are absent, never 0, when the answer was
+   * text-only — which is every answer on a deployment with no image leg and
+   * every answer from a model that has not probed vision-capable. The EE
+   * writer has to be able to tell "this call site does not report it" from
+   * "it reported none", and every row written before P4 is the former.
+   * Adding optional fields is compatible with that consumer; renaming or
+   * requiring one is not.
+   *
+   * They count what was SENT, not what was picked or considered. A candidate
+   * that was skipped (missing bytes, an unreadable header, past a #1154
+   * ceiling, past the byte budget) cost the provider nothing and belongs in
+   * the route's log line, not in an attestation of what the model saw.
+   *
+   * Deliberately numbers only — no attachment key, no page id and obviously
+   * no bytes. `inputMessages[].contentLength` goes through `contentToText`,
+   * which drops image parts, so no base64 reaches this entry by any path.
+   */
+  retrievedImageCount?: number;
+  retrievedImageBytes?: number;
 }
 
 /**

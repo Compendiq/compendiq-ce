@@ -100,7 +100,9 @@ import {
   getRagImagesPerPageMax,
   getRagImageIndexExternal,
   getRagImageLegEnabled,
+  getRagAnswerMaxImages,
   invalidateRagImageIntakeCache,
+  invalidateRagAnswerMaxImagesCache,
 } from '../../core/services/admin-settings-service.js';
 
 /**
@@ -216,6 +218,7 @@ beforeEach(() => {
   invalidateRagMmrCache();
   invalidateRagRankingPriorCache();
   invalidateRagImageIntakeCache();
+  invalidateRagAnswerMaxImagesCache();
 });
 
 let app: ReturnType<typeof Fastify>;
@@ -802,6 +805,46 @@ describe('PUT /api/admin/settings — the image retrieval leg (#1115 P3)', () =>
 
   it('rejects anything that is not a boolean, rather than saving a value the reader ignores', async () => {
     for (const body of [{ ragImageLegEnabled: 'off' }, { ragImageLegEnabled: 0 }]) {
+      const res = await put(body);
+      expect(res.statusCode, JSON.stringify(body)).toBe(400);
+    }
+    expect(rows).toEqual({});
+  });
+});
+
+describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () => {
+  it('writes rag_answer_max_images under its documented key', async () => {
+    const res = await put({ ragAnswerMaxImages: 4 });
+
+    expect(res.statusCode).toBe(200);
+    expect(rows).toEqual({ rag_answer_max_images: '4' });
+  });
+
+  it('writes 0 — the off switch has to survive the round-trip', async () => {
+    // The one value a falsy-guard bug would drop, and the one this knob
+    // exists to make reachable: 0 means "never show the model a retrieved
+    // picture" and must land as the literal '0' rather than as no write.
+    const res = await put({ ragAnswerMaxImages: 0 });
+
+    expect(res.statusCode).toBe(200);
+    expect(rows).toEqual({ rag_answer_max_images: '0' });
+    await expect(getRagAnswerMaxImages()).resolves.toBe(0);
+  });
+
+  it('makes the NEXT ASK see the change — the write goes through the cached path (#1118)', async () => {
+    await put({ ragAnswerMaxImages: 5 });
+    await expect(getRagAnswerMaxImages()).resolves.toBe(5);
+    await put({ ragAnswerMaxImages: 1 });
+    await expect(getRagAnswerMaxImages()).resolves.toBe(1);
+  });
+
+  it('rejects a cap outside the reader range, rather than saving a lie', async () => {
+    for (const body of [
+      { ragAnswerMaxImages: 9 },
+      { ragAnswerMaxImages: -1 },
+      { ragAnswerMaxImages: 2.5 },
+      { ragAnswerMaxImages: '2' },
+    ]) {
       const res = await put(body);
       expect(res.statusCode, JSON.stringify(body)).toBe(400);
     }

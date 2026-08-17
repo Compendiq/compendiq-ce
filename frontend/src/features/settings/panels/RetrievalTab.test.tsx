@@ -1985,3 +1985,64 @@ describe('RetrievalTab — image retrieval (#1115 P3)', () => {
     expect(group.textContent).toMatch(/one extra embedding call per question/i);
   });
 });
+
+describe('RetrievalTab — images shown to the model (#1115 P4)', () => {
+  it('seeds the cap from the server document', async () => {
+    mockApi({ settings: { ...defaultSettings, ragAnswerMaxImages: 5 } });
+    renderTab();
+    await ready();
+
+    await waitFor(() => expect(input('ragAnswerMaxImages').value).toBe('5'));
+  });
+
+  it('defaults to 2 when the server document predates the knob', async () => {
+    mockApi({ settings: defaultSettings });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragAnswerMaxImages').value).toBe('2'));
+  });
+
+  it('saves 0 — the off switch is a value, not an absence', async () => {
+    // The one number that a "falsy means unchanged" diff would drop, and the
+    // only way an operator turns this off without unassigning the model that
+    // fills the index.
+    const puts = mockApi({ settings: { ...defaultSettings, ragAnswerMaxImages: 2 } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragAnswerMaxImages').value).toBe('2'));
+
+    type('ragAnswerMaxImages', '0');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragAnswerMaxImages: 0 });
+  });
+
+  it('lives in the Image retrieval group, beside the leg it depends on', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+
+    const group = screen.getByTestId('rag-image-leg-enabled').closest('section')!;
+    expect(within(group as HTMLElement).getByTestId('retrieval-ragAnswerMaxImages')).toBeInTheDocument();
+  });
+
+  it('says on screen that a text-only chat model never receives images', async () => {
+    // ADR-025 D8: a text-only answer is unqualified — nothing on the answer
+    // says a picture was withheld. This is therefore the ONLY place an
+    // operator can learn that the cap does nothing without a vision-capable
+    // chat model, so it has to be beside the control rather than in a
+    // runbook.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+
+    const row = screen.getByTestId('retrieval-ragAnswerMaxImages').closest('div')!;
+    const group = screen.getByTestId('rag-image-leg-enabled').closest('section')!;
+    expect(row).toBeInTheDocument();
+    expect(group.textContent).toMatch(/Text-only chat models never receive images/i);
+    expect(group.textContent).toMatch(/0 turns this off/i);
+  });
+});

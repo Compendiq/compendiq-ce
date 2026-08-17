@@ -88,6 +88,13 @@ interface RetrievalValues {
   ragImageLegEnabled: boolean;
   ragImagesPerPageMax: number;
   ragImageIndexExternal: boolean;
+  /**
+   * #1115 P4 — the ANSWER side: how many of the matched pictures the chat
+   * model is actually shown. A third half of the same feature, and it sits in
+   * the same group because an operator reasoning about "does the assistant
+   * see our diagrams?" needs the intake, the leg and this in one place.
+   */
+  ragAnswerMaxImages: number;
 }
 
 interface BenchmarkVariantSummary {
@@ -141,6 +148,7 @@ const DEFAULTS: RetrievalValues = {
   ragImageLegEnabled: true,
   ragImagesPerPageMax: 20,
   ragImageIndexExternal: true,
+  ragAnswerMaxImages: 2,
 };
 
 /**
@@ -225,6 +233,19 @@ const FIELDS: Record<NumericKey, NumericField> = {
     // scan — an indexing bug's symptoms from a settings change.
     min: 1,
     max: 200,
+    step: 1,
+  },
+  ragAnswerMaxImages: {
+    key: 'ragAnswerMaxImages',
+    label: 'Images shown to the model',
+    unit: 'images',
+    // 0 IS reachable here, unlike the intake cap above. A zero intake cap
+    // reconciles the index away; a zero answer cap subtracts nothing durable
+    // — the index still fills, the leg still ranks, the sources still carry
+    // their thumbnails — so it is the honest off switch for the one cost this
+    // number bounds.
+    min: 0,
+    max: 8,
     step: 1,
   },
 };
@@ -979,6 +1000,25 @@ export function RetrievalTab() {
             image past it is one request, so a page with ninety screenshots would spend ninety of
             them while the rest of the corpus waits. Images past the cap are skipped and counted
             on the Embeddings tab.
+          </p>
+        </NumberRow>
+
+        <NumberRow
+          field={FIELDS.ragAnswerMaxImages}
+          value={values.ragAnswerMaxImages}
+          onChange={(v) => set('ragAnswerMaxImages', v)}
+          defaultValue={DEFAULTS.ragAnswerMaxImages}
+        >
+          {/*
+            The second sentence is the only place this fact is ever stated.
+            ADR-025 D8 makes a text-only answer UNQUALIFIED — nothing on the
+            answer, in the sources or in the announcement says a picture was
+            withheld — so an operator whose chat model cannot see images has
+            no other way to find out that this control does nothing for them.
+          */}
+          <p>
+            Up to this many retrieved images are attached to the question when the chat model can
+            see images; 0 turns this off. Text-only chat models never receive images.
           </p>
         </NumberRow>
 

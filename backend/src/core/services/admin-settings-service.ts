@@ -607,6 +607,60 @@ export function invalidateRagImageLegCache(): void {
 }
 
 /**
+ * #1115 P4 — `rag_answer_max_images`, how many of the images the leg matched
+ * on the pages grounding an answer are ATTACHED to the question as image
+ * parts. Default **2**, clamped to [0, 8], cached like its siblings and read
+ * once per `/llm/ask` that gets as far as a completion.
+ *
+ * **Zero is a value, and this reader is the one place that shows.** Its
+ * sibling `rag_images_per_page_max` refuses 0 outright, because a zero INTAKE
+ * cap reconciles every row away on the next scan. A zero ANSWER cap subtracts
+ * nothing durable: the index still fills, the leg still ranks, and the
+ * pictures still reach the reader as `kind: 'image'` sources. So `'0'` must
+ * resolve to 0 rather than falling back — otherwise the panel's own off switch
+ * would be unreachable and every vision-capable deployment would keep paying
+ * the bytes.
+ *
+ * The SHAPE is strict for the intake cap's reason, read the other way round:
+ * `parseInt('1e3')` is 1, and a permissive parse would read a fat-fingered row
+ * as "show the model one picture" rather than as the typo it is. Anything that
+ * is not a run of digits leaves the default standing.
+ *
+ * Soft-fail is the DEFAULT, not 0 — the direction its siblings all take. A DB
+ * hiccup must not silently change what the model is shown, and 2 is what the
+ * deployment asked for by not asking.
+ */
+export const RAG_ANSWER_MAX_IMAGES_DEFAULT = 2;
+export const RAG_ANSWER_MAX_IMAGES_MAX = 8;
+
+const RAG_ANSWER_MAX_IMAGES_TTL_MS = 60_000;
+let ragAnswerMaxImagesCache: { value: number; expiresAt: number } | null = null;
+
+export async function getRagAnswerMaxImages(): Promise<number> {
+  if (ragAnswerMaxImagesCache && Date.now() < ragAnswerMaxImagesCache.expiresAt) {
+    return ragAnswerMaxImagesCache.value;
+  }
+  let resolved = RAG_ANSWER_MAX_IMAGES_DEFAULT;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_answer_max_images'`,
+    );
+    const raw = (r.rows[0]?.setting_value ?? '').trim();
+    if (/^\d+$/.test(raw)) {
+      resolved = Math.min(Number(raw), RAG_ANSWER_MAX_IMAGES_MAX);
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to resolve rag_answer_max_images — using the default');
+  }
+  ragAnswerMaxImagesCache = { value: resolved, expiresAt: Date.now() + RAG_ANSWER_MAX_IMAGES_TTL_MS };
+  return resolved;
+}
+
+export function invalidateRagAnswerMaxImagesCache(): void {
+  ragAnswerMaxImagesCache = null;
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].
