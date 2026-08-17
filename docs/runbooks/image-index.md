@@ -573,8 +573,10 @@ whole step is one cached settings read:
    without an assigned `image_embedding` model, and on most questions where
    there is one.
 3. **The resolved `chat` pair has probed vision-capable.** The stored #1154
-   verdict, read from `llm_model_capabilities` — never a fresh probe, which
-   would put an LLM round-trip on the answer path. The tri-state is not
+   verdict, read from `llm_model_capabilities` — never a *blocking* probe,
+   which would put an LLM round-trip on the answer path. (A missing or stale
+   row does schedule one in the background; see "What it does not do" below.)
+   The tri-state is not
    collapsed: `false` (probed and refused) and `null` (never established)
    both mean text-only here, and only `true` admits bytes. If the verdict is
    wrong, fix it with **Re-check** on the chat row (#1184), not here.
@@ -691,6 +693,13 @@ an upgrade moved one of those ceilings under an index built before it). The
 remedy is a re-read: **Process now**, or **Re-scan all** if it is not just the
 one page, on the Embeddings tab.
 
+One of those ceilings is checked from the file's **size on disk, before the
+bytes are read** — a picture that has grown past `MAX_IMAGE_BYTES` since it was
+indexed is refused with one `stat` rather than loaded whole and then thrown
+away. It counts as `invalid` like the rest. The check fails open: a size that
+cannot be established is treated as unknown and the read goes ahead, still
+bounded by the gate above.
+
 `missing` means the bytes are not in the store the reference names
 (deleted, or never downloaded — a lazy fetch is the recovery path, §5),
 `overBudget` that the request was already full, and `duplicate` that the same
@@ -706,17 +715,24 @@ dropped.
 **By hand.** Ask a question that only a picture answers on a page with no
 prose. With the gate open the answer describes the picture; with it shut the
 answer is about the title. The refusal above is the sharpest signal of all —
-if you see it, condition (1), (3) or (4) is the one that failed, and the pick
-line separates the third from the first two: **no `#1115 P4: retrieved-image
-pick` line at all** means the pick never ran (the cap is 0, or the model cannot
-see images), while a line carrying a non-zero `skipped` counter means it ran
-and could not use anything it found. There is no third shape to look for — the
-line is only emitted when the pick attached or refused something, so on a
-refused turn it is either absent or carries a non-zero counter.
+if you see it, condition (1), (3) or (4) is the one that failed, and the log
+separates them. Grep `#1115 P4` — the prefix, not the pick message — because
+there are three shapes, not two:
+
+| what you see | what it means |
+|---|---|
+| a `retrieved-image pick` line with a non-zero `skipped` counter | the pick ran and could not use anything it found (condition 4) |
+| `could not resolve page identities for retrieved images` at `warn`, and no pick line | the batched `pages` lookup failed, so the pick soft-failed before it read a byte — the cap and the vision verdict are both fine |
+| no `#1115 P4` line at all | the pick never ran: the cap is 0, or the model cannot see images (conditions 1 and 3) |
 
 ### What it does not do
 
-- **No probe.** The vision verdict is read, never established, on this path.
+- **No blocking probe.** The stored verdict is returned immediately. When it
+  is missing, stale (30 days) or `null` outside the 5-minute cooldown,
+  `getVisionCapability` schedules a refresh probe in the background and answers
+  from the row it has — so asking questions on a deployment whose chat model
+  was never probed *can* be what establishes the verdict, but it never adds
+  latency to the answer and never changes what that answer was sent.
 - **No resize, no re-encode, no download.** Bytes come off disk exactly as the
   intake stored them (ADR-025 D10).
 - **No effect on grounding.** A retrieved image never averts or softens a

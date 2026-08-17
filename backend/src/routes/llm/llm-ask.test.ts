@@ -1492,6 +1492,26 @@ describe('POST /api/llm/ask', () => {
     const PNG = buildPng(8, 8);
     const JPEG = buildJpeg(12, 9);
 
+    /**
+     * A valid PNG whose bytes are unique to `tag` (review r3).
+     *
+     * Any case where ONE request carries two or more pictures has to use these
+     * rather than the shared `PNG`: the pick deduplicates on the sha256 of the
+     * bytes, so three copies of one buffer are attached ONCE whatever the cap
+     * and whatever the selection order is. Both the cap case and the
+     * round-robin case below were written with the shared buffer and were
+     * therefore green under `{ max: 8 }` and under a flat best-first sort —
+     * the dedupe, not the property each test names, was what produced the
+     * expected output. `retrieved-images.test.ts` carries the same helper for
+     * the same reason.
+     *
+     * The padding rides after `IEND`, which the validator's fixed-offset PNG
+     * header read ignores.
+     */
+    function distinctPng(tag: string): Buffer {
+      return Buffer.concat([buildPng(8, 8), Buffer.from(tag.padEnd(8, '.'), 'ascii')]);
+    }
+
     /** A retrieved page carrying image hits, plus its on-disk bytes. */
     function pageWithFiles(
       pageId: number,
@@ -1558,12 +1578,17 @@ describe('POST /api/llm/ask', () => {
     });
 
     it('never sends more than the knob allows', async () => {
+      // The three pictures must be DISTINCT (review r3). Written with three
+      // copies of the shared `PNG` this case passed under `{ max: 8 }` — the
+      // byte-identical dedupe attached exactly one of them whatever the cap
+      // was, so nothing here pinned that the knob's VALUE reaches the pick at
+      // all, only that 0 gates the step off.
       mockAnswerMaxImages.mockResolvedValue(1);
       mockHybridSearch.mockResolvedValue([
         pageWithFiles(52, [
-          { key: 'b1.png', similarity: 0.9, bytes: PNG },
-          { key: 'b2.png', similarity: 0.8, bytes: PNG },
-          { key: 'b3.png', similarity: 0.7, bytes: PNG },
+          { key: 'b1.png', similarity: 0.9, bytes: distinctPng('b1') },
+          { key: 'b2.png', similarity: 0.8, bytes: distinctPng('b2') },
+          { key: 'b3.png', similarity: 0.7, bytes: distinctPng('b3') },
         ]),
       ]);
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
@@ -1578,11 +1603,16 @@ describe('POST /api/llm/ask', () => {
     });
 
     it('takes each page’s best picture before any page’s second', async () => {
+      // x1 and x2 are DISTINCT for the same reason as the case above (review
+      // r3): as two copies of one buffer, a flat best-first sort produced the
+      // very same output — x2 deduplicated away and the JPEG landing second —
+      // so this case passed under the sort it exists to refuse.
       mockAnswerMaxImages.mockResolvedValue(2);
+      const x1 = distinctPng('x1');
       mockHybridSearch.mockResolvedValue([
         pageWithFiles(53, [
-          { key: 'x1.png', similarity: 0.95, bytes: PNG },
-          { key: 'x2.png', similarity: 0.94, bytes: PNG },
+          { key: 'x1.png', similarity: 0.95, bytes: x1 },
+          { key: 'x2.png', similarity: 0.94, bytes: distinctPng('x2') },
         ]),
         pageWithFiles(54, [{ key: 'y1.jpg', similarity: 0.51, bytes: JPEG }]),
       ]);
@@ -1600,7 +1630,7 @@ describe('POST /api/llm/ask', () => {
         .filter((p) => p.type === 'image_url')
         .map((p) => (p.image_url as { url: string }).url);
       expect(urls).toEqual([
-        `data:image/png;base64,${PNG.toString('base64')}`,
+        `data:image/png;base64,${x1.toString('base64')}`,
         `data:image/jpeg;base64,${JPEG.toString('base64')}`,
       ]);
     });
@@ -1869,6 +1899,38 @@ describe('POST /api/llm/ask', () => {
       expect(entry.retrievedImageBytes).toBe(PNG.length);
     });
 
+    it('records them on the STREAM-ERROR audit entry too', async () => {
+      // Review r3. There are two `emitLlmAudit` calls in this route and the
+      // `status: 'error'` one could be stripped of its image fields with the
+      // whole suite green, because every other audit assertion drives a
+      // successful stream. The EE consumer reads these as an attestation of
+      // what the model was sent, and a request that blew up mid-stream was
+      // still SENT the bytes — arguably the more interesting one to have the
+      // byte total for.
+      mockHybridSearch.mockResolvedValue([
+        pageWithFiles(66, [{ key: 'm1.png', similarity: 0.9, bytes: PNG }]),
+      ]);
+      // A generator that throws on its FIRST `next()` — i.e. inside the
+      // route's `for await`, after `reply.hijack()`, which is the branch that
+      // writes the `status: 'error'` audit entry.
+      mockStreamChatClient.mockImplementation(async function* () {
+        yield { content: 'It shows ', done: false };
+        throw new Error('provider hung up mid-stream');
+      });
+
+      await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q', model: 'llama3' },
+      });
+
+      const entry = mockEmitLlmAudit.mock.calls[0]![0] as Record<string, unknown>;
+      expect(entry.status).toBe('error');
+      expect(entry.retrievedImageCount).toBe(1);
+      expect(entry.retrievedImageBytes).toBe(PNG.length);
+      // …and the base64 stays out of this entry as well.
+      expect(JSON.stringify(entry)).not.toContain('data:image/');
+    });
+
     it('leaves the audit fields absent when no image was sent', async () => {
       // Absent, not 0: the EE writer distinguishes "this route does not report
       // it" from "it reported none", and every pre-P4 row is the former.
@@ -2132,6 +2194,57 @@ describe('POST /api/llm/ask', () => {
       expect(final.refused).toBeFalsy();
       expect(mockStreamChatClient).toHaveBeenCalled();
       // Unqualified: no caveat about pictures the model could not see.
+      expect(typeof sentUserContent()).toBe('string');
+      expect(sentSystemPrompt()).not.toContain('images from the knowledge base');
+    });
+
+    it('ANSWERS an all-image-REACHED set whose rows carry real lede text (D8)', async () => {
+      // Review r3. The predicate is `imageTextSynthesized`, and P3 sets that
+      // flag on the strictly narrower half of `imageOnly`: a page the image
+      // leg reached is `imageOnly`, and it is `imageTextSynthesized` only in
+      // `rag-service.ts`'s `!fromChunk` branch — the page with no
+      // `chunk_index 0` row at all. A page that HAS a chunk-0 lede is
+      // `imageOnly` with real prose as its `chunkText`, which is grounding,
+      // and swapping the two flags in the predicate turns those turns into
+      // "The only matches for this question are images" on a vision-`false`
+      // deployment. Every other fixture in this block sets both flags
+      // together, so nothing else here can tell them apart.
+      mockGetVisionCapability.mockResolvedValue(false);
+      pageIdentityRows.push({ id: 78, confluence_id: 'c78', source: 'confluence' });
+      writeCachedAttachment('c78', 'sheet.png', PNG);
+      mockHybridSearch.mockResolvedValue([
+        {
+          pageId: 78,
+          confluenceId: 'c78',
+          // The lede the page really carries — NOT a synthesised title.
+          chunkText: 'The intake manifold distributes charge air to each cylinder.',
+          pageTitle: 'Intake manifold',
+          sectionTitle: 'Intake manifold',
+          spaceKey: 'ENG',
+          score: 0.0164,
+          vectorScore: null,
+          keywordRank: null,
+          imageOnly: true as const,
+          imageHits: [{
+            source: 'confluence' as const,
+            key: 'sheet.png',
+            similarity: 0.68,
+            attachmentUrl: '/api/attachments/78/sheet.png',
+          }],
+        },
+      ]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does the schematic show' },
+      });
+
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBeFalsy();
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      // …and text-only and unqualified, exactly as D8 requires.
       expect(typeof sentUserContent()).toBe('string');
       expect(sentSystemPrompt()).not.toContain('images from the knowledge base');
     });

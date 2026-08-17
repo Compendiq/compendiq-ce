@@ -2359,6 +2359,21 @@ concurrency in front of it is the **SSE stream cap**
 not `LLM_CONCURRENCY`: the pick runs on the request path, above the LLM queue
 entirely.
 
+**And `MAX_IMAGE_BYTES` is a ceiling on what is READ, not only on what is
+accepted (review r3).** The budget bounds the request and `validateImage`
+bounds the candidate, but both measure a buffer that already exists —
+`resolveAttachmentBytes` calls `fs.readFile` with no limit. The intake applied
+the same 5 MB gate before it wrote the row, so the reachable state is the one
+`skipped.invalid` names: the bytes on disk are no longer the bytes that were
+indexed, and the store will hold 40 MiB. On the intake worker that costs a
+background read; on the answer path it is a request-path read with no cache in
+front of it, so the pick now `stat`s each candidate first
+(`resolveAttachmentByteSize`, sharing the reader's own path resolution so the
+two can never measure different files) and refuses an oversized one without
+loading it. It fails **open** — an unreadable size is "unknown", not "too big",
+and the checks behind it still bound the read — and it is a mitigation rather
+than a guarantee, since a file can grow between the `stat` and the read.
+
 Two consequences of the two caps being separate numbers are worth stating
 where an operator meets them, because D8 forbids saying either on an answer.
 **Above 4, the model can be shown a picture the reader has no chip for**:

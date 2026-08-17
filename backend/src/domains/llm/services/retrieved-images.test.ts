@@ -293,6 +293,61 @@ describe('pickRetrievedImages — skip and count', () => {
     expect(picked.skipped.invalid).toBe(2);
   });
 
+  it('refuses a file past MAX_IMAGE_BYTES WITHOUT reading it', async () => {
+    // Review r3. The byte budget bounds what is SENT and `validateImage`
+    // bounds what is ACCEPTED — but before this, nothing bounded what was
+    // READ: `resolveAttachmentBytes` calls `fs.readFile` with no ceiling and
+    // the length check runs after the whole buffer exists. The reachable state
+    // is the one `skipped.invalid` already names — the bytes on disk are no
+    // longer the bytes the intake indexed under the same 5 MB gate — and
+    // unlike the intake worker this loop runs on the REQUEST path.
+    //
+    // The assertion is on the READ, not on the verdict: the verdict was
+    // already right (`validateImage` throws on the length), so a test that
+    // only checked `skipped.invalid` passes with or without the stat.
+    const readFile = vi.spyOn(fs, 'readFile');
+    try {
+      pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
+      // A real PNG header so nothing else can be what refuses it, padded past
+      // the ceiling.
+      const bloated = Buffer.concat([buildPng(4, 4), Buffer.alloc(MAX_IMAGE_BYTES + 1)]);
+      await writeConfluenceFile('c1', 'replaced.png', bloated);
+
+      const picked = await pickRetrievedImages([page(1, [hit('replaced.png', 0.9)])], { max: 2 });
+
+      expect(picked.used).toEqual([]);
+      expect(picked.skipped.invalid).toBe(1);
+      expect(
+        readFile.mock.calls.some(([p]) => String(p).endsWith('replaced.png')),
+      ).toBe(false);
+    } finally {
+      // `finally`, not a trailing call: a failing assertion above would
+      // otherwise leave the spy installed for every test after this one in
+      // the file, turning one red into eight.
+      readFile.mockRestore();
+    }
+  });
+
+  it('reads on anyway when the size cannot be established — the stat fails OPEN', async () => {
+    // A stat a hardened filesystem refuses is not evidence that the file is
+    // too big, and turning "unknown" into a skip would delete a perfectly
+    // readable picture. The read behind it is still bounded by the checks the
+    // test above leaves in place. (The absent-file case reaches the same
+    // `null` and is pinned by "counts a file that is not on disk" above, which
+    // still reports `missing` rather than `invalid`.)
+    const stat = vi.spyOn(fs, 'stat').mockRejectedValue(new Error('EACCES'));
+    try {
+      pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
+      await writeConfluenceFile('c1', 'fine.png', buildPng(4, 4));
+
+      const picked = await pickRetrievedImages([page(1, [hit('fine.png', 0.9)])], { max: 2 });
+
+      expect(picked.used.map((u) => u.attachmentKey)).toEqual(['fine.png']);
+    } finally {
+      stat.mockRestore();
+    }
+  });
+
   it('counts an image past MAX_IMAGE_DIMENSION rather than sending it', async () => {
     // The same ceiling a user-attached image clears, applied through the same
     // function. A corpus image is not a more trusted input than an upload —

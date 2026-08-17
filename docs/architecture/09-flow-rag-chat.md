@@ -1672,7 +1672,11 @@ text-only model's answer over the same pages share one key for the TTL — as do
 the same model's answers either side of an admin moving the cap, or of a
 picture being deleted from one of those pages. It is a count plus a hash of
 the `(pageId, store, key, size)` tuples, and `undefined` when nothing was
-attached, so every text-only deployment keeps the keys it already had. Because
+attached, which keeps "no pictures" from colliding with a future "0 pictures".
+It does **not** preserve pre-P4 keys: `hashLlmInputs` writes a `\x00`
+separator per component, so a 15th component moves every digest whether or not
+it is empty, and each deployment cold-starts its answer cache once for one
+`LLM_CACHE_TTL`. Because
 that identity is only known after the pick, `buildRagCacheKey` now runs below
 the refusal gate rather than beside `docIds` — a refusing request builds no
 key at all, which it never needed.

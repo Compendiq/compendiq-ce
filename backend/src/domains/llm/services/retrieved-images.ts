@@ -55,6 +55,7 @@ import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
 import {
   resolveAttachmentBytes,
+  resolveAttachmentByteSize,
   type AttachmentStoreSource,
 } from '../../../core/services/attachment-store.js';
 import { validateImage, MAX_IMAGE_BYTES } from '../../../core/services/image-validator.js';
@@ -134,7 +135,12 @@ export interface RetrievedImageUse {
 export interface RetrievedImagesSkipped {
   /** No page identity, or no such file in the store the hit names. */
   missing: number;
-  /** Bytes a vision encoder cannot read, or past a #1154 ceiling. */
+  /**
+   * Bytes a vision encoder cannot read, or past a #1154 ceiling — including
+   * the one ceiling that is now checked BEFORE the read, from the file's size
+   * on disk (review r3), so an attachment that has outgrown `MAX_IMAGE_BYTES`
+   * since it was indexed is refused without being loaded.
+   */
   invalid: number;
   /**
    * Candidates that would have taken the request past
@@ -265,13 +271,37 @@ export async function pickRetrievedImages(
       continue;
     }
 
-    const resolved = await resolveAttachmentBytes({
+    const location = {
       pageId: identity.id,
       confluenceId: identity.confluence_id,
       pageSource: identity.source,
       source: candidate.source,
       key: candidate.key,
-    });
+    };
+
+    // Refuse an oversized file WITHOUT reading it (review r3). The byte budget
+    // below bounds what is SENT and `validateImage` bounds what is ACCEPTED,
+    // but neither bounds what is READ: `resolveAttachmentBytes` calls
+    // `fs.readFile` with no ceiling, and `validateImage`'s `MAX_IMAGE_BYTES`
+    // check only runs once the whole buffer exists. An `ImageHit` can only
+    // exist for a row the intake wrote under that same 5 MB gate — but the
+    // reachable state is exactly the one `skipped.invalid` names: the bytes on
+    // disk are no longer the bytes that were indexed, and the store will hold
+    // 40 MiB. Unlike the intake worker, this loop runs on the REQUEST path,
+    // before `reply.hijack()` and with nothing cached in front of it, so one
+    // stat per candidate is cheap insurance against an unbounded read.
+    //
+    // It FAILS OPEN: a `null` size is "unknown", not "too big", so a stat that
+    // cannot be taken costs a read that the checks below still bound. And a
+    // file can grow between the stat and the read, which is why this is a
+    // mitigation rather than the ceiling — `validateImage` stays.
+    const sizeOnDisk = await resolveAttachmentByteSize(location);
+    if (sizeOnDisk !== null && sizeOnDisk > MAX_IMAGE_BYTES) {
+      skipped.invalid++;
+      continue;
+    }
+
+    const resolved = await resolveAttachmentBytes(location);
     if (!resolved) {
       skipped.missing++;
       continue;

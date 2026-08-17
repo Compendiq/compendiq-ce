@@ -287,11 +287,17 @@ export async function listCachedAttachments(pageId: string): Promise<string[]> {
   }
 }
 
-/** Read one cached attachment's bytes by key + filename, or null if absent. */
-export async function readCachedAttachmentFile(
-  pageId: string,
-  filename: string,
-): Promise<Buffer | null> {
+/**
+ * The on-disk path of one cached attachment, with the containment check.
+ *
+ * Extracted so the reader and {@link resolveAttachmentByteSize} cannot end up
+ * resolving the same key to two different files: a `stat` that names a
+ * different path than the `readFile` beside it measures the wrong file, which
+ * is the exact failure a size ceiling exists to prevent. Throws on traversal
+ * rather than answering null, because a refused path is a bug in the caller
+ * and not an absent file.
+ */
+function cachedAttachmentPath(pageId: string, filename: string): string {
   const dir = attachmentDirNow(pageId);
   const safeFilename = validateFilename(filename);
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- both inputs validated above (validatePageId via attachmentDirNow, validateFilename); containment asserted below
@@ -299,6 +305,15 @@ export async function readCachedAttachmentFile(
   if (!resolved.startsWith(attachmentsRootNow() + path.sep)) {
     throw new Error('Path traversal detected');
   }
+  return resolved;
+}
+
+/** Read one cached attachment's bytes by key + filename, or null if absent. */
+export async function readCachedAttachmentFile(
+  pageId: string,
+  filename: string,
+): Promise<Buffer | null> {
+  const resolved = cachedAttachmentPath(pageId, filename);
   try {
     return await fs.readFile(resolved);
   } catch {
@@ -446,8 +461,12 @@ export async function resolveAttachmentBytes(
   }
 }
 
-/** `<ATTACHMENTS_DIR>/local/<page_id>/<filename>`, layout owned by the local store. */
-async function readLocalStoreFile(pageId: number, key: string): Promise<Buffer | null> {
+/**
+ * `<ATTACHMENTS_DIR>/local/<page_id>/<filename>`, layout owned by the local
+ * store — the local half of {@link cachedAttachmentPath}, extracted for the
+ * same reason.
+ */
+function localStorePath(pageId: number, key: string): string {
   if (!Number.isInteger(pageId) || pageId <= 0) {
     throw new Error('Invalid page id');
   }
@@ -463,8 +482,49 @@ async function readLocalStoreFile(pageId: number, key: string): Promise<Buffer |
   if (!resolved.startsWith(path.resolve(dir) + path.sep)) {
     throw new Error('Path traversal detected');
   }
+  return resolved;
+}
+
+async function readLocalStoreFile(pageId: number, key: string): Promise<Buffer | null> {
+  const resolved = localStorePath(pageId, key);
   try {
     return await fs.readFile(resolved);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How many bytes {@link resolveAttachmentBytes} would return for this input,
+ * WITHOUT reading them — or `null` when that cannot be established.
+ *
+ * The ceilings around images are all post-hoc: `validateImage` measures
+ * `buf.length` and `MAX_IMAGE_DIMENSION` reads a header, both of which need
+ * the whole buffer in memory first. That is fine for the intake worker, which
+ * reads a page's images once and off the request path. It is not fine for
+ * #1115 P4, which reads candidates on the ANSWER path, before `reply.hijack()`
+ * and with no cache in front of it: an attachment that has been replaced since
+ * it was indexed can be any size the store will hold (the draw.io route admits
+ * 40 MiB), and the pick would load each one whole only to refuse it.
+ *
+ * So the answer path stats first and skips. `null` is deliberately ambiguous —
+ * absent file, refused key, unreadable directory — and callers must treat it
+ * as "unknown, go and read": failing OPEN keeps a stat that a hardened
+ * filesystem refuses from turning a perfectly readable picture into a skip,
+ * and the read behind it is still bounded by the caller's own gate. It is a
+ * mitigation, not a guarantee: a file can grow between the stat and the read.
+ */
+export async function resolveAttachmentByteSize(
+  input: ResolveAttachmentBytesInput,
+): Promise<number | null> {
+  const { pageId, confluenceId, pageSource, source, key } = input;
+  if (!isDirectChildKey(key)) return null;
+  try {
+    const resolved = source === 'local'
+      ? localStorePath(pageId, key)
+      : cachedAttachmentPath(confluenceTreeKey(pageSource, pageId, confluenceId), key);
+    const stat = await fs.stat(resolved);
+    return stat.isFile() ? stat.size : null;
   } catch {
     return null;
   }
