@@ -2,6 +2,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ChevronRight, Loader2, RefreshCw } from 'lucide-react';
 import type { ImageEmbeddingProbe } from '@compendiq/contracts';
+import {
+  IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN,
+  IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX,
+} from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { formatRelativeTime } from '../../../shared/lib/format-relative-time';
 
@@ -175,8 +179,12 @@ export function ImageEmbeddingCapability({
             data-testid="image-embedding-target-dimensions"
             type="number"
             inputMode="numeric"
-            min={64}
-            max={16000}
+            // The schema's own bounds, not a hand-copied pair — and they
+            // constrain nothing on their own: `e.target.value` is read
+            // regardless, so `LlmTab.clampImageTargetDims` is what keeps an
+            // out-of-range entry from coming back as a raw Zod issue path.
+            min={IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN}
+            max={IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX}
             placeholder="native"
             className="nm-input w-28 font-mono text-xs"
             aria-describedby="image-embedding-target-dimensions-help"

@@ -161,6 +161,14 @@ export async function probeImageEmbedding(
   cfg: ProviderConfig,
   model: string,
   targetDimensions: number | null = null,
+  /**
+   * The per-call budget. Injectable ONLY so the deadline itself is testable —
+   * production has one caller-facing value and it is the default. Without it
+   * the wiring below was unpinned: the client's own deadline test proves the
+   * option works, and deleting this key here would silently hand an admin's
+   * blocking PUT back to the queue's 300s timeout, twice over.
+   */
+  timeoutMs: number = IMAGE_PROBE_TIMEOUT_MS,
 ): Promise<ImageEmbeddingProbeResult> {
   // The truncation width is sent on BOTH calls, and the probe then insists the
   // answers come back at it. That is the point of plumbing it here rather than
@@ -171,7 +179,7 @@ export async function probeImageEmbedding(
   // insert against a column of the wrong width.
   const opts = {
     ...(targetDimensions !== null ? { dimensions: targetDimensions } : {}),
-    timeoutMs: IMAGE_PROBE_TIMEOUT_MS,
+    timeoutMs,
   };
   let imageWidth: number;
   let textWidth: number;

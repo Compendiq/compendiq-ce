@@ -216,6 +216,11 @@ function mockRoutes(options?: {
       });
     }
     if (url.endsWith('/admin/settings') && (init as RequestInit).method === 'PUT') {
+      // Stateful, because the server is: `PUT /admin/settings` and `PUT
+      // /admin/llm-usecases` are two requests, and the first one LANDS even
+      // when the second is refused. A mock that answered a fixed document
+      // could not show what the panel does after that partial save.
+      Object.assign(settingsBody, JSON.parse((init as RequestInit).body as string));
       return new Response(JSON.stringify({ message: 'Admin settings updated' }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -1273,6 +1278,89 @@ describe('LlmTab', () => {
           ) && (init as RequestInit | undefined)?.method === 'PUT',
       ),
     ).toHaveLength(0);
+  });
+
+  /**
+   * Review round 3 — the two PUTs are not atomic, and the refused half is the
+   * DESIGNED outcome: the probe gate answers 422 whenever the endpoint will
+   * not serve the width. The settings PUT in front of it has already landed by
+   * then, so `docs/runbooks/image-index.md` §2 tells the operator to clear the
+   * field and save again. That remedy only works if the panel's comparison
+   * baseline names what the server actually stored — invalidating
+   * `['admin-settings']` only on success left it on the PRE-save value, so
+   * reverting the field read as unchanged and reported "No changes" over a
+   * width the server still held, silently, until a reload.
+   */
+  it('re-reads the stored width after a refused save, so reverting it is a real change', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({
+      putError:
+        "This endpoint refused the request. Image embedding needs a server that accepts vLLM's chat-embeddings shape on /v1/embeddings.",
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = (await screen.findByTestId(
+      'image-embedding-target-dimensions',
+    )) as HTMLInputElement;
+
+    const urlOf = (c: unknown[]) =>
+      typeof c[0] === 'string' ? (c[0] as string) : (c[0] as URL).toString();
+    const settingsCalls = (method: string | undefined) =>
+      spy.mock.calls.filter(
+        (c) =>
+          urlOf(c).endsWith('/admin/settings')
+          && (c[1] as RequestInit | undefined)?.method === method,
+      );
+
+    fireEvent.change(field, { target: { value: '4000' } });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    // The width landed; the assignment PUT behind it was refused.
+    await waitFor(() => expect(settingsCalls('PUT')).toHaveLength(1));
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalled());
+    // …and the panel re-read the document anyway, which is the fix.
+    await waitFor(() => expect(settingsCalls(undefined).length).toBeGreaterThan(1));
+    // The typed value survives the refusal — the admin corrects it in place.
+    expect(field.value).toBe('4000');
+
+    // The runbook's remedy: clear the field, save again.
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => expect(settingsCalls('PUT')).toHaveLength(2));
+    expect(JSON.parse((settingsCalls('PUT')[1]![1] as RequestInit).body as string)).toEqual({
+      imageEmbeddingTargetDimensions: null,
+    });
+    expect(vi.mocked(toast.message)).not.toHaveBeenCalledWith('No changes');
+  });
+
+  /**
+   * Review round 3 — `min`/`max` on a bare `type="number"` input constrain
+   * nothing about the value read off `e.target.value`, so an out-of-range
+   * entry reached `ImageEmbeddingTargetDimensionsSchema` and came back as a
+   * raw Zod issue path. The sibling control one function away has clamped for
+   * exactly this reason since #268.
+   */
+  it('clamps an out-of-range truncation width instead of letting Zod refuse it', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = await screen.findByTestId('image-embedding-target-dimensions');
+
+    fireEvent.change(field, { target: { value: '32' } });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => {
+      const settingsPut = spy.mock.calls.find(
+        ([input, init]) =>
+          (typeof input === 'string' ? input : (input as URL).toString()).endsWith(
+            '/admin/settings',
+          ) && (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(settingsPut).toBeTruthy();
+      expect(JSON.parse((settingsPut![1] as RequestInit).body as string)).toEqual({
+        imageEmbeddingTargetDimensions: 64,
+      });
+    });
   });
 
   /**

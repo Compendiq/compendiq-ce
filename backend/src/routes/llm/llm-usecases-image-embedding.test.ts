@@ -639,6 +639,50 @@ describe.skipIf(!dbAvailable)('the probe detail routes (#1184 shape)', () => {
   });
 
   /**
+   * Review round 3: the reprobe route reads the SAME
+   * `image_embedding_target_dimensions` the assignment PUT does, and nothing
+   * asserted it — the setting was written only in the two PUT cases above, so
+   * deleting `getImageEmbeddingTargetDimensions()` from this handler left the
+   * whole file green.
+   *
+   * The regression it hides is destructive and points the wrong way: probing
+   * at the native width answers 4096, so the identity moves from `…#2048` to
+   * `…#native`, the route TRUNCATEs `page_image_embeddings`, retypes the
+   * column `halfvec(2048)` → `vector(4096)`, drops the HNSW index and
+   * re-dirties every non-folder page — after which P2's embedder, which reads
+   * the same setting, writes 2048-wide vectors into a 4096-wide column.
+   * Re-check is the remedy AFTER a width change, so it is exactly the entry
+   * point that must send the configured width.
+   */
+  it('POST reprobe sends the configured truncation width and moves nothing', async () => {
+    const id = await seedProvider('vlbox-mrl-reprobe', goodUrl, 'Qwen/Qwen3-VL-Embedding-8B');
+    width = 4096; // the 8B's native answer — pgvector's unindexed tier
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('image_embedding_target_dimensions', '2048')`,
+    );
+    expect((await put({ image_embedding: { providerId: id } })).statusCode).toBe(200);
+
+    const r = await app.inject({
+      method: 'POST', url: '/api/admin/llm-usecases/image_embedding/reprobe',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.statusCode).toBe(200);
+    // Not 4096/'unindexed': the re-check asks for the truncated width, the
+    // same one the leg will send.
+    expect(r.json()).toMatchObject({ dimensions: 2048, tier: 'halfvec' });
+    // Nothing moved — the identity is unchanged, so no TRUNCATE and no re-scan.
+    expect(r.json()).toMatchObject({ rebuilt: false, dirtiedPages: 0 });
+    const type = await query<{ type: string }>(
+      `SELECT format_type(atttypid, atttypmod) AS type FROM pg_attribute
+        WHERE attrelid = 'page_image_embeddings'::regclass AND attname = 'embedding'`,
+    );
+    expect(type.rows[0]!.type).toBe('halfvec(2048)');
+    expect(await setting(IMAGE_EMBEDDING_INDEX_MODEL_KEY)).toBe(
+      `${id}:Qwen/Qwen3-VL-Embedding-8B@${goodUrl}#2048`,
+    );
+  });
+
+  /**
    * Review round 1: "Re-check" reads as diagnostic, and on a width change it
    * empties `page_image_embeddings` and re-dirties the corpus. The control
    * cannot say so unless the route reports it, so the verdict travels back —

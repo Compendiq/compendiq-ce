@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { readFileSync } from 'node:fs';
 import {
   probeImageEmbedding,
   persistImageEmbeddingProbe,
   readImageEmbeddingProbe,
   IMAGE_EMBEDDING_PROBE_KEY,
+  IMAGE_PROBE_TIMEOUT_MS,
 } from './image-embedding-probe.js';
 import { PROBE_ERROR_MAX_CHARS } from './model-capabilities.js';
 import type { ProviderConfig } from './openai-compatible-client.js';
@@ -232,6 +234,59 @@ describe('probeImageEmbedding', () => {
     );
     expect(result.dimensions).toBeNull();
     expect(result.reason).toBe('unreachable');
+  });
+
+  /**
+   * Review round 3 — the per-call deadline, pinned AT THIS CALLER.
+   *
+   * `vl-embedding-client.test.ts` proves the `timeoutMs` option works; nothing
+   * proved this function passes one. Deleting the key from its `opts` left
+   * both files green, and the failure it reintroduces is the one CLAUDE.md's
+   * rule (5) spells out: this probe blocks an admin's assignment PUT and makes
+   * two calls in sequence, so a socket that accepts the connection and never
+   * answers would hold two global `LLM_CONCURRENCY` slots for the queue's own
+   * 300s each.
+   */
+  describe('the per-call deadline', () => {
+    it('gives up on an endpoint that accepts and never answers', async () => {
+      // Its own server: this one is deliberately left hanging, and the shared
+      // one is reused by every case above.
+      const stalled = createServer(() => {
+        /* accepts the request and never writes a response */
+      });
+      await new Promise<void>((r) => stalled.listen(0, '127.0.0.1', r));
+      const { port } = stalled.address() as AddressInfo;
+      const startedAt = Date.now();
+      try {
+        const result = await probeImageEmbedding(
+          { ...cfg(), baseUrl: `http://127.0.0.1:${port}/v1` },
+          'm',
+          null,
+          150,
+        );
+        expect(result).toMatchObject({ dimensions: null, tier: null, reason: 'unreachable' });
+        // Without the option plumbed through, this runs to the queue's own
+        // 300s timeout and the test times out instead.
+        expect(Date.now() - startedAt).toBeLessThan(5_000);
+      } finally {
+        stalled.closeAllConnections();
+        await new Promise<void>((r) => stalled.close(() => r()));
+      }
+    }, 10_000);
+
+    /**
+     * The budget above is injectable only so the case above can run in
+     * milliseconds; production passes nothing, so the DEFAULT is what actually
+     * bounds an admin's PUT. Nothing observable over HTTP distinguishes a 60s
+     * deadline from none within a test's lifetime, so the default is pinned at
+     * the source — the same recipe `ai-scroll-chain.test.ts` uses for a fact no
+     * render can see.
+     */
+    it('defaults that budget to IMAGE_PROBE_TIMEOUT_MS', () => {
+      const src = readFileSync(new URL('./image-embedding-probe.ts', import.meta.url), 'utf8');
+      expect(src).toMatch(/timeoutMs\s*:\s*number\s*=\s*IMAGE_PROBE_TIMEOUT_MS\s*,/);
+      expect(IMAGE_PROBE_TIMEOUT_MS).toBe(60_000);
+    });
   });
 
   /**

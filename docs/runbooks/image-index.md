@@ -88,7 +88,11 @@ Two consequences worth knowing before you set it:
 - **The width is saved even when the probe that follows it fails.** It has to
   be: the probe sends it, so it is written first. A refusal therefore leaves the
   new width stored, the assignment and the column exactly as they were, and the
-  refusal on the row. Fix the server, or clear the field, and save again.
+  refusal on the row — the row, because a width change re-sends the assignment
+  already in force, and a refused verdict for the *live* pair is stored (§4).
+  Fix the server, or clear the field, and save again; the panel re-reads the
+  stored width after a refusal, so clearing the field back to `native` is a real
+  change and not a silent no-op.
 
 Compendiq re-normalises client-side whenever it sends `dimensions`, because
 truncating a unit vector does not leave a unit vector and vLLM is not documented
@@ -169,7 +173,7 @@ scripted client sees.
 
 | Category (`reason`) | What the toast says | Do |
 |---|---|---|
-| `shape_rejected` | "This endpoint refused the request. Image embedding needs a server that accepts vLLM's chat-embeddings shape…" | The endpoint answered 400/404/405/422 — it is reachable and refusing *this request*. Usually the wrong kind of server (see §1) or the wrong model id. If a truncation width is set, it may also be vLLM refusing `dimensions` for a checkpoint it does not consider Matryoshka (§2) — the message says so when that applies. The provider's own body is in the **backend log**: it is deliberately *not* stored for a pair that was refused, so the row's disclosure will not show it. |
+| `shape_rejected` | "This endpoint refused the request. Image embedding needs a server that accepts vLLM's chat-embeddings shape…" | The endpoint answered 400/404/405/422 — it is reachable and refusing *this request*. Usually the wrong kind of server (see §1) or the wrong model id. If a truncation width is set, it may also be vLLM refusing `dimensions` for a checkpoint it does not consider Matryoshka (§2) — the message says so when that applies. The provider's own body is always in the **backend log**, which is why the toast points there. Whether the row's disclosure also shows it depends on *which* pair was refused: a refused verdict overwrites the stored one only when the refused pair **is the live pair** (a re-save of the assignment already in force, which is what a width change sends — §2). A refused change to a *different* pair is not stored, so the disclosure keeps describing the previous, still-working leg rather than replacing a true verdict with "Not established". |
 | `provider_error` | "The provider answered with an error rather than a vector…" | 401/403 (credentials), 429 (rate limit) or 5xx. **Not** a verdict about the server being the wrong kind: a vLLM still loading its model answers 503, and `vllm#33865` is an open report of intermittent 5xx from this endpoint. Check credentials and readiness, then press Save or Re-check again. |
 | `unreachable` | "The provider could not be reached, or did not answer within the probe's time budget…" | Check the base URL, credentials, and that the server is up. The per-provider breaker may also be open from earlier failures. Each probe call is bounded at 60s. |
 | `width_mismatch` | "This endpoint returned different vector widths for an image and for a text…" | The server is not applying the same formatting to both. Not usable. |

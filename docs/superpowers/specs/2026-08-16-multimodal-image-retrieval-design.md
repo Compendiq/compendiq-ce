@@ -93,10 +93,13 @@ CREATE INDEX pages_image_embedding_dirty_idx ON pages(id) WHERE image_embedding_
   time**: it is `core/db/vector-column-tier.ts` now, and `withLockRetry` came
   out of `shadow-migration-service.ts` into `core/db/with-lock-retry.ts`
   alongside it. When the probed dimension differs from the live column **or**
-  the recorded `provider:model@baseUrl` differs from the newly assigned one
+  the recorded `provider:model@baseUrl#dims` differs from the newly assigned one
   (the base URL is part of the identity because a provider row's endpoint moves
-  without its id changing, and P1's assignment route pins the *resolved* model
-  into the row so it cannot follow `provider.default_model`):
+  without its id changing; `#dims` is the requested MRL truncation width, which
+  is part of it in its own right because the same checkpoint at the same URL
+  truncated to 2048 and left at its native 4096 are two different spaces; and
+  P1's assignment route pins the *resolved* model into the row so it cannot
+  follow `provider.default_model`):
   `TRUNCATE page_image_embeddings; ALTER COLUMN … TYPE …;` rebuild HNSW; mark
   every non-folder page image-dirty. Records
   `admin_settings.image_embedding_dimensions` and `…_index_model`. This is D7

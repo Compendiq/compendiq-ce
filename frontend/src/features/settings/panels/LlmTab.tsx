@@ -8,7 +8,11 @@ import type {
   UsecaseAssignments,
   UpdateUsecaseAssignmentsInput,
 } from '@compendiq/contracts';
-import { LlmUsecaseSchema } from '@compendiq/contracts';
+import {
+  LlmUsecaseSchema,
+  IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN,
+  IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX,
+} from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ProviderListSection } from './ProviderListSection';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
@@ -27,6 +31,23 @@ const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 const DEFAULT_CONCURRENT_STREAMS_CAP = 3;
 const MIN_CONCURRENT_STREAMS_CAP = 1;
 const MAX_CONCURRENT_STREAMS_CAP = 20;
+
+/**
+ * #1115 — clamp the MRL truncation width to the contract's own bounds before
+ * it is sent, exactly as `handleSaveRuntimeLimits` does for the stream cap.
+ * `min`/`max` on a bare `type="number"` input constrain nothing about the value
+ * read back off `e.target.value`, so an out-of-range entry otherwise reached
+ * `ImageEmbeddingTargetDimensionsSchema` and came back as a raw Zod issue path
+ * ("imageEmbeddingTargetDimensions: Too small: expected number to be >=64")
+ * instead of the panel's own sentence.
+ */
+function clampImageTargetDims(value: number | null): number | null {
+  if (value === null) return null;
+  return Math.max(
+    IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN,
+    Math.min(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX, value),
+  );
+}
 
 export function LlmTab() {
   const qc = useQueryClient();
@@ -144,11 +165,26 @@ export function LlmTab() {
       if (Object.keys(diff).length === 0) return { ok: true };
       return apiFetch('/admin/llm-usecases', { method: 'PUT', body: JSON.stringify(diff) });
     },
-    onSuccess: async (result) => {
-      // The width lives in the settings document, so re-read it and drop its
-      // hydration guard alongside the assignments below.
+    // #1115 review round 3 — the settings document is re-read on EVERY
+    // outcome, not only success, because the two requests above are not
+    // atomic: a 422 from the assignment PUT (the designed answer when the
+    // probe refuses the pair) leaves the width already persisted by the
+    // request before it. Invalidating only on success left
+    // `savedImageTargetDims` naming the pre-save value while the server held
+    // the new one, so the runbook's own remedy — "clear the field, and save
+    // again" — compared the cleared field against a stale baseline, read as
+    // unchanged, and reported "No changes" over a width the server still had.
+    //
+    // Both halves live here rather than in `onSuccess` because React Query
+    // runs `onSettled` LAST: dropping the hydration guard before the refetch
+    // lands re-seeds the field from the stale cache entry and then locks it
+    // there. And the guard is dropped on success ONLY — after a refusal the
+    // admin's typed value must survive so they can correct it in place.
+    onSettled: async (_result, error) => {
       await qc.invalidateQueries({ queryKey: ['admin-settings'] });
-      setImageTargetInitialized(false);
+      if (!error) setImageTargetInitialized(false);
+    },
+    onSuccess: async (result) => {
       // Refetch the canonical assignments, then drop the one-shot hydration
       // guard so the form re-seeds from the fresh server state (#949) — the
       // same post-save reset IpAllowlistTab does. Awaiting the invalidation
@@ -221,7 +257,13 @@ export function LlmTab() {
   function handleSave() {
     if (!assignments || !rawAssignments) return;
     const diff = diffUsecaseAssignments(rawAssignments, assignments);
-    const imageTargetChanged = imageTargetInitialized && imageTargetDims !== savedImageTargetDims;
+    // Clamped BEFORE the comparison, not only before the request: a typed 32
+    // against a stored 64 is not a change once the clamp has run, and diffing
+    // the raw value would re-send the assignment and re-probe for a width the
+    // server already holds.
+    const nextImageTargetDims = clampImageTargetDims(imageTargetDims);
+    const imageTargetChanged =
+      imageTargetInitialized && nextImageTargetDims !== savedImageTargetDims;
     if (Object.keys(diff).length === 0 && !imageTargetChanged) {
       toast.message('No changes');
       return;
@@ -238,7 +280,7 @@ export function LlmTab() {
     }
     save.mutate({
       diff,
-      ...(imageTargetChanged ? { imageTargetDimensions: imageTargetDims } : {}),
+      ...(imageTargetChanged ? { imageTargetDimensions: nextImageTargetDims } : {}),
     });
   }
 

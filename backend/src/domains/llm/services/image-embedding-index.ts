@@ -50,7 +50,11 @@ import { logger } from '../../../core/utils/logger.js';
 
 /** Width the image column is currently typed to, as `admin_settings` records it. */
 export const IMAGE_EMBEDDING_DIMENSIONS_KEY = 'image_embedding_dimensions';
-/** `<providerId>:<model>` the live index was built for. */
+/**
+ * `<providerId>:<model>@<baseUrl>#<requestedDims|native>` the live index was
+ * built for — all four parts, because a width change and an endpoint change are
+ * each a different vector space in the same column (`identityOf`).
+ */
 export const IMAGE_EMBEDDING_INDEX_MODEL_KEY = 'image_embedding_index_model';
 /** The one HNSW index over `page_image_embeddings.embedding`. */
 export const IMAGE_EMBEDDING_HNSW_INDEX = 'page_image_embeddings_embedding_hnsw_idx';
@@ -106,7 +110,9 @@ async function hnswIndexExists(): Promise<boolean> {
  * Two outcomes:
  *
  *  - **rebuilt** — the width differs from the live column OR the recorded
- *    provider+model+baseUrl differs from the newly assigned one. Under one bounded-lock
+ *    `provider:model@baseUrl#dims` identity differs from the newly assigned
+ *    one (the requested truncation width is the fourth part, and changing it
+ *    alone is a rebuild). Under one bounded-lock
  *    transaction: TRUNCATE (the stored vectors are of the old width and/or the
  *    old space, and neither can be cast into the new one), retype, drop and
  *    rebuild the HNSW index for the new tier, record the pair, and mark every

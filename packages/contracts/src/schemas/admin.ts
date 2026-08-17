@@ -134,7 +134,13 @@ const RagRankingPriorWeightSchema = z.number().min(0).max(0.05);
  * the number here would make an operator who *wants* a sequential-scan index
  * unable to say so.
  */
-export const ImageEmbeddingTargetDimensionsSchema = z.number().int().min(64).max(16_000);
+export const IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN = 64;
+export const IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX = 16_000;
+export const ImageEmbeddingTargetDimensionsSchema = z
+  .number()
+  .int()
+  .min(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN)
+  .max(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX);
 
 /**
  * #1114 — which model a confidence threshold was calibrated against, and
