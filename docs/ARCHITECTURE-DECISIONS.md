@@ -1298,15 +1298,34 @@ Three properties keep it from disturbing what is already here:
    across the two — a weighted blend, a shared cutoff — is meaningless. RRF only
    ever sees positions. Page-denominated like #1106: a page's best image rank
    counts once.
-2. **It never feeds the confidence number.** `retrieval-confidence.ts` compares
-   an operator-tuned scalar against a text-cosine distribution; an image
-   similarity on that scale is a different unit wearing the same name. An
-   image-only hit set therefore has basis `none` and never refuses — the
-   treatment keyword-only hits already get — and the `sources[]` entry for an
-   image carries `similarity: null` so the badge's sample stays honest.
-3. **The stages after fusion are untouched.** Rerank, the ranking prior, MMR and
-   sibling assembly all operate on `chunkText`; image rows carry none, so they
-   are invisible to all four rather than specially handled in each.
+2. **The image SIMILARITY never feeds the confidence number.**
+   `retrieval-confidence.ts` compares an operator-tuned scalar against a
+   text-cosine distribution; an image similarity on that scale is a different
+   unit wearing the same name. So an image hit contributes no `vectorScore` and
+   can never establish the `similarity` basis, and the `sources[]` entry for an
+   image carries `similarity: null` so the badge's sample stays honest. **That
+   is narrower than "an image-only hit set never refuses", and the difference
+   is load-bearing for P3.** The `rerank` basis is tested FIRST and carries no
+   vector-led precondition — `if (maxRerank !== null && allReranked)`,
+   `backend/src/domains/llm/services/retrieval-confidence.ts:124`; only the
+   *similarity* basis below it requires a vector-led set. With #1104's stage
+   assigned, any fully-reranked set gets `basis: 'rerank'` regardless of which
+   leg found it, which is already true of keyword-only sets today. And an
+   image-reached page does reach rerank, because it enters the pipeline as an
+   ordinary `SearchResult` (point 3). **P3 must therefore decide explicitly
+   whether a title-synthesised row may carry a `rerankScore` into
+   `computeRetrievalConfidence` — as the code stands it would**, and #1105's
+   gate could then refuse on it.
+3. **The stages after fusion see text, never pixels.** A
+   `page_image_embeddings` row is never itself a `SearchResult`: the fused
+   result for an image-reached page is an ordinary text row — its
+   `chunk_index 0` row, or, for a page below the text floor that has no chunk
+   at all, one whose `chunkText` is synthesised from the title (design record
+   §5). Rerank, the ranking prior, MMR and sibling assembly therefore need no
+   image-specific branch. What they do need from P3 is a judgement on the
+   synthesised row: it carries text the page did not originally have, and that
+   text is what a cross-encoder would score and what MMR's trigram Jaccard
+   would diff.
 
 Failure is honest in the shape #1104 established: a VL call that fails, times
 out or meets an open breaker bypasses the leg, records
@@ -2171,7 +2190,7 @@ production can prove".
 **D12 — The vLLM version is pinned, and bumping it is a re-index event.**
 `vllm#33204` (open) reports ~0.92 cosine against the reference
 `qwen_vl_utils` preprocessing, which vLLM's docs acknowledge; `vllm#33954`
-reported quality *declining* between 0.14.0rc2 and 0.15.2; `vllm#33986` is the
+(closed) reported quality *declining* between 0.14.0rc2 and 0.15.2; `vllm#33986` is the
 open tracking issue for the family. A corpus embedded on one version and queried
 on another is silently degraded. D7 makes honouring this cheap.
 
@@ -2184,10 +2203,17 @@ other legs and fuses as a **third RRF leg**, page-denominated like #1106. Rank,
 not score: published cross-modal similarities sit in a different absolute band
 than text↔text ones (roughly 0.46–0.72 vs 0.75–0.81 in the model card's own
 tables), so any threshold tuned on text misbehaves on images. For the same
-reason **the image leg never feeds the confidence number** (#1105): an
-image-only hit set has basis `none` and never refuses, exactly like a
-keyword-only one. Rerank, the ranking prior, MMR and sibling assembly are
-untouched — they all score `chunkText`, and image rows have none.
+reason **the image similarity never feeds the confidence number** (#1105):
+image hits carry no `vectorScore`, so they cannot establish the `similarity`
+basis. That is deliberately narrower than "an image-only set never refuses" —
+the `rerank` basis is tested first and has no vector-led precondition
+(`retrieval-confidence.ts:124`), and an image-reached page reaches rerank as an
+ordinary `SearchResult`, so **P3 has to rule on whether such a row may carry a
+`rerankScore` into the gate; as the code stands it would.** Rerank, the ranking
+prior, MMR and sibling assembly still need no image-specific branch, because a
+`page_image_embeddings` row never becomes a `SearchResult`: an image-reached
+page enters them as its `chunk_index 0` row, or as a title-synthesised one
+(see the design record's retrieval section).
 
 ### v1 scope fence
 

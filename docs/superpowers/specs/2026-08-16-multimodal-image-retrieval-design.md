@@ -29,7 +29,7 @@ opened — three had moved and are corrected here.
 | D9 | **Bytes come from disk, never Redis staging.** A new **core** `attachment-store.ts` — the path-resolution + read half hoisted out of `attachment-handler.ts`, plus `resolveAttachmentBytes` — is the one reader over both stores. | `llm` may import `core` only (`backend/eslint.config.js:50-53`); the staging path exists to move *user uploads* across two requests and is capacity-gated against a `noeviction` Redis (#1183). Retrieved bytes already have a stable local path. |
 | D10 | **No server-side pixel processing in v1.** SVG and draw.io XML-in-`.png` are excluded by `sniffImageFormat`; images over `MAX_IMAGE_BYTES` (5 MB) or 4096 px are **skipped and counted**, not resized. | The backend deliberately has no `sharp` / `image-size` (`core/services/image-validator.ts:3-13`); adding a native decoder is a separate supply-chain decision. The model server resizes to its own pixel budget (≈1.31 Mpx) anyway. |
 | D11 | **Dev story = a ~30-line Python shim** (`mlx-embeddings` behind FastAPI) exposing exactly the vLLM `messages` shape on `/v1/embeddings`. Committed under `tools/vl-embedding-shim/` with a runbook. | Only local option that reproduces production semantics (instruction as system message, template on both modalities). LM Studio's `/v1/embeddings` takes no images; llama-server's route is non-OpenAI with a per-server random media marker and two open bugs; `mlx_vlm.server` templates images but not text. **Local vectors are for plumbing and ranked-list eyeballing; metrics that decide anything are measured on the prod stack** (MLX-vs-CUDA numerics, quantisation, vLLM's own ~0.92-cosine preprocessing divergence, `vllm#33204`). |
-| D12 | **vLLM version is pinned and a bump is a re-index event** for the image index. | Open upstream divergence/regression issues (`vllm#33204`, `#33954`, `#33986`). Cheap to honour thanks to D7. |
+| D12 | **vLLM version is pinned and a bump is a re-index event** for the image index. | Upstream divergence/regression issues: `vllm#33204` **open** (~0.92 cosine against the reference `qwen_vl_utils` preprocessing), `#33986` the **open** tracking issue, `#33954` **closed** (quality declining between 0.14.0rc2 and 0.15.2). Cheap to honour thanks to D7. |
 
 ## 2. What this does NOT do (v1 scope fence)
 
@@ -135,11 +135,22 @@ bare query rather than a garbled one.
   it has none (an image-only page below the 20-char text floor — today
   invisible), synthesise `chunkText = title`. This is how image-only pages
   become retrievable at all.
-- **Untouched**: rerank (scores `chunkText`), the ranking prior, MMR (trigram
-  Jaccard over text — image rows never enter it), sibling assembly, pins.
+- **No image-specific branch after fusion**: a `page_image_embeddings` row never
+  becomes a `SearchResult`, so rerank, the ranking prior, MMR (trigram Jaccard
+  over text), sibling assembly and pins keep scoring `chunkText` exactly as
+  today. What they see for an image-reached page is the row above — chunk 0, or
+  the title-synthesised one. **P3 owns the judgement that follows**: the
+  synthesised row carries text the page did not originally have, and that text
+  is what a cross-encoder scores and what MMR diffs.
 - **Confidence (#1105)**: image similarity does **not** feed the confidence
-  number; an image-only-hit set has basis `none` and never refuses (consistent
-  with keyword-only).
+  number — image hits carry no `vectorScore`, so they cannot establish the
+  `similarity` basis. **Not the same as "never refuses":** the `rerank` basis is
+  tested first and has no vector-led precondition
+  (`retrieval-confidence.ts:124`), so with #1104's stage assigned a fully
+  reranked set gets `basis: 'rerank'` whichever leg found it — true of
+  keyword-only sets today. P3 must decide whether the synthesised row may carry
+  a `rerankScore` into `computeRetrievalConfidence`; as the code stands it
+  would.
 - **Failure**: a VL call that fails or times out ⇒ leg bypassed honestly,
   `degraded_reason = 'image_leg_unavailable'` in `search_analytics` (migration
   088's column), `searchTypeFinal` unchanged.
