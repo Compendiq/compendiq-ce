@@ -9,7 +9,8 @@ has landed. P1–P6 are not implemented.
 
 Written against `dev @ 94a4ad41` and two verified fact-bases (codebase +
 external research). Every claim that drives a decision carries its source, and
-every `file:line` reference was re-verified against `dev` at PR time.
+every `file:line` reference was re-verified against `dev @ 4b75e8da` when P0
+opened — three had moved and are corrected here.
 
 ---
 
@@ -77,8 +78,8 @@ CREATE INDEX pages_image_embedding_dirty_idx ON pages(id) WHERE image_embedding_
 - **Runtime DDL** `ensureImageEmbeddingColumn(dims)` (P1): same tiering the text
   column uses (≤2000 `vector` + HNSW, ≤4000 `halfvec` + HNSW, else unindexed
   with a WARN and a UI notice). That tiering exists in three places today —
-  `embedding-service.ts:1664-1690` (the live destructive path),
-  `shadow-migration-service.ts:102-106` and `eval/seed.ts:39-42` — and the image
+  `embedding-service.ts:1662-1688` (the live destructive path),
+  `shadow-migration-service.ts:103-107` and `eval/seed.ts:39-43` — and the image
   path is a fourth; it is deliberately a *copy of the rule*, not a shared
   helper, until someone unifies all four. When the probed dimension differs
   from the live column: `TRUNCATE page_image_embeddings; ALTER COLUMN … TYPE …;`
