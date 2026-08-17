@@ -172,17 +172,80 @@ export const ApplyImprovementRequestSchema = z.object({
   title: z.string().optional(),
 });
 
-export const ConversationSchema = z.object({
+/**
+ * #1361 — conversation persistence contracts. `title_source` records who
+ * named the row: the trimmed first question, the LLM auto-title (PR 3), or
+ * a user rename — the last is never overwritten.
+ */
+export const TITLE_SOURCES = ['question', 'generated', 'user'] as const;
+export const TitleSourceSchema = z.enum(TITLE_SOURCES);
+export type TitleSource = z.infer<typeof TitleSourceSchema>;
+
+/**
+ * A source persisted beside an assistant turn (the wire `Source` allow-listed
+ * to what a citation chip renders). `pageId` is a positive internal `pages.id`
+ * or ABSENT — the route's `pageId: 0` sentinel for external/web sources is
+ * omitted on persist. `unavailable` is a READ-TIME annotation from
+ * `GET /llm/conversations/:id` (page trashed or no longer visible to the
+ * caller); it is never stored.
+ */
+export const SourceSchema = z.object({
+  pageTitle: z.string(),
+  spaceKey: z.string().nullable().optional(),
+  pageId: z.number().int().positive().optional(),
+  confluenceId: z.string().nullable().optional(),
+  url: z.string().optional(),
+  sectionTitle: z.string().optional(),
+  similarity: z.number().nullable().optional(),
+  unavailable: z.literal(true).optional(),
+});
+export type PersistedSource = z.infer<typeof SourceSchema>;
+
+export const StoredChatMessageSchema = z.object({
+  role: z.enum(['user', 'assistant', 'system']),
+  content: z.string(),
+  refused: z.boolean().optional(),
+  sources: z.array(SourceSchema).optional(),
+});
+export type StoredChatMessage = z.infer<typeof StoredChatMessageSchema>;
+
+export const ConversationSummarySchema = z.object({
   id: z.string().uuid(),
+  title: z.string(),
+  titleSource: TitleSourceSchema,
   model: z.string(),
-  title: z.string().nullable(),
-  messages: z.array(z.object({
-    role: z.enum(['user', 'assistant', 'system']),
-    content: z.string(),
-  })),
+  pageId: z.number().int().positive().nullable(),
+  pageTitle: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
+export type ConversationSummary = z.infer<typeof ConversationSummarySchema>;
+
+export const ConversationDetailSchema = ConversationSummarySchema.extend({
+  messages: z.array(StoredChatMessageSchema),
+  /** `selectReplayableHistory(messages).truncated` — the reopen-time half of decision 10. */
+  historyTruncated: z.boolean(),
+});
+export type ConversationDetail = z.infer<typeof ConversationDetailSchema>;
+
+export const ConversationListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(200).optional(),
+});
+export type ConversationListQuery = z.infer<typeof ConversationListQuerySchema>;
+
+export const ConversationListResponseSchema = z.object({
+  items: z.array(ConversationSummarySchema),
+  nextCursor: z.string().nullable(),
+});
+export type ConversationListResponse = z.infer<typeof ConversationListResponseSchema>;
+
+export const UpdateConversationSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+});
+export type UpdateConversationBody = z.infer<typeof UpdateConversationSchema>;
+
+export const ConversationIdParamSchema = z.object({ id: z.string().uuid() });
 
 export const ImprovementSchema = z.object({
   id: z.string().uuid(),
@@ -217,7 +280,6 @@ export type DiagramType = z.infer<typeof GenerateDiagramRequestSchema>['diagramT
 export type AnalyzeQualityRequest = z.infer<typeof AnalyzeQualityRequestSchema>;
 export type ForceEmbedTreeRequest = z.infer<typeof ForceEmbedTreeRequestSchema>;
 export type ApplyImprovementRequest = z.infer<typeof ApplyImprovementRequestSchema>;
-export type Conversation = z.infer<typeof ConversationSchema>;
 export type Improvement = z.infer<typeof ImprovementSchema>;
 export type OllamaModel = z.infer<typeof OllamaModelSchema>;
 export type DocumentFormat = z.infer<typeof DocumentFormatSchema>;

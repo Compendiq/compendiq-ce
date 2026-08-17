@@ -5,6 +5,15 @@ import {
   PrepareImageResponseSchema,
   GenerateRequestSchema,
   ImproveRequestSchema,
+  TITLE_SOURCES,
+  SourceSchema,
+  StoredChatMessageSchema,
+  ConversationSummarySchema,
+  ConversationDetailSchema,
+  ConversationListQuerySchema,
+  ConversationListResponseSchema,
+  UpdateConversationSchema,
+  ConversationIdParamSchema,
 } from './llm.js';
 
 const VALID_HANDLE = 'a'.repeat(64);
@@ -73,5 +82,90 @@ describe('imageHandle on request schemas', () => {
     expect(() => ImproveRequestSchema.parse({
       content: 'x', type: 'clarity', imageHandle: 'nope',
     })).toThrow();
+  });
+});
+
+describe('conversation schemas (#1361)', () => {
+  const KB_SOURCE = {
+    pageTitle: 'Runbook',
+    spaceKey: 'ENG',
+    pageId: 42,
+    confluenceId: '123456789012',
+    sectionTitle: 'Rotation',
+    similarity: 0.71,
+  };
+  // The live wire shape for an external doc: no pageId at all (the route's
+  // `pageId: 0` sentinel is OMITTED by the persister, Task 7).
+  const EXTERNAL_SOURCE = {
+    pageTitle: 'Fastify docs',
+    spaceKey: 'External',
+    confluenceId: 'https://fastify.dev/docs',
+    url: 'https://fastify.dev/docs',
+    sectionTitle: 'Fastify docs',
+    similarity: null,
+  };
+
+  it('TITLE_SOURCES is exactly question | generated | user', () => {
+    expect([...TITLE_SOURCES]).toEqual(['question', 'generated', 'user']);
+  });
+
+  it('SourceSchema round-trips a KB source and an external-doc source', () => {
+    expect(SourceSchema.parse(KB_SOURCE)).toEqual(KB_SOURCE);
+    expect(SourceSchema.parse(EXTERNAL_SOURCE)).toEqual(EXTERNAL_SOURCE);
+    expect(SourceSchema.parse({ ...KB_SOURCE, unavailable: true }).unavailable).toBe(true);
+  });
+
+  it('SourceSchema rejects the wire sentinel pageId: 0 — the persister must omit it', () => {
+    expect(SourceSchema.safeParse({ ...EXTERNAL_SOURCE, pageId: 0 }).success).toBe(false);
+  });
+
+  it('StoredChatMessageSchema accepts refused turns and turns carrying sources', () => {
+    expect(() => StoredChatMessageSchema.parse({ role: 'assistant', content: 'no', refused: true })).not.toThrow();
+    expect(() => StoredChatMessageSchema.parse({ role: 'assistant', content: 'yes', sources: [KB_SOURCE, EXTERNAL_SOURCE] })).not.toThrow();
+    expect(StoredChatMessageSchema.safeParse({ role: 'tool', content: 'x' }).success).toBe(false);
+  });
+
+  it('ConversationListQuerySchema defaults limit to 50, coerces, and caps at 100', () => {
+    expect(ConversationListQuerySchema.parse({})).toEqual({ limit: 50 });
+    expect(ConversationListQuerySchema.parse({ limit: '25', cursor: 'abc' })).toEqual({ limit: 25, cursor: 'abc' });
+    expect(ConversationListQuerySchema.safeParse({ limit: 101 }).success).toBe(false);
+    expect(ConversationListQuerySchema.safeParse({ limit: 0 }).success).toBe(false);
+  });
+
+  it('UpdateConversationSchema trims, and rejects blank or over-long titles', () => {
+    expect(UpdateConversationSchema.parse({ title: '  PAT rotation  ' })).toEqual({ title: 'PAT rotation' });
+    expect(UpdateConversationSchema.safeParse({ title: '   ' }).success).toBe(false);
+    expect(UpdateConversationSchema.safeParse({ title: 'x'.repeat(201) }).success).toBe(false);
+  });
+
+  it('ConversationIdParamSchema requires a uuid', () => {
+    expect(ConversationIdParamSchema.safeParse({ id: 'conv-1' }).success).toBe(false);
+    expect(ConversationIdParamSchema.safeParse({ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }).success).toBe(true);
+  });
+
+  it('summary / detail / list response round-trip the wire shape', () => {
+    const summary = {
+      id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a',
+      title: 'PAT rotation',
+      titleSource: 'question',
+      model: 'qwen3:8b',
+      pageId: 42,
+      pageTitle: 'Runbook',
+      createdAt: '2026-08-17T10:00:00.000Z',
+      updatedAt: '2026-08-17T11:00:00.000Z',
+    };
+    expect(ConversationSummarySchema.parse(summary)).toEqual(summary);
+    expect(ConversationSummarySchema.parse({ ...summary, pageId: null, pageTitle: null }).pageId).toBeNull();
+    const detail = {
+      ...summary,
+      messages: [
+        { role: 'user', content: 'how do we rotate the PAT?' },
+        { role: 'assistant', content: 'Under Settings → Confluence.', sources: [KB_SOURCE] },
+      ],
+      historyTruncated: false,
+    };
+    expect(ConversationDetailSchema.parse(detail)).toEqual(detail);
+    expect(ConversationDetailSchema.safeParse({ ...detail, historyTruncated: undefined }).success).toBe(false);
+    expect(ConversationListResponseSchema.parse({ items: [summary], nextCursor: null }).nextCursor).toBeNull();
   });
 });
