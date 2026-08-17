@@ -2,8 +2,18 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, RouterProvider, createMemoryRouter, useLocation } from 'react-router-dom';
+import { toast } from 'sonner';
 import { PagesPage } from './PagesPage';
 import { installVirtualizerRectShim } from '../../test-utils';
+
+// No <Toaster/> is mounted in these unit tests (it lives at the app root,
+// main.tsx), so a real `toast()` call renders nothing this suite can query.
+// Mocked as a callable-with-methods stub so both `toast(...)` (the #945
+// clear-filters undo toast) and `toast.success(...)` (the embedding-complete
+// toast elsewhere in this file) keep working without a real Toaster.
+vi.mock('sonner', () => ({
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), info: vi.fn() }),
+}));
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -314,14 +324,17 @@ describe('PagesPage', () => {
     expect(badge).toHaveTextContent('1');
   });
 
-  it('shows clear filters button when filters are active', () => {
+  it('shows the "Clear all" pill-row control when filters are active (harden pass: the panel no longer duplicates it)', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
-    expect(screen.getByTestId('clear-filters')).toBeInTheDocument();
+    expect(screen.getByTestId('clear-all-pill-filters')).toBeInTheDocument();
+    // The panel's own duplicate "Clear filters" button is gone — one control,
+    // not two disagreeing on label and visual weight (polish pass, 2026-08-17).
+    expect(screen.queryByTestId('clear-filters')).not.toBeInTheDocument();
   });
 
-  it('clears all advanced filters when clear button is clicked', () => {
+  it('clears all advanced filters when "Clear all" is clicked, and shows a 5s undo toast', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
 
@@ -330,12 +343,45 @@ describe('PagesPage', () => {
     fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
 
     // Click clear
-    fireEvent.click(screen.getByTestId('clear-filters'));
+    fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
 
     // Verify filters are reset
     expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
     expect((screen.getByTestId('filter-embedding') as HTMLSelectElement).value).toBe('');
-    expect(screen.queryByTestId('clear-filters')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('clear-all-pill-filters')).not.toBeInTheDocument();
+
+    expect(toast).toHaveBeenCalledWith('Filters cleared', expect.objectContaining({
+      duration: 5000,
+      action: expect.objectContaining({ label: 'Undo' }),
+    }));
+  });
+
+  it('"Undo" on the clear-filters toast restores the cleared filters', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+    fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
+    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
+
+    // No <Toaster/> is mounted in this suite, so there is no rendered "Undo"
+    // button to click — invoke the action the mocked toast() was called
+    // with, exactly as a real Toaster would when the user clicks it.
+    const call = vi.mocked(toast).mock.calls.at(-1);
+    act(() => {
+      call?.[1]?.action?.onClick?.(new MouseEvent('click') as unknown as Event);
+    });
+
+    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('stale');
+  });
+
+  it('the "Clear all" control is never styled as destructive (clearing filters loses no data)', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+    const clearAll = screen.getByTestId('clear-all-pill-filters');
+    expect(clearAll.className).not.toContain('destructive');
   });
 
   it('renders freshness filter options', () => {
@@ -570,6 +616,82 @@ describe('PagesPage', () => {
       // Wait for re-render
       await screen.findByText('Try a different search term');
       expect(screen.queryByText('Go to Settings')).not.toBeInTheDocument();
+    });
+
+    // --- Empty state misdiagnosis (harden pass, 2026-08-17) ---
+    //
+    // This branched on `search` alone and never consulted the active
+    // filters: filtering to zero results reported "Sync your Confluence
+    // spaces to see pages here" and sent the user to Settings — the wrong
+    // room for a problem their own filters caused, with no mention of which
+    // filter did it and no way to clear it from this screen.
+    describe('when filters (not corpus emptiness) caused the empty result set', () => {
+      it('names the active filter instead of blaming an unsynced knowledge base', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+        expect(await screen.findByText(/No pages match Freshness: Stale \(>90 days\)/)).toBeInTheDocument();
+        expect(screen.queryByText('Sync your Confluence spaces to see pages here')).not.toBeInTheDocument();
+      });
+
+      it('shows "Clear filters" instead of "Go to Settings" as the primary action', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+        expect(await screen.findByText('Clear filters')).toBeInTheDocument();
+        expect(screen.queryByText('Go to Settings')).not.toBeInTheDocument();
+      });
+
+      it('clicking "Clear filters" in the empty state actually clears the filter', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+        const clearAction = await screen.findByText('Clear filters');
+
+        fireEvent.click(clearAction);
+
+        await waitFor(() => {
+          expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
+        });
+      });
+
+      it('mentions both the search term and the filter when both are active', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+        fireEvent.change(screen.getByPlaceholderText('Search pages...'), { target: { value: 'zzznotathing' } });
+
+        expect(await screen.findByText('No pages match "zzznotathing" with Freshness: Stale (>90 days)')).toBeInTheDocument();
+      });
+
+      it('summarizes more than 3 active filters instead of listing every label', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        await waitFor(() => expect(screen.getByRole('option', { name: 'Alice' })).toBeInTheDocument());
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+        fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
+        fireEvent.change(screen.getByTestId('filter-quality'), { target: { value: 'poor' } });
+        fireEvent.change(screen.getByTestId('filter-author'), { target: { value: 'Alice' } });
+
+        expect(await screen.findByText(/and 1 more/)).toBeInTheDocument();
+      });
     });
   });
 
@@ -904,7 +1026,11 @@ describe('PagesPage', () => {
     fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
 
     expect(screen.getByTestId('active-filter-pills')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: stale');
+    // Human label, not the raw wire value (polish pass, 2026-08-17) — the
+    // dropdown that set this reads "Stale (>90 days)"; the pill used to
+    // print "stale", forcing the user to translate between two vocabularies
+    // for the same value.
+    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: Stale (>90 days)');
   });
 
   it('does not show active filter pills when no filters are active', () => {
@@ -918,8 +1044,8 @@ describe('PagesPage', () => {
     fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'fresh' } });
     fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
 
-    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: fresh');
-    expect(screen.getByTestId('filter-pill-embedding')).toHaveTextContent('Embedding: pending');
+    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: Fresh (<7 days)');
+    expect(screen.getByTestId('filter-pill-embedding')).toHaveTextContent('Embedding: Needs Embedding');
   });
 
   it('removes individual filter when pill is clicked', () => {
@@ -996,11 +1122,148 @@ describe('PagesPage', () => {
     });
   });
 
+  // --- #945 harden pass (2026-08-17) ---
+  //
+  // A design critique of this surface found the Space filter was silently
+  // ignored by semantic/hybrid search exactly like the advanced filters
+  // above, but had no pill, was never counted, and was never named in the
+  // #945 notice — the scoped-to-a-space search kept returning results from
+  // other spaces while the UI reported nothing wrong. The same pass found
+  // the Filters disclosure had no aria-expanded/aria-controls, and that the
+  // "inactive" pill treatment (opacity-50 + aria-disabled on live, clickable
+  // buttons) failed contrast and lied to assistive tech, since the buttons
+  // were never actually disabled.
+  describe('#945 harden pass — Space filter honesty, disclosure ARIA, and non-fake-disabled pills', () => {
+    it('the Space filter gets a pill, is counted, and is named in the notice once semantic search runs', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => expect(screen.getByRole('option', { name: 'Development' })).toBeInTheDocument());
+      const spaceSelect = screen.getByRole('combobox', { name: /filter by space/i });
+      fireEvent.change(spaceSelect, { target: { value: 'DEV' } });
+
+      const pill = screen.getByTestId('filter-pill-space');
+      expect(pill).toHaveTextContent('Space: Development');
+
+      // Keyword mode: Space genuinely filters results, so no notice yet.
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      const notice = await screen.findByTestId('filters-ignored-notice');
+      expect(notice).toHaveTextContent('Space: Development');
+      expect(notice).toHaveTextContent('Semantic and hybrid search ignore your active filters');
+    });
+
+    it('removing the Space pill clears the space filter, and it resets the select', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await waitFor(() => expect(screen.getByRole('option', { name: 'Development' })).toBeInTheDocument());
+      fireEvent.change(screen.getByRole('combobox', { name: /filter by space/i }), { target: { value: 'DEV' } });
+      expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('filter-pill-space'));
+
+      expect(screen.queryByTestId('filter-pill-space')).not.toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /filter by space/i })).toHaveValue('');
+    });
+
+    it('"Clear all" also clears an active Space filter alongside the advanced ones', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      await waitFor(() => expect(screen.getByRole('option', { name: 'Development' })).toBeInTheDocument());
+      fireEvent.change(screen.getByRole('combobox', { name: /filter by space/i }), { target: { value: 'DEV' } });
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
+
+      expect(screen.queryByTestId('filter-pill-space')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+    });
+
+    it('the Filters toggle declares its disclosure state via aria-expanded/aria-controls', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const toggle = screen.getByTestId('advanced-filters-toggle');
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      expect(toggle).toHaveAttribute('aria-controls', 'advanced-filters-panel');
+
+      fireEvent.click(toggle);
+
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByTestId('advanced-filters-panel')).toHaveAttribute('id', 'advanced-filters-panel');
+    });
+
+    it('active-filter pills stay fully operable in semantic mode — no opacity/aria-disabled, but they point at the notice', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      await screen.findByTestId('filters-ignored-notice');
+      const pillsWrap = screen.getByTestId('active-filter-pills');
+      expect(pillsWrap).not.toHaveAttribute('aria-disabled');
+      expect(pillsWrap.className).not.toContain('opacity-50');
+
+      const pill = screen.getByTestId('filter-pill-freshness');
+      expect(pill).toHaveAttribute('aria-describedby', 'filters-ignored-notice');
+      expect(pill).not.toBeDisabled();
+
+      // Genuinely clickable, not just visually "enabled" — this is exactly
+      // the check that used to fool automated tooling the same way it
+      // fooled a sighted user.
+      fireEvent.click(pill);
+      expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+    });
+
+    it('announces the honesty notice through a persistent sr-only live region', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+      const liveRegion = screen.getByTestId('filters-live-announcer');
+      expect(liveRegion).toHaveAttribute('role', 'status');
+      expect(liveRegion).toHaveAttribute('aria-live', 'polite');
+      expect(liveRegion).toHaveTextContent('');
+
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      await screen.findByTestId('filters-ignored-notice');
+      expect(liveRegion).toHaveTextContent(/ignore your active filters/);
+    });
+
+    it('summarizes more than 3 active filters in the notice instead of listing every label', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      await waitFor(() => expect(screen.getByRole('option', { name: 'Development' })).toBeInTheDocument());
+      fireEvent.change(screen.getByRole('combobox', { name: /filter by space/i }), { target: { value: 'DEV' } });
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
+      fireEvent.change(screen.getByTestId('filter-quality'), { target: { value: 'poor' } });
+      expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      const notice = await screen.findByTestId('filters-ignored-notice');
+      expect(notice).toHaveTextContent('and 1 more');
+    });
+  });
+
   // --- Visual divider test ---
 
-  it('renders a visual divider between sort and filters toggle', () => {
+  it('renders a visual divider between the filter selects and Sort (not between Sort and Filters)', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('sort-filter-divider')).toBeInTheDocument();
+    expect(screen.getByTestId('source-sort-divider')).toBeInTheDocument();
   });
 
   // --- Grid layout test ---
@@ -1022,7 +1285,7 @@ describe('PagesPage', () => {
 
     const pill = screen.getByTestId('filter-pill-freshness');
     expect(pill.tagName).toBe('BUTTON');
-    expect(pill).toHaveAttribute('aria-label', 'Remove Freshness: stale filter');
+    expect(pill).toHaveAttribute('aria-label', 'Remove Freshness: Stale (>90 days) filter');
   });
 
   it('filter pills do not contain nested interactive elements', () => {
@@ -1226,6 +1489,14 @@ describe('PagesPage', () => {
       expect(screen.getByRole('combobox', { name: /sort pages/i })).toBeInTheDocument();
     });
 
+    // Every other control in the section already had one; the search field —
+    // the sole control the route's own `/` shortcut exists to focus — was the
+    // one exception, named only by its placeholder (polish pass, 2026-08-17).
+    it('the search field exposes an accessible name (was placeholder-only)', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      expect(screen.getByRole('textbox', { name: /search pages/i })).toBeInTheDocument();
+    });
+
     it('advanced-panel labels are programmatically associated with their controls', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
@@ -1238,6 +1509,46 @@ describe('PagesPage', () => {
       expect(screen.getByRole('combobox', { name: /quality/i })).toBeInTheDocument();
       expect(screen.getByLabelText(/modified from/i)).toBeInTheDocument();
       expect(screen.getByLabelText(/modified to/i)).toBeInTheDocument();
+    });
+  });
+
+  // --- Search box polish (2026-08-17) ---
+  //
+  // The `/` shortcut that focuses this field was completely undiscoverable —
+  // "New Page" carried a visible ShortcutHint chip, this field carried
+  // nothing. And Escape didn't clear a populated field, the one universal
+  // convention on search inputs, leaving only the 18px clear `×` as an exit.
+  describe('search box polish (2026-08-17)', () => {
+    it('shows the "/" shortcut hint when the field is empty, and swaps to the clear button once populated', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(screen.getByText('/')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-clear')).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), { target: { value: 'kubernetes' } });
+
+      expect(screen.getByTestId('search-clear')).toBeInTheDocument();
+      expect(screen.queryByText('/')).not.toBeInTheDocument();
+    });
+
+    it('Escape clears a populated search field', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'kubernetes' } });
+      expect(input.value).toBe('kubernetes');
+
+      fireEvent.keyDown(input, { key: 'Escape' });
+
+      expect(input.value).toBe('');
+    });
+
+    it('Escape on an already-empty search field is a no-op', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+
+      // Should not throw, and should not, say, clear an unrelated filter.
+      expect(() => fireEvent.keyDown(input, { key: 'Escape' })).not.toThrow();
+      expect(input.value).toBe('');
     });
   });
 

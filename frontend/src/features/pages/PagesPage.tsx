@@ -39,6 +39,41 @@ const SOURCE_LABELS: Record<PageSource, string> = {
   standalone: 'Local',
 };
 
+// Human-readable labels for the wire values of the Freshness / Embedding /
+// Quality filters, matching each <option>'s own text exactly. Until this
+// polish pass only the source pill read a label map like this one — every
+// other pill printed the raw enum value (`Freshness: stale`, `Quality:
+// poor`) while the dropdown that set it read `Stale (>90 days)`, `Poor
+// (0-49)`: two vocabularies for one value, ~40px apart on screen (2026-08-17).
+const FRESHNESS_LABELS: Record<string, string> = {
+  fresh: 'Fresh (<7 days)',
+  recent: 'Recent (7-30 days)',
+  aging: 'Aging (30-90 days)',
+  stale: 'Stale (>90 days)',
+};
+const EMBEDDING_LABELS: Record<string, string> = {
+  pending: 'Needs Embedding',
+  done: 'Embedded',
+};
+const QUALITY_LABELS: Record<string, string> = {
+  excellent: 'Excellent (90-100)',
+  good: 'Good (70-89)',
+  'needs-work': 'Needs Work (50-69)',
+  poor: 'Poor (0-49)',
+};
+
+/**
+ * "A, B" for up to 3 labels; "A, B, C, and N more" beyond that. Shared by the
+ * #945 semantic-search honesty notice and the filtered-to-zero empty state
+ * (harden pass, 2026-08-17) so both describe the same active-filter set the
+ * same way rather than drifting apart with their own truncation rules.
+ */
+function summarizeFilterLabels(labels: string[]): string {
+  return labels.length <= 3
+    ? labels.join(', ')
+    : `${labels.slice(0, 3).join(', ')}, and ${labels.length - 3} more`;
+}
+
 // ---------------------------------------------------------------------------
 // Memoized page list item: prevents re-render from embedding-status polling
 // ---------------------------------------------------------------------------
@@ -518,21 +553,42 @@ export function PagesPage() {
     }
   }, [embeddingStatusData, queryClient]);
 
+  // `space` was excluded from this list until #945's harden pass: the
+  // semantic/hybrid backend branches never read spaceKey either (confirmed
+  // against backend/src/routes/knowledge/search.ts — the vector and hybrid
+  // blocks build their result set from the query embedding and the user's
+  // accessible spaces alone), but the Space select had no pill, was never
+  // counted in `activeFilterCount`, and the #945 notice below never
+  // mentioned it — so a scoped-to-a-space semantic search silently searched
+  // the whole accessible corpus while the UI reported nothing wrong.
   const activeFilters = useMemo(() => {
     const filters: { key: string; label: string }[] = [];
     // Keys are the URL param names so `clearFilter` can act on them directly.
+    if (spaceKey) filters.push({ key: 'space', label: `Space: ${selectedSpace?.name ?? spaceKey}` });
     if (author) filters.push({ key: 'author', label: `Author: ${author}` });
     if (labels) filters.push({ key: 'labels', label: `Label: ${labels}` });
-    if (freshness) filters.push({ key: 'freshness', label: `Freshness: ${freshness}` });
-    if (embeddingStatus) filters.push({ key: 'embedding', label: `Embedding: ${embeddingStatus}` });
-    if (qualityFilter) filters.push({ key: 'quality', label: `Quality: ${qualityFilter}` });
+    if (freshness) filters.push({ key: 'freshness', label: `Freshness: ${FRESHNESS_LABELS[freshness] ?? freshness}` });
+    if (embeddingStatus) filters.push({ key: 'embedding', label: `Embedding: ${EMBEDDING_LABELS[embeddingStatus] ?? embeddingStatus}` });
+    if (qualityFilter) filters.push({ key: 'quality', label: `Quality: ${QUALITY_LABELS[qualityFilter] ?? qualityFilter}` });
     if (dateFrom) filters.push({ key: 'from', label: `From: ${dateFrom}` });
     if (dateTo) filters.push({ key: 'to', label: `To: ${dateTo}` });
     if (sourceFilter) filters.push({ key: 'source', label: `Source: ${SOURCE_LABELS[sourceFilter]}` });
     return filters;
-  }, [author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter]);
+  }, [spaceKey, selectedSpace, author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter]);
 
   const activeFilterCount = activeFilters.length;
+
+  // Single source of truth for the #945 honesty notice, read by both the
+  // visible <p> and the sr-only live-region announcer below it — computed
+  // once so the two can never drift out of text with each other. Every key
+  // in `activeFilters` is, today, exactly the set the semantic/hybrid
+  // backend branches ignore (see the comment on `activeFilters` above), so
+  // no separate "which filters are inert" list is needed here.
+  const filtersIgnoredMessage = useMemo(() => {
+    if (!useSemanticSearch || activeFilterCount === 0) return '';
+    const summary = summarizeFilterLabels(activeFilters.map((f) => f.label));
+    return `Semantic and hybrid search ignore your active filters — ${summary}. They apply to keyword search only.`;
+  }, [useSemanticSearch, activeFilterCount, activeFilters]);
 
   // The pill keys are the URL param names, so a pill clears exactly the param
   // it renders — no second mapping table to drift out of sync.
@@ -540,8 +596,25 @@ export function PagesPage() {
     setFilters({ [key]: '', page: 1 } as Partial<PageFilterState>);
   }, [setFilters]);
 
+  // Clearing filters destroys nothing — it's reversible by definition, which
+  // is why the control is quiet (`nm-button-ghost`-weight, never
+  // `bg-destructive`) and why a 5s undo toast is enough of a safety net
+  // (polish pass, 2026-08-17: this used to be one click with no way back,
+  // styled as if it deleted data).
   const clearAllFilters = useCallback(() => {
+    const previousFilters: Partial<PageFilterState> = {
+      space: spaceKey,
+      author,
+      labels,
+      freshness,
+      embedding: embeddingStatus,
+      quality: qualityFilter,
+      from: dateFrom,
+      to: dateTo,
+      source: sourceFilter,
+    };
     setFilters({
+      space: '',
       author: '',
       labels: '',
       freshness: '',
@@ -552,7 +625,11 @@ export function PagesPage() {
       source: '',
       page: 1,
     });
-  }, [setFilters]);
+    toast('Filters cleared', {
+      duration: 5000,
+      action: { label: 'Undo', onClick: () => setFilters(previousFilters) },
+    });
+  }, [setFilters, spaceKey, author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter]);
 
   const navigateToPage = useCallback((id: string) => {
     navigate(`/pages/${id}`);
@@ -768,6 +845,12 @@ export function PagesPage() {
               ref={searchInputRef as RefObject<HTMLInputElement>}
               type="text"
               placeholder="Search pages..."
+              // The one control in this section with no aria-label — every
+              // sibling (space/source/sort selects, the mode toggle, every
+              // advanced field) already has one; this is the field the
+              // route's own `/` shortcut exists to focus (polish pass,
+              // 2026-08-17).
+              aria-label="Search pages"
               value={search}
               onChange={(e) => {
                 const val = e.target.value;
@@ -783,9 +866,22 @@ export function PagesPage() {
                   setFilters({ search: '', page: 1, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                 }
               }}
+              onKeyDown={(e) => {
+                // The universal convention on search inputs, missing here —
+                // the only way out was the 18px clear `×`. Mirrors the clear
+                // button's own effect; consumed so a page-level Escape
+                // handler doesn't also fire on the same keystroke
+                // (polish pass, 2026-08-17).
+                if (e.key === 'Escape' && search) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setSearchInput('');
+                  setFilters({ search: '', page: 1, mode: 'keyword', ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
+                }
+              }}
               className="nm-input pl-10 pr-10"
             />
-            {search && (
+            {search ? (
               <button
                 onClick={() => {
                   setSearchInput('');
@@ -798,6 +894,16 @@ export function PagesPage() {
               >
                 <X size={14} />
               </button>
+            ) : (
+              // The `/` shortcut that focuses this field was completely
+              // undiscoverable — "New Page" carries a visible hint chip, this
+              // field (the only other shortcut on the route) carried nothing.
+              // Same slot the clear button uses once there's a query to clear,
+              // so the two never compete for space (polish pass, 2026-08-17).
+              <ShortcutHint
+                shortcutId="focus-page-search"
+                className="pointer-events-none absolute right-3 top-1/2 ml-0 -translate-y-1/2"
+              />
             )}
           </div>
 
@@ -824,9 +930,16 @@ export function PagesPage() {
                   aria-pressed={searchMode === m}
                   className={cn(
                     'rounded-sm px-2.5 py-1 text-xs font-medium capitalize transition-colors',
+                    'nm-focus-ring',
                     searchMode === m
                       ? 'nm-pill-active'
-                      : 'text-muted-foreground hover:text-foreground',
+                      // `nm-pill-active` carries its own 1px border; matching it here
+                      // with a same-width *transparent* border (rather than no border
+                      // at all) keeps every segment's box size identical, so selecting
+                      // a mode doesn't reflow the other two by the border's width (was
+                      // 24px inactive vs 26px active, shifting all three horizontally
+                      // on every click — polish pass, 2026-08-17).
+                      : 'border border-transparent text-muted-foreground hover:text-foreground',
                   )}
                 >
                   {m}
@@ -862,6 +975,12 @@ export function PagesPage() {
             ))}
           </select>
 
+          {/* Divider between the filters (space/source) and Sort. It used to
+              sit between Sort and Filters instead, which visually grouped
+              Sort with the advanced-filters toggle rather than separating
+              it — Sort isn't a filter (polish pass, 2026-08-17). */}
+          <div className="hidden h-6 w-px bg-border/60 sm:block" aria-hidden="true" data-testid="source-sort-divider" />
+
           <select
             value={sort}
             onChange={(e) => setFilters({ sort: e.target.value as typeof sort })}
@@ -875,19 +994,19 @@ export function PagesPage() {
             <option value="relevance">Relevance</option>
           </select>
 
-          {/* Divider between sort and filters */}
-          <div className="hidden h-6 w-px bg-border/60 sm:block" aria-hidden="true" data-testid="sort-filter-divider" />
-
           {/* Advanced filters toggle */}
           <button
             onClick={() => setShowAdvancedFilters((v) => !v)}
             className={cn(
               'flex items-center gap-1.5 rounded-md px-3 py-2 text-sm transition-colors',
+              'nm-focus-ring',
               showAdvancedFilters || activeFilterCount > 0
                 ? 'bg-action/15 text-action'
                 : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
             )}
             data-testid="advanced-filters-toggle"
+            aria-expanded={showAdvancedFilters}
+            aria-controls="advanced-filters-panel"
           >
             <Filter size={14} />
             Filters
@@ -900,9 +1019,40 @@ export function PagesPage() {
 
         </div>
 
+        {/* sr-only live-region announcer for the #945 honesty notice below.
+            Always mounted (only its text content changes) rather than
+            mounting/unmounting the notice itself with aria-live on it — some
+            assistive tech only starts watching a live region once it is
+            already present in the accessibility tree, so a region that
+            appears for the first time alongside its own content can go
+            unannounced. This is the one place that state gets spoken; the
+            visible <p> below is purely visual and carries no aria-live of
+            its own to avoid a double announcement. */}
+        <span role="status" aria-live="polite" className="sr-only" data-testid="filters-live-announcer">
+          {filtersIgnoredMessage}
+        </span>
+
+        {/* Honest notice: every active filter above is silently ignored by
+            semantic and hybrid search (#945's original scope was "advanced
+            filters"; the harden pass folded Space in too — see the comment
+            on `activeFilters`). Placed here, ahead of the advanced panel and
+            the pill row, so it is the first thing seen after switching mode
+            rather than something a user has to scroll past two other blocks
+            to find. */}
+        {filtersIgnoredMessage && (
+          <p
+            id="filters-ignored-notice"
+            className="flex items-start gap-1.5 text-xs text-muted-foreground"
+            data-testid="filters-ignored-notice"
+          >
+            <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+            <span>{filtersIgnoredMessage}</span>
+          </p>
+        )}
+
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div className="grid grid-cols-2 items-end gap-3 border-t border-border pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
+          <div id="advanced-filters-panel" className="grid grid-cols-2 items-end gap-3 border-t border-border pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
             {/* Author filter */}
             <div className="min-w-40">
               <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
@@ -997,7 +1147,14 @@ export function PagesPage() {
                 type="date"
                 value={dateFromInput}
                 onChange={(e) => setDateFromInput(e.target.value)}
-                className="nm-select-md w-full"
+                // nm-select-md paints a dropdown chevron for the border/height/
+                // focus-ring recipe it's borrowed here for; a date input has its
+                // own native calendar-picker icon in that exact spot, and the
+                // two rendered side by side at 390px (polish pass, 2026-08-17).
+                // `!` forces this past nm-select-md's own background-image —
+                // same specificity, and cascade order between a hand-authored
+                // @utility and a built-in Tailwind utility isn't safe to assume.
+                className="nm-select-md w-full !bg-none"
                 data-testid="filter-date-from"
               />
             </div>
@@ -1008,39 +1165,38 @@ export function PagesPage() {
                 type="date"
                 value={dateToInput}
                 onChange={(e) => setDateToInput(e.target.value)}
-                className="nm-select-md w-full"
+                className="nm-select-md w-full !bg-none"
                 data-testid="filter-date-to"
               />
             </div>
 
-            {/* Clear all filters */}
-            {activeFilterCount > 0 && (
-              <button
-                onClick={clearAllFilters}
-                className="flex items-center gap-1 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive hover:bg-destructive/20"
-                data-testid="clear-filters"
-              >
-                <X size={14} />
-                Clear filters
-              </button>
-            )}
+            {/* A "clear everything" control used to live here too — "Clear
+                filters" in filled destructive red — duplicating the pill
+                row's plain-text "Clear all" below under a different label
+                and opposite visual weight, for the identical
+                `clearAllFilters` call. Clearing filters destroys no data,
+                so the destructive-red treatment was also just wrong. The
+                pill row's "Clear all" is now the one control (polish pass,
+                2026-08-17); it sits beside the pills it clears, which the
+                panel does not. */}
           </div>
         )}
 
         {/* Active filter pills.
-            Semantic/hybrid search ignores advanced filters (the backend
-            vector/hybrid paths never receive them), so when semantic search is
-            running we visually mark the pills as inactive rather than pretend
-            they still filter the results (#945). */}
+            These stay fully legible and operable in semantic/hybrid mode —
+            they are not disabled, removing one really does update the URL,
+            and `opacity-50` on a clickable button both fails contrast and
+            fools automated "is it enabled" checks the same way it fools a
+            sighted user. The #945 honesty notice above is the one place that
+            says these are being ignored; each pill just points to it via
+            `aria-describedby` so a screen-reader user tabbing onto a pill
+            hears why it's listed. `data-inactive` is a plain state marker
+            for tests/styling, not an accessibility claim. */}
         {activeFilters.length > 0 && (
           <div
-            className={cn(
-              'flex flex-wrap items-center gap-2 border-t border-border pt-3',
-              useSemanticSearch && 'opacity-50',
-            )}
+            className="flex flex-wrap items-center gap-2 border-t border-border pt-3"
             data-testid="active-filter-pills"
             data-inactive={useSemanticSearch ? 'true' : undefined}
-            aria-disabled={useSemanticSearch || undefined}
           >
             {activeFilters.map((f) => (
               <button
@@ -1048,6 +1204,7 @@ export function PagesPage() {
                 onClick={() => clearFilter(f.key)}
                 className="inline-flex items-center gap-1 rounded-full bg-action/10 px-2.5 py-0.5 text-xs font-medium text-action"
                 aria-label={`Remove ${f.label} filter`}
+                aria-describedby={useSemanticSearch ? 'filters-ignored-notice' : undefined}
                 data-testid={`filter-pill-${f.key}`}
               >
                 {f.label}
@@ -1056,25 +1213,12 @@ export function PagesPage() {
             ))}
             <button
               onClick={clearAllFilters}
-              className="text-xs text-muted-foreground hover:text-foreground"
+              className="rounded-sm text-xs text-muted-foreground hover:text-foreground nm-focus-ring"
               data-testid="clear-all-pill-filters"
             >
               Clear all
             </button>
           </div>
-        )}
-
-        {/* Honest notice: advanced filters are keyword-only. In semantic/hybrid
-            mode the backend ignores them, so tell the user instead of silently
-            dropping them (#945). */}
-        {useSemanticSearch && activeFilterCount > 0 && (
-          <p
-            className="flex items-center gap-1.5 text-xs text-muted-foreground"
-            data-testid="filters-ignored-notice"
-          >
-            <AlertTriangle size={12} className="shrink-0 text-warning" aria-hidden="true" />
-            Advanced filters apply to keyword search only — they don't affect semantic or hybrid results.
-          </p>
         )}
       </section>
 
@@ -1231,8 +1375,24 @@ export function PagesPage() {
                               drives the wrap. The excerpt's own rendering is
                               unchanged — it still fills the block's final
                               width and clamps at two lines. */}
+                          {/* item.excerpt is a full-text-search snippet carrying
+                              <mark> highlight tags on its keyword leg (the
+                              semantic leg's snippets carry none). Rendering it
+                              as plain React text escaped the tags into literal
+                              "<mark>…</mark>" on screen for the ~250ms-1.5s
+                              every semantic/hybrid search spends showing
+                              phase-1 keyword results — on 80-90% of rows, every
+                              time. SanitizedHtml with an explicit `mark`-only
+                              allowlist renders the highlighting the backend
+                              already computed instead of leaking its markup
+                              (polish pass, 2026-08-17). */}
                           {item.excerpt && (
-                            <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground max-sm:[contain:inline-size]">{item.excerpt}</p>
+                            <SanitizedHtml
+                              html={item.excerpt}
+                              allowedTags={['mark']}
+                              allowedAttrs={[]}
+                              className="mt-0.5 line-clamp-2 text-xs text-muted-foreground max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-foreground/10 [&_mark]:font-medium [&_mark]:text-foreground"
+                            />
                           )}
                           {item.spaceKey && (
                             <span className="mt-1 inline-block text-xs text-muted-foreground">{item.spaceKey}</span>
@@ -1318,11 +1478,30 @@ export function PagesPage() {
               </button>
             </div>
           ) : !pagesData?.items.length ? (
+            // Filters first, search second, corpus-emptiness last (harden
+            // pass, 2026-08-17): an empty result set with active filters was
+            // reported as "Sync your Confluence spaces to see pages here",
+            // sending the user to Settings for a problem their own filters
+            // caused, with no mention of the filters and no way to clear
+            // them from this screen. `activeFilterCount` already reflects
+            // exactly what's filtering this list (Space included, since it
+            // now participates in `activeFilters` above) — a real empty
+            // corpus is the one case where it, and `search`, are both empty.
             <EmptyState
               icon={FolderOpen}
               title="No pages found"
-              description={search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here'}
-              action={!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined}
+              description={
+                activeFilterCount > 0
+                  ? (search
+                      ? `No pages match "${search}" with ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`
+                      : `No pages match ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`)
+                  : (search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here')
+              }
+              action={
+                activeFilterCount > 0
+                  ? { label: 'Clear filters', onClick: clearAllFilters }
+                  : (!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined)
+              }
             />
           ) : (
             <>

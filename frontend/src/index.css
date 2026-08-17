@@ -1048,6 +1048,26 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   }
 }
 
+/* The teal focus-visible ring, standalone — for a one-off control that needs
+   nm-button-ghost's/nm-icon-button's focus mechanic without the rest of
+   either recipe (e.g. a segmented-control pill or a bare toggle button).
+   Tailwind's own generated `focus-visible:outline-*` utility classes do not
+   reliably win this element's cascade in this build (measured directly: the
+   generated `.focus-visible\:outline-ring` rule is present in the served
+   CSS with correct :focus-visible nesting, yet a live keyboard-Tab check
+   showed outline-color still resolving to transparent/currentColor rather
+   than the teal token) — reuse the hand-authored mechanism the rest of this
+   file already proves out, rather than a second unproven path to the same
+   color (polish pass, 2026-08-17). */
+@utility nm-focus-ring {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+
+  &:focus-visible {
+    outline-color: var(--color-ring);
+  }
+}
+
 @utility nm-icon-button {
   display: inline-flex;
   align-items: center;
