@@ -540,6 +540,7 @@ describe('.github/workflows/pr-check.yml keeps the Tests job off the frontend an
   it('runs frontend tests as their own job so they do not wait on backend coverage', () => {
     expect(frontendJob).toMatch(/name:\s*Frontend Tests/);
     expect(frontendJob).toMatch(/npm test -w frontend/);
+    expect(frontendJob).toMatch(/npm run build -w @compendiq\/contracts/);
     expect(frontendJob).not.toMatch(/postgres:/);
     expect(testsJob).not.toMatch(/npm test -w frontend/);
   });

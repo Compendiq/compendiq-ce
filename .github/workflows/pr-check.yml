@@ -131,6 +131,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Vite resolves the workspace package from its published `dist`, not
+      # the tsconfig source alias. The old serial Tests job built contracts
+      # before frontend; this job must do the same or ~46 files fail to
+      # import `@compendiq/contracts`.
+      - name: Build contracts
+        run: npm run build -w @compendiq/contracts
+
       - name: Frontend tests
         run: npm test -w frontend
 
