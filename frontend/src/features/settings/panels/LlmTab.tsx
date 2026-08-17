@@ -8,14 +8,11 @@ import type {
   UsecaseAssignments,
   UpdateUsecaseAssignmentsInput,
 } from '@compendiq/contracts';
-import {
-  LlmUsecaseSchema,
-  IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN,
-  IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX,
-} from '@compendiq/contracts';
+import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ProviderListSection } from './ProviderListSection';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
+import { clampImageEmbeddingTargetDimensions } from './image-embedding-target-dimensions';
 import { EmbeddingReembedBanner } from './EmbeddingReembedBanner';
 import { EmbeddingShadowMigrationCard } from './EmbeddingShadowMigrationCard';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
@@ -31,23 +28,6 @@ const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 const DEFAULT_CONCURRENT_STREAMS_CAP = 3;
 const MIN_CONCURRENT_STREAMS_CAP = 1;
 const MAX_CONCURRENT_STREAMS_CAP = 20;
-
-/**
- * #1115 — clamp the MRL truncation width to the contract's own bounds before
- * it is sent, exactly as `handleSaveRuntimeLimits` does for the stream cap.
- * `min`/`max` on a bare `type="number"` input constrain nothing about the value
- * read back off `e.target.value`, so an out-of-range entry otherwise reached
- * `ImageEmbeddingTargetDimensionsSchema` and came back as a raw Zod issue path
- * ("imageEmbeddingTargetDimensions: Too small: expected number to be >=64")
- * instead of the panel's own sentence.
- */
-function clampImageTargetDims(value: number | null): number | null {
-  if (value === null) return null;
-  return Math.max(
-    IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN,
-    Math.min(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX, value),
-  );
-}
 
 export function LlmTab() {
   const qc = useQueryClient();
@@ -260,8 +240,9 @@ export function LlmTab() {
     // Clamped BEFORE the comparison, not only before the request: a typed 32
     // against a stored 64 is not a change once the clamp has run, and diffing
     // the raw value would re-send the assignment and re-probe for a width the
-    // server already holds.
-    const nextImageTargetDims = clampImageTargetDims(imageTargetDims);
+    // server already holds. The field clamps on blur too — this is the backstop
+    // for a save reached without one, and the clamp is idempotent.
+    const nextImageTargetDims = clampImageEmbeddingTargetDimensions(imageTargetDims);
     const imageTargetChanged =
       imageTargetInitialized && nextImageTargetDims !== savedImageTargetDims;
     if (Object.keys(diff).length === 0 && !imageTargetChanged) {

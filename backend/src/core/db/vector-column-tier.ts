@@ -41,7 +41,16 @@ export const HNSW_PARAMS = 'WITH (m = 16, ef_construction = 200)';
 export const HNSW_VECTOR_MAX_DIMS = 2000;
 /** Largest width pgvector will build an HNSW index over `halfvec` for. */
 export const HNSW_HALFVEC_MAX_DIMS = 4000;
-/** pgvector's own ceiling on a declared column width. */
+/**
+ * pgvector's own ceiling on a declared column width.
+ *
+ * The same number is `IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX` in
+ * `packages/contracts`, which bounds the MRL truncation width an admin may ask
+ * for — a request that succeeds there and then throws here is a probe the
+ * operator passed and a column that cannot be built. Contracts cannot import
+ * the backend, so the equality is asserted from this side, in
+ * `vector-column-tier.test.ts`.
+ */
 export const VECTOR_MAX_DIMS = 16_000;
 
 /**

@@ -90,9 +90,18 @@ Two consequences worth knowing before you set it:
   new width stored, the assignment and the column exactly as they were, and the
   refusal on the row — the row, because a width change re-sends the assignment
   already in force, and a refused verdict for the *live* pair is stored (§4).
-  Fix the server, or clear the field, and save again; the panel re-reads the
-  stored width after a refusal, so clearing the field back to `native` is a real
-  change and not a silent no-op.
+  Fix the server and press **Re-check** on the row, or clear the field and save
+  again. The two remedies are not interchangeable, and which one you need
+  follows from the width already being stored. **Save is a value diff**: after a
+  refusal the panel re-reads the stored width, so once the server is fixed
+  pressing Save again compares the same number against itself, finds no change
+  in the dropdowns either, and reports **"No changes"** without re-probing
+  anything. **Re-check** is the control that re-runs the probe — it reads that
+  same stored width, sends it, and on success re-applies the column type
+  (`ensureImageEmbeddingColumn`), which is the half the refused save never got
+  to. Clearing the field back to `native` *is* a real change against the stored
+  width, so that branch really does go through Save — and it re-sends the
+  assignment and re-probes with it.
 
 Compendiq re-normalises client-side whenever it sends `dimensions`, because
 truncating a unit vector does not leave a unit vector and vLLM is not documented
@@ -174,10 +183,10 @@ scripted client sees.
 | Category (`reason`) | What the toast says | Do |
 |---|---|---|
 | `shape_rejected` | "This endpoint refused the request. Image embedding needs a server that accepts vLLM's chat-embeddings shape…" | The endpoint answered 400/404/405/422 — it is reachable and refusing *this request*. Usually the wrong kind of server (see §1) or the wrong model id. If a truncation width is set, it may also be vLLM refusing `dimensions` for a checkpoint it does not consider Matryoshka (§2) — the message says so when that applies. The provider's own body is always in the **backend log**, which is why the toast points there. Whether the row's disclosure also shows it depends on *which* pair was refused: a refused verdict overwrites the stored one only when the refused pair **is the live pair** (a re-save of the assignment already in force, which is what a width change sends — §2). A refused change to a *different* pair is not stored, so the disclosure keeps describing the previous, still-working leg rather than replacing a true verdict with "Not established". |
-| `provider_error` | "The provider answered with an error rather than a vector…" | 401/403 (credentials), 429 (rate limit) or 5xx. **Not** a verdict about the server being the wrong kind: a vLLM still loading its model answers 503, and `vllm#33865` is an open report of intermittent 5xx from this endpoint. Check credentials and readiness, then press Save or Re-check again. |
+| `provider_error` | "The provider answered with an error rather than a vector…" | 401/403 (credentials), 429 (rate limit) or 5xx. **Not** a verdict about the server being the wrong kind: a vLLM still loading its model answers 503, and `vllm#33865` is an open report of intermittent 5xx from this endpoint. Check credentials and readiness, then re-run the probe — and mind *which* control does that. If you were changing the truncation width on an assignment already in force, the width is already stored, so Save is a no-op that answers "No changes": fix the server and press **Re-check** on the row, or clear the field and save again (§2). If you were making or changing an assignment, the dropdowns still hold your unsaved edit, so **Save** re-sends and re-probes. |
 | `unreachable` | "The provider could not be reached, or did not answer within the probe's time budget…" | Check the base URL, credentials, and that the server is up. The per-provider breaker may also be open from earlier failures. Each probe call is bounded at 60s. |
 | `width_mismatch` | "This endpoint returned different vector widths for an image and for a text…" | The server is not applying the same formatting to both. Not usable. |
-| `dimensions_ignored` | "This endpoint ignored the truncation width configured for image embedding…" | The server accepted the request but answered at another width — almost always started without `--hf-overrides '{"is_matryoshka": true}'` (§2). Restart it with the override, or clear the truncation width. |
+| `dimensions_ignored` | "This endpoint ignored the truncation width configured for image embedding…" | The server accepted the request but answered at another width — almost always started without `--hf-overrides '{"is_matryoshka": true}'` (§2). Restart it with the override and press **Re-check** on the row, or clear the truncation width and save again — the stored width makes a repeat Save a no-op (§2). |
 | `unusable_width` | "This endpoint returned a vector width Postgres cannot store — a pgvector column holds at most 16000 dimensions." | Only fires above pgvector's **column** ceiling. A width of 4001–16000 is *not* refused: it is stored and left unindexed (see Index tiers), which the row states. |
 
 On success the row shows `2048-dim · halfvec HNSW` (or `vector HNSW`, or

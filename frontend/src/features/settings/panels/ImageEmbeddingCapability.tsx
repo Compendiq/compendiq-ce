@@ -8,6 +8,7 @@ import {
 } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { formatRelativeTime } from '../../../shared/lib/format-relative-time';
+import { clampImageEmbeddingTargetDimensions } from './image-embedding-target-dimensions';
 
 /**
  * #1115 — the `image_embedding` row's detail strip: what the leg is for, what
@@ -181,8 +182,9 @@ export function ImageEmbeddingCapability({
             inputMode="numeric"
             // The schema's own bounds, not a hand-copied pair — and they
             // constrain nothing on their own: `e.target.value` is read
-            // regardless, so `LlmTab.clampImageTargetDims` is what keeps an
-            // out-of-range entry from coming back as a raw Zod issue path.
+            // regardless, so `clampImageEmbeddingTargetDimensions` is what
+            // keeps an out-of-range entry from coming back as a raw Zod issue
+            // path. It runs on blur here and again in `LlmTab` before the PUT.
             min={IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN}
             max={IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX}
             placeholder="native"
@@ -198,6 +200,13 @@ export function ImageEmbeddingCapability({
               const parsed = Number(raw);
               onTargetDimensionsChange(Number.isFinite(parsed) ? Math.trunc(parsed) : null);
             }}
+            // Settle on the value that will actually be sent, once the admin
+            // has finished typing. Clamping per keystroke would rewrite `4` to
+            // `64` and make `4000` — the largest indexable width, and the one
+            // the unindexed note tells them to enter — unreachable.
+            onBlur={() =>
+              onTargetDimensionsChange(clampImageEmbeddingTargetDimensions(targetDimensions))
+            }
           />
           <p
             id="image-embedding-target-dimensions-help"

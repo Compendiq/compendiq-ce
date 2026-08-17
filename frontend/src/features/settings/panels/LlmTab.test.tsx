@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import {
+  IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN,
+  IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX,
+} from '@compendiq/contracts';
 import { LlmTab } from './LlmTab';
 import { useAuthStore } from '../../../stores/auth-store';
 
@@ -1361,6 +1365,69 @@ describe('LlmTab', () => {
         imageEmbeddingTargetDimensions: 64,
       });
     });
+  });
+
+  /**
+   * Final review, nit 3 — the `min`/`max` attributes are the schema's own
+   * bounds, read from the contract rather than typed in. A hand-copied pair
+   * would let the field advertise a range the server refuses (or, worse, refuse
+   * one it accepts) the first time either bound is retuned.
+   */
+  it('advertises the contract bounds on the truncation field', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = await screen.findByTestId('image-embedding-target-dimensions');
+
+    expect(field.getAttribute('min')).toBe(String(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN));
+    expect(field.getAttribute('max')).toBe(String(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX));
+  });
+
+  /**
+   * Final review, nit 2 — the clamp above runs at SAVE, so until the admin
+   * pressed the button the field sat showing a number that was not the one
+   * about to be sent. It now settles on blur, and only on blur: clamping per
+   * keystroke rewrites `4` to `64` the moment it is typed, which makes `4000`
+   * — the largest indexable width, and the one the unindexed note tells the
+   * operator to enter — unreachable from an empty field.
+   */
+  it('clamps the truncation width on blur while keeping keystrokes typeable', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    const field = (await screen.findByTestId(
+      'image-embedding-target-dimensions',
+    )) as HTMLInputElement;
+
+    // Mid-entry: below the floor, and left exactly as typed.
+    fireEvent.change(field, { target: { value: '4' } });
+    expect(field.value).toBe('4');
+    fireEvent.change(field, { target: { value: '40' } });
+    expect(field.value).toBe('40');
+    // …all the way to a legal width, which a per-keystroke clamp would have
+    // made unreachable.
+    fireEvent.change(field, { target: { value: '4000' } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(field.value).toBe('4000'));
+
+    // Leaving the field on an out-of-range value settles it on what will be
+    // sent, rather than arguing with the admin at Save time.
+    fireEvent.change(field, { target: { value: '32' } });
+    fireEvent.blur(field);
+    await waitFor(() =>
+      expect(field.value).toBe(String(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN)),
+    );
+
+    fireEvent.change(field, { target: { value: '99999' } });
+    fireEvent.blur(field);
+    await waitFor(() =>
+      expect(field.value).toBe(String(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX)),
+    );
+
+    // An empty field still means "native width", not the floor.
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(field.value).toBe(''));
   });
 
   /**
