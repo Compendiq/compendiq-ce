@@ -650,6 +650,12 @@ answers on its face — it prints "15-minute event" beside the Daily Scrum — s
 attribution question took its place. Attribution and dates are the shape that
 travels: a diagram names no people.
 
+**Those four are the one part of this fixture its own protocol does not cover**
+— they are the merger's, written after the six blind slices had been submitted
+(`labeledBy` discloses it, and the `img-06-*` slice keeps them separable), so
+**P5b should replace or extend them with blind-labelled procedural negatives**
+and the ceiling below carries the headroom to do it without moving a bound.
+
 It is a **separate schema and a separate loader** (`ImageFixtureSchema` /
 `loadImageFixture`), never a widened `FixtureSchema`: the two are scored on
 different axes, and every baseline in this runbook is a comparison against the
@@ -664,8 +670,10 @@ individually exist.
 `fixture-de-images.test.ts` pins the rest — `corpusManifestSha` against
 `computeCorpusManifestSha([IMAGE_CORPUS_DIR])` (the same contract
 `fixture.json` has: a corpus refresh moves the captions these labels were
-written from), the N ≥ 100 floor, ≥ 20 English, 8–22 negatives of which ≥ 4 are
-English and ≥ 8 German, no content shape
+written from), the N ≥ 100 floor, ≥ 20 English, 8–26 negatives of which ≥ 4 are
+English and ≥ 8 German (the ceiling carries four rungs of headroom for P5b's
+blind-labelled English negatives, and stays a count rather than a share — a
+ratio at N = 307 would silently license 30), no content shape
 below 15%, every image accounted for by a label or by a `notUsable` entry
 carrying the labeller's reason (capped at a **tenth** of the corpus, so an image
 can be dropped on the record but the *measured* set cannot quietly shrink), and
@@ -676,7 +684,12 @@ under the test's own normaliser, which folds **punctuation** as well as case and
 whitespace — an exact match passes `Rollout Januar 2005` against the caption
 `Rollout, Januar 2005`, and someone pasting a caption is exactly who drops the
 comma. That normaliser is deliberately not `normalizeQuery`, which also backs
-`loadFixture`'s duplicate-query rule for the shipped **text** fixture.
+`loadFixture`'s duplicate-query rule for the shipped **text** fixture. It also
+requires a non-empty `rationale` on **every** label, reported by id: the schema
+defaults that field to `''`, so a label written without one parses clean and is
+indistinguishable from one whose reason was deleted — and the rationale is the
+only record of why an image was credited to a query, which is what the r1 and r2
+findings in the paragraph below were adjudicated out of.
 
 Two label-quality rules the guard cannot enforce, and which reviews r1 and r2
 had to fix by hand: a query must describe **the pixels**, not the caption's word

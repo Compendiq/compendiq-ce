@@ -256,11 +256,15 @@ describe('the shipped image fixture (#1115 P5c)', () => {
     // abstention rather than retrieval.
     const negatives = fixture.labels.filter((l) => l.style === 'image-negative');
     expect(negatives.length).toBeGreaterThanOrEqual(8);
-    // 22 rather than the 20 this first shipped with, and moved deliberately:
+    // 26 rather than the 20 this first shipped with, and moved deliberately:
     // the four English distractors below are an addition, not a rebalancing,
     // and at 307 labels 22 is 7.2% of the fixture — the same share the German
     // slice already carried, nowhere near abstention dominating the measure.
-    expect(negatives.length).toBeLessThanOrEqual(22);
+    // The four spare rungs are headroom for P5b to replace those merger-written
+    // English negatives with blind-labelled procedural ones without touching
+    // this bound. The floor stays 8. Still a count and not a percentage, for
+    // the reason written above it: a ratio would silently license 30.
+    expect(negatives.length).toBeLessThanOrEqual(26);
     expect(negatives.every((l) => l.expectedImages.length === 0)).toBe(true);
 
     // PER LANGUAGE, because the whole-fixture count above is blind to a slice
@@ -359,9 +363,18 @@ describe('the shipped image fixture (#1115 P5c)', () => {
     expect(normalizeCaption('Rollout der A380')).not.toBe(normalizeCaption(caption));
   });
 
-  it('records who labelled it and keeps every notUsable reason', () => {
+  it('records who labelled it, keeps every notUsable reason, and every label its rationale', () => {
     const fixture = shipped();
     expect(fixture.labeledBy).toMatch(/independent/i);
     expect(fixture.notUsable.every((n) => n.reason.trim().length > 0)).toBe(true);
+
+    // `rationale` carries `.default('')` in the schema, so a label that omits it
+    // parses clean and reads back as "no reason given" — indistinguishable from
+    // one whose reason was deleted. It is the only record of WHY an image was
+    // credited to a query, and both review rounds were adjudicated out of it:
+    // every finding above was settled by re-opening the picture and reading the
+    // rationale against it. Reported by id rather than as a boolean, so a
+    // failure names the label to go and look at.
+    expect(fixture.labels.filter((l) => !l.rationale.trim()).map((l) => l.id)).toEqual([]);
   });
 });

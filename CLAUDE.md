@@ -167,10 +167,13 @@ belongs to one of that label's own pages. The last is the one nobody eyeballs:
 `imageHit@K` is scored inside the retrieved page, so an image credited to the
 wrong page is unreachable however good the leg is, while the page and the image
 each exist. `fixture-de-images.test.ts` pins the sha, N ≥ 100, ≥ 20 English
-(the cross-lingual case the text leg cannot serve), 8–22 `image-negative`
+(the cross-lingual case the text leg cannot serve), 8–26 `image-negative`
 distractors with EMPTY `expectedImages` (without them a leg that answers with a
 picture every time scores like one that answers correctly), no content shape
-below 15%, every image accounted for by a label or a `notUsable` reason, and
+below 15%, every image accounted for by a label or a `notUsable` reason, a
+non-empty `rationale` on every label (the schema defaults it to `''`, so a
+missing reason parses clean and reads back exactly like a deleted one — and the
+rationale is what both review rounds were adjudicated out of), and
 **no query that restates a manifest caption** — the caption-strip rule guarded
 from the other side, since a query copied off the manifest hands the leg the
 match the empty alt text exists to deny it. Three of those are narrower than they
@@ -193,7 +196,11 @@ VL space is claimed for. Review r2 added four English ones under their **own**
 id slice (`img-06-*`), because they are the merger's rather than a blind
 labeller's and those ids are the fixture's authorship record; the German floor
 sits beside the English one so the gap can never be closed by re-languaging the
-negatives already there. And it is the **first vendored content whose own
+negatives already there. Those four are the one part of the fixture its own
+protocol does not cover, so **P5b should replace or extend them with
+blind-labelled procedural negatives** — which is what the ceiling's four rungs
+of headroom above 22 are for, and why it stays a count rather than a share (a
+ratio at N = 307 would license 30). And it is the **first vendored content whose own
 licence is not MIT** (the English corpus is MIT documentation; this repository
 itself is **AGPL-3.0**): page text is CC BY-SA 4.0 (adapted) and images are
 filtered to CC0 / public domain / CC BY x / CC BY-SA x with a **named** author
