@@ -18,9 +18,38 @@ import {
   MAX_ATTACHMENT_FAILURES,
   getRedisClient,
 } from '../../../core/services/redis-cache.js';
+import {
+  attachmentCacheDir,
+  attachmentDir,
+  listCachedAttachments,
+  readCachedAttachmentFile,
+  safeAttachmentPath,
+  validateFilename,
+} from '../../../core/services/attachment-store.js';
 
-const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
-const ATTACHMENTS_BASE_RESOLVED = path.resolve(ATTACHMENTS_BASE);
+/**
+ * The path-resolution and READ half of this module lives in
+ * `core/services/attachment-store.ts` since #1115 P0 — `domains/llm` may
+ * import `core` and nothing else, and the image-embedding worker needs the
+ * same resolver this module has always used. Nothing moved except the
+ * address: the names below are re-exported so this module's importers
+ * (`sync-service`, `sync-overview-service`, `pages-crud`,
+ * `routes/knowledge/local-attachments`, `routes/confluence/attachments`,
+ * `page-relocate-service`) did not change.
+ *
+ * What stayed here is everything that talks to Confluence or writes to disk:
+ * downloading, caching, the draw.io and cross-page image sync, and the
+ * relocate writers.
+ */
+export {
+  isStorableAttachmentFilename,
+  readAttachment,
+  getMimeType,
+  attachmentCacheDir,
+  listCachedAttachments,
+  readCachedAttachmentFile,
+  __internal,
+} from '../../../core/services/attachment-store.js';
 
 /**
  * Files larger than this threshold are streamed directly to disk
@@ -32,103 +61,6 @@ export const STREAM_THRESHOLD_BYTES = 5 * 1024 * 1024;
  * Maximum allowed attachment size for streaming downloads. Default: 50 MB.
  */
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
-
-// Allowed shape for a Confluence page identifier as we use it on disk.
-// Confluence DC native IDs are numeric; our tests and a few legacy callers
-// also use short kebab-style IDs (e.g. `page-1`). We accept letters, digits,
-// `_`, `-` only — slashes, dots, NUL bytes, and any other separator-like
-// character cause rejection up front, so a malicious pageId can never reach
-// `path.resolve` / `path.join`.
-const PAGE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
-
-function validatePageId(pageId: string): string {
-  if (typeof pageId !== 'string' || pageId.length === 0 || !PAGE_ID_PATTERN.test(pageId)) {
-    throw new Error('Invalid page ID');
-  }
-  return pageId;
-}
-
-/**
- * Whether an attachment filename is one the stores will hold — the same rule
- * {@link validateFilename} enforces, asked as a question instead of thrown.
- *
- * Callers that must not blow up on a file they merely *found* need to check
- * before they read: `validateFilename` throws a bare `Error`, which surfaces as
- * a masked 500 several layers up (#1169).
- */
-export function isStorableAttachmentFilename(filename: string): boolean {
-  if (typeof filename !== 'string') {
-    return false;
-  }
-  // `path.basename` strips any directory components — `../../etc/passwd`
-  // collapses to `passwd`, `/abs/file` to `file`. We then re-validate.
-  const base = path.basename(filename);
-  if (base.length === 0) {
-    return false;
-  }
-  if (base.includes('\0')) {
-    return false;
-  }
-  // Reject hidden / metadata files (`.`, `..`, `.htaccess`, …). After
-  // `basename`, `..` and `.` would otherwise round-trip through the
-  // containment check unchanged, which is still safe but pointless.
-  if (base.startsWith('.')) {
-    return false;
-  }
-  return true;
-}
-
-function validateFilename(filename: string): string {
-  if (!isStorableAttachmentFilename(filename)) {
-    throw new Error('Invalid filename');
-  }
-  return path.basename(filename);
-}
-
-/**
- * Attachments are stored in a shared directory keyed only by pageId.
- * The public-facing functions still accept a `userId` argument for
- * backward compatibility / observability, but the on-disk path no longer
- * depends on it.
- */
-function attachmentDir(pageId: string): string {
-  const safeId = validatePageId(pageId);
-  // safeId is constrained to /^[A-Za-z0-9_-]+$/ by validatePageId above,
-  // so it cannot contain `..`, separators, NUL bytes, or anything else
-  // path.resolve would interpret as an escape.
-  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- pageId is validated against an allow-list (PAGE_ID_PATTERN) above; containment is asserted below
-  const resolved = path.resolve(ATTACHMENTS_BASE_RESOLVED, safeId);
-  if (!resolved.startsWith(ATTACHMENTS_BASE_RESOLVED + path.sep)) {
-    throw new Error('Path traversal detected');
-  }
-  return resolved;
-}
-
-/**
- * Build the on-disk path for an attachment, with explicit traversal-safe
- * validation of both `pageId` and `filename`. Throws on any input that
- * does not fit the strict allow-list — no unvalidated user-controlled
- * input reaches `path.resolve`.
- *
- * Replaces the previous `attachmentPath(userId, pageId, filename)` helper,
- * which relied on `path.basename` sanitisation plus a generic `// nosemgrep`
- * annotation. The new helper makes the invariant explicit and asserts the
- * resolved path stays under the attachments root (with `path.sep`, so the
- * `/base-evil` prefix-overlap trick is rejected).
- */
-function safeAttachmentPath(pageId: string, filename: string): string {
-  const safeFilename = validateFilename(filename);
-  const dir = attachmentDir(pageId);
-  // Both inputs are validated by helpers above: pageId by an allow-list,
-  // filename by basename + checks for empty / NUL / dotfile. The
-  // containment assertion that follows is the final defence-in-depth.
-  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- both arguments are validated above (validatePageId, validateFilename) and containment is asserted below
-  const resolved = path.resolve(dir, safeFilename);
-  if (!resolved.startsWith(ATTACHMENTS_BASE_RESOLVED + path.sep)) {
-    throw new Error('Path traversal detected');
-  }
-  return resolved;
-}
 
 /**
  * Download and cache an attachment locally.
@@ -175,65 +107,6 @@ export async function attachmentExists(userId: string, pageId: string, filename:
   } catch {
     return false;
   }
-}
-
-/**
- * Read a cached attachment. If the exact filename is not found, searches for
- * cross-page reference variants (.xref-{hash}) that match the same base name.
- * This handles the case where stale cached HTML references a plain filename
- * but the sync stored the file with an xref suffix.
- */
-export async function readAttachment(userId: string, pageId: string, filename: string): Promise<Buffer | null> {
-  const fullPath = safeAttachmentPath(pageId, filename);
-  try {
-    return await fs.readFile(fullPath);
-  } catch (err) {
-    logger.debug({ pageId, filename, fullPath, error: (err as NodeJS.ErrnoException).code }, 'Exact attachment path miss');
-  }
-
-  // Search for .xref- variants: "foo.jpg" matches "foo.xref-{hash}.jpg"
-  const safe = validateFilename(filename);
-  const dir = attachmentDir(pageId);
-  const ext = path.extname(safe);
-  const stem = ext ? safe.slice(0, -ext.length) : safe;
-  const prefix = `${stem}.xref-`;
-
-  try {
-    const entries = await fs.readdir(dir);
-    const match = entries.find((e) => e.startsWith(prefix) && e.endsWith(ext));
-    if (match) {
-      logger.debug({ pageId, filename, xrefMatch: match }, 'Serving attachment via xref fallback');
-      return await fs.readFile(safeAttachmentPath(pageId, match));
-    }
-    logger.debug({ pageId, filename, dir, dirContents: entries.slice(0, 20) }, 'No xref match found — listing dir contents');
-  } catch {
-    logger.debug({ pageId, filename, dir }, 'Attachment directory does not exist');
-  }
-
-  return null;
-}
-
-/**
- * Get the MIME type from filename extension.
- */
-export function getMimeType(filename: string): string {
-  const ext = path.extname(filename).toLowerCase();
-  const mimeTypes: Record<string, string> = {
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.svg': 'image/svg+xml',
-    '.webp': 'image/webp',
-    '.pdf': 'application/pdf',
-    '.xml': 'application/xml',
-    // draw.io XML sibling uploaded by the PUT route with content-type
-    // application/xml — keep the served Content-Type consistent so browsers
-    // don't fall back to octet-stream (download-only) when a user inspects
-    // the cached .drawio file directly.
-    '.drawio': 'application/xml',
-  };
-  return mimeTypes[ext] ?? 'application/octet-stream';
 }
 
 /**
@@ -775,77 +648,6 @@ export async function cleanPageAttachments(_userId: string, pageId: string): Pro
 }
 
 /**
- * Resolve the attachments root at CALL time (#1123).
- *
- * `ATTACHMENTS_BASE` above is captured at module load, which is right for the
- * long-lived process but pins the directory for anything importing this module
- * — including integration tests that point `ATTACHMENTS_DIR` at a temp dir
- * after the import graph is already resolved. The relocate helpers below run
- * rarely and must be testable, so they re-read the env each call. Same
- * rationale as `attachmentsBase()` in `core/services/local-attachment-service`.
- */
-function attachmentsRootNow(): string {
-  return path.resolve(process.env.ATTACHMENTS_DIR ?? ATTACHMENTS_BASE);
-}
-
-/** Call-time equivalent of {@link attachmentDir}, with the same traversal guard. */
-function attachmentDirNow(pageId: string): string {
-  const safeId = validatePageId(pageId);
-  const root = attachmentsRootNow();
-  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- pageId is validated against PAGE_ID_PATTERN by validatePageId; containment is asserted below
-  const resolved = path.resolve(root, safeId);
-  if (!resolved.startsWith(root + path.sep)) {
-    throw new Error('Path traversal detected');
-  }
-  return resolved;
-}
-
-/** Absolute path of the Confluence-cache directory for an attachment key. */
-export function attachmentCacheDir(pageId: string): string {
-  return attachmentDirNow(pageId);
-}
-
-/**
- * Filenames cached for an attachment key. Empty when the directory is absent.
- *
- * Hidden entries are skipped: no write path in either store can create one
- * (`validateFilename` here, `localFilePath` in the local store both refuse a
- * leading dot), so a dot-named file is always something else writing into the
- * directory — `.DS_Store`, an AppleDouble sidecar, an rsync temp file. Listing
- * it made the caller's very next read throw `Invalid filename`, which failed an
- * entire relocate over debris nothing references (#1169).
- */
-export async function listCachedAttachments(pageId: string): Promise<string[]> {
-  try {
-    const entries = await fs.readdir(attachmentDirNow(pageId), { withFileTypes: true });
-    return entries
-      .filter((e) => e.isFile() && isStorableAttachmentFilename(e.name))
-      .map((e) => e.name);
-  } catch {
-    return [];
-  }
-}
-
-/** Read one cached attachment's bytes by key + filename, or null if absent. */
-export async function readCachedAttachmentFile(
-  pageId: string,
-  filename: string,
-): Promise<Buffer | null> {
-  const dir = attachmentDirNow(pageId);
-  const safeFilename = validateFilename(filename);
-  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- both inputs validated above (validatePageId via attachmentDirNow, validateFilename); containment asserted below
-  const resolved = path.resolve(dir, safeFilename);
-  if (!resolved.startsWith(attachmentsRootNow() + path.sep)) {
-    throw new Error('Path traversal detected');
-  }
-  try {
-    return await fs.readFile(resolved);
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Copy a page's cached attachments from one key to another (#1123 relocate).
  *
  * A COPY, never a move: relocate runs this *before* its database transaction
@@ -863,7 +665,7 @@ export async function copyAttachmentDirectory(
   const filenames = await listCachedAttachments(fromPageId);
   if (filenames.length === 0) return [];
 
-  const destDir = attachmentDirNow(toPageId);
+  const destDir = attachmentCacheDir(toPageId);
   await fs.mkdir(destDir, { recursive: true });
 
   const copied: string[] = [];
@@ -871,7 +673,7 @@ export async function copyAttachmentDirectory(
     const data = await readCachedAttachmentFile(fromPageId, filename);
     if (data === null) continue;
     const safeFilename = validateFilename(filename);
-    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- destDir is containment-checked by attachmentDirNow; safeFilename is basename-sanitised by validateFilename
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- destDir is containment-checked by attachmentCacheDir; safeFilename is basename-sanitised by validateFilename
     await fs.writeFile(path.resolve(destDir, safeFilename), data);
     copied.push(filename);
   }
@@ -882,17 +684,18 @@ export async function copyAttachmentDirectory(
  * Write bytes into the Confluence attachment cache under an explicit key,
  * resolving the attachments root at call time. {@link writeAttachmentCache}
  * does the same against the module-load root; relocate needs the call-time
- * variant for the same testability reason as {@link attachmentsRootNow}.
+ * variant for the same testability reason as `attachmentsRootNow` in
+ * `core/services/attachment-store.ts`.
  */
 export async function writeAttachmentCacheAt(
   pageId: string,
   filename: string,
   data: Buffer,
 ): Promise<void> {
-  const dir = attachmentDirNow(pageId);
+  const dir = attachmentCacheDir(pageId);
   await fs.mkdir(dir, { recursive: true });
   const safeFilename = validateFilename(filename);
-  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- dir is containment-checked by attachmentDirNow; safeFilename is basename-sanitised by validateFilename
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- dir is containment-checked by attachmentCacheDir; safeFilename is basename-sanitised by validateFilename
   await fs.writeFile(path.resolve(dir, safeFilename), data);
 }
 
@@ -903,21 +706,9 @@ export async function writeAttachmentCacheAt(
  */
 export async function removeAttachmentDirectory(pageId: string): Promise<void> {
   try {
-    await fs.rm(attachmentDirNow(pageId), { recursive: true, force: true });
+    await fs.rm(attachmentCacheDir(pageId), { recursive: true, force: true });
   } catch {
     // Directory may not exist, or the key may be unrepresentable on disk.
   }
   await clearAttachmentFailures(getRedisClient(), pageId);
 }
-
-// Test-only: expose validators so unit tests can exercise the validation logic
-// directly without going through the higher-level cache functions (which mock
-// out `fs` and `client`). Not part of the public module surface.
-export const __internal = {
-  validatePageId,
-  validateFilename,
-  safeAttachmentPath,
-  attachmentDir,
-  ATTACHMENTS_BASE,
-  ATTACHMENTS_BASE_RESOLVED,
-};

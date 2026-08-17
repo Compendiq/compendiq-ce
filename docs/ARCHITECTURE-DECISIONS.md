@@ -201,6 +201,62 @@ npm install -D @types/turndown @types/jsdom @types/he
 
 **Rationale**: Storing both `body_storage` (original) and `body_html` (clean) avoids re-converting on every page load. The LLM always gets Markdown (proven to be the best format for LLM comprehension). The editor always gets clean HTML (what TipTap expects).
 
+### #1115 (2026-08-17) — images stop being invisible to RETRIEVAL; the pipeline above is unchanged
+
+**Nothing in the conversion pipeline changes.** Confluence XHTML ⇄ clean HTML ⇄
+Markdown stays exactly as specified above, with the same libraries and the same
+macro mapping. An `<img>` still converts to `<img>`, and its *text* contribution
+to embedding input is still whatever alt text it carries.
+
+What changes (ADR-025, landing in **P2**) is that the attachment's **bytes**
+become a second, parallel index — `page_image_embeddings`, embedded by a
+vision-language model, fused as a third retrieval leg. Five consequences are
+worth stating here, where a reader of the pipeline will look for them:
+
+- **Images never join the pipeline above.** They stay bytes from disk to model,
+  exactly as #1154's uploaded images do. There is no image → Markdown step, no
+  OCR, and no new conversion rule.
+- **The enumeration key is the pipeline's own output, URL-DECODED.** The
+  converter writes `<img src="/api/attachments/<id>/<file>">` into `body_html`
+  with `<file>` percent-encoded (`content-converter.ts:366`, `:386`, `:410`;
+  the paste/import routes do the same at `pages-crud.ts:2730` and `:2945`),
+  while the file on disk carries the DECODED name — `cacheAttachment` and
+  `writeAttachmentCache` are handed the raw filename. So the `attachment_key`
+  is `decodeURIComponent(basename(src))`. Take the basename literally and
+  every filename containing a space or a non-ASCII character is keyed in a
+  form `resolveAttachmentBytes` can never resolve, and the miss is silent —
+  an absent file and a mis-encoded key both answer `null`. (The attachment
+  route never trips over this because Fastify decodes its `:filename` param
+  for it; an enumerator walking HTML has no such decoder in front of it.)
+  The id is `confluence_id` when `pages.source = 'confluence'` and the numeric
+  page id otherwise — the derivation `pages-crud.ts:2723-2728` and
+  `parentKeyFor` (`page-relocate-service.ts:140-142`) both use, and which the
+  hoisted reader restates rather than inferring from a null `confluence_id`.
+- **`body_html` carries BOTH attachment prefixes, and the store follows the
+  PREFIX.** `/api/attachments/<key>/<file>` is the Confluence cache;
+  `/api/local-attachments/<page_id>/<file>` is the local store, and it is
+  persisted, not rendered: `relocateToLocal` copies every cached attachment
+  into the local store (`page-relocate-service.ts:672-684`), rewrites the body
+  (`:692-696`) and writes it in the same UPDATE that nulls `confluence_id`
+  (`:729-752`), then deletes the old cache directory (`:820`). Nothing rewrites
+  an `<img src>` at render time. So the enumerator reads
+  `/api/attachments/` ⇒ `source: 'confluence'` and `/api/local-attachments/`
+  ⇒ `source: 'local'` — **never** `pages.confluence_id IS NULL`, which names
+  the Confluence tree for precisely the pages whose bytes were moved out of it
+  and produces the same silent `null` as an absent file. A relocated page that
+  is then pasted into carries both prefixes at once, which is why `source` is
+  part of `page_image_embeddings`' unique key. It also keeps the enumerator on
+  **HTML**: a relocated page's `body_storage` is deliberately left verbatim
+  (`page-relocate-service.ts:698-700`), so it still describes the Confluence
+  attachments the body no longer points at.
+- **draw.io PNGs are indexed only where they are really rasters.** Confluence's
+  export is sometimes `<mxfile>` XML behind a `.png` name (ADR-013); magic-byte
+  sniffing refuses it and the file is skipped and counted, never guessed at from
+  the extension.
+- **A page whose text is below the embedding floor becomes reachable.** Today an
+  image-only page produces no chunk at all; the image leg gives it a row,
+  synthesising `chunkText` from the title for the downstream stages.
+
 ---
 
 ## ADR-004: Caching & Sync Strategy
@@ -1252,6 +1308,63 @@ at that call site and widened the structural guard to the whole backend, so the
 asymmetry is now enforced app-wide rather than at one remembered call. See the
 query-side prefix paragraph above.
 
+### #1115 (2026-08-17) — a third retrieval leg, over a separate image index
+
+ADR-025 adds a **third leg** to the fusion described above (landing in **P3**):
+alongside the vector leg over `page_embeddings` and the keyword leg over
+`pages.tsv`, an image leg does kNN over `page_image_embeddings` — a separate
+table, embedded by a separate vision-language model, under the same visibility
+predicate as the other two. It runs only when the `image_embedding` use case is
+assigned, the table is non-empty and `rag_image_leg_enabled` is on; otherwise
+there is no query embed and no added latency.
+
+Three properties keep it from disturbing what is already here:
+
+1. **It fuses by RANK, never by score.** A text-tuned scalar cutoff has no
+   defined meaning on a cross-modal score. The published worked examples sit in
+   different absolute bands — text→image around 0.46–0.72, text↔text as high as
+   0.75–0.81 (`arXiv:2601.04720v2` Appendix C: Table 9's MS COCO rows are 0.46
+   and 0.52, Table 8's SQuAD rows 0.75 and 0.81; the model card's own matrix
+   scores a matching text query 0.7155 against an image document and 0.8160
+   against a text one). The bands are **not** claimed to be disjoint — Table 8's
+   own AG News pairs score 0.55 and 0.57 — which is the point: there is no
+   threshold that separates them, so any score-space arithmetic across the two
+   (a weighted blend, a shared cutoff) is meaningless. RRF only ever sees
+   positions. Page-denominated like #1106: a page's best image rank counts once.
+2. **The image SIMILARITY never feeds the confidence number.**
+   `retrieval-confidence.ts` compares an operator-tuned scalar against a
+   text-cosine distribution; an image similarity on that scale is a different
+   unit wearing the same name. So an image hit contributes no `vectorScore` and
+   can never establish the `similarity` basis, and the `sources[]` entry for an
+   image carries `similarity: null` so the badge's sample stays honest. **That
+   is narrower than "an image-only hit set never refuses", and the difference
+   is load-bearing for P3.** The `rerank` basis is tested FIRST and carries no
+   vector-led precondition — `if (maxRerank !== null && allReranked)`,
+   `backend/src/domains/llm/services/retrieval-confidence.ts:124`; only the
+   *similarity* basis below it requires a vector-led set. With #1104's stage
+   assigned, any fully-reranked set gets `basis: 'rerank'` regardless of which
+   leg found it, which is already true of keyword-only sets today. And an
+   image-reached page does reach rerank, because it enters the pipeline as an
+   ordinary `SearchResult` (point 3). **P3 must therefore decide explicitly
+   whether a title-synthesised row may carry a `rerankScore` into
+   `computeRetrievalConfidence` — as the code stands it would**, and #1105's
+   gate could then refuse on it.
+3. **The stages after fusion see text, never pixels.** A
+   `page_image_embeddings` row is never itself a `SearchResult`: the fused
+   result for an image-reached page is an ordinary text row — its
+   `chunk_index 0` row, or, for a page below the text floor that has no chunk
+   at all, one whose `chunkText` is synthesised from the title (design record
+   §5). Rerank, the ranking prior, MMR and sibling assembly therefore need no
+   image-specific branch. What they do need from P3 is a judgement on the
+   synthesised row: it carries text the page did not originally have, and that
+   text is what a cross-encoder would score and what MMR's trigram Jaccard
+   would diff.
+
+Failure is honest in the shape #1104 established: a VL call that fails, times
+out or meets an open breaker bypasses the leg, records
+`degraded_reason = 'image_leg_unavailable'`, and leaves `searchTypeFinal` and
+the text legs exactly as they were.
+
 ---
 
 ## ADR-013: Draw.io / Diagrams.net Support
@@ -1696,6 +1809,51 @@ question can retrieve different top-K sets, and the chat cache keys on doc
 ids — the two legitimately cache as separate entries. `search_analytics.rerank_score` (migration 088) gets its first
 writer; `max_score` keeps the fusion unit.
 
+### #1115 — the `image_embedding` use case (Phase 2)
+
+ADR-021 gains a **seventh** use case, `image_embedding` (ADR-025). Migration
+`093` widened the `llm_usecase_assignments` CHECK in **P0**; the resolver, the
+client, the probe and the settings row land in **P1**.
+
+**It is the `rerank` rule, one rung stronger.** `resolveImageEmbeddingUsecase()`
+returns `null` when unassigned and the image leg is simply off; `resolveUsecase('image_embedding')`
+throws, exactly as it does for rerank. The reason to refuse inheritance is
+sharper here than it was for #1104: a default chat provider handed `/v1/rerank`
+traffic **errors**, which is loud, whereas a default text-embedding provider
+handed an image-embedding request will happily answer the plain-`input` shape
+with a well-formed vector that is simply wrong — and wrong vectors are
+indistinguishable from bad retrieval.
+
+**A second non-OpenAI-shaped endpoint, beside `/v1/rerank`.** The path is
+`/v1/embeddings`, but the body is vLLM's chat-embeddings extension: a `messages`
+array (system = instruction, user = image and/or text parts, plus a trailing
+**empty `assistant` message**) with `continue_final_message: true`. The trailing
+turn is load-bearing — the checkpoint pools the last token, so the prompt must
+end at `<|im_start|>assistant\n` — and vLLM applies the chat template on the
+`messages` path only, so the plain `{model, input}` shape pools a different
+position and produces vectors that must never be mixed into the same index. This
+is why `vl-embedding-client.ts` is its own client (sharing `providerRequestInfra`
+with `rerank-client.ts`) rather than a branch inside
+`openai-compatible-client.ts`'s embeddings path, and it narrows Alternative 2's
+"every provider is OpenAI-compatible" premise a second time.
+
+**Non-support list, recorded so nobody re-derives it:** Hugging Face **TEI**
+(no image concept in its OpenAPI spec; the request for this family,
+`text-embeddings-inference#822`, is open with zero comments), **LM Studio**
+`/v1/embeddings` (text `input` only), **llama.cpp `llama-server`** (multimodal
+embeddings exist, but on the non-OpenAI `POST /embedding` route with a
+hand-built template and a per-server random media marker), and the plain
+`{model, input}` shape on any server. The supported production path is **vLLM
+≥ 0.14.0 with `--runner pooling`**, pinned by version because a bump changes the
+vector space (ADR-025 D12).
+
+**The probe follows `vision-probe.ts`, and records a width.** On assignment, P1
+embeds a known image *and* a text through the client, refuses the pair if the
+endpoint rejects the `messages` shape or returns mismatched widths, and stores
+the resulting dimension — which then picks the column type and index tier for
+`page_image_embeddings`, the same probe-then-DDL pattern the text column already
+uses. Capability is established by asking, never by declaration.
+
 ## ADR-022: RAG retrieval honours per-user space permissions
 
 **Date:** 2026-04-21
@@ -1898,6 +2056,290 @@ Multi-replica deployments sit behind a load balancer. `trustProxy` MUST be set t
 
 ---
 
+## ADR-025: Multimodal image retrieval — dual space
+
+**Date:** 2026-08-17
+**Status:** Accepted (owner interview, 2026-08-17). **Partially implemented:**
+P0 has shipped — this ADR, migration `093` (the `page_image_embeddings` table,
+`pages.image_embedding_dirty`, the widened use-case CHECK) and the core
+`attachment-store` hoist. The client, the probe, the index writer, the
+retrieval leg and the answer path land in **P1–P4**, and every paragraph below
+that describes unshipped behaviour says which PR owns it. Nothing in Compendiq
+embeds or retrieves an image today.
+**Design of record:** `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`
+(issue #1115, epic #1100 Phase 2).
+
+### Context
+
+Confluence pages carry meaning in pictures — architecture diagrams, screenshots
+of a UI, flowcharts, photos of hardware — and Compendiq's retrieval cannot see
+any of it. `embedPage` embeds `htmlToEmbeddingText(body_html)`, in which an
+`<img>` contributes at most its alt text, so a page whose answer lives in a
+diagram is reachable only through whatever prose happens to surround it. Pages
+whose text falls below the 20-character floor are not indexed at all.
+
+Qwen3-VL-Embedding (released 2026-01-07, Apache-2.0, 2B and 8B checkpoints)
+embeds images and text into one space, which makes a text query able to retrieve
+an image directly. The epic framed Phase 1 (a better *text* embedder, #1114) and
+Phase 2 (a multimodal embedder) as **mutually exclusive** — one column, one
+model. That framing is what this ADR overturns.
+
+### Decision
+
+Twelve decisions. The reasons matter more than the list, because most of them
+are a choice between "one model for everything" and "the product's primary path
+stays on its best model".
+
+**D1 — Dual space, not shared.** Text keeps the Phase-1 text embedder
+(Qwen3-Embedding-4B @ 2560 on the `halfvec` HNSW tier). A VL model embeds
+**images** into a separate index, and embeds the **query** a second time for
+that index only. Two citations decide it:
+
+- On **MMTEB Retrieval** (text-only), the VL models *lose* to the text models:
+  Qwen3-Embedding-8B **70.88**, Qwen3-Embedding-4B **69.60**,
+  Qwen3-VL-Embedding-8B **69.41**, Qwen3-VL-Embedding-2B **67.12**, `bge-m3`
+  **54.60** (published model-card table; the same comparison is **Table 4** of
+  `arXiv:2601.04720v2`, "Performance on MTEB Multilingual", which prints one
+  decimal — 70.9 / 69.6 / 69.4 / 67.1 / 54.6. Table 1 of that paper is the
+  checkpoint-spec table, not a results table). The 8B multimodal model is
+  beaten on text retrieval by the *4B* text model. A shared space is therefore
+  a measured regression on the path almost every query takes.
+- A shared space also forces **every** text embed through the VL chat-template
+  request shape (D4), which only vLLM — or a self-written shim — serves. That
+  ends Ollama, LM Studio and plain-OpenAI text embedding for every CE
+  deployment, which is the opposite of ADR-021's N-provider model.
+
+**D2 — Phase 1 and Phase 2 are increments.** #1114's cutover proceeds on its own
+schedule; #1115 adds an index beside it. The epic's "mutually exclusive"
+paragraph is superseded.
+
+**D3 — A new ADR-021 use case, `image_embedding`, modelled on `rerank` (P1).**
+It never inherits the default provider, it has its own resolver
+(`resolveImageEmbeddingUsecase`, returning `null` when unassigned) and its own
+client, and **unassigned means the image leg is disabled**. Same argument that
+made `rerank` non-inheriting in #1104, one rung stronger: a chat provider cannot
+answer `/v1/rerank` and would error, whereas a text embedder *will* answer the
+plain-`input` shape with a plausible vector that is simply wrong. Silent
+garbage is worse than a 404.
+
+**D4 — The request shape is vLLM's chat-embeddings extension, never plain
+`input` (P1).** `POST /v1/embeddings` with a `messages` array — system message
+carrying the instruction, user message carrying the image and/or text, and a
+trailing **empty `assistant` message** with `continue_final_message: true`:
+
+```json
+{ "model": "Qwen/Qwen3-VL-Embedding-2B",
+  "messages": [
+    {"role": "system",    "content": [{"type": "text", "text": "Represent the user's input."}]},
+    {"role": "user",      "content": [{"type": "image_url", "image_url": {"url": "data:image/webp;base64,…"}},
+                                      {"type": "text", "text": ""}]},
+    {"role": "assistant", "content": [{"type": "text", "text": ""}]}
+  ],
+  "encoding_format": "float", "continue_final_message": true, "add_special_tokens": true }
+```
+
+The trailing empty assistant turn is the single easiest thing to get wrong: the
+checkpoint pools the **last token** (`1_Pooling`: `"pooling_mode": "lasttoken"`,
+then L2-normalise), and the prompt has to end with `<|im_start|>assistant\n` for
+that token to be the one the model was trained to pool. vLLM applies the chat
+template on the `messages` path **only** — a plain `{model, input}` request is
+tokenised bare, pooling a different position, off-distribution. Mixing the two
+inside one index is the failure this rule exists to prevent. Instruction on the
+**query** (`"Retrieve images or text relevant to the user's query."`), the
+checkpoint's default (`"Represent the user's input."`) on the **corpus**, and the
+instruction is written in **English regardless of corpus language**, per the
+model card's own guidance.
+
+**D5 — Default recommendation: Qwen3-VL-Embedding-2B at its native 2048, on the
+`halfvec` HNSW tier.** The 8B is allowed only with MRL truncation to
+`dimensions ≤ 4000`, because its native 4096 lands in pgvector's **unindexed**
+tier (HNSW caps at 2000 for `vector` and 4000 for `halfvec`) — and MRL on vLLM
+additionally needs `--hf-overrides '{"is_matryoshka": true}'`, since neither
+checkpoint declares the flag, plus client-side re-normalisation after
+truncation. Weights are 4.26 GB (2B) and 16.29 GB (8B) in bf16; production is an
+**RTX 6000 96 GB Blackwell**, so **VRAM is not the constraint** and the choice
+is quality: the image eval measures both and the numbers decide. The truncation
+cost is small where it applies — the authors measure ~1.4% MRR@10 going from
+1024 to 512 dims, with int8 quantisation nearly free and binary decidedly not.
+
+**D6 — Storage is a new table, `page_image_embeddings`, not rows in
+`page_embeddings` (P0, shipped).** A `kind` discriminator on the existing table
+would have made every text path conditional: `embedPage`'s unscoped `DELETE`,
+its `AVG(embedding)` for `pages.page_avg_embedding`, the `(page_id,
+chunk_index)` uniqueness, #1116's shadow columns, MMR, rerank and sibling
+assembly. Three of the issue's ten listed blockers disappear structurally rather
+than by everyone remembering a `WHERE`. It is also the only shape that can hold
+two different widths from two different models at once.
+
+**D7 — Changing the image model truncates the index and re-scans. No shadow
+swap (P1/P2).** #1116's shadow path exists because a text re-embed degrades live
+search for hours; here the leg is simply *disabled* while the index is empty, so
+text retrieval is untouched. Images are far cheaper to redo: only referenced
+files, content-addressed by sha256, and typically a handful per page.
+
+**D8 — The answer path degrades to text-only when the chat model's vision
+verdict is not `true`, and retrieved images never count as grounding (P4).**
+`resolveImagePart` (#1154) *throws* on `false`/`null`, which is right for a user
+who explicitly attached an image and wrong for retrieval that merely found one —
+so P4 needs a sibling that returns `null`. And the refusal gate (#1105) must not
+count a retrieved image as "other grounding": doing so would stop honest
+refusals on every weak retrieval that happens to touch a page with a picture on
+it. (Owner ruling, 2026-08-10.)
+
+**D9 — Bytes come from disk, never Redis staging (P0, shipped).**
+`core/services/attachment-store.ts` is the hoisted path-resolution + read half
+of `attachment-handler.ts`, plus one new `resolveAttachmentBytes`. Two reasons
+it had to be in `core`: `domains/llm` may import `core` and nothing else
+(`backend/eslint.config.js:50-53`), and #1154's staging path exists to carry a
+*user upload* across two requests against a `noeviction` Redis (#1183) — a
+retrieved attachment already has a stable path on disk. The function applies
+**no ACL**; a test walks `src/routes` and fails if any route file names it.
+
+**D10 — No server-side pixel processing in v1 (P2).** SVG and draw.io
+XML-in-`.png` are excluded because `sniffImageFormat` refuses them; images over
+`MAX_IMAGE_BYTES` (5 MB) or `MAX_IMAGE_DIMENSION` (4096) are **skipped and
+counted**, never resized. The backend has deliberately no `sharp` and no
+`image-size` (`core/services/image-validator.ts:3-13`), and adding a native
+image decoder is a supply-chain decision of its own. The model server resizes to
+its own budget anyway (~1.31 Mpx ≈ 1280 visual tokens, the trained ceiling in
+`preprocessor_config.json`; the paper reports a *regression* at the highest
+resource levels, so sending more pixels is not free upside).
+
+**D11 — Local development runs a ~30-line Python shim** (`mlx-embeddings`
+behind FastAPI) exposing exactly the D4 shape, committed under
+`tools/vl-embedding-shim/` with a runbook (P5). Everything else fails on the
+input side, which is worth recording because it looks solvable and is not:
+
+| Serving path | Verdict |
+|---|---|
+| **vLLM** ≥ 0.14.0, `--runner pooling` | The production path. `/v1/embeddings` with `messages`. |
+| **TEI** | No image concept anywhere in its OpenAPI spec; the feature request for this exact family (`huggingface/text-embeddings-inference#822`, opened 2026-02-12) is open with zero comments, and a generic image-embedding request has been open since March 2025. |
+| **LM Studio** `/v1/embeddings` | Text `input` only; images are documented for chat, not embeddings. |
+| **llama.cpp `llama-server`** | Multimodal embeddings exist, but on the **non-OpenAI** `POST /embedding` route, with a hand-built chat template and a **per-server random media marker** fetched from `/props` (two open bugs: `ggml-org/llama.cpp#26201`, `#25088`). The OpenAI-shaped PR (`#18665`) is closed unmerged. |
+| **`mlx_vlm.server`** | Templates images but not text — usable for smoke-testing plumbing, not for judging quality. |
+
+**Local vectors never decide anything.** Quantisation, MLX-vs-CUDA numerics and
+vLLM's own preprocessing divergence all shift the space; see "what only
+production can prove".
+
+**D12 — The vLLM version is pinned, and bumping it is a re-index event.**
+`vllm#33204` (open) reports ~0.92 cosine against the reference
+`qwen_vl_utils` preprocessing, which vLLM's docs acknowledge; `vllm#33954`
+(closed) reported quality *declining* between 0.14.0rc2 and 0.15.2; `vllm#33986` is the
+open tracking issue for the family. A corpus embedded on one version and queried
+on another is silently degraded. D7 makes honouring this cheap.
+
+### Retrieval, in one paragraph (P3)
+
+The image leg runs only when the use case is assigned, the table is non-empty
+and `rag_image_leg_enabled` is on — otherwise no query embed and no cost. It
+kNN-searches `page_image_embeddings` under the same visibility predicate as the
+other legs and fuses as a **third RRF leg**, page-denominated like #1106. Rank,
+not score: the published worked examples put text→image around 0.46–0.72 and
+text↔text as high as 0.75–0.81 (`arXiv:2601.04720v2` Appendix C: Table 9's MS
+COCO rows are 0.46 and 0.52, Table 8's SQuAD rows 0.75 and 0.81; the model
+card's own matrix scores a matching text query 0.7155 against an image document
+and 0.8160 against a text one), and they are not cleanly separable — Table 8's
+AG News pairs score 0.55 and 0.57 — so a cutoff tuned on text has no defined
+meaning on a cross-modal score. For the same
+reason **the image similarity never feeds the confidence number** (#1105):
+image hits carry no `vectorScore`, so they cannot establish the `similarity`
+basis. That is deliberately narrower than "an image-only set never refuses" —
+the `rerank` basis is tested first and has no vector-led precondition
+(`retrieval-confidence.ts:124`), and an image-reached page reaches rerank as an
+ordinary `SearchResult`, so **P3 has to rule on whether such a row may carry a
+`rerankScore` into the gate; as the code stands it would.** Rerank, the ranking
+prior, MMR and sibling assembly still need no image-specific branch, because a
+`page_image_embeddings` row never becomes a `SearchResult`: an image-reached
+page enters them as its `chunk_index 0` row, or as a title-synthesised one
+(see the design record's retrieval section).
+
+### v1 scope fence
+
+No SVG rasterisation and no server-side downscale (D10). No joint
+image+caption document embedding — v1 embeds the image alone so the vector is
+purely visual, and captions already reach the *text* leg through `body_text`;
+this is the first tuning knob to measure afterwards. No Qwen3-VL-Reranker, no
+video, no OCR. No attachment retention policy (**#1349**). External images are
+embedded once cached — they are already corpus content on disk — with a
+one-line opt-out knob.
+
+### Evaluation plan (P5)
+
+A new axis on the #1102 harness, not a new harness. Corpus:
+`eval/corpus-de-images/` — ~60 German Wikipedia articles with 2–3 images each,
+committed downscaled (≤ 512 px longest edge, ≤ ~80 KB, ≈ 5–10 MB total) under
+CC0 / PD / CC BY / CC BY-SA with per-page and per-image attribution, covering
+technical diagrams, science figures, organisational/process charts and photos.
+Pages carry the images **without captions**, which is the case the feature
+exists for. Queries are German plus a small English subset (the cross-lingual
+case), labelled by an independent vision-capable agent on a different model than
+the implementer, blind to the retrieval code (the owner's #1102 amendment).
+Metric: page Recall@K / MRR **paired, leg on vs off**, McNemar exact — the
+harness's own gate — plus `imageHit@K`, embed throughput and the query-time cost
+of the extra leg. Both checkpoints are measured (2B via the D11 shim, 8B via
+`llama-server` with MRL ≤ 4000), and a **text-parity run for both checkpoints,
+EN + DE**, through the shim's chat-template path is recorded here beside the
+MMTEB figures — informational, since D1 does not depend on it. Not in CI: the
+gate has no runnable VL model (`nomic-embed-text` is text-only), so CI tests
+plumbing against a fake embedder.
+
+### What only production can prove
+
+Everything above is either published, measured on a local shim, or read out of
+this codebase. Four things are none of those, and this section exists so that
+nobody reads the numbers above as if they were ours:
+
+1. **Retrieval quality on real Confluence pages.** The eval corpus is German
+   Wikipedia because it is licensable and committable. Real instances have
+   screenshots of internal tools, hand-drawn whiteboards and 12-year-old Visio
+   exports, and no published benchmark covers them.
+2. **Any number produced locally.** MLX-vs-CUDA numerics, 4/8-bit quantisation
+   and vLLM's ~0.92-cosine preprocessing divergence (D12) each move the space.
+   Local runs are for plumbing and for eyeballing ranked lists.
+3. **Throughput and backfill duration.** No published figures exist — searching
+   the model cards, the GitHub README and the full text of `arXiv:2601.04720v2`
+   for throughput, images/s or GPU timings returns nothing. What is defensible
+   is the *shape*: cost is dominated by visual tokens, so a 1280-token image is
+   roughly 10–25× a short text query at any model size, and the 8B is ~4× the
+   2B's weights. Measure the real corpus on the real card before scheduling a
+   backfill.
+4. **Whether 2B or 8B is worth it here.** D5 is a recommendation with a decision
+   procedure attached, not a result.
+
+### Consequences
+
+- **Two indexes, two models, two failure modes.** An operator who never assigns
+  `image_embedding` gets today's behaviour exactly, including no extra latency:
+  the leg does not run and the query is embedded once.
+- **`page_embeddings` stays text-only by construction (D6)**, so #1116's shadow
+  swap, `page_avg_embedding`, MMR, rerank and sibling assembly need no
+  image-awareness — now or later.
+- **A model change on the image side is destructive and cheap** (D7), and a
+  vLLM upgrade is one (D12). Both are operator-visible actions, not background
+  drift.
+- **The image leg can degrade alone.** A VL failure bypasses the leg, records
+  `degraded_reason = 'image_leg_unavailable'`, and leaves text retrieval and the
+  `searchType` label untouched.
+- **`resolveAttachmentBytes` is a system read with no ACL** (D9). Its safety is
+  a boundary, not a check: routes must keep using the gated readers, and the
+  test that walks `src/routes` is what keeps that true as new routes appear.
+- **The instruction matcher must learn about `vl` (P1).** `wantsInstructionPrefix`
+  (#1329) matches `qwen3` + `embed`, so a Qwen3-**VL**-Embedding id would get the
+  flat `Instruct:/Query:` text-side prefix — the wrong format for this family.
+  The VL client owns its own formatting and the text-side matcher excludes `vl`,
+  so an operator who ever points the *text* `embedding` assignment at a VL model
+  gets a bare query rather than a garbled one.
+- **Prompt injection rendered as pixels remains unmitigated** and is now
+  reachable without a user attaching anything: a synced page can carry an image
+  containing instructions. `sanitizeLlmInput` cannot inspect pixels (ADR-021's
+  #1154 amendment states the same limitation for uploads); D10's no-OCR fence
+  means v1 does not mitigate it. What v1 does do is bound the exposure — at most
+  `rag_answer_max_images` (default 2) retrieved images ever reach a completion,
+  and only when the chat model is vision-capable.
+
+---
+
 ## Summary of All Decisions
 
 | # | Decision | Choice | Key Rationale |
@@ -1926,3 +2368,4 @@ Multi-replica deployments sit behind a load balancer. `trustProxy` MUST be set t
 | 022 | RAG retrieval honours per-user space permissions | Post-filter RRF merge by readable space set | Cheap, correct for space-level RBAC; pairs with ADR-023 for per-page |
 | 023 | Per-page ACL enforcement for RAG retrieval (Enterprise) | Mirror Confluence per-page view restrictions; resolve ancestor inheritance at sync time | Keeps query path O(topK); regulated-buyer RAG never leaks restricted-page chunks |
 | 024 | Multi-instance readiness | Generic Redis pub/sub cache-bus + BullMQ `upsertJobScheduler` + p-limit in-place hot-swap + bounded graceful shutdown + soft-fail per-pod fallbacks | Multi-replica `backend` without an extra coordinator service; advisory-only pub/sub keeps the operator footprint small |
+| 025 | Multimodal image retrieval | Dual space: text keeps its embedder, images get their own `page_image_embeddings` index + a non-inheriting `image_embedding` use case + a third RRF leg | VL text retrieval is a measured regression vs. the text model, and a shared space would force every text embed through vLLM's chat-embeddings shape |

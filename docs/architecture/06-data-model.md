@@ -19,6 +19,7 @@ erDiagram
 
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
+    pages ||--o{ page_image_embeddings : "images indexed as (#1115, P0 schema)"
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
@@ -73,6 +74,7 @@ erDiagram
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
+        bool image_embedding_dirty "attachments changed; re-embed IMAGES only (#1115, written from P2)"
         vector page_avg_embedding "materialized avg of chunk vectors, HNSW-indexed (#919)"
         timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
         uuid local_modified_by FK "who last edited locally (#305)"
@@ -102,6 +104,20 @@ erDiagram
         text chunk_text
         vector embedding "vector(n) or halfvec(n) — n is the resolved model's width"
         jsonb metadata
+    }
+
+    page_image_embeddings {
+        bigint id PK
+        int page_id FK "ON DELETE CASCADE"
+        text source "confluence | local — which attachment store the key resolves in"
+        text attachment_key "filename inside that store"
+        text sha256 "content address of the embedded bytes; the re-scan skip"
+        text format "sniffed: png | jpeg | webp | gif"
+        int width "nullable; header-declared only"
+        int height "nullable; header-declared only"
+        text model "provider model id that produced the vector"
+        vector embedding "vector(n) or halfvec(n) — n is the probed IMAGE model's width; no HNSW until the probe"
+        timestamptz created_at
     }
 
     page_relationships {
@@ -397,6 +413,30 @@ together, which matters most for #1114's query-side prefix.
   destructive `enqueueReembedAll({newDimensions})` path refuses to run while
   that state row exists (and vice versa). Runbook:
   `docs/runbooks/shadow-reembed.md`.
+- **The image index is a separate table (#1115) — `P0 schema, populated from
+  P2`.** `page_image_embeddings` holds one vector per referenced image per page,
+  produced by a *different* model from a *different* ADR-021 use case
+  (`image_embedding`), and `pages.image_embedding_dirty` is its own dirty flag.
+  Migration `093` ships the shape; **nothing writes or reads either yet**. Four
+  properties are deliberate:
+  - **Not rows in `page_embeddings`.** A `kind` discriminator would have made
+    `embedPage`'s `DELETE`, its `AVG(embedding)` for `page_avg_embedding`, the
+    `(page_id, chunk_index)` uniqueness, #1116's shadow columns, MMR, rerank and
+    sibling assembly all conditional. A separate table keeps every one of them
+    text-only by construction, and it is the only shape that can hold two
+    different probed widths at once.
+  - **The declared `vector(…)` width in the migration is a placeholder.** The
+    live type follows the image model's probed width through the same tiering
+    the text column uses, and **the migration ships no HNSW index at all** —
+    the opclass is unknown until the probe answers, so the index is runtime DDL
+    (`ensureImageEmbeddingColumn`, P1), like the shadow columns above.
+  - **A model change here truncates and re-scans.** No shadow swap: the leg is
+    disabled while the index is empty, so text retrieval is never degraded, and
+    images are cheap to redo (content-addressed by `sha256`).
+  - **`image_embedding_dirty` is separate from `embedding_dirty` on purpose.**
+    An attachment can change under an unchanged page version — sync's
+    version-unchanged branch is exactly that case — and then the images must be
+    re-embedded and the text must not. Design of record: ADR-025.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
   page's average chunk vector, written by `embedPage` inside the same
   transaction as the chunk inserts, with its own HNSW index

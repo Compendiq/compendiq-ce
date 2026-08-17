@@ -18,7 +18,7 @@ flowchart LR
 
     subgraph domains["domains/"]
         direction TB
-        dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler<br/>subpage-context<br/>sync-overview-service"]
+        dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>subpage-context<br/>sync-overview-service"]
         dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service"]
     end
@@ -27,7 +27,7 @@ flowchart LR
         direction TB
         cDB["db/ — pg pool, migrations"]
         cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -144,6 +144,43 @@ The guard it exports the other way round, `assertNoShadowMigration` /
 `routes/knowledge/pages-crud.ts` and `routes/foundation/admin.ts` as well as
 `routes/llm` — the same `routes/* → domains/llm` composition those files
 already do for `processDirtyPages`.
+
+## Attachment bytes: one reader in `core`, the writers in `confluence` (#1115)
+
+`core/services/attachment-store.ts` holds the path resolution and the READ half
+of what used to be `domains/confluence/services/attachment-handler.ts`:
+`safeAttachmentPath` and its traversal guards, `readAttachment`,
+`attachmentCacheDir` / `listCachedAttachments` / `readCachedAttachmentFile`,
+`getMimeType`, plus one new `resolveAttachmentBytes`. Everything that talks to
+Confluence or writes to disk — `cacheAttachment`, the draw.io and cross-page
+image sync, `writeAttachmentCache`, the relocate writers — stayed in the
+confluence domain, which re-exports the moved names so its six importers did not
+change.
+
+**Why the split runs there.** `llm` may import `core` and nothing else, and
+Phase 2's image-embedding worker (`domains/llm`) needs attachment bytes off
+disk. Copying the resolver into `llm` would have produced a second
+implementation of the traversal guard; hoisting it keeps one. The direction is
+also the only legal one: `core → confluence` is forbidden, `confluence → core`
+is what the domain already does.
+
+**`resolveAttachmentBytes` is a SYSTEM read — no ACL, and that is a boundary,
+not an omission.** It resolves either store from a page's identity and answers
+bytes plus the sniffed format. Which store is the CALLER's decision and follows
+the URL prefix in `body_html` — `/api/attachments/` is the Confluence cache,
+`/api/local-attachments/` the local store, and both really occur there, because
+`relocateToLocal` moves the bytes into the local store and persists the
+rewritten body. Inside the Confluence cache the directory key is
+`pages.source === 'confluence' && confluence_id ? confluence_id : String(id)`,
+the same rule `parentKeyFor` and the paste/import writer use, which is why
+`pageSource` is a required input rather than something inferred from a null
+`confluence_id`. It exists for the embedding worker, which runs outside
+any request, and for the answer path *after* retrieval has applied the
+visibility predicate. Routes must keep using the gated readers —
+`getLocalAttachment` (which calls `assertLocalPageAccess`) or `readAttachment`
+behind `routes/confluence/attachments.ts`'s own page-access check. A test walks
+`src/routes` and fails if any file there so much as names the function, so a
+route added later inherits the rule rather than the bypass.
 
 ## Background workers
 
