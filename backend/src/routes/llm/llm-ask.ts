@@ -2,6 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat, type ChatMessage, type ChatContentPart } from '../../domains/llm/services/openai-compatible-client.js';
+import type { PersistedSource } from '@compendiq/contracts';
+import { toPersistedSources } from '../../domains/llm/services/persisted-source.js';
 
 /**
  * A persisted conversation turn. `refused` marks a #1105 confidence refusal:
@@ -10,7 +12,7 @@ import { streamChat, type ChatMessage, type ChatContentPart } from '../../domain
  * invites imitation) and excluded from the gate's history exemption (a
  * refusal turn grounds nothing).
  */
-type StoredChatMessage = ChatMessage & { refused?: boolean };
+type StoredChatMessage = ChatMessage & { refused?: boolean; sources?: PersistedSource[] };
 
 import { contentToText } from '../../domains/llm/services/prompts.js';
 import { hybridSearch, buildRagContext, type RetrievalMeta } from '../../domains/llm/services/rag-service.js';
@@ -168,7 +170,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
 
     // Load conversation history if continuing
     let conversationHistory: StoredChatMessage[] = [];
-    let convId = conversationId;
+    let convId: string | null | undefined = conversationId;
 
     if (convId) {
       const conv = await query<{ messages: StoredChatMessage[] }>(
@@ -443,9 +445,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // only by keyword search and none was ever measured (#1117).
     //
     // Note the two are separate FIELDS rather than one redefined field purely
-    // for legibility — `sources` is never persisted (saveConversation below
-    // writes `ChatMessage[]`, i.e. `{role, content}`), so a replayed
-    // conversation carries no sources at all and renders no badge regardless.
+    // for legibility. `sources` IS persisted per assistant turn since #1361 —
+    // through `toPersistedSources`, which keeps what a chip renders and drops
+    // `score`/`rerankScore` — so a reopened conversation renders its chips and
+    // confidence badge (computed client-side from `similarity`).
     const sources = [
       ...searchResults.map((r) => ({
         pageId: r.pageId,
@@ -498,31 +501,51 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       })),
     ];
 
-    // Helper to save/create conversation from a cached answer or a refusal.
-    // The row's `model` column is the THREAD's configured model, not an
-    // attestation that it was invoked — a refusal writes it without a call.
-    const saveConversation = async (answer: string, opts?: { refused?: boolean }) => {
-      const newMessages: StoredChatMessage[] = [
-        ...conversationHistory,
-        { role: 'user', content: question },
-        opts?.refused
-          ? { role: 'assistant', content: answer, refused: true }
-          : { role: 'assistant', content: answer },
-      ];
+    // Helper to save/create conversation from a streamed, cached, or refused
+    // answer. The row's `model` column is the THREAD's configured model, not
+    // an attestation that it was invoked — a refusal writes it without a call.
+    // Returns the id the final frame must carry (null when the row vanished
+    // under us) and whether this call INSERTed (PR 3's auto-title trigger).
+    const persistedSources = toPersistedSources(sources);
+    const saveConversation = async (
+      answer: string,
+      opts?: { refused?: boolean },
+    ): Promise<{ id: string | null; inserted: boolean }> => {
+      const assistantTurn: StoredChatMessage = {
+        role: 'assistant',
+        content: answer,
+        ...(opts?.refused ? { refused: true } : {}),
+        ...(persistedSources.length > 0 ? { sources: persistedSources } : {}),
+      };
+      const newTurns: StoredChatMessage[] = [{ role: 'user', content: question }, assistantTurn];
 
       if (convId) {
-        await query(
-          'UPDATE llm_conversations SET messages = $3, updated_at = NOW() WHERE id = $1 AND user_id = $2',
-          [convId, userId, JSON.stringify(newMessages)],
+        // #1361: atomic append. Two tabs asking concurrently interleave at
+        // pair granularity, so history stays well-formed; the whole array is
+        // never read-modify-written. 0 rows means the row was deleted since
+        // the 404 check above — do not resurrect it.
+        const updated = await query<{ id: string }>(
+          `UPDATE llm_conversations
+              SET messages = messages || $3::jsonb, updated_at = NOW()
+            WHERE id = $1 AND user_id = $2
+            RETURNING id`,
+          [convId, userId, JSON.stringify(newTurns)],
         );
-      } else {
-        const insertResult = await query<{ id: string }>(
-          `INSERT INTO llm_conversations (user_id, model, title, messages)
-           VALUES ($1, $2, $3, $4) RETURNING id`,
-          [userId, resolvedModel, question.slice(0, 100), JSON.stringify(newMessages)],
-        );
-        convId = insertResult.rows[0]!.id;
+        if (updated.rows.length === 0) {
+          logger.warn({ conversationId: convId, userId }, 'Conversation vanished mid-answer; exchange not persisted');
+          convId = null;
+          return { id: null, inserted: false };
+        }
+        return { id: convId, inserted: false };
       }
+
+      const insertResult = await query<{ id: string }>(
+        `INSERT INTO llm_conversations (user_id, model, title, messages)
+         VALUES ($1, $2, $3, $4) RETURNING id`,
+        [userId, resolvedModel, question.slice(0, 100), JSON.stringify(newTurns)],
+      );
+      convId = insertResult.rows[0]!.id;
+      return { id: convId, inserted: true };
     };
 
     // ── Honest-refusal gate (#1105, widened by #1114's prerequisite) ─────
@@ -694,7 +717,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           refusalReason,
           confidence: confidence.score,
           confidenceBasis: confidence.basis,
-          conversationId: convId,
+          conversationId: convId ?? null,
           sources,
         },
         // Nothing was cached — the default `cached: true` would be a lie.
@@ -712,7 +735,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         await saveConversation(cached.content);
 
         sendCachedSSE(reply, cached.content, {
-          conversationId: convId,
+          conversationId: convId ?? null,
           sources,
         });
         return;
@@ -805,7 +828,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           reply.raw.write(`data: ${JSON.stringify({
             done: true,
             final: true,
-            conversationId: convId,
+            conversationId: convId ?? null,
             sources,
           })}\n\n`);
         }

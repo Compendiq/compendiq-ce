@@ -520,6 +520,13 @@ describe('POST /api/llm/ask', () => {
       const persistedTurn = persisted.find((m) => m.role === 'assistant')!;
       expect(persistedTurn.content).not.toContain('attached as sources');
       expect(persistedTurn.refused).toBe(true);
+      // #1361: the weak sources are persisted as structured data beside the
+      // prose (which still does not promise a list).
+      const persistedSources = persistedTurn.sources as Array<Record<string, unknown>>;
+      expect(Array.isArray(persistedSources)).toBe(true);
+      expect(persistedSources.length).toBeGreaterThan(0);
+      expect(persistedSources[0]).toHaveProperty('pageId');
+      expect(persistedSources[0]).not.toHaveProperty('score');
     });
 
     it('gate ON + rerank basis: gates on the RERANK knob, not the similarity one (#1268 B2)', async () => {
@@ -971,6 +978,105 @@ describe('POST /api/llm/ask', () => {
       expect(JSON.parse(response.body).message).toContain('Conversation not found');
       expect(mockHybridSearch).not.toHaveBeenCalled();
       expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('persistence shape (#1361)', () => {
+    it('appends a continuation turn atomically with jsonb || and RETURNING id', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [{ messages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }] }] };
+        }
+        return { rows: [{ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('a2'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q2', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(response.statusCode).toBe(200);
+      const update = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE llm_conversations'),
+      )!;
+      expect(update[0]).toContain('messages = messages || $3::jsonb');
+      expect(update[0]).toContain('RETURNING id');
+      const appended = JSON.parse((update[1] as unknown[])[2] as string) as Array<{ role: string; content: string }>;
+      // Only the NEW pair travels — no read-modify-write of the whole array.
+      expect(appended.map((m) => m.role)).toEqual(['user', 'assistant']);
+      expect(appended[1].content).toBe('a2');
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(finals.find((f) => f.final === true)!.conversationId).toBe('5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a');
+    });
+
+    it('carries conversationId: null on the final frame when the append hits 0 rows (deleted mid-answer)', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [{ messages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }] }] };
+        }
+        if (typeof sql === 'string' && sql.includes('UPDATE llm_conversations')) {
+          return { rows: [] };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('a2'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q2', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = finals.find((f) => f.final === true)!;
+      expect('conversationId' in final).toBe(true);
+      expect(final.conversationId).toBeNull();
+      // Nothing was re-INSERTed: the deleted conversation is not resurrected.
+      expect(mockQuery.mock.calls.some((c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'))).toBe(false);
+    });
+
+    it('persists KB sources on the streamed turn without the deprecated score, and omits pageId for an external doc', async () => {
+      mockMcpIsEnabled.mockResolvedValue(true);
+      mockMcpFetchDocumentation.mockResolvedValue({ url: 'https://example.com/doc', title: 'Doc', markdown: 'body' });
+      mockHybridSearch.mockResolvedValue([{
+        pageId: 42, pageTitle: 'Runbook', spaceKey: 'ENG', confluenceId: '123', sectionTitle: 'Rotation',
+        score: 0.9, vectorScore: 0.71, content: 'chunk',
+      }]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'how do we rotate the PAT?', externalUrls: ['https://example.com/doc'] },
+      });
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const messages = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; sources?: Array<Record<string, unknown>> }>;
+      const assistant = messages.find((m) => m.role === 'assistant')!;
+      expect(assistant.sources).toBeDefined();
+      const kb = assistant.sources!.find((s) => s.pageId === 42)!;
+      expect(kb).toEqual({ pageTitle: 'Runbook', spaceKey: 'ENG', pageId: 42, confluenceId: '123', sectionTitle: 'Rotation', similarity: 0.71 });
+      const ext = assistant.sources!.find((s) => s.url === 'https://example.com/doc')!;
+      expect(ext).not.toHaveProperty('pageId');
+      expect(messages.find((m) => m.role === 'user')).not.toHaveProperty('sources');
+      mockMcpIsEnabled.mockResolvedValue(false);
+    });
+
+    it('persists sources on a cache-hit turn too', async () => {
+      mockGetCachedResponse.mockResolvedValueOnce({ content: 'cached answer' });
+      mockHybridSearch.mockResolvedValue([{ pageId: 7, pageTitle: 'P', spaceKey: 'S', confluenceId: null, score: 0.5, vectorScore: 0.6, content: 'c' }]);
+      mockBuildRagContext.mockReturnValue('ctx');
+
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'cached question' } });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const messages = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; sources?: unknown[] }>;
+      expect(messages.find((m) => m.role === 'assistant')!.sources).toHaveLength(1);
     });
   });
 
