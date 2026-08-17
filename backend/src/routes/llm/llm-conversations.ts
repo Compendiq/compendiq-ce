@@ -8,6 +8,7 @@ import {
   type ConversationSummary,
   type StoredChatMessage,
   type TitleSource,
+  UpdateConversationSchema,
 } from '@compendiq/contracts';
 import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
@@ -154,6 +155,27 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       // so a long conversation says so the moment it opens.
       historyTruncated: selectReplayableHistory(row.messages).truncated,
     };
+  });
+
+  // PATCH /api/llm/conversations/:id — rename (#1361). Sets title_source =
+  // 'user', which the auto-title (PR 3) never overwrites. Deliberately does
+  // NOT bump updated_at: that would re-bucket the row into "Today".
+  fastify.patch('/llm/conversations/:id', async (request) => {
+    const { id } = ConversationIdParamSchema.parse(request.params);
+    const { title } = UpdateConversationSchema.parse(request.body);
+    const result = await query<ConversationRow>(
+      `UPDATE llm_conversations c
+          SET title = $3, title_source = 'user'
+        WHERE c.id = $1 AND c.user_id = $2
+        RETURNING c.id, c.title, c.title_source, c.model, c.page_ref,
+                  (SELECT p.title FROM pages p WHERE p.id = c.page_ref AND p.deleted_at IS NULL) AS page_title,
+                  c.created_at, c.updated_at`,
+      [id, request.userId, title],
+    );
+    if (result.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Conversation not found');
+    }
+    return toSummary(result.rows[0]!);
   });
 
   // DELETE /api/llm/conversations/:id

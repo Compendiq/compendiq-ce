@@ -98,6 +98,11 @@ describe('llm-conversations routes - auth required', () => {
     expect(response.statusCode).toBe(401);
   });
 
+  it('should return 401 for PATCH /api/llm/conversations/:id without auth', async () => {
+    const response = await app.inject({ method: 'PATCH', url: '/api/llm/conversations/conv-1', payload: { title: 'x' } });
+    expect(response.statusCode).toBe(401);
+  });
+
   it('should return 401 for DELETE /api/llm/conversations/:id without auth', async () => {
     const response = await app.inject({
       method: 'DELETE',
@@ -312,6 +317,35 @@ describe('llm-conversations routes - CRUD', () => {
     expect(response.statusCode).toBe(404);
     const body = JSON.parse(response.body);
     expect(body.message).toContain('Conversation not found');
+  });
+
+  // --- PATCH /api/llm/conversations/:id ---
+
+  it('renames: title_source becomes user, updated_at is NOT bumped, returns the summary (#1361)', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: CONV_1, title: 'PAT rotation', title_source: 'user', model: 'llama3', page_ref: null, page_title: null,
+        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z') }],
+    });
+    const response = await app.inject({ method: 'PATCH', url: `/api/llm/conversations/${CONV_1}`, payload: { title: '  PAT rotation  ' } });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({ id: CONV_1, title: 'PAT rotation', titleSource: 'user' });
+    const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("title_source = 'user'");
+    expect(sql).not.toMatch(/updated_at\s*=/);
+    expect(params).toEqual([CONV_1, 'test-user-123', 'PAT rotation']);
+  });
+
+  it('PATCH answers 404 for another user\'s or a missing conversation', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    const response = await app.inject({ method: 'PATCH', url: `/api/llm/conversations/${CONV_2}`, payload: { title: 'x' } });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('PATCH answers 400 for a blank title, an over-long title, or a non-uuid id', async () => {
+    expect((await app.inject({ method: 'PATCH', url: `/api/llm/conversations/${CONV_1}`, payload: { title: '   ' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'PATCH', url: `/api/llm/conversations/${CONV_1}`, payload: { title: 'x'.repeat(201) } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'PATCH', url: '/api/llm/conversations/conv-1', payload: { title: 'x' } })).statusCode).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   // --- DELETE /api/llm/conversations/:id ---
