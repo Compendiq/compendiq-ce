@@ -146,10 +146,12 @@ def _parse_messages(messages: Any) -> EmbedItem:
     for index, message in enumerate(entries):
         role = message['role']
         if role == 'system':
+            # One check, not two: "not first" already covers "a second one",
+            # so a separate `instruction is not None` branch would be dead.
             if index != 0:
-                raise ShimRequestError('a system message must be the first message')
-            if instruction is not None:
-                raise ShimRequestError('at most one system message is accepted')
+                raise ShimRequestError(
+                    'at most one system message is accepted, and it must be first'
+                )
             instruction = ''.join(
                 str(part.get('text', ''))
                 for part in _content_parts(message.get('content'), where='system')
