@@ -1340,6 +1340,22 @@ states the condition where an operator will meet it.
   page, and re-ranks using a weighted blend.
 - **Scope** — results are filtered to pages the requesting user can see
   (own pages + spaces they have RBAC access to).
+- **Space filter (#1351).** `/api/search`'s `spaceKey` param now narrows
+  `mode=semantic` and `mode=hybrid` too, not just `mode=keyword` — before
+  this, `vectorSearch`/`hybridSearch` built their result set from the query
+  embedding and the RBAC-accessible space set alone, silently ignoring a
+  user's Space selection and answering from their whole accessible corpus.
+  `vectorSearch(userId, embedding, limit, opts)` and
+  `keywordSearch(userId, question, limit, opts)` both take an optional
+  `opts.spaceKey`, threaded into `HybridSearchOptions.spaceKey` and applied
+  as an `AND cp.space_key = $n` predicate alongside — never instead of —
+  `visiblePagesPredicate`, so it can only narrow the ACL-visible set, never
+  widen it. Standalone pages carry no `space_key` (NULL), so scoping to a
+  space excludes them, mirroring keyword mode's own `cp.space_key = $n`
+  filter. Optional and `undefined` by default: `/llm/ask`, deep search
+  (`multi-query-search.ts`) and the eval/benchmark harness don't pass it and
+  are unaffected — `/api/search`'s semantic and hybrid branches are the only
+  callers today.
 
 ## Streaming contract
 

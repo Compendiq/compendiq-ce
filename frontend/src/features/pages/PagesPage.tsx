@@ -553,14 +553,19 @@ export function PagesPage() {
     }
   }, [embeddingStatusData, queryClient]);
 
-  // `space` was excluded from this list until #945's harden pass: the
-  // semantic/hybrid backend branches never read spaceKey either (confirmed
-  // against backend/src/routes/knowledge/search.ts — the vector and hybrid
-  // blocks build their result set from the query embedding and the user's
-  // accessible spaces alone), but the Space select had no pill, was never
-  // counted in `activeFilterCount`, and the #945 notice below never
-  // mentioned it — so a scoped-to-a-space semantic search silently searched
-  // the whole accessible corpus while the UI reported nothing wrong.
+  // `space` was excluded from this list until #945's harden pass: at the
+  // time, the semantic/hybrid backend branches never read spaceKey either
+  // (confirmed against backend/src/routes/knowledge/search.ts — the vector
+  // and hybrid blocks built their result set from the query embedding and
+  // the user's accessible spaces alone), but the Space select had no pill,
+  // was never counted in `activeFilterCount`, and the #945 notice below
+  // never mentioned it — so a scoped-to-a-space semantic search silently
+  // searched the whole accessible corpus while the UI reported nothing
+  // wrong. #1351 later made the backend actually honor spaceKey in both
+  // modes; Space stays in `activeFilters` (it is still a real, honored
+  // filter worth a pill and a count in every mode) but has since been
+  // carved OUT of the notice below, which now describes only what remains
+  // genuinely ignored.
   const activeFilters = useMemo(() => {
     const filters: { key: string; label: string }[] = [];
     // Keys are the URL param names so `clearFilter` can act on them directly.
@@ -578,17 +583,27 @@ export function PagesPage() {
 
   const activeFilterCount = activeFilters.length;
 
+  // #1351: Space stopped being one of the filters semantic/hybrid ignore —
+  // vectorSearch/hybridSearch now apply an explicit space_key predicate
+  // (backend/src/domains/llm/services/rag-service.ts). `activeFilters` above
+  // stays the full pill set (Space is still a real, honored filter worth a
+  // pill and a count in every mode), but the #945 honesty notice must now
+  // describe only the filters STILL ignored — author/date/labels/freshness/
+  // embedding/quality/source — or it would tell a scoped-to-a-space semantic
+  // search that its scoping is being dropped when it no longer is.
+  const ignoredFilters = useMemo(
+    () => activeFilters.filter((f) => f.key !== 'space'),
+    [activeFilters],
+  );
+
   // Single source of truth for the #945 honesty notice, read by both the
   // visible <p> and the sr-only live-region announcer below it — computed
-  // once so the two can never drift out of text with each other. Every key
-  // in `activeFilters` is, today, exactly the set the semantic/hybrid
-  // backend branches ignore (see the comment on `activeFilters` above), so
-  // no separate "which filters are inert" list is needed here.
+  // once so the two can never drift out of text with each other.
   const filtersIgnoredMessage = useMemo(() => {
-    if (!useSemanticSearch || activeFilterCount === 0) return '';
-    const summary = summarizeFilterLabels(activeFilters.map((f) => f.label));
+    if (!useSemanticSearch || ignoredFilters.length === 0) return '';
+    const summary = summarizeFilterLabels(ignoredFilters.map((f) => f.label));
     return `Semantic and hybrid search ignore your active filters — ${summary}. They apply to keyword search only.`;
-  }, [useSemanticSearch, activeFilterCount, activeFilters]);
+  }, [useSemanticSearch, ignoredFilters]);
 
   // The pill keys are the URL param names, so a pill clears exactly the param
   // it renders — no second mapping table to drift out of sync.
@@ -1032,13 +1047,14 @@ export function PagesPage() {
           {filtersIgnoredMessage}
         </span>
 
-        {/* Honest notice: every active filter above is silently ignored by
-            semantic and hybrid search (#945's original scope was "advanced
-            filters"; the harden pass folded Space in too — see the comment
-            on `activeFilters`). Placed here, ahead of the advanced panel and
-            the pill row, so it is the first thing seen after switching mode
-            rather than something a user has to scroll past two other blocks
-            to find. */}
+        {/* Honest notice: every filter in `ignoredFilters` above is silently
+            ignored by semantic and hybrid search (#945's original scope was
+            "advanced filters"; the harden pass folded Space in too — #1351
+            later took it back out once the backend started honoring it — see
+            the comments on `activeFilters`/`ignoredFilters`). Placed here,
+            ahead of the advanced panel and the pill row, so it is the first
+            thing seen after switching mode rather than something a user has
+            to scroll past two other blocks to find. */}
         {filtersIgnoredMessage && (
           <p
             id="filters-ignored-notice"
@@ -1188,29 +1204,36 @@ export function PagesPage() {
             and `opacity-50` on a clickable button both fails contrast and
             fools automated "is it enabled" checks the same way it fools a
             sighted user. The #945 honesty notice above is the one place that
-            says these are being ignored; each pill just points to it via
-            `aria-describedby` so a screen-reader user tabbing onto a pill
-            hears why it's listed. `data-inactive` is a plain state marker
-            for tests/styling, not an accessibility claim. */}
+            says the OTHER filters are being ignored; each of those pills
+            points to it via `aria-describedby` so a screen-reader user
+            tabbing onto a pill hears why it's listed. The Space pill is
+            deliberately excluded (#1351: it is no longer ignored), so it
+            never wires up to a notice about a scoping that IS applying.
+            `data-inactive` is a plain state marker for tests/styling, not an
+            accessibility claim — true only while the notice it points at is
+            actually on screen. */}
         {activeFilters.length > 0 && (
           <div
             className="flex flex-wrap items-center gap-2 border-t border-border pt-3"
             data-testid="active-filter-pills"
-            data-inactive={useSemanticSearch ? 'true' : undefined}
+            data-inactive={filtersIgnoredMessage ? 'true' : undefined}
           >
-            {activeFilters.map((f) => (
-              <button
-                key={f.key}
-                onClick={() => clearFilter(f.key)}
-                className="inline-flex items-center gap-1 rounded-full bg-action/10 px-2.5 py-0.5 text-xs font-medium text-action"
-                aria-label={`Remove ${f.label} filter`}
-                aria-describedby={useSemanticSearch ? 'filters-ignored-notice' : undefined}
-                data-testid={`filter-pill-${f.key}`}
-              >
-                {f.label}
-                <X size={12} aria-hidden="true" data-testid={`filter-pill-remove-${f.key}`} />
-              </button>
-            ))}
+            {activeFilters.map((f) => {
+              const ignoredBySemanticSearch = useSemanticSearch && f.key !== 'space';
+              return (
+                <button
+                  key={f.key}
+                  onClick={() => clearFilter(f.key)}
+                  className="inline-flex items-center gap-1 rounded-full bg-action/10 px-2.5 py-0.5 text-xs font-medium text-action"
+                  aria-label={`Remove ${f.label} filter`}
+                  aria-describedby={ignoredBySemanticSearch ? 'filters-ignored-notice' : undefined}
+                  data-testid={`filter-pill-${f.key}`}
+                >
+                  {f.label}
+                  <X size={12} aria-hidden="true" data-testid={`filter-pill-remove-${f.key}`} />
+                </button>
+              );
+            })}
             <button
               onClick={clearAllFilters}
               className="rounded-sm text-xs text-muted-foreground hover:text-foreground nm-focus-ring"
