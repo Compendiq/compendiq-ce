@@ -1125,6 +1125,21 @@ describe('POST /api/llm/ask', () => {
       const final = (parseSseBody(response.body) as Array<Record<string, unknown>>).find((f) => f.final === true)!;
       expect('historyTruncated' in final).toBe(false);
     });
+
+    it('titles a new conversation on a word boundary, never mid-word (#1361)', async () => {
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('ok'));
+      const question = 'What is the recommended procedure for rotating the Confluence personal access token, and who owns it?';
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question } });
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const title = (insert[1] as unknown[])[2] as string;
+      expect(title.length).toBeLessThanOrEqual(81);
+      expect(title.endsWith('…')).toBe(true);
+      expect(question[title.length - 1]).toBe(' '); // the cut fell on a space
+    });
   });
 
   it('should return 400 when question exceeds maximum length', async () => {

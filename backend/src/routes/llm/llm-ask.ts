@@ -4,6 +4,7 @@ import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver
 import { streamChat, type ChatMessage, type ChatContentPart } from '../../domains/llm/services/openai-compatible-client.js';
 import type { PersistedSource } from '@compendiq/contracts';
 import { toPersistedSources } from '../../domains/llm/services/persisted-source.js';
+import { initialTitleFromQuestion } from '../../domains/llm/services/conversation-title.js';
 
 /**
  * A persisted conversation turn. `refused` marks a #1105 confidence refusal:
@@ -543,7 +544,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       const insertResult = await query<{ id: string }>(
         `INSERT INTO llm_conversations (user_id, model, title, messages)
          VALUES ($1, $2, $3, $4) RETURNING id`,
-        [userId, resolvedModel, question.slice(0, 100), JSON.stringify(newTurns)],
+        [userId, resolvedModel, initialTitleFromQuestion(question), JSON.stringify(newTurns)],
       );
       convId = insertResult.rows[0]!.id;
       return { id: convId, inserted: true };
