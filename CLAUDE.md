@@ -154,7 +154,7 @@ page bodies carry `![](images/…)` with an **empty alt and no caption** — a p
 that captions its own figures is answerable from text alone, so an image leg
 measured on it scores a win it did not earn; the captions live in the manifest,
 for P5c's independent labeller. **P5c's labels are now committed
-(`fixture-de-images.json`, 303 queries over all 65 pages and all 187 images) and
+(`fixture-de-images.json`, 307 queries over all 65 pages and all 187 images) and
 still nothing consumes them** — P5b remains the PR that wires the axis. They get
 their **own** schema and loader (`ImageFixtureSchema` / `loadImageFixture`),
 never a widened `FixtureSchema`: the two fixtures are scored on different axes,
@@ -167,13 +167,13 @@ belongs to one of that label's own pages. The last is the one nobody eyeballs:
 `imageHit@K` is scored inside the retrieved page, so an image credited to the
 wrong page is unreachable however good the leg is, while the page and the image
 each exist. `fixture-de-images.test.ts` pins the sha, N ≥ 100, ≥ 20 English
-(the cross-lingual case the text leg cannot serve), 8–20 `image-negative`
+(the cross-lingual case the text leg cannot serve), 8–22 `image-negative`
 distractors with EMPTY `expectedImages` (without them a leg that answers with a
 picture every time scores like one that answers correctly), no content shape
 below 15%, every image accounted for by a label or a `notUsable` reason, and
 **no query that restates a manifest caption** — the caption-strip rule guarded
 from the other side, since a query copied off the manifest hands the leg the
-match the empty alt text exists to deny it. Two of those are narrower than they
+match the empty alt text exists to deny it. Three of those are narrower than they
 read and were widened in review. The caption rule compares under its **own**
 normaliser, which folds punctuation as well as case and whitespace: an exact
 match passes `Rollout Januar 2005` against the caption `Rollout, Januar 2005`,
@@ -184,7 +184,16 @@ different corpus. And `notUsable` is **capped at a tenth of the corpus**,
 because "accounted for" is an unbounded excuse: retiring 60 of the 187 images
 with a reason and deleting their 103 labels leaves every other assertion in that
 file green while the set actually measured shrinks by a third. Today it is
-empty, so the cap ships with full slack. And it is the **first vendored content whose own
+empty, so the cap ships with full slack. And the negative count is now **per
+language** as well (≥ 4 English, ≥ 8 German): all 18 shipped negatives were
+German, so a whole-fixture bound stayed green over an English slice that was
+100% positives — the one slice this file certifies as reportable on its own,
+scoring an always-answers leg exactly like a correct one, on the case a shared
+VL space is claimed for. Review r2 added four English ones under their **own**
+id slice (`img-06-*`), because they are the merger's rather than a blind
+labeller's and those ids are the fixture's authorship record; the German floor
+sits beside the English one so the gap can never be closed by re-languaging the
+negatives already there. And it is the **first vendored content whose own
 licence is not MIT** (the English corpus is MIT documentation; this repository
 itself is **AGPL-3.0**): page text is CC BY-SA 4.0 (adapted) and images are
 filtered to CC0 / public domain / CC BY x / CC BY-SA x with a **named** author

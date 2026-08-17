@@ -1,6 +1,6 @@
 {
   "corpusManifestSha": "1d305046bdd084e59e2bb0cbb3e7206d5e91ec74ac82658ee85e3d403b6323a2",
-  "labeledBy": "six independent claude-sonnet-5 labelers, one page slice each, blind to retrieval code; merged by claude-opus-5 (schema validation, dedupe, coverage) — 2026-08-17. Ids are img-<slice>-<n>: the slice is the labeling agent (00-05), renumbered from the fragments' inconsistent schemes without reordering, so every label traces back to the one agent that wrote it.",
+  "labeledBy": "six independent claude-sonnet-5 labelers, one page slice each, blind to retrieval code; merged by claude-opus-5 (schema validation, dedupe, coverage) — 2026-08-17. Ids are img-<slice>-<n>: the slice is the labeling agent (00-05), renumbered from the fragments' inconsistent schemes without reordering, so every label traces back to the one agent that wrote it. Slice 06 is NOT one of them: the four English image-negative distractors added by the merger in review round 2, once the negative slice turned out to be 18/18 German, and kept under their own slice so they are never read as blind-labeller work.",
   "notUsable": [],
   "labels": [
     {
@@ -2574,7 +2574,7 @@
     },
     {
       "id": "img-03-033",
-      "query": "Foto von großen Hochleistungsroutern und Switches im Rechenzentrum",
+      "query": "Produktfoto mehrerer großer Router- und Switch-Gehäuse nebeneinander vor weißem Hintergrund",
       "lang": "de",
       "expectedFiles": [
         "router.md"
@@ -2583,7 +2583,7 @@
         "images/router__2.png"
       ],
       "style": "image",
-      "rationale": "Produktfoto mehrerer großer Rack-Geräte unterschiedlicher Bauform, wie sie im Kernnetz eingesetzt werden."
+      "rationale": "Freigestellte Produktaufnahme: mehrere Juniper-Gehäuse unterschiedlicher Bauhöhe stehen nebeneinander vor weißem Hintergrund — kein Schrank, kein Raum, keine Verkabelung. Genau das trennt es vom Schwesterbild router__3.jpg, das im Rack sitzt; die frühere Fassung sagte 'im Rechenzentrum' und beschrieb damit das andere Bild."
     },
     {
       "id": "img-03-034",
@@ -2854,7 +2854,7 @@
     },
     {
       "id": "img-04-014",
-      "query": "Struktogramm für eine einfache Ja-Nein-Verzweigung",
+      "query": "Struktogramm mit einer Ja-Nein-Bedingung und nur einem einzigen Anweisungsblock unter dem Ja-Zweig",
       "lang": "de",
       "expectedFiles": [
         "nassi-shneiderman-diagramm.md"
@@ -2863,7 +2863,7 @@
         "images/nassi-shneiderman-diagramm__1.png"
       ],
       "style": "image",
-      "rationale": "The small diagram shows a single triangular decision split into 'ja' and 'nein' over one instruction block, the simplest selection structogram on the page."
+      "rationale": "One 'Bedingung' triangle over a SINGLE 'Anweisungsblock 1', which fills the left half under 'ja' while the 'nein' half stays empty. The block count is the discriminator: the earlier wording said only 'einfache Ja-Nein-Verzweigung', which is equally true of __2, and 'einfach' is the caption's own word ('Einfache Auswahl') rather than anything visible."
     },
     {
       "id": "img-04-015",
@@ -3905,6 +3905,50 @@
       "expectedImages": [],
       "style": "image-negative",
       "rationale": "Slow start, congestion avoidance, fast retransmit and fast recovery are explained only in prose; the three vendored images cover the handshake, header layout and buffering, not congestion control."
+    },
+    {
+      "id": "img-06-001",
+      "query": "Who formalised the Scrum framework, and where does the name come from?",
+      "lang": "en",
+      "expectedFiles": [
+        "scrum.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Sutherland and Schwaber formalising Scrum from 1993, and Nonaka and Takeuchi's rugby analogy behind the name, are attribution facts carried only in prose; the three images are an events overview, a process cycle and a sprint burndown chart, none naming a person or an origin. Note a duration question would NOT have been text-only here: the events overview prints the Daily Scrum's '15-minute event' on its face."
+    },
+    {
+      "id": "img-06-002",
+      "query": "Who discovered the fuel cell principle, and in which year?",
+      "lang": "en",
+      "expectedFiles": [
+        "brennstoffzelle.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Christian Friedrich Schönbein's 1838 discovery and William Grove's part in it are stated only in the history section; the three images are a photograph of a methanol demonstration cell and two operating-principle schematics labelled with reactants and electrodes — no person, no date, no company."
+    },
+    {
+      "id": "img-06-003",
+      "query": "Who received the 1962 Nobel Prize for the structure of DNA, and whose contribution went unmentioned?",
+      "lang": "en",
+      "expectedFiles": [
+        "desoxyribonukleinsaeure.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "Watson, Crick and Wilkins receiving the prize, and Rosalind Franklin going unnamed by the committee, are narrative facts from the discovery section; the three images are a base-pairing structural formula, a right- vs left-handed helix pair and a replication-fork diagram, none of which depicts a person or a prize."
+    },
+    {
+      "id": "img-06-004",
+      "query": "In which year was the foundation stone of Cologne Cathedral laid, and when was the building finally completed?",
+      "lang": "en",
+      "expectedFiles": [
+        "koelner-dom.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "1248 and 1880 are stated in the opening prose; the three vendored images are undated photographs — a lit night view from the Deutz bank, an aerial of the cathedral quarter from the north-east and the excavated baptistery — and none carries a construction date."
     }
   ]
 }

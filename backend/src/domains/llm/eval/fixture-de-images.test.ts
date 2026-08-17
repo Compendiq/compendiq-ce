@@ -249,15 +249,31 @@ describe('the shipped image fixture (#1115 P5c)', () => {
     expect(pages.size).toBeGreaterThanOrEqual(20);
   });
 
-  it('carries image-negative distractors, and not so many that they dominate', () => {
+  it('carries image-negative distractors in BOTH languages, and not so many that they dominate', () => {
     const fixture = shipped();
     // Without them a leg that returns an image for every query scores the same
     // as one that returns the right image. Too many and the fixture measures
     // abstention rather than retrieval.
     const negatives = fixture.labels.filter((l) => l.style === 'image-negative');
     expect(negatives.length).toBeGreaterThanOrEqual(8);
-    expect(negatives.length).toBeLessThanOrEqual(20);
+    // 22 rather than the 20 this first shipped with, and moved deliberately:
+    // the four English distractors below are an addition, not a rebalancing,
+    // and at 307 labels 22 is 7.2% of the fixture — the same share the German
+    // slice already carried, nowhere near abstention dominating the measure.
+    expect(negatives.length).toBeLessThanOrEqual(22);
     expect(negatives.every((l) => l.expectedImages.length === 0)).toBe(true);
+
+    // PER LANGUAGE, because the whole-fixture count above is blind to a slice
+    // that is all positives — and one was: all 18 negatives were German when
+    // this fixture first shipped, so the English slice, the very one the test
+    // above certifies as big enough to report on its own and the case a shared
+    // VL space is claimed for, scored an always-answers leg exactly like a
+    // correct one.
+    const negativesIn = (lang: string) => negatives.filter((l) => l.lang === lang).length;
+    expect(negativesIn('en')).toBeGreaterThanOrEqual(4);
+    // ...and German keeps its own, so "the English slice needs distractors" can
+    // never be satisfied by re-languaging the ones already there.
+    expect(negativesIn('de')).toBeGreaterThanOrEqual(8);
   });
 
   it('measures all four content shapes, none below 15% of the fixture', () => {
