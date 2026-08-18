@@ -533,7 +533,7 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
   }
 
   // Process children / ui-children display macro -> placeholder div, preserving all params
-  const childrenParamNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType'];
+  const childrenParamNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns'];
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const macroName = getMacroName(macro);
     if (macroName !== 'children' && macroName !== 'ui-children') continue;
@@ -922,7 +922,7 @@ export function htmlToConfluence(html: string): string {
   }
 
   // Convert children / ui-children macro placeholders back to ac:structured-macro
-  const childrenRoundTripParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType'];
+  const childrenRoundTripParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns'];
   for (const div of doc.querySelectorAll('div.confluence-children-macro')) {
     const macro = doc.createElement('ac:structured-macro');
     const originalName = div.getAttribute('data-macro-name') || 'children';

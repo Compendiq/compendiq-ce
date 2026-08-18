@@ -401,7 +401,7 @@ describe('article-extensions', () => {
       const addAttributes = ConfluenceChildren.config.addAttributes;
       const attrs = addAttributes?.call({ name: 'confluenceChildren', options: {}, storage: {}, parent: undefined });
       expect(attrs).toBeDefined();
-      const expectedParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+      const expectedParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns', 'macro-name'];
       for (const param of expectedParams) {
         expect(attrs).toHaveProperty(param);
         expect(attrs[param].default).toBeNull();
@@ -422,6 +422,7 @@ describe('article-extensions', () => {
             'data-page': 'My Page',
             'data-style': 'h3',
             'data-excerpttype': 'rich',
+            'data-columns': '2',
             'data-macro-name': 'ui-children',
           };
           return map[name.toLowerCase()] ?? null;
@@ -435,6 +436,7 @@ describe('article-extensions', () => {
       expect(attrs.page.parseHTML(mockElement)).toBe('My Page');
       expect(attrs.style.parseHTML(mockElement)).toBe('h3');
       expect(attrs.excerptType.parseHTML(mockElement)).toBe('rich');
+      expect(attrs.columns.parseHTML(mockElement)).toBe('2');
       expect(attrs['macro-name'].parseHTML(mockElement)).toBe('ui-children');
     });
   });
@@ -453,6 +455,7 @@ describe('article-extensions', () => {
           page: null,
           style: null,
           excerptType: null,
+          columns: '2',
           'macro-name': 'ui-children',
         },
       };
@@ -467,6 +470,7 @@ describe('article-extensions', () => {
       expect(content).toBe('[Children pages listed here]');
       expect(attrs['data-sort']).toBe('title');
       expect(attrs['data-depth']).toBe('0');
+      expect(attrs['data-columns']).toBe('2');
       expect(attrs['data-macro-name']).toBe('ui-children');
       // Null attrs should not appear
       expect(attrs).not.toHaveProperty('data-reverse');
