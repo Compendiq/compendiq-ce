@@ -805,3 +805,28 @@ If you drop the trailing `assistant` turn or `continue_final_message`, this call
 **still succeeds** and still returns a plausible vector — of a different, worse
 space. That is why the client's request body is asserted byte-for-byte in
 `vl-embedding-client.test.ts` rather than left to a smoke test.
+
+### Measuring it, rather than verifying it (#1115 P5b)
+
+A 200 with a vector of the right width proves the endpoint is wired up. It says
+nothing about whether the leg **helps**, and that is a separate exercise with
+its own corpus and its own harness: the `--images` axis on the retrieval eval.
+It seeds a German image corpus through this exact intake — bytes on disk,
+`embedPageImages`, `page_image_embeddings` — and then runs every fixture query
+twice on one seeded database, image leg off and on, paired, and decides with
+McNemar exact. It also reports image embed throughput (images/s) and each arm's
+query cost, which are the two operational numbers §5 and §6 above tell you to
+measure before scheduling a backfill or raising `PG_VECTOR_POOL_MAX`. Read the
+right half of each: the seeder embeds one page after another with **no pause**,
+so `throughputImagesPerSec` is the endpoint's rate and
+`backfillThroughputImagesPerSec` is the one this section's backfill pays (the
+worker sleeps 200 ms after every page, which the seeder does not). Likewise the
+leg's query cost is `queryCostMs.deltaPaired` — the per-query `on - off` — and
+not the difference between the two per-arm percentiles, which are independent
+summaries of possibly different queries.
+
+Recipe, environment and how to read the report: **`docs/runbooks/retrieval-eval.md`,
+"Image axis (`--images`)"**. It is not in CI (no vision-language model is
+runnable there), and a run through the local shim is plumbing-grade — the
+numbers that decide the model, the MRL width and the default are measured on
+the production stack (ADR-025 D11).

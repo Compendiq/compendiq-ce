@@ -2599,6 +2599,39 @@ MMTEB figures — informational, since D1 does not depend on it. Not in CI: the
 gate has no runnable VL model (`nomic-embed-text` is text-only), so CI tests
 plumbing against a fake embedder.
 
+**Status (2026-08-17): the HARNESS is shipped; the MEASUREMENT is not.** P5a
+vendored the corpus (65 articles, 187 images), P5c the labels (307 queries) and
+**P5b the `--images` axis** — the flag, the seeder, the paired runner, the
+metrics and the report. Four things about the shipped axis are decisions rather
+than implementation detail, and each has a wrong-looking obvious alternative.
+The corpus is seeded **through the real intake** (`embedPageImages` over bytes
+on disk under `attachment-store`'s own layout, with the body rewritten by
+`buildPageImageUrl`), never by inserting vectors — a mis-keyed directory or a
+mis-encoded filename resolves to the same silent `null` as a missing file, so a
+seeder that wrote its own rows would measure its own fixture. The two arms run
+**in one process on one seeded database, interleaved per query**, forced with
+`HybridSearchOptions.imageLeg` rather than by writing
+`admin_settings.rag_image_leg_enabled` — pairing is McNemar's precondition, and
+a global setting would change what every other request on the instance
+retrieves for the duration of the run. The axis's **VL endpoint is its own pair
+of environment variables and never falls back to the text one**, which is D3's
+non-inheriting rule enforced by refusal rather than by prose. And the run is
+**refused rather than reported** in every state where the two arms would be the
+same configuration: an intake that skipped an image, a leg that contributed
+hits to fewer than half the queries, or a leg-off arm that came back carrying
+image hits — all of which otherwise produce a delta of exactly zero that reads
+as "the leg does not help". Two further refusals follow from the same premise
+(review r2): **`--deep-search` is refused on this axis**, because expansion
+reformulates per request, so the arms would be paraphrased separately and two of
+each arm's three fused legs would be different questions; and **`--baseline`
+refuses a pair whose VL model, width or index endpoint differs**, which the
+existing model guard cannot see — `report.model` is the TEXT embedder and reads
+the same on a 2B run and an 8B one. Recipe and report fields:
+`docs/runbooks/retrieval-eval.md`, "Image axis (`--images`)". **The numbers
+themselves are a follow-up**, measured on the production stack per D11 and
+recorded on #1115 by the operator who runs them; nothing in this ADR should be
+read as a result until they are.
+
 ### What only production can prove
 
 Everything above is either published, measured on a local shim, or read out of

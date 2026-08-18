@@ -96,8 +96,16 @@ function sleep(ms: number): Promise<void> {
 /** Per-image latency budget, covering queue wait — `rerank-client.ts`'s rule. */
 const IMAGE_EMBED_TIMEOUT_MS = 120_000;
 
-/** Delay between pages, mirroring `processDirtyPages`' server-pressure valve. */
-const INTER_PAGE_DELAY_MS = 200;
+/**
+ * Delay between pages, mirroring `processDirtyPages`' server-pressure valve.
+ *
+ * Exported because it is part of what a BACKFILL costs and nothing else in the
+ * codebase can see it: #1115 P5b's eval times the intake without this valve
+ * (there is nothing to be gentle to — it seeds a disposable database against a
+ * dedicated endpoint) and publishes the backfill figure separately by adding it
+ * back, so the two numbers cannot drift apart from this constant.
+ */
+export const INTER_PAGE_DELAY_MS = 200;
 
 /** Pages per LIMIT/OFFSET window. Half the text worker's, since a page here can cost N requests. */
 export const DIRTY_IMAGE_PAGE_BATCH_SIZE = 50;

@@ -143,15 +143,16 @@ And `resetEvalCorpus` drops the
 *no* claim rather than the previous run's — absent routes the benchmark to its
 warning, which is the safe verdict for "unknown".
 
-**A third corpus exists and nothing consumes it yet (#1115 P5a).**
+**A third corpus exists and only `--images` reaches it (#1115 P5a).**
 `eval/corpus-de-images/` is 65 German Wikipedia articles carrying 187 vendored
 images, for the image retrieval leg — built by `tools/eval-corpus-images/`
 (Python; Pillow does the re-encoding the backend deliberately has no dependency
 for). Three rules are load-bearing. It is **absent from `CORPUS_DIRS` and
-`corpusDirsForLanguage`** until P5b adds the `--images` axis:
+`corpusDirsForLanguage`**, and stays so now that P5b's axis exists —
+that axis loads it through `loadImageCorpusManifest` instead, because
 `computeCorpusManifestSha` covers every directory in that list, so wiring it in
-invalidates every recorded baseline at once, and that is a cost to pay
-deliberately rather than in the PR that only vendors the bytes. It sits inside
+invalidates every recorded baseline at once and the image measurement never
+needed to spend that. It sits inside
 the `corpus-<lang>` namespace without being a language, so `translatedCorpusDirs`
 **throws** on a `lang` whose directory resolves onto it — `--lang de-images`
 otherwise handed the image corpus back as a translation and only died a step
@@ -159,9 +160,9 @@ later on a missing `fixture-de-images.json`, which is luck, not a guard. Its
 page bodies carry `![](images/…)` with an **empty alt and no caption** — a page
 that captions its own figures is answerable from text alone, so an image leg
 measured on it scores a win it did not earn; the captions live in the manifest,
-for P5c's independent labeller. **P5c's labels are now committed
+for P5c's independent labeller. **P5c's labels are committed
 (`fixture-de-images.json`, 307 queries over all 65 pages and all 187 images) and
-still nothing consumes them** — P5b remains the PR that wires the axis. They get
+P5b's `--images` axis is what consumes them.** They get
 their **own** schema and loader (`ImageFixtureSchema` / `loadImageFixture`),
 never a widened `FixtureSchema`: the two fixtures are scored on different axes,
 and adding `lang` / `expectedImages` / two more styles to the shipped schema
@@ -203,9 +204,11 @@ id slice (`img-06-*`), because they are the merger's rather than a blind
 labeller's and those ids are the fixture's authorship record; the German floor
 sits beside the English one so the gap can never be closed by re-languaging the
 negatives already there. Those four are the one part of the fixture its own
-protocol does not cover, so **P5b should replace or extend them with
-blind-labelled procedural negatives** — which is what the ceiling's four rungs
-of headroom above 22 are for, and why it stays a count rather than a share (a
+protocol does not cover, and **replacing or extending them with blind-labelled
+procedural negatives is still owed** — P5b shipped the axis without doing it,
+so the debt now sits against the first measurement rather than against the
+harness. The ceiling's four rungs of headroom above 22 are what it is for, and
+why it stays a count rather than a share (a
 ratio at N = 307 would license 30). And it is the **first vendored content whose own
 licence is not MIT** (the English corpus is MIT documentation; this repository
 itself is **AGPL-3.0**): page text is CC BY-SA 4.0 (adapted) and images are
@@ -271,6 +274,126 @@ dropped (a `{{Infobox Berg}}` maintenance link opened `zugspitze.md` on `pd5`),
 and a footnote box whose table was stripped goes with it. It does not reach the
 runtime image: the Dockerfile copies `backend/dist/`, and `tsc` emits no
 markdown.
+
+**`--images` is a SECOND AXIS on the eval, not a flag on the gate (#1115 P5b).**
+It answers a different question — what the image leg ADDS, not whether this
+checkout retrieves better — so it seeds a different corpus against a different
+fixture with a different runner and its own report family (`axis: 'images'`),
+and `--baseline` refuses a cross-axis pair *before* the corpus-sha check,
+because "measured against a different corpus" sends the reader looking for a
+corpus edit that never happened. It refuses a same-axis pair measured through a
+different **VL** model, width or index endpoint too, and that one needs its own
+check: the gate's model guard reads `report.model`, which is the TEXT embedder
+and reads identically on two runs made with different checkpoints, so a 2B run
+against an 8B one — the runbook's own two recipes, both at 2048 dimensions —
+otherwise passed every guard the harness makes and had its difference printed
+as `VERDICT: credible improvement` about retrieval logic. The comparison is by
+model, width and the *endpoint half* of `imageIndexIdentity`, never the whole
+string: its head is the provider row's uuid, which the seeder re-creates every
+run, so an identity check would refuse every legitimate re-run and teach
+operators to delete the guard. It refuses two **declared** and disagreeing
+`imageEndpointBackend` labels as well, and that one is asymmetric on purpose: an
+absent `EVAL_IMAGE_EMBEDDING_BACKEND` on either side is not compared, because it
+is a label the operator typed rather than something the harness probed. It is **not in CI and cannot be**: the
+`retrieval-eval` job runs `nomic-embed-text`, which is text-only, and no VL
+model is runnable there — so CI keeps testing this axis's plumbing against a
+stub HTTP endpoint (`eval/vl-stub-server.ts`, a real `node:http` server so
+`vl-embedding-client.ts` runs for real) and the numbers come from a run an
+operator starts. Four rules are load-bearing. (1) **Seeded through the REAL
+intake**: bytes into a per-run `mkdtemp` `ATTACHMENTS_DIR` under the layout
+`attachment-store` computes, the stored `body_html` rewritten by
+`buildPageImageUrl` (the exact inverse of the enumerator — the seeder never
+spells a URL), then `embedPage` *and* `embedPageImages`. A seeder that INSERTed
+into `page_image_embeddings` would measure its own fixture: a mis-keyed
+directory and a mis-encoded filename both resolve to the same silent `null` as
+a deleted file. The page id has to exist before the body can name it, because a
+standalone page's Confluence-tree key IS its numeric PK. The image count is
+checked **twice**, and the second check is the one that is not circular: per
+page against the body the seeder itself stored, and once at the end against the
+MANIFEST — an `<img>` lost between the two (a converter or sanitiser change)
+shrinks the per-page expectation in step with the result and every page passes
+at a smaller count, which is 170 of 187 indexed under a report that says
+nothing happened. (2) **Both arms in one process on one seeded database,
+interleaved per query and alternating which arm goes first**, forced with
+`HybridSearchOptions.imageLeg` and never by writing
+`admin_settings.rag_image_leg_enabled` — pairing is McNemar's precondition, a
+global setting would change what every other request on the instance retrieves
+for the duration of the run, a block design (all-off then all-on) would hand
+the rig's whole warm-up cost to whichever arm went first and publish it as the
+leg's latency, and a fixed off-then-on order inside each pair does the same
+thing one query at a time: every query's own first touch is paid by the arm
+that runs first, so `queryCostMs` came out biased toward UNDERSTATING the leg.
+The alternation is deterministic on the label index (re-runs stay comparable)
+and each pair records it — plus **each arm's `startedAt`**, which is what any
+test of the alternation must read: `offFirst` is recomputed from the label
+index and pushed onto the pair from that same expression, so asserting on it
+compares `index % 2 === 0` with itself and stays green against a runner whose
+branch has been replaced by an unconditional off-then-on (verified by
+mutation). Both arms run `recordAnalytics: false`: each question
+is asked twice and only one of the two is a question anybody asked. Everything
+the report publishes per query — vector, rerank, assembly, pin and expansion
+participation — is the **leg-on arm's** count, never a sum over both arms,
+which is a count of arm-queries and prints above 100% against N labels; and
+none of them is hardcoded, because a zero in the assembly field is a state the
+text gate REFUSES to publish. Every stage flag applies to both arms and
+**`--deep-search` is therefore refused on this axis**: expansion reformulates
+per REQUEST (`reformulateQuery`, uncached and unseeded, with no seam for a
+precomputed list), so each arm would be paraphrased separately, two of every
+arm's three fused legs would be different questions, and McNemar would count
+that difference as the leg's. Forcing `imageLeg` is pinned in **both**
+directions — the off arm by the dirty-arm refusal, the on arm by a case that
+disables `rag_image_leg_enabled` and still expects image hits, since an on arm
+that merely inherited the knob would run leg-off against leg-off on any database
+whose knob is false. The seed's `eval_corpus_language` claim is
+`de-images`, **not** `de`: that row exists so `benchmark-query-latency.ts` can
+refuse a question set aimed at the wrong corpus, and 65 image pages are not the
+German text corpus its `--lang de` questions are written against — recorded as
+`de` the two were indistinguishable and the refusal switched off for exactly
+that state. (3) **Its VL
+endpoint is its own pair of variables** (`EVAL_IMAGE_EMBEDDING_BASE_URL` /
+`_MODEL`, plus optional `_DIMENSIONS` for MRL and `_BACKEND` as a recorded
+provenance label) and **never falls back to `EVAL_EMBEDDING_*`** — that
+endpoint would answer with a well-formed vector from a different space, which
+is ADR-021's non-inheriting rule enforced by refusal. Missing variables, and
+`--lang` naming anything but `de`, are refused *before* the disposable-database
+guard, so a typo costs a message rather than a migration run. (4) **Refuse,
+don't report, wherever the two arms would be the same configuration**: an
+intake that skipped an image (the corpus is curated, so a skip is a rig fault),
+a leg contributing hits to under half the queries, or a leg-off arm that came
+back carrying image hits. Each otherwise yields a delta of exactly zero, which
+reads as "the leg does not help" rather than "the leg never ran". The last two
+are checked at **different times**, and that is the rule rather than an
+oversight: the dirty off arm refuses on the FIRST such pair, because a forcing
+flag that does not force is a property of the code path and every remaining
+query would answer the same way, while the participation floor is fractional
+and post-loop, because a bypass is legitimately intermittent. **The two
+throughput figures and the two latency figures each come in a raw and an
+operational form, and neither pair may be collapsed.** The seeder embeds one
+page after another with no pause, so `throughputImagesPerSec` describes the
+ENDPOINT; a `processDirtyPageImages` backfill additionally sleeps
+`INTER_PAGE_DELAY_MS` after every page, which is 13 s on the 65-page corpus, so
+that valve is added back into `backfillThroughputImagesPerSec` — derived from
+the worker's own exported constant, never slept inside the timed loop, which
+would put a constant inside a number about the endpoint. And `queryCostMs.off`
+/ `.on` are unpaired marginals: their difference is not any query's cost, so
+the leg's cost is `queryCostMs.deltaPaired`, percentiles of `on.ms - off.ms`
+over the same query — the runner's whole interleave-and-alternate design exists
+for that figure, and the first cut discarded the per-query pairs before the
+report was written. `imageHit@K`
+is denominated over the 285 labels that NAME an image and `imageNegativeLeak@K`
+over the `image-negative` slice alone, because precision and recall folded into
+one number leave neither readable; the first is also bounded above by page
+recall@10 by construction — an expected image belongs to one of its own label's
+expected pages, so a low value is most often a page the run never retrieved
+rather than a picture the leg got wrong. What the harness cannot separate is
+the leg that ran and lost the fusion from the leg that bypassed itself:
+`image_leg_unavailable` reaches `search_analytics` and both arms run
+`recordAnalytics: false`, so the run's warn lines are the only trace and the
+runbook says to read them before quoting a delta. Recipe, report fields and how to read
+`imageHit@K` against the paired page delta:
+`docs/runbooks/retrieval-eval.md`, "Image axis". **The harness is shipped; the
+measurement is a follow-up on #1115** — local shim numbers are plumbing-grade
+and the production stack decides (ADR-025 D11).
 
 **Query-time latency is measured OUTSIDE `eval/`**, by
 `backend/scripts/benchmark-query-latency.ts` — `runner.ts`'s participation

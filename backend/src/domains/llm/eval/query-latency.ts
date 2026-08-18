@@ -27,6 +27,7 @@
 import pLimit from 'p-limit';
 import { formatQueryForEmbedding } from '../services/query-instruction.js';
 import { assertKnownFlags, flagValue, wantsHelp } from './cli-flags.js';
+import { IMAGE_AXIS_CORPUS_CLAIM } from './images-axis.js';
 import { percentile, round } from './latency-stats.js';
 
 // Re-exported so this module stays the benchmark's single import surface; the
@@ -408,6 +409,20 @@ export function checkCorpusLanguage(
     return `This database records no corpus language — it was seeded before that was recorded. `
       + `--lang ${requested} selects the QUESTION SET only; the corpus is whatever was seeded here. `
       + `Re-seed with scripts/run-retrieval-eval.ts --lang ${requested} to have it certified.`;
+  }
+  // #1115 P5b: a claim that is not a language at all. `--images` seeds the
+  // image corpus, whose 65 pages are not the corpus any --lang question set is
+  // written against — and the generic refusal below would offer
+  // `--lang de-images` as the remedy, which `corpusDirsForLanguage` throws on.
+  if (recorded === IMAGE_AXIS_CORPUS_CLAIM) {
+    throw new Error(
+      `This database holds the #1115 image corpus ("${IMAGE_AXIS_CORPUS_CLAIM}": 65 German Wikipedia `
+      + `articles seeded by run-retrieval-eval.ts --images), not the ${requested} text corpus. --lang `
+      + `chooses the question set and never the corpus, so this arm would time ${requested} questions `
+      + `against pages they were never written for and publish the result as a ${requested} `
+      + `measurement. Re-seed the text corpus first (scripts/run-retrieval-eval.ts --lang ${requested}); `
+      + `"${IMAGE_AXIS_CORPUS_CLAIM}" is not a --lang value.`,
+    );
   }
   if (recorded !== requested) {
     throw new Error(
