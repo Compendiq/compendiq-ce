@@ -274,7 +274,7 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText('Expand page sidebar'));
+    fireEvent.click(screen.getByLabelText('Expand inspector'));
 
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
@@ -339,12 +339,13 @@ describe('ArticleRightPane', () => {
     expect(screen.getByText('docs')).toBeInTheDocument();
   });
 
-  it('renders Version history in the collapsed rail', () => {
+  it('renders Version history in the collapsed rail overflow', async () => {
     useUiStore.setState({ articleSidebarCollapsed: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByTestId('article-history-rail-btn')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('article-actions-rail'));
+    expect(await screen.findByTestId('article-history-rail-btn')).toBeInTheDocument();
     expect(screen.getByLabelText('Version history')).toBeInTheDocument();
   });
 
@@ -407,7 +408,7 @@ describe('ArticleRightPane', () => {
     useAiDockStore.setState({ open: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByLabelText('Expand page sidebar'));
+    fireEvent.click(screen.getByLabelText('Expand inspector'));
 
     expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
     // Untouched: closing the sheet is `AppLayout`'s job and the `.` shortcut's,
@@ -504,24 +505,126 @@ describe('ArticleRightPane', () => {
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    // Sanity-check the rail rendered with its action stack
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
-    expect(screen.getByTestId('article-actions-rail')).toBeInTheDocument();
-
+    fireEvent.click(screen.getByTestId('article-actions-rail'));
     fireEvent.click(screen.getByTestId('article-requality-rail-btn'));
 
     expect(mockRequalityPage).toHaveBeenCalledTimes(1);
     expect(mockRequalityPage.mock.calls[0]![0]).toBe('page-1');
   });
 
-  it('hides rail actions while editing', () => {
+  it('hides the rail overflow while editing, but keeps Assistant and Outline', () => {
     useUiStore.setState({ articleSidebarCollapsed: true });
-    useArticleViewStore.setState({ editing: true });
+    useArticleViewStore.setState({
+      editing: true,
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
+    expect(screen.getByTestId('article-assistant-rail-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('article-outline-rail-btn')).toBeInTheDocument();
     expect(screen.queryByTestId('article-actions-rail')).not.toBeInTheDocument();
+  });
+
+  describe('collapsed rail hybrid (primary + overflow)', () => {
+    function renderRail() {
+      useUiStore.setState({ articleSidebarCollapsed: true });
+      return render(<ArticleRightPane />, { wrapper: createWrapper() });
+    }
+
+    it('is a complementary landmark named Page inspector', () => {
+      renderRail();
+      const rail = screen.getByTestId('article-right-pane-rail');
+      expect(rail.tagName).toBe('ASIDE');
+      expect(rail).toHaveAttribute('aria-label', 'Page inspector');
+    });
+
+    it('keeps Expand, Assistant and Pin first-class and parks maintenance behind More', () => {
+      renderRail();
+
+      expect(screen.getByLabelText('Expand inspector')).toBeInTheDocument();
+      expect(screen.getByTestId('article-assistant-rail-btn')).toBeInTheDocument();
+      expect(screen.getByLabelText('Pin page')).toBeInTheDocument();
+
+      expect(screen.queryByTestId('article-requality-rail-btn')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('article-reembed-rail-btn')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('article-history-rail-btn')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Export PDF')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+
+      expect(screen.getByTestId('article-requality-rail-btn')).toBeInTheDocument();
+      expect(screen.getByTestId('article-reembed-rail-btn')).toBeInTheDocument();
+      expect(screen.getByTestId('article-history-rail-btn')).toBeInTheDocument();
+      expect(screen.getByLabelText('Export PDF')).toBeInTheDocument();
+      expect(screen.getByText('Maintenance & AI')).toBeInTheDocument();
+    });
+
+    it('names Re-embed without RAG jargon', async () => {
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+
+      const reembed = await screen.findByTestId('article-reembed-rail-btn');
+      expect(reembed).toHaveAccessibleName(/re-embed for search/i);
+      expect(reembed).not.toHaveAccessibleName(/RAG/i);
+    });
+
+    it('invokes requality from the overflow, not the open rail', async () => {
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+      fireEvent.click(await screen.findByTestId('article-requality-rail-btn'));
+
+      expect(mockRequalityPage).toHaveBeenCalledTimes(1);
+      expect(mockRequalityPage.mock.calls[0]![0]).toBe('page-1');
+    });
+
+    it('expands onto the Assistant tab from the rail trigger', () => {
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-assistant-rail-btn'));
+
+      expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+      expect(screen.getByTestId('page-context-tab-assistant')).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+    });
+
+    it('marks Pin as pressed and keeps the shared focus ring', () => {
+      renderRail();
+      const pin = screen.getByLabelText('Pin page');
+      expect(pin).toHaveAttribute('aria-pressed', 'false');
+      expect(pin.className).toMatch(/focus-visible:ring-2/);
+    });
+
+    it('paints the rail Assistant mark violet', () => {
+      renderRail();
+      const trigger = screen.getByTestId('article-assistant-rail-btn');
+      const mark = trigger.querySelector('svg');
+      expect(mark).not.toBeNull();
+      expect(mark!.className.baseVal || mark!.getAttribute('class') || '').toContain(
+        'text-status-ai',
+      );
+    });
+
+    it('closes the outline flyout when focus leaves it for another rail control', async () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+      });
+      renderRail();
+
+      const outline = screen.getByTestId('article-outline-rail-btn');
+      const assistant = screen.getByTestId('article-assistant-rail-btn');
+      fireEvent.focus(outline);
+      expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
+
+      fireEvent.blur(outline, { relatedTarget: assistant });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('article-outline-flyout')).not.toBeInTheDocument();
+      });
+    });
   });
 
   it('invokes reembed mutation when Re-embed is clicked', () => {
