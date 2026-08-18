@@ -208,9 +208,8 @@ Markdown stays exactly as specified above, with the same libraries and the same
 macro mapping. An `<img>` still converts to `<img>`, and its *text* contribution
 to embedding input is still whatever alt text it carries.
 
-What changes (ADR-025; the intake shipped in **P2**, retrieval in **P3**, the
-answer path in **P4**)
-is that the attachment's **bytes**
+What changed (ADR-025; the intake in **P2**, retrieval in **P3**, the answer
+path in **P4**, all shipped) is that the attachment's **bytes**
 become a second, parallel index — `page_image_embeddings`, embedded by a
 vision-language model, fused as a third retrieval leg. Five consequences are
 worth stating here, where a reader of the pipeline will look for them:
@@ -2117,8 +2116,24 @@ Multi-replica deployments sit behind a load balancer. `trustProxy` MUST be set t
 ## ADR-025: Multimodal image retrieval — dual space
 
 **Date:** 2026-08-17
-**Status:** Accepted (owner interview, 2026-08-17). **Partially implemented:**
-P0 through P4 have shipped. P0: this ADR, migration `093` (the
+**Status:** Accepted (owner interview, 2026-08-17). **Shipped, P0 through
+P5b** — the feature is complete and measured on a local shim; the production
+run is what settles the checkpoint (see **Measured**, below, and D11).
+
+| PR | Landed | What |
+|---|---|---|
+| P0 | 2026-08-17 | #1350 — this ADR, migration `093`, the core `attachment-store` hoist |
+| P1 | 2026-08-17 | #1356 — the `image_embedding` use case end to end |
+| shim | 2026-08-17 | #1352 — `tools/vl-embedding-shim/` |
+| P2 | 2026-08-17 | #1360 — the intake, the dirty flags, the worker, the Embeddings-tab card |
+| P5a | 2026-08-17 | #1353 — `eval/corpus-de-images/` |
+| P5c | 2026-08-17 | #1358 — `fixture-de-images.json` |
+| P3 | 2026-08-17 | #1362 — the third RRF leg, the image sources, the Retrieval-tab knobs |
+| P4 | 2026-08-18 | #1367 — the answer path, `rag_answer_max_images`, `image_only_context` |
+| P5b | 2026-08-18 | #1366 — the `--images` axis |
+| P6 | 2026-08-18 | this sweep — CLAUDE.md consolidation, this **Measured** section, diagrams and runbooks |
+
+P0: this ADR, migration `093` (the
 `page_image_embeddings` table, `pages.image_embedding_dirty`, the widened
 use-case CHECK) and the core `attachment-store` hoist. P1: the
 `image_embedding` use case end to end — `vl-embedding-client.ts`,
@@ -2137,8 +2152,10 @@ Image retrieval group. **P4: the model sees them** — `retrieved-images.ts`
 parts on the user turn,
 `rag_answer_max_images` and its Retrieval-tab control, the
 `image_only_context` refusal, the two optional audit fields and the
-attached-image component of the answer cache key. Every paragraph below that
-describes unshipped behaviour says which PR owns it.
+attached-image component of the answer cache key. **P5 measured it** — P5a the
+corpus, P5c the labels, P5b the `--images` axis and the run recorded under
+**Measured** below. Every paragraph below names the PR that owns the behaviour
+it describes; none of them is outstanding.
 **Design of record:** `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`
 (issue #1115, epic #1100 Phase 2).
 
@@ -2239,7 +2256,9 @@ different width. It is part of the rebuild identity for the same reason. The
 client re-normalises after truncation, because slicing a unit vector does not
 leave one and vLLM is not documented to re-normalise on every path. Weights are 4.26 GB (2B) and 16.29 GB (8B) in bf16; production is an
 **RTX 6000 96 GB Blackwell**, so **VRAM is not the constraint** and the choice
-is quality: the image eval measures both and the numbers decide. The truncation
+is quality. The image eval measured both, and the recommendation held: the 2B
+was **≥** the 8B on this corpus at a quarter of the intake cost and a fifth of
+the query cost (**Measured** §B). The truncation
 cost is small where it applies — the authors measure ~1.4% MRR@10 going from
 1024 to 512 dims, with int8 quantisation nearly free and binary decidedly not.
 
@@ -2536,8 +2555,8 @@ leg does move is `no_context`** (review r3): it fires on an EMPTY result set,
 so a page the leg made retrievable stands it down and a question that used to
 refuse honestly now answers. That follows from the ruling above rather than
 contradicting it, and `no_context` is never the reason for such a set. **What
-happens NEXT is P4's, and D8a supersedes P3's "an image-only hit set never
-refuses"**: where the picture is attached the turn answers as P3 said, and
+happens next is the answer path's, and D8a superseded P3's "an image-only hit
+set never refuses"**: where the picture is attached the turn answers as P3 said, and
 where it cannot be — and every row is a title-synthesised one — the request
 refuses with `image_only_context` instead. P3's own justification is what
 carries the supersession: thin-evidence-not-absent-evidence held *because* the
@@ -2599,10 +2618,11 @@ MMTEB figures — informational, since D1 does not depend on it. Not in CI: the
 gate has no runnable VL model (`nomic-embed-text` is text-only), so CI tests
 plumbing against a fake embedder.
 
-**Status (2026-08-17): the HARNESS is shipped; the MEASUREMENT is not.** P5a
+**Status: both the harness and the first measurement have landed.** P5a
 vendored the corpus (65 articles, 187 images), P5c the labels (307 queries) and
 **P5b the `--images` axis** — the flag, the seeder, the paired runner, the
-metrics and the report. Four things about the shipped axis are decisions rather
+metrics and the report; the run they produced is in **Measured** below. Four
+things about the shipped axis are decisions rather
 than implementation detail, and each has a wrong-looking obvious alternative.
 The corpus is seeded **through the real intake** (`embedPageImages` over bytes
 on disk under `attachment-store`'s own layout, with the body rewritten by
@@ -2627,10 +2647,87 @@ each arm's three fused legs would be different questions; and **`--baseline`
 refuses a pair whose VL model, width or index endpoint differs**, which the
 existing model guard cannot see — `report.model` is the TEXT embedder and reads
 the same on a 2B run and an 8B one. Recipe and report fields:
-`docs/runbooks/retrieval-eval.md`, "Image axis (`--images`)". **The numbers
-themselves are a follow-up**, measured on the production stack per D11 and
-recorded on #1115 by the operator who runs them; nothing in this ADR should be
-read as a result until they are.
+`docs/runbooks/retrieval-eval.md`, "Image axis (`--images`)".
+
+### Measured
+
+Two runs, both through the D11 shim, both recorded on #1115. **Everything here
+is a local number**, which per D11 and "What only production can prove" below
+means it is evidence about the rig and the ranking logic, not about the
+checkpoint — the production stack decides. Reproduce either with
+`docs/runbooks/retrieval-eval.md`.
+
+#### A. Text-parity gate
+
+2026-08-17, #1102 fixture, 275 pages, 197 queries per language, rerank off,
+deep-search off, local shim. Posted on #1115. This is the run D1 promised as
+*informational*: it asks whether a VL checkpoint could serve the TEXT side, so
+that "dual space" is a measured choice rather than a citation.
+
+| Model (EN, `fts=simple`) | R@1 | R@3 | R@5 | R@10 | MRR |
+|---|---|---|---|---|---|
+| `bge-m3` | .6091 | .7919 | .8477 | .9137 | .7131 |
+| Qwen3-Embedding-4B | .6599 | .9086 | .9289 | .9645 | .7839 |
+| Qwen3-VL-Embedding-2B (mlx 8-bit, 2048) | .6193 | .8579 | .9239 | .9543 | .7460 |
+| Qwen3-VL-Embedding-8B (llama Q6_K, native 4096, unindexed exact scan) | .6802 | .9086 | .9442 | .9746 | .7967 |
+
+| Model (DE, `fts=german`) | R@1 | R@3 | R@5 | R@10 | MRR |
+|---|---|---|---|---|---|
+| `bge-m3` | .5939 | .7919 | .8477 | .8883 | .7052 |
+| Qwen3-Embedding-4B | .6548 | .8731 | .9036 | .9492 | .7702 |
+| Qwen3-VL-Embedding-2B | .6142 | .8122 | .8934 | .9492 | .7313 |
+| Qwen3-VL-Embedding-8B | .6548 | .8832 | .9492 | .9797 | .7793 |
+
+Ordering in both languages: VL-8B ≳ Qwen3-4B > VL-2B > `bge-m3`. Both VL
+checkpoints clear `bge-m3` — the gate — VL-8B decisively (EN R@3 +.117,
+p = 3.4e-5; DE R@5 +.102, p = 1.8e-4) and VL-2B narrowly (EN R@5 +.076,
+p = .0026; DE R@10 +.061, p = .0042). Qwen3-4B → VL-2B is a small **loss**
+(EN/DE R@1 −.041, DE R@3 −.061, p = .029); Qwen3-4B → VL-8B is a **tie** —
+nothing survives Bonferroni ×4. **Consequence: D1 stands.** Text stays on the
+Phase-1 text embedder and the VL model embeds images only.
+
+#### B. Image axis
+
+2026-08-18, `--images`, the #1366 harness, dev `8b07d9e4`. 65 pages / 187
+images / 307 labels (249 de, 58 en; 22 image-negative); text side
+Qwen3-Embedding-4B; `fts=german`; no rerank; leg on/off paired per query in one
+process; McNemar exact. Local shim — the D11 caveat applies.
+
+| | VL-2B (mlx 8-bit, native 2048) | VL-8B (llama Q6_K, MRL 2048) |
+|---|---|---|
+| Page R@1, off→on | .9381→.9381 (6W/6L) | .9414→.9414 (4W/4L) |
+| Page R@3 | .9837→1.000 (5W/0L, p = .0625) | same |
+| Page R@5 | .9870→1.000 (4W/0L, p = .125) | same |
+| Page R@10 | .9967→1.000 (1W/0L) | same |
+| MRR | .9616→.9674 | .9633→.9696 |
+| image-negative R@1 (n = 22) | 1.000→.9091 (0W/2L: `img-00-058`, `img-05-032`) | same two |
+| `imageHit@1/@3/@5` (n = 285) | .8175 / .9719 / .9895 | .8070 / .9649 / .9825 |
+| `imageNegLeak@1/@3/@5` | .0909 / .6818 / .9545 | same |
+| index throughput | 4.26 img/s (187 in 44 s) | 0.98 img/s (190 s) |
+| query cost, paired p50/p95 | +35 / +56 ms | +171 / +211 ms |
+
+**Reading it.** The leg never costs a page at K ≥ 3 — every discordant pair at
+those Ks is a win — and R@1 is a tie. The corpus is text-easy (R@10 .9967 with
+the leg off), so the paired page delta *cannot* reach significance here; the
+leg's contribution shows in `imageHit@K` instead (.82 at 1, .97 at 3). Every
+image R@1 loss is a diagram confused with a neighbouring diagram. The two
+negative losses are exactly the class the negatives exist to expose (2 of 22).
+The 2B is **≥** the 8B at a quarter of the intake cost and a fifth of the query
+cost — but this is **not a clean checkpoint comparison** (Q6_K + MRL 2048
+against 8-bit native), so it is evidence for the default rather than a
+refutation of the 8B.
+
+**Recommendation: the 2B default (D5) stands. The 8B is not justified by these
+numbers. The production run decides.**
+
+Full comment, with the raw reports:
+<https://github.com/Compendiq/compendiq-ce/issues/1115#issuecomment-5322826145>.
+
+**Debts these numbers leave open.** The English `image-negative` slice is four
+labels written by the merger rather than a blind labeller (**#1370**). And
+`IMAGE_PAGE_FANOUT` (4), `minImageLegParticipation` and `rag_answer_max_images`
+are still **by-analogy** defaults: this corpus is too easy to retune them
+against, so they wait on the production run.
 
 ### What only production can prove
 
@@ -2652,14 +2749,22 @@ nobody reads the numbers above as if they were ours:
    roughly 10–25× a short text query at any model size, and the 8B is ~4× the
    2B's weights. Measure the real corpus on the real card before scheduling a
    backfill.
-4. **Whether 2B or 8B is worth it here.** D5 is a recommendation with a decision
-   procedure attached, not a result.
+4. **Whether 2B or 8B is worth it here.** The local run (**Measured** §B) put
+   the 2B at or above the 8B on both quality and cost, which is why D5's
+   recommendation ships — but it ran the 8B quantised (Q6_K) and MRL-truncated
+   against an 8-bit native 2B, on a corpus whose leg-off page recall@10 was
+   already .9967. That is not a checkpoint comparison, and it cannot become one
+   locally. Re-run the axis on the production stack against the real corpus
+   before treating "2B" as settled.
 
 ### Consequences
 
 - **Two indexes, two models, two failure modes.** An operator who never assigns
-  `image_embedding` gets today's behaviour exactly, including no extra latency:
-  the leg does not run and the query is embedded once.
+  `image_embedding` gets today's behaviour exactly: the leg does not run and the
+  query is embedded once. The shut gate is not free — as shipped in P3 every
+  hybrid search pays one cached boolean plus one indexed read of the assignment,
+  which on an unassigned instance answers first and stops there — but that is a
+  round-trip, not a model call (ADR-012's #1115 amendment).
 - **`page_embeddings` stays text-only by construction (D6)**, so #1116's shadow
   swap, `page_avg_embedding`, MMR, rerank and sibling assembly need no
   image-awareness — now or later.

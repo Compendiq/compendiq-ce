@@ -190,6 +190,35 @@ Do not point the eval at LM Studio and the shim in the same run, and do not load
 another model into LM Studio while a run is in flight — the usual rule from the
 eval runbook applies unchanged.
 
+### The `--images` axis takes its OWN variables
+
+The run above measures the shim on the TEXT side (the parity gate). To measure
+the image leg instead, the axis reads a separate pair and **never falls back**
+to `EVAL_EMBEDDING_*` — that endpoint would answer with a well-formed vector
+from a different space, which is ADR-021's non-inheriting rule enforced by
+refusal:
+
+```bash
+export EVAL_IMAGE_EMBEDDING_BASE_URL=http://127.0.0.1:8011/v1
+export EVAL_IMAGE_EMBEDDING_MODEL=$(curl -s localhost:8011/v1/models | jq -r '.data[0].id')
+export EVAL_IMAGE_EMBEDDING_DIMENSIONS=2048     # optional; MRL truncation
+export EVAL_IMAGE_EMBEDDING_BACKEND=mlx         # optional; a recorded provenance label
+
+npx tsx scripts/run-retrieval-eval.ts --images --out /tmp/images-2b.json
+```
+
+`--images` implies `--lang de` and accepts no other language (the corpus is
+German Wikipedia; its English slice is a per-label field, not a flag), and a
+missing variable is refused *before* the disposable-database guard, so a typo
+costs a message rather than a migration run. Omitting `--out` writes
+`retrieval-eval-images.json` — a per-axis default, so an image run cannot
+overwrite a text report. `_BACKEND` is a label you typed rather than something the harness
+probed, which is why `--baseline` compares it only when **both** sides declare
+one — set it, or a 2B run and an 8B one differ in a field no guard reads.
+Recipe, report fields and how to read the result:
+`docs/runbooks/retrieval-eval.md`, "Image axis (`--images`)"; the first
+measurement is under "Measured 2026-08-18" there and in ADR-025 **Measured** §B.
+
 ---
 
 ## What local numbers mean

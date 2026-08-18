@@ -4,21 +4,45 @@ Operating the `image_embedding` leg: which server can serve it, how to start
 one, how to assign and probe it, what fills the index, how retrieval reads it,
 and what changing the model costs.
 
-**Scope as of P4.** The leg is *configurable*, *provable*, *fills*, is *read*
-and now *answers*: assigning it types the `page_image_embeddings` column,
+**Scope: the feature is complete (P0–P5b).** The leg is *configurable*,
+*provable*, *fills*, is *read*, *answers* and has been *measured* (ADR-025
+**Measured** §B; recipe in `docs/runbooks/retrieval-eval.md`, "Image axis").
+Assigning it types the `page_image_embeddings` column,
 builds its index and queues every page (§4); a worker embeds each page's
 images into it (§5); hybrid retrieval fuses a third, image-based leg into page
 ranking (§6), with matched images listed as sources on `/llm/ask`; and the
 chat model is shown up to `rag_answer_max_images` of those pictures when it
 has probed vision-capable (§7).
 
-**What P4 still does NOT do:** it never shows a picture to a chat model that
+**What it still does NOT do:** it never shows a picture to a chat model that
 has not separately probed vision-capable, and it says nothing when it cannot —
 a text-only answer is unqualified, with the images still listed as sources.
-§7 is where that gate and its one refusal are written down.
+§7 is where that gate and its one refusal are written down. There is also no
+SVG rasterisation, no server-side downscale and no OCR (ADR-025 D10), and a
+server upgraded in place behind an unchanged base URL is invisible to every
+signal in the code (§8).
 
 Design of record: ADR-025 in `docs/ARCHITECTURE-DECISIONS.md` and
 `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`.
+
+---
+
+## 0. What this runbook covers
+
+Nine sections, in the order you meet them. Every `§n` reference in this file
+points into this list.
+
+| § | | Read it when |
+|---|---|---|
+| [1](#1-what-the-endpoint-has-to-be) | What the endpoint has to be | Before choosing a server — "OpenAI-compatible" is not enough |
+| [2](#2-serving-it-on-vllm) | Serving it on vLLM | Starting the production endpoint, or setting the MRL truncation width |
+| [3](#3-local-development) | Local development | You want an endpoint on a laptop (details: `vl-embedding-dev.md`) |
+| [4](#4-assigning-and-probing) | Assigning and probing | Wiring the model up in Settings, or a probe refused your assignment |
+| [5](#5-intake--what-gets-embedded-and-what-does-not) | Intake | The index is not filling, or a row count looks lower than the picture count |
+| [6](#6-retrieval--the-image-leg-1115-p3) | Retrieval — the image leg | Deciding whether the leg is worth its latency, or it stopped contributing |
+| [7](#7-answer-path--showing-the-model-the-pictures-1115-p4) | Answer path | Asking why the assistant did not describe a diagram it cited |
+| [8](#8-changing-the-model-or-the-provider) | Changing the model | Swapping checkpoints, moving the endpoint, or upgrading a server in place |
+| [9](#9-verifying-by-hand) | Verifying by hand | Proving the whole chain end to end, or measuring it (`retrieval-eval.md`) |
 
 ---
 

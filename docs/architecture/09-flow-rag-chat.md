@@ -354,6 +354,15 @@ before capping at `rankWidth` — the exact analogue of the
 `truncateAtDistinctPages(… vectorRawLimit(rankWidth) …)` the vector leg does
 one line above.
 
+**`IMAGE_PAGE_FANOUT` (4) is provisional BY ANALOGY, not measured** the way
+`PAGE_FANOUT` is. The density it guesses at is an admin knob here
+(`rag_images_per_page_max`, default 20), so two galleries can fill the 40-row
+narrow window between them at shipped defaults. Retuning it is what the
+`--images` axis is for, and the first run could not do it: the eval corpus's
+leg-off page recall@10 was already .9967, so the fan-out had nothing to move
+(ADR-025 **Measured** §B). It waits on the production run, together with
+`minImageLegParticipation` and `rag_answer_max_images`.
+
 **Visibility is the shared fragment, never a copy.** The kNN joins `pages` and
 applies the same `visiblePagesPredicate` the vector leg does, plus
 `deleted_at IS NULL` and the optional `spaceKey` narrow. An image row carries
@@ -473,7 +482,8 @@ best image first across the returned pages, capped at `MAX_IMAGE_SOURCES` = 4
 per answer and appended after the page and web entries (the model cites
 `[Source N]` from `buildRagContext`, so inserting in the middle would renumber
 sources an answer already referred to). `similarity` is always `null` — see the
-band argument above; `score` is the PAGE's fused value, like every other entry.
+band argument above, and it is also what keeps `averageSourceSimilarity`
+from mixing two scales; `score` is the PAGE's fused value, like every other entry.
 The page and web shapes are untouched, so the frontend's `url`-keyed
 page-vs-web discriminator (#1125) is unchanged and an absent `kind` still means
 "a knowledge-base page". `attachmentUrl` is built by
@@ -1012,8 +1022,9 @@ verdict rides the trace as `rag.confidence` / `rag.confidence_basis`.
 `/llm/ask` logs it on every question (`RAG retrieval confidence`, info,
 with the full meta and the resulting `refusalReason` — `aclEmptied` marks a
 healthy set the EE ACL filter emptied, a visibility fact the refusal
-wording deliberately does not distinguish), and refuses for **one of three
-reasons**, of which only the third consults a knob:
+wording deliberately does not distinguish), and refuses for **one of four
+reasons** — three decided here, of which only the third consults a knob, and a
+fourth decided later:
 
 1. **`semantic_index_unavailable`** — `degradedReason === 'embedding_failed'`:
    the embedding leg THREW (provider outage, model still loading, 5xx,
@@ -1066,7 +1077,7 @@ strict-parsed ('' = unset),
 TTL-cached — the score is measurable (non-null) and below that threshold,
 and no other grounding **materialised**: an assembled sub-page tree,
 fetched external docs, web results that actually came back, or a prior
-**substantive** assistant turn. That stand-down covers **all three**
+**substantive** assistant turn. That stand-down covers **all four**
 reasons, the outage one included: a page tree, attached documents, web
 results and a substantive prior turn are real grounding, and the vector
 index being down takes nothing away from them. Request flags alone never stand the gate
@@ -1453,10 +1464,13 @@ states the condition where an operator will meet it.
 
 ## Image retrieval leg — configuration and probe (#1115, P1)
 
-**Nothing in this section retrieves anything yet.** P1 lands the leg's
-configuration and the proof that a configured endpoint can serve it; the
-page-embedding worker is P2 and the third RRF leg is P3. Design of record:
-ADR-025 and `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`.
+**This section is the leg's CONFIGURATION half** — how an endpoint is assigned,
+proved and typed. What it retrieves is "The image leg (#1115 P3)" above, what
+fills it is `docs/architecture/08-flow-sync.md`, and what the model is shown is
+"Answer path — retrieved images as model input (#1115 P4)" below. Design of
+record: ADR-025 and
+`docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`;
+operations: `docs/runbooks/image-index.md`.
 
 ```
 Settings → AI Models → "Image embedding" row

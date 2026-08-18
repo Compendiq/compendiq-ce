@@ -617,6 +617,10 @@ would invalidate every recorded baseline above at once. The `--images` axis
 `loadImageCorpusManifest` instead, so no run described above this section
 touches it and the English gate's sha is unmoved. The labels are P5c's, by
 independent vision-capable agents on a different model from the implementer.
+It also sits inside the `corpus-<lang>` namespace **without being a language**,
+so `translatedCorpusDirs` throws on any `--lang` whose directory resolves onto
+it: `--lang de-images` otherwise handed the image corpus back as a *translation*
+and died a step later on a missing fixture, which is luck rather than a guard.
 `corpus-de-images.test.ts` fails if the `CORPUS_DIRS` wiring ever happens, and
 is also what keeps the corpus honest:
 page bodies carry `![](images/…)` with an **empty alt and no caption**, because
@@ -957,8 +961,9 @@ leg.
 interesting runs are the ones where they disagree.** The page delta is what
 the feature is *for* — did the picture make the page retrievable — and it is
 what the McNemar verdict is computed on. `imageHit@K` asks whether the leg
-picked the right *picture* on that page, which is what P4's answer path will
-put in front of a reader. A high `imageHit@K` with a flat page delta means the
+picked the right *picture* on that page, which is what the answer path puts in
+front of a reader — as a `kind: 'image'` source always, and as model input when
+the chat model is vision-capable. A high `imageHit@K` with a flat page delta means the
 leg is finding the right image on pages the text legs already had: correct, and
 worth nothing to ranking. A page delta with a low `imageHit@K` means pages are
 moving for image evidence that is not the evidence the labeller named — read
@@ -1017,6 +1022,52 @@ ranked lists by eye, and to catch a wiring mistake before it costs GPU time.
 **The numbers that decide 2B-vs-8B, the MRL width and the default are measured
 on the production stack**, and belong on #1115 as a comment by the operator who
 ran them.
+
+### Measured 2026-08-18
+
+The first run of this axis, so that a later one has something to compare
+against. Local shim, so read the section immediately above before quoting any
+of it.
+
+**Configuration.** `--images` on the #1366 harness at dev `8b07d9e4`. 65 pages /
+187 images / 307 labels (249 de, 58 en; 22 `image-negative`). Text side
+Qwen3-Embedding-4B, `fts=german`, no rerank, no deep search. Both arms paired
+per query in one process, McNemar exact.
+
+| | VL-2B (mlx 8-bit, native 2048) | VL-8B (llama Q6_K, MRL 2048) |
+|---|---|---|
+| Page R@1, off→on | .9381→.9381 (6W/6L) | .9414→.9414 (4W/4L) |
+| Page R@3 | .9837→1.000 (5W/0L, p = .0625) | same |
+| Page R@5 | .9870→1.000 (4W/0L, p = .125) | same |
+| Page R@10 | .9967→1.000 (1W/0L) | same |
+| MRR | .9616→.9674 | .9633→.9696 |
+| image-negative R@1 (n = 22) | 1.000→.9091 (0W/2L: `img-00-058`, `img-05-032`) | same two |
+| `imageHit@1/@3/@5` (n = 285) | .8175 / .9719 / .9895 | .8070 / .9649 / .9825 |
+| `imageNegLeak@1/@3/@5` | .0909 / .6818 / .9545 | same |
+| index throughput | 4.26 img/s (187 in 44 s) | 0.98 img/s (190 s) |
+| query cost, paired p50/p95 | +35 / +56 ms | +171 / +211 ms |
+
+**How to read it, using the rules above.** The leg never costs a page at
+K ≥ 3 — every discordant pair at those Ks is a win — and R@1 is a tie. The
+corpus is text-easy (leg-off R@10 is .9967), so the paired page delta *cannot*
+reach significance here whatever the leg does; this is exactly the "high
+`imageHit@K`, flat page delta" case in the reading notes above, and it is the
+correct outcome rather than a null result. Every image R@1 loss is a diagram
+confused with a neighbouring diagram. The two negative losses are the class the
+`image-negative` labels exist to expose (2 of 22) — read them against the
+headline before calling the leg free. The 2B is **≥** the 8B at a quarter of
+the intake cost and a fifth of the query cost, but the two arms were not
+matched (Q6_K + MRL 2048 against 8-bit native), so this supports the 2B default
+rather than refuting the 8B.
+
+Recorded in ADR-025 under **Measured** §B, which is the citable copy. Full
+comment with the raw reports:
+<https://github.com/Compendiq/compendiq-ce/issues/1115#issuecomment-5322826145>.
+
+**What it did NOT settle.** `IMAGE_PAGE_FANOUT`, `minImageLegParticipation` and
+`rag_answer_max_images` are still by-analogy defaults — this corpus is too easy
+to retune them against. And the English `image-negative` slice is four labels
+written by the merger rather than a blind labeller (**#1370**).
 
 ## The `vocabulary-gap` slice (#1112)
 
