@@ -233,11 +233,14 @@ two legs' ranking rules. Its visibility predicate is
 leg uses; an image row carries no ACL of its own.
 
 **`retrieved-images.ts` (P4)** turns the hits the leg attached to the returned
-pages into `image_url` parts on the user turn: `pickRetrievedImages` gates on
-the stored #1154 vision verdict being exactly `true`, selects round-robin
-across pages with a byte-identity dedupe, re-runs `validateImage` unforked and
-stops at a derived base64 budget. **It is a service because of the P0 guard,
-not despite it.** `resolveAttachmentBytes` applies no ACL and
+pages into `image_url` parts on the user turn: `pickRetrievedImages` selects
+round-robin across pages with a byte-identity dedupe, re-runs `validateImage`
+unforked and stops at a derived base64 budget. **The vision gate is the
+CALLER's, not this module's** — `routes/llm/llm-ask.ts` reads the stored #1154
+verdict and calls the pick only on an exact `true` (09's "Four gates, cheapest
+first"). So the pick loads bytes unconditionally, and nothing that has not
+already applied that gate may reach it. **It is a service because of the P0
+guard, not despite it.** `resolveAttachmentBytes` applies no ACL and
 `attachment-store.test.ts` fails if any file under `src/routes` names it, so
 the read is legal only where retrieval has already applied
 `visiblePagesPredicate` and the EE per-page filter — and that argument is what

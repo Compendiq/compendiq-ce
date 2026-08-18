@@ -136,3 +136,66 @@ describe('the measured image-axis record is in both places', () => {
     expect(adr025).not.toContain('**The numbers\nthemselves are a follow-up**');
   });
 });
+
+describe('the docs put the P4 vision gate in the caller, not in the pick', () => {
+  /**
+   * Review r1 (major). The P6 sweep's new `03` paragraph said
+   * "`pickRetrievedImages` gates on the stored #1154 vision verdict". It does
+   * not, and never did: the function takes `(pages, { max, byteBudget })` and
+   * contains no capability check at all. The gate is one level up, in
+   * `routes/llm/llm-ask.ts` — `chatVision === true ? await
+   * pickRetrievedImages(...) : <empty pick>`.
+   *
+   * That paragraph is the one that argues where the module boundary sits, so a
+   * reader who believes the pick self-gates can add a second caller and send
+   * bytes to a text-only model. `09` and the ADR both stated it correctly, so
+   * this was one divergent copy — exactly the drift a close-out sweep exists to
+   * remove, and exactly the drift the next paragraph-adder reintroduces.
+   *
+   * Two halves, so it fails from either side.
+   */
+  const RECORD_FILES = [
+    'CLAUDE.md',
+    'docs/ARCHITECTURE-DECISIONS.md',
+    'docs/architecture/03-backend-domains.md',
+    'docs/architecture/09-flow-rag-chat.md',
+    'docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md',
+  ];
+
+  /**
+   * The shape the wrong claim shipped in, and nothing broader: the function
+   * name as the SUBJECT of a gating verb whose object is the vision verdict.
+   * Deliberately narrow, like `attachment-store.test.ts`'s `RETIRED_CLAIM` —
+   * "the vision-gated image parts" sitting beside `retrieved-images.ts` in the
+   * ADR's P4 list is correct prose and must keep passing.
+   */
+  const MISATTRIBUTED_GATE =
+    /pickRetrievedImages`?\s+(?:only\s+)?(?:gates?|checks?|reads?|requires?|verifies|refuses)\b[^.;]*\bvision\b/i;
+
+  it('the code half: the gate lives in the route, not in the service', () => {
+    const service = read('backend', 'src', 'domains', 'llm', 'services', 'retrieved-images.ts');
+    const route = read('backend', 'src', 'routes', 'llm', 'llm-ask.ts');
+    expect(
+      service,
+      'the pick now reads the capability itself — if that is deliberate, the ' +
+        'records below must move the gate with it',
+    ).not.toContain('getVisionCapability');
+    expect(route).toContain('getVisionCapability');
+  });
+
+  it.each(RECORD_FILES)('%s does not make the pick its own vision gate', (rel) => {
+    const text = read(...rel.split('/'));
+    // Sentence-scoped, so an unrelated "vision" elsewhere in a 2,000-line file
+    // cannot trip it.
+    const offenders = text
+      .split(/(?<=[.;])\s+/)
+      .filter((sentence) => MISATTRIBUTED_GATE.test(sentence))
+      .map((sentence) => sentence.trim().slice(0, 160));
+    expect(
+      offenders,
+      `${rel}: pickRetrievedImages(pages, { max, byteBudget }) applies no ` +
+        'capability check. The gate is llm-ask.ts — see 09, "Four gates, ' +
+        'cheapest first".',
+    ).toEqual([]);
+  });
+});
