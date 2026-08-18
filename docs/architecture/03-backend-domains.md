@@ -80,6 +80,8 @@ flowchart LR
     know --> conf
 
     rF --> core
+    rF --> llm
+    rF --> conf
     rC --> core
     rC --> conf
     rL --> core
@@ -97,11 +99,43 @@ flowchart LR
 - `confluence` may use `llm` (for sync-time embedding).
 - `llm` is self-contained (core only).
 - `knowledge` is the integrator and may use all three other domains.
-- Each `routes/*` group may import `core` plus the domains it exposes;
-  `routes/knowledge` is the top-level aggregator and may import anything.
+- `routes/foundation` may import `core` + `llm` + `confluence` — widened by
+  #1347 (below) for the provider health check, list-models, the LLM
+  concurrency/queue-depth admin knobs, the confidence-basis resolver
+  (`admin.ts`, `health.ts`, `setup.ts`), and the Confluence connection
+  test/sync overview (`settings.ts`). It does **not** import `knowledge`.
+- `routes/confluence` may import `core` + `confluence`.
+- `routes/llm` may import `core` + `llm` + `confluence` (sub-page context,
+  `getClientForUser`) — this allowance predates #1347.
+- `routes/knowledge` is the top-level aggregator and may import anything.
 
 Adding a new import across these lines without updating the ESLint config is
 a build failure — update the config *and* this diagram together.
+
+**The rule above was not enforced for any route file until #1347.**
+`boundaries/elements` patterned each route element as `src/routes/<x>/*`
+(`mode: 'folder'`), which classifies a SUBFOLDER of that directory, not a
+file sitting directly in it — and every route file lives directly in
+`src/routes/<x>/`, so no route file ever matched an element and
+`boundaries/dependencies` silently never fired for any of them. Domain
+folders (`src/core`, `src/domains/*`) have no direct files today, which is
+why *their* rules were already firing correctly. The fix is bare folder
+patterns (`src/core`, `src/routes/foundation`, …), which `mode: 'folder'`
+classifies whether the file is direct or nested, plus
+`boundaries/no-unknown-files: error` so a file that maps to no element fails
+lint outright instead of silently opting out of every rule (this caught
+`src/telemetry-register.ts`, now mapped into the `app` element).
+`backend/src/eslint-boundaries.test.ts` lints synthetic probe source through
+ESLint's Node API to pin both directions — a disallowed cross-boundary
+import fails, an allowed one does not — so a future config regression is a
+red test rather than a silent no-op. Enforcing the rule as originally
+written reported 7 real violations, all `routes/foundation` reaching into
+`domains/llm`/`domains/confluence`; the allow-list above reflects the
+widening decided in #1347 rather than re-homing those call sites (rejected
+as an L-size change to route registration, out of scope for a lint fix).
+`boundaries/no-unknown` (which flags an unresolvable *dependency target*,
+not an unmapped source file) stays off — `@compendiq/contracts` resolves
+outside `src/` and would be pure noise.
 
 ## Image input (#1154)
 
