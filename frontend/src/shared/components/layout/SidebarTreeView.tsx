@@ -26,6 +26,7 @@ import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
 import { useClickOutside } from '../../hooks/use-click-outside';
 import { useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
+import { PageIcon } from '../page-icon/PageIcon';
 import type { PageTreeItem } from '../../hooks/use-pages';
 import type { TreeNode } from './sidebar-types';
 import { useTreeRovingFocus } from './sidebar-tree-keyboard';
@@ -327,6 +328,9 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         {/* #767: pin the weight explicitly (conditional, never both classes)
             so titles can't inherit or synthesize a heavier weight while the
             variable font loads or the row sits on a composited layer. */}
+        {node.page.icon && (
+          <PageIcon icon={node.page.icon} pageId={node.page.id} size="row" className="mr-1.5" />
+        )}
         <span className={cn('min-w-0 flex-1 truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
           {node.page.title}
         </span>

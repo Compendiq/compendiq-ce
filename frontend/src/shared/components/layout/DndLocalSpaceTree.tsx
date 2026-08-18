@@ -8,6 +8,7 @@ import {
 import { DragDropProvider, type DragEndEvent } from '@dnd-kit/react';
 import { useSortable, isSortable } from '@dnd-kit/react/sortable';
 import { cn } from '../../lib/cn';
+import { PageIcon } from '../page-icon/PageIcon';
 import type { TreeNode } from './sidebar-types';
 
 export interface DndLocalSpaceTreeProps {
@@ -238,7 +239,10 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
         {/* #767: pin the weight explicitly (conditional, never both classes)
             so titles can't inherit or synthesize a heavier weight while the
             variable font loads or the row sits on a composited layer. */}
-        <span className={cn('truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
+        {node.page.icon && (
+          <PageIcon icon={node.page.icon} pageId={node.page.id} size="row" className="mr-1.5" />
+        )}
+        <span className={cn('min-w-0 flex-1 truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
           {node.page.title}
         </span>
       </div>

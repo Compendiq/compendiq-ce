@@ -5,12 +5,15 @@ import { Columns2 } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import type { NodeViewProps } from '@tiptap/react';
+import type { PageIcon } from '@compendiq/contracts';
+import { PageIcon as PageIconMark } from '../page-icon/PageIcon';
 
 interface ChildPage {
   id: number;
   confluenceId: string | null;
   title: string;
   spaceKey: string | null;
+  icon?: PageIcon | null;
   children?: ChildPage[];
 }
 
@@ -97,10 +100,14 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
   );
 
   function renderTitle(child: ChildPage) {
-    const titleClass = 'nm-focus-ring min-w-0 break-words';
+    const titleClass = 'nm-focus-ring inline-flex min-w-0 items-start gap-1.5 break-words';
+    const mark = child.icon ? (
+      <PageIconMark icon={child.icon} pageId={child.id} size="row" className="mt-0.5" />
+    ) : null;
     if (isEditable) {
       return (
         <span className={cn(titleClass, 'text-foreground')} title={child.title}>
+          {mark}
           {child.title}
         </span>
       );
@@ -111,6 +118,7 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
         className={cn(titleClass, 'children-directory-link')}
         title={child.title}
       >
+        {mark}
         {child.title}
       </Link>
     );

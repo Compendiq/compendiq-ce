@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
+import { toPageIcon } from '../../core/services/page-icon.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { z } from 'zod';
 
@@ -26,6 +27,8 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       author: string | null;
       last_modified_at: Date | null;
       body_text: string | null;
+      icon_kind: string | null;
+      icon_value: string | null;
     }>(
       // Truncate the excerpt in SQL, not in JS. The row count is unbounded
       // since #1130, and `body_text` is a TOASTed full-article column — a user
@@ -34,7 +37,8 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       // Matches `search.ts`, which does the same for the same reason.
       `SELECT pp.page_id, pp.pin_order, pp.pinned_at,
               cp.space_key, cp.title, cp.author, cp.last_modified_at,
-              substring(cp.body_text, 1, 200) AS body_text
+              substring(cp.body_text, 1, 200) AS body_text,
+              cp.icon_kind, cp.icon_value
        FROM pinned_pages pp
        JOIN pages cp ON cp.id = pp.page_id
        WHERE pp.user_id = $1
@@ -53,6 +57,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
         excerpt: row.body_text ? row.body_text.slice(0, 200) : '',
         pinnedAt: row.pinned_at,
         pinOrder: row.pin_order,
+        icon: toPageIcon(row.icon_kind, row.icon_value),
       })),
       total: result.rows.length,
     };
