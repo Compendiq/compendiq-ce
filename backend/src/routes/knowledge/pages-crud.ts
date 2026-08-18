@@ -23,7 +23,7 @@ import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
-import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { getUserAccessibleSpaces, isSystemAdmin } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema } from '@compendiq/contracts';
@@ -128,6 +128,33 @@ const ALLOWED_IMAGE_MIMES = new Set([
 const ImportImageSchema = z.object({
   url: z.string().url().max(2048),
 });
+
+type ImageUploadPage = {
+  id: number;
+  source: string;
+  confluence_id: string | null;
+  created_by_user_id: string | null;
+  space_key: string | null;
+  visibility: string | null;
+};
+
+/**
+ * Who may attach an image to a page. Matches PUT /pages/:id and
+ * pages-icon assertCanEdit, plus the system-admin bypass that
+ * userCanAccessPage already grants for read — otherwise an admin
+ * who can open the editor is refused at paste.
+ */
+async function userCanUploadPageImage(userId: string, page: ImageUploadPage): Promise<boolean> {
+  if (await isSystemAdmin(userId)) return true;
+  if (page.source === 'standalone') {
+    return page.created_by_user_id === userId || page.visibility === 'shared';
+  }
+  if (page.space_key) {
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    return accessibleSpaces.includes(page.space_key);
+  }
+  return false;
+}
 
 /** Magic-byte signatures for each allowed import MIME. The leading bytes must
  *  match the declared `Content-Type` from the upstream — otherwise a malicious
@@ -2743,11 +2770,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Verify the page exists and the user has access
     // Support both integer PK (standalone pages) and confluence_id (Confluence pages)
     const isNumericId = /^\d+$/.test(id);
-    const pageResult = await query<{
-      id: number; source: string; confluence_id: string | null;
-      created_by_user_id: string | null; space_key: string | null;
-    }>(
-      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key
+    const pageResult = await query<ImageUploadPage>(
+      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key, p.visibility
        FROM pages p
        WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
@@ -2764,30 +2788,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const page = pageResult.rows[0]!;
 
-    // Access control: standalone pages require ownership; Confluence pages require space access
-    if (page.source === 'standalone') {
-      if (page.created_by_user_id !== userId) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to upload images to this page',
-        });
-      }
-    } else if (page.space_key) {
-      const accessibleSpaces = await getUserAccessibleSpaces(userId);
-      if (!accessibleSpaces.includes(page.space_key)) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to upload images to this page',
-        });
-      }
-    } else {
-      // No space_key and not standalone — deny access
+    if (!(await userCanUploadPageImage(userId, page))) {
       return reply.status(403).send({
         statusCode: 403,
         error: 'Forbidden',
-        message: 'Access denied',
+        message: page.source === 'standalone' || page.space_key
+          ? 'Not authorized to upload images to this page'
+          : 'Access denied',
       });
     }
 
@@ -2861,11 +2868,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Verify the page exists and the user has access. Mirrors the inline
     // upload route's logic exactly so the two stay aligned.
     const isNumericId = /^\d+$/.test(id);
-    const pageResult = await query<{
-      id: number; source: string; confluence_id: string | null;
-      created_by_user_id: string | null; space_key: string | null;
-    }>(
-      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key
+    const pageResult = await query<ImageUploadPage>(
+      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key, p.visibility
        FROM pages p
        WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
@@ -2879,28 +2883,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       });
     }
     const page = pageResult.rows[0]!;
-    if (page.source === 'standalone') {
-      if (page.created_by_user_id !== userId) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to import images to this page',
-        });
-      }
-    } else if (page.space_key) {
-      const accessibleSpaces = await getUserAccessibleSpaces(userId);
-      if (!accessibleSpaces.includes(page.space_key)) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to import images to this page',
-        });
-      }
-    } else {
+    if (!(await userCanUploadPageImage(userId, page))) {
       return reply.status(403).send({
         statusCode: 403,
         error: 'Forbidden',
-        message: 'Access denied',
+        message: page.source === 'standalone' || page.space_key
+          ? 'Not authorized to import images to this page'
+          : 'Access denied',
       });
     }
 
