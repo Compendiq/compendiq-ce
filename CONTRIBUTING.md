@@ -146,8 +146,8 @@ and issue #1347 for the full detail:
 - **routes/confluence** -- can import core + confluence
 - **routes/llm** -- can import core + llm + confluence (sub-page context,
   `getClientForUser` -- this allowance predates #1347)
-- **routes/knowledge** -- can import core + own domain (knowledge routes can
-  access all domains)
+- **routes/knowledge** -- can import core + llm + confluence + knowledge (the
+  top-level aggregator -- it can import any domain)
 
 The rule was silently inert for every route file until #1347 fixed the
 element patterns (they matched a subfolder of each `routes/<domain>/`
