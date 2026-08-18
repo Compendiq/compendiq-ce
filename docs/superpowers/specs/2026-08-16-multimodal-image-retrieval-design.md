@@ -289,11 +289,11 @@ prod can prove).
 |----|---------|------------|
 | P0 ✅ | This spec + ADR-025 + amendments; migration `093` (table, dirty flag, CHECK widening; **no HNSW**); core `attachment-store.ts` hoist + `resolveAttachmentBytes`; diagrams 03 / 06 / README. **No contracts change, no behaviour change.** | owner approval |
 | P1 ✅ | `vl-embedding-client.ts` + resolver + probe + `ensureImageEmbeddingColumn` + assignment UI/routes + the `image_embedding` contracts enum + the `vl` exclusion in the text-side instruction matcher. Landed with two hoists the plan did not anticipate: `columnTypeFor` and `withLockRetry` into `core/db`. | P0 |
-| P2 | `image-embedding-service.ts` + dirty-flag wiring (sync, uploads, local attachments) + worker + Embeddings-tab card + re-scan | P1 |
+| P2 ✅ | `image-embedding-service.ts` + dirty-flag wiring (sync, uploads, local attachments) + worker + Embeddings-tab card + re-scan | P1 |
 | P3 ✅ | Retrieval leg (`image-leg-search.ts`) + third-leg fusion + `image_leg_unavailable` + wire shape (`sources.kind`) + Retrieval-tab knobs + frontend thumbnails. **Rulings §5 left open**: an image-only row is excluded from the confidence sample entirely (both directions — see ADR-012's #1115 amendment), the synthesised row stays as-is and carries no `chunkIndex`, and deep search runs the leg on the ORIGINAL leg only. | P1, P2 |
 | P4 ✅ | Answer path (retrieved parts, degrade rule, caps, audit) + `rag_answer_max_images`. **Rulings closed**: selection is round-robin across the returned pages, not a flat best-first sort, with byte-identical pictures attached once; the base64 ceiling is a CONSTANT derived from `MAX_IMAGE_BYTES` (~6.7 MB), never a knob and never a literal; and the new `image_only_context` refusal **supersedes P3's interim pin** that an image-only hit set never refuses — where no picture reached the model, the prompt is a list of titles. | P3 |
-| P5 | Eval: ~~Wikipedia corpus fetch script + vendored corpus~~ (✅ #1353) + independent labels + seeder + `--images` axis + ~~shim~~ (✅ #1352, `tools/vl-embedding-shim/` + `docs/runbooks/vl-embedding-dev.md`) + runbook; measurement report | P2 (corpus/labels can start earlier) |
-| P6 | Diagram/ADR/CLAUDE.md sweep, #1100/#1115 close-out | all |
+| P5 ✅ | Eval: ~~Wikipedia corpus fetch script + vendored corpus~~ (✅ #1353) + ~~independent labels~~ (✅ #1358, 307) + ~~seeder + `--images` axis~~ (✅ #1366) + ~~shim~~ (✅ #1352, `tools/vl-embedding-shim/` + `docs/runbooks/vl-embedding-dev.md`) + runbook; measurement report. **Measured 2026-08-18** and recorded in ADR-025 **Measured** §B — the leg never costs a page at K ≥ 3, `imageHit@1` .82, 2B ≥ 8B; D5's default holds and the production run still decides (D11). | P2 (corpus/labels can start earlier) |
+| P6 ✅ | Diagram/ADR/CLAUDE.md sweep, #1100/#1115 close-out. CLAUDE.md's seven #1115 paragraphs (~11,200 words) became two blocks (~1,650); ADR-025 gained its **Measured** section; §11 below is closed. | all |
 
 **P0's scope fence, as ruled.** No contracts change in P0: the
 `image_embedding` enum member ships with P1's client/resolver/probe/UI so that
@@ -302,17 +302,27 @@ no assignment row can appear without backend support behind it, and the
 
 ## 11. Questions asked, and the answers (2026-08-17 owner interview)
 
-1. **Which VL checkpoint, in which format?** The 8B as
+**All four are closed.** Each carries the ruling it closed on; nothing in this
+section is outstanding.
+
+1. **Which VL checkpoint, in which format?** ✅ **Answered.** The 8B as
    `VesNFF/Qwen3-VL-Embedding-8B-GGUF` (Q6_K + mmproj) behind `llama-server`,
-   and the 2B as an MLX build behind the `mlx-embeddings` shim. Both are
-   measured; neither is assumed.
-2. **Wikipedia licence in an MIT repo?** Acceptable, with the attribution files
-   and licence filter in §8. The corpus is committed rather than fetched, so
-   the eval stays reproducible if Commons files move.
-3. **Default checkpoint?** Recommend 2B @ 2048 native; the image eval decides
-   whether 8B @ MRL ≤ 4000 is worth 4× the weights. Production has an
-   RTX 6000 96 GB Blackwell, so this is a quality question, not a VRAM one.
-4. **Retention?** Out of scope → **#1349**.
+   and the 2B as an MLX build behind the shim's `mlx` backend. Both *were*
+   measured, on both axes (ADR-025 **Measured** §A and §B); neither was
+   assumed.
+2. **Wikipedia licence in an MIT repo?** ✅ **Answered.** Acceptable, with the
+   attribution files and licence filter in §8. The corpus is committed rather
+   than fetched, so the eval stays reproducible if Commons files move. Shipped
+   as `eval/corpus-de-images/` + `LICENSE-ATTRIBUTION.md`, guarded by
+   `corpus-de-images.test.ts`.
+3. **Default checkpoint?** ✅ **Answered: 2B @ 2048 native, and it holds.** The
+   image axis put the 2B at or above the 8B on this corpus at a quarter of the
+   intake cost and a fifth of the query cost (ADR-025 **Measured** §B), so D5's
+   recommendation ships as the default. The 8B is **not** ruled out — that run
+   compared a Q6_K, MRL-truncated 8B against an 8-bit native 2B on a corpus
+   whose leg-off page recall@10 was already .9967 — and the production run
+   decides (D11).
+4. **Retention?** ✅ **Answered.** Out of scope → **#1349**.
 
 ## 12. Owner rulings, 2026-08-17 (interview) — recorded verbatim
 

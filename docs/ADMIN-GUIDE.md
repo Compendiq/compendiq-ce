@@ -405,7 +405,9 @@ many of the matched pictures are attached to the chat request. Turning the leg
 off leaves the index being built; unassigning the `image_embedding` use case
 (Settings → AI Models → LLM providers) turns off both retrieval halves. None of
 them makes the leg run when no vision-language model is assigned or the index
-is empty. Operations: `docs/runbooks/image-index.md`.
+is empty. **The whole feature — assigning the model, watching the index fill,
+what a text-only chat model does — is "Image retrieval" below**; operations are
+`docs/runbooks/image-index.md`.
 
 Two things about the answer knob specifically. **0 is a legal value here** —
 unlike `rag_images_per_page_max`, whose floor is 1 because a zero intake cap
@@ -697,6 +699,113 @@ retrieval confidence` log line carries `healthCaveat`
 standing down and why. **The right values are deployment-specific** —
 start from your logged confidence values, not from a number someone else
 used.
+
+### Image retrieval (`Settings → AI Models`)
+
+Pictures in your pages — architecture diagrams, screenshots, flowcharts — are
+embedded by a **separate, vision-language model** into a **separate index**
+(`page_image_embeddings`), and searched as a third retrieval leg beside the
+semantic and keyword ones. Text retrieval is untouched by all of it: two
+indexes, two models, two failure modes (ADR-025).
+
+**Everything here is off until you assign the model.** An instance that never
+does gets exactly today's behaviour, with no extra latency. Operations —
+serving, probing, re-scanning, changing the model — are
+`docs/runbooks/image-index.md`.
+
+The feature spans three sub-tabs, one per question you would actually ask.
+
+#### 1. Can it run? — `LLM providers` → the **Image embedding** row
+
+`image_embedding` is a use case like `chat` or `embedding`, with one
+difference: **it never inherits the default provider** (the `rerank` rule,
+ADR-021). Leaving it unassigned is how you turn the whole feature off.
+
+- **Assign** a provider + model and press **Save**. The save **probes first and
+  refuses on failure** — it embeds a known image *and* a text and requires the
+  two to come back at the same width. A wrong model here would fill an index
+  with well-formed, meaningless vectors, which is worse than a refusal.
+- **Truncate to N dimensions (MRL)** — sent as the `dimensions` parameter on
+  every image-embedding request. Leave it empty for the model's native width.
+  The 8B needs **4000 or fewer** to stay indexable, and the server must accept
+  the parameter (vLLM: `--hf-overrides '{"is_matryoshka": true}'`). A server
+  that ignores it is refused rather than silently recorded at the wrong width.
+- **Last probe** shows what the model answered: `2048-dim · halfvec HNSW`,
+  `vector HNSW`, `no index (sequential scan)`, or **Not established**. Above
+  4000 dimensions pgvector cannot build an HNSW index at all, and the row says
+  so with the remedy beside it.
+- **Re-check** re-runs the probe. It is **not merely diagnostic**: on a width or
+  endpoint change it empties the index and re-queues every page, and the toast
+  says so. Use it after upgrading a model server *in place* behind the same URL
+  — that is the one change no signal in the app can see.
+
+#### 2. Is it running? — `Embeddings` → the **Image index** card
+
+- **Status line** — the live index's width, tier and model, or
+  `Not assigned — assign Image embedding under Settings → AI Models → LLM
+  providers`.
+- **Images embedded** and **Pages pending** (`dirty/total`).
+- **Last run** — pages, `embedded`, `reused`, `removed`, plus **Skipped:** by
+  reason (`missing`, `unsupported`, `oversized`, `too large`, `capped`,
+  `external`). This is where a row count lower than your picture count gets
+  explained: images are **skipped and counted, never resized**, and SVG and
+  draw.io files are never embedded at all.
+- **Process now** drains the current backlog. **Re-scan all** marks every page
+  and re-reads its images; already-embedded images are **reused by content
+  hash**, so a re-scan is far cheaper than it sounds.
+- Three states are amber because you have to act on them: a run with **failed
+  images** (those pages stay queued and retry), pages that **could not be
+  written**, and an index built for a **different model or endpoint** than the
+  one now assigned — that last one names **Re-check** as the fix.
+- **Changing the image model empties and rebuilds this index; text search is
+  unaffected.** There is no shadow-swap path here and deliberately so: the leg
+  simply goes dark while the index refills.
+
+#### 3. How should it behave? — `Retrieval` → the **Image retrieval** group
+
+| Control | Key | Default | What it does |
+| --- | --- | --- | --- |
+| **Image leg** | `rag_image_leg_enabled` | on | Fuses the image index into page ranking. Costs **one extra embedding call per question**. Off leaves the index still being built. |
+| **Images per page** | `rag_images_per_page_max` | 20 | How many of a page's images are indexed. A cost bound: each one past it is a request. |
+| **Index external images** | `rag_image_index_external` | on | Whether pictures Confluence pulled from an external URL are indexed. |
+| **Images shown to the model** | `rag_answer_max_images` | 2 | How many matched pictures are attached to the chat request. **0 is legal** and is the honest off switch. |
+
+When `image_embedding` is unassigned the group shows a muted note and **keeps
+its controls enabled** — they are settings, not actions, and configuring the leg
+before assigning the model is a reasonable order to work in.
+
+#### What a text-only chat model does
+
+**A chat model that has not probed vision-capable never receives images,
+whatever *Images shown to the model* says.** The answer is then produced from
+text alone and is **unqualified**: nothing on the answer, in the sources or in
+the screen-reader announcement says a picture was withheld. That is deliberate
+(ADR-025 D8) — on such a deployment the notice would appear on *every* answer,
+which is how a notice stops being read — and the fact is stated exactly once,
+under that control.
+
+The matched pictures still appear as sources with their thumbnails, so a reader
+can open them. To find out whether your model can see images, look at the chat
+row under **Settings → AI Models → LLM providers**: it shows the verdict, and
+**Re-check** there is how a wrong one is corrected.
+
+#### What the refusal looks like to a user
+
+There is one refusal specific to this feature. When **every** page retrieved is
+an image-only page — one whose text is too thin to index, so its only context is
+a synthesised title — **and** not one of its pictures could be shown to the
+model, the request runs no completion. The prompt would otherwise be a list of
+titles and a question.
+
+The user sees an ordinary assistant turn saying the question was not answered,
+carrying a `Not answered` chip and the pictures beneath it under *Closest
+matches — not used*. It is neutral, not red and not amber: the request did not
+fail, and the matches may well be the right ones. One real text row anywhere in
+the results is enough to stand it down, so this does not fire on ordinary
+answers whose fifth source happens to be a picture.
+
+If you see it often, the remedy is a vision-capable chat model — or turn the
+image leg off, if the pages it is reaching are not ones you want answered from.
 
 ### Sync conflict resolution (Enterprise, v0.4+)
 

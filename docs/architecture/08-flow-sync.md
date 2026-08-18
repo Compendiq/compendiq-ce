@@ -692,7 +692,14 @@ every page carrying a diagram on every sync. `fetchAndCachePageImage` — the
 per-request lazy fetch on `/api/attachments/:pageId/:filename` — raises it on
 the same rule, because it is the recovery path for a `missing` skip: a skip is
 terminal (the page still clears its flag), so nothing else would re-queue the
-page once the bytes finally land.
+page once the bytes finally land. Three more go through the same module —
+`writeAttachmentCache`, `putLocalAttachment` (which is why the module is in
+`core`: `core` may not import a domain, and one of its callers lives there) and
+`cleanPageAttachments`. A CLEANUP raising the flag looks backwards and is not:
+it **re-queues the page for a re-read and never shrinks the index**, because the
+reconcile's keep-set is the BODY's references and deleting cached files never
+touches `body_html` — so every image comes back as a `missing` skip whose row is
+deliberately kept.
 
 **Page-body writes raise it too, and not through that module.** Each sets the
 column inline in an UPDATE (or INSERT) it already owns, in two flavours. The
