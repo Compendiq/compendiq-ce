@@ -569,8 +569,8 @@ requests per new conversation. A one-shot timer would race the model's latency.
    copied**, so the persisted shape satisfies `SourceSchema.pageId: positive()`. This spec
    predates #1115 P3, which landed on `dev` after it was written: the allow-list also
    carries `kind: 'image'` + `attachmentUrl` for an image source — both, or, when the URL is
-   empty or outside the attachment routes (`ATTACHMENT_URL_PATTERN` in contracts, the
-   producer's one runtime gate), the entry is dropped entirely because its page is already
+   empty or outside the attachment routes (`ATTACHMENT_URL_PATTERN` in contracts, the pattern
+   both runtime gates import), the entry is dropped entirely because its page is already
    carried by the page-shaped entry for the same result — so a reopened answer renders the
    same thumbnails the live one did; `similarity` on that shape stays `null` regardless (the
    cross-modal band, ADR-025 §8); the frontend's `isImageSource` imports the same pattern, so
@@ -611,7 +611,7 @@ requests per new conversation. A one-shot timer would race the model's latency.
    (`llm-audit-hook.ts:100`), `try/catch` inside, `logger.warn` on failure, never awaited,
    never delaying the frame. The cache-hit path is the one insert path with a good answer in
    hand and is not skipped.
-   Inside: `resolveUsecase('chat')` (no sixth ADR-021 use case — the #1112 argument), inputs
+   Inside: `resolveUsecase('chat')` (no eighth ADR-021 use case — the #1112 argument), inputs
    through `sanitizeLlmInput` (question capped at 1,000 chars, answer at 1,500; the answer is
    omitted when `refused`), `chat(config, model, messages, { maxTokens: 32, timeoutMs:
    20_000 })` — the `reformulateQuery` template (`multi-query-search.ts:303-333`), with a

@@ -1927,8 +1927,9 @@ ADR-021 is NOT amended with a new use case by #1361. Conversation persistence
 keyset-paged list, `PATCH` rename, the history replay budget) is storage and
 routing, not an outbound model call. The one model call #1361 adds — the
 auto-title (PR 3) — resolves `resolveUsecase('chat')` deliberately, the #1112
-argument: a one-line title is a rewrite any chat model can do, and a seventh
-assignment would be a knob every operator must set before titles work at all.
+argument: a one-line title is a rewrite any chat model can do, and an eighth
+assignment (after `rerank`, #1104, and `image_embedding`, #1115) would be a knob
+every operator must set before titles work at all.
 It runs after the answer's terminal frame, never in front of it, sanitises its
 inputs, constrains its output, and soft-fails to the word-boundary-trimmed
 question. Design of record: `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`.

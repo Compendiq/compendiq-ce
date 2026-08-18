@@ -5,16 +5,6 @@ import { streamChat, type ChatMessage, type ChatContentPart } from '../../domain
 import type { PersistedSource } from '@compendiq/contracts';
 import { toPersistedSources } from '../../domains/llm/services/persisted-source.js';
 import { initialTitleFromQuestion } from '../../domains/llm/services/conversation-title.js';
-
-/**
- * A persisted conversation turn. `refused` marks a #1105 confidence refusal:
- * it is persistence/UI metadata, STRIPPED before messages are sent to the
- * model (a refusal is not model context — replaying "I am not answering"
- * invites imitation) and excluded from the gate's history exemption (a
- * refusal turn grounds nothing).
- */
-type StoredChatMessage = ChatMessage & { refused?: boolean; sources?: PersistedSource[] };
-
 import { contentToText } from '../../domains/llm/services/prompts.js';
 import { hybridSearch, buildRagContext, type RetrievalMeta } from '../../domains/llm/services/rag-service.js';
 // #1112: deep search's wrapper around hybridSearch. Its own module, not a
@@ -59,6 +49,15 @@ import {
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
+
+/**
+ * A persisted conversation turn. `refused` marks a #1105 confidence refusal:
+ * it is persistence/UI metadata, STRIPPED before messages are sent to the
+ * model (a refusal is not model context — replaying "I am not answering"
+ * invites imitation) and excluded from the gate's history exemption (a
+ * refusal turn grounds nothing).
+ */
+type StoredChatMessage = ChatMessage & { refused?: boolean; sources?: PersistedSource[] };
 
 /**
  * Why the ask path declined to answer. Emitted as `refusalReason` on the

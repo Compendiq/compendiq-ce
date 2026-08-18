@@ -51,8 +51,8 @@ export function toPersistedSources(sources: WireSource[]): PersistedSource[] {
     const isImage = s.kind === 'image' && typeof s.attachmentUrl === 'string' && ATTACHMENT_URL_PATTERN.test(s.attachmentUrl);
     if (s.kind === 'image' && !isImage) {
       logger.warn(
-        { pageId: s.pageId, pageTitle: s.pageTitle },
-        'Dropping an image source whose attachmentUrl is empty or outside the attachment routes while persisting the conversation turn — its page, if any, is kept via the page-shaped entry for the same search result',
+        { pageId: s.pageId, pageTitle: s.pageTitle, attachmentUrl: s.attachmentUrl ?? null },
+        'Dropping an image source whose attachmentUrl is missing, empty or outside the attachment routes while persisting the conversation turn — its page, if any, is kept via the page-shaped entry for the same search result',
       );
       return [];
     }
