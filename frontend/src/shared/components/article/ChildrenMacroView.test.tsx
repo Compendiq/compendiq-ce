@@ -102,12 +102,16 @@ describe('ChildrenMacroView', () => {
     expect(screen.getByTestId('children-macro-view').getAttribute('data-columns')).toBe('1');
     expect(screen.queryByTestId('children-columns-toggle')).toBeNull();
 
-    // Notion-style page links: body colour + underline, flush with article text.
-    // The teal prose-link colour and the old padded row (`px-2`) are the two
-    // things that made this read as chrome rather than document.
+    // Notion-style page links: body colour + underline. The teal prose-link
+    // colour and the old padded row (`px-2`) are the two things that made
+    // this read as chrome rather than document. Hover uses the same accent
+    // fill as PagesPage / the page tree — a background change, not a border.
     expect(links[0].classList.contains('children-directory-link')).toBe(true);
     expect(links[0].className).not.toMatch(/text-primary/);
     expect(links[0].className).not.toMatch(/(?:^|\s)px-2(?:\s|$)/);
+    expect(links[0].className).toMatch(/hover:bg-accent/);
+    expect(links[0].className).toMatch(/rounded-md/);
+    expect(links[0].className).toMatch(/transition-colors/);
     expect(list?.className).not.toMatch(/(?:^|\s)pl-3(?:\s|$)/);
   });
 
@@ -226,7 +230,11 @@ describe('ChildrenMacroView', () => {
       'Compendiq only',
     );
     expect(screen.queryByRole('link')).toBeNull();
-    expect(screen.getByText('Getting Started').tagName).toBe('SPAN');
+    const title = screen.getByText('Getting Started');
+    expect(title.tagName).toBe('SPAN');
+    // Edit-mode titles are not navigable, so they must not wear the
+    // pages-list hover fill — that would advertise a click that is not there.
+    expect(title.className).not.toMatch(/hover:bg-accent/);
     toggle.click();
     expect(updateAttributes).toHaveBeenCalledWith({ columns: '2' });
   });
@@ -346,9 +354,12 @@ describe('ChildrenMacroView link treatment', () => {
     );
     const start = css.indexOf('.prose .confluence-children-view a,');
     expect(start).toBeGreaterThan(-1);
-    const block = css.slice(start, start + 700);
+    const block = css.slice(start, start + 1100);
     expect(block).not.toMatch(/--color-primary/);
     expect(css).toMatch(/\.confluence-children-view ul ul\s*\{\s*padding-inline-start:\s*0;/);
     expect(css).toMatch(/\.confluence-children-view li\s*\{\s*padding-inline-start:\s*0;/);
+    // Prose's `transition: color, text-decoration` would snap the row fill
+    // unless this override includes background-color.
+    expect(block).toMatch(/background-color\s+0\.15s/);
   });
 });
