@@ -5,6 +5,7 @@ import { Pin, PinOff, Clock, User, ChevronDown, ChevronUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
 import { COLLAPSED_PIN_COUNT, entranceDelay, staggerPosition } from './pinned-articles-layout';
+import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 
 export function PinnedArticlesSection() {
   const navigate = useNavigate();
@@ -119,7 +120,10 @@ export function PinnedArticlesSection() {
               </button>
 
               {/* Title */}
-              <p className="line-clamp-2 pr-6 font-medium">{item.title}</p>
+              <p className="flex items-start gap-1.5 pr-6 font-medium">
+                {item.icon && <PageIcon icon={item.icon} pageId={item.id} size="row" className="mt-0.5" />}
+                <span className="line-clamp-2">{item.title}</span>
+              </p>
 
               {/* Metadata row */}
               <div className="flex items-center gap-3 text-xs text-muted-foreground">

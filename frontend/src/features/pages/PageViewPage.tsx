@@ -13,7 +13,13 @@ import {
   usePinPage,
   useUnpinPage,
   useDeletePage,
+  useUpdatePageIcon,
+  useUploadPageIcon,
 } from '../../shared/hooks/use-pages';
+import { PageIcon } from '../../shared/components/page-icon/PageIcon';
+import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
+import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
+import type { SettablePageIcon } from '@compendiq/contracts';
 import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
@@ -129,6 +135,9 @@ export function PageViewPage() {
   const { data: settings } = useSettings();
   const updateMutation = useUpdatePage();
   const labelsMutation = useUpdatePageLabels();
+  const iconMutation = useUpdatePageIcon();
+  const uploadIconMutation = useUploadPageIcon();
+  const [iconUploadError, setIconUploadError] = useState<string | null>(null);
   const { data: filterOptions } = usePageFilterOptions();
   const { data: pinnedData } = usePinnedPages();
   const pinMutation = usePinPage();
@@ -285,6 +294,45 @@ export function PageViewPage() {
   const handleCloseLightbox = useCallback(() => {
     setLightboxSrc(null);
   }, []);
+
+  const handleSelectIcon = useCallback(
+    (icon: SettablePageIcon) => {
+      if (!id) return;
+      setIconUploadError(null);
+      iconMutation.mutate({ id, icon });
+    },
+    [id, iconMutation],
+  );
+
+  const handleRemoveIcon = useCallback(() => {
+    if (!id) return;
+    setIconUploadError(null);
+    iconMutation.mutate({ id, icon: null });
+  }, [id, iconMutation]);
+
+  const handleUploadIcon = useCallback(
+    async (file: File) => {
+      if (!id) return;
+      setIconUploadError(null);
+      try {
+        const { blob } = await downscaleImage(file);
+        const dataUri = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(new Error("Couldn't read that image."));
+          reader.readAsDataURL(blob);
+        });
+        await uploadIconMutation.mutateAsync({ id, dataUri });
+      } catch (err) {
+        setIconUploadError(
+          err instanceof ImageDecodeError || err instanceof Error
+            ? err.message
+            : "Couldn't upload that image.",
+        );
+      }
+    },
+    [id, uploadIconMutation],
+  );
 
   const handleStartEditing = useCallback(() => {
     if (!page || !id) return;
@@ -832,15 +880,26 @@ export function PageViewPage() {
       <div>
         {!editing && (
           <HeaderHost fallbackClassName="mb-1 min-w-0 truncate text-[15px] font-semibold sm:text-lg">
-            <span className="min-w-0 truncate text-[15px] font-semibold text-foreground sm:text-lg">
-              {page.title}
+            <span className="flex min-w-0 items-center gap-2 text-[15px] font-semibold text-foreground sm:text-lg">
+              <PageIcon icon={page.icon} pageId={page.id} size="row" />
+              <span className="min-w-0 truncate">{page.title}</span>
             </span>
           </HeaderHost>
         )}
 
         {editing ? (
           <>
-            <div className="mx-auto max-w-[1200px] px-5 pt-4 sm:px-10">
+            <div className="group mx-auto flex max-w-[1200px] items-start gap-3 px-5 pt-4 sm:px-10">
+                <PageTitleIcon
+                  icon={page.icon}
+                  pageId={page.id}
+                  editable
+                  onSelect={handleSelectIcon}
+                  onUpload={handleUploadIcon}
+                  onRemove={handleRemoveIcon}
+                  uploading={uploadIconMutation.isPending}
+                  uploadError={iconUploadError}
+                />
                 {/* Same column and top inset as the read-mode <h1>. Type ramp
                     is copied verbatim so the title does not resize or re-wrap
                     when you toggle Edit. `p-0` kills the UA textarea padding
@@ -848,7 +907,7 @@ export function PageViewPage() {
                 <AutoGrowTextarea
                   value={editTitle}
                   onValueChange={setEditTitle}
-                  className="mb-4 p-0 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground placeholder:text-muted-foreground/40 sm:text-4xl"
+                  className="mb-4 min-w-0 flex-1 p-0 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground placeholder:text-muted-foreground/40 sm:text-4xl"
                   placeholder="Page title…"
                   aria-label="Page title"
                   data-testid="edit-title-input"
@@ -867,12 +926,24 @@ export function PageViewPage() {
           /* Empty page — no content yet */
           <div
             ref={contentRef}
-            className="mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
+            className="group mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
             data-testid="article-content-shell"
           >
-            <h1 className="mb-6 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
-              {page.title}
-            </h1>
+            <div className="mb-6 flex items-start gap-3">
+              <PageTitleIcon
+                icon={page.icon}
+                pageId={page.id}
+                editable
+                onSelect={handleSelectIcon}
+                onUpload={handleUploadIcon}
+                onRemove={handleRemoveIcon}
+                uploading={uploadIconMutation.isPending}
+                uploadError={iconUploadError}
+              />
+              <h1 className="min-w-0 flex-1 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
+                {page.title}
+              </h1>
+            </div>
             <div className="flex flex-col items-center gap-4 py-12 text-center">
               <FileText size={48} className="text-muted-foreground/30" />
               <p className="text-muted-foreground">This page has no content yet.</p>
@@ -890,12 +961,24 @@ export function PageViewPage() {
           /* Reading view — constrained to 1200px reading column */
           <div
             ref={contentRef}
-            className="mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
+            className="group mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
             data-testid="article-content-shell"
           >
-            <h1 className="mb-4 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
-              {page.title}
-            </h1>
+            <div className="mb-4 flex items-start gap-3">
+              <PageTitleIcon
+                icon={page.icon}
+                pageId={page.id}
+                editable
+                onSelect={handleSelectIcon}
+                onUpload={handleUploadIcon}
+                onRemove={handleRemoveIcon}
+                uploading={uploadIconMutation.isPending}
+                uploadError={iconUploadError}
+              />
+              <h1 className="min-w-0 flex-1 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
+                {page.title}
+              </h1>
+            </div>
 
             {page.summaryStatus && (
               <ArticleSummary

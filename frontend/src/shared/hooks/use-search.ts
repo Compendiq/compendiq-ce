@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import type { PageIcon } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
 
 interface SearchResultItem {
   id: string | number;
   title: string;
   spaceKey: string | null;
+  icon?: PageIcon | null;
   /** Short excerpt / snippet from the matching content */
   excerpt: string;
   /**
@@ -37,6 +39,7 @@ interface SearchApiResponse {
     rank?: number;
     score?: number;
     similarity?: number | null;
+    icon?: PageIcon | null;
   }>;
   total: number;
   page: number;
@@ -64,6 +67,7 @@ function mapItems(response: SearchApiResponse): SearchResultItem[] {
     // Absent (keyword mode never sends it) stays null rather than collapsing to
     // 0 — a page nobody measured must render no figure, not "0%".
     similarity: item.similarity ?? null,
+    icon: item.icon ?? null,
   }));
 }
 

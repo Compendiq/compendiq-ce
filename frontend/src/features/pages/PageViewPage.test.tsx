@@ -275,6 +275,8 @@ vi.mock('../../shared/hooks/use-pages', () => ({
   }),
   useUpdatePage: () => ({ mutateAsync: mockUpdatePage, isPending: false }),
   useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdatePageIcon: () => ({ mutate: vi.fn(), isPending: false }),
+  useUploadPageIcon: () => ({ mutateAsync: vi.fn(), isPending: false }),
   usePageFilterOptions: () => ({ data: { authors: [], labels: [] } }),
   usePinnedPages: () => ({ data: { items: [] } }),
   usePinPage: () => ({ mutate: mockPinMutate, isPending: false }),
@@ -398,6 +400,19 @@ describe('PageViewPage', () => {
     const titles = screen.getAllByText('Engineering Handbook');
     expect(titles.length).toBeGreaterThanOrEqual(2);
     expect(screen.getByRole('heading', { level: 1, name: 'Engineering Handbook' })).toBeInTheDocument();
+  });
+
+  it('offers Add icon on the title when the page has no mark', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    expect(screen.getByRole('button', { name: 'Add icon' })).toBeInTheDocument();
+  });
+
+  it('places the page mark to the left of the document title', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const heading = screen.getByRole('heading', { level: 1, name: 'Engineering Handbook' });
+    const add = screen.getByRole('button', { name: 'Add icon' });
+    expect(heading.parentElement?.className).toMatch(/(?:^|\s)flex(?:\s|$)/);
+    expect(add.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('gives the document title the same reduced top inset in read and edit', () => {

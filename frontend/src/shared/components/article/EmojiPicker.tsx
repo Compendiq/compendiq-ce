@@ -50,9 +50,11 @@ const CATEGORY_ICONS: Record<
 
 export function EmojiPickerContent({
   editor,
+  onPick,
   onClose,
 }: {
-  editor: EditorType;
+  editor?: EditorType;
+  onPick?: (emoji: string) => void;
   onClose: () => void;
 }) {
   const [searchQuery, setSearchQuery] = useState('');
@@ -81,7 +83,8 @@ export function EmojiPickerContent({
   }, [searchQuery, selectedCategory]);
 
   const handleSelectEmoji = (emojiChar: string) => {
-    editor.chain().focus().insertContent(emojiChar).run();
+    if (onPick) onPick(emojiChar);
+    else editor?.chain().focus().insertContent(emojiChar).run();
     onClose();
   };
 

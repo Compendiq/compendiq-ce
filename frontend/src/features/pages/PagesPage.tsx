@@ -5,7 +5,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
-import { PageSourceEnum, type PageSource } from '@compendiq/contracts';
+import { PageSourceEnum, type PageSource, type PageIcon as PageIconValue } from '@compendiq/contracts';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
@@ -28,6 +28,7 @@ import { cn } from '../../shared/lib/cn';
 import { neutralChipClass } from '../../shared/components/badges/neutral-chip';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
+import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
@@ -102,6 +103,7 @@ interface PageListItemProps {
     summaryStatus?: SummaryStatus;
     source: 'confluence' | 'standalone';
     visibility?: string;
+    icon?: PageIconValue | null;
   };
   index: number;
   onNavigate: (id: string) => void;
@@ -179,7 +181,10 @@ const PageListItem = memo(function PageListItem({
             <div className="flex items-center gap-2 max-sm:flex-wrap max-sm:gap-y-1">
               {/* 13px medium. At 16px the title read as a card heading, which
                   is what made forty rows look like forty cards. */}
-              <p className="truncate text-[13px] font-medium">{pageItem.title}</p>
+              <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
+                {pageItem.icon && <PageIcon icon={pageItem.icon} pageId={pageItem.id} size="row" />}
+                <span className="min-w-0 truncate">{pageItem.title}</span>
+              </p>
               {/* Source badge. Neutral, like Private below: a source is a
                   category, not a state, so it may not borrow the status
                   greens/indigos — the label is the differentiator. The recipe
@@ -1342,7 +1347,10 @@ export function PagesPage() {
                         data-testid={`article-hover-${item.id}`}
                       >
                         <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
-                          <p className="truncate text-[13px] font-medium text-foreground">{item.title}</p>
+                          <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
+                            {item.icon && <PageIcon icon={item.icon} pageId={item.id} size="row" />}
+                            <span className="min-w-0 truncate">{item.title}</span>
+                          </p>
                           {/* `contain:inline-size` zeroes the excerpt's
                               contribution to the block's intrinsic width.
                               Without it the excerpt's unwrapped length — not
