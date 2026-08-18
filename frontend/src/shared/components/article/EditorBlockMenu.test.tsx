@@ -564,25 +564,13 @@ describe('EditorBlockMenu — atomic and macro blocks', () => {
     expect(screen.getByTestId('block-menu-delete')).toBeTruthy();
   });
 
-  it('toggles UI Expand default-open from the handle menu', async () => {
-    const { editor } = await mountMenu(
+  it('treats a Refined UI Expand as the same Expand module', async () => {
+    await mountMenu(
       '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
     );
-    const toggle = screen.getByTestId('block-menu-default-open');
-    expect(toggle).toHaveAttribute('aria-pressed', 'false');
-    expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
-    await act(async () => {
-      fireEvent.click(toggle);
-    });
-    expect(editor.getHTML()).toMatch(/<details[^>]*\sopen\b/);
-    expect(screen.getByTestId('block-menu-default-open')).toHaveAttribute('aria-pressed', 'true');
-  });
-
-  it('does not offer default-open on a native expand', async () => {
-    await mountMenu(
-      '<details data-macro-name="expand"><summary>T</summary><p>B</p></details>',
-    );
+    expect(screen.getByTestId('block-menu-label')).toHaveTextContent('Expand');
     expect(screen.queryByTestId('block-menu-default-open')).toBeNull();
+    expect(screen.getByTestId('block-menu-delete')).toBeTruthy();
   });
 });
 

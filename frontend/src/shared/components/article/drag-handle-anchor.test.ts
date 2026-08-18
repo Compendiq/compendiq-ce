@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { DRAG_HANDLE_INSET_PX, isListItemName, dragHandleReferenceRect } from './drag-handle-anchor';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { DRAG_HANDLE_INSET_PX, DRAG_HANDLE_GUTTER, isListItemName, dragHandleReferenceRect } from './drag-handle-anchor';
 
 describe('drag-handle-anchor', () => {
   it('treats list items as the nodes that need the list-left remount', () => {
@@ -37,5 +39,14 @@ describe('drag-handle-anchor', () => {
       { node: { type: { name: 'listItem' } } as never, pos: 4 },
     );
     expect(rect!.getBoundingClientRect().left).toBe(24 - DRAG_HANDLE_INSET_PX);
+  });
+
+  it('pulls the editable surface left so the grip stays inside .tiptap', () => {
+    const css = readFileSync(resolve(__dirname, '../../../index.css'), 'utf-8');
+    const start = css.indexOf(".tiptap[contenteditable='true']");
+    expect(start).toBeGreaterThan(-1);
+    const block = css.slice(start, css.indexOf('}', start));
+    expect(block).toContain(`padding-left: ${DRAG_HANDLE_GUTTER}`);
+    expect(block).toContain(`margin-left: -${DRAG_HANDLE_GUTTER}`);
   });
 });

@@ -6,6 +6,7 @@ import StarterKit from '@tiptap/starter-kit';
 import { Image } from '@tiptap/extension-image';
 import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex, ExtendedTable, BlockShortcutsExtension } from './article-extensions';
+import { CompendiqTableView } from './table-layout-view';
 
 // Helper to extract parseHTML rules from a TipTap extension config
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -50,6 +51,15 @@ describe('article-extensions', () => {
       expect(output).toContain('data-macro-name="ui-expand"');
       expect(output).toContain('data-macro-params=');
       expect(output).toContain('breakout-mode');
+      editor.destroy();
+    });
+
+    it('paints the live toggle class without serializing it', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.view.dom.querySelector('details')).toHaveClass('cq-expand');
+      expect(editor.getHTML()).not.toContain('cq-expand');
       editor.destroy();
     });
 
@@ -1209,6 +1219,13 @@ describe('Block in blocks: rich block nesting inside column containers', () => {
     expect(innerSection?.content?.length).toBe(2);
 
     editor.destroy();
+  });
+});
+
+describe('ExtendedTable options', () => {
+  it('keeps required TableOptions and uses CompendiqTableView', () => {
+    expect(ExtendedTable.options.HTMLAttributes).toEqual(expect.any(Object));
+    expect(ExtendedTable.options.View).toBe(CompendiqTableView);
   });
 });
 

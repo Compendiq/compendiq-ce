@@ -11,6 +11,7 @@ import { ChildrenMacroView } from './ChildrenMacroView';
 import { FigureIndexView } from './FigureIndexView';
 import { TableIndexView } from './TableIndexView';
 import { createTableSelectionPerimeterPlugin } from './table-cell-selection';
+import { CompendiqTableView } from './table-layout-view';
 import { blockLabel } from './block-menu-nodes';
 
 const SUMMARY_INTERACTIVE_DESCENDANT =
@@ -61,10 +62,7 @@ function applyExpandIdentity(el: HTMLElement, attrs: { macroName?: unknown; macr
   } else {
     el.removeAttribute('data-macro-params');
   }
-  el.setAttribute(
-    'data-expand-kind',
-    attrs.macroName === 'ui-expand' ? 'ui-expand' : 'expand',
-  );
+  el.classList.add('cq-expand');
 }
 
 /**
@@ -166,26 +164,28 @@ export const Details = Node.create({
       new Plugin({
         key: new PluginKey('detailsToggle'),
         props: {
-          handleClickOn(view, _pos, _node, _nodePos, event) {
-            // ProseMirror swallows the native <details> toggle. Flip the DOM
-            // only — never the node — so a title click cannot persist
-            // `expanded` on UI Expand. Body stays reachable after the author
-            // opens the section; NodeView keeps that session open across
-            // transactions.
-            const target = event.target;
-            if (!(target instanceof HTMLElement)) return false;
-            const summary = target.closest('summary');
-            const details = summary?.parentElement;
-            if (!summary || details?.tagName !== 'DETAILS' || !view.dom.contains(details)) {
-              return false;
-            }
-            const interactiveDescendant = target.closest(SUMMARY_INTERACTIVE_DESCENDANT);
-            if (interactiveDescendant && summary.contains(interactiveDescendant)) {
-              return false;
-            }
-            details.toggleAttribute('open', !details.hasAttribute('open'));
-            event.preventDefault();
-            return true;
+          // Toggle on `click`, not `handleClickOn`. ProseMirror fires
+          // handleClickOn from mouseup; the UA then runs the summary's
+          // default on click and toggles again — first click is a no-op,
+          // second is a double-click that skips handleClickOn and only
+          // the native open lands.
+          handleDOMEvents: {
+            click(view, event) {
+              const target = event.target;
+              if (!(target instanceof HTMLElement)) return false;
+              const summary = target.closest('summary');
+              const details = summary?.parentElement;
+              if (!summary || details?.tagName !== 'DETAILS' || !view.dom.contains(details)) {
+                return false;
+              }
+              const interactiveDescendant = target.closest(SUMMARY_INTERACTIVE_DESCENDANT);
+              if (interactiveDescendant && summary.contains(interactiveDescendant)) {
+                return false;
+              }
+              details.toggleAttribute('open', !details.hasAttribute('open'));
+              event.preventDefault();
+              return true;
+            },
           },
         },
       }),
@@ -1384,6 +1384,15 @@ export const TableIndex = Node.create({
  * Supports `data-layout="default"` (prose width) and `data-layout="full-width"` (expand to page width).
  */
 export const ExtendedTable = Table.extend({
+  addOptions() {
+    // parent is always defined on Table.extend; optional-call spread would
+    // make required TableOptions fields (HTMLAttributes) optional and fail tsc.
+    return {
+      ...this.parent!(),
+      View: CompendiqTableView,
+    };
+  },
+
   addAttributes() {
     return {
       ...this.parent?.(),
@@ -1521,7 +1530,9 @@ export function insertPanel(editor: Editor, panelType: PanelType) {
 }
 
 /**
- * Inserts an expand section with an empty summary and empty body, caret in the title.
+ * Inserts the shared Expand module (empty title and body, caret in the title).
+ * Authoring always creates native `expand`. Synced `ui-expand` still loads as
+ * the same module and keeps its Confluence identity on save (#1211).
  */
 export function insertExpandSection(editor: Editor, macroName: 'expand' | 'ui-expand' = 'expand') {
   insertBlockWithCaret(editor, 'details', {

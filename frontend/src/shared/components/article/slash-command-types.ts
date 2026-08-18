@@ -5,7 +5,7 @@ import {
   List, ListOrdered, CheckSquare, Quote, Minus,
   Table as TableIcon, CodeSquare, Workflow, Code,
   Info, TriangleAlert, StickyNote, Lightbulb,
-  ChevronsUpDown, SquareChevronDown, Columns2, Columns3,
+  ChevronsUpDown, Columns2, Columns3,
   ListTree, Badge, Paperclip, Images, Table2,
 } from 'lucide-react';
 import { insertPanel, insertExpandSection } from './article-extensions';
@@ -265,25 +265,13 @@ export const SLASH_COMMAND_ITEMS: readonly SlashCommandItem[] = [
   {
     id: 'expand',
     title: 'Expand section',
-    description: 'Starts closed. Native Confluence Expand.',
+    description: 'Hide a section until the reader opens it.',
     category: 'Layout & containers',
-    keywords: ['expand', 'details', 'collapse', 'hidden', 'toggle'],
+    keywords: ['expand', 'details', 'collapse', 'hidden', 'toggle', 'ui-expand', 'refined', 'ui expand'],
     Icon: ChevronsUpDown,
     run: (editor, range) => {
       editor.chain().focus().deleteRange(range).run();
-      insertExpandSection(editor, 'expand');
-    },
-  },
-  {
-    id: 'ui-expand',
-    title: 'UI Expand',
-    description: 'Starts closed. Refined UI Expand — set Open by default on the block handle.',
-    category: 'Layout & containers',
-    keywords: ['ui-expand', 'refined', 'ui expand'],
-    Icon: SquareChevronDown,
-    run: (editor, range) => {
-      editor.chain().focus().deleteRange(range).run();
-      insertExpandSection(editor, 'ui-expand');
+      insertExpandSection(editor);
     },
   },
   {

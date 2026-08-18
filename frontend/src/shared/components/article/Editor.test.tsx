@@ -518,17 +518,11 @@ describe('Editor', () => {
       expect(editor.getHTML()).toContain('<summary>Outer</summary>');
     });
 
-    it('inserts a Refined UI Expand with its macro identity intact', async () => {
-      const editor = await renderEditorWithToolbar();
-
-      chooseInsertItem('UI Expand');
-
-      const html = editor.getHTML();
-      expect(html).toContain('data-macro-name="ui-expand"');
-      expect(html).toContain('<summary></summary>');
-      expect(html).not.toContain('Click here to expand');
-      expect(html).not.toContain('Content here...');
-      expect(editor.state.selection.$from.parent.type.name).toBe('detailsSummary');
+    it('does not offer a second insert for Refined UI Expand', async () => {
+      await renderEditorWithToolbar();
+      openInsertMenu();
+      expect(screen.queryByRole('menuitem', { name: 'UI Expand' })).toBeNull();
+      expect(screen.getByRole('menuitem', { name: 'Expand section' })).toBeInTheDocument();
     });
   });
 
