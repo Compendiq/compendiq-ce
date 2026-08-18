@@ -34,23 +34,33 @@ export interface WireSource {
  * The URL must be a NON-EMPTY string, not merely a string: `''` passes
  * `typeof === 'string'` on both this guard and the frontend's `isImageSource`
  * (review r1 #5), so an empty-string URL would take the image branch — and
- * its image `aria-label` — with no picture in it, which is the duplicate-page
- * failure this function exists to remove, reached through an unusable URL
- * instead of a missing one. Unreachable today (`buildPageImageUrl` never
- * returns `''`), so a source that trips it is a future regression, not a
- * skip this deployment already relies on — hence the warn rather than a
- * silent drop.
+ * its image `aria-label` — with no picture in it.
+ *
+ * An image source (`kind === 'image'`) whose URL fails that check is DROPPED
+ * ENTIRELY (review r2 #1) — the whole entry, not merely its `kind` and
+ * `attachmentUrl`. `llm-ask.ts` builds one page-shaped entry per search
+ * result (from `searchResults`) and, separately, one image-shaped entry per
+ * image hit on that same result (from `searchResults[].imageHits`), so a
+ * stripped-but-kept image entry would carry the SAME `pageId` as the page
+ * entry already sitting in the array and reopen as a second, identical page
+ * chip — the "worst of both" the architect's decision names, reached through
+ * an unusable URL instead of a missing one. Dropping it loses nothing: that
+ * page is already represented by its own page-shaped entry. Unreachable
+ * today (`buildPageImageUrl` never returns `''`), so a source that trips
+ * this is a future regression, not a skip this deployment already relies on
+ * — hence the warn.
  */
 export function toPersistedSources(sources: WireSource[]): PersistedSource[] {
-  return sources.map((s) => {
+  return sources.flatMap((s) => {
     const isImage = s.kind === 'image' && typeof s.attachmentUrl === 'string' && s.attachmentUrl.length > 0;
     if (s.kind === 'image' && !isImage) {
       logger.warn(
         { pageId: s.pageId, pageTitle: s.pageTitle },
-        'Dropping an image source with no usable attachmentUrl while persisting the conversation turn',
+        'Dropping an image source with no usable attachmentUrl while persisting the conversation turn — its page, if any, is kept via the page-shaped entry for the same search result',
       );
+      return [];
     }
-    return {
+    return [{
       pageTitle: s.pageTitle,
       ...(s.spaceKey !== undefined ? { spaceKey: s.spaceKey } : {}),
       ...(typeof s.pageId === 'number' && s.pageId > 0 ? { pageId: s.pageId } : {}),
@@ -59,6 +69,6 @@ export function toPersistedSources(sources: WireSource[]): PersistedSource[] {
       ...(s.sectionTitle ? { sectionTitle: s.sectionTitle } : {}),
       ...(isImage ? { kind: 'image' as const, attachmentUrl: s.attachmentUrl! } : {}),
       similarity: s.similarity ?? null,
-    };
+    }];
   });
 }

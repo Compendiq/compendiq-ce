@@ -199,6 +199,19 @@ export type TitleSource = z.infer<typeof TitleSourceSchema>;
  * literal on every branch, and the page/web shape deliberately carries none
  * (#1125 keys those on `url`) — so an absent `kind` has to keep meaning "a
  * knowledge-base page".
+ *
+ * This is the ONE shared definition both `toPersistedSources` (backend) and
+ * `isImageSource` (frontend) are hardened against (review r2 #2), so it has
+ * to state the rule they enforce rather than leave it implicit in two
+ * independent predicates that could drift. `attachmentUrl` is restricted to
+ * the two authenticated attachment route prefixes, not merely a non-empty
+ * string: `SourceThumbnail` hands it straight to `useAuthenticatedSrc`,
+ * which treats any src NOT starting with `/api/` as already-safe and sets
+ * it as the rendered `<img src>` directly — an absolute URL stored here
+ * would become an unauthenticated outbound request from the reader's
+ * browser on every reopen. The `superRefine` below is the co-presence half
+ * of the SAME rule stated above in prose: `kind` and `attachmentUrl` copy
+ * together, never singly.
  */
 export const SourceSchema = z.object({
   pageTitle: z.string(),
@@ -210,7 +223,14 @@ export const SourceSchema = z.object({
   similarity: z.number().nullable().optional(),
   unavailable: z.literal(true).optional(),
   kind: z.literal('image').optional(),
-  attachmentUrl: z.string().optional(),
+  attachmentUrl: z.string().regex(/^\/api\/(local-)?attachments\//).optional(),
+}).superRefine((value, ctx) => {
+  if (value.kind === 'image' && value.attachmentUrl === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['attachmentUrl'], message: 'attachmentUrl is required when kind is "image"' });
+  }
+  if (value.attachmentUrl !== undefined && value.kind === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['kind'], message: 'kind must be "image" when attachmentUrl is present' });
+  }
 });
 export type PersistedSource = z.infer<typeof SourceSchema>;
 

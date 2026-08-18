@@ -145,6 +145,26 @@ describe('conversation schemas (#1361)', () => {
     expect(SourceSchema.parse(KB_SOURCE).kind).toBeUndefined();
   });
 
+  // review r2 #2 — the schema is the one shared definition both
+  // `toPersistedSources` (backend) and `isImageSource` (frontend) are
+  // written against; it has to state the rule they enforce, or a future
+  // writer (backfill, EE, manual SQL) can produce data neither predicate
+  // was hardened for. Encoding it here also closes a live risk:
+  // `SourceThumbnail` hands `attachmentUrl` straight to `useAuthenticatedSrc`,
+  // which sets any src NOT starting with `/api/` directly as the rendered
+  // `<img src>` — an absolute URL there is an unauthenticated outbound
+  // request from the reader's browser on every reopen.
+  it('SourceSchema rejects an attachmentUrl outside the attachment routes', () => {
+    expect(SourceSchema.safeParse({ ...IMAGE_SOURCE, attachmentUrl: '' }).success).toBe(false);
+    expect(SourceSchema.safeParse({ ...IMAGE_SOURCE, attachmentUrl: 'https://evil.example/x.png' }).success).toBe(false);
+    expect(SourceSchema.safeParse({ ...IMAGE_SOURCE, attachmentUrl: '/api/local-attachments/42/turbine.png' }).success).toBe(true);
+  });
+
+  it('SourceSchema rejects kind without attachmentUrl and attachmentUrl without kind', () => {
+    expect(SourceSchema.safeParse({ ...KB_SOURCE, kind: 'image' }).success).toBe(false);
+    expect(SourceSchema.safeParse({ ...KB_SOURCE, attachmentUrl: '/api/attachments/42/turbine.png' }).success).toBe(false);
+  });
+
   it('StoredChatMessageSchema accepts refused turns and turns carrying sources', () => {
     expect(() => StoredChatMessageSchema.parse({ role: 'assistant', content: 'no', refused: true })).not.toThrow();
     expect(() => StoredChatMessageSchema.parse({ role: 'assistant', content: 'yes', sources: [KB_SOURCE, EXTERNAL_SOURCE] })).not.toThrow();

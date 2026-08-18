@@ -60,10 +60,17 @@ describe('toPersistedSources', () => {
     expect(typeof parsed.attachmentUrl).toBe('string');
   });
 
-  it('copies neither field when kind is present without attachmentUrl', () => {
-    const [s] = toPersistedSources([{ kind: 'image', pageId: 42, pageTitle: 'Page 42' }]);
-    expect(s).not.toHaveProperty('kind');
-    expect(s).not.toHaveProperty('attachmentUrl');
+  // review r2 #1 — an image source with no usable URL is DROPPED ENTIRELY,
+  // not merely stripped of kind/attachmentUrl. `llm-ask.ts` builds one
+  // page-shaped entry per search result AND, separately, one image-shaped
+  // entry per image hit on that same result, so a stripped-but-kept entry
+  // would sit beside the real page entry for the same pageId and reopen as
+  // a second, identical page chip — the exact "worst of both" the identity
+  // fix exists to remove. Nothing is lost: that page is already in the
+  // array as its own page source.
+  it('drops the entire entry (not just kind/attachmentUrl) when kind is present without attachmentUrl', () => {
+    const out = toPersistedSources([{ kind: 'image', pageId: 42, pageTitle: 'Page 42' }]);
+    expect(out).toEqual([]);
   });
 
   it('copies neither field when attachmentUrl is present without kind', () => {
@@ -79,15 +86,35 @@ describe('toPersistedSources', () => {
   // reached through an unusable URL instead of a missing one. Unreachable
   // today (`buildPageImageUrl` never returns ''), so this pins the guard
   // rather than a live bug.
-  it('copies neither field when attachmentUrl is the empty string, and warns', () => {
+  //
+  // review r2 #1 — the entry is DROPPED, not merely stripped: a stripped
+  // survivor would sit beside the page entry `llm-ask.ts` already built for
+  // this same pageId and reopen as a duplicate page chip, which is exactly
+  // the failure the warn message now names.
+  it('drops the entire entry when attachmentUrl is the empty string, and warns', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
-    const [s] = toPersistedSources([{ kind: 'image', pageId: 42, pageTitle: 'Page 42', attachmentUrl: '' }]);
-    expect(s).not.toHaveProperty('kind');
-    expect(s).not.toHaveProperty('attachmentUrl');
+    const out = toPersistedSources([{ kind: 'image', pageId: 42, pageTitle: 'Page 42', attachmentUrl: '' }]);
+    expect(out).toEqual([]);
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({ pageId: 42, pageTitle: 'Page 42' }),
-      expect.stringContaining('image source'),
+      expect.stringContaining('Dropping'),
     );
+    warn.mockRestore();
+  });
+
+  // review r2 #1 — the page entry for the SAME search result survives even
+  // though its image entry is dropped, which is the fact that makes dropping
+  // safe rather than lossy: `llm-ask.ts` builds the page entry from
+  // `searchResults` and the image entry from the same result's `imageHits`
+  // as two separate array elements, so losing the malformed image entry
+  // loses no page identity.
+  it('drops only the malformed image entry, keeping the page entry for the same result', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    const out = toPersistedSources([
+      { pageId: 42, pageTitle: 'Page 42', spaceKey: 'OPS' },
+      { kind: 'image', pageId: 42, pageTitle: 'Page 42', spaceKey: 'OPS', attachmentUrl: '' },
+    ]);
+    expect(out).toEqual([{ pageTitle: 'Page 42', spaceKey: 'OPS', pageId: 42, similarity: null }]);
     warn.mockRestore();
   });
 });

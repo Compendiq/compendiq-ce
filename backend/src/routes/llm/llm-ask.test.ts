@@ -2383,7 +2383,12 @@ describe('POST /api/llm/ask', () => {
         )!;
         const persisted = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; sources?: Array<Record<string, unknown>> }>;
         const persistedImage = persisted.find((m) => m.role === 'assistant')!.sources!.find((s) => s.kind === 'image')!;
-        expect(persistedImage.attachmentUrl).toEqual(expect.any(String));
+        expect(persistedImage).toMatchObject({
+          kind: 'image',
+          pageId: 72,
+          attachmentUrl: '/api/attachments/72/sheet.png',
+          similarity: null,
+        });
       });
     }
 
