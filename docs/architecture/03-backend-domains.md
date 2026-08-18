@@ -104,9 +104,10 @@ flowchart LR
   concurrency/queue-depth admin knobs, the confidence-basis resolver
   (`admin.ts`, `health.ts`, `setup.ts`), and the Confluence connection
   test/sync overview (`settings.ts`). It does **not** import `knowledge`.
-- Every other `routes/*` group may import `core` plus the domains it
-  exposes; `routes/knowledge` is the top-level aggregator and may import
-  anything.
+- `routes/confluence` may import `core` + `confluence`.
+- `routes/llm` may import `core` + `llm` + `confluence` (sub-page context,
+  `getClientForUser`) — this allowance predates #1347.
+- `routes/knowledge` is the top-level aggregator and may import anything.
 
 Adding a new import across these lines without updating the ESLint config is
 a build failure — update the config *and* this diagram together.

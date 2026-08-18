@@ -143,7 +143,10 @@ and issue #1347 for the full detail:
 - **routes/foundation** -- can import core + llm + confluence (the health
   check, list-models, the LLM admin knobs, the confidence-basis resolver,
   and the Confluence connection test/sync overview all live there)
-- **other routes** -- can import core + own domain (knowledge routes can
+- **routes/confluence** -- can import core + confluence
+- **routes/llm** -- can import core + llm + confluence (sub-page context,
+  `getClientForUser` -- this allowance predates #1347)
+- **routes/knowledge** -- can import core + own domain (knowledge routes can
   access all domains)
 
 The rule was silently inert for every route file until #1347 fixed the
