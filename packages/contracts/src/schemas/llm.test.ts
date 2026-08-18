@@ -119,6 +119,32 @@ describe('conversation schemas (#1361)', () => {
     expect(SourceSchema.safeParse({ ...EXTERNAL_SOURCE, pageId: 0 }).success).toBe(false);
   });
 
+  // #1115 P3 + #1361: an image source persists with its identity so a
+  // reopened answer renders the same thumbnails as the live one.
+  const IMAGE_SOURCE = {
+    pageTitle: 'Turbine diagram',
+    spaceKey: 'OPS',
+    pageId: 42,
+    kind: 'image' as const,
+    attachmentUrl: '/api/attachments/42/turbine.png',
+    similarity: null,
+  };
+
+  it('SourceSchema parses an image source and RETAINS kind and attachmentUrl (Zod strips undeclared keys)', () => {
+    const parsed = SourceSchema.parse(IMAGE_SOURCE);
+    expect(parsed.kind).toBe('image');
+    expect(parsed.attachmentUrl).toBe('/api/attachments/42/turbine.png');
+    expect(parsed).toEqual(IMAGE_SOURCE);
+  });
+
+  it('SourceSchema rejects a kind other than "image"', () => {
+    expect(SourceSchema.safeParse({ ...KB_SOURCE, kind: 'page' }).success).toBe(false);
+  });
+
+  it('SourceSchema still parses a legacy page source with no kind at all', () => {
+    expect(SourceSchema.parse(KB_SOURCE).kind).toBeUndefined();
+  });
+
   it('StoredChatMessageSchema accepts refused turns and turns carrying sources', () => {
     expect(() => StoredChatMessageSchema.parse({ role: 'assistant', content: 'no', refused: true })).not.toThrow();
     expect(() => StoredChatMessageSchema.parse({ role: 'assistant', content: 'yes', sources: [KB_SOURCE, EXTERNAL_SOURCE] })).not.toThrow();

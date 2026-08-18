@@ -296,6 +296,32 @@ describe('llm-conversations routes - CRUD', () => {
     expect(web).not.toHaveProperty('unavailable');
   });
 
+  // #1115 P3 + #1361: a stored image source carries `kind`/`attachmentUrl`
+  // and the annotation applies to it exactly like a page source — the
+  // annotator spreads, it does not special-case the shape.
+  it('keeps kind and attachmentUrl intact on a stored image source, annotating unavailable only for the trashed/invisible page', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: CONV_1, title: 't', title_source: 'question', model: 'm', page_ref: null, page_title: null,
+        messages: [
+          { role: 'user', content: 'q' },
+          { role: 'assistant', content: 'a', sources: [
+            { pageTitle: 'Gone', pageId: 9, kind: 'image', attachmentUrl: '/api/attachments/9/a.png', similarity: null },
+            { pageTitle: 'Still here', pageId: 7, kind: 'image', attachmentUrl: '/api/attachments/7/b.png', similarity: null },
+          ] },
+        ],
+        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z'),
+      }],
+    });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 7 }] }); // 9 is not visible
+
+    const body = JSON.parse((await app.inject({ method: 'GET', url: `/api/llm/conversations/${CONV_1}` })).body);
+    const [gone, here] = body.messages[1].sources;
+    expect(gone).toMatchObject({ kind: 'image', attachmentUrl: '/api/attachments/9/a.png', unavailable: true });
+    expect(here).toMatchObject({ kind: 'image', attachmentUrl: '/api/attachments/7/b.png' });
+    expect(here).not.toHaveProperty('unavailable');
+  });
+
   it('reports historyTruncated: true for a conversation longer than the replay budget', async () => {
     const messages: Array<{ role: string; content: string }> = [];
     for (let n = 0; n < 6; n++) {

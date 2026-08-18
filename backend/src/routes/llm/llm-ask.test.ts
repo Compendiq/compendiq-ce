@@ -1708,7 +1708,11 @@ describe('POST /api/llm/ask', () => {
       expect(sources.every((s) => s.kind === undefined)).toBe(true);
     });
 
-    it('never persists them — sources are not part of the stored conversation', async () => {
+    // #1361: image sources persist WITH their identity (kind + attachmentUrl)
+    // so a reopened conversation renders the same thumbnails the live answer
+    // did — see `toPersistedSources`. They still drop `score`, like every
+    // other persisted source.
+    it('persists image sources with kind and attachmentUrl, and drops score', async () => {
       mockHybridSearch.mockResolvedValue([
         pageWithImages(42, [{ key: 'a.png', similarity: 0.7 }]),
       ]);
@@ -1719,11 +1723,20 @@ describe('POST /api/llm/ask', () => {
         payload: { question: 'q', model: 'llama3' },
       });
 
-      // Nothing written to `llm_conversations` may carry an attachment URL:
-      // the stored shape is `{role, content}` and a replayed conversation
-      // renders no sources at all.
-      const written = JSON.stringify(mockQuery.mock.calls);
-      expect(written).not.toContain('/api/attachments/42/a.png');
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const messages = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; sources?: Array<Record<string, unknown>> }>;
+      const assistant = messages.find((m) => m.role === 'assistant')!;
+      const image = assistant.sources!.find((s) => s.kind === 'image')!;
+      expect(image).toMatchObject({
+        kind: 'image',
+        pageId: 42,
+        pageTitle: 'Page 42',
+        attachmentUrl: '/api/attachments/42/a.png',
+        similarity: null,
+      });
+      expect(image).not.toHaveProperty('score');
     });
   });
 

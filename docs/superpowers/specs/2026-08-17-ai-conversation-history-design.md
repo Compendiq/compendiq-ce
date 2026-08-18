@@ -516,6 +516,11 @@ requests per new conversation. A one-shot timer would race the model's latency.
   persisted) and still suppresses the badge on a refusal (#1119). A source with `unavailable:
   true` resolves to `{ kind: 'none' }` in `resolveSourceTarget` and renders inert with
   `title="This page is no longer available to you"`.
+- **PR 2 flag, not decided here**: every persisted `kind: 'image'` source reopens as a live
+  thumbnail fetch (`useAuthenticatedSrc` pulling the full attachment, up to `MAX_IMAGE_SOURCES`
+  = 4 per turn, no server-side resize per ADR-025) — a long thread reopened fetches N turns × 4.
+  PR 2 should decide whether reopened thumbnails render lazily (in-viewport, or only the last N
+  turns) rather than eagerly for the whole history.
 
 ## Backend
 
@@ -561,7 +566,12 @@ requests per new conversation. A one-shot timer would race the model's latency.
    sectionTitle, similarity }` (drop the deprecated `score`; order is the array), **with
    `pageId: 0` — the wire's "not a knowledge-base page" sentinel for external-doc and web
    sources (`llm-ask.ts:476, :486`; `SourceCitations.tsx:18-22`) — omitted rather than
-   copied**, so the persisted shape satisfies `SourceSchema.pageId: positive()`. The
+   copied**, so the persisted shape satisfies `SourceSchema.pageId: positive()`. This spec
+   predates #1115 P3, which landed on `dev` after it was written: the allow-list also
+   carries `kind: 'image'` + `attachmentUrl` for an image source (both or neither, mirroring
+   the frontend's `isImageSource`), so a reopened answer renders the same thumbnails the live
+   one did; `similarity` on that shape stays `null` regardless (the cross-modal band, ADR-025
+   §8). The
    persisted *prose* is unchanged: `llm-ask.test.ts:722-744` and `:496-523` keep asserting
    the persisted refusal text does not say "listed below" / "attached as sources" — the
    sources are now structured data beside it, and the frontend's `RefusalSourcesLabel`

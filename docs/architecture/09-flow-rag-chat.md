@@ -229,7 +229,11 @@ writes `{role, content, refused?, sources?}` through `toPersistedSources`
 external/web sources) on the stream, cache-hit and refusal paths alike — so a
 reopened conversation renders its citation chips and its confidence badge
 (computed client-side from `similarity`) exactly as the live answer did; a
-refusal still shows no badge (#1119). `GET /llm/conversations/:id` annotates a
+refusal still shows no badge (#1119). An image source (#1115 P3's
+`kind: 'image'` entries) persists its `kind` and `attachmentUrl` together —
+both or neither — so a reopened answer shows the same thumbnails rather than
+a duplicate page chip; `similarity` on that shape stays `null` either way.
+`GET /llm/conversations/:id` annotates a
 source `unavailable: true` at read time when its page is trashed or no longer
 visible to the caller (`visiblePagesPredicate`, the retrieval path's own rule).
 

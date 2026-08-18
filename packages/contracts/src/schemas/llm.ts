@@ -188,6 +188,16 @@ export type TitleSource = z.infer<typeof TitleSourceSchema>;
  * omitted on persist. `unavailable` is a READ-TIME annotation from
  * `GET /llm/conversations/:id` (page trashed or no longer visible to the
  * caller); it is never stored.
+ *
+ * An ABSENT `kind` still means a knowledge-base page or web source — the
+ * #1125 url-keyed discriminator on those two shapes is untouched.
+ * `kind: 'image'` + `attachmentUrl` is #1115 P3's image source, persisted
+ * (#1361) so a reopened answer renders the same thumbnails as the live one.
+ * `similarity` on an image source is always `null`: the hit's own cosine is
+ * cross-modal and sits in a different band than the text cosines beside it
+ * (ADR-025 §8). Deliberately NOT a discriminated union — the read path
+ * spreads over these objects and `unavailable` is a flat annotation that
+ * applies to every shape alike.
  */
 export const SourceSchema = z.object({
   pageTitle: z.string(),
@@ -198,6 +208,8 @@ export const SourceSchema = z.object({
   sectionTitle: z.string().optional(),
   similarity: z.number().nullable().optional(),
   unavailable: z.literal(true).optional(),
+  kind: z.literal('image').optional(),
+  attachmentUrl: z.string().optional(),
 });
 export type PersistedSource = z.infer<typeof SourceSchema>;
 
