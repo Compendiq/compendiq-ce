@@ -815,6 +815,7 @@ export function PageViewPage() {
                 onToggleHeaderNumbering={toggleHeaderNumbering}
                 pageProperty={tagChip}
                 actions={sessionActions}
+                pageId={id}
               />
             </div>
           ) : (

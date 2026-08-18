@@ -3,6 +3,8 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Highlight } from '@tiptap/extension-highlight';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { Color } from '@tiptap/extension-color';
 import type { Editor as EditorType } from '@tiptap/react';
 import { useEffect } from 'react';
 
@@ -63,6 +65,8 @@ function Harness({
   const editor = useEditor({
     extensions: [
       StarterKit,
+      TextStyle,
+      Color,
       Highlight.configure({ multicolor: true }),
       // The REAL inline Confluence atoms. The macro guard below is about these
       // exact node types — a hand-rolled stand-in would prove nothing about the
@@ -208,6 +212,21 @@ describe('BubbleMenuContent — formatting commands', () => {
 
     fireEvent.click(screen.getByTitle('Bold (Ctrl+B)'));
     expect(editor.getHTML()).toContain('<strong>Hello</strong>');
+  });
+
+  it('exposes the same color picker as the toolbar', async () => {
+    await mountEditor('<p>Hello world</p>');
+    expect(screen.getByTestId('color-picker-trigger')).toBeInTheDocument();
+  });
+
+  it('keeps color when the selection is also bold', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+    fireEvent.click(screen.getByTitle('Bold (Ctrl+B)'));
+    fireEvent.click(screen.getByTestId('color-picker-trigger'));
+    fireEvent.click(screen.getByLabelText('Red text'));
+    expect(editor.getHTML()).toContain('rgb(239, 68, 68)');
+    expect(editor.getHTML()).toContain('<strong>');
   });
 
   it('toggles italic on the current selection', async () => {

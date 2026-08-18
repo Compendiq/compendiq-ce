@@ -37,6 +37,7 @@ import {
   UnknownMacro,
   ExtendedTable,
 } from './article-extensions';
+import { InlineLucideIcon } from './inline-lucide-icon';
 import { MermaidBlock } from './MermaidBlockExtension';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
@@ -55,7 +56,8 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
     data.attrName === 'data-layout' ||
     data.attrName === 'data-layout-type' ||
     data.attrName === 'data-cell-width' ||
-    data.attrName === 'data-border'
+    data.attrName === 'data-border' ||
+    data.attrName === 'data-lucide'
   ) {
     data.forceKeepAttr = true;
   }
@@ -108,7 +110,7 @@ export function ArticleViewer({
   const sanitizedContent = useMemo(
     () =>
       DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title', 'data-layout', 'data-layout-type', 'data-cell-width', 'data-border'],
+        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title', 'data-layout', 'data-layout-type', 'data-cell-width', 'data-border', 'data-lucide'],
       }),
     [content],
   );
@@ -150,6 +152,7 @@ export function ArticleViewer({
         },
       }).configure({ lowlight }),
       Image.configure({ inline: false }),
+      InlineLucideIcon,
       Details,
       DetailsSummary,
       Panel,
@@ -518,7 +521,7 @@ export function ArticleViewer({
           !isLight && 'prose-invert',
           '[&_.tiptap]:outline-none',
           // Table styles
-          '[&_table]:border-collapse [&_td]:border [&_td]:border-[var(--glass-border)] [&_td]:p-2',
+          '[&_table]:border-separate [&_table]:border-spacing-0 [&_td]:border [&_td]:border-[var(--glass-border)] [&_td]:p-2',
           '[&_th]:border [&_th]:border-[var(--glass-border)] [&_th]:bg-[oklch(from_var(--color-muted)_l_c_h_/_0.3)] [&_th]:p-2 [&_th]:font-semibold',
           // Task list styles
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
