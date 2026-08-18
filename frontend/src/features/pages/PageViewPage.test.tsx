@@ -958,16 +958,58 @@ describe('PageViewPage', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  // The format toolbar sits in the 48px app header (HeaderHost), not in a
-  // sticky strip inside the article column. The #1186 under-mask recipe is
-  // therefore unused here — the header is outside the scroll container —
-  // and must not come back as a second bar eating the document.
-  describe('edit chrome lives in the app header', () => {
-    it('does not keep a sticky under-mask in the article column', () => {
+  // #703 / #769 / #1186 — the sticky edit toolbar lives in the article
+  // column again (not the 48px app header) and carries an opaque bg-card
+  // under-mask. It covers the toolbar's own box, so content scrolling under
+  // the bar cannot show through, and it reaches one scroll-container padding
+  // step above it (#1186 — height pinned against AppLayout in
+  // scroll-padding-mask.test.ts). Overhang is block-start only (#769).
+  describe('sticky edit-toolbar under-mask (#703, #769, #1186)', () => {
+    const NEGATIVE_UTILITY = /(^|[\s:])-(bottom|left|right|inset(-[xy])?)-/;
+    const ARBITRARY_NEGATIVE = /\b(bottom|left|right|inset(-[xy])?)-\[-/;
+
+    const renderEditing = () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText('Edit'));
+      return screen.getByTestId('edit-toolbar-mask');
+    };
+
+    it('renders an opaque under-mask behind the edit toolbar', () => {
       render(<PageViewPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByText('Edit'));
 
-      expect(screen.queryByTestId('edit-toolbar-mask')).not.toBeInTheDocument();
+      const mask = screen.getByTestId('edit-toolbar-mask');
+      const toolbar = mask.parentElement;
+      expect(toolbar).not.toBeNull();
+      expect(toolbar!.className).toContain('sticky');
+      expect(toolbar!.className).toContain('-top-5');
+      expect(toolbar!.className).toContain('isolate');
+
+      expect(mask.className).toContain('bg-card');
+      expect(mask.className).not.toContain('bg-card/');
+      expect(mask.className).toContain('z-[-1]');
+      expect(mask.className).toContain('inset-x-0');
+      expect(mask.className).toContain('bottom-0');
+    });
+
+    it('the under-mask covers the scroll padding above the stuck toolbar (#1186)', () => {
+      const mask = renderEditing();
+      expect(mask.className).not.toMatch(/(^|\s)inset-0(\s|$)/);
+      expect(mask.className).toMatch(/(^|\s)-top-\d/);
+    });
+
+    it('the under-mask takes the clicks it occludes, rather than passing them to hidden content', () => {
+      const mask = renderEditing();
+      expect(mask.className).not.toContain('pointer-events-none');
+      expect(mask.style.pointerEvents).toBe('');
+    });
+
+    it('the under-mask does not overhang the block-end or inline edges (#769 phantom scroll)', () => {
+      const mask = renderEditing();
+      expect(mask.className).not.toMatch(NEGATIVE_UTILITY);
+      expect(mask.className).not.toMatch(ARBITRARY_NEGATIVE);
+      expect(mask.style.top).toBe('');
+      expect(mask.style.bottom).toBe('');
     });
 
     it('renders the format toolbar with Cancel and Save as its session actions', async () => {
