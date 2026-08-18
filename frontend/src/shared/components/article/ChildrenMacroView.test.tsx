@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ChildrenMacroView } from './ChildrenMacroView';
@@ -99,6 +101,14 @@ describe('ChildrenMacroView', () => {
     expect(list?.classList.contains('list-none')).toBe(true);
     expect(screen.getByTestId('children-macro-view').getAttribute('data-columns')).toBe('1');
     expect(screen.queryByTestId('children-columns-toggle')).toBeNull();
+
+    // Notion-style page links: body colour + underline, flush with article text.
+    // The teal prose-link colour and the old padded row (`px-2`) are the two
+    // things that made this read as chrome rather than document.
+    expect(links[0].classList.contains('children-directory-link')).toBe(true);
+    expect(links[0].className).not.toMatch(/text-primary/);
+    expect(links[0].className).not.toMatch(/(?:^|\s)px-2(?:\s|$)/);
+    expect(list?.className).not.toMatch(/(?:^|\s)pl-3(?:\s|$)/);
   });
 
   it('shows empty message when no children exist', async () => {
@@ -149,6 +159,10 @@ describe('ChildrenMacroView', () => {
 
     expect(screen.getByText('Parent Page')).toBeTruthy();
     expect(screen.getByText('Nested Child')).toBeTruthy();
+
+    // Nested titles start on the same left edge as the article, not a tree gutter.
+    const nested = screen.getByTestId('children-list').querySelector('ul ul');
+    expect(nested?.className).not.toMatch(/(?:^|\s)pl-3(?:\s|$)/);
   });
 
   it('splits the top-level list into two columns when columns=2', async () => {
@@ -320,5 +334,21 @@ describe('ChildrenMacroView', () => {
     expect(view.classList.contains('rounded-lg')).toBe(false);
     expect(screen.queryByRole('heading')).toBeNull();
     expect(screen.queryByText('Children of this page')).toBeNull();
+  });
+});
+
+describe('ChildrenMacroView link treatment', () => {
+  const css = readFileSync(resolve(__dirname, '../../../index.css'), 'utf-8');
+
+  it('overrides prose teal links with an inherited, always-underlined title', () => {
+    expect(css).toMatch(
+      /\.prose \.confluence-children-view a[\s\S]*?color:\s*inherit[\s\S]*?text-decoration:\s*underline/,
+    );
+    const start = css.indexOf('.prose .confluence-children-view a,');
+    expect(start).toBeGreaterThan(-1);
+    const block = css.slice(start, start + 700);
+    expect(block).not.toMatch(/--color-primary/);
+    expect(css).toMatch(/\.confluence-children-view ul ul\s*\{\s*padding-inline-start:\s*0;/);
+    expect(css).toMatch(/\.confluence-children-view li\s*\{\s*padding-inline-start:\s*0;/);
   });
 });

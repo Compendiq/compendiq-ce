@@ -2113,18 +2113,40 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
 /* Children directory — marker-free so it reads as a page index, not a bullet list.
    `.prose :where(ul)` is (0,1,1) and would otherwise keep the 1.25rem gutter
-   even when the list carries `list-none`. Nested lists indent from padding, not
-   from a marker column. */
+   even when the list carries `list-none`. Titles sit on the article's left
+   edge; nested pages do not pick up a tree gutter. */
 .confluence-children-view ul {
   list-style: none;
   margin: 0;
   padding-inline-start: 0;
 }
 .confluence-children-view ul ul {
-  padding-inline-start: 0.75rem;
+  padding-inline-start: 0;
+}
+.confluence-children-view li {
+  padding-inline-start: 0;
 }
 .confluence-children-view li::marker {
   content: none;
+}
+
+/* Notion-style page links: inherit the article colour and stay underlined.
+   `.prose :where(a)` paints every link teal and only underlines on hover —
+   that treatment is chrome, not a document title. */
+.prose .confluence-children-view a,
+.tiptap .confluence-children-view a {
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: from-font;
+  text-underline-offset: 0.18em;
+  text-decoration-color: oklch(from var(--color-foreground) l c h / 0.45);
+}
+.prose .confluence-children-view a:hover,
+.tiptap .confluence-children-view a:hover {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--color-foreground);
 }
 
 /* Confluence layout macros — multi-column grid */

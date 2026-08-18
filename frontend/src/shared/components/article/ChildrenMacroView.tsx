@@ -97,11 +97,10 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
   );
 
   function renderTitle(child: ChildPage) {
-    const rowClass =
-      'nm-focus-ring block min-w-0 rounded-md px-2 py-1.5 text-sm break-words';
+    const titleClass = 'nm-focus-ring min-w-0 break-words';
     if (isEditable) {
       return (
-        <span className={cn(rowClass, 'text-foreground')} title={child.title}>
+        <span className={cn(titleClass, 'text-foreground')} title={child.title}>
           {child.title}
         </span>
       );
@@ -109,7 +108,7 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
     return (
       <Link
         to={`/pages/${child.id}`}
-        className={cn(rowClass, 'hover:bg-muted hover:underline')}
+        className={cn(titleClass, 'children-directory-link')}
         title={child.title}
       >
         {child.title}
@@ -123,9 +122,9 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
       <ul
         className={cn(
           'children-directory m-0 list-none p-0',
-          split && 'grid grid-cols-1 gap-x-8 gap-y-0.5 sm:grid-cols-2',
-          !split && 'flex flex-col gap-0.5',
-          !root && 'mt-0.5 pl-3',
+          split && 'grid grid-cols-1 gap-x-8 gap-y-1 sm:grid-cols-2',
+          !split && 'flex flex-col gap-1',
+          !root && 'mt-1',
         )}
       >
         {items.map((child) => (
@@ -201,9 +200,9 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
           data-testid="children-loading"
         >
           <span className="sr-only">Loading child pages</span>
-          <div className="h-8 bg-muted w-48 rounded-md" />
-          <div className="h-8 bg-muted w-36 rounded-md" />
-          <div className="h-8 bg-muted w-52 rounded-md" />
+          <div className="bg-muted h-4 w-48" />
+          <div className="bg-muted h-4 w-36" />
+          <div className="bg-muted h-4 w-52" />
         </div>
       ) : error ? (
         <div className="flex flex-wrap items-center gap-2" data-testid="children-error">
