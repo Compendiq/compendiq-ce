@@ -66,11 +66,11 @@ describe('EditorToolbar', () => {
     expect(properties).not.toContainElement(screen.getByRole('button', { name: 'Save' }));
   });
 
-  it('presents nineteen main controls plus utilities', () => {
+  it('presents eighteen main controls plus utilities', () => {
     render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
-    // 19 = (block type + quote + code block + divider) + 5 marks + 1 align dropdown + 3 lists + 2 colours + 1 emoji + Insert + undo + redo
-    expect(toolbar.querySelectorAll('button').length).toBe(19);
+    // 18 = (block type + quote + code block + divider) + 5 marks + 1 align dropdown + 3 lists + 1 colour + 1 emoji + Insert + undo + redo
+    expect(toolbar.querySelectorAll('button').length).toBe(18);
   });
 
   it('renders the groups in the restructured order', () => {
@@ -408,26 +408,52 @@ describe('EditorToolbar', () => {
 
   // ---------- colours ----------
 
-  it('sizes both colour pickers like every other control', () => {
-    // They used to be the two 36px boxes in a row of 28px ones. `nm-icon-button`
-    // is the workspace's 32px control, so the row now has ONE height.
+  it('sizes the colour picker like every other control', () => {
     render(<EditorToolbar editor={createMockEditor()} />);
-    const triggers = screen.getAllByTestId('color-picker-trigger');
-    expect(triggers.length).toBe(2);
-    for (const t of triggers) expect(t.className).toContain('nm-icon-button');
+    const trigger = screen.getByTestId('color-picker-trigger');
+    expect(trigger.className).toContain('nm-icon-button');
   });
 
-  it('names both colour triggers and every swatch', () => {
+  it('opens one Color panel with text and highlight rows, including Brown and Teal', () => {
     render(<EditorToolbar editor={createMockEditor()} />);
-    const triggers = screen.getAllByTestId('color-picker-trigger');
-    expect(triggers[0]).toHaveAttribute('aria-label', 'Text Color');
-    expect(triggers[1]).toHaveAttribute('aria-label', 'Highlight (Ctrl+Shift+H)');
-    expect(triggers[0]?.querySelector('svg')).toHaveClass('lucide-baseline');
+    const trigger = screen.getByTestId('color-picker-trigger');
+    expect(trigger).toHaveAttribute('aria-label', 'Color');
+    expect(trigger.querySelector('svg')).toHaveClass('lucide-baseline');
 
-    fireEvent.click(triggers[0]!);
+    fireEvent.click(trigger);
+    expect(screen.getByRole('group', { name: 'Color' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Highlight' })).toBeInTheDocument();
+
     const swatches = screen.getAllByTestId('color-picker-swatch');
-    expect(swatches.length).toBeGreaterThanOrEqual(8);
+    // 10 hues × two roles. The original eight stay; Brown and Teal are the extras.
+    expect(swatches).toHaveLength(20);
+    expect(screen.getByLabelText('Brown text')).toBeInTheDocument();
+    expect(screen.getByLabelText('Teal highlight')).toBeInTheDocument();
     for (const sw of swatches) expect(sw.getAttribute('aria-label')).toBeTruthy();
+  });
+
+  it('applies text colour and highlight from the same panel', () => {
+    const setColor = vi.fn(() => chain);
+    const toggleHighlight = vi.fn(() => chain);
+    const chain: Record<string, unknown> = new Proxy(
+      { setColor, toggleHighlight } as Record<string, unknown>,
+      {
+        get(target, prop: string) {
+          if (prop === 'setColor') return target.setColor;
+          if (prop === 'toggleHighlight') return target.toggleHighlight;
+          if (prop === 'run') return vi.fn();
+          return () => chain;
+        },
+      },
+    );
+    render(<EditorToolbar editor={createMockEditor({ chain: () => chain })} />);
+    fireEvent.click(screen.getByTestId('color-picker-trigger'));
+    fireEvent.click(screen.getByLabelText('Red text'));
+    expect(setColor).toHaveBeenCalledWith('#ef4444');
+
+    fireEvent.click(screen.getByTestId('color-picker-trigger'));
+    fireEvent.click(screen.getByLabelText('Yellow highlight'));
+    expect(toggleHighlight).toHaveBeenCalledWith({ color: '#eab308' });
   });
 
   // ---------- utilities ----------
@@ -563,8 +589,8 @@ describe('EditorToolbar', () => {
   });
 
   // ---------- More formatting overflow (P2) ----------
-  // Strikethrough, Inline Code, Task List, Alignment, Text Color and
-  // Highlight used to fold into NOTHING when the responsive collapse hid
+  // Strikethrough, Inline Code, Task List, Alignment and Color
+  // used to fold into NOTHING when the responsive collapse hid
   // them, despite the code's own comment claiming they "gracefully fold
   // into the Insert dropdown" — only Quote/Code block/Divider actually did.
 
@@ -606,7 +632,7 @@ describe('EditorToolbar', () => {
 
       // ...but every one of them is reachable from More formatting.
       open(screen.getByTestId('more-formatting-trigger'));
-      for (const label of ['Task List', 'Inline Code', 'Strikethrough', 'Alignment', 'Text Color', 'Highlight']) {
+      for (const label of ['Task List', 'Inline Code', 'Strikethrough', 'Alignment', 'Color']) {
         expect(screen.getByText(label)).toBeInTheDocument();
       }
     } finally {
@@ -659,7 +685,7 @@ describe('EditorToolbar', () => {
     }
   });
 
-  it('applies a text color from the overflow menu’s Text Color submenu', () => {
+  it('applies a text color from the overflow menu’s Color submenu', () => {
     const setColor = vi.fn(() => chain);
     const chain: Record<string, unknown> = new Proxy({ setColor } as Record<string, unknown>, {
       get(target, prop: string) {
@@ -674,8 +700,7 @@ describe('EditorToolbar', () => {
       render(<EditorToolbar editor={editor} />);
       resize.apply();
       open(screen.getByTestId('more-formatting-trigger'));
-      open(screen.getByText('Text Color'));
-      fireEvent.click(screen.getByLabelText('Red'));
+      fireEvent.click(screen.getByLabelText('Red text'));
       expect(setColor).toHaveBeenCalledWith('#ef4444');
     } finally {
       resize.restore();

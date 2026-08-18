@@ -62,5 +62,11 @@ describe('PAGE_LUCIDE_ICON_IDS', () => {
   it('isPageLucideIconId matches the catalogue', () => {
     expect(isPageLucideIconId('rocket')).toBe(true);
     expect(isPageLucideIconId('globe')).toBe(false);
+    expect(isPageLucideIconId('workflow')).toBe(true);
+    expect(isPageLucideIconId('kanban')).toBe(true);
+  });
+
+  it('covers a broad page-mark set, not a short starter list', () => {
+    expect(PAGE_LUCIDE_ICON_IDS.length).toBeGreaterThanOrEqual(240);
   });
 });

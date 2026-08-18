@@ -30,7 +30,7 @@ export function PageIconPicker({
   uploadError?: string | null;
   trigger: React.ReactNode;
 }) {
-  const [tab, setTab] = useState<PickerTab>('emoji');
+  const [tab, setTab] = useState<PickerTab>('icons');
   const [query, setQuery] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -54,8 +54,8 @@ export function PageIconPicker({
           onOpenAutoFocus={(event) => event.preventDefault()}
         >
           <div className="mb-2 flex items-center gap-1" role="tablist" aria-label="Icon type">
-            <TabButton current={tab} id="emoji" onSelect={setTab} icon={Smile} label="Emoji" />
             <TabButton current={tab} id="icons" onSelect={setTab} icon={Shapes} label="Icons" />
+            <TabButton current={tab} id="emoji" onSelect={setTab} icon={Smile} label="Emoji" />
             <TabButton current={tab} id="upload" onSelect={setTab} icon={ImagePlus} label="Upload" />
           </div>
 
@@ -78,7 +78,7 @@ export function PageIconPicker({
                 />
               </div>
               <div
-                className="grid max-h-56 grid-cols-6 gap-1 overflow-y-auto"
+                className="grid max-h-72 grid-cols-6 gap-1 overflow-y-auto"
                 data-testid="page-icon-lucide-grid"
               >
                 {icons.map((item) => {

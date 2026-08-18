@@ -51,9 +51,12 @@ describe('PageTitleIcon', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Add icon' }));
-    expect(screen.getByRole('tab', { name: /Emoji/i })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /Icons/i })).toBeInTheDocument();
+    const iconsTab = screen.getByRole('tab', { name: /Icons/i });
+    expect(iconsTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('page-icon-lucide-grid')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Emoji/i })).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByRole('tab', { name: /Upload/i })).toBeInTheDocument();
+    expect(screen.getByTestId('page-icon-lucide-grid').querySelectorAll('button').length).toBeGreaterThan(200);
   });
 
   it('shows the existing mark as Change page icon', () => {

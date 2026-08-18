@@ -9,7 +9,7 @@ import {
   Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2, Workflow, Badge,
   ChevronsUpDown, Paperclip, ListTree, ImagePlus, Table2,
   Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb,
-  Baseline, Highlighter,
+  Baseline,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
   Smile, MoreHorizontal,
 } from 'lucide-react';
@@ -37,8 +37,8 @@ import { cn } from '../../lib/cn';
  * List of Tables" perhaps twice a year. Two of those icons were even the same
  * glyph for different actions.
  *
- * It is now twelve, plus undo/redo. The frequent operations stay on the surface
- * — marks, lists, colours — and the long tail moves behind two menus that say
+ * Frequent operations stay on the surface — marks, lists, colour — and the
+ * long tail moves behind two menus that say
  * what they are in words. Nothing was removed: every action the flat row
  * offered is still here, and the two menus put a NAME beside each one, which
  * the icon wall never did.
@@ -107,16 +107,26 @@ const PANEL_TYPES = [
   { value: 'tip', label: 'Tip', Icon: Lightbulb, swatch: 'var(--color-success)' },
 ] as const;
 
+/**
+ * Text colour and highlight share one palette. The eight original hexes stay
+ * so existing marks still read as selected; Brown and Teal fill the two
+ * gaps against the Notion / Plane row (grey → brown → warm → cool → red).
+ */
 const PRESET_COLORS = [
-  { label: 'Red', value: '#ef4444' },
+  { label: 'Grey', value: '#6b7280' },
+  { label: 'Brown', value: '#b45309' },
   { label: 'Orange', value: '#f97316' },
   { label: 'Yellow', value: '#eab308' },
   { label: 'Green', value: '#22c55e' },
+  { label: 'Teal', value: '#0d9488' },
   { label: 'Blue', value: '#3b82f6' },
   { label: 'Purple', value: '#a855f7' },
   { label: 'Pink', value: '#ec4899' },
-  { label: 'Grey', value: '#6b7280' },
-];
+  { label: 'Red', value: '#ef4444' },
+] as const;
+
+const SWATCH_BUTTON =
+  'flex size-6 items-center justify-center rounded-full border outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring';
 
 /* ----------------------------------------------------------- insert menu -- */
 
@@ -511,28 +521,142 @@ function InsertMenu({ editor }: { editor: EditorType }) {
 
 /* --------------------------------------------------------------- colours -- */
 
-/**
- * #353: built on Radix Popover so keyboard / screen-reader users get proper
- * focus management (Escape to close, focus returns to trigger, click-outside
- * dismiss). The trigger is now 32px like every other control in the row rather
- * than the 36px it used to be — still clear of WCAG 2.5.5's 24×24 floor, and no
- * longer the two odd-sized boxes in the toolbar.
- *
- * The applied colour shows as a bar under the glyph rather than as a pressed
- * box: it has to say WHICH colour is applied, which a state fill cannot.
- */
-function ColorPickerDropdown({
+function ColorRow({
+  label,
+  kind,
+  activeColor,
   onSelect,
   onReset,
-  activeColor,
-  icon,
-  title,
+  onDone,
 }: {
+  label: string;
+  kind: 'text' | 'highlight';
+  activeColor: string | undefined;
   onSelect: (color: string) => void;
   onReset: () => void;
-  activeColor: string | undefined;
-  icon: React.ReactNode;
-  title: string;
+  onDone: () => void;
+}) {
+  const defaultLabel = `Default ${label.toLowerCase()}`;
+  return (
+    <div>
+      <p className="px-0.5 pb-1.5 text-[12px] font-medium uppercase tracking-wider text-muted-foreground">
+        {label}
+      </p>
+      <div className="grid grid-cols-6 gap-1" role="group" aria-label={label}>
+        <button
+          type="button"
+          title={defaultLabel}
+          aria-label={defaultLabel}
+          aria-pressed={!activeColor}
+          onClick={() => {
+            onReset();
+            onDone();
+          }}
+          className={cn(
+            SWATCH_BUTTON,
+            !activeColor ? 'border-foreground' : 'border-border',
+            kind === 'highlight' && 'bg-background',
+          )}
+        >
+          {kind === 'text' ? (
+            <span className="text-[11px] font-semibold text-muted-foreground">A</span>
+          ) : (
+            <span aria-hidden className="relative block size-3">
+              <span className="absolute inset-0 rounded-full border border-muted-foreground/70" />
+              <span className="absolute inset-x-0 top-1/2 h-px -rotate-45 bg-muted-foreground" />
+            </span>
+          )}
+        </button>
+        {PRESET_COLORS.map((c) => {
+          const selected = activeColor === c.value;
+          const swatchLabel = `${c.label} ${kind === 'text' ? 'text' : 'highlight'}`;
+          return (
+            <button
+              key={`${kind}-${c.value}`}
+              type="button"
+              title={swatchLabel}
+              aria-label={swatchLabel}
+              aria-pressed={selected}
+              data-testid="color-picker-swatch"
+              onClick={() => {
+                onSelect(c.value);
+                onDone();
+              }}
+              className={cn(SWATCH_BUTTON, selected ? 'border-foreground' : 'border-border')}
+              style={kind === 'highlight' ? { backgroundColor: c.value } : undefined}
+            >
+              {kind === 'text' && (
+                <span className="text-[11px] font-semibold" style={{ color: c.value }}>
+                  A
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ColorPanel({
+  textColor,
+  highlightColor,
+  onSelectText,
+  onResetText,
+  onSelectHighlight,
+  onResetHighlight,
+  onDone,
+}: {
+  textColor: string | undefined;
+  highlightColor: string | undefined;
+  onSelectText: (color: string) => void;
+  onResetText: () => void;
+  onSelectHighlight: (color: string) => void;
+  onResetHighlight: () => void;
+  onDone: () => void;
+}) {
+  return (
+    <div className="flex w-[11.5rem] flex-col gap-2.5">
+      <ColorRow
+        label="Color"
+        kind="text"
+        activeColor={textColor}
+        onSelect={onSelectText}
+        onReset={onResetText}
+        onDone={onDone}
+      />
+      <ColorRow
+        label="Highlight"
+        kind="highlight"
+        activeColor={highlightColor}
+        onSelect={onSelectHighlight}
+        onReset={onResetHighlight}
+        onDone={onDone}
+      />
+    </div>
+  );
+}
+
+/**
+ * One Color control, not two. Notion and Plane put text colour and highlight
+ * in the same panel so the author picks a hue, then a role, without hunting
+ * for a second trigger. The A-glyph carries both states: fill for highlight,
+ * the letter (and the underline) for text colour.
+ */
+function ColorPickerDropdown({
+  textColor,
+  highlightColor,
+  onSelectText,
+  onResetText,
+  onSelectHighlight,
+  onResetHighlight,
+}: {
+  textColor: string | undefined;
+  highlightColor: string | undefined;
+  onSelectText: (color: string) => void;
+  onResetText: () => void;
+  onSelectHighlight: (color: string) => void;
+  onResetHighlight: () => void;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -542,19 +666,24 @@ function ColorPickerDropdown({
         <button
           type="button"
           {...{ [TOOLBAR_ITEM_ATTR]: '' }}
-          title={title}
-          aria-label={title}
+          title="Color"
+          aria-label="Color"
           aria-haspopup="dialog"
           data-testid="color-picker-trigger"
           className="nm-icon-button"
         >
           <span className="relative flex items-center justify-center">
-            {icon}
-            {activeColor && (
+            <span
+              className="flex items-center justify-center rounded-[3px] px-px"
+              style={{ backgroundColor: highlightColor || undefined }}
+            >
+              <Baseline size={15} style={textColor ? { color: textColor } : undefined} />
+            </span>
+            {textColor && (
               <span
                 aria-hidden
                 className="absolute -bottom-1.5 left-0 right-0 h-[3px] rounded-full"
-                style={{ backgroundColor: activeColor }}
+                style={{ backgroundColor: textColor }}
               />
             )}
           </span>
@@ -564,40 +693,18 @@ function ColorPickerDropdown({
         <Popover.Content
           align="start"
           sideOffset={6}
-          aria-label={`${title} swatches`}
+          aria-label="Color swatches"
           className="z-50 nm-card-elevated p-2.5 outline-none"
         >
-          <div className="grid grid-cols-4 gap-1.5">
-            {PRESET_COLORS.map((c) => (
-              <button
-                key={c.value}
-                type="button"
-                title={c.label}
-                aria-label={c.label}
-                aria-pressed={activeColor === c.value}
-                data-testid="color-picker-swatch"
-                onClick={() => {
-                  onSelect(c.value);
-                  setOpen(false);
-                }}
-                className={cn(
-                  'h-7 w-7 rounded-md border outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring',
-                  activeColor === c.value ? 'border-foreground' : 'border-border',
-                )}
-                style={{ backgroundColor: c.value }}
-              />
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              onReset();
-              setOpen(false);
-            }}
-            className="mt-2 w-full rounded-md px-2 py-1 text-xs text-muted-foreground outline-2 outline-offset-2 outline-transparent transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-ring"
-          >
-            Reset
-          </button>
+          <ColorPanel
+            textColor={textColor}
+            highlightColor={highlightColor}
+            onSelectText={onSelectText}
+            onResetText={onResetText}
+            onSelectHighlight={onSelectHighlight}
+            onResetHighlight={onResetHighlight}
+            onDone={() => setOpen(false)}
+          />
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
@@ -685,76 +792,12 @@ function AlignMenuDropdown({ editor }: { editor: EditorType }) {
 }
 
 /**
- * A colour picker rendered as `DropdownMenu.Sub` content, for use INSIDE
- * `MoreFormattingMenu`. Deliberately not `ColorPickerDropdown` (a separate
- * `Popover.Root`) nested inside another menu's content: two independent
- * Radix overlay roots nested that way is the classic trap where the outer
- * menu's outside-click detection treats the inner Popover's portalled
- * content as "outside" and closes prematurely. `DropdownMenu.Sub` is the
- * primitive built for nesting inside one root — the same pattern already
- * proven here by the Insert menu's Panel and Column-layout submenus.
- */
-function ColorSwatchSub({
-  icon,
-  label,
-  activeColor,
-  onSelect,
-  onReset,
-  onDone,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  activeColor: string | undefined;
-  onSelect: (color: string) => void;
-  onReset: () => void;
-  onDone: () => void;
-}) {
-  return (
-    <DropdownMenu.Sub>
-      <DropdownMenu.SubTrigger className={MENU_ITEM}>
-        {icon}
-        {label}
-        <ChevronDown size={13} className="ml-auto -rotate-90 opacity-60" />
-      </DropdownMenu.SubTrigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.SubContent sideOffset={4} className={cn(MENU_CONTENT, 'w-auto p-2.5')}>
-          <div className="grid grid-cols-4 gap-1.5">
-            {PRESET_COLORS.map((c) => (
-              <button
-                key={c.value}
-                type="button"
-                title={c.label}
-                aria-label={c.label}
-                aria-pressed={activeColor === c.value}
-                onClick={() => { onSelect(c.value); onDone(); }}
-                className={cn(
-                  'h-7 w-7 rounded-md border outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring',
-                  activeColor === c.value ? 'border-foreground' : 'border-border',
-                )}
-                style={{ backgroundColor: c.value }}
-              />
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => { onReset(); onDone(); }}
-            className="mt-2 w-full rounded-md px-2 py-1 text-xs text-muted-foreground outline-2 outline-offset-2 outline-transparent transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-ring"
-          >
-            Reset
-          </button>
-        </DropdownMenu.SubContent>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Sub>
-  );
-}
-
-/**
  * The overflow home for controls the responsive fold has no other place to
  * put. Quote/Code block/Divider and Emoji already live in the Insert menu
  * unconditionally, so hiding their toolbar buttons costs nothing — but
- * Strikethrough, Inline Code, Task List, Alignment, Text Color and Highlight
+ * Strikethrough, Inline Code, Task List, Alignment and Color
  * had NO other home: at the app's own default 1440px layout (both side
- * panels open, ~645px of toolbar width) all six vanished with no way to
+ * panels open, ~645px of toolbar width) they vanished with no way to
  * reach them at all (#P2). This renders nothing when every one of them is
  * already visible as its own button.
  */
@@ -883,22 +926,18 @@ function MoreFormattingMenu({
 
           {!showColors && (
             <>
-              <ColorSwatchSub
-                icon={<Baseline size={15} className="shrink-0" />}
-                label="Text Color"
-                activeColor={activeState.textColor}
-                onSelect={(color) => editor.chain().focus().setColor(color).run()}
-                onReset={() => editor.chain().focus().unsetColor().run()}
-                onDone={close}
-              />
-              <ColorSwatchSub
-                icon={<Highlighter size={15} className="shrink-0" />}
-                label="Highlight"
-                activeColor={activeState.highlightColor}
-                onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
-                onReset={() => editor.chain().focus().unsetHighlight().run()}
-                onDone={close}
-              />
+              <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
+              <div className="px-1 pb-0.5 pt-0.5">
+                <ColorPanel
+                  textColor={activeState.textColor}
+                  highlightColor={activeState.highlightColor}
+                  onSelectText={(color) => editor.chain().focus().setColor(color).run()}
+                  onResetText={() => editor.chain().focus().unsetColor().run()}
+                  onSelectHighlight={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+                  onResetHighlight={() => editor.chain().focus().unsetHighlight().run()}
+                  onDone={close}
+                />
+              </div>
             </>
           )}
         </DropdownMenu.Content>
@@ -972,8 +1011,8 @@ export function EditorToolbar({
   const showOrderedList = containerWidth >= 640;
   const showUnderline = containerWidth >= 640;
 
-  // Strikethrough, Inline Code, Task List, Alignment, Text Color and
-  // Highlight have no other home when the fold hides them — unlike Quote/
+  // Strikethrough, Inline Code, Task List, Alignment and Color
+  // have no other home when the fold hides them — unlike Quote/
   // Code block/Divider/Emoji, which always live in the Insert menu too.
   const showMoreFormatting = !(showTaskList && showCode && showStrike && showAlign && showColors);
 
@@ -1137,18 +1176,12 @@ export function EditorToolbar({
             <ToolbarSeparator />
             <ToolbarGroup name="colors">
               <ColorPickerDropdown
-                icon={<Baseline size={15} />}
-                title="Text Color"
-                activeColor={activeState.textColor}
-                onSelect={(color) => editor.chain().focus().setColor(color).run()}
-                onReset={() => editor.chain().focus().unsetColor().run()}
-              />
-              <ColorPickerDropdown
-                icon={<Highlighter size={15} />}
-                title="Highlight (Ctrl+Shift+H)"
-                activeColor={activeState.highlightColor}
-                onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
-                onReset={() => editor.chain().focus().unsetHighlight().run()}
+                textColor={activeState.textColor}
+                highlightColor={activeState.highlightColor}
+                onSelectText={(color) => editor.chain().focus().setColor(color).run()}
+                onResetText={() => editor.chain().focus().unsetColor().run()}
+                onSelectHighlight={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+                onResetHighlight={() => editor.chain().focus().unsetHighlight().run()}
               />
             </ToolbarGroup>
           </>
