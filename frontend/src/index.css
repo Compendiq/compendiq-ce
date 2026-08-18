@@ -2141,6 +2141,12 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   text-decoration-thickness: from-font;
   text-underline-offset: 0.18em;
   text-decoration-color: oklch(from var(--color-foreground) l c h / 0.45);
+  /* `.prose :where(a)` only transitions color/decoration and would snap the
+     pages-list accent fill. Include background so hover eases like a row. */
+  transition:
+    color 0.15s ease,
+    text-decoration-color 0.15s ease,
+    background-color 0.15s ease;
 }
 .prose .confluence-children-view a:hover,
 .tiptap .confluence-children-view a:hover {

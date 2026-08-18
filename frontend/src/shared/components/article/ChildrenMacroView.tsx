@@ -100,7 +100,14 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
   );
 
   function renderTitle(child: ChildPage) {
-    const titleClass = 'nm-focus-ring inline-flex min-w-0 items-start gap-1.5 break-words';
+    // Same hover language as PagesPage / the page tree: a flat accent fill,
+    // never a border, lift, or teal. Padding is always on so the fill has
+    // somewhere to land without a layout shift; `px-1.5` not `px-2` — the
+    // latter is the old chrome row this directory was stripped of.
+    const titleClass = cn(
+      'nm-focus-ring flex min-w-0 w-full items-start gap-1.5 break-words rounded-md px-1.5 py-1 transition-colors duration-150',
+      !isEditable && 'hover:bg-accent focus-visible:bg-accent',
+    );
     const mark = child.icon ? (
       <PageIconMark icon={child.icon} pageId={child.id} size="row" className="mt-0.5" />
     ) : null;
