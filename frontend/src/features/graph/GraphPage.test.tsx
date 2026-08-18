@@ -95,7 +95,7 @@ describe('GraphPage', () => {
     render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
-      expect(screen.getByText('Knowledge Graph')).toBeInTheDocument();
+      expect(screen.getByText('Graph')).toBeInTheDocument();
     });
 
     // Should display node/edge counts

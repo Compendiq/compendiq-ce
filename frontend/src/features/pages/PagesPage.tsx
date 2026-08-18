@@ -741,47 +741,42 @@ export function PagesPage() {
     <div className="max-w-[1100px] space-y-3">
       <HeaderHost fallbackClassName="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 border-b border-border pb-2.5">
         <h1 className="shrink-0 text-[15px] font-semibold sm:text-lg">Pages</h1>
-        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-2 sm:gap-x-4">
-          <section
-            data-header-kpis
-            aria-labelledby="kb-status-heading"
-            className="flex items-center"
+        <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+          <button
+            onClick={() => navigate('/trash')}
+            className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
+            data-testid="trash-link"
+            title="Trash"
           >
-            <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
-            <KPICards
-              embeddingStatus={embeddingStatusData}
-              spacesCount={spaces?.length ?? 0}
-              lastSynced={syncStatus?.lastSynced}
-              onSync={() => syncMutation.mutate()}
-              isSyncing={syncStatus?.status === 'syncing'}
-            />
-          </section>
+            <Trash2 size={15} />
+            <span className="hidden sm:inline">Trash</span>
+          </button>
 
-          <span aria-hidden className="hidden h-4 w-px bg-border lg:block" />
-
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <button
-              onClick={() => navigate('/trash')}
-              className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
-              data-testid="trash-link"
-              title="Trash"
-            >
-              <Trash2 size={15} />
-              <span className="hidden sm:inline">Trash</span>
-            </button>
-
-            <button
-              onClick={() => navigate('/pages/new')}
-              className="nm-button-ghost h-8 px-3 text-xs sm:text-sm"
-              data-testid="new-page-button"
-            >
-              <Plus size={15} />
-              <span>New Page</span>
-              <ShortcutHint shortcutId="new-page" />
-            </button>
-          </div>
+          <button
+            onClick={() => navigate('/pages/new')}
+            className="nm-button-ghost h-8 px-3 text-xs sm:text-sm"
+            data-testid="new-page-button"
+          >
+            <Plus size={15} />
+            <span>New Page</span>
+            <ShortcutHint shortcutId="new-page" />
+          </button>
         </div>
       </HeaderHost>
+
+      <section
+        aria-labelledby="kb-status-heading"
+        className="flex items-center"
+      >
+        <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
+        <KPICards
+          embeddingStatus={embeddingStatusData}
+          spacesCount={spaces?.length ?? 0}
+          lastSynced={syncStatus?.lastSynced}
+          onSync={() => syncMutation.mutate()}
+          isSyncing={syncStatus?.status === 'syncing'}
+        />
+      </section>
 
       {/* Filters */}
       {/* A control row, not a pane. This was a bordered `bg-card` box with

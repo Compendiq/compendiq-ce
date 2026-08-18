@@ -115,8 +115,8 @@ export function NotificationDropdown({
               {group.label}
             </div>
             {group.items.map((notification, i) => {
-              const Icon = typeIcons[notification.type];
-              const color = typeColors[notification.type];
+              const Icon = typeIcons[notification.type] ?? Bell;
+              const color = typeColors[notification.type] ?? 'text-muted-foreground';
               return (
                 <m.button
                   key={notification.id}

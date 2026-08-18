@@ -55,7 +55,7 @@ export function AppHeaderMain() {
         ref={slotRef}
         id={APP_HEADER_SLOT_ID}
         data-testid="app-header-slot"
-        className="flex min-w-0 flex-1 items-center gap-3 [&_[data-header-kpis]]:max-lg:hidden"
+        className="flex min-w-0 flex-1 items-center gap-3"
       />
       {!occupied && defaultTitle && (
         <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">

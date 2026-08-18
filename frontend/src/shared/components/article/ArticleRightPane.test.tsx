@@ -957,6 +957,23 @@ describe('ArticleRightPane', () => {
     expect(screen.getByTestId('quality-score-badge')).toHaveTextContent('85');
   });
 
+  it('lists source and draft facts in Details, not as header chrome', () => {
+    currentMockPage = {
+      ...mockPage,
+      source: 'standalone',
+      visibility: 'private',
+      hasDraft: true,
+    } as typeof currentMockPage;
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('Source')).toBeInTheDocument();
+    expect(screen.getByText('Local')).toBeInTheDocument();
+    expect(screen.getByText('Visibility')).toBeInTheDocument();
+    expect(screen.getByText('Private')).toBeInTheDocument();
+    expect(screen.getByText('Unpublished draft')).toBeInTheDocument();
+  });
+
   it('uses confluenceId (not internal id) in the "Open in Confluence" link', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 

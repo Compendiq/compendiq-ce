@@ -7,25 +7,83 @@ import { apiFetch } from '../../lib/api';
 import { NotificationDropdown, type Notification } from './NotificationDropdown';
 import { cn } from '../../lib/cn';
 
+const NOTIFICATION_TYPES = new Set<Notification['type']>([
+  'comment',
+  'mention',
+  'verification_due',
+  'sync_complete',
+  'general',
+]);
+
+interface NotificationListResponse {
+  items: Notification[];
+  total: number;
+}
+
+/** GET /notifications answers `{ items, total }`, never a bare array. */
+function toNotificationList(data: unknown): Notification[] {
+  const raw = Array.isArray(data)
+    ? data
+    : data && typeof data === 'object' && Array.isArray((data as { items?: unknown }).items)
+      ? (data as { items: unknown[] }).items
+      : [];
+
+  return raw.map((row) => {
+    const n = (row ?? {}) as Record<string, unknown>;
+    const type = typeof n.type === 'string' && NOTIFICATION_TYPES.has(n.type as Notification['type'])
+      ? (n.type as Notification['type'])
+      : 'general';
+    return {
+      id: String(n.id ?? ''),
+      type,
+      title: typeof n.title === 'string' ? n.title : '',
+      body: typeof n.body === 'string' ? n.body : '',
+      read: Boolean(n.read ?? n.isRead),
+      link: typeof n.link === 'string' ? n.link : undefined,
+      createdAt: n.createdAt instanceof Date
+        ? n.createdAt.toISOString()
+        : typeof n.createdAt === 'string'
+          ? n.createdAt
+          : new Date(0).toISOString(),
+    };
+  });
+}
+
 function useNotifications() {
-  return useQuery<Notification[]>({
+  return useQuery({
     queryKey: ['notifications'],
-    queryFn: () => apiFetch('/notifications'),
+    queryFn: () => apiFetch<unknown>('/notifications'),
     refetchInterval: 60_000, // poll every 60s
     refetchOnWindowFocus: true,
+    select: toNotificationList,
   });
+}
+
+function patchCachedList(
+  old: unknown,
+  mapItem: (n: Notification) => Notification,
+): NotificationListResponse | Notification[] | undefined {
+  if (Array.isArray(old)) return old.map((row) => mapItem(toNotificationList([row])[0]!));
+  if (old && typeof old === 'object' && Array.isArray((old as NotificationListResponse).items)) {
+    const envelope = old as NotificationListResponse;
+    return {
+      ...envelope,
+      items: toNotificationList(envelope.items).map(mapItem),
+    };
+  }
+  return undefined;
 }
 
 function useMarkNotificationRead() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (notificationId: string) =>
-      apiFetch(`/notifications/${notificationId}/read`, { method: 'PUT' }),
+      apiFetch(`/notifications/${notificationId}/read`, { method: 'POST' }),
     onMutate: async (notificationId) => {
       await queryClient.cancelQueries({ queryKey: ['notifications'] });
-      const previous = queryClient.getQueryData<Notification[]>(['notifications']);
-      queryClient.setQueryData<Notification[]>(['notifications'], (old) =>
-        old?.map((n) => (n.id === notificationId ? { ...n, read: true } : n)),
+      const previous = queryClient.getQueryData(['notifications']);
+      queryClient.setQueryData(['notifications'], (old) =>
+        patchCachedList(old, (n) => (n.id === notificationId ? { ...n, read: true } : n)),
       );
       return { previous };
     },
@@ -44,12 +102,12 @@ function useMarkAllRead() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () =>
-      apiFetch('/notifications/read-all', { method: 'PUT' }),
+      apiFetch('/notifications/read-all', { method: 'POST' }),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['notifications'] });
-      const previous = queryClient.getQueryData<Notification[]>(['notifications']);
-      queryClient.setQueryData<Notification[]>(['notifications'], (old) =>
-        old?.map((n) => ({ ...n, read: true })),
+      const previous = queryClient.getQueryData(['notifications']);
+      queryClient.setQueryData(['notifications'], (old) =>
+        patchCachedList(old, (n) => ({ ...n, read: true })),
       );
       return { previous };
     },
@@ -79,7 +137,7 @@ export function NotificationBell() {
   const markAllRead = useMarkAllRead();
 
   const unreadCount = useMemo(
-    () => notifications?.filter((n) => !n.read).length ?? 0,
+    () => (Array.isArray(notifications) ? notifications.filter((n) => !n.read).length : 0),
     [notifications],
   );
 
@@ -104,7 +162,7 @@ export function NotificationBell() {
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
         <button
-          className="relative flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground transition-colors outline-none"
+          className="nm-icon-button relative"
           aria-label="Notifications"
           data-testid="notification-bell"
         >

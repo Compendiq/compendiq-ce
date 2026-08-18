@@ -408,6 +408,19 @@ describe('PageViewPage', () => {
     document.body.innerHTML = '';
   });
 
+  function openPageActions() {
+    const trigger = screen.getByTestId('page-actions-overflow-btn');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+    fireEvent.click(trigger);
+  }
+
+  async function closePageActions() {
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    });
+  }
+
   // ---------- fetch-failure vs. genuine 404 (P1) ----------
   // usePage used to be consumed as { data, isLoading } only, so a 500, a
   // dropped network, and a real 404 all fell into the same "Page not found"
@@ -450,13 +463,12 @@ describe('PageViewPage', () => {
     expect(screen.getByText(/this page is still there/i)).toBeInTheDocument();
   });
 
-  it('renders the article title and space key in the header strip', () => {
+  it('renders the article title in the header strip and as the document heading', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
     const titles = screen.getAllByText('Engineering Handbook');
     expect(titles.length).toBeGreaterThanOrEqual(2);
     expect(screen.getByRole('heading', { level: 1, name: 'Engineering Handbook' })).toBeInTheDocument();
-    expect(screen.getByText('ENG')).toBeInTheDocument();
   });
 
   it('gives the document title the same reduced top inset in read and edit', () => {
@@ -1026,19 +1038,11 @@ describe('PageViewPage', () => {
   // the Draft badge must use the neutral private-tier palette (no
   // orange/amber/primary). The Playwright contrast spec in Task 6 will catch
   // the colour combo at run-time; this guards the contract at the unit level.
-  it('Draft badge uses neutral private-tier palette, not orange/amber', () => {
+  it('does not put the Draft badge in the 48px header', () => {
     currentMockPage = { ...mockPage, hasDraft: true } as typeof mockPage;
     try {
       render(<PageViewPage />, { wrapper: createWrapper() });
-      const badge = screen.getByTestId('badge-draft');
-      expect(badge.className).not.toMatch(/orange|amber|primary|warning|yellow/);
-      // bg-foreground/10 + text-secondary-foreground, the recipe the whole
-      // badge cluster shares with the PagesPage rows — bg-muted measured
-      // 1.00:1 against a hovered bg-accent row there (accent == muted in
-      // Graphite), and muted-fg 3.85:1 on the tinted hovered Paper row.
-      expect(badge.className).toContain('bg-foreground/10');
-      expect(badge.className).toContain('text-secondary-foreground');
-      expect(badge.className).not.toContain('text-muted-foreground');
+      expect(screen.queryByTestId('badge-draft')).not.toBeInTheDocument();
     } finally {
       currentMockPage = mockPage;
     }
@@ -1451,29 +1455,35 @@ describe('PageViewPage', () => {
   });
 
   describe('relocate entry point (#1123)', () => {
-    it('offers "Move to Confluence" on a local article', () => {
+    it('offers "Move to Confluence" on a local article', async () => {
       currentMockPage = { ...mockPage, source: 'standalone', spaceKey: 'HOME', confluenceId: null as unknown as string };
       render(<PageViewPage />, { wrapper: createWrapper() });
 
-      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to Confluence/i);
+      openPageActions();
+      expect(await screen.findByTestId('relocate-btn')).toHaveTextContent(/Move to Confluence/i);
+      await closePageActions();
     });
 
-    it('offers "Move to local space" on a Confluence article', () => {
+    it('offers "Move to local space" on a Confluence article', async () => {
       currentMockPage = { ...mockPage, source: 'confluence' };
       render(<PageViewPage />, { wrapper: createWrapper() });
 
-      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to local space/i);
+      openPageActions();
+      expect(await screen.findByTestId('relocate-btn')).toHaveTextContent(/Move to local space/i);
+      await closePageActions();
     });
 
     // Hidden, not disabled: `pages:relocate` is seeded onto editor /
     // space_admin by migration 086 and CE ships no UI for granting
     // permissions, so a denied user has no in-product path to earning it.
-    it('renders no relocate control without the pages:relocate permission', () => {
+    it('renders no relocate control without the pages:relocate permission', async () => {
       mockRelocateAllowed = false;
       currentMockPage = { ...mockPage, source: 'standalone' };
       render(<PageViewPage />, { wrapper: createWrapper() });
 
+      openPageActions();
       expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
+      await closePageActions();
     });
 
     it('opens the relocate dialog carrying the article’s own source', async () => {
@@ -1484,6 +1494,7 @@ describe('PageViewPage', () => {
       // the network, and a stubbed child cannot show that this page hands it
       // the right `source` — only that it passed *something*.
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      openPageActions();
       fireEvent.click(screen.getByTestId('relocate-btn'));
 
       await screen.findByRole('dialog');
@@ -1557,7 +1568,8 @@ describe('PageViewPage', () => {
       currentMockPage = { ...mockPage };
       render(<PageViewPage />, { wrapper: createWrapper() });
 
-      const verifyBtn = screen.getByTestId('verify-btn');
+      openPageActions();
+      const verifyBtn = await screen.findByTestId('verify-btn');
       expect(verifyBtn).toHaveAttribute('aria-busy', 'false');
 
       fireEvent.click(verifyBtn);

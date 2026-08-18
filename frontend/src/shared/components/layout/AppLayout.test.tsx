@@ -59,6 +59,14 @@ vi.mock('./ThemeToggle', () => ({
   ThemeToggle: () => <div data-testid="theme-toggle" />,
 }));
 
+vi.mock('./NotificationBell', () => ({
+  NotificationBell: () => <div data-testid="notification-bell" />,
+}));
+
+vi.mock('./UserMenu', () => ({
+  UserMenu: () => <button type="button" data-testid="user-menu">Account</button>,
+}));
+
 // AppLayout only needs the breakpoint decision in these tests. Keep it
 // synchronous so shortcut-hook spies are not invalidated by a post-mount
 // media-query subscription update; the hook itself has dedicated tests.
@@ -183,7 +191,7 @@ describe('AppLayout', () => {
     expect(header!.parentElement).toBe(rootDiv);
   });
 
-  it('has no visible Find control in the header', () => {
+  it('puts a Find control in the header that opens the command palette', () => {
     render(
       <AppLayout>
         <div>content</div>
@@ -191,9 +199,25 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/ai') },
     );
     const header = document.querySelector('header')!;
-    expect(header.querySelector('[data-testid="header-find"]')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Jump to page or command' })).not.toBeInTheDocument();
-    expect(screen.queryByText('Jump to page')).not.toBeInTheDocument();
+    const find = header.querySelector('[data-testid="header-find"]');
+    expect(find).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Jump to page or command' })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('header-find'));
+    expect(useCommandPaletteStore.getState().isOpen).toBe(true);
+  });
+
+  it('keeps session chrome in the header landmark', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+    const header = document.querySelector('header')!;
+    expect(header.querySelector('[data-testid="header-session-cluster"]')).toBeTruthy();
+    expect(header.querySelector('[data-testid="theme-toggle"]')).toBeTruthy();
+    expect(header.querySelector('[data-testid="notification-bell"]')).toBeTruthy();
+    expect(header.querySelector('[data-testid="user-menu"]')).toBeTruthy();
   });
 
   it('registers Cmd/Ctrl+K to open the command palette', () => {
@@ -282,18 +306,6 @@ describe('AppLayout', () => {
       expect(screen.queryByRole('dialog', { name: 'Navigation menu' })).not.toBeInTheDocument();
     });
     expect(document.activeElement).toBe(toggle);
-  });
-
-  it('keeps session chrome out of the header', () => {
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    const header = document.querySelector('header')!;
-    expect(header.querySelector('[data-testid="theme-toggle"]')).toBeNull();
-    expect(header.querySelector('[data-testid="user-avatar-initial"]')).toBeNull();
   });
 
   it('shows tree sidebar on /pages and /ai, swaps to settings sidebar on /settings', () => {

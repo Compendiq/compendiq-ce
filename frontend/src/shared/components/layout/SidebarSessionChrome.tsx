@@ -5,9 +5,9 @@ import { UserMenu } from './UserMenu';
 /**
  * Session chrome for the left rail — theme + account.
  *
- * Lives at the foot of both sidebars (Pages tree and Settings) so it stays
- * reachable when the header is only logo + mobile hamburger. Compact mode
- * stacks the same two controls for the 40px rail.
+ * Kept as a rail-foot building block. The live session cluster now sits in
+ * the 48px header (`HeaderSessionCluster`) so account/theme stay in a
+ * stable landmark; the sidebars no longer mount this.
  */
 export function SidebarSessionChrome({ compact = false }: { compact?: boolean }) {
   return (

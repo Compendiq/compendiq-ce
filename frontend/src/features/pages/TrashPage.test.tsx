@@ -110,7 +110,7 @@ describe('TrashPage', () => {
   it('exposes an accessible name on the back button (#939)', () => {
     mockApi({ items: [], total: 0 });
     render(<TrashPage />, { wrapper: createWrapper() });
-    expect(screen.getByRole('button', { name: /back to dashboard/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /back to pages/i })).toBeInTheDocument();
   });
 
   it('shows a restore button for each trash item', async () => {

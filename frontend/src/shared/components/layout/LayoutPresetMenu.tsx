@@ -46,21 +46,23 @@ const presets: Array<{
 export function LayoutPresetMenu({
   activePreset,
   onSelect,
+  compact = false,
 }: {
   activePreset: LayoutPreset | null;
   onSelect: (preset: LayoutPreset) => void;
+  compact?: boolean;
 }) {
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          className="nm-button-ghost h-8 px-2 text-xs"
+          className={compact ? 'nm-icon-button' : 'nm-button-ghost h-8 px-2 text-xs'}
           aria-label="Layout presets"
           title="Layout presets"
         >
           <LayoutTemplate size={15} aria-hidden="true" />
-          <span className="hidden sm:inline">Layout</span>
+          {!compact && <span className="hidden sm:inline">Layout</span>}
         </button>
       </DropdownMenu.Trigger>
 

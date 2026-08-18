@@ -21,6 +21,7 @@ import { AiDock } from '../../../features/ai/dock/AiDock';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { Logo } from '../Logo';
 import { AppHeaderMain } from './header-slot';
+import { HeaderSessionCluster } from './HeaderSessionCluster';
 import { PageTransition } from './PageTransition';
 import { type LayoutPreset } from './LayoutPresetMenu';
 import { ArticleLayoutControlsProvider } from './article-layout-controls';
@@ -461,6 +462,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         {/* Route title and page actions. Pages (and any HeaderHost) claim
             the slot; otherwise the path name is wayfinding. */}
         <AppHeaderMain />
+        <HeaderSessionCluster />
       </header>
 
       {/* Mobile sidebar slide-over */}
