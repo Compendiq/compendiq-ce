@@ -577,8 +577,8 @@ describe('POST /api/llm/ask', () => {
       expect(final.confidenceBasis).toBe('similarity');
       // The closest sources still travel — "one of them may still help".
       expect((final.sources as unknown[]).length).toBe(1);
-      // Live text explains the attached chips; persisted text (no sources on
-      // reload) does not — each surface's copy matches what it shows.
+      // Live text explains the attached chips; persisted text does not —
+      // each surface's copy matches what it shows.
       const contentFrame = events.find((f) => typeof f.content === 'string')!;
       expect(contentFrame.content).toContain('attached as sources');
       const upsert = mockQuery.mock.calls.find(
@@ -961,8 +961,10 @@ describe('POST /api/llm/ask', () => {
       const messages = JSON.parse((insert![1] as unknown[])[3] as string) as Array<{ role: string; content: string }>;
       const assistantTurn = messages.find((m) => m.role === 'assistant')! as { role: string; content: string; refused?: boolean };
       expect(assistantTurn.content).toContain('not answering rather than guessing');
-      // The persisted row has no sources column — the text must not promise
-      // a list that will not exist on reload.
+      // The persisted turn carries its sources as structured data (#1361);
+      // the PROSE must still not promise a list, because the reload derives
+      // its own heading from the presence of `sources` rather than replaying
+      // attachment prose.
       expect(assistantTurn.content.toLowerCase()).not.toContain('listed below');
       // The marker is what keeps this turn out of the model context and out
       // of the gate's history exemption on the next turn.
@@ -2371,6 +2373,17 @@ describe('POST /api/llm/ask', () => {
         // The pictures ride as sources, under #1119's "Closest matches — not
         // used" heading.
         expect((final.sources as Array<Record<string, unknown>>).some((s) => s.kind === 'image')).toBe(true);
+        // #1361: the same image identity is what gets persisted — this is
+        // precisely the refusal where the image sources ARE the whole
+        // grounding (every text row is a synthesised title), so a persist
+        // that dropped `kind`/`attachmentUrl` here would silently downgrade
+        // a reopened refusal to a set of duplicate page chips.
+        const insert = mockQuery.mock.calls.find(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+        )!;
+        const persisted = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; sources?: Array<Record<string, unknown>> }>;
+        const persistedImage = persisted.find((m) => m.role === 'assistant')!.sources!.find((s) => s.kind === 'image')!;
+        expect(persistedImage.attachmentUrl).toEqual(expect.any(String));
       });
     }
 

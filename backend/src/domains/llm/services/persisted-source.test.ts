@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { SourceSchema } from '@compendiq/contracts';
 import { toPersistedSources } from './persisted-source.js';
+import { logger } from '../../../core/utils/logger.js';
 
 describe('toPersistedSources', () => {
   it('keeps the chip fields of a KB source and drops the sort/rerank scores', () => {
@@ -40,6 +42,24 @@ describe('toPersistedSources', () => {
     expect(s).not.toHaveProperty('score');
   });
 
+  // The `toEqual` literals above pin the shape as of today, but TypeScript
+  // alone does not: the return type's field is optional and the object is
+  // built through a spread, so excess-property checking never sees a
+  // producer-side rename (verified empirically — `attachmentUrl` renamed to
+  // `imageUrl` inside `toPersistedSources` still compiles clean against
+  // `PersistedSource[]`). Parsing the producer's own output against the
+  // contract `isImageSource` is written against closes that gap on either
+  // side of the handoff.
+  it('produces output that validates against SourceSchema as an image source', () => {
+    const [s] = toPersistedSources([{
+      kind: 'image', pageId: 42, pageTitle: 'Page 42', spaceKey: 'OPS',
+      attachmentUrl: '/api/attachments/42/a.png', similarity: null, score: 0.0328,
+    }]);
+    const parsed = SourceSchema.parse(s);
+    expect(parsed.kind).toBe('image');
+    expect(typeof parsed.attachmentUrl).toBe('string');
+  });
+
   it('copies neither field when kind is present without attachmentUrl', () => {
     const [s] = toPersistedSources([{ kind: 'image', pageId: 42, pageTitle: 'Page 42' }]);
     expect(s).not.toHaveProperty('kind');
@@ -50,5 +70,24 @@ describe('toPersistedSources', () => {
     const [s] = toPersistedSources([{ pageId: 42, pageTitle: 'Page 42', attachmentUrl: '/api/attachments/42/a.png' }]);
     expect(s).not.toHaveProperty('kind');
     expect(s).not.toHaveProperty('attachmentUrl');
+  });
+
+  // review r1 #5 — an empty string passes `typeof s.attachmentUrl ===
+  // 'string'` on both sides of the wire/frontend predicate, which would take
+  // the image branch (and its image `aria-label`) with no picture in it: the
+  // exact duplicate-page-chip failure this fix exists to remove, just
+  // reached through an unusable URL instead of a missing one. Unreachable
+  // today (`buildPageImageUrl` never returns ''), so this pins the guard
+  // rather than a live bug.
+  it('copies neither field when attachmentUrl is the empty string, and warns', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    const [s] = toPersistedSources([{ kind: 'image', pageId: 42, pageTitle: 'Page 42', attachmentUrl: '' }]);
+    expect(s).not.toHaveProperty('kind');
+    expect(s).not.toHaveProperty('attachmentUrl');
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ pageId: 42, pageTitle: 'Page 42' }),
+      expect.stringContaining('image source'),
+    );
+    warn.mockRestore();
   });
 });

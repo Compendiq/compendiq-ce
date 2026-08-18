@@ -249,7 +249,13 @@ Four rules are load-bearing:
   answer, each thumbnail fetches the FULL attachment (ADR-025 adds no
   server-side resize), so the worst case is `MAX_IMAGE_SOURCES` (4) ×
   `MAX_IMAGE_BYTES` to paint 14px and 32px squares — held down by both
-  attachment routes' `max-age=3600`. Lower the cap if that stops holding.
+  attachment routes' `max-age=3600`. **Since #1361 the entries persist, so a
+  REOPENED thread multiplies this by the number of assistant turns on
+  screen** — `useAuthenticatedSrc` fetches eagerly per chip with no dedupe
+  and holds one blob per instance, and today nothing caps how many turns
+  render at once — PR 2 decides whether reopened thumbnails render lazily
+  (see the PR-2 flag at `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md:519`).
+  Lower the cap if the single-answer case stops holding.
 
 **In Settings → AI Models, the leg has three admin surfaces**, one per question
 an operator actually asks. *Can it run?* — the **Image embedding** row on **LLM

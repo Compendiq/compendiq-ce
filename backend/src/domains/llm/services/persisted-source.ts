@@ -1,4 +1,5 @@
 import type { PersistedSource } from '@compendiq/contracts';
+import { logger } from '../../../core/utils/logger.js';
 
 /** The union `llm-ask.ts` builds from search results, external docs, web hits and image hits. */
 export interface WireSource {
@@ -29,10 +30,26 @@ export interface WireSource {
  * A `kind` with no url or a url with no kind is not an image source by that
  * predicate, so copying just one would produce a shape the reader cannot
  * render as either a page or an image.
+ *
+ * The URL must be a NON-EMPTY string, not merely a string: `''` passes
+ * `typeof === 'string'` on both this guard and the frontend's `isImageSource`
+ * (review r1 #5), so an empty-string URL would take the image branch — and
+ * its image `aria-label` — with no picture in it, which is the duplicate-page
+ * failure this function exists to remove, reached through an unusable URL
+ * instead of a missing one. Unreachable today (`buildPageImageUrl` never
+ * returns `''`), so a source that trips it is a future regression, not a
+ * skip this deployment already relies on — hence the warn rather than a
+ * silent drop.
  */
 export function toPersistedSources(sources: WireSource[]): PersistedSource[] {
   return sources.map((s) => {
-    const isImage = s.kind === 'image' && typeof s.attachmentUrl === 'string';
+    const isImage = s.kind === 'image' && typeof s.attachmentUrl === 'string' && s.attachmentUrl.length > 0;
+    if (s.kind === 'image' && !isImage) {
+      logger.warn(
+        { pageId: s.pageId, pageTitle: s.pageTitle },
+        'Dropping an image source with no usable attachmentUrl while persisting the conversation turn',
+      );
+    }
     return {
       pageTitle: s.pageTitle,
       ...(s.spaceKey !== undefined ? { spaceKey: s.spaceKey } : {}),

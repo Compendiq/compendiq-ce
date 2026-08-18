@@ -195,9 +195,10 @@ export type TitleSource = z.infer<typeof TitleSourceSchema>;
  * (#1361) so a reopened answer renders the same thumbnails as the live one.
  * `similarity` on an image source is always `null`: the hit's own cosine is
  * cross-modal and sits in a different band than the text cosines beside it
- * (ADR-025 §8). Deliberately NOT a discriminated union — the read path
- * spreads over these objects and `unavailable` is a flat annotation that
- * applies to every shape alike.
+ * (ADR-025 §8). Deliberately NOT a discriminated union: Zod needs a present
+ * literal on every branch, and the page/web shape deliberately carries none
+ * (#1125 keys those on `url`) — so an absent `kind` has to keep meaning "a
+ * knowledge-base page".
  */
 export const SourceSchema = z.object({
   pageTitle: z.string(),

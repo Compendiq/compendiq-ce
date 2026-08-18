@@ -8,10 +8,13 @@ import type { Source } from './SourceCitations';
  * component, and exporting it from `SourceCitations.tsx` costs that file its
  * fast-refresh boundary.
  *
- * It requires the URL as well as the discriminator. `kind` alone would let a
- * malformed frame render an empty `<img>` and, worse, take the image branch's
- * `aria-label` on a chip with no picture in it — the check and the thing it
- * unlocks have to be the same fact.
+ * It requires the URL as well as the discriminator, and the URL must be
+ * NON-EMPTY: `''` passes a bare `typeof === 'string'` check, which would let
+ * a malformed frame render an empty `<img>` and, worse, take the image
+ * branch's `aria-label` on a chip with no picture in it — the check and the
+ * thing it unlocks have to be the same fact. The backend's
+ * `toPersistedSources` guard is the same rule on the write side (review r1
+ * #5); keep the two in lock-step.
  *
  * **`similarity` on an image source is always `null`**, deliberately: the
  * image leg's own score is a CROSS-MODAL cosine sitting in a different band
@@ -20,7 +23,7 @@ import type { Source } from './SourceCitations';
  * backend, and pinned in `source-confidence.test.ts`.
  */
 export function isImageSource(source: Source): boolean {
-  return source.kind === 'image' && typeof source.attachmentUrl === 'string';
+  return source.kind === 'image' && typeof source.attachmentUrl === 'string' && source.attachmentUrl.length > 0;
 }
 
 /**
