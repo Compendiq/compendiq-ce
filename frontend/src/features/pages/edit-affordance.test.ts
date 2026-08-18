@@ -8,11 +8,12 @@ const inspectorSource = readFileSync(
 );
 
 /**
- * `Edit` is the primary action on `/pages/:id` and was its quietest control:
- * 12px ghost text in a ~24px box, identical in weight to Relocate / Verify /
- * Graph beside it and last in a wrapping row, so at 834px and 390px it landed
- * alone on a second line below the 44px thumb minimum. The source comment above
- * it already called it "the most used control on the page".
+ * `Edit` is the only first-class chrome action on `/pages/:id` in read mode.
+ * It lives on the same sticky 48px chassis as the write toolbar, at the same
+ * 32px (`h-8`) box as every format-toolbar control. Labels sit beside it as
+ * pills, not inside a count button. Operate verbs live in the inspector.
+ * It used to be 12px ghost text in a ~24px box, last in a wrapping operate
+ * row, so at 834px and 390px it landed alone below the 44px thumb minimum.
  *
  * This is a hierarchy fact, not a layout one — jsdom cannot measure it and a
  * render test would only assert the class string anyway, so it is checked here
@@ -40,16 +41,14 @@ describe('the Edit affordance', () => {
     expect(editButton()).toMatch(/shrink-0/);
   });
 
-  it('uses the real secondary button so it outranks Relocate / Verify', () => {
+  it('uses the same 32px box as the format-toolbar controls', () => {
     expect(editButton()).toMatch(/nm-button-ghost/);
-    expect(editButton()).not.toMatch(/px-2\.5 py-1 text-xs/);
+    expect(editButton()).toMatch(/\bh-8\b/);
+    expect(editButton()).toMatch(/px-2\.5/);
+    expect(editButton()).toMatch(/text-xs/);
+    expect(editButton()).not.toMatch(/max-sm:min-h-11/);
+    // Write-mode sticky chassis still matches the 48px header line.
     expect(source).toContain('min-h-[calc(3rem-1px)]');
-  });
-
-  // 2.5.5: the row is reachable one-handed on a phone, where this used to be a
-  // ~24px target in the hardest reach zone.
-  it('clears a 44px touch target below the sm breakpoint', () => {
-    expect(editButton()).toMatch(/max-sm:min-h-11/);
   });
 
   it('keeps its keyboard hint', () => {

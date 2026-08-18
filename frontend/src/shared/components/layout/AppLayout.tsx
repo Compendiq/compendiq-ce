@@ -261,7 +261,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       key: 'Ctrl+K',
       keys: ['k'],
       mod: true,
-      description: 'Jump to page or command',
+      description: 'Find',
       category: 'navigation',
       action: openCommandPalette,
     },
@@ -446,6 +446,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <header className="app-header relative z-10 flex h-12 shrink-0 items-center gap-3 border-b px-3">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
+          type="button"
           onClick={() => setMobileSidebarOpen((v) => !v)}
           className="nm-icon-button mr-2 md:hidden"
           aria-label={mobileSidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
@@ -456,11 +457,16 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </button>
 
         <Link to="/" aria-label="Compendiq home" className="flex shrink-0 items-center group">
-          <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
+          {/* Clip to the Q-tile below `md` so hamburger + lockup + title +
+              session cluster fit the 48px. The SVG itself stays the full
+              lockup; overflow hides the wordmark rather than squashing it. */}
+          <span className="block h-[22px] w-[22px] overflow-hidden md:w-auto">
+            <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
+          </span>
         </Link>
 
-        {/* Route title and page actions. Pages (and any HeaderHost) claim
-            the slot; otherwise the path name is wayfinding. */}
+        {/* Route title and one page claim (article Edit / ⋯). Session tools
+            stay in the landmark; list-page actions live on the page. */}
         <AppHeaderMain />
         <HeaderSessionCluster />
       </header>

@@ -787,6 +787,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       created_by_user_id: string | null;
       has_draft: boolean;
       draft_updated_at: Date | null;
+      verified_at: Date | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
               cp.body_storage, cp.body_html, cp.body_text,
@@ -798,7 +799,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               EXISTS(SELECT 1 FROM pages c2 WHERE c2.parent_id = cp.confluence_id AND cp.confluence_id IS NOT NULL AND c2.deleted_at IS NULL) as has_children,
               cp.summary_html, cp.summary_status, cp.summary_generated_at, cp.summary_model, cp.summary_error,
               cp.source, cp.visibility, cp.created_by_user_id,
-              (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at
+              (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at,
+              cp.verified_at
        FROM pages cp
        WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
          AND cp.deleted_at IS NULL`,
@@ -867,6 +869,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       createdByUserId: row.created_by_user_id,
       hasDraft: row.has_draft,
       draftUpdatedAt: row.draft_updated_at?.toISOString() ?? null,
+      verifiedAt: row.verified_at,
     };
   });
 

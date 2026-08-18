@@ -164,7 +164,7 @@ describe('UserMenu', () => {
     });
   });
 
-  it('calls logoutApi when Sign out is selected', async () => {
+  it('asks before signing out, and only then calls logoutApi', async () => {
     renderUserMenu();
     const trigger = screen.getByRole('button');
     fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
@@ -173,12 +173,29 @@ describe('UserMenu', () => {
       expect(trigger).toHaveAttribute('data-state', 'open');
     });
 
-    const signOut = screen.getByText('Sign out');
-    fireEvent.click(signOut);
+    fireEvent.click(screen.getByText('Sign out'));
+    expect(mockLogoutApi).not.toHaveBeenCalled();
+
+    const dialog = await screen.findByTestId('confirm-dialog');
+    expect(dialog).toHaveTextContent('Sign out?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
 
     await vi.waitFor(() => {
       expect(mockLogoutApi).toHaveBeenCalled();
     });
+  });
+
+  it('does not sign out when the confirm is cancelled', async () => {
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+    fireEvent.click(screen.getByText('Sign out'));
+    await screen.findByTestId('confirm-dialog');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    expect(mockLogoutApi).not.toHaveBeenCalled();
   });
 
   // /admin/analytics is mounted at App.tsx:165 but no UI links to it.

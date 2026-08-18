@@ -739,10 +739,25 @@ export function PagesPage() {
     // `mx-auto`: this is a workspace pane beside a sidebar, not a centered
     // page, so the cap should keep content flush-left, not float it.
     <div className="max-w-[1100px] space-y-3">
-      <HeaderHost fallbackClassName="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 border-b border-border pb-2.5">
-        <h1 className="shrink-0 text-[15px] font-semibold sm:text-lg">Pages</h1>
-        <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+      <HeaderHost fallbackClassName="mb-1">
+        <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">Pages</h1>
+      </HeaderHost>
+
+      <section
+        aria-labelledby="kb-status-heading"
+        className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2"
+      >
+        <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
+        <KPICards
+          embeddingStatus={embeddingStatusData}
+          spacesCount={spaces?.length ?? 0}
+          lastSynced={syncStatus?.lastSynced}
+          onSync={() => syncMutation.mutate()}
+          isSyncing={syncStatus?.status === 'syncing'}
+        />
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           <button
+            type="button"
             onClick={() => navigate('/trash')}
             className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
             data-testid="trash-link"
@@ -753,6 +768,7 @@ export function PagesPage() {
           </button>
 
           <button
+            type="button"
             onClick={() => navigate('/pages/new')}
             className="nm-button-ghost h-8 px-3 text-xs sm:text-sm"
             data-testid="new-page-button"
@@ -762,20 +778,6 @@ export function PagesPage() {
             <ShortcutHint shortcutId="new-page" />
           </button>
         </div>
-      </HeaderHost>
-
-      <section
-        aria-labelledby="kb-status-heading"
-        className="flex items-center"
-      >
-        <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
-        <KPICards
-          embeddingStatus={embeddingStatusData}
-          spacesCount={spaces?.length ?? 0}
-          lastSynced={syncStatus?.lastSynced}
-          onSync={() => syncMutation.mutate()}
-          isSyncing={syncStatus?.status === 'syncing'}
-        />
       </section>
 
       {/* Filters */}

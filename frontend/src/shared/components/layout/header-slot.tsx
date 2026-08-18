@@ -50,18 +50,21 @@ export function AppHeaderMain() {
   }, []);
 
   return (
-    <>
+    // One wayfinding row. The slot is `contents` so a claimed title and the
+    // fallback h1 occupy the same flex track — never a flex-1 hole that
+    // shoves an unclaimed title against the session cluster.
+    <div className="flex min-w-0 flex-1 items-center gap-3">
       <div
         ref={slotRef}
         id={APP_HEADER_SLOT_ID}
         data-testid="app-header-slot"
-        className="flex min-w-0 flex-1 items-center gap-3"
+        className="contents"
       />
       {!occupied && defaultTitle && (
         <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">
           {defaultTitle}
         </h1>
       )}
-    </>
+    </div>
   );
 }

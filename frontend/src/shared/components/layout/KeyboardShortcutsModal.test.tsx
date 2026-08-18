@@ -35,7 +35,7 @@ describe('KeyboardShortcutsModal', () => {
     useKeyboardShortcutsStore.setState({ isOpen: true });
     render(<KeyboardShortcutsModal />);
     // Navigation
-    expect(screen.getByText('Jump to page or command')).toBeInTheDocument();
+    expect(screen.getByText('Find')).toBeInTheDocument();
     // Actions — uses correct Alt+N from registry, not Ctrl+N
     expect(screen.getByText('New Page')).toBeInTheDocument();
     // Panels
