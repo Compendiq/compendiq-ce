@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { SourceCitations, type Source } from './SourceCitations';
@@ -190,5 +190,136 @@ describe('SourceCitations', () => {
   it('handles single source', () => {
     render(<SourceCitations sources={[mockSources[0]]} />, { wrapper: Wrapper });
     expect(screen.getByText('Sources (1)')).toBeInTheDocument();
+  });
+
+  // ── Image sources (#1115 P3) ─────────────────────────────────────────────
+
+  describe('image sources', () => {
+    const imageSource: Source = {
+      kind: 'image',
+      pageTitle: 'Turbine assembly',
+      spaceKey: 'ENG',
+      pageId: 77,
+      attachmentUrl: '/api/attachments/77/turbine.png',
+      similarity: null,
+    };
+
+    beforeEach(() => {
+      vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:thumb');
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    });
+
+    function mockAttachmentFetch(ok = true) {
+      const fetchMock = vi.fn(async () =>
+        ok
+          ? ({ ok: true, status: 200, blob: async () => new Blob(['x']) } as unknown as Response)
+          : ({ ok: false, status: 404, blob: async () => new Blob() } as unknown as Response),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      return fetchMock;
+    }
+
+    it('renders the thumbnail, the category label and a link to the PAGE', async () => {
+      const fetchMock = mockAttachmentFetch();
+      render(<SourceCitations sources={[imageSource]} />, { wrapper: Wrapper });
+      fireEvent.click(screen.getByText('Sources (1)'));
+
+      // The picture is fetched through the authenticated route, not set as a
+      // bare `src` (which would 401).
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(fetchMock.mock.calls[0]![0]).toBe('/api/attachments/77/turbine.png');
+      const thumb = await screen.findByTestId('source-thumbnail');
+      // Decorative: the title beside it is the accessible name.
+      expect(thumb).toHaveAttribute('alt', '');
+      expect(thumb).toHaveAttribute('aria-hidden', 'true');
+
+      expect(screen.getByTestId('source-image-label')).toHaveTextContent('Image');
+      expect(screen.getByText('Turbine assembly')).toBeInTheDocument();
+
+      // The control navigates to the page, never to the attachment.
+      fireEvent.click(screen.getByTestId('source-card-1'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
+
+    it('degrades to the title-only card when the thumbnail cannot be loaded', async () => {
+      mockAttachmentFetch(false);
+      render(<SourceCitations sources={[imageSource]} />, { wrapper: Wrapper });
+      fireEvent.click(screen.getByText('Sources (1)'));
+
+      await waitFor(() =>
+        expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument(),
+      );
+      // Still a complete, operable citation — the label and the link survive.
+      expect(screen.getByTestId('source-image-label')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('source-card-1'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
+
+    it('leaves an ordinary page source alone — no thumbnail, no label', () => {
+      render(<SourceCitations sources={[mockSources[0]]} />, { wrapper: Wrapper });
+      fireEvent.click(screen.getByText('Sources (1)'));
+      expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('source-image-label')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('source-image-file')).not.toBeInTheDocument();
+    });
+
+    it('names the picture, so two hits on one page are distinguishable (review r1)', () => {
+      // One page contributes up to `MAX_IMAGE_HITS_PER_PAGE` (3) entries, and
+      // the title, the space and the destination are identical on all of them
+      // — with the thumbnail decorative by design, these cards were three
+      // visually and programmatically identical citations.
+      mockAttachmentFetch();
+      render(
+        <SourceCitations
+          sources={[
+            imageSource,
+            { ...imageSource, attachmentUrl: '/api/attachments/77/rotor%20detail.png' },
+          ]}
+        />,
+        { wrapper: Wrapper },
+      );
+      fireEvent.click(screen.getByText('Sources (2)'));
+
+      expect(screen.getAllByTestId('source-image-file').map((n) => n.textContent))
+        .toEqual(['turbine.png', 'rotor detail.png']);
+      // …and the cards' own accessible names differ, since the name comes
+      // from their content.
+      const names = [1, 2].map((n) => screen.getByTestId(`source-card-${n}`).textContent);
+      expect(new Set(names).size).toBe(2);
+    });
+
+    it('keeps the category label alone when the URL carries no filename', () => {
+      mockAttachmentFetch();
+      render(
+        <SourceCitations sources={[{ ...imageSource, attachmentUrl: '/api/attachments/77/' }]} />,
+        { wrapper: Wrapper },
+      );
+      fireEvent.click(screen.getByText('Sources (1)'));
+      expect(screen.getByTestId('source-image-label')).toHaveTextContent('Image');
+      expect(screen.queryByTestId('source-image-file')).not.toBeInTheDocument();
+    });
+
+    it('degrades to the ordinary page card when kind says image but no URL arrived', () => {
+      // Review r3. `isImageSource` requires the URL as well as the
+      // discriminator, and the guard was untested: with it removed the card
+      // takes the image branch with nothing to render, and
+      // `imageSourceFileName` reaches `.split` on `undefined` and THROWS
+      // during render, taking the whole message list with it. The check and
+      // the thing it unlocks have to be the same fact.
+      const { kind, pageTitle, pageId } = imageSource;
+      render(
+        <SourceCitations sources={[{ kind, pageTitle, pageId } as Source]} />,
+        { wrapper: Wrapper },
+      );
+      fireEvent.click(screen.getByText('Sources (1)'));
+
+      expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('source-image-label')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('source-image-file')).not.toBeInTheDocument();
+      // …and it is still a working citation, not a hole.
+      expect(screen.getByText('Turbine assembly')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('source-card-1'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
   });
 });

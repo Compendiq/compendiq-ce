@@ -51,6 +51,21 @@ describe('EditorToolbar', () => {
     expect(screen.getByRole('toolbar', { name: 'Page editor toolbar' })).toBeInTheDocument();
   });
 
+  it('keeps page properties out of the session-actions group', () => {
+    render(
+      <EditorToolbar
+        editor={createMockEditor()}
+        pageProperty={<button type="button">Add tags</button>}
+        actions={<button type="button">Save</button>}
+      />,
+    );
+    const properties = screen.getByRole('group', { name: 'Page properties' });
+    const actions = screen.getByRole('group', { name: 'Page actions' });
+    expect(properties).toHaveTextContent('Add tags');
+    expect(actions).toHaveTextContent('Save');
+    expect(properties).not.toContainElement(screen.getByRole('button', { name: 'Save' }));
+  });
+
   it('presents nineteen main controls plus utilities', () => {
     render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });

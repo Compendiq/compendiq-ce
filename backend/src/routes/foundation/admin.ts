@@ -36,6 +36,10 @@ import {
   getRagImagesPerPageMax,
   getRagImageIndexExternal,
   invalidateRagImageIntakeCache,
+  getRagImageLegEnabled,
+  invalidateRagImageLegCache,
+  getRagAnswerMaxImages,
+  invalidateRagAnswerMaxImagesCache,
 } from '../../core/services/admin-settings-service.js';
 import {
   computeCalibrationStatus,
@@ -358,6 +362,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragRankingPriorWeight,
       ragImagesPerPageMax,
       ragImageIndexExternal,
+      ragImageLegEnabled,
+      ragAnswerMaxImages,
       imageEmbeddingTargetDimensions,
     ] = await Promise.all([
       getEmbeddingDimensions(),
@@ -397,6 +403,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // from the release the worker ships in.
       getRagImagesPerPageMax(),
       getRagImageIndexExternal(),
+      // #1115 P3 — the retrieval half. Its own reader and its own cache: it is
+      // read once per hybrid search, where the intake pair is read once per
+      // page scanned, so sharing a cache entry would tie a hot-path read to an
+      // invalidation the worker triggers.
+      getRagImageLegEnabled(),
+      // #1115 P4 — the ANSWER half: how many of the matched images the chat
+      // model is shown. A third reader rather than a widened one for the same
+      // reason again — it is read once per ask that reaches a completion, and
+      // it is the only one of the three whose 0 is meaningful.
+      getRagAnswerMaxImages(),
       // #1115 — uncached, like `getFtsLanguage`: it is read a handful of times
       // per admin action, and a stale one would let a probe fired seconds after
       // the width was saved measure the OLD width and type the column to it.
@@ -507,6 +523,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // #1115 P2 — the image-index intake knobs.
       ragImagesPerPageMax,
       ragImageIndexExternal,
+      // #1115 P3 — the retrieval half.
+      ragImageLegEnabled,
+      // #1115 P4 — the answer half.
+      ragAnswerMaxImages,
       // #1114 — which model each threshold was tuned against, and whether it
       // is still the live one. Provider id + model name only: this payload is
       // the settings document, not the provider document.
@@ -722,6 +742,23 @@ export async function adminRoutes(fastify: FastifyInstance) {
         'rag_image_index_external',
         invalidateRagImageIntakeCache,
         body.ragImageIndexExternal !== undefined ? String(body.ragImageIndexExternal) : undefined,
+      ],
+      // #1115 P3 — the retrieval half, through the same cached path so the
+      // next hybrid search reads the new value rather than the old one for up
+      // to a minute (#1118's lesson).
+      [
+        'rag_image_leg_enabled',
+        invalidateRagImageLegCache,
+        body.ragImageLegEnabled !== undefined ? String(body.ragImageLegEnabled) : undefined,
+      ],
+      // #1115 P4 — the answer half. `!== undefined`, never a truthiness test:
+      // 0 is this knob's off switch (the only one of the three image knobs
+      // for which zero is a legal value), and a falsy guard would silently
+      // drop the one write an operator turning the feature off can make.
+      [
+        'rag_answer_max_images',
+        invalidateRagAnswerMaxImagesCache,
+        body.ragAnswerMaxImages !== undefined ? String(body.ragAnswerMaxImages) : undefined,
       ],
     ];
     const invalidateFor = new Map<string, () => void>();

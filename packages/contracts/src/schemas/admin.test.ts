@@ -45,6 +45,10 @@ const validReadPayload = {
   // default the reader owns.
   ragImagesPerPageMax: 20,
   ragImageIndexExternal: true,
+  // #1115 P3 — the retrieval half, required on read for the same reason.
+  ragImageLegEnabled: true,
+  // #1115 P4 — how many retrieved images the answer path may show the model.
+  ragAnswerMaxImages: 2,
   // #1114 — required on read; both bases null on an instance that has never
   // set a threshold (the 0/0 default).
   ragConfidenceCalibration: { similarity: null, rerank: null },
@@ -477,6 +481,10 @@ describe('retrieval knobs (#1118)', () => {
       // #1115 P2 — the two image-intake knobs join the same contract.
       'ragImagesPerPageMax',
       'ragImageIndexExternal',
+      // #1115 P3 — and the retrieval half.
+      'ragImageLegEnabled',
+      // #1115 P4 — and the answer-path cap.
+      'ragAnswerMaxImages',
     ] as const) {
       const { [key]: _dropped, ...without } = validReadPayload;
       expect(() => AdminSettingsSchema.parse(without), `${key} must be required`).toThrow();
@@ -506,6 +514,50 @@ describe('retrieval knobs (#1118)', () => {
       expect(() => UpdateAdminSettingsSchema.parse({ ragImageIndexExternal: 'off' })).toThrow();
       expect(() =>
         AdminSettingsSchema.parse({ ...validReadPayload, ragImageIndexExternal: 'off' }),
+      ).toThrow();
+    });
+  });
+
+  describe('#1115 P3 — the image retrieval leg', () => {
+    it('rag_image_leg_enabled is a boolean on both schemas', () => {
+      expect(
+        UpdateAdminSettingsSchema.parse({ ragImageLegEnabled: false }).ragImageLegEnabled,
+      ).toBe(false);
+      // Not a string, and not 0/1: the backend reader's OFF-list parses
+      // `'true'`/`'false'`, and anything it does not recognise leaves the
+      // default standing — so a value that reaches SQL in another shape would
+      // silently fail to turn the leg off.
+      expect(() => UpdateAdminSettingsSchema.parse({ ragImageLegEnabled: 'off' })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragImageLegEnabled: 0 })).toThrow();
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, ragImageLegEnabled: 'off' }),
+      ).toThrow();
+    });
+  });
+
+  describe('#1115 P4 — the answer-path image cap', () => {
+    it('rag_answer_max_images accepts [0, 8] integers', () => {
+      expect(UpdateAdminSettingsSchema.parse({ ragAnswerMaxImages: 0 }).ragAnswerMaxImages).toBe(0);
+      expect(UpdateAdminSettingsSchema.parse({ ragAnswerMaxImages: 8 }).ragAnswerMaxImages).toBe(8);
+    });
+
+    it('accepts 0 — unlike the INTAKE cap, zero is a real value here', () => {
+      // `ragImagesPerPageMax` refuses 0 because a zero INTAKE cap reconciles
+      // every row away on the next scan, which reads as an indexing bug. A
+      // zero ANSWER cap destroys nothing: the index keeps filling, the leg
+      // keeps ranking, the sources keep their thumbnails — the model simply
+      // stops being shown the pictures. That is the honest off switch for the
+      // one cost this knob bounds (bytes sent to a vision model), so it must
+      // be reachable.
+      expect(() => UpdateAdminSettingsSchema.parse({ ragAnswerMaxImages: 0 })).not.toThrow();
+    });
+
+    it('rejects 9, a negative cap and a fractional one', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ ragAnswerMaxImages: 9 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragAnswerMaxImages: -1 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragAnswerMaxImages: 2.5 })).toThrow();
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, ragAnswerMaxImages: '2' }),
       ).toThrow();
     });
   });

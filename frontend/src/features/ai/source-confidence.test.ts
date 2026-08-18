@@ -72,4 +72,37 @@ describe('averageSourceSimilarity', () => {
     // badge; null is the absence of one and must not.
     expect(averageSourceSimilarity([kb(0)])).toBe(0);
   });
+
+  // ── #1115 P3: image sources ────────────────────────────────────────────
+
+  const image = (): Source => ({
+    kind: 'image',
+    pageTitle: 'A diagram sheet',
+    pageId: 9,
+    attachmentUrl: '/api/attachments/9/sheet.png',
+    // Always null on the wire: the image leg's own score is a CROSS-MODAL
+    // cosine and does not share a scale with the text cosines beside it
+    // (ADR-025 §8), so it must never join this mean.
+    similarity: null,
+    score: 0.0328,
+  });
+
+  it('ignores image sources — a cross-modal score must not join a text-cosine mean', () => {
+    expect(averageSourceSimilarity([kb(0.5), image(), image()])).toBeCloseTo(0.5, 10);
+  });
+
+  it('returns null for an answer whose only sources are images', () => {
+    // Not 0: nothing measurable came back, so no badge at all — the same
+    // verdict a keyword-only answer gets.
+    expect(averageSourceSimilarity([image(), image()])).toBeNull();
+  });
+
+  it('would fail if an image source ever carried a similarity — the guarantee is the null', () => {
+    // Documented as a contract rather than a defensive filter: this function
+    // reads ONE field, so the honesty of the badge rests on the backend
+    // emitting `similarity: null` for `kind: 'image'`. If that changed, this
+    // is the number that would move.
+    const leaky = { ...image(), similarity: 0.71 } as Source;
+    expect(averageSourceSimilarity([kb(0.5), leaky])).not.toBeCloseTo(0.5, 10);
+  });
 });

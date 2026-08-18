@@ -3,6 +3,7 @@ import * as Popover from '@radix-ui/react-popover';
 import { Tag } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { absorbPortalEscape } from '../lib/absorb-portal-escape';
+import { tagChipLabel } from '../lib/tag-utils';
 import { TagEditor, type TagEditorHandle } from './TagEditor';
 
 interface TagPopoverProps {
@@ -49,6 +50,7 @@ export function TagPopover({
 }: TagPopoverProps) {
   const [open, setOpen] = useState(false);
   const editorRef = useRef<TagEditorHandle>(null);
+  const label = tagChipLabel(tags.length);
 
   // Escape peels one layer at a time: an open autocomplete claims the key, and
   // only a second Escape closes the popover. The peel has to be decided here
@@ -65,14 +67,11 @@ export function TagPopover({
       <Popover.Trigger
         type="button"
         data-testid="tag-popover-trigger"
-        title={tags.length > 0 ? `Tags (${tags.length})` : 'Tags'}
-        aria-label="Tags"
-        className={cn(
-          'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-75 hover:bg-foreground/5 hover:text-foreground data-[state=open]:bg-foreground/10 data-[state=open]:text-foreground',
-          className,
-        )}
+        aria-label={label}
+        className={cn('nm-button-ghost h-8 shrink-0 px-2.5 text-xs', className)}
       >
         <Tag size={15} className="shrink-0" aria-hidden="true" />
+        {label}
       </Popover.Trigger>
 
       <Popover.Portal>

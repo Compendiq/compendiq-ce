@@ -963,7 +963,12 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         className={cn(
           'prose max-w-none',
           !isLight && 'prose-invert',
-          '[&_.tiptap]:min-h-[200px] [&_.tiptap]:px-10 [&_.tiptap]:py-6 [&_.tiptap]:outline-none',
+          '[&_.tiptap]:min-h-[200px] [&_.tiptap]:py-6 [&_.tiptap]:outline-none',
+          // Naked article/new-page editors sit in the page's own
+          // `px-5 sm:px-10` column — a second px-10 here inset the body
+          // (and its tables) past the title. Carded editors keep an inset
+          // so prose does not touch the card edge.
+          naked ? '[&_.tiptap]:px-0' : '[&_.tiptap]:px-10',
           '[&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:p-2 [&_th]:border [&_th]:border-border [&_th]:bg-foreground/5 [&_th]:p-2',
           '[&_pre]:rounded-md [&_pre]:bg-foreground/5 [&_pre:not([data-title])]:p-4 [&_pre[data-title]]:px-4 [&_pre[data-title]]:pb-4',
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',

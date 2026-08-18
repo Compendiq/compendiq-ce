@@ -43,8 +43,11 @@ import { clampImageEmbeddingTargetDimensions } from './image-embedding-target-di
  *     sentence was true while no worker consumed the assignment; P2 ships one,
  *     so it is a POINTER now (`IMAGE_EMBEDDING_INDEX_POINTER`). Row counts, a
  *     last run and the two actions belong together on the Embeddings tab, and
- *     the caveat that nothing SEARCHES the index yet belongs beside those
- *     numbers rather than beside an assignment dropdown.
+ *     that is where an operator asking "is it working?" should land — not
+ *     beside an assignment dropdown, which can only answer "is it configured?".
+ *     (P1 and P2 also had a caveat to place, that nothing SEARCHED the index
+ *     yet. P3 landed the retrieval leg, so there is no such caveat any more —
+ *     the card's last line names where the leg is switched on instead.)
  */
 
 const PROBE_QUERY_KEY = ['llm-usecases', 'image_embedding', 'probe'] as const;
@@ -70,8 +73,13 @@ export const IMAGE_EMBEDDING_SUPPORT_NOTE =
  * consumed the assignment. P2 gives it a worker, so the sentence would now be
  * false; it is replaced by a POINTER, because the honest answer to "is it
  * working?" is a row count and a last run, and those live on the Embeddings
- * tab. The remaining caveat — that nothing SEARCHES the index yet — belongs
- * beside those numbers, not here, and `ImageIndexCard` carries it.
+ * tab.
+ *
+ * P2 also left a caveat to place — that nothing SEARCHED the index yet — and
+ * put it beside those numbers rather than here. P3 landed the retrieval leg,
+ * so that caveat is gone entirely: `ImageIndexCard`'s last line now names
+ * where the leg is switched on. The pointer stays for its own reason, which
+ * was never the caveat.
  *
  * This row keeps its own scope: what the leg is, what it needs, and what the
  * last probe found.

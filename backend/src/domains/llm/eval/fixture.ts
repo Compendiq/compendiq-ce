@@ -229,7 +229,15 @@ export function loadFixture(raw: unknown, corpus: CorpusPage[]): Fixture {
  */
 export const MIN_FIXTURE_SIZE = 100;
 
-export function assertFixturePower(fixture: Fixture): void {
+/**
+ * Typed on `labels` alone rather than on `Fixture`, so #1115 P5b's image
+ * fixture is held to the SAME floor. The two are separate schemas on purpose
+ * (see `ImageFixtureSchema` below), and the arithmetic behind this floor —
+ * Recall@K over N moves in 1/N steps — is a property of N, not of which fields
+ * a label carries. A second copy of it for the image axis is how one of them
+ * gets retuned alone.
+ */
+export function assertFixturePower(fixture: { labels: readonly unknown[] }): void {
   if (fixture.labels.length < MIN_FIXTURE_SIZE) {
     throw new FixtureValidationError(
       `Fixture has ${fixture.labels.length} labels; #1102 requires at least ${MIN_FIXTURE_SIZE} — ` +

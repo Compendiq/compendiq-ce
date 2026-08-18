@@ -452,9 +452,9 @@ describe('NewPagePage', () => {
     expect(screen.getByPlaceholderText('Untitled page')).toBeInTheDocument();
   });
 
-  it('exposes an accessible name on the back button (#939)', () => {
+  it('exposes a labeled Cancel as the exit from the create form (#939)', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    expect(screen.getByRole('button', { name: /back to pages/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Cancel' })).toBeInTheDocument();
   });
 
   it('renders both article type toggle buttons', () => {
@@ -1028,5 +1028,21 @@ describe('NewPagePage', () => {
         );
       });
     });
+  });
+
+  it('keeps Cancel and the identity row in the sticky header', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    const sticky = await screen.findByTestId('new-page-sticky-header');
+    expect(sticky).toContainElement(screen.getByTestId('cancel-new-page-btn'));
+    expect(sticky).toContainElement(screen.getByTestId('article-type-toggle'));
+    expect(sticky).toContainElement(screen.getByTestId('space-selector'));
+    expect(sticky).not.toContainElement(screen.getByTestId('title-input'));
+  });
+
+  it('Cancel leaves the create form without creating', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.click(await screen.findByTestId('cancel-new-page-btn'));
+    expect(mockNavigate).toHaveBeenCalledWith('/pages');
+    expect(mockCreateMutateAsync).not.toHaveBeenCalled();
   });
 });

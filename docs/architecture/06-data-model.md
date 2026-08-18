@@ -19,7 +19,7 @@ erDiagram
 
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
-    pages ||--o{ page_image_embeddings : "images indexed as (#1115, P0 schema, P1 typing, P2 rows)"
+    pages ||--o{ page_image_embeddings : "images indexed as (#1115; P0 schema, P1 typing, P2 rows, read by the P3 leg)"
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
@@ -428,8 +428,14 @@ together, which matters most for #1114's query-side prefix.
   attachment_key)` — where `source` follows the URL PREFIX in that body, never
   `confluence_id IS NULL`, because a relocated page has no `confluence_id` and
   its bytes in the local store. `sha256` is what makes a re-scan cheap: an
-  unchanged file keeps its row and costs no request. **Nothing READS a row yet**
-  — that is P3. Four properties are deliberate:
+  unchanged file keeps its row and costs no request. **P3 reads it** —
+  `image-leg-search.ts` kNN-searches this table under the same
+  `visiblePagesPredicate` the vector leg uses and fuses the result as a third
+  RRF leg; **P4 reads the BYTES behind it**, attaching up to
+  `rag_answer_max_images` of the matched pictures to the chat request. A row
+  never becomes a `SearchResult` itself: an image-reached page enters ranking as
+  its own `chunk_index 0` chunk, or as a title-synthesised one. Four properties
+  are deliberate:
   - **Not rows in `page_embeddings`.** A `kind` discriminator would have made
     `embedPage`'s `DELETE`, its `AVG(embedding)` for `page_avg_embedding`, the
     `(page_id, chunk_index)` uniqueness, #1116's shadow columns, MMR, rerank and
@@ -451,7 +457,11 @@ together, which matters most for #1114's query-side prefix.
     `admin_settings.image_embedding_target_dimensions` is the MRL width the leg
     *requests* (vLLM's `dimensions` is per-request, so nothing truncates unless
     the client asks). `admin_settings.image_embedding_dimensions` and
-    `…_index_model` record what the live index was built for.
+    `…_index_model` record what the live index was built for — the second as the
+    full identity string `provider:model@baseUrl#dims`, which is the only thing
+    that can tell two same-width spaces apart. `…_probe` holds the last probe's
+    verdict, and it is admin-only: its `error` is the provider's own body
+    (#1184's rule).
   - **A model change here truncates and re-scans.** No shadow swap: the leg is
     disabled while the index is empty, so text retrieval is never degraded, and
     images are cheap to redo (content-addressed by `sha256`). The trigger is the
@@ -470,8 +480,11 @@ together, which matters most for #1114's query-side prefix.
     `fetchAndCachePageImage`, `writeAttachmentCache`, `putLocalAttachment`,
     `cleanPageAttachments`), while the BODY writers raise the column inline in
     the UPDATE they already own, gated on `body_html` alone (the sync upsert,
-    the conflict-policy update, both relocate directions, and the four
-    `body_html` writers in `routes/knowledge/pages-crud.ts`). It is CLEARED only
+    the conflict-policy update, both relocate directions, the four `body_html`
+    writers in `routes/knowledge/pages-crud.ts`, `restoreVersion` and both
+    branches of `POST /llm/improvements/apply` — the last two matter because a
+    restore and an Apply are the two ways a page's `img` set moves with no
+    attachment write to notice it). It is CLEARED only
     by a page whose scan had no failure, so the flag is the retry queue as well
     as the work queue. Design of record: ADR-025.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each

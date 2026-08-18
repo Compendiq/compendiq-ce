@@ -79,6 +79,22 @@ interface RetrievalValues {
   ragMmrEnabled: boolean;
   ragMmrLambda: number;
   ragRankingPriorWeight: number;
+  /**
+   * #1115 — image retrieval. Three knobs across two halves of one feature:
+   * `ragImageLegEnabled` is the QUERY side (P3), the other two are the INTAKE
+   * side (P2) and their controls live here because this is where an operator
+   * reasons about what retrieval sees.
+   */
+  ragImageLegEnabled: boolean;
+  ragImagesPerPageMax: number;
+  ragImageIndexExternal: boolean;
+  /**
+   * #1115 P4 — the ANSWER side: how many of the matched pictures the chat
+   * model is actually shown. A third half of the same feature, and it sits in
+   * the same group because an operator reasoning about "does the assistant
+   * see our diagrams?" needs the intake, the leg and this in one place.
+   */
+  ragAnswerMaxImages: number;
 }
 
 interface BenchmarkVariantSummary {
@@ -129,6 +145,10 @@ const DEFAULTS: RetrievalValues = {
   ragMmrEnabled: false,
   ragMmrLambda: 0.7,
   ragRankingPriorWeight: 0,
+  ragImageLegEnabled: true,
+  ragImagesPerPageMax: 20,
+  ragImageIndexExternal: true,
+  ragAnswerMaxImages: 2,
 };
 
 /**
@@ -203,6 +223,30 @@ const FIELDS: Record<NumericKey, NumericField> = {
     max: 0.05,
     step: 0.001,
     decimals: 3,
+  },
+  ragImagesPerPageMax: {
+    key: 'ragImagesPerPageMax',
+    label: 'Images per page',
+    unit: 'images',
+    // 0 is deliberately not reachable: the leg is switched off by unassigning
+    // the use case, and a zero cap would reconcile every row away on the next
+    // scan — an indexing bug's symptoms from a settings change.
+    min: 1,
+    max: 200,
+    step: 1,
+  },
+  ragAnswerMaxImages: {
+    key: 'ragAnswerMaxImages',
+    label: 'Images shown to the model',
+    unit: 'images',
+    // 0 IS reachable here, unlike the intake cap above. A zero intake cap
+    // reconciles the index away; a zero answer cap subtracts nothing durable
+    // — the index still fills, the leg still ranks, the sources still carry
+    // their thumbnails — so it is the honest off switch for the one cost this
+    // number bounds.
+    min: 0,
+    max: 8,
+    step: 1,
   },
 };
 
@@ -496,6 +540,17 @@ export function RetrievalTab() {
   const rerankRow = assignments?.rerank;
   const rerankActive =
     !!rerankRow && rerankRow.providerId !== null && rerankRow.resolved.providerId !== NIL_UUID;
+
+  // #1115 P3 — the same non-inheriting rule as `rerank`: `resolved` reports
+  // what WOULD serve if assigned, so the leg is live only on an explicit
+  // `providerId`. Rendered as a NOTICE, never as a disabled control.
+  //
+  // `assignments === undefined` (the query has not answered, or failed) shows
+  // NOTHING rather than the notice: telling an operator their leg is off on
+  // evidence the panel has not collected is the mistake `usePageTree`'s
+  // three-state rule is about, one surface over.
+  const imageEmbeddingRow = assignments?.image_embedding;
+  const imageEmbeddingUnassigned = !!assignments && !imageEmbeddingRow?.providerId;
 
   const { data: benchmark } = useQuery<BenchmarkRun>({
     queryKey: ['retrieval-benchmark', benchmarkRunId],
@@ -888,6 +943,108 @@ export function RetrievalTab() {
             called …” title — gets averaged away by the vector leg and diluted by fusion. When on,
             an exact match is pinned to the top of the results. On by default; turn it off to make
             every result come from ranking alone.
+          </p>
+        </ToggleRow>
+      </Section>
+
+      {/* ── Image retrieval (#1115) ─────────────────────────────────────── */}
+      <Section
+        title="Image retrieval"
+        description="Pictures in your pages are embedded into their own index and searched as a third retrieval leg beside the semantic and keyword ones."
+      >
+        {/*
+          The unassigned notice is MUTED, not amber (ADR-010): on an instance
+          with no vision-language model this is the permanent, correct state —
+          not a warning — and amber that is always on is amber that stops
+          meaning anything. The controls stay ENABLED beside it: they are
+          settings, not actions, and an operator configuring the leg before
+          assigning the model is a reasonable order to work in.
+        */}
+        {imageEmbeddingUnassigned && (
+          <p className="text-xs text-muted-foreground" data-testid="retrieval-image-unassigned">
+            Image embedding is not assigned; the image leg does not run. Assign a
+            vision-language model under{' '}
+            <Link className="underline underline-offset-2 hover:text-foreground" to={LLM_PROVIDERS_PATH}>
+              {SETTINGS_PANELS.models.label} → LLM providers
+            </Link>
+            .
+          </p>
+        )}
+
+        <ToggleRow
+          id="rag-image-leg-enabled"
+          label="Image leg"
+          checked={values.ragImageLegEnabled}
+          onChange={(v) => set('ragImageLegEnabled', v)}
+          defaultChecked={DEFAULTS.ragImageLegEnabled}
+        >
+          <p>
+            Fuses the image index into page ranking, so a page whose diagram answers the question
+            is found even when its text does not mention it. On by default.
+          </p>
+          <p>
+            It costs one extra embedding call per question — the question is embedded a second
+            time, by the vision-language model, alongside the ordinary retrieval. Turn it off to
+            stop paying that while leaving the index being built.
+          </p>
+        </ToggleRow>
+
+        <NumberRow
+          field={FIELDS.ragImagesPerPageMax}
+          value={values.ragImagesPerPageMax}
+          onChange={(v) => set('ragImagesPerPageMax', v)}
+          defaultValue={DEFAULTS.ragImagesPerPageMax}
+        >
+          <p>
+            How many of a page&apos;s images are indexed. A cost bound, not a quality one: each
+            image past it is one request, so a page with ninety screenshots would spend ninety of
+            them while the rest of the corpus waits. Images past the cap are skipped and counted
+            on the Embeddings tab.
+          </p>
+        </NumberRow>
+
+        <NumberRow
+          field={FIELDS.ragAnswerMaxImages}
+          value={values.ragAnswerMaxImages}
+          onChange={(v) => set('ragAnswerMaxImages', v)}
+          defaultValue={DEFAULTS.ragAnswerMaxImages}
+        >
+          {/*
+            The second sentence is the only place this fact is ever stated.
+            ADR-025 D8 makes a text-only answer UNQUALIFIED — nothing on the
+            answer, in the sources or in the announcement says a picture was
+            withheld — so an operator whose chat model cannot see images has
+            no other way to find out that this control does nothing for them.
+
+            Which is exactly why the third sentence has to point somewhere
+            (review r2): stating a dependency with no way to check it leaves
+            the reader stuck at "can mine?". The verdict — and #1184's
+            Re-check, which is how a wrong one is corrected — is the chat
+            row's `VisionBadge`, on the same route the unassigned notice at
+            the top of this Section already links to.
+          */}
+          <p>
+            Up to this many retrieved images are attached to the question when the chat model can
+            see images; 0 turns this off. Text-only chat models never receive images. Whether
+            yours can is shown on the chat row under{' '}
+            <Link className="underline underline-offset-2 hover:text-foreground" to={LLM_PROVIDERS_PATH}>
+              {SETTINGS_PANELS.models.label} → LLM providers
+            </Link>
+            .
+          </p>
+        </NumberRow>
+
+        <ToggleRow
+          id="rag-image-index-external"
+          label="Index external images"
+          checked={values.ragImageIndexExternal}
+          onChange={(v) => set('ragImageIndexExternal', v)}
+          defaultChecked={DEFAULTS.ragImageIndexExternal}
+        >
+          <p>
+            Confluence pages can embed pictures from an external URL; those are cached here and
+            are page content like any other, so they are indexed by default. Turn this off to
+            keep third-party imagery out of the index.
           </p>
         </ToggleRow>
       </Section>

@@ -101,10 +101,36 @@ export function computeRetrievalConfidence(
     // reversal note in the module doc.
     return healthCaveat === null ? { score: 0, basis: 'none' } : { score: null, basis: 'none' };
   }
+  // #1115 P3 — a page reached ONLY by the image leg is invisible to this
+  // formula, in BOTH directions. The ruling ADR-025 §5 left to P3, and the
+  // reason it is an exclusion rather than "image hits carry no vectorScore":
+  //
+  //  - Its `chunkText` is a stand-in — the page's chunk 0, or its title —
+  //    chosen because every stage downstream needs a row, not because anything
+  //    matched it. The rerank stage will happily score that text, and a
+  //    rerankScore over text no leg matched is a measurement of the wrong
+  //    thing. Left in, it could REFUSE a turn: the `rerank` basis needs full
+  //    coverage, so one title-only row scoring 0.05 becomes the max nothing,
+  //    and, worse, an UNRERANKED image-only row flips `allReranked` false and
+  //    silently demotes a fully-reranked set to the similarity basis.
+  //  - It also cannot LIFT the number: it carries no `vectorScore`, so it can
+  //    only ever displace a measured row from position 0 and turn a
+  //    vector-led set into an unmeasurable one.
+  //
+  // Its own image similarity never appears here at all — it is cross-modal and
+  // sits in a different band from text cosines (ADR-025 §8), so no threshold
+  // tuned on one has a meaning on the other.
+  //
+  // The empty-set branch above deliberately reads the ORIGINAL results: a set
+  // of nothing but image hits is not an empty corpus, so it must not score 0
+  // and be refused as one. It falls through to `basis: 'none'`, score null —
+  // the same verdict a keyword-only set gets, and for the same reason.
+  const measurable = results.filter((r) => r.imageOnly !== true);
+  if (measurable.length === 0) return { score: null, basis: 'none' };
   let maxRerank: number | null = null;
   let maxSim: number | null = null;
   let allReranked = true;
-  for (const r of results) {
+  for (const r of measurable) {
     if (r.rerankScore != null) {
       if (maxRerank === null || r.rerankScore > maxRerank) maxRerank = r.rerankScore;
     } else {
@@ -127,7 +153,11 @@ export function computeRetrievalConfidence(
   // and the set is treated exactly like its all-keyword twin (see the module
   // doc). Clamp: cosine can run negative (see vectorScore's JSDoc); a
   // threshold in [0,1) must still catch it, so floor at 0.
-  if (maxSim !== null && results[0]!.vectorScore !== null) {
+  // "Vector-led" is asked of the best MEASURABLE row, not of `results[0]`: an
+  // image-only row that fused above a measured vector row is not evidence the
+  // vector leg failed to lead, and reading position 0 would let the image leg
+  // turn a measurable set unmeasurable by arriving one rank higher.
+  if (maxSim !== null && measurable[0]!.vectorScore !== null) {
     return { score: Math.max(0, maxSim), basis: 'similarity' };
   }
   return { score: null, basis: 'none' };

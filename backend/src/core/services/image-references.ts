@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import path from 'path';
 import { JSDOM } from 'jsdom';
+import type { PageSource } from '@compendiq/contracts';
 
 export const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']);
 
@@ -133,6 +134,74 @@ const EXTERNAL_IMAGE_KEY = /^external-[0-9a-f]{12}(\.[A-Za-z0-9]+)?$/;
 /** Whether a key names an image this page pulled from an external URL. */
 export function isExternalImageKey(key: string): boolean {
   return EXTERNAL_IMAGE_KEY.test(key);
+}
+
+/**
+ * The Confluence-tree directory key for a page: its `confluence_id` when the
+ * page is Confluence-sourced, its numeric id as text otherwise.
+ *
+ * **One definition, three users**: this function, the paste/import writer
+ * (`routes/knowledge/pages-crud.ts`) and `parentKeyFor`
+ * (`domains/knowledge/services/page-relocate-service.ts`). It used to be four
+ * — `attachment-store.ts` carried a private copy, which now imports this one —
+ * and a reader keying differently from the writer reads the wrong directory
+ * and answers `null`, silently. The remaining two live in `domains/`, which
+ * `core` may not import (`backend/eslint.config.js`), so they stay restated;
+ * if any of them changes, all of them must.
+ *
+ * `pageSource` is a REQUIRED input rather than something inferred from
+ * `confluenceId`: `confluenceId ?? pageId` agrees with the writers on every
+ * row one can currently produce and disagrees on `source = 'standalone'` with
+ * a non-null `confluence_id`, so the obvious `SELECT id, confluence_id FROM
+ * pages` would name a different page's directory the day such a row exists.
+ *
+ * Truthiness, not `!= null`: an empty-string `confluence_id` keys on the
+ * numeric id, matching `parentKeyFor`. No writer can produce that state
+ * (`validatePageId('')` throws and sync never sets an empty id), but the two
+ * must not disagree about the case either way.
+ */
+export function confluenceAttachmentDirKey(
+  pageSource: PageSource,
+  pageId: number,
+  confluenceId: string | null | undefined,
+): string {
+  return pageSource === 'confluence' && confluenceId ? confluenceId : String(pageId);
+}
+
+/** The page identity a stored `(source, key)` pair needs to become a URL. */
+export interface PageImageUrlInput extends PageImageReference {
+  /** `pages.id` — the numeric PK, also the local store's directory key. */
+  pageId: number;
+  /** `pages.source`. Decides the Confluence-tree key; see {@link confluenceAttachmentDirKey}. */
+  pageSource: PageSource;
+  /** `pages.confluence_id`, or null for a standalone page. */
+  confluenceId?: string | null;
+}
+
+/**
+ * The `<img src>` a stored image row corresponds to — the exact INVERSE of
+ * {@link extractImageReferencesFromHtml} (#1115 P3).
+ *
+ * The image leg answers with `(source, attachment_key)` and the ask route has
+ * to give the browser a URL the authenticated attachment routes really serve.
+ * Deriving that URL at the consumer is how it drifts: the store follows the
+ * PREFIX, the Confluence directory follows `pageSource`, and the filename is
+ * percent-encoded on the wire while the bytes sit on disk under the raw name
+ * (`content-converter.ts` writes `encodeURIComponent(localFilename)`). Getting
+ * any one of the three wrong produces a 404 in a source chip, which reads as a
+ * missing picture rather than a wrong URL.
+ *
+ * `encodeURIComponent`, not `encodeURI`: a filename may legitimately contain
+ * `#`, `?` or `/`-adjacent characters, and only the component form escapes
+ * them out of the path.
+ */
+export function buildPageImageUrl(input: PageImageUrlInput): string {
+  const file = encodeURIComponent(input.key);
+  if (input.source === 'local') {
+    return `/api/local-attachments/${input.pageId}/${file}`;
+  }
+  const dir = confluenceAttachmentDirKey(input.pageSource, input.pageId, input.confluenceId);
+  return `/api/attachments/${encodeURIComponent(dir)}/${file}`;
 }
 
 /**

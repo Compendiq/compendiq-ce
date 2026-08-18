@@ -53,9 +53,24 @@ function assignedRerank() {
   };
 }
 
+/** #1115 P3 — a VL model behind the `image_embedding` use case. */
+function assignedImageEmbedding() {
+  return {
+    providerId: '99999999-8888-7777-6666-555555555555',
+    model: 'Qwen/Qwen3-VL-Embedding-2B',
+    resolved: {
+      providerId: '99999999-8888-7777-6666-555555555555',
+      providerName: 'vLLM pooling',
+      model: 'Qwen/Qwen3-VL-Embedding-2B',
+    },
+  };
+}
+
 interface MockOptions {
   settings?: Record<string, unknown>;
   rerank?: ReturnType<typeof unassignedRerank>;
+  /** #1115 P3 — the `image_embedding` assignment row; unassigned by default. */
+  imageEmbedding?: ReturnType<typeof unassignedRerank>;
   /**
    * #1114 — lets a test model the half of the server the panel's remedy
    * depends on: saving a threshold RE-RECORDS its calibration, so the next
@@ -76,6 +91,7 @@ interface MockOptions {
 function mockApi({
   settings = defaultSettings,
   rerank = unassignedRerank(),
+  imageEmbedding = unassignedRerank(),
   afterPut,
   putResult,
 }: MockOptions = {}) {
@@ -88,7 +104,12 @@ function mockApi({
 
     if (url.includes('/admin/llm-usecases')) {
       const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
-      return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank });
+      return json({
+        chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank,
+        // #1115 P3 — unassigned by default, the ordinary state for a
+        // non-inheriting use case with no VL model behind it.
+        image_embedding: imageEmbedding,
+      });
     }
     if (url.includes('/admin/retrieval-benchmark')) {
       if (method === 'POST') return json({ runId: '11111111-1111-4111-8111-111111111111', status: 'queued' }, 202);
@@ -1839,5 +1860,216 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
 
     await waitFor(() => expect(puts).toHaveLength(1));
     expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
+  });
+});
+
+describe('RetrievalTab — image retrieval (#1115 P3)', () => {
+  it('seeds all three image knobs from the server document', async () => {
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragImageLegEnabled: false,
+        ragImagesPerPageMax: 7,
+        ragImageIndexExternal: false,
+      },
+    });
+    renderTab();
+    await ready();
+
+    await waitFor(() =>
+      expect((screen.getByTestId('rag-image-leg-enabled') as HTMLInputElement).checked).toBe(false),
+    );
+    expect(input('ragImagesPerPageMax').value).toBe('7');
+    expect((screen.getByTestId('rag-image-index-external') as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('defaults to the leg ON when the server document predates the knob', async () => {
+    // An instance upgraded into this release has no row, and the reader's
+    // default is on. A panel defaulting to OFF would report a leg that is
+    // running as switched off.
+    mockApi({ settings: defaultSettings });
+    renderTab();
+    await ready();
+    await waitFor(() =>
+      expect((screen.getByTestId('rag-image-leg-enabled') as HTMLInputElement).checked).toBe(true),
+    );
+    expect(input('ragImagesPerPageMax').value).toBe('20');
+    expect((screen.getByTestId('rag-image-index-external') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('saves ONLY the image knob that changed', async () => {
+    const puts = mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+
+    fireEvent.click(screen.getByTestId('rag-image-leg-enabled'));
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragImageLegEnabled: false });
+  });
+
+  it('saves the intake knobs through the same PUT', async () => {
+    const puts = mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragImagesPerPageMax').value).toBe('20'));
+
+    type('ragImagesPerPageMax', '5');
+    fireEvent.click(screen.getByTestId('rag-image-index-external'));
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragImagesPerPageMax: 5, ragImageIndexExternal: false });
+  });
+
+  it('names the unassigned state in MUTED copy, keeps the controls live, and points at the panel', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+
+    const note = await screen.findByTestId('retrieval-image-unassigned');
+    expect(note).toHaveTextContent(/Image embedding is not assigned; the image leg does not run\./);
+    // ADR-010: a permanent, correct state is not a warning. Amber that is
+    // always on is amber that stops meaning anything.
+    expect(note.className).toContain('text-muted-foreground');
+    expect(note.className).not.toMatch(/warning|amber/);
+    expect(note).not.toHaveAttribute('role', 'status');
+    // Wayfinding: the link goes to the panel that owns the assignment.
+    const link = within(note).getByRole('link');
+    expect(link.getAttribute('href')).toContain('?sub=llm');
+    // Settings, not actions — an operator may configure the leg before
+    // assigning the model.
+    expect((screen.getByTestId('rag-image-leg-enabled') as HTMLInputElement).disabled).toBe(false);
+    expect(input('ragImagesPerPageMax').disabled).toBe(false);
+  });
+
+  it('drops the notice once a vision-language model is assigned', async () => {
+    mockApi({ imageEmbedding: assignedImageEmbedding() });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+    expect(screen.queryByTestId('retrieval-image-unassigned')).not.toBeInTheDocument();
+  });
+
+  it('says nothing at all while the assignment query has not answered', async () => {
+    // Telling an operator the leg is off on evidence the panel has not
+    // collected is worse than saying nothing — `usePageTree`'s rule, one
+    // surface over. An absent assignments document is silence, not a verdict.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (inputArg) => {
+      const url = typeof inputArg === 'string' ? inputArg : (inputArg as Request).url;
+      if (url.includes('/admin/llm-usecases')) return new Response('boom', { status: 500 });
+      if (url.includes('/admin/settings')) {
+        return new Response(JSON.stringify(defaultSettings), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('Not found', { status: 404 });
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+    expect(screen.queryByTestId('retrieval-image-unassigned')).not.toBeInTheDocument();
+  });
+
+  it('states the cost of the leg on screen, at rest', async () => {
+    // #1119's rule: a caveat that lives in a tooltip is unreachable by touch,
+    // keyboard and screen readers. The leg costs one extra embedding call per
+    // question, and an operator deciding whether to leave it on needs that
+    // beside the switch rather than in a runbook.
+    mockApi();
+    renderTab();
+    await ready();
+    const group = screen.getByTestId('rag-image-leg-enabled').closest('section')!;
+    expect(group.textContent).toMatch(/one extra embedding call per question/i);
+  });
+});
+
+describe('RetrievalTab — images shown to the model (#1115 P4)', () => {
+  it('seeds the cap from the server document', async () => {
+    mockApi({ settings: { ...defaultSettings, ragAnswerMaxImages: 5 } });
+    renderTab();
+    await ready();
+
+    await waitFor(() => expect(input('ragAnswerMaxImages').value).toBe('5'));
+  });
+
+  it('defaults to 2 when the server document predates the knob', async () => {
+    mockApi({ settings: defaultSettings });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragAnswerMaxImages').value).toBe('2'));
+  });
+
+  it('saves 0 — the off switch is a value, not an absence', async () => {
+    // The one number that a "falsy means unchanged" diff would drop, and the
+    // only way an operator turns this off without unassigning the model that
+    // fills the index.
+    const puts = mockApi({ settings: { ...defaultSettings, ragAnswerMaxImages: 2 } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragAnswerMaxImages').value).toBe('2'));
+
+    type('ragAnswerMaxImages', '0');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragAnswerMaxImages: 0 });
+  });
+
+  it('lives in the Image retrieval group, beside the leg it depends on', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+
+    const group = screen.getByTestId('rag-image-leg-enabled').closest('section')!;
+    expect(within(group as HTMLElement).getByTestId('retrieval-ragAnswerMaxImages')).toBeInTheDocument();
+  });
+
+  it('says on screen that a text-only chat model never receives images', async () => {
+    // ADR-025 D8: a text-only answer is unqualified — nothing on the answer
+    // says a picture was withheld. This is therefore the ONLY place an
+    // operator can learn that the cap does nothing without a vision-capable
+    // chat model, so it has to be beside the control rather than in a
+    // runbook.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+
+    // Scoped to the ROW that owns the input, not to the whole Image
+    // retrieval section: read off the section, both assertions passed for
+    // copy sitting under the leg toggle or the intake cap three controls
+    // away — which is the one thing this case is meant to pin, since the
+    // sentence is only findable where the control is. Same row-scoping
+    // recipe as the calibration-strip adjacency case above.
+    const row = input('ragAnswerMaxImages').closest('div.space-y-1\\.5');
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toMatch(/Text-only chat models never receive images/i);
+    expect(row!.textContent).toMatch(/0 turns this off/i);
+  });
+
+  it('points at the row where that verdict is shown, instead of leaving it unanswerable', async () => {
+    // Review r2. The sentence above is the only surface stating the vision
+    // dependency, and without a destination it leaves the reader at "can
+    // mine?" — while the verdict, and #1184's Re-check that corrects a wrong
+    // one, sit on the chat row two clicks away. The unassigned notice at the
+    // top of this same Section already links there; the copy that depends on
+    // the answer should too.
+    // Assigned, so the Section's unassigned notice — which carries its own
+    // link to the same route — is not rendered: this asserts the link inside
+    // the helper copy itself, on the deployment where an operator is actually
+    // reading this control.
+    mockApi({ imageEmbedding: assignedImageEmbedding() });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+    expect(screen.queryByTestId('retrieval-image-unassigned')).not.toBeInTheDocument();
+
+    const helper = screen.getByText(/Text-only chat models never receive images/i);
+    const link = within(helper).getByRole('link', { name: /LLM providers/i });
+    expect(link.getAttribute('href')).toContain('?sub=llm');
   });
 });

@@ -401,6 +401,21 @@ describe('the system reader stays out of the request path', () => {
     ).toEqual([]);
   });
 
+  it('takes its SIZE-only sibling with it', () => {
+    // `resolveAttachmentByteSize` (#1115 P4) resolves the same path through
+    // the same helpers and applies the same authorisation — none. It answers
+    // less, but "is there a file under this page id, and how big" is still a
+    // fact about a page the caller may not be allowed to see. It is NOT
+    // covered by the assertion above: `resolveAttachmentBytes` is not a
+    // substring of `resolveAttachmentByteSize` (the `s` is a capital `S`), so
+    // a route naming only the size reader would fall through it.
+    expect(
+      routeFilesMentioning('resolveAttachmentByteSize'),
+      'resolveAttachmentByteSize performs no ACL check either — it is the ' +
+        'pre-read stat for the post-retrieval answer path, not a route helper.',
+    ).toEqual([]);
+  });
+
   it('is not imported from any file under src/routes, under any local name', () => {
     expect(routeFilesMentioning('attachment-store.js')).toEqual([]);
   });

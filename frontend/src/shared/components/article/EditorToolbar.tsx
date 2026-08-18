@@ -943,11 +943,14 @@ export function EditorToolbar({
   editor,
   headerNumbering,
   onToggleHeaderNumbering,
+  pageProperty,
   actions,
 }: {
   editor: EditorType;
   headerNumbering?: boolean;
   onToggleHeaderNumbering?: () => void;
+  /** Page-level property chip (tags). Not a session action. */
+  pageProperty?: React.ReactNode;
   actions?: React.ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1161,9 +1164,18 @@ export function EditorToolbar({
         </ToolbarGroup>
       </div>
 
-      {actions && (
-        <div role="group" aria-label="Page actions" className="ml-auto flex flex-nowrap shrink-0 items-center gap-1.5 pl-2">
-          {actions}
+      {(pageProperty || actions) && (
+        <div className="ml-auto flex flex-nowrap shrink-0 items-center gap-1.5 pl-2">
+          {pageProperty && (
+            <div role="group" aria-label="Page properties">
+              {pageProperty}
+            </div>
+          )}
+          {actions && (
+            <div role="group" aria-label="Page actions" className="flex flex-nowrap shrink-0 items-center gap-1.5">
+              {actions}
+            </div>
+          )}
         </div>
       )}
     </div>

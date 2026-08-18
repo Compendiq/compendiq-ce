@@ -17,18 +17,15 @@ import { resolve } from 'path';
  * There are two ways to keep content out of it, and this file enforces both:
  *
  *   (a) COVER IT — reach one padding step past your own box with an opaque
- *       under-mask. PageViewPage's edit toolbar (fixed in #1186) and
- *       NewPagePage's sticky toolbar (fixed in the same way once the New Page
- *       redesign copied PageViewPage's bar-across-the-column treatment but
- *       reused the *older* `before:bg-background` mask instead — the wrong
- *       fill for a route where the main column IS the pane, which painted a
- *       chassis-coloured band across the white document above the toolbar).
- *       The height of that reach is not a free choice: it is AppLayout's
- *       padding, in another file. It has already drifted once (pt-4 to
- *       pt-5), and a mask that no longer matches fails silently — the bleed
- *       simply returns, thinner. The invariants below read both numbers out
- *       of the sources rather than restating them, the same approach as
- *       `nginx-api-body-limit.test.ts`.
+ *       under-mask. NewPagePage's sticky toolbar (the same recipe #1186
+ *       first applied to the article editor, before that format bar moved
+ *       into the app header — outside the scroll container, so it no longer
+ *       needs a mask). The height of that reach is not a free choice: it is
+ *       AppLayout's padding, in another file. It has already drifted once
+ *       (pt-4 to pt-5), and a mask that no longer matches fails silently —
+ *       the bleed simply returns, thinner. The invariants below read both
+ *       numbers out of the sources rather than restating them, the same
+ *       approach as `nginx-api-body-limit.test.ts`.
  *
  *   (b) NEVER SCROLL INTO IT — leave the scroll container with no overflow at
  *       all, so nothing ever passes through either strip. `/ai` (#1218): its
@@ -60,7 +57,6 @@ function read(relativePath: string): string {
 }
 
 const appLayoutSource = read('shared/components/layout/AppLayout.tsx');
-const pageViewSource = read('features/pages/PageViewPage.tsx');
 const newPageSource = read('features/pages/NewPagePage.tsx');
 
 /** The classes on AppLayout's main scroll container. */
@@ -86,9 +82,9 @@ const EDIT_TOOLBAR_WRAPPER = 'className="sticky -top-5 z-30 isolate -mt-5"';
  * Located by marker, and tied to the toolbar it belongs to: the reach asserted
  * below is the only place the exact height is pinned, so silently reading some
  * *other* element would leave the real mask free to drift back to a plain box.
- * Every way of not finding the right element throws by name instead. Shared by
- * PageViewPage's edit toolbar and NewPagePage's sticky toolbar — both use the
- * identical wrapper/under-mask recipe, so one locator serves both sources.
+ * Every way of not finding the right element throws by name instead. New Page
+ * is the remaining in-column sticky format bar; the article editor's bar
+ * lives in the app header now.
  */
 function stickyToolbarMaskClasses(source: string, sourceName: string, maskTestId: string): string {
   const wrapperAt = source.indexOf(EDIT_TOOLBAR_WRAPPER);
@@ -128,21 +124,7 @@ describe('nothing shows in the scroll container padding (#1186, #1218)', () => {
     expect(scrollPaddingTopSteps()).toBeGreaterThan(0);
   });
 
-  it("the edit toolbar's under-mask reaches exactly that far above the toolbar", () => {
-    const classes = stickyToolbarMaskClasses(pageViewSource, 'PageViewPage.tsx', 'edit-toolbar-mask');
-    // Anti-vacuity: the subject must be the mask itself, not any element the
-    // locator happened to land on.
-    expect(classes, `not an under-mask: ${classes}`).toContain('z-[-1]');
-
-    const reach = classes.match(/(?:^|\s)-top-(\d+)(?:\s|$)/);
-    expect(reach, `mask does not reach above its box: ${classes}`).not.toBeNull();
-    expect(Number(reach![1])).toBe(scrollPaddingTopSteps());
-  });
-
   it("the New Page sticky toolbar's under-mask reaches exactly that far above the toolbar", () => {
-    // Same recipe as PageViewPage's edit toolbar (see the fill-colour note
-    // above the class comment) — reused via the same locator and the same
-    // wrapper marker, so the two cannot drift apart unnoticed.
     const classes = stickyToolbarMaskClasses(newPageSource, 'NewPagePage.tsx', 'new-page-toolbar-mask');
     expect(classes, `not an under-mask: ${classes}`).toContain('z-[-1]');
     // The mask must paint the document pane's own colour, not the app

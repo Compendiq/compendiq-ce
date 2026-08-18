@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { CitationChips } from './CitationChips';
 import type { Source } from './SourceCitations';
@@ -158,5 +158,140 @@ describe('CitationChips', () => {
     );
     fireEvent.click(screen.getByTestId('citation-chip-1'));
     expect(outerClick).not.toHaveBeenCalled();
+  });
+
+  // ── Image sources (#1115 P3) ─────────────────────────────────────────────
+  //
+  // This component is what the DOCK renders for a message's sources
+  // (`DockPanel` → `CitationChips`), so these cover the article-side assistant
+  // as well as `/ai`'s inline chips.
+
+  describe('image sources', () => {
+    const imageSource: Source = {
+      kind: 'image',
+      pageTitle: 'Turbine assembly',
+      pageId: 77,
+      attachmentUrl: '/api/attachments/77/turbine.png',
+      similarity: null,
+      score: 0.0328,
+    };
+
+    beforeEach(() => {
+      vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:thumb');
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    });
+
+    function mockAttachmentFetch(ok = true) {
+      const fetchMock = vi.fn(async () =>
+        ok
+          ? ({ ok: true, status: 200, blob: async () => new Blob(['x']) } as unknown as Response)
+          : ({ ok: false, status: 404, blob: async () => new Blob() } as unknown as Response),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      return fetchMock;
+    }
+
+    it('renders a thumbnail inside the numbered chip and names the control', async () => {
+      const fetchMock = mockAttachmentFetch();
+      render(<CitationChips sources={[imageSource]} />, { wrapper: Wrapper });
+
+      const chip = screen.getByTestId('citation-chip-1');
+      // The number stays — the answer text refers to it by position.
+      expect(chip).toHaveTextContent('1');
+      // The picture is decorative, so the CONTROL carries the name — page
+      // first, then the picture, because one page can contribute three.
+      expect(chip).toHaveAttribute('aria-label', 'Turbine assembly — image: turbine.png');
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(fetchMock.mock.calls[0]![0]).toBe('/api/attachments/77/turbine.png');
+      const thumb = await screen.findByTestId('source-thumbnail');
+      expect(thumb).toHaveAttribute('alt', '');
+      expect(thumb).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    it('navigates to the PAGE, never to the attachment', async () => {
+      mockAttachmentFetch();
+      render(<CitationChips sources={[imageSource]} />, { wrapper: Wrapper });
+      fireEvent.click(screen.getByTestId('citation-chip-1'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
+
+    it('degrades to the plain numbered chip when the thumbnail cannot be loaded', async () => {
+      mockAttachmentFetch(false);
+      render(<CitationChips sources={[imageSource]} />, { wrapper: Wrapper });
+
+      await waitFor(() =>
+        expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument(),
+      );
+      const chip = screen.getByTestId('citation-chip-1');
+      expect(chip).toHaveTextContent('1');
+      expect(chip).toHaveAttribute('aria-label', 'Turbine assembly — image: turbine.png');
+      fireEvent.click(chip);
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
+
+    it('leaves an ordinary page chip untouched', () => {
+      render(<CitationChips sources={[mockSources[0]]} />, { wrapper: Wrapper });
+      expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
+      expect(screen.getByTestId('citation-chip-1')).not.toHaveAttribute('aria-label');
+    });
+
+    it('tells two pictures from the SAME page apart (review r1)', () => {
+      // `MAX_IMAGE_HITS_PER_PAGE` is 3, so one page really does contribute
+      // several entries, and every other field on them is identical — same
+      // title, same space, same destination — while the thumbnails are
+      // deliberately decorative. Without the filename these announce as three
+      // copies of one name over the surface whose subject IS the pictures.
+      mockAttachmentFetch();
+      render(
+        <CitationChips
+          sources={[
+            imageSource,
+            { ...imageSource, attachmentUrl: '/api/attachments/77/rotor%20detail.png' },
+          ]}
+        />,
+        { wrapper: Wrapper },
+      );
+
+      const labels = [1, 2].map((n) =>
+        screen.getByTestId(`citation-chip-${n}`).getAttribute('aria-label'),
+      );
+      expect(labels).toEqual([
+        'Turbine assembly — image: turbine.png',
+        // Percent-encoded on the wire, readable in the name.
+        'Turbine assembly — image: rotor detail.png',
+      ]);
+      expect(new Set(labels).size).toBe(2);
+    });
+
+    it('degrades to the ordinary numbered chip when kind says image but no URL arrived', () => {
+      // Review r3. `isImageSource` requires the URL as well as the
+      // discriminator. Untested, the guard could be reduced to `kind ===
+      // 'image'` with the whole frontend suite green — after which a
+      // malformed frame renders an empty `<img>`, takes an `aria-label`
+      // promising a picture on a chip that has none, and
+      // `imageSourceFileName` THROWS on `undefined.split` mid-render.
+      const { kind, pageTitle, pageId } = imageSource;
+      render(<CitationChips sources={[{ kind, pageTitle, pageId } as Source]} />, { wrapper: Wrapper });
+
+      const chip = screen.getByTestId('citation-chip-1');
+      expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
+      expect(chip).not.toHaveAttribute('aria-label');
+      expect(chip).toHaveTextContent('1');
+      fireEvent.click(chip);
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
+
+    it('keeps the unqualified name when the URL carries no filename', () => {
+      // A placeholder would be worse than nothing: the plain label is already
+      // the correct name for a page contributing one picture.
+      mockAttachmentFetch();
+      render(
+        <CitationChips sources={[{ ...imageSource, attachmentUrl: '/api/attachments/77/' }]} />,
+        { wrapper: Wrapper },
+      );
+      expect(screen.getByTestId('citation-chip-1'))
+        .toHaveAttribute('aria-label', 'Turbine assembly — image');
+    });
   });
 });

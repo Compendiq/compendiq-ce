@@ -24,7 +24,7 @@ flowchart TB
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
         fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123)"]
         fSpaces["spaces/<br/>settings · new"]
-        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockPanel · AiDockSheet · DockDiffCard (#1126)<br/>tab inside ArticleRightPane, sheet over the article below md"]
+        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockPanel · AiDockSheet · DockDiffCard (#1126)<br/>tab inside ArticleRightPane, sheet over the article below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
         fGraph["graph/"]
         fSettings["settings/<br/>LoginPage · user + admin"]
         fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)<br/>analytics/ (AnalyticsPage)"]
@@ -216,6 +216,60 @@ flowchart TB
   the reordering convention that predated this is gone from the zones and all
   three hosts; `expectComposerFocusOrder` (`test-utils.ts`) fails on any `order-*`
   inside a composer (WCAG 2.4.3).
+
+## Image retrieval on the frontend (#1115)
+
+Three surfaces, and they answer three different questions.
+
+**On an answer, a matched picture is a SOURCE.** `/llm/ask` emits
+`kind: 'image'` entries with `attachmentUrl` and `similarity: null`, appended
+after the page and web ones. `SourceCitations` (the cards),
+`CitationChips` (the inline chips, which is also what the dock renders) and
+`SourceThumbnail` render them; `image-source.ts` holds the shared derivation.
+Four rules are load-bearing:
+
+- **The thumbnail is decorative on every surface** — `alt=""` + `aria-hidden`,
+  with the accessible name on the control that wraps it. It fetches through
+  `useAuthenticatedSrc` because both attachment routes sit behind
+  `fastify.authenticate` and a bare `<img src>` 401s, and it renders **nothing**
+  while loading or on failure, so the citation degrades to its title-only shape
+  rather than a broken-image box.
+- **The name has to reach the PICTURE, not only the page.** One page contributes
+  up to three of these entries and every other field on them is identical, so a
+  decorative thumbnail left three indistinguishable citations — the tree's
+  twenty-identical-"Expand"-buttons problem, on the surface whose subject is
+  *which* picture matched. `imageSourceFileName` decodes the last segment of
+  `attachmentUrl` into the chip's `aria-label` and a truncating span beside the
+  card's `Image` label, and answers `null` rather than a placeholder when there
+  is no usable segment — the unqualified label is the right name for a page
+  contributing one picture.
+- **Neutral, per ADR-010.** A source is a category, so the word "Image" is the
+  channel; no status hue is borrowed.
+- **The byte cost is bounded by the cap, not mitigated.** Chips render on every
+  answer, each thumbnail fetches the FULL attachment (ADR-025 adds no
+  server-side resize), so the worst case is `MAX_IMAGE_SOURCES` (4) ×
+  `MAX_IMAGE_BYTES` to paint 14px and 32px squares — held down by both
+  attachment routes' `max-age=3600`. Lower the cap if that stops holding.
+
+**In Settings → AI Models, the leg has three admin surfaces**, one per question
+an operator actually asks. *Can it run?* — the **Image embedding** row on **LLM
+providers** (`UsecaseAssignmentsSection` + `ImageEmbeddingCapability`: the
+assignment, the MRL truncation field, the **Last probe** chip and **Re-check**).
+*Is it running?* — the **Image index** card on **Embeddings**
+(`ImageIndexCard`: status, counters, last run by skip reason, **Process now**,
+**Re-scan all**). *How should it behave?* — the **Image retrieval** group on
+**Retrieval** (`RetrievalTab`: **Image leg**, **Images per page**, **Index
+external images**, **Images shown to the model**). Splitting them that way is
+deliberate: a row count and a last run are the honest answer to "is it
+working?", which is why the probe row **points at** the Embeddings card instead
+of claiming an index it cannot see, and why the Retrieval group's unassigned
+notice **points back at** LLM providers while leaving its own controls enabled —
+they are settings, not actions.
+
+**A text-only chat model is invisible here, on purpose** (ADR-025 D8). Nothing
+on an answer, in the sources or in the announcement says a picture was withheld;
+the fact is stated exactly once, under **Images shown to the model**, and that
+copy points at the chat row where the verdict and its **Re-check** live.
 
 ## Relocating an article across the Confluence boundary (#1123)
 

@@ -19,7 +19,7 @@ flowchart LR
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service"]
     end
 
@@ -145,9 +145,9 @@ The guard it exports the other way round, `assertNoShadowMigration` /
 `routes/llm` — the same `routes/* → domains/llm` composition those files
 already do for `processDirtyPages`.
 
-## The image-embedding leg (#1115 P1–P2)
+## The image-embedding leg (#1115 P1–P4)
 
-Four modules in `domains/llm/services`, two in `core/services`, and two rules
+Six modules in `domains/llm/services`, two in `core/services`, and two rules
 hoisted into `core/db`:
 
 - **`vl-embedding-client.ts`** — the only thing in the tree that speaks vLLM's
@@ -221,6 +221,32 @@ vLLM parameter, so this is what makes the ≤ 4000 remedy the settings row and t
 column type, the image embedder (P2) and — from P3 — the query side sending the
 same number.
 
+**`image-leg-search.ts` (P3)** is the reader the index had been waiting for:
+the gate, one VL query embed and one kNN over `page_image_embeddings`,
+answering a page-denominated hit list that `rag-service.ts` fuses as a third
+RRF leg. It is a sibling of `rag-service.ts` rather than part of it only
+because `hybridSearch` is already the longest function in the backend — every
+FUSION decision (how the ranks combine, what an image-only page gets as text,
+what the stable head reconstructs) stayed in `rag-service.ts`, beside the other
+two legs' ranking rules. Its visibility predicate is
+`core/services/page-visibility.ts`'s shared fragment, the same one the vector
+leg uses; an image row carries no ACL of its own.
+
+**`retrieved-images.ts` (P4)** turns the hits the leg attached to the returned
+pages into `image_url` parts on the user turn: `pickRetrievedImages` selects
+round-robin across pages with a byte-identity dedupe, re-runs `validateImage`
+unforked and stops at a derived base64 budget. **The vision gate is the
+CALLER's, not this module's** — `routes/llm/llm-ask.ts` reads the stored #1154
+verdict and calls the pick only on an exact `true` (09's "Four gates, cheapest
+first"). So the pick loads bytes unconditionally, and nothing that has not
+already applied that gate may reach it. **It is a service because of the P0
+guard, not despite it.** `resolveAttachmentBytes` applies no ACL and
+`attachment-store.test.ts` fails if any file under `src/routes` names it, so
+the read is legal only where retrieval has already applied
+`visiblePagesPredicate` and the EE per-page filter — and that argument is what
+the module boundary records. `routes/llm/llm-ask.ts` reaches
+`pickRetrievedImages`, never the store.
+
 `core/db/vector-column-tier.ts` (`columnTypeFor`, `HNSW_PARAMS`) and
 `core/db/with-lock-retry.ts` are **moves, not additions**: the tiering rule was
 stated identically in `shadow-migration-service.ts`, `embedding-service.ts` and
@@ -237,6 +263,15 @@ probe-gated assignment PUT plus `GET`/`POST`
 /admin/embedding/image-index` for the status the Embeddings-tab card renders,
 plus `…/rescan` and `…/process`, both of which start a detached scan and answer
 immediately — a corpus-wide run outlives every proxy timeout in the path).
+
+**Nothing in `domains/llm/eval/` is part of the running server**, and the image
+axis is five modules there — `images-axis.ts` (flag parsing and the run's
+refusals), `seed-images.ts` (the corpus through the REAL intake),
+`runner-images.ts` (both arms, paired), `images-metrics.ts` and
+`images-report.ts` — plus `corpus-images.ts` for the manifest. They import the
+same `hybridSearch` and `embedPageImages` the product runs, which is the point:
+a harness with its own copy measures its own copy. Recipe and report fields:
+`docs/runbooks/retrieval-eval.md`, "Image axis (`--images`)".
 
 ## Attachment bytes: one reader in `core`, the writers in `confluence` (#1115)
 

@@ -3,6 +3,8 @@ import {
   extractImageReferencesFromHtml,
   isExternalImageKey,
   extractImageReferences,
+  buildPageImageUrl,
+  confluenceAttachmentDirKey,
 } from './image-references.js';
 
 /**
@@ -120,5 +122,78 @@ describe('isExternalImageKey (#1115)', () => {
     expect(isExternalImageKey('external-diagram.png')).toBe(false);
     expect(isExternalImageKey('externally-sourced.png')).toBe(false);
     expect(isExternalImageKey('diagram.png')).toBe(false);
+  });
+});
+
+/**
+ * #1115 P3 — the INVERSE of the enumerator above.
+ *
+ * The image leg answers with `(source, attachment_key)` pairs and `/llm/ask`
+ * has to hand the browser a URL the authenticated attachment routes actually
+ * serve. Round-tripping through the enumerator is the property that matters:
+ * a builder that agreed with nothing would 404 in the source list while every
+ * unit test passed.
+ */
+describe('buildPageImageUrl (#1115 P3)', () => {
+  it('round-trips every reference the enumerator produces', () => {
+    const html = [
+      '<img src="/api/attachments/99001/diagram.png">',
+      '<img src="/api/local-attachments/42/moved.png">',
+      // Percent-encoded in the src, raw on disk — the converter's own shape.
+      '<img src="/api/attachments/99001/Screen%20shot.png">',
+    ].join('');
+    const page = { pageId: 42, pageSource: 'confluence' as const, confluenceId: '99001' };
+    const refs = extractImageReferencesFromHtml(html);
+    expect(refs).toHaveLength(3);
+    const rebuilt = refs.map((r) => buildPageImageUrl({ ...page, source: r.source, key: r.key }));
+    expect(rebuilt).toEqual([
+      '/api/attachments/99001/diagram.png',
+      '/api/local-attachments/42/moved.png',
+      '/api/attachments/99001/Screen%20shot.png',
+    ]);
+    // And the rebuilt URLs enumerate back to the same references.
+    expect(extractImageReferencesFromHtml(rebuilt.map((u) => `<img src="${u}">`).join(''))).toEqual(
+      refs,
+    );
+  });
+
+  it('keys the Confluence tree exactly as the reader does — never `confluenceId ?? pageId`', () => {
+    // A standalone page with a non-null confluence_id is the row the two rules
+    // disagree on. `pageSource` decides, which is why it is a required input.
+    expect(
+      buildPageImageUrl({
+        source: 'confluence', key: 'a.png',
+        pageId: 7, pageSource: 'standalone', confluenceId: '99001',
+      }),
+    ).toBe('/api/attachments/7/a.png');
+    expect(
+      buildPageImageUrl({
+        source: 'confluence', key: 'a.png',
+        pageId: 7, pageSource: 'confluence', confluenceId: '99001',
+      }),
+    ).toBe('/api/attachments/99001/a.png');
+    expect(confluenceAttachmentDirKey('confluence', 7, null)).toBe('7');
+    expect(confluenceAttachmentDirKey('confluence', 7, '')).toBe('7');
+  });
+
+  it('ignores confluence_id entirely for the local store', () => {
+    expect(
+      buildPageImageUrl({
+        source: 'local', key: 'moved.png',
+        pageId: 42, pageSource: 'confluence', confluenceId: '99001',
+      }),
+    ).toBe('/api/local-attachments/42/moved.png');
+  });
+
+  it('encodes the filename the way the converter does', () => {
+    // `content-converter.ts` writes encodeURIComponent(localFilename) into the
+    // src; a raw `#` or `?` in the name would otherwise truncate the path at
+    // the route and 404.
+    expect(
+      buildPageImageUrl({
+        source: 'confluence', key: 'a b#1?x.png',
+        pageId: 7, pageSource: 'standalone', confluenceId: null,
+      }),
+    ).toBe('/api/attachments/7/a%20b%231%3Fx.png');
   });
 });

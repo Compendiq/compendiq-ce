@@ -122,6 +122,30 @@ describe('AppLayout', () => {
     expect(header!.querySelector('a[href="/ai"]')).toBeNull();
   });
 
+  it('shows a route title in the header when the page has not claimed the slot', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+    const header = document.querySelector('header')!;
+    expect(header.querySelector('h1')?.textContent).toBe('AI');
+  });
+
+  it('lets a page claim the header slot', () => {
+    render(
+      <AppLayout>
+        <div id="from-page">
+          {/* Pages-style claim happens via HeaderHost in the child tree */}
+        </div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    // No child claimed the slot — Pages title is the fallback.
+    expect(document.querySelector('header h1')?.textContent).toBe('Pages');
+  });
+
   it('renders app logo in top header bar on all routes', () => {
     const { unmount } = render(
       <AppLayout>
@@ -159,52 +183,36 @@ describe('AppLayout', () => {
     expect(header!.parentElement).toBe(rootDiv);
   });
 
-  it('renders centered search bar with input-like appearance', () => {
+  it('has no visible Find control in the header', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
-      { wrapper: createWrapper('/') },
+      { wrapper: createWrapper('/ai') },
     );
-    expect(screen.getByText('Search pages, commands...')).toBeInTheDocument();
+    const header = document.querySelector('header')!;
+    expect(header.querySelector('[data-testid="header-find"]')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Jump to page or command' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Jump to page')).not.toBeInTheDocument();
   });
 
-  it('search bar has role="search" landmark and distinct aria-labels', () => {
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    const searchRegion = screen.getByRole('search');
-    expect(searchRegion).toBeInTheDocument();
-
-    // Desktop and mobile search buttons have distinct aria-labels
-    const desktopBtn = screen.getByLabelText('Search knowledge base');
-    const mobileBtn = screen.getByLabelText('Search');
-    expect(desktopBtn).toBeInTheDocument();
-    expect(mobileBtn).toBeInTheDocument();
-  });
-
-  it('search buttons have dynamic aria-expanded reflecting command palette state', () => {
-    useCommandPaletteStore.setState({ isOpen: false });
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    const desktopBtn = screen.getByLabelText('Search knowledge base');
-    const mobileBtn = screen.getByLabelText('Search');
-    expect(desktopBtn).toHaveAttribute('aria-expanded', 'false');
-    expect(mobileBtn).toHaveAttribute('aria-expanded', 'false');
-
-    // When command palette is open, aria-expanded should be true
-    act(() => {
-      useCommandPaletteStore.setState({ isOpen: true });
+  it('registers Cmd/Ctrl+K to open the command palette', () => {
+    let captured: keyboardShortcutsModule.ShortcutDefinition[] = [];
+    vi.spyOn(keyboardShortcutsModule, 'useKeyboardShortcuts').mockImplementation((shortcuts) => {
+      captured = shortcuts;
     });
-    expect(desktopBtn).toHaveAttribute('aria-expanded', 'true');
-    expect(mobileBtn).toHaveAttribute('aria-expanded', 'true');
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const search = captured.find((s) => s.keys.includes('k') && s.mod);
+    expect(search).toBeTruthy();
+    expect(search!.key).toBe('Ctrl+K');
+    useCommandPaletteStore.setState({ isOpen: false });
+    search!.action();
+    expect(useCommandPaletteStore.getState().isOpen).toBe(true);
   });
 
   it('mobile slide-over exposes dialog semantics and closes on Escape', async () => {
@@ -276,16 +284,16 @@ describe('AppLayout', () => {
     expect(document.activeElement).toBe(toggle);
   });
 
-  it('search bar is absolutely centered in header', () => {
+  it('keeps session chrome out of the header', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    const searchRegion = screen.getByRole('search');
-    expect(searchRegion.className).toContain('absolute');
-    expect(searchRegion.className).toContain('justify-center');
+    const header = document.querySelector('header')!;
+    expect(header.querySelector('[data-testid="theme-toggle"]')).toBeNull();
+    expect(header.querySelector('[data-testid="user-avatar-initial"]')).toBeNull();
   });
 
   it('shows tree sidebar on /pages and /ai, swaps to settings sidebar on /settings', () => {
@@ -384,40 +392,24 @@ describe('AppLayout', () => {
     expect(document.activeElement).toBe(main);
   });
 
-  it('shows article layout presets only while reading a page', () => {
-    const { unmount } = render(
+  it('does not render a layout preset selector in the shell', () => {
+    render(
       <AppLayout>
         <div>article</div>
       </AppLayout>,
       { wrapper: createWrapper('/pages/123') },
-    );
-    expect(screen.getByRole('button', { name: 'Layout presets' })).toBeInTheDocument();
-    unmount();
-
-    render(
-      <AppLayout>
-        <div>dashboard</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
     );
     expect(screen.queryByRole('button', { name: 'Layout presets' })).not.toBeInTheDocument();
   });
 
-  it('applies the Editing layout preset and requests the Details inspector', async () => {
+  it('does not treat the create form as an existing article', () => {
     render(
       <AppLayout>
-        <div>article</div>
+        <div>new page</div>
       </AppLayout>,
-      { wrapper: createWrapper('/pages/123') },
+      { wrapper: createWrapper('/pages/new') },
     );
-
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Layout presets' }), { button: 0 });
-    fireEvent.click(await screen.findByText('Editing'));
-
-    expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
-    expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
-    expect(useAiDockStore.getState().open).toBe(false);
-    expect(screen.getByTestId('article-right-pane')).toHaveAttribute('data-inspector-view', 'details');
+    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
   });
 
   it('temporarily compacts the tree beside an expanded inspector at intermediate widths', () => {
@@ -523,49 +515,7 @@ describe('AppLayout', () => {
     expect(header!.querySelector('[aria-label="Expand sidebar"]')).toBeNull();
   });
 
-  it('clicking the desktop search button opens the command palette', () => {
-    useCommandPaletteStore.setState({ isOpen: false });
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    const desktopBtn = screen.getByLabelText('Search knowledge base');
-    fireEvent.click(desktopBtn);
-    expect(useCommandPaletteStore.getState().isOpen).toBe(true);
-  });
 
-  it('clicking the mobile search button opens the command palette', () => {
-    useCommandPaletteStore.setState({ isOpen: false });
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    const mobileBtn = screen.getByLabelText('Search');
-    fireEvent.click(mobileBtn);
-    expect(useCommandPaletteStore.getState().isOpen).toBe(true);
-  });
-
-  it('search controls are native button elements (keyboard accessible via Enter/Space)', () => {
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    // Native <button> elements are keyboard-accessible by default:
-    // browsers fire click on Enter and Space without extra JS.
-    const desktopBtn = screen.getByLabelText('Search knowledge base');
-    const mobileBtn = screen.getByLabelText('Search');
-    expect(desktopBtn.tagName).toBe('BUTTON');
-    expect(mobileBtn.tagName).toBe('BUTTON');
-    // Neither button has tabIndex=-1 which would remove keyboard focus
-    expect(desktopBtn).not.toHaveAttribute('tabindex', '-1');
-    expect(mobileBtn).not.toHaveAttribute('tabindex', '-1');
-  });
 
   // #1126: the dock holds the right side of an article route and forces the
   // article pane into its rail, so `.` toggling the pane's own preference would
@@ -746,7 +696,7 @@ describe('AppLayout', () => {
 
   describe('"show me the assistant" on a layout with no dock', () => {
     /**
-     * `openDock()` is raised by Alt+I, by the AI layout preset and by the
+     * `openDock()` is raised by Alt+I and by the
      * inspector's rail button. It used to open a third column; the assistant is
      * a tab in `ArticleRightPane` now and `AiDock` renders only the mobile
      * sheet, so on every layout at `md` and up the flag has to be consumed and

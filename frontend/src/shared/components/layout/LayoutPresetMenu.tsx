@@ -55,12 +55,12 @@ export function LayoutPresetMenu({
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          className="app-search flex h-9 items-center gap-2 rounded-lg px-2.5 text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          className="nm-button-ghost h-8 px-2 text-xs"
           aria-label="Layout presets"
           title="Layout presets"
         >
           <LayoutTemplate size={15} aria-hidden="true" />
-          <span className="hidden xl:inline">Layout</span>
+          <span className="hidden sm:inline">Layout</span>
         </button>
       </DropdownMenu.Trigger>
 

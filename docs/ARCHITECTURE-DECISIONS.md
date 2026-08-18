@@ -208,8 +208,8 @@ Markdown stays exactly as specified above, with the same libraries and the same
 macro mapping. An `<img>` still converts to `<img>`, and its *text* contribution
 to embedding input is still whatever alt text it carries.
 
-What changes (ADR-025; the intake shipped in **P2**, retrieval lands in **P3**)
-is that the attachment's **bytes**
+What changed (ADR-025; the intake in **P2**, retrieval in **P3**, the answer
+path in **P4**, all shipped) is that the attachment's **bytes**
 become a second, parallel index — `page_image_embeddings`, embedded by a
 vision-language model, fused as a third retrieval leg. Five consequences are
 worth stating here, where a reader of the pipeline will look for them:
@@ -1320,13 +1320,16 @@ query-side prefix paragraph above.
 
 ### #1115 (2026-08-17) — a third retrieval leg, over a separate image index
 
-ADR-025 adds a **third leg** to the fusion described above (landing in **P3**):
+ADR-025 adds a **third leg** to the fusion described above (**shipped in P3**):
 alongside the vector leg over `page_embeddings` and the keyword leg over
 `pages.tsv`, an image leg does kNN over `page_image_embeddings` — a separate
 table, embedded by a separate vision-language model, under the same visibility
 predicate as the other two. It runs only when the `image_embedding` use case is
 assigned, the table is non-empty and `rag_image_leg_enabled` is on; otherwise
-there is no query embed and no added latency.
+there is no query embed, no kNN and no row. The gate itself is not free — a
+cached boolean plus one indexed read of the assignment, which on an unassigned
+instance answers first and never reaches the non-empty check — but that is a
+round-trip, not a model call.
 
 Three properties keep it from disturbing what is already here:
 
@@ -1340,7 +1343,11 @@ Three properties keep it from disturbing what is already here:
    own AG News pairs score 0.55 and 0.57 — which is the point: there is no
    threshold that separates them, so any score-space arithmetic across the two
    (a weighted blend, a shared cutoff) is meaningless. RRF only ever sees
-   positions. Page-denominated like #1106: a page's best image rank counts once.
+   positions. Page-denominated like #1106: a page's best image rank counts once
+   — and, because those pages were denominated from a raw image-row stream,
+   each carries the raw position of its best image so #1103's stable head can
+   reconstruct what a narrower request's leg held rather than taking a plain
+   prefix of a page-crowded window.
 2. **The image SIMILARITY never feeds the confidence number.**
    `retrieval-confidence.ts` compares an operator-tuned scalar against a
    text-cosine distribution; an image similarity on that scale is a different
@@ -1355,25 +1362,47 @@ Three properties keep it from disturbing what is already here:
    assigned, any fully-reranked set gets `basis: 'rerank'` regardless of which
    leg found it, which is already true of keyword-only sets today. And an
    image-reached page does reach rerank, because it enters the pipeline as an
-   ordinary `SearchResult` (point 3). **P3 must therefore decide explicitly
-   whether a title-synthesised row may carry a `rerankScore` into
-   `computeRetrievalConfidence` — as the code stands it would**, and #1105's
-   gate could then refuse on it.
+   ordinary `SearchResult` (point 3). **P3 ruled: it may not.** A row reached
+   ONLY by the image leg is filtered out of `computeRetrievalConfidence`'s
+   sample entirely (`SearchResult.imageOnly`), in both directions. It could
+   REFUSE a turn — a rerank score over a lede or a title that no leg matched
+   measures the wrong thing, and an *unreranked* image-only row flips
+   `allReranked` false and silently demotes a fully reranked set to the
+   similarity basis. And it could not raise the number honestly either: with no
+   `vectorScore` it can only displace a measured row from position 0 and make a
+   vector-led set unmeasurable, which is why the vector-led test now reads the
+   best MEASURABLE row rather than `results[0]`. A set of nothing but image
+   hits is therefore `basis: 'none'`, score `null` — the keyword-only verdict,
+   and deliberately not the empty-corpus `score: 0` that a threshold refuses. A
+   page found by BOTH an image and a text leg stays in the sample: its cosine
+   is real.
 3. **The stages after fusion see text, never pixels.** A
    `page_image_embeddings` row is never itself a `SearchResult`: the fused
    result for an image-reached page is an ordinary text row — its
    `chunk_index 0` row, or, for a page below the text floor that has no chunk
    at all, one whose `chunkText` is synthesised from the title (design record
    §5). Rerank, the ranking prior, MMR and sibling assembly therefore need no
-   image-specific branch. What they do need from P3 is a judgement on the
-   synthesised row: it carries text the page did not originally have, and that
-   text is what a cross-encoder would score and what MMR's trigram Jaccard
-   would diff.
+   image-specific branch. **P3's judgement on the synthesised row**: it stays,
+   unchanged, and the cost is accepted rather than mitigated. It carries text
+   the page did not originally have, so a title-only row ranks poorly under
+   rerank and looks maximally distinct under MMR — both acceptable, because the
+   row still carries the page, the picture and a title a person can read, and
+   because the alternative (special-casing three stages) puts half a ranking
+   rule in each of them. It is flagged `imageTextSynthesized` so the fact is
+   visible rather than inferred, and it carries no `chunkIndex`: that field
+   means "the chunk the vector leg matched" and is the sibling-assembly anchor,
+   which an image-reached page does not have.
 
 Failure is honest in the shape #1104 established: a VL call that fails, times
 out or meets an open breaker bypasses the leg, records
 `degraded_reason = 'image_leg_unavailable'`, and leaves `searchTypeFinal` and
-the text legs exactly as they were.
+the text legs exactly as they were. **Precedence, added by P3:** that value is
+recorded only when the text side is healthy. There is one `degraded_reason`
+column and the value that belongs in it is the outage that hurt the answer
+most — during an embedding outage an operator needs `embedding_failed`, and an
+image leg that fell over in the same second is a footnote to it. A second
+column would buy a fact nobody has asked a question about at the cost of every
+existing reader's `=` predicate.
 
 ---
 
@@ -1765,6 +1794,8 @@ Three decisions inside that are not obvious. **It fails open, so the bound is co
 
 **Prompt injection rendered as pixels is unmitigated, and accepted.** `core/utils/sanitize-llm-input.ts` operates on text; instructions drawn into an image reach the model untouched, and there is no mitigation short of an OCR pass — which this design rejects outright as the fallback path. This is a stated limitation, not an oversight: the residual risk is accepted in exchange for not degrading screenshots and diagrams (the feature's core use case) to OCR fragments.
 
+**#1115 P4 widens who can reach that risk, on the same terms.** Retrieved knowledge-base images now ride this exact gate — the same `(provider_id, model)` verdict, read with the same `getVisionCapability`, refused on anything but `true` — so **an image already in the corpus is model input**, and the unmitigated-pixels paragraph above applies to it unchanged. The threat model moves rather than grows: the KB text on those same pages is first-party content that the ASKING user did not author and that `sanitizeLlmInput` already scans (`/llm/ask` audits detections with `contentOrigin: 'first_party_kb'`), so the new exposure is the part of that content nothing can scan. Whoever can attach a picture to a page can put instructions in front of the chat model of anyone whose question retrieves it. Accepted for the same reason and with the same remedy as above: no OCR, no pixel inspection, and the ceilings (`MAX_IMAGE_BYTES`, `MAX_IMAGE_DIMENSION`, `rag_answer_max_images`, the byte budget) bound the volume, never the content.
+
 ---
 
 ### #1104 — the `rerank` use case
@@ -1825,7 +1856,12 @@ ADR-021 gains a **seventh** use case, `image_embedding` (ADR-025). Migration
 `093` widened the `llm_usecase_assignments` CHECK in **P0**; the resolver, the
 client, the probe and the settings row shipped in **P1**; **P2 gave it a
 consumer** — `image-embedding-service.ts` embeds every referenced page image
-through it. Nothing retrieves one yet — that is P3.
+through it; **P3 gave it a second** — `image-leg-search.ts` embeds the QUERY
+through the same resolved pair (once per request, `VL_QUERY_INSTRUCTION`, 3s)
+and searches the index it filled. **P4 made the results model input** — up to
+`rag_answer_max_images` of the matched pictures are attached to the chat
+request when the resolved `chat` pair has probed vision-capable, gated on the
+#1154 verdict and text-only (unqualified) otherwise.
 
 **It is the `rerank` rule, one rung stronger.** `resolveImageEmbeddingUsecase()`
 returns `null` when unassigned and the image leg is simply off; `resolveUsecase('image_embedding')`
@@ -2102,8 +2138,24 @@ Multi-replica deployments sit behind a load balancer. `trustProxy` MUST be set t
 ## ADR-025: Multimodal image retrieval — dual space
 
 **Date:** 2026-08-17
-**Status:** Accepted (owner interview, 2026-08-17). **Partially implemented:**
-P0, P1 and P2 have shipped. P0: this ADR, migration `093` (the
+**Status:** Accepted (owner interview, 2026-08-17). **Shipped, P0 through
+P5b** — the feature is complete and measured on a local shim; the production
+run is what settles the checkpoint (see **Measured**, below, and D11).
+
+| PR | Landed | What |
+|---|---|---|
+| P0 | 2026-08-17 | #1350 — this ADR, migration `093`, the core `attachment-store` hoist |
+| P1 | 2026-08-17 | #1356 — the `image_embedding` use case end to end |
+| shim | 2026-08-17 | #1352 — `tools/vl-embedding-shim/` |
+| P2 | 2026-08-17 | #1360 — the intake, the dirty flags, the worker, the Embeddings-tab card |
+| P5a | 2026-08-17 | #1353 — `eval/corpus-de-images/` |
+| P5c | 2026-08-17 | #1358 — `fixture-de-images.json` |
+| P3 | 2026-08-17 | #1362 — the third RRF leg, the image sources, the Retrieval-tab knobs |
+| P4 | 2026-08-18 | #1367 — the answer path, `rag_answer_max_images`, `image_only_context` |
+| P5b | 2026-08-18 | #1366 — the `--images` axis |
+| P6 | 2026-08-18 | this sweep — CLAUDE.md consolidation, this **Measured** section, diagrams and runbooks |
+
+P0: this ADR, migration `093` (the
 `page_image_embeddings` table, `pages.image_embedding_dirty`, the widened
 use-case CHECK) and the core `attachment-store` hoist. P1: the
 `image_embedding` use case end to end — `vl-embedding-client.ts`,
@@ -2112,11 +2164,20 @@ runtime DDL `ensureImageEmbeddingColumn`, the probe-gated assignment routes and
 the Settings row. **P2: the index fills** — `image-embedding-service.ts`
 (`embedPageImages` + `processDirtyPageImages`), the `image_embedding_dirty`
 writers at every place an image can change under a page, the two intake knobs,
-the admin status/re-scan/process routes and the Embeddings-tab card. The
-retrieval leg and the answer path land in **P3–P4**, and every paragraph below
-that describes unshipped behaviour says which PR owns it. **Nothing RETRIEVES
-an image yet**: after P2 the index is populated and read by nothing, which the
-Embeddings-tab card states on screen.
+the admin status/re-scan/process routes and the Embeddings-tab card. **P3: the
+index is read** — `image-leg-search.ts`, the third RRF leg in `hybridSearch`,
+`rag_image_leg_enabled`, `degraded_reason = 'image_leg_unavailable'`, the
+`kind: 'image'` source entries and their thumbnails, and the Retrieval tab's
+Image retrieval group. **P4: the model sees them** — `retrieved-images.ts`
+(`pickRetrievedImages`, round-robin across pages with a byte-identity dedupe,
+`validateImage` unforked, the derived base64 budget), the vision-gated image
+parts on the user turn,
+`rag_answer_max_images` and its Retrieval-tab control, the
+`image_only_context` refusal, the two optional audit fields and the
+attached-image component of the answer cache key. **P5 measured it** — P5a the
+corpus, P5c the labels, P5b the `--images` axis and the run recorded under
+**Measured** below. Every paragraph below names the PR that owns the behaviour
+it describes; none of them is outstanding.
 **Design of record:** `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`
 (issue #1115, epic #1100 Phase 2).
 
@@ -2217,7 +2278,9 @@ different width. It is part of the rebuild identity for the same reason. The
 client re-normalises after truncation, because slicing a unit vector does not
 leave one and vLLM is not documented to re-normalise on every path. Weights are 4.26 GB (2B) and 16.29 GB (8B) in bf16; production is an
 **RTX 6000 96 GB Blackwell**, so **VRAM is not the constraint** and the choice
-is quality: the image eval measures both and the numbers decide. The truncation
+is quality. The image eval measured both, and the recommendation held: the 2B
+was **≥** the 8B on this corpus at a quarter of the intake cost and a fifth of
+the query cost (**Measured** §B). The truncation
 cost is small where it applies — the authors measure ~1.4% MRR@10 going from
 1024 to 512 dims, with int8 quantisation nearly free and binary decidedly not.
 
@@ -2262,13 +2325,110 @@ reports `rebuilt` and `dirtiedPages` back to the panel — "Re-check" reads as
 diagnostic and on a width change is not.
 
 **D8 — The answer path degrades to text-only when the chat model's vision
-verdict is not `true`, and retrieved images never count as grounding (P4).**
-`resolveImagePart` (#1154) *throws* on `false`/`null`, which is right for a user
-who explicitly attached an image and wrong for retrieval that merely found one —
-so P4 needs a sibling that returns `null`. And the refusal gate (#1105) must not
-count a retrieved image as "other grounding": doing so would stop honest
-refusals on every weak retrieval that happens to touch a page with a picture on
-it. (Owner ruling, 2026-08-10.)
+verdict is not `true`, and retrieved images never count as grounding (P4,
+shipped).** `resolveImagePart` (#1154) *throws* on `false`/`null`, which is
+right for a user who explicitly attached an image and wrong for retrieval that
+merely found one — so P4 reads the stored verdict directly through
+`getVisionCapability` and treats anything but `true` as a gate that quietly
+shuts. And the refusal gate (#1105) must not count a retrieved image as "other
+grounding": doing so would stop honest refusals on every weak retrieval that
+happens to touch a page with a picture on it. (Owner ruling, 2026-08-10.)
+
+As shipped, "degrades" means **unqualified**: no sentence in the prompt, no
+caveat on the answer, no badge and no change to the announcement — the pictures
+simply stay in `sources[]` where the reader can open them. A per-answer "the
+assistant could not see the diagram" would recur on every answer on such a
+deployment, which is how a notice stops being read; the fact is stated once,
+beside the knob in Settings → Retrieval, which is the only place it appears.
+The gate's non-grounding half is enforced structurally rather than by
+inspection: the pick step runs *after* the refusal decision, so at the moment
+`otherGrounding` is computed there is nothing to count and a refused turn has
+read no image bytes.
+
+Two mechanisms fell out of implementing it. The pick lives in a
+`domains/llm` **service** (`retrieved-images.ts`) rather than in the route,
+because D9's reader is ACL-free and the P0 guard forbids any file under
+`src/routes` from naming it — the read is safe only because retrieval already
+applied the visibility predicate, and the service boundary is where that
+argument is written down. And selection across pages is **round-robin**: a page
+carrying several near-identical screenshots would otherwise take every slot at
+the default cap of 2 and hide the second page, which is image count beating
+image breadth — the same head dilution `MAX_IMAGE_HITS_PER_PAGE` bounds inside
+a page.
+
+**D8a — An all-image-only context with nothing attached REFUSES
+(`image_only_context`; P4, shipped — supersedes P3's interim ruling).** P3
+ruled that an image-only hit set never refuses, and justified it as thin
+evidence rather than absent evidence *because P4 was about to show the model
+the picture*. Where P4 does, the turn answers exactly as P3 said. Where it
+cannot — no vision-capable chat model, `rag_answer_max_images` at 0, or every
+candidate skipped — and **every** returned row is a page whose only context is
+a synthesised title, the prompt is a list of titles and a question, which is
+absent evidence wearing a source list. That case now refuses with its own
+reason, runs no completion, and carries the pictures beneath it as the closest
+matches.
+
+`every`, never `any`: one real text row is grounding, and widening it would
+refuse ordinary answers whose fifth source happens to be a picture. It stands
+down on `otherGrounding` like the other reasons, and it is its own reason
+rather than one of the three because neither fits — `weak_match` is a measured
+verdict about relevance and nothing here was measured (the pages may match
+perfectly), and `no_context` is false on its face, since retrieval did find
+pages. It is decided after the pick step, because it needs the attached count,
+and still before any completion.
+
+**D8b — `rag_answer_max_images` is a COUNT and the byte ceiling is a CONSTANT
+(P4, shipped).** The admin knob (default 2, range 0–8, and **0 is a legal
+value** — the honest off switch, since a zero answer cap subtracts nothing
+durable) bounds a thing an operator can reason about. `RETRIEVED_IMAGES_BYTE_BUDGET`
+is not exposed, because a byte ceiling depends on what the
+corpus happens to hold and its failure mode is a provider timing out on a
+request whose size nobody can see. It exists because this path bypasses the LLM
+queue's sizing by design — the queue counts requests, not bytes — so the cap
+alone would admit ~55 MB of base64 into a single prompt at
+`MAX_IMAGE_BYTES` × 8.
+
+The budget is **derived from `MAX_IMAGE_BYTES`** (its base64 length, ~6.7 MB),
+not a literal (review r1). It shipped as a flat 6 MiB described as "roughly one
+`MAX_IMAGE_BYTES` image", which is 14% short of it — so an image between 4.5 MB
+and the 5 MB intake ceiling was indexed, ranked by the leg and shown to the
+reader as a source while being categorically unshowable to the model, a cliff
+with no symptom. Deriving it states the intent (whatever the intake admits, the
+answer path can carry one of) and stops the two drifting apart. The
+concurrency in front of it is the **SSE stream cap**
+(`llm_max_concurrent_streams_per_user`, hard default 3, admin-raisable to 20),
+not `LLM_CONCURRENCY`: the pick runs on the request path, above the LLM queue
+entirely.
+
+**And `MAX_IMAGE_BYTES` is a ceiling on what is READ, not only on what is
+accepted (review r3).** The budget bounds the request and `validateImage`
+bounds the candidate, but both measure a buffer that already exists —
+`resolveAttachmentBytes` calls `fs.readFile` with no limit. The intake applied
+the same 5 MB gate before it wrote the row, so the reachable state is the one
+`skipped.invalid` names: the bytes on disk are no longer the bytes that were
+indexed, and the store will hold 40 MiB. On the intake worker that costs a
+background read; on the answer path it is a request-path read with no cache in
+front of it, so the pick now `stat`s each candidate first
+(`resolveAttachmentByteSize`, sharing the reader's own path resolution so the
+two can never measure different files) and refuses an oversized one without
+loading it. It fails **open** — an unreadable size is "unknown", not "too big",
+and the checks behind it still bound the read — and it is a mitigation rather
+than a guarantee, since a file can grow between the `stat` and the read.
+
+Two consequences of the two caps being separate numbers are worth stating
+where an operator meets them, because D8 forbids saying either on an answer.
+**Above 4, the model can be shown a picture the reader has no chip for**:
+`MAX_IMAGE_SOURCES` (4) bounds the source list and `rag_answer_max_images`
+(0–8) bounds the attachments, and the two also select by different rules —
+sources are a flat best-first sort across pages, the pick is round-robin — so
+even below 4 a round-robin slot can land on a page the flat sort has already
+filled past. The page is still cited either way. And **byte-identical pictures
+are attached once**: P2 indexes per page, so one diagram reused across five
+pages is five candidates with the same bytes, the same embedding and therefore
+the same similarity, which sorts them adjacent inside one round; without the
+dedupe the model received one piece of evidence in both default slots, which
+is the count-beats-breadth failure round-robin exists to prevent, reached from
+inside a round.
 
 **D9 — Bytes come from disk, never Redis staging (P0, shipped).**
 `core/services/attachment-store.ts` is the hoisted path-resolution + read half
@@ -2374,30 +2534,81 @@ since one page may spend `rag_images_per_page_max × IMAGE_EMBED_TIMEOUT_MS` and
 neither a page-count cadence nor a time cadence evaluated at a page BOUNDARY can
 renew during the one page slow enough to need it.
 
-### Retrieval, in one paragraph (P3)
+### Retrieval, in one paragraph (P3, shipped)
 
-The image leg runs only when the use case is assigned, the table is non-empty
-and `rag_image_leg_enabled` is on — otherwise no query embed and no cost. It
-kNN-searches `page_image_embeddings` under the same visibility predicate as the
-other legs and fuses as a **third RRF leg**, page-denominated like #1106. Rank,
-not score: the published worked examples put text→image around 0.46–0.72 and
-text↔text as high as 0.75–0.81 (`arXiv:2601.04720v2` Appendix C: Table 9's MS
-COCO rows are 0.46 and 0.52, Table 8's SQuAD rows 0.75 and 0.81; the model
+The image leg (`domains/llm/services/image-leg-search.ts`) runs only when the
+caller has not forced it off, `rag_image_leg_enabled` is on (default true), the
+use case is assigned and the table is non-empty — otherwise no query embed, no
+kNN and no row (the gate's own cost is a cached boolean plus one indexed
+assignment read, which on an unassigned instance returns before the
+non-empty check runs). The last condition is re-read per request rather than cached, because
+it flips on the first embed and on a rebuild's `TRUNCATE`. It embeds the query
+ONCE through `embedTextsVl` under `VL_QUERY_INSTRUCTION`, bounded at 3s
+(shorter than the rerank stage's 5s because it runs in PARALLEL with the text
+legs, so everything past them is added to every question), gives the kNN its
+own 2s `SET LOCAL statement_timeout` — a second budget, not a restatement of
+the first: the gate has no `indexed` condition, and above 4000 dimensions no
+HNSW index is built, so the leg legitimately scans sequentially while the
+answer path waits (review r3) — kNN-searches
+`page_image_embeddings` under the same `visiblePagesPredicate` the vector leg
+uses — the shared fragment, never a copy, since an image row carries no ACL of
+its own — and fuses as a **third RRF leg**, page-denominated like #1106 (a
+page's best image ranks it once, so image COUNT cannot beat image QUALITY).
+Rank, not score: the published worked examples put text→image around 0.46–0.72
+and text↔text as high as 0.75–0.81 (`arXiv:2601.04720v2` Appendix C: Table 9's
+MS COCO rows are 0.46 and 0.52, Table 8's SQuAD rows 0.75 and 0.81; the model
 card's own matrix scores a matching text query 0.7155 against an image document
 and 0.8160 against a text one), and they are not cleanly separable — Table 8's
 AG News pairs score 0.55 and 0.57 — so a cutoff tuned on text has no defined
-meaning on a cross-modal score. For the same
-reason **the image similarity never feeds the confidence number** (#1105):
-image hits carry no `vectorScore`, so they cannot establish the `similarity`
-basis. That is deliberately narrower than "an image-only set never refuses" —
-the `rerank` basis is tested first and has no vector-led precondition
-(`retrieval-confidence.ts:124`), and an image-reached page reaches rerank as an
-ordinary `SearchResult`, so **P3 has to rule on whether such a row may carry a
-`rerankScore` into the gate; as the code stands it would.** Rerank, the ranking
-prior, MMR and sibling assembly still need no image-specific branch, because a
-`page_image_embeddings` row never becomes a `SearchResult`: an image-reached
-page enters them as its `chunk_index 0` row, or as a title-synthesised one
-(see the design record's retrieval section).
+meaning on a cross-modal score.
+
+**P3's ruling on the confidence gate, which P0 left open.** The image
+similarity never feeds the number, and — the part P0 flagged as undecided — an
+image-ONLY row is excluded from `computeRetrievalConfidence`'s sample
+altogether. Both directions matter: a `rerankScore` over a lede or a title that
+no leg matched is a measurement of the wrong thing and could REFUSE a turn,
+while an unreranked image-only row would flip `allReranked` false and silently
+demote a fully reranked set to the similarity basis; and the row carries no
+`vectorScore`, so left in it could only displace a measured row from position 0
+and make a vector-led set unmeasurable. A set of nothing but image hits is
+`basis: 'none'` with score `null` — the keyword-only verdict, not the
+empty-corpus `score: 0` a threshold would refuse. **The one arm of #1105 the
+leg does move is `no_context`** (review r3): it fires on an EMPTY result set,
+so a page the leg made retrievable stands it down and a question that used to
+refuse honestly now answers. That follows from the ruling above rather than
+contradicting it, and `no_context` is never the reason for such a set. **What
+happens next is the answer path's, and D8a superseded P3's "an image-only hit
+set never refuses"**: where the picture is attached the turn answers as P3 said, and
+where it cannot be — and every row is a title-synthesised one — the request
+refuses with `image_only_context` instead. P3's own justification is what
+carries the supersession: thin-evidence-not-absent-evidence held *because* the
+model was about to be shown the picture, and a prompt of nothing but titles is
+absent evidence. The `kind: 'image'` source still puts that evidence in front
+of the reader either way, and an operator who disagrees turns the leg off.
+Rerank, the ranking prior,
+MMR, sibling assembly and the #1107 pin need no image-specific branch, because
+a `page_image_embeddings` row never becomes a `SearchResult`: an image-reached
+page enters them as its `chunk_index 0` row, or (with no chunk at all) as a
+title-synthesised one flagged `imageTextSynthesized`.
+
+**Failure is a bypass and is recorded.** `degraded_reason =
+'image_leg_unavailable'`, but only when the text side is healthy: there is one
+column, and the value that belongs in it is the outage that hurt the answer
+most. `searchTypeFinal` is unchanged. **Every read that can throw is a failure,
+not a verdict** (review r2): the resolver's throw-vs-`null` distinction is the
+one the module is built around, and the gate's `EXISTS` probe and the image-only
+lede fetch each got their own catch for the same reason — an unanswerable probe
+is not an empty index, and a lede fetch that throws silently deletes exactly the
+pages this leg exists to make retrievable while the analytics row claims health. Deep search runs the leg on the ORIGINAL
+question only (`imageLeg: false` on the paraphrase legs) — one VL call per
+gesture, and it keeps the image evidence at weight 1 instead of the 1 + 0.6 +
+0.6 a merge that sums weighted per-leg ranks would give the same evidence
+repeated three times. `/api/search?mode=hybrid` gets the leg for ranking with
+its wire shape unchanged; `mode=semantic` never reaches `hybridSearch` at all.
+On `/llm/ask` the wire gains `kind: 'image'` source entries carrying
+`attachmentUrl` (built by the inverse of the `<img src>` enumerator) and
+`similarity: null`, capped at four per answer. The page and web source shapes
+are untouched. Operations: `docs/runbooks/image-index.md` §6.
 
 ### v1 scope fence
 
@@ -2429,6 +2640,117 @@ MMTEB figures — informational, since D1 does not depend on it. Not in CI: the
 gate has no runnable VL model (`nomic-embed-text` is text-only), so CI tests
 plumbing against a fake embedder.
 
+**Status: both the harness and the first measurement have landed.** P5a
+vendored the corpus (65 articles, 187 images), P5c the labels (307 queries) and
+**P5b the `--images` axis** — the flag, the seeder, the paired runner, the
+metrics and the report; the run they produced is in **Measured** below. Four
+things about the shipped axis are decisions rather
+than implementation detail, and each has a wrong-looking obvious alternative.
+The corpus is seeded **through the real intake** (`embedPageImages` over bytes
+on disk under `attachment-store`'s own layout, with the body rewritten by
+`buildPageImageUrl`), never by inserting vectors — a mis-keyed directory or a
+mis-encoded filename resolves to the same silent `null` as a missing file, so a
+seeder that wrote its own rows would measure its own fixture. The two arms run
+**in one process on one seeded database, interleaved per query**, forced with
+`HybridSearchOptions.imageLeg` rather than by writing
+`admin_settings.rag_image_leg_enabled` — pairing is McNemar's precondition, and
+a global setting would change what every other request on the instance
+retrieves for the duration of the run. The axis's **VL endpoint is its own pair
+of environment variables and never falls back to the text one**, which is D3's
+non-inheriting rule enforced by refusal rather than by prose. And the run is
+**refused rather than reported** in every state where the two arms would be the
+same configuration: an intake that skipped an image, a leg that contributed
+hits to fewer than half the queries, or a leg-off arm that came back carrying
+image hits — all of which otherwise produce a delta of exactly zero that reads
+as "the leg does not help". Two further refusals follow from the same premise
+(review r2): **`--deep-search` is refused on this axis**, because expansion
+reformulates per request, so the arms would be paraphrased separately and two of
+each arm's three fused legs would be different questions; and **`--baseline`
+refuses a pair whose VL model, width or index endpoint differs**, which the
+existing model guard cannot see — `report.model` is the TEXT embedder and reads
+the same on a 2B run and an 8B one. Recipe and report fields:
+`docs/runbooks/retrieval-eval.md`, "Image axis (`--images`)".
+
+### Measured
+
+Two runs, both through the D11 shim, both recorded on #1115. **Everything here
+is a local number**, which per D11 and "What only production can prove" below
+means it is evidence about the rig and the ranking logic, not about the
+checkpoint — the production stack decides. Reproduce either with
+`docs/runbooks/retrieval-eval.md`.
+
+#### A. Text-parity gate
+
+2026-08-17, #1102 fixture, 275 pages, 197 queries per language, rerank off,
+deep-search off, local shim. Posted on #1115. This is the run D1 promised as
+*informational*: it asks whether a VL checkpoint could serve the TEXT side, so
+that "dual space" is a measured choice rather than a citation.
+
+| Model (EN, `fts=simple`) | R@1 | R@3 | R@5 | R@10 | MRR |
+|---|---|---|---|---|---|
+| `bge-m3` | .6091 | .7919 | .8477 | .9137 | .7131 |
+| Qwen3-Embedding-4B | .6599 | .9086 | .9289 | .9645 | .7839 |
+| Qwen3-VL-Embedding-2B (mlx 8-bit, 2048) | .6193 | .8579 | .9239 | .9543 | .7460 |
+| Qwen3-VL-Embedding-8B (llama Q6_K, native 4096, unindexed exact scan) | .6802 | .9086 | .9442 | .9746 | .7967 |
+
+| Model (DE, `fts=german`) | R@1 | R@3 | R@5 | R@10 | MRR |
+|---|---|---|---|---|---|
+| `bge-m3` | .5939 | .7919 | .8477 | .8883 | .7052 |
+| Qwen3-Embedding-4B | .6548 | .8731 | .9036 | .9492 | .7702 |
+| Qwen3-VL-Embedding-2B | .6142 | .8122 | .8934 | .9492 | .7313 |
+| Qwen3-VL-Embedding-8B | .6548 | .8832 | .9492 | .9797 | .7793 |
+
+Ordering in both languages: VL-8B ≳ Qwen3-4B > VL-2B > `bge-m3`. Both VL
+checkpoints clear `bge-m3` — the gate — VL-8B decisively (EN R@3 +.117,
+p = 3.4e-5; DE R@5 +.102, p = 1.8e-4) and VL-2B narrowly (EN R@5 +.076,
+p = .0026; DE R@10 +.061, p = .0042). Qwen3-4B → VL-2B is a small **loss**
+(EN/DE R@1 −.041, DE R@3 −.061, p = .029); Qwen3-4B → VL-8B is a **tie** —
+nothing survives Bonferroni ×4. **Consequence: D1 stands.** Text stays on the
+Phase-1 text embedder and the VL model embeds images only.
+
+#### B. Image axis
+
+2026-08-18, `--images`, the #1366 harness, dev `8b07d9e4`. 65 pages / 187
+images / 307 labels (249 de, 58 en; 22 image-negative); text side
+Qwen3-Embedding-4B; `fts=german`; no rerank; leg on/off paired per query in one
+process; McNemar exact. Local shim — the D11 caveat applies.
+
+| | VL-2B (mlx 8-bit, native 2048) | VL-8B (llama Q6_K, MRL 2048) |
+|---|---|---|
+| Page R@1, off→on | .9381→.9381 (6W/6L) | .9414→.9414 (4W/4L) |
+| Page R@3 | .9837→1.000 (5W/0L, p = .0625) | same |
+| Page R@5 | .9870→1.000 (4W/0L, p = .125) | same |
+| Page R@10 | .9967→1.000 (1W/0L) | same |
+| MRR | .9616→.9674 | .9633→.9696 |
+| image-negative R@1 (n = 22) | 1.000→.9091 (0W/2L: `img-00-058`, `img-05-032`) | same two |
+| `imageHit@1/@3/@5` (n = 285) | .8175 / .9719 / .9895 | .8070 / .9649 / .9825 |
+| `imageNegLeak@1/@3/@5` | .0909 / .6818 / .9545 | same |
+| index throughput | 4.26 img/s (187 in 44 s) | 0.98 img/s (190 s) |
+| query cost, paired p50/p95 | +35 / +56 ms | +171 / +211 ms |
+
+**Reading it.** The leg never costs a page at K ≥ 3 — every discordant pair at
+those Ks is a win — and R@1 is a tie. The corpus is text-easy (R@10 .9967 with
+the leg off), so the paired page delta *cannot* reach significance here; the
+leg's contribution shows in `imageHit@K` instead (.82 at 1, .97 at 3). Every
+image R@1 loss is a diagram confused with a neighbouring diagram. The two
+negative losses are exactly the class the negatives exist to expose (2 of 22).
+The 2B is **≥** the 8B at a quarter of the intake cost and a fifth of the query
+cost — but this is **not a clean checkpoint comparison** (Q6_K + MRL 2048
+against 8-bit native), so it is evidence for the default rather than a
+refutation of the 8B.
+
+**Recommendation: the 2B default (D5) stands. The 8B is not justified by these
+numbers. The production run decides.**
+
+Full comment, with the raw reports:
+<https://github.com/Compendiq/compendiq-ce/issues/1115#issuecomment-5322826145>.
+
+**Debts these numbers leave open.** The English `image-negative` slice is four
+labels written by the merger rather than a blind labeller (**#1370**). And
+`IMAGE_PAGE_FANOUT` (4), `minImageLegParticipation` and `rag_answer_max_images`
+are still **by-analogy** defaults: this corpus is too easy to retune them
+against, so they wait on the production run.
+
 ### What only production can prove
 
 Everything above is either published, measured on a local shim, or read out of
@@ -2449,14 +2771,22 @@ nobody reads the numbers above as if they were ours:
    roughly 10–25× a short text query at any model size, and the 8B is ~4× the
    2B's weights. Measure the real corpus on the real card before scheduling a
    backfill.
-4. **Whether 2B or 8B is worth it here.** D5 is a recommendation with a decision
-   procedure attached, not a result.
+4. **Whether 2B or 8B is worth it here.** The local run (**Measured** §B) put
+   the 2B at or above the 8B on both quality and cost, which is why D5's
+   recommendation ships — but it ran the 8B quantised (Q6_K) and MRL-truncated
+   against an 8-bit native 2B, on a corpus whose leg-off page recall@10 was
+   already .9967. That is not a checkpoint comparison, and it cannot become one
+   locally. Re-run the axis on the production stack against the real corpus
+   before treating "2B" as settled.
 
 ### Consequences
 
 - **Two indexes, two models, two failure modes.** An operator who never assigns
-  `image_embedding` gets today's behaviour exactly, including no extra latency:
-  the leg does not run and the query is embedded once.
+  `image_embedding` gets today's behaviour exactly: the leg does not run and the
+  query is embedded once. The shut gate is not free — as shipped in P3 every
+  hybrid search pays one cached boolean plus one indexed read of the assignment,
+  which on an unassigned instance answers first and stops there — but that is a
+  round-trip, not a model call (ADR-012's #1115 amendment).
 - **`page_embeddings` stays text-only by construction (D6)**, so #1116's shadow
   swap, `page_avg_embedding`, MMR, rerank and sibling assembly need no
   image-awareness — now or later.

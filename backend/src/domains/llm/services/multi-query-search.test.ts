@@ -389,6 +389,57 @@ describe('multiQuerySearch (#1112)', () => {
     expect(mockHybridSearch.mock.calls[2]![4].onRetrievalMeta).toBeUndefined();
   });
 
+  it('runs the image leg on the ORIGINAL question only — one VL call per deep search (#1115 P3)', async () => {
+    // Two distinct costs, both real. Three VL calls would be three
+    // near-identical query vectors at 3x the latency against one
+    // IMAGE_LEG_TIMEOUT_MS; and because this merge SUMS weighted per-leg
+    // ranks, the same image evidence fed to all three legs would enter at
+    // 1 + 0.6 + 0.6, i.e. as if three phrasings had independently agreed.
+    mockChat.mockResolvedValue('restarting the ingest worker\ningest worker restart procedure');
+    mockHybridSearch.mockResolvedValue([row(1)]);
+
+    await multiQuerySearch('u1', 'how do I restart the ingest worker', 5, undefined, optsIn);
+
+    expect(mockHybridSearch).toHaveBeenCalledTimes(3);
+    // The original leg leaves the decision to the admin setting…
+    expect(mockHybridSearch.mock.calls[0]![4].imageLeg).toBeUndefined();
+    // …and the paraphrase legs are forced off.
+    expect(mockHybridSearch.mock.calls[1]![4].imageLeg).toBe(false);
+    expect(mockHybridSearch.mock.calls[2]![4].imageLeg).toBe(false);
+  });
+
+  it('does not override a caller that already forced the image leg off', async () => {
+    // `/api/search`-style callers and the paired eval pass their own value;
+    // the wrapper must not turn it back on for the original leg.
+    mockChat.mockResolvedValue('a\nb');
+    mockHybridSearch.mockResolvedValue([row(1)]);
+
+    await multiQuerySearch('u1', 'how do I restart the ingest worker', 5, undefined, {
+      ...optsIn,
+      imageLeg: false,
+    });
+
+    expect(mockHybridSearch.mock.calls.every((c) => c[4].imageLeg === false)).toBe(true);
+  });
+
+  it('keeps the image hits of a page the original leg found (#1115 P3)', () => {
+    // `mergeMultiQueryResults` keeps the row object from the EARLIEST leg a
+    // page appeared in, which is the original — the only leg that ran the
+    // image query. If that rule ever changed, the hits would vanish from the
+    // merged answer while the leg still paid for them.
+    const hits = [{ source: 'confluence' as const, key: 'a.png', similarity: 0.6, attachmentUrl: '/api/attachments/1/a.png' }];
+    const merged = mergeMultiQueryResults(
+      [
+        { results: [row(7, { imageHits: hits, imageOnly: true })], weight: ORIGINAL_QUERY_WEIGHT },
+        { results: [row(7)], weight: PARAPHRASE_QUERY_WEIGHT },
+      ],
+      5,
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.imageHits).toEqual(hits);
+    expect(merged[0]!.imageOnly).toBe(true);
+  });
+
   /**
    * The pool arithmetic, pinned as arithmetic rather than as a magic number.
    * The legs run CONCURRENTLY against one provider and one RERANK_TIMEOUT_MS,

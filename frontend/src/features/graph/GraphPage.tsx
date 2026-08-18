@@ -10,6 +10,7 @@ import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { useEmbeddingStatus, isZeroEmbeddings } from '../../shared/hooks/use-pages';
 import { useAuthStore } from '../../stores/auth-store';
 import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters, type GraphMeta } from './graph-hooks';
+import { HeaderHost } from '../../shared/components/layout/header-slot';
 
 // ---------- Types ----------
 
@@ -652,7 +653,9 @@ export function GraphPage() {
       {/* Header bar */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold">Knowledge Graph</h1>
+          <HeaderHost fallbackClassName="">
+            <h1 className="text-[15px] font-semibold sm:text-lg">Knowledge Graph</h1>
+          </HeaderHost>
           <p className="text-sm text-muted-foreground">
             {data.nodes.length} {viewMode === 'clustered' ? 'clusters' : 'pages'}, {data.edges.length} connections
             {focusPageId && ' (local view)'}

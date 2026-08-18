@@ -9,15 +9,19 @@ import { formatRelativeTime } from '../../../shared/lib/format-relative-time';
 /**
  * #1115 P2 — Settings → AI Models → Embeddings: the image index.
  *
- * The card exists because the index it describes is, in this release, a thing
- * that fills up and is read by nothing. Four pieces of copy carry that, and
- * each of them is a consequence somebody would otherwise have to discover:
+ * Four pieces of copy carry the things an operator would otherwise have to
+ * discover:
  *
- *  - **"Image search is not live yet"** — the LLM providers row promises image
- *    search and its probe says "confirmed". Without this sentence, an operator
- *    who assigns the leg, watches rows appear and then searches for a picture
- *    concludes the feature is broken. It replaces the inert note that row used
- *    to carry (#1119's rule: on screen, at rest, not in a tooltip).
+ *  - **Where the index is READ** — until P3 this sentence said image search
+ *    was not live yet, because the index really was a thing that filled up and
+ *    was read by nothing, while the LLM providers row promised image search
+ *    and its probe said "confirmed". P3 landed the retrieval leg, so that
+ *    sentence became false and is now a pointer at the switch that turns the
+ *    leg on. The rule it satisfies is unchanged (#1119: on screen, at rest,
+ *    not in a tooltip) — what changed is which fact is true. It names the FULL
+ *    panel chain (review r2), not a bare "under Retrieval": that is the
+ *    spelling `settings-wayfinding.test.ts` can police, and a naked tab name
+ *    is unfollowable from a panel that has no such tab.
  *  - **Re-scan's consequence** — it marks every page. That sounds expensive,
  *    and the half that makes it cheap (content-hash reuse) is invisible unless
  *    stated.
@@ -335,8 +339,8 @@ export function ImageIndexCard() {
         Changing the image model empties and rebuilds this index; text search is unaffected.
       </p>
 
-      <p className="text-muted-foreground text-xs" data-testid="image-index-not-live-note">
-        Image search is not live yet in this release; the index is being prepared.
+      <p className="text-muted-foreground text-xs" data-testid="image-index-retrieval-note">
+        Image search runs as a third retrieval leg when enabled under Settings → AI Models → Retrieval.
       </p>
     </div>
   );

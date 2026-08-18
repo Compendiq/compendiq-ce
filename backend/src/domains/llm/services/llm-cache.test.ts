@@ -113,6 +113,23 @@ describe('buildRagCacheKey', () => {
     }));
   });
 
+  it('keys on the retrieved images that were SENT, not on the pages they came from (#1115 P4)', () => {
+    // The doc-id component says which pages ground the answer and nothing
+    // about whether the model could SEE them. Without this component a
+    // vision-capable model's image-augmented answer and a text-only model's
+    // answer to the same question over the same pages share one key and serve
+    // each other for the whole TTL — and so do the same model's answers
+    // either side of an admin moving `rag_answer_max_images`, or of one of
+    // the pictures being deleted from its page.
+    const at = (retrievedImages?: string) =>
+      buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1', retrievedImages });
+
+    expect(at('2-abcdef')).not.toBe(at(undefined));
+    expect(at('2-abcdef')).not.toBe(at('1-abcdef'));
+    expect(at('2-abcdef')).not.toBe(at('2-fedcba'));
+    expect(at('2-abcdef')).toBe(at('2-abcdef'));
+  });
+
   it('keys on the REALIZED outcome — a soft-failed chunk-level answer never occupies the assembled key (#1270 F9)', () => {
     const at = (assembledPages: number) =>
       buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1', contextChars: 6000, assembledPages });

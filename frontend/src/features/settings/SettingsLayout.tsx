@@ -1,10 +1,11 @@
 import { Suspense, useEffect } from 'react';
-import { Outlet, useNavigate } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 import { useAuthStore } from '../../stores/auth-store';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
-import { firstVisiblePath, type AccessContext } from './settings-nav';
+import { firstVisiblePath, settingsPanelFromPath, type AccessContext } from './settings-nav';
+import { HeaderHost } from '../../shared/components/layout/header-slot';
 
 /**
  * Extends AccessContext with the license-fetch loading flag so
@@ -26,6 +27,8 @@ export function SettingsLayout() {
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === 'admin';
   const { isEnterprise, hasFeature, isLoading: isEnterpriseLoading } = useEnterprise();
+  const { pathname } = useLocation();
+  const panel = settingsPanelFromPath(pathname);
 
   return (
     <m.div
@@ -38,30 +41,19 @@ export function SettingsLayout() {
       // Wide enough that the tabs carrying tables (audit, users) still breathe.
       className=""
     >
-      {/* Sticky title strip, full bleed with a bottom hairline — the same shape
-          as the article's context strip, and for the same reason: the settings
-          column IS the pane now (AppLayout gives `<main>` the surface), so a
-          rounded bordered card inside it would be a box drawn on a box.
-
-          `-mx-4 sm:-mx-6` cancels the scroll container's padding so the rule
-          runs edge to edge; `-top-5 -mt-5` pulls it flush with the top of the
-          pane, because a sticky box otherwise clamps to its containing block's
-          content-box top and leaves the container's `pt-5` showing above it. */}
-      <div className="sticky -top-5 z-20 -mx-4 -mt-5 mb-4 border-b border-border bg-card sm:-mx-6">
-        {/* Aligned with the body below, which is `mx-auto max-w-4xl` inside the
-            scroll container's `px-4 sm:px-6`. The strip cancels that padding to
-            run its rule edge to edge, so it adds the same amount back: 896 + 48
-            = 944 at the same `px-6`, which puts both content edges on the same
-            x. Measured, not eyeballed. */}
-        {/* Same 48px line as the settings sidebar's nav row beside it, and as
-            the article route's three rules — `calc(3rem-1px)` because the
-            hairline is on the sticky parent rather than on this row, so the
-            subtraction is what keeps the two rules meeting at the same y
-            instead of the title strip finishing 3px high. */}
-        <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[928px] items-center px-4 py-2 sm:max-w-[944px] sm:px-6">
-          <h1 className="text-lg font-semibold">Settings</h1>
-        </div>
-      </div>
+      <HeaderHost
+        fallbackClassName="sticky -top-5 z-20 -mx-4 -mt-5 mb-4 border-b border-border bg-card sm:-mx-6 [&>h1]:mx-auto [&>h1]:flex [&>h1]:min-h-[calc(3rem-1px)] [&>h1]:max-w-[928px] [&>h1]:items-center [&>h1]:px-4 [&>h1]:py-2 sm:[&>h1]:max-w-[944px] sm:[&>h1]:px-6"
+      >
+        <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">
+          Settings
+          {panel && (
+            <span className="font-normal text-muted-foreground">
+              {' · '}
+              {panel.label}
+            </span>
+          )}
+        </h1>
+      </HeaderHost>
 
       {/* No card. The FORM still caps at `max-w-2xl`: without it a "Confluence
           URL" input stretched the full width of the pane — a single-line field

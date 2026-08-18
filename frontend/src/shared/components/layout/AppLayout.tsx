@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
-import { Search, Menu, X } from 'lucide-react';
+import { Menu, X } from 'lucide-react';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
 import { useUiStore } from '../../../stores/ui-store';
@@ -10,7 +10,6 @@ import { CommandPalette } from './CommandPalette';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { ServiceStatus } from '../badges/ServiceStatus';
 import { TrialBanner } from '../banners/TrialBanner';
-import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
 import { SettingsSidebar } from './SettingsSidebar';
 import {
@@ -20,19 +19,19 @@ import {
 import { AiProvider } from '../../../features/ai/AiContext';
 import { AiDock } from '../../../features/ai/dock/AiDock';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
-import { ShortcutHint } from '../ShortcutHint';
 import { Logo } from '../Logo';
-import { ThemeToggle } from './ThemeToggle';
+import { AppHeaderMain } from './header-slot';
 import { PageTransition } from './PageTransition';
-import { LayoutPresetMenu, type LayoutPreset } from './LayoutPresetMenu';
+import { type LayoutPreset } from './LayoutPresetMenu';
+import { ArticleLayoutControlsProvider } from './article-layout-controls';
 import { useMediaQuery, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
+import { isExistingArticlePath } from '../../lib/article-route';
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const openCommandPalette = useCommandPaletteStore((s) => s.open);
-  const isCommandPaletteOpen = useCommandPaletteStore((s) => s.isOpen);
   const toggleShortcutsModal = useKeyboardShortcutsStore((s) => s.toggle);
   const shortcutsModalOpen = useKeyboardShortcutsStore((s) => s.isOpen);
   const pendingSequence = useKeyboardShortcutsStore((s) => s.pendingSequence);
@@ -54,7 +53,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const mobileSidebarRef = useRef<HTMLDivElement>(null);
   const previousLayoutPathRef = useRef(location.pathname);
-  const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
+  const isArticleRoute = isExistingArticlePath(location.pathname);
   const isInspectorCompactLayout = useMediaQuery('(min-width: 768px) and (max-width: 1439px)');
   const isMobileLayout = useIsMobileLayout();
   // On /settings* we swap the Pages tree for a Settings-specific sidebar so
@@ -187,7 +186,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
       reading: treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
       editing: !treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
       focus: treeSidebarCollapsed && articleSidebarCollapsed && !dockOpen,
-      research: !treeSidebarCollapsed && articleSidebarCollapsed && dockOpen,
+      // Research asks for the assistant tab. The dock-open effect below
+      // immediately turns `openDock()` into an expanded inspector, so the
+      // live match is tree + inspector, same as editing. The request is what
+      // distinguishes them; a later manual panel change still clears.
+      research: !treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
     }[activeLayoutPreset];
     if (!matches) setActiveLayoutPreset(null);
   }, [activeLayoutPreset, articleSidebarCollapsed, dockOpen, treeSidebarCollapsed]);
@@ -257,7 +260,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       key: 'Ctrl+K',
       keys: ['k'],
       mod: true,
-      description: 'Open command palette / quick search',
+      description: 'Jump to page or command',
       category: 'navigation',
       action: openCommandPalette,
     },
@@ -412,6 +415,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
     // the page that started it. It is inert until an AI surface mounts and
     // registers as a consumer — see `retainAi` in AiContext.
     <AiProvider>
+    <ArticleLayoutControlsProvider
+      value={isArticleRoute
+        ? { activePreset: activeLayoutPreset, applyPreset: applyLayoutPreset }
+        : null}
+    >
     {/* `app-backdrop` (index.css) paints the gradient chassis rather than a flat
         --color-background. It must not be swapped back to a `bg-*` utility:
         those set background-color, which cannot express the gradient. */}
@@ -434,7 +442,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       {/* Top navigation bar. 48px: the workspace convention, and 10px back from
           the 58px the neumorphic header needed to give its extrusion room to
           read. The height is spent on content everywhere else in the app. */}
-      <header className="app-header relative z-10 flex h-12 shrink-0 items-center border-b px-3">
+      <header className="app-header relative z-10 flex h-12 shrink-0 items-center gap-3 border-b px-3">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
           onClick={() => setMobileSidebarOpen((v) => !v)}
@@ -446,53 +454,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
 
-        {/* Logo - always visible in header */}
-        <Link to="/" aria-label="Compendiq home" className="mr-3 flex shrink-0 items-center group">
+        <Link to="/" aria-label="Compendiq home" className="flex shrink-0 items-center group">
           <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
         </Link>
 
-        {/* Spacer — the in-page breadcrumb was removed; the sidebar carries all
-            navigation context now (main nav strip + tree / settings nav). */}
-        <div className="flex min-w-0 flex-1 items-center" />
-
-
-        {/* Center: search bar — absolutely centered in header */}
-        <div className="pointer-events-none absolute inset-x-0 hidden justify-center sm:flex" role="search">
-          <button
-            onClick={openCommandPalette}
-            aria-label="Search knowledge base"
-            aria-expanded={isCommandPaletteOpen}
-            className="app-search pointer-events-auto flex h-8 w-full max-w-lg items-center gap-2 rounded-md px-2.5 text-[13px]"
-          >
-            <Search size={14} className="shrink-0" />
-            <span className="truncate">Search pages, commands...</span>
-            <span className="ml-auto shrink-0">
-              <ShortcutHint shortcutId="search" />
-            </span>
-          </button>
-        </div>
-
-        {/* Mobile search button (visible on small screens only) */}
-        <button
-          onClick={openCommandPalette}
-          aria-label="Search"
-          aria-expanded={isCommandPaletteOpen}
-          className="app-search ml-auto mr-2 flex items-center rounded-md p-1.5 sm:hidden"
-        >
-          <Search size={16} />
-        </button>
-
-        {/* Right side: article layout + theme + user */}
-        <div className="flex items-center gap-3 sm:ml-auto">
-          {isArticleRoute && (
-            <LayoutPresetMenu
-              activePreset={activeLayoutPreset}
-              onSelect={applyLayoutPreset}
-            />
-          )}
-          <ThemeToggle />
-          <UserMenu />
-        </div>
+        {/* Route title and page actions. Pages (and any HeaderHost) claim
+            the slot; otherwise the path name is wayfinding. */}
+        <AppHeaderMain />
       </header>
 
       {/* Mobile sidebar slide-over */}
@@ -689,6 +657,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         )}
       </AnimatePresence>
     </div>
+    </ArticleLayoutControlsProvider>
     </AiProvider>
   );
 }

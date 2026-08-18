@@ -8,7 +8,7 @@ import { useUiStore } from '../../../stores/ui-store';
 import { logoutApi } from '../../lib/api';
 import { ShortcutHint } from '../ShortcutHint';
 
-export function UserMenu() {
+export function UserMenu({ align = 'end' }: { align?: 'start' | 'end' } = {}) {
   const user = useAuthStore((s) => s.user);
   const navigate = useNavigate();
   const openShortcuts = useKeyboardShortcutsStore((s) => s.open);
@@ -18,17 +18,22 @@ export function UserMenu() {
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
-        <button className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground hover:bg-foreground/5 transition-colors outline-none">
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-action text-xs font-medium text-action-foreground" data-testid="user-avatar-initial">
+        <button
+          className="nm-icon-button"
+          aria-label={user?.username ? `${user.username} menu` : 'Account menu'}
+        >
+          <div
+            className="flex h-7 w-7 items-center justify-center rounded-full bg-muted text-xs font-medium text-foreground"
+            data-testid="user-avatar-initial"
+          >
             {user?.username?.charAt(0).toUpperCase() ?? '?'}
           </div>
-          <span className="text-sm font-medium">{user?.username}</span>
         </button>
       </DropdownMenu.Trigger>
 
       <DropdownMenu.Portal>
         <DropdownMenu.Content
-          align="end"
+          align={align}
           sideOffset={8}
           // z-50 sits above the AI sub-header's z-20 sticky strip; without
           // it the portaled menu is clipped behind that strip when the trigger

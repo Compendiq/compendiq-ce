@@ -928,5 +928,34 @@ refuses with a `400` that names the file rather than dropping it silently. The
 two stores disagree on what is storable (the cache rejects NUL bytes, the local
 store caps at 255 characters), so a move checks a filename against **both**.
 
+### Images are RETRIEVAL input, not pipeline input (#1115)
+
+Nothing in this document changed when the image index shipped, and that is the
+decision rather than an omission (ADR-025's amendment to ADR-003). An `<img>`
+still converts to an `<img>`, its *text* contribution to embedding input is
+still whatever alt text it carries, and there is **no image → Markdown step, no
+OCR and no new conversion rule**. What the image index consumes is the
+attachment's **bytes**, read straight off disk and handed to a vision-language
+model — the same route #1154's uploaded images take, and the reason
+`document-extractor.ts` has no image branch.
+
+Two things this pipeline nonetheless owns, because the index depends on them:
+
+- **The enumeration key is this pipeline's own output, URL-DECODED.** The
+  converter writes `<img src="/api/attachments/<key>/<file>">` with `<file>`
+  percent-encoded while the file on disk carries the DECODED name, so
+  `extractImageReferencesFromHtml` decodes the final segment — and a mis-encoded
+  key resolves to the same silent `null` as an absent file.
+- **The store follows the URL PREFIX, never `confluence_id IS NULL`.**
+  `/api/attachments/` means Store A and `/api/local-attachments/` means Store B,
+  and a relocated page proves why: it has no `confluence_id` and its bytes are
+  in Store B, so the null test names the Confluence tree for exactly the pages
+  whose bytes left it. One page can legitimately carry both prefixes.
+
+`buildPageImageUrl` (`core/services/image-references.ts`) is the exact inverse
+of that enumerator and shares its directory rule, so the reader's key and the
+citation's URL cannot drift. Design of record: ADR-025; operations:
+`docs/runbooks/image-index.md`.
+
 See [`08-flow-sync.md`](./08-flow-sync.md) for where this hooks into the
 sync pipeline.

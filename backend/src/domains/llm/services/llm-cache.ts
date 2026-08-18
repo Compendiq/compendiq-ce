@@ -99,6 +99,33 @@ export function buildRagCacheKey(
      */
     deepSearch?: boolean;
     imageHash?: string;
+    /**
+     * #1115 P4: the RETRIEVED images the request actually carried, as
+     * `retrievedImagesCacheComponent` renders them (count + a hash of the
+     * page/store/key/size tuples), or `undefined` when none were sent.
+     *
+     * The doc-id component above says which pages ground the answer and
+     * nothing about whether the model could SEE them, so without this a
+     * vision-capable model's image-augmented answer and a text-only model's
+     * answer to the same question over the same pages would share a key and
+     * serve each other for the TTL — as would the same model's answers either
+     * side of an admin moving `rag_answer_max_images`, or of a picture being
+     * deleted from one of those pages.
+     *
+     * `undefined` is the no-images spelling because the absence of images is
+     * not a zero-length set of them — it keeps "no pictures were attached"
+     * unable to collide with some future "0 pictures, deliberately", and
+     * keeps the suffix out of the derivation's own reading below. It does
+     * NOT preserve existing keys, and review r1 corrected the claim that it
+     * did: `hashLlmInputs` writes a `\x00` separator per component, so
+     * passing a 15th component at all moves every pre-P4 digest whether or
+     * not it is empty. Every deployment cold-starts its answer cache once,
+     * for one `LLM_CACHE_TTL`.
+     *
+     * Distinct from `imageHash`, which is the USER's own attachment. The two
+     * are different inputs and both belong in the key.
+     */
+    retrievedImages?: string;
     /** Sanitized/truncated attached document text; folded into the final hash. */
     referenceText?: string;
   },
@@ -121,8 +148,9 @@ export function buildRagCacheKey(
   const pinnedSuffix = options?.pinnedCount !== undefined ? `pin:${options.pinnedCount}` : '';
   const deepSuffix = options?.deepSearch ? 'deep:1' : '';
   const imageSuffix = options?.imageHash ? `img:${options.imageHash}` : '';
+  const retrievedImagesSuffix = options?.retrievedImages ? `rimg:${options.retrievedImages}` : '';
   const referenceSuffix = options?.referenceText ? `ref:${options.referenceText}` : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix, referenceSuffix);
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix, retrievedImagesSuffix, referenceSuffix);
 }
 
 export class LlmCache {

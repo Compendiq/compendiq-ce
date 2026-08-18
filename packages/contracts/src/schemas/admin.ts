@@ -140,6 +140,38 @@ const RagImagesPerPageMaxSchema = z.number().int().min(1).max(200);
  * deployments that would rather not embed third-party imagery at all.
  */
 const RagImageIndexExternalSchema = z.boolean();
+/**
+ * `rag_image_leg_enabled` (#1115 P3) — whether retrieval fuses a third,
+ * image-based RRF leg. Default ON.
+ *
+ * It is not a second off switch for the feature: with the `image_embedding`
+ * use case unassigned or the index empty the leg does not run at all, whatever
+ * this says. What it buys is the ability to stop paying the leg's one extra
+ * embedding call per question WITHOUT unassigning the use case and thereby
+ * stopping the index being filled — the two halves have different costs and an
+ * operator has to be able to turn off the query-time one on its own.
+ */
+const RagImageLegEnabledSchema = z.boolean();
+/**
+ * `rag_answer_max_images` (#1115 P4) — how many of the images the leg matched
+ * on the pages that ground an answer are attached to the question as image
+ * parts. Default 2, [0, 8].
+ *
+ * **0 IS a value here**, unlike `rag_images_per_page_max`. That one refuses 0
+ * because a zero INTAKE cap reconciles every row away on the next scan — an
+ * indexing bug's symptoms from a settings change. A zero ANSWER cap destroys
+ * nothing: the index still fills, the leg still ranks pages, and the pictures
+ * still ride the wire as `kind: 'image'` sources with their thumbnails. All it
+ * turns off is the one cost this knob exists to bound — base64 image bytes in
+ * a chat completion — so it has to be reachable without unassigning anything.
+ *
+ * The ceiling is 8 rather than the display cap's 4 (`MAX_IMAGE_SOURCES`): the
+ * two bound different costs and must not be collapsed. A source chip is one
+ * cacheable browser fetch; an answer part is `MAX_IMAGE_BYTES`-worth of base64
+ * in a prompt, which is why the service behind this also carries a hard
+ * byte budget the cap cannot exceed.
+ */
+const RagAnswerMaxImagesSchema = z.number().int().min(0).max(8);
 
 /**
  * #1115 — `image_embedding_target_dimensions`, the MRL truncation width the
@@ -412,6 +444,10 @@ export const AdminSettingsSchema = z.object({
    */
   ragImagesPerPageMax: RagImagesPerPageMaxSchema,
   ragImageIndexExternal: RagImageIndexExternalSchema,
+  /** #1115 P3 — the retrieval half of the image index. Default ON. */
+  ragImageLegEnabled: RagImageLegEnabledSchema,
+  /** #1115 P4 — how many retrieved images the answer path shows the model. */
+  ragAnswerMaxImages: RagAnswerMaxImagesSchema,
   /**
    * #1114 — read-only, and deliberately absent from the update schema below.
    * The server resolves the pair itself when it writes a threshold; a client
@@ -495,6 +531,10 @@ export const UpdateAdminSettingsSchema = z.object({
    */
   ragImagesPerPageMax: RagImagesPerPageMaxSchema.optional(),
   ragImageIndexExternal: RagImageIndexExternalSchema.optional(),
+  /** #1115 P3 — the Retrieval tab's `Image leg` toggle. */
+  ragImageLegEnabled: RagImageLegEnabledSchema.optional(),
+  /** #1115 P4 — the Retrieval tab's `Images shown to the model` cap. */
+  ragAnswerMaxImages: RagAnswerMaxImagesSchema.optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;

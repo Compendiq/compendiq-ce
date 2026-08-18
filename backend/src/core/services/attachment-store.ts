@@ -73,6 +73,7 @@ import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sniffImageFormat } from './image-validator.js';
 import { canStoreLocalFilename, localAttachmentsDir } from './local-attachment-service.js';
+import { confluenceAttachmentDirKey } from './image-references.js';
 import type { ImageFormat, PageSource } from '@compendiq/contracts';
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
@@ -286,11 +287,17 @@ export async function listCachedAttachments(pageId: string): Promise<string[]> {
   }
 }
 
-/** Read one cached attachment's bytes by key + filename, or null if absent. */
-export async function readCachedAttachmentFile(
-  pageId: string,
-  filename: string,
-): Promise<Buffer | null> {
+/**
+ * The on-disk path of one cached attachment, with the containment check.
+ *
+ * Extracted so the reader and {@link resolveAttachmentByteSize} cannot end up
+ * resolving the same key to two different files: a `stat` that names a
+ * different path than the `readFile` beside it measures the wrong file, which
+ * is the exact failure a size ceiling exists to prevent. Throws on traversal
+ * rather than answering null, because a refused path is a bug in the caller
+ * and not an absent file.
+ */
+function cachedAttachmentPath(pageId: string, filename: string): string {
   const dir = attachmentDirNow(pageId);
   const safeFilename = validateFilename(filename);
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- both inputs validated above (validatePageId via attachmentDirNow, validateFilename); containment asserted below
@@ -298,6 +305,15 @@ export async function readCachedAttachmentFile(
   if (!resolved.startsWith(attachmentsRootNow() + path.sep)) {
     throw new Error('Path traversal detected');
   }
+  return resolved;
+}
+
+/** Read one cached attachment's bytes by key + filename, or null if absent. */
+export async function readCachedAttachmentFile(
+  pageId: string,
+  filename: string,
+): Promise<Buffer | null> {
+  const resolved = cachedAttachmentPath(pageId, filename);
   try {
     return await fs.readFile(resolved);
   } catch {
@@ -311,31 +327,19 @@ export async function readCachedAttachmentFile(
 export type AttachmentStoreSource = 'confluence' | 'local';
 
 /**
- * The Confluence-tree directory key for a page: its `confluence_id` when the
- * page is Confluence-sourced, its numeric id as text otherwise.
+ * The Confluence-tree directory key for a page — {@link
+ * confluenceAttachmentDirKey}, imported rather than restated.
  *
- * Deliberately the same rule as `parentKeyFor`
- * (`domains/knowledge/services/page-relocate-service.ts:140-142`) and the
- * paste/import writer (`routes/knowledge/pages-crud.ts:2723-2728`), restated
- * here rather than imported because `core` may not import a domain
- * (`backend/eslint.config.js:50-53`). If any of the three changes, all three
- * must — a reader keying differently from the writer reads the wrong
- * directory, and this module answers `null` for it, silently.
- *
- * The two writers are not byte-identical: `parentKeyFor` branches on
- * truthiness, the paste/import writer on `?? String(page.id)`, so they differ
- * on an **empty-string** `confluence_id` — writer targets `''`, this reader
- * `String(pageId)`. No writer can produce that state: `validatePageId('')`
- * throws, so a write under `''` fails before it lands, and sync never sets an
- * empty id. This mirrors `parentKeyFor` (the truthiness form) deliberately.
+ * It used to be a private copy here. #1115 P3 needs the same rule to build the
+ * `<img src>` an image source points at, and a third definition of "which
+ * directory holds this page's bytes" is how a reader and a writer start
+ * disagreeing silently: this module answers `null` for a mis-keyed directory,
+ * and a mis-keyed URL 404s in a source chip. `image-references.ts` is where it
+ * lives now, beside the enumerator that parses the same URLs back apart, and
+ * its JSDoc carries the reasoning (including why `pageSource` is required and
+ * why the empty-string case matches `parentKeyFor`).
  */
-function confluenceTreeKey(
-  pageSource: PageSource,
-  pageId: number,
-  confluenceId: string | null | undefined,
-): string {
-  return pageSource === 'confluence' && confluenceId ? confluenceId : String(pageId);
-}
+const confluenceTreeKey = confluenceAttachmentDirKey;
 
 export interface ResolveAttachmentBytesInput {
   /** `pages.id` — the numeric PK, also the local store's directory key. */
@@ -457,8 +461,12 @@ export async function resolveAttachmentBytes(
   }
 }
 
-/** `<ATTACHMENTS_DIR>/local/<page_id>/<filename>`, layout owned by the local store. */
-async function readLocalStoreFile(pageId: number, key: string): Promise<Buffer | null> {
+/**
+ * `<ATTACHMENTS_DIR>/local/<page_id>/<filename>`, layout owned by the local
+ * store — the local half of {@link cachedAttachmentPath}, extracted for the
+ * same reason.
+ */
+function localStorePath(pageId: number, key: string): string {
   if (!Number.isInteger(pageId) || pageId <= 0) {
     throw new Error('Invalid page id');
   }
@@ -474,8 +482,49 @@ async function readLocalStoreFile(pageId: number, key: string): Promise<Buffer |
   if (!resolved.startsWith(path.resolve(dir) + path.sep)) {
     throw new Error('Path traversal detected');
   }
+  return resolved;
+}
+
+async function readLocalStoreFile(pageId: number, key: string): Promise<Buffer | null> {
+  const resolved = localStorePath(pageId, key);
   try {
     return await fs.readFile(resolved);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How many bytes {@link resolveAttachmentBytes} would return for this input,
+ * WITHOUT reading them — or `null` when that cannot be established.
+ *
+ * The ceilings around images are all post-hoc: `validateImage` measures
+ * `buf.length` and `MAX_IMAGE_DIMENSION` reads a header, both of which need
+ * the whole buffer in memory first. That is fine for the intake worker, which
+ * reads a page's images once and off the request path. It is not fine for
+ * #1115 P4, which reads candidates on the ANSWER path, before `reply.hijack()`
+ * and with no cache in front of it: an attachment that has been replaced since
+ * it was indexed can be any size the store will hold (the draw.io route admits
+ * 40 MiB), and the pick would load each one whole only to refuse it.
+ *
+ * So the answer path stats first and skips. `null` is deliberately ambiguous —
+ * absent file, refused key, unreadable directory — and callers must treat it
+ * as "unknown, go and read": failing OPEN keeps a stat that a hardened
+ * filesystem refuses from turning a perfectly readable picture into a skip,
+ * and the read behind it is still bounded by the caller's own gate. It is a
+ * mitigation, not a guarantee: a file can grow between the stat and the read.
+ */
+export async function resolveAttachmentByteSize(
+  input: ResolveAttachmentBytesInput,
+): Promise<number | null> {
+  const { pageId, confluenceId, pageSource, source, key } = input;
+  if (!isDirectChildKey(key)) return null;
+  try {
+    const resolved = source === 'local'
+      ? localStorePath(pageId, key)
+      : cachedAttachmentPath(confluenceTreeKey(pageSource, pageId, confluenceId), key);
+    const stat = await fs.stat(resolved);
+    return stat.isFile() ? stat.size : null;
   } catch {
     return null;
   }
