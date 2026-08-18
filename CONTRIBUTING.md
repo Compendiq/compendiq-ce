@@ -132,13 +132,26 @@ Before submitting a PR, verify:
 
 ### Domain Boundary Rules
 
-Import restrictions are enforced by ESLint (`eslint-plugin-boundaries`):
+Import restrictions are enforced by ESLint (`eslint-plugin-boundaries`) --
+see `backend/eslint.config.js`, `docs/architecture/03-backend-domains.md`
+and issue #1347 for the full detail:
 
 - **core** -- no domain or route imports
 - **confluence** -- can import core + llm
 - **llm** -- can import core only
 - **knowledge** -- can import core + llm + confluence
-- **routes** -- can import core + own domain (knowledge routes can access all domains)
+- **routes/foundation** -- can import core + llm + confluence (the health
+  check, list-models, the LLM admin knobs, the confidence-basis resolver,
+  and the Confluence connection test/sync overview all live there)
+- **other routes** -- can import core + own domain (knowledge routes can
+  access all domains)
+
+The rule was silently inert for every route file until #1347 fixed the
+element patterns (they matched a subfolder of each `routes/<domain>/`
+directory rather than the files inside it) and turned on
+`boundaries/no-unknown-files`, so a file that maps to no declared element
+now fails lint. `backend/src/eslint-boundaries.test.ts` is a guard test
+that pins both directions with synthetic probe source.
 
 ## Security
 

@@ -41,7 +41,10 @@ Domain-based backend with ESLint-enforced import boundaries (`eslint-plugin-boun
 - `confluence` → `core` + `llm` (sync embeddings)
 - `llm` → `core` only
 - `knowledge` → `core` + `llm` + `confluence`
-- `routes/<domain>` → `core` + own domain (knowledge routes may reach all domains)
+- `routes/foundation` → `core` + `llm` + `confluence` (provider health/list-models, the LLM queue knobs, the confidence-basis resolver, and the Confluence connection test/sync overview — see #1347 below)
+- `routes/<other domain>` → `core` + own domain (knowledge routes may reach all domains)
+
+**The routes rule was inert until #1347.** `boundaries/elements` patterned each route element as `src/routes/<x>/*` with `mode: 'folder'`, which only classifies a SUBFOLDER of that directory — every route file lives directly in `src/routes/<x>/`, so none of them ever matched an element and `boundaries/dependencies` silently never applied to any route file (a `routes/foundation` file importing `domains/knowledge` passed `npm run lint` clean). Patterns are now bare folder paths (`src/core`, `src/routes/foundation`, …), which `mode: 'folder'` classifies whether the file sits directly in the folder or a subfolder of it. `boundaries/no-unknown-files: error` is on, so a `src/` file with no element mapping now fails lint outright — this is what caught `src/telemetry-register.ts`, added to the `app` element. `backend/src/eslint-boundaries.test.ts` pins both directions (a disallowed import fails, an allowed one and `no-unknown-files` behave as configured) by linting synthetic probe source through ESLint's Node API, so a config regression is a red test rather than a silent no-op. Once the rule actually fired, whole-tree lint reported 7 real violations, all `routes/foundation` reaching into `domains/llm`/`domains/confluence` for the reasons listed above — the allow-list above reflects that widening rather than re-homing those seven call sites (an L-size change to route registration, rejected as out of scope).
 
 Layout: `backend/src/{core,domains/{confluence,llm,knowledge},routes/{foundation,confluence,llm,knowledge}}` + `frontend/src/{features,shared,stores,providers}` + `packages/contracts/`. Detailed structure → `docs/architecture/03-backend-domains.md` and `04-frontend-structure.md`.
 
