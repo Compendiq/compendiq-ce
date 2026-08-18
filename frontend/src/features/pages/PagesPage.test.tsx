@@ -275,6 +275,13 @@ describe('PagesPage', () => {
     expect(screen.getByTestId('kpi-embedding-coverage')).toBeInTheDocument();
   });
 
+  it('keeps corpus KPIs out of the 48px header slot', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const kpis = screen.getByTestId('kpi-cards');
+    expect(kpis.closest('#app-header-slot')).toBeNull();
+    expect(kpis.closest('header')).toBeNull();
+  });
+
   it('renders the page title, search input, and filter controls', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     expect(screen.getByText('Pages')).toBeInTheDocument();

@@ -2021,9 +2021,9 @@ describe('SidebarTreeNode memoization', () => {
       expect(screen.getByText('4 pages in DEV')).toBeInTheDocument();
     });
 
-    it('keeps session chrome in the footer, not the header', () => {
+    it('does not keep session chrome in the rail footer', () => {
       render(<SidebarTreeView />, { wrapper: createWrapper() });
-      expect(screen.getByTestId('sidebar-session-chrome')).toBeInTheDocument();
+      expect(screen.queryByTestId('sidebar-session-chrome')).not.toBeInTheDocument();
     });
   });
 

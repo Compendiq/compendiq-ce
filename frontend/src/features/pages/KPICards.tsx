@@ -99,9 +99,9 @@ function EmbeddingCoverageRing({ percent, isProcessing }: EmbeddingCoverageRingP
 // ---------- KPICards ----------
 
 /**
- * Status strip aligned in the header row.
+ * Corpus status strip for the Pages body — not the 48px header.
  *
- * Displays three corpus facts: total pages, embedded count / coverage, and last sync time with quick-sync CTA.
+ * Three facts: total pages, embedded count / coverage, and last sync with a quick-sync CTA.
  */
 export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isSyncing }: KPICardsProps) {
   const totalPages = embeddingStatus?.totalPages ?? 0;

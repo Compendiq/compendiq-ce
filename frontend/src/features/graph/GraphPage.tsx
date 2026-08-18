@@ -654,7 +654,7 @@ export function GraphPage() {
       <div className="flex items-center justify-between">
         <div>
           <HeaderHost fallbackClassName="">
-            <h1 className="text-[15px] font-semibold sm:text-lg">Knowledge Graph</h1>
+            <h1 className="text-[15px] font-semibold sm:text-lg">Graph</h1>
           </HeaderHost>
           <p className="text-sm text-muted-foreground">
             {data.nodes.length} {viewMode === 'clustered' ? 'clusters' : 'pages'}, {data.edges.length} connections

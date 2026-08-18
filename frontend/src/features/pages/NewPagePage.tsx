@@ -10,6 +10,7 @@ import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureEr
 import { LocationPicker } from '../../shared/components/LocationPicker';
 import { TagPopover } from '../../shared/components/TagPopover';
 import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
+import { HeaderHost } from '../../shared/components/layout/header-slot';
 import type { LocationSelection } from '../../shared/components/LocationPicker';
 import { readLastConfluenceSpace, rememberConfluenceSpace } from './last-confluence-space';
 import type { Editor as EditorType } from '@tiptap/core';
@@ -307,6 +308,9 @@ export function NewPagePage() {
 
   return (
     <div>
+      <HeaderHost fallbackClassName="mb-3">
+        <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">New Page</h1>
+      </HeaderHost>
       {/* Sticky write chrome: formatting + Create/Cancel, then the identity
           row (type, space, visibility, location). Both stay pinned so a long
           draft cannot scroll away the only exit or the space/visibility
@@ -370,8 +374,7 @@ export function NewPagePage() {
             <EditorContextToolbars editor={editorInstance} innerClassName="mx-auto max-w-[1248px] px-4 sm:px-16" />
           )}
           <div className="mx-auto max-w-[1248px] px-4 py-3 sm:px-16">
-            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-              <h1 className="text-lg font-semibold">New Page</h1>
+            <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => fileInputRef.current?.click()}

@@ -1,13 +1,16 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
+  AlertCircle,
   ChevronRight,
   Cpu,
   ExternalLink,
   FileText,
   FolderOpen,
   Gauge,
+  Globe,
   ListTree,
+  Lock,
   MoreHorizontal,
   PanelRight,
   PanelRightClose,
@@ -50,6 +53,8 @@ import { useSettings } from '../../hooks/use-settings';
 import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { LayoutPresetMenu } from '../layout/LayoutPresetMenu';
+import { useArticleLayoutControls } from '../layout/article-layout-controls';
 import type { TocHeading } from './TableOfContents';
 
 // ---------- Outline tree helpers ----------
@@ -266,6 +271,7 @@ export function ArticleRightPane({
   const width = useUiStore((s) => s.articleSidebarWidth);
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
   const reduceEffects = useReducedMotion();
+  const layoutControls = useArticleLayoutControls();
 
   // `collapsed` is the user's preference and nothing else now.
   //
@@ -1327,6 +1333,13 @@ export function ArticleRightPane({
         </button>
         </div>
 
+        {layoutControls && (
+          <LayoutPresetMenu
+            compact
+            activePreset={layoutControls.activePreset}
+            onSelect={layoutControls.applyPreset}
+          />
+        )}
         <button
           onClick={toggleSidebar}
           className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -1554,6 +1567,32 @@ export function ArticleRightPane({
               <dt className="text-muted-foreground">Space</dt>
               <dd className="truncate font-medium text-foreground/85">{page.spaceKey}</dd>
             </div>
+            <div className="flex items-center justify-between gap-3 py-2">
+              <dt className="text-muted-foreground">Source</dt>
+              <dd className="font-medium text-foreground/85">
+                {page.source === 'standalone' ? 'Local' : 'Confluence'}
+              </dd>
+            </div>
+            {page.source === 'standalone' && (
+              <div className="flex items-center justify-between gap-3 py-2">
+                <dt className="text-muted-foreground">Visibility</dt>
+                <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                  {page.visibility === 'shared' ? (
+                    <><Globe size={13} className="text-muted-foreground" /> Shared</>
+                  ) : (
+                    <><Lock size={13} className="text-muted-foreground" /> Private</>
+                  )}
+                </dd>
+              </div>
+            )}
+            {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
+              <div className="flex items-center justify-between gap-3 py-2">
+                <dt className="text-muted-foreground">Draft</dt>
+                <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                  <AlertCircle size={13} className="text-muted-foreground" /> Unpublished draft
+                </dd>
+              </div>
+            )}
             <div className="flex items-center justify-between gap-3 py-2">
               <dt className="text-muted-foreground">Type</dt>
               <dd className="flex items-center gap-1.5 font-medium text-foreground/85">

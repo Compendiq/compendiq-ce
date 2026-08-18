@@ -37,7 +37,7 @@ export function UserMenu({ align = 'end' }: { align?: 'start' | 'end' } = {}) {
           sideOffset={8}
           // z-50 sits above the AI sub-header's z-20 sticky strip; without
           // it the portaled menu is clipped behind that strip when the trigger
-          // is in the top-right of the header on /ai.
+          // is in the header session cluster.
           className="z-50 min-w-[180px] nm-card-elevated p-1.5"
         >
           <DropdownMenu.Label className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
