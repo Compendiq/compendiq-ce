@@ -1655,19 +1655,27 @@ describe('chunkText', () => {
   });
 
   it('should respect custom chunkOverlap parameter (zero overlap)', () => {
-    // Two paragraphs, small chunk size, zero overlap
-    const paragraph1 = 'First paragraph content here. '.repeat(5);
-    const paragraph2 = 'Second paragraph content here. '.repeat(5);
+    // Two paragraphs with distinct, non-overlapping wording (no shared
+    // substrings), small chunk size, zero overlap.
+    const paragraph1 = 'alpha-word '.repeat(5) + 'ALPHATAIL';
+    const paragraph2 = 'beta-word '.repeat(5) + 'BETATAIL';
     const text = `${paragraph1}\n\n${paragraph2}`;
 
     // With zero overlap the chunks should be independent
     const chunks = chunkText(text, 'Title', 'DEV', 'page-1', 30, 0);
-    expect(chunks.length).toBeGreaterThanOrEqual(1);
-    // With zero overlap no chunk should start with words from previous chunk's tail
-    // (this is a structural check — all chunks should be non-empty)
+    expect(chunks.length).toBeGreaterThan(1);
     for (const chunk of chunks) {
       expect(chunk.text.length).toBeGreaterThan(0);
     }
+    // With zero overlap, no chunk should carry the trailing text of the
+    // previous chunk forward — a real duplication assertion, not merely
+    // non-empty chunks (#1271: the buggy slice(-0) === slice(0) carried the
+    // whole previous chunk forward).
+    expect(chunks[0]!.text).toContain('ALPHATAIL');
+    expect(chunks[0]!.text).not.toContain('BETATAIL');
+    expect(chunks[1]!.text).toContain('BETATAIL');
+    expect(chunks[1]!.text).not.toContain('ALPHATAIL');
+    expect(chunks[1]!.text).not.toContain('alpha-word');
   });
 
   it('#1271: chunkOverlap 0 must not carry the whole previous chunk (slice(-0) bug)', () => {
