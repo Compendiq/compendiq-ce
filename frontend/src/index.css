@@ -107,6 +107,14 @@ body {
   outline-offset: 2px;
 }
 
+/* The read-only viewer still produces NodeSelections as a side effect of
+   clicking atom macros (ProseMirror builds one in selectionFromDOM even in a
+   non-editable view). There it is never an editing gesture, so the ring is
+   suppressed; the editable editor keeps it for block selection. */
+.article-viewer-container .ProseMirror-selectednode {
+  outline: none;
+}
+
 /* Headings share the body face. There is no display voice in this system: a
    workspace heading is a wayfinding label, and a second family competing with
    it at 15–20px costs legibility without buying identity.
