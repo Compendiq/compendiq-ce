@@ -22,8 +22,6 @@ import {
   Sparkles,
   Trash2,
   History,
-  Upload,
-  Download,
   ShieldCheck,
 } from 'lucide-react';
 
