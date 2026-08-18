@@ -91,6 +91,26 @@ describe('toPersistedSources', () => {
   // survivor would sit beside the page entry `llm-ask.ts` already built for
   // this same pageId and reopen as a duplicate page chip, which is exactly
   // the failure the warn message now names.
+  // review r3 #1 — the prefix rule lives in the contract (`ATTACHMENT_URL_PATTERN`)
+  // but nothing Zod-parses a persisted source at runtime, so the PRODUCER is
+  // the one gate that keeps an absolute URL out of the row — and out of
+  // `SourceThumbnail` → `useAuthenticatedSrc`, which sets any non-`/api/`
+  // src directly as the rendered `<img src>`.
+  it('drops an image source whose attachmentUrl is outside the attachment routes, and warns', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    const out = toPersistedSources([
+      { pageId: 42, pageTitle: 'Page 42' },
+      { kind: 'image', pageId: 42, pageTitle: 'Page 42', attachmentUrl: 'https://evil.example/x.png' },
+      { kind: 'image', pageId: 42, pageTitle: 'Page 42', attachmentUrl: '/api/local-attachments/42/b.png' },
+    ]);
+    expect(out).toEqual([
+      { pageTitle: 'Page 42', pageId: 42, similarity: null },
+      { pageTitle: 'Page 42', pageId: 42, kind: 'image', attachmentUrl: '/api/local-attachments/42/b.png', similarity: null },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it('drops the entire entry when attachmentUrl is the empty string, and warns', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     const out = toPersistedSources([{ kind: 'image', pageId: 42, pageTitle: 'Page 42', attachmentUrl: '' }]);

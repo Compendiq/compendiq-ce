@@ -231,8 +231,11 @@ reopened conversation renders its citation chips and its confidence badge
 (computed client-side from `similarity`) exactly as the live answer did; a
 refusal still shows no badge (#1119). An image source (#1115 P3's
 `kind: 'image'` entries) persists its `kind` and `attachmentUrl` together —
-both or neither — so a reopened answer shows the same thumbnails rather than
-a duplicate page chip; `similarity` on that shape stays `null` either way.
+or, when the URL is empty or outside the attachment routes
+(`ATTACHMENT_URL_PATTERN`), the entry is dropped entirely, since its page is
+already carried by the page-shaped entry for the same search result — so a
+reopened answer shows the same thumbnails rather than a duplicate page chip;
+`similarity` on that shape stays `null` either way.
 `GET /llm/conversations/:id` annotates a
 source `unavailable: true` at read time when its page is trashed or no longer
 visible to the caller (`visiblePagesPredicate`, the retrieval path's own rule).

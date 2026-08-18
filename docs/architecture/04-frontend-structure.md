@@ -257,7 +257,7 @@ Four rules are load-bearing:
   chip and no dedupe. **#1361 only makes that state reachable in one
   gesture** — a reopen replays the whole history at once instead of one turn
   at a time — which is why PR 2 decides whether thumbnails render lazily (see
-  the **PR 2 flag** bullet in the Frontend section of
+  the **PR 2 flag** bullet at the end of the `/ai` page changes section of
   `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`).
   Lower the cap if the single-answer case stops holding.
 

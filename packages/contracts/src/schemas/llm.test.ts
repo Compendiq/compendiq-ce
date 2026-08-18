@@ -145,15 +145,15 @@ describe('conversation schemas (#1361)', () => {
     expect(SourceSchema.parse(KB_SOURCE).kind).toBeUndefined();
   });
 
-  // review r2 #2 — the schema is the one shared definition both
-  // `toPersistedSources` (backend) and `isImageSource` (frontend) are
-  // written against; it has to state the rule they enforce, or a future
-  // writer (backfill, EE, manual SQL) can produce data neither predicate
-  // was hardened for. Encoding it here also closes a live risk:
-  // `SourceThumbnail` hands `attachmentUrl` straight to `useAuthenticatedSrc`,
-  // which sets any src NOT starting with `/api/` directly as the rendered
-  // `<img src>` — an absolute URL there is an unauthenticated outbound
-  // request from the reader's browser on every reopen.
+  // The prefix rule is stated ONCE, here (`ATTACHMENT_URL_PATTERN`), and
+  // enforced at runtime by the producer (`toPersistedSources` drops an entry
+  // that fails it) — nothing re-parses a persisted source on the read path
+  // or in the frontend, so this schema is the definition a second writer or
+  // a client-side parse imports, not itself a gate. Why it matters:
+  // `SourceThumbnail` hands `attachmentUrl` to `useAuthenticatedSrc`, which
+  // sets any src NOT starting with `/api/` directly as the rendered
+  // `<img src>`, so an absolute URL that reached the row would be an
+  // unauthenticated outbound request from the reader's browser on reopen.
   it('SourceSchema rejects an attachmentUrl outside the attachment routes', () => {
     expect(SourceSchema.safeParse({ ...IMAGE_SOURCE, attachmentUrl: '' }).success).toBe(false);
     expect(SourceSchema.safeParse({ ...IMAGE_SOURCE, attachmentUrl: 'https://evil.example/x.png' }).success).toBe(false);
@@ -206,7 +206,9 @@ describe('conversation schemas (#1361)', () => {
       ...summary,
       messages: [
         { role: 'user', content: 'how do we rotate the PAT?' },
-        { role: 'assistant', content: 'Under Settings → Confluence.', sources: [KB_SOURCE] },
+        // The reopen wire is this nesting; an image source must survive it
+        // intact or PR 2's typed client drops the thumbnails silently.
+        { role: 'assistant', content: 'Under Settings → Confluence.', sources: [KB_SOURCE, IMAGE_SOURCE] },
         { role: 'assistant', content: 'I am not answering.', refused: true },
       ],
       historyTruncated: false,

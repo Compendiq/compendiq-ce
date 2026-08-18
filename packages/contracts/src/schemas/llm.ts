@@ -200,19 +200,25 @@ export type TitleSource = z.infer<typeof TitleSourceSchema>;
  * (#1125 keys those on `url`) — so an absent `kind` has to keep meaning "a
  * knowledge-base page".
  *
- * This is the ONE shared definition both `toPersistedSources` (backend) and
- * `isImageSource` (frontend) are hardened against (review r2 #2), so it has
- * to state the rule they enforce rather than leave it implicit in two
- * independent predicates that could drift. `attachmentUrl` is restricted to
- * the two authenticated attachment route prefixes, not merely a non-empty
- * string: `SourceThumbnail` hands it straight to `useAuthenticatedSrc`,
- * which treats any src NOT starting with `/api/` as already-safe and sets
- * it as the rendered `<img src>` directly — an absolute URL stored here
- * would become an unauthenticated outbound request from the reader's
- * browser on every reopen. The `superRefine` below is the co-presence half
- * of the SAME rule stated above in prose: `kind` and `attachmentUrl` copy
+ * `attachmentUrl` is restricted to the two authenticated attachment route
+ * prefixes (`ATTACHMENT_URL_PATTERN`), not merely a non-empty string:
+ * `SourceThumbnail` hands it straight to `useAuthenticatedSrc`, which sets
+ * any src NOT starting with `/api/` directly as the rendered `<img src>`, so
+ * an absolute URL stored here would be an unauthenticated outbound request
+ * from the reader's browser on every reopen. Be clear about WHERE that rule
+ * runs: nothing Zod-parses a persisted source today — `toPersistedSources`
+ * builds the row by construction, `GET /llm/conversations/:id` returns the
+ * stored JSON without re-parsing, and the frontend's `isImageSource` trusts
+ * the server-built URL. The one runtime gate is therefore the PRODUCER,
+ * which applies the same exported pattern before it persists (an entry that
+ * fails it is dropped, see `persisted-source.ts`); this schema states the
+ * rule so a second writer or a client-side parse (PR 2) imports one
+ * definition instead of re-deriving it. The `superRefine` below is the
+ * co-presence half of the same rule: `kind` and `attachmentUrl` come
  * together, never singly.
  */
+export const ATTACHMENT_URL_PATTERN = /^\/api\/(local-)?attachments\//;
+
 export const SourceSchema = z.object({
   pageTitle: z.string(),
   spaceKey: z.string().nullable().optional(),
@@ -223,7 +229,7 @@ export const SourceSchema = z.object({
   similarity: z.number().nullable().optional(),
   unavailable: z.literal(true).optional(),
   kind: z.literal('image').optional(),
-  attachmentUrl: z.string().regex(/^\/api\/(local-)?attachments\//).optional(),
+  attachmentUrl: z.string().regex(ATTACHMENT_URL_PATTERN).optional(),
 }).superRefine((value, ctx) => {
   if (value.kind === 'image' && value.attachmentUrl === undefined) {
     ctx.addIssue({ code: 'custom', path: ['attachmentUrl'], message: 'attachmentUrl is required when kind is "image"' });

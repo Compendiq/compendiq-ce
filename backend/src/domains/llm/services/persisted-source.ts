@@ -1,4 +1,4 @@
-import type { PersistedSource } from '@compendiq/contracts';
+import { ATTACHMENT_URL_PATTERN, type PersistedSource } from '@compendiq/contracts';
 import { logger } from '../../../core/utils/logger.js';
 
 /** The union `llm-ask.ts` builds from search results, external docs, web hits and image hits. */
@@ -24,39 +24,35 @@ export interface WireSource {
  * `SourceSchema.pageId` is positive-or-absent, and the read side annotates
  * only sources that carry a real page id.
  *
- * `kind`/`attachmentUrl` copy together, never singly — both or neither,
- * mirroring the frontend's `isImageSource` predicate (#1115 P3), so a
- * reopened conversation renders the same thumbnails as the live answer did.
- * A `kind` with no url or a url with no kind is not an image source by that
- * predicate, so copying just one would produce a shape the reader cannot
- * render as either a page or an image.
+ * An image source (#1115 P3, `kind: 'image'`) keeps its `kind` AND its
+ * `attachmentUrl` — the pair the frontend's `isImageSource` discriminates
+ * on — so a reopened conversation renders the same thumbnails as the live
+ * answer did. The URL must satisfy the contract's `ATTACHMENT_URL_PATTERN`
+ * (one of the two authenticated attachment routes; `''` and absolute URLs
+ * fail it). This is the ONE runtime gate for that rule: nothing re-parses a
+ * persisted source on the read path, and `SourceThumbnail` hands the stored
+ * URL to `useAuthenticatedSrc`, which sets any non-`/api/` src directly as
+ * `<img src>`.
  *
- * The URL must be a NON-EMPTY string, not merely a string: `''` passes
- * `typeof === 'string'` on both this guard and the frontend's `isImageSource`
- * (review r1 #5), so an empty-string URL would take the image branch — and
- * its image `aria-label` — with no picture in it.
- *
- * An image source (`kind === 'image'`) whose URL fails that check is DROPPED
- * ENTIRELY (review r2 #1) — the whole entry, not merely its `kind` and
- * `attachmentUrl`. `llm-ask.ts` builds one page-shaped entry per search
- * result (from `searchResults`) and, separately, one image-shaped entry per
- * image hit on that same result (from `searchResults[].imageHits`), so a
- * stripped-but-kept image entry would carry the SAME `pageId` as the page
- * entry already sitting in the array and reopen as a second, identical page
- * chip — the "worst of both" the architect's decision names, reached through
- * an unusable URL instead of a missing one. Dropping it loses nothing: that
- * page is already represented by its own page-shaped entry. Unreachable
- * today (`buildPageImageUrl` never returns `''`), so a source that trips
- * this is a future regression, not a skip this deployment already relies on
- * — hence the warn.
+ * An image source whose URL fails that check is DROPPED ENTIRELY — the whole
+ * entry, never a stripped survivor. `llm-ask.ts` builds one page-shaped entry
+ * per search result and, separately, one image-shaped entry per image hit on
+ * that same result, so a kept-but-stripped image entry would carry the SAME
+ * `pageId` as the page entry already in the array and reopen as a second,
+ * identical page chip — the exact duplicate the identity fix exists to
+ * remove. Dropping it loses nothing: the page is already represented by its
+ * own entry. Unreachable today (`buildPageImageUrl` only ever emits the two
+ * allowed prefixes), so a source that trips this is a regression upstream —
+ * hence the warn. A url without a kind is not an image source and neither
+ * field is copied.
  */
 export function toPersistedSources(sources: WireSource[]): PersistedSource[] {
   return sources.flatMap((s) => {
-    const isImage = s.kind === 'image' && typeof s.attachmentUrl === 'string' && s.attachmentUrl.length > 0;
+    const isImage = s.kind === 'image' && typeof s.attachmentUrl === 'string' && ATTACHMENT_URL_PATTERN.test(s.attachmentUrl);
     if (s.kind === 'image' && !isImage) {
       logger.warn(
         { pageId: s.pageId, pageTitle: s.pageTitle },
-        'Dropping an image source with no usable attachmentUrl while persisting the conversation turn — its page, if any, is kept via the page-shaped entry for the same search result',
+        'Dropping an image source whose attachmentUrl is empty or outside the attachment routes while persisting the conversation turn — its page, if any, is kept via the page-shaped entry for the same search result',
       );
       return [];
     }
