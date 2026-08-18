@@ -146,10 +146,11 @@ describe('conversation schemas (#1361)', () => {
   });
 
   // The prefix rule is stated ONCE, here (`ATTACHMENT_URL_PATTERN`), and
-  // enforced at runtime by the producer (`toPersistedSources` drops an entry
-  // that fails it) — nothing re-parses a persisted source on the read path
-  // or in the frontend, so this schema is the definition a second writer or
-  // a client-side parse imports, not itself a gate. Why it matters:
+  // enforced at runtime by the two gates that import it — the producer
+  // (`toPersistedSources` drops an entry that fails it) and the frontend's
+  // `isImageSource` (the last check before `<img>`); nothing re-parses a
+  // persisted source on the read path, so the schema itself is the shared
+  // definition, not a gate. Why it matters:
   // `SourceThumbnail` hands `attachmentUrl` to `useAuthenticatedSrc`, which
   // sets any src NOT starting with `/api/` directly as the rendered
   // `<img src>`, so an absolute URL that reached the row would be an

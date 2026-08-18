@@ -29,10 +29,10 @@ export interface WireSource {
  * on — so a reopened conversation renders the same thumbnails as the live
  * answer did. The URL must satisfy the contract's `ATTACHMENT_URL_PATTERN`
  * (one of the two authenticated attachment routes; `''` and absolute URLs
- * fail it). This is the ONE runtime gate for that rule: nothing re-parses a
- * persisted source on the read path, and `SourceThumbnail` hands the stored
- * URL to `useAuthenticatedSrc`, which sets any non-`/api/` src directly as
- * `<img src>`.
+ * fail it). Nothing re-parses a persisted source on the read path, so this
+ * is the write-side gate; the frontend's `isImageSource` imports the same
+ * pattern as the last check before `<img>` (`SourceThumbnail` hands the URL
+ * to `useAuthenticatedSrc`, which sets any non-`/api/` src directly).
  *
  * An image source whose URL fails that check is DROPPED ENTIRELY — the whole
  * entry, never a stripped survivor. `llm-ask.ts` builds one page-shaped entry

@@ -573,8 +573,8 @@ requests per new conversation. A one-shot timer would race the model's latency.
    producer's one runtime gate), the entry is dropped entirely because its page is already
    carried by the page-shaped entry for the same result — so a reopened answer renders the
    same thumbnails the live one did; `similarity` on that shape stays `null` regardless (the
-   cross-modal band, ADR-025 §8). PR 2 should harden the frontend's `isImageSource` with the
-   same exported pattern (the last gate before `<img>`; it currently trusts the wire). The
+   cross-modal band, ADR-025 §8); the frontend's `isImageSource` imports the same pattern, so
+   the persist gate and the last gate before `<img>` are one definition. The
    persisted *prose* is unchanged: `llm-ask.test.ts:722-744` and `:496-523` keep asserting
    the persisted refusal text does not say "listed below" / "attached as sources" — the
    sources are now structured data beside it, and the frontend's `RefusalSourcesLabel`

@@ -19,10 +19,19 @@ describe('isImageSource', () => {
     expect(isImageSource(source({ kind: 'image' }))).toBe(false);
   });
 
-  // review r1 #5 — an empty string passes a bare `typeof === 'string'` check,
-  // which would take the image branch (and its image `aria-label`) on a chip
-  // with no picture in it. Mirrors the backend's `toPersistedSources` guard.
+  // An empty string passes a bare `typeof === 'string'` check, which would
+  // take the image branch (and its image `aria-label`) on a chip with no
+  // picture in it. Same rule as the backend's `toPersistedSources` guard —
+  // both import `ATTACHMENT_URL_PATTERN` from contracts.
   it('is false when attachmentUrl is the empty string', () => {
     expect(isImageSource(source({ kind: 'image', attachmentUrl: '' }))).toBe(false);
+  });
+
+  // The last gate before `<img>`: `useAuthenticatedSrc` sets any non-`/api/`
+  // src directly, so a URL outside the two attachment routes is not a picture.
+  it('is false when attachmentUrl is outside the attachment routes, true for both route prefixes', () => {
+    expect(isImageSource(source({ kind: 'image', attachmentUrl: 'https://evil.example/x.png' }))).toBe(false);
+    expect(isImageSource(source({ kind: 'image', attachmentUrl: '/api/attachmentsX/1/a.png' }))).toBe(false);
+    expect(isImageSource(source({ kind: 'image', attachmentUrl: '/api/local-attachments/1/a.png' }))).toBe(true);
   });
 });

@@ -1,3 +1,4 @@
+import { ATTACHMENT_URL_PATTERN } from '@compendiq/contracts';
 import type { Source } from './SourceCitations';
 
 /**
@@ -8,13 +9,17 @@ import type { Source } from './SourceCitations';
  * component, and exporting it from `SourceCitations.tsx` costs that file its
  * fast-refresh boundary.
  *
- * It requires the URL as well as the discriminator, and the URL must be
- * NON-EMPTY: `''` passes a bare `typeof === 'string'` check, which would let
- * a malformed frame render an empty `<img>` and, worse, take the image
- * branch's `aria-label` on a chip with no picture in it — the check and the
- * thing it unlocks have to be the same fact. The backend's
- * `toPersistedSources` guard is the same rule on the write side (review r1
- * #5); keep the two in lock-step.
+ * It requires the URL as well as the discriminator, and the URL must satisfy
+ * the contract's `ATTACHMENT_URL_PATTERN` (one of the two authenticated
+ * attachment routes) — the same rule the backend's `toPersistedSources`
+ * applies before it persists, imported rather than restated so the two gates
+ * cannot drift. A bare `typeof === 'string'` let `''` through, which would
+ * render an empty `<img>` and, worse, take the image branch's `aria-label` on
+ * a chip with no picture in it — the check and the thing it unlocks have to
+ * be the same fact. And this is the LAST gate before `<img>`: `SourceThumbnail`
+ * hands the URL to `useAuthenticatedSrc`, which sets any non-`/api/` src
+ * directly, so a stored absolute URL that somehow reached the wire must not
+ * be treated as a picture here either.
  *
  * **`similarity` on an image source is always `null`**, deliberately: the
  * image leg's own score is a CROSS-MODAL cosine sitting in a different band
@@ -23,7 +28,7 @@ import type { Source } from './SourceCitations';
  * backend, and pinned in `source-confidence.test.ts`.
  */
 export function isImageSource(source: Source): boolean {
-  return source.kind === 'image' && typeof source.attachmentUrl === 'string' && source.attachmentUrl.length > 0;
+  return source.kind === 'image' && typeof source.attachmentUrl === 'string' && ATTACHMENT_URL_PATTERN.test(source.attachmentUrl);
 }
 
 /**

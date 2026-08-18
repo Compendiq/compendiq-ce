@@ -207,13 +207,13 @@ export type TitleSource = z.infer<typeof TitleSourceSchema>;
  * an absolute URL stored here would be an unauthenticated outbound request
  * from the reader's browser on every reopen. Be clear about WHERE that rule
  * runs: nothing Zod-parses a persisted source today — `toPersistedSources`
- * builds the row by construction, `GET /llm/conversations/:id` returns the
- * stored JSON without re-parsing, and the frontend's `isImageSource` trusts
- * the server-built URL. The one runtime gate is therefore the PRODUCER,
- * which applies the same exported pattern before it persists (an entry that
- * fails it is dropped, see `persisted-source.ts`); this schema states the
- * rule so a second writer or a client-side parse (PR 2) imports one
- * definition instead of re-deriving it. The `superRefine` below is the
+ * builds the row by construction and `GET /llm/conversations/:id` returns
+ * the stored JSON without re-parsing. The runtime gates are the PRODUCER,
+ * which applies this exported pattern before it persists (an entry that
+ * fails it is dropped, see `persisted-source.ts`), and the frontend's
+ * `isImageSource`, which imports the same pattern as the last check before
+ * `<img>`; the schema states the rule so both — and any later writer or
+ * client-side parse — share one definition. The `superRefine` below is the
  * co-presence half of the same rule: `kind` and `attachmentUrl` come
  * together, never singly.
  */
