@@ -57,3 +57,26 @@ describe('untitled expand placeholder CSS (#1227)', () => {
     expect(rule).toMatch(/pointer-events:\s*none/);
   });
 });
+
+describe('expand module chrome', () => {
+  const css = readFileSync(resolve(__dirname, '../../../index.css'), 'utf-8');
+
+  it('hides the UA disclosure marker so the drawn chevron is the only affordance', () => {
+    expect(css).toMatch(/details > summary.*::-webkit-details-marker/s);
+    expect(css).toMatch(/details > summary.*::marker/s);
+  });
+
+  it('does not wrap the section in a card', () => {
+    const start = css.indexOf('.prose :where(details) {');
+    expect(start).toBeGreaterThan(-1);
+    const block = css.slice(start, css.indexOf('}', start));
+    expect(block).toMatch(/border:\s*none/);
+    expect(block).toMatch(/background:\s*transparent/);
+  });
+
+  it('draws the chevron on the summary so it centers on the title line', () => {
+    expect(css).toContain('.prose :where(details > summary)::after');
+    expect(css).toContain('.prose :where(details[open] > summary)::after');
+    expect(css).toMatch(/translateY\(-50%\)\s+rotate\(-45deg\)/);
+  });
+});

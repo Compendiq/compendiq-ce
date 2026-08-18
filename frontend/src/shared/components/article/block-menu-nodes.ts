@@ -134,11 +134,7 @@ export function blockLabel(node: PMNode): string {
     }
     return 'Panel';
   }
-  if (name === 'details') {
-    const macroName = node.attrs.macroName as string | undefined;
-    if (macroName === 'ui-expand') return 'UI Expand';
-    return 'Expand';
-  }
+  if (name === 'details') return 'Expand';
   // An unrecognised Confluence macro carries the real macro name — far more
   // useful than the generic "Macro" when deciding whether to delete it.
   if (name === 'unknownMacro') {

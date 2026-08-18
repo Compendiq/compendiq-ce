@@ -98,26 +98,16 @@ export function EditorBlockMenu({
     selector: () => {
       const nr = nodeRange();
       if (!nr) {
-        return {
-          present: false,
-          hasText: false,
-          dropsMacros: false,
-          dropsLinks: false,
-          isUiExpand: false,
-          defaultOpen: false,
-        };
+        return { present: false, hasText: false, dropsMacros: false, dropsLinks: false };
       }
       const range = nr.to - nr.from >= 2 ? { from: nr.from + 1, to: nr.to - 1 } : null;
       const { doc } = editor.state;
       const hasText = range !== null && doc.textBetween(range.from, range.to, '\n').trim().length > 0;
-      const liveNode = doc.nodeAt(nr.from);
       return {
         present: true,
         hasText,
         dropsMacros: range !== null && hasText && containsStructuredInline(doc, range.from, range.to),
         dropsLinks: range !== null && hasText && containsLossyMarks(doc, range.from, range.to),
-        isUiExpand: liveNode?.type.name === 'details' && liveNode.attrs.macroName === 'ui-expand',
-        defaultOpen: !!liveNode?.attrs.open,
       };
     },
   });
@@ -299,25 +289,6 @@ export function EditorBlockMenu({
               <div role="separator" aria-orientation="horizontal" className="my-1 mx-1.5 h-px bg-border" />
 
               <div className="flex flex-col gap-0.5">
-                {live.isUiExpand && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      editor.commands.setDetailsOpen({ pos: targetPos, open: !live.defaultOpen });
-                    }}
-                    data-testid="block-menu-default-open"
-                    aria-pressed={live.defaultOpen}
-                    className={cn(
-                      'flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs text-foreground/90 transition-colors',
-                      'hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-                    )}
-                  >
-                    <span>Open by default</span>
-                    <span className="text-[11px] text-muted-foreground">
-                      {live.defaultOpen ? 'On' : 'Off'}
-                    </span>
-                  </button>
-                )}
                 <button
                   type="button"
                   onClick={duplicateBlock}
@@ -462,7 +433,7 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
       <Popover.Root open={open} onOpenChange={(next) => { if (!next) closeMenu(); }}>
         <Popover.Anchor asChild>
           <span
-            className="flex h-full w-full items-center justify-center cursor-pointer relative before:absolute before:-inset-1.5 before:content-['']"
+            className="flex h-full w-full items-center justify-center cursor-pointer relative before:absolute before:-inset-y-2 before:-left-2 before:-right-3 before:content-['']"
             data-block-menu-open={open ? 'true' : undefined}
             data-testid="drag-handle-trigger"
             title="Drag to move · Click for block actions"

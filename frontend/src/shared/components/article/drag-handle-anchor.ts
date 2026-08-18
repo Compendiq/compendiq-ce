@@ -4,6 +4,15 @@ import type { Node as PMNode } from '@tiptap/pm/model';
 /** Extra gutter so the grip sits left of the paragraph, not on the first glyph. */
 export const DRAG_HANDLE_INSET_PX = 12;
 
+/**
+ * Width of the editable editor's left pull-out (padding + matching negative
+ * margin). Must cover the grip (1.5rem) plus `DRAG_HANDLE_INSET_PX` so the
+ * handle still sits inside `.tiptap`. Otherwise `mouseleave` on the editor
+ * fires in the gap between the block and the grip and the handle vanishes
+ * before you can click it.
+ */
+export const DRAG_HANDLE_GUTTER = '2.25rem';
+
 export function isListItemName(name: string): boolean {
   return name === 'listItem' || name === 'taskItem';
 }

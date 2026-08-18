@@ -53,6 +53,15 @@ describe('article-extensions', () => {
       editor.destroy();
     });
 
+    it('paints the live toggle class without serializing it', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.view.dom.querySelector('details')).toHaveClass('cq-expand');
+      expect(editor.getHTML()).not.toContain('cq-expand');
+      editor.destroy();
+    });
+
     it('omits both attributes when absent (editor-created sections stay bare)', () => {
       const editor = createDetailsEditor('<details><summary>T</summary><p>B</p></details>');
       const output = editor.getHTML();

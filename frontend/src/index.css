@@ -1756,46 +1756,97 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   margin: 1rem 0;
 }
 
-/* Details/summary (expand macros). Title is document heading, not a primary
-   action — teal/underline/`user-select: none` burned the interaction accent
-   on every section and blocked copying the title. */
+/* Expand module — one document toggle for native Expand and Refined UI Expand.
+   A card-in-card was chrome competing with the article. This is a 32px title
+   row (44px on coarse pointers), a drawn chevron (not the UA marker), and
+   indented body. The chevron is `summary::after` so it centers on the title
+   (including the untitled placeholder); #1227's caret-safe float stays on
+   `summary::before`. */
 .prose :where(details) {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 0.75rem 1rem;
-  margin: 1rem 0;
-  background: var(--surface-card);
+  position: relative;
   max-width: 100%;
+  margin: 0.35rem 0;
+  padding: 0;
+  border: none;
+  background: transparent;
 }
 
-.prose :where(summary) {
-  font-weight: 500;
+.prose :where(details > summary) {
+  position: relative;
+  list-style: none;
   cursor: pointer;
   color: var(--color-foreground);
-  overflow-wrap: anywhere;
-}
-
-.prose :where(summary):hover {
-  color: var(--color-foreground);
-}
-
-.tiptap.ProseMirror[contenteditable='true'] details[data-expand-kind='expand'] > summary::after,
-.tiptap.ProseMirror[contenteditable='true'] details[data-expand-kind='ui-expand'] > summary::after {
-  float: right;
-  font-size: 0.75rem;
   font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--color-muted-foreground);
+  overflow-wrap: anywhere;
+  min-height: 2rem;
+  padding: 0.375rem 0.5rem 0.375rem 1.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+.prose :where(details > summary)::-webkit-details-marker,
+.prose :where(details > summary)::marker {
+  display: none;
+  content: none;
+}
+
+.prose :where(details > summary):hover {
+  background: oklch(from var(--color-muted) l c h / 0.35);
+  border-color: var(--color-border-interactive);
+}
+
+.prose :where(details > summary):focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+/* Chevron on summary (not details) so it stays centered on the title
+   line — including the untitled placeholder — instead of drifting
+   against the whole open section. ::after so #1227's ::before placeholder
+   and caret float stay untouched. */
+.prose :where(details > summary)::after {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0.5rem;
+  top: 50%;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-inline-end: 1.5px solid var(--color-muted-foreground);
+  border-bottom: 1.5px solid var(--color-muted-foreground);
+  transform: translateY(-50%) rotate(-45deg);
   pointer-events: none;
 }
 
-.tiptap.ProseMirror[contenteditable='true'] details[data-expand-kind='expand'] > summary::after {
-  content: 'Expand';
+.prose :where(details[open] > summary)::after {
+  transform: translateY(-50%) rotate(45deg);
 }
 
-.tiptap.ProseMirror[contenteditable='true'] details[data-expand-kind='ui-expand'] > summary::after {
-  content: 'UI Expand';
+@media (prefers-reduced-motion: no-preference) {
+  .prose :where(details > summary)::after {
+    transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+}
+
+.prose :where(details[open] > :not(summary)) {
+  padding-inline: 1.75rem 0.5rem;
+}
+
+@media (pointer: coarse) {
+  .prose :where(details > summary) {
+    min-height: 2.75rem;
+    padding-block: 0.625rem;
+  }
+}
+
+@media (forced-colors: active) {
+  .prose :where(details > summary) {
+    border-color: CanvasText;
+  }
+
+  .prose :where(details > summary)::after {
+    forced-color-adjust: none;
+    border-color: CanvasText;
+  }
 }
 
 /*
@@ -1826,12 +1877,6 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   color: var(--color-muted-foreground);
   font-weight: 400;
   pointer-events: none;
-}
-
-.prose :where(details[open] > summary) {
-  margin-bottom: 0.5rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--glass-border);
 }
 
 /* ============================================
@@ -2487,6 +2532,18 @@ pre:focus-within .code-copy-btn,
   outline: none;
 }
 
+/*
+ * Drag-handle gutter. The grip is `left-start` of a rect inset 12px from the
+ * block, so it lives in the article padding — outside `.tiptap`. Moving left
+ * from the block to click it then fires the drag-handle plugin's mouseleave
+ * and the grip disappears. Pull the editable surface left without moving the
+ * glyphs: padding owns the gutter, negative margin keeps the measure.
+ */
+.tiptap[contenteditable='true'] {
+  padding-left: 2.25rem;
+  margin-left: -2.25rem;
+}
+
 .tiptap p.is-empty::before,
 .tiptap p.is-editor-empty:first-child::before,
 .tiptap h1.is-empty::before,
@@ -2830,6 +2887,17 @@ pre:focus-within .code-copy-btn,
   user-select: none;
   z-index: 50;
   touch-action: none;
+}
+
+/* Bridge the 12px inset so the pointer is still on the grip while travelling
+   from the block to the visible box. */
+.drag-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 0.75rem;
 }
 
 .drag-handle:hover {

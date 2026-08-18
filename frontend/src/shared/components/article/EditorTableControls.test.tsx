@@ -72,6 +72,26 @@ describe('EditorTableControls & Table Expansion', () => {
     expect(editor.getAttributes('table')['data-layout']).toBe('full-width');
   });
 
+  it('shows a saved full-width table at page width in the editor DOM', async () => {
+    // TipTap's TableView builds its own wrapper and does not copy node
+    // attributes onto the <table>. View mode re-stamps them; edit mode
+    // used to skip that, so a full-width table shrank to its colgroup
+    // pixel width the moment you entered Edit.
+    const editor = await renderEditorWithContent(
+      '<table data-layout="full-width"><tbody><tr>' +
+        '<th colwidth="120"><p>ID</p></th><th colwidth="300"><p>Title</p></th>' +
+        '</tr></tbody></table>',
+    );
+
+    await waitFor(() => {
+      const table = editor.view.dom.querySelector('table');
+      const wrapper = editor.view.dom.querySelector('.tableWrapper');
+      expect(table).toHaveAttribute('data-layout', 'full-width');
+      expect(wrapper).toHaveAttribute('data-layout', 'full-width');
+      expect(table).toHaveStyle({ width: '100%' });
+    });
+  });
+
   it('renders labeled table groups and icon-only buttons when cursor is inside a table', async () => {
     const editor = await renderEditorWithTable();
     focusFirstTableCell(editor);
