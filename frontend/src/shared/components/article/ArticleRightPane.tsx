@@ -16,14 +16,17 @@ import {
   PanelRightClose,
   Pin,
   FileDown,
+  GitGraph,
   Loader2,
   RefreshCw,
   Sparkles,
   Trash2,
   History,
+  ShieldCheck,
 } from 'lucide-react';
 
 import { AutoTagger } from '../../../features/pages/AutoTagger';
+import { RelocateDialog } from '../../../features/pages/RelocateDialog';
 import { DockPanel } from '../../../features/ai/dock/DockPanel';
 import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
@@ -47,8 +50,9 @@ import {
   useResyncPage,
   useUnpinPage,
 } from '../../hooks/use-pages';
-import { useQuery } from '@tanstack/react-query';
-import { useExportPdf } from '../../hooks/use-standalone';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useExportPdf, useVerifyPage } from '../../hooks/use-standalone';
+import { usePermission } from '../../hooks/use-permission';
 import { useSettings } from '../../hooks/use-settings';
 import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
@@ -301,6 +305,7 @@ export function ArticleRightPane({
   const headings = useArticleViewStore((s) => s.headings);
   const editing = useArticleViewStore((s) => s.editing);
 
+  const queryClient = useQueryClient();
   const { data: page } = usePage(id);
   const { data: pinnedData } = usePinnedPages();
   const { data: settings } = useSettings();
@@ -310,8 +315,16 @@ export function ArticleRightPane({
   const resyncMutation = useResyncPage();
   const reembedMutation = useReembedPage();
   const requalityMutation = useRequalityPage();
+  const { allowed: canRelocate } = usePermission('pages:relocate');
+  const verifyMutation = useVerifyPage();
+  const [relocateOpen, setRelocateOpen] = useState(false);
+  const [verifyStatusMsg, setVerifyStatusMsg] = useState<string | null>(null);
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
+  const verifiedAt = page?.verifiedAt ?? null;
+  const verifiedDateStr = verifiedAt
+    ? new Date(verifiedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    : null;
 
   // #718: gate the Auto-tag button on the NEW provider source, not the removed
   // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
@@ -674,6 +687,22 @@ export function ArticleRightPane({
     });
   }, [id, isPinned, page, pinMutation, unpinMutation]);
 
+  const handleVerify = useCallback(async () => {
+    if (!id) return;
+    try {
+      await verifyMutation.mutateAsync({ pageId: Number(id) });
+      toast.success('Page verified — next review reminder rescheduled');
+      setVerifyStatusMsg('Page verified');
+      await queryClient.invalidateQueries({ queryKey: ['pages', id] });
+      setTimeout(() => setVerifyStatusMsg(null), 3000);
+    } catch (err) {
+      const msg = err instanceof Error && err.message ? err.message : 'Failed to verify page';
+      toast.error(msg);
+      setVerifyStatusMsg(msg);
+      setTimeout(() => setVerifyStatusMsg(null), 3000);
+    }
+  }, [id, queryClient, verifyMutation]);
+
   // Deleting soft-deletes into the 30-day trash, so the confirm copy must
   // not claim the action "cannot be undone". ConfirmDialog replaces the
   // native confirm() to match the neumorphic design system. Same flow
@@ -787,6 +816,15 @@ export function ArticleRightPane({
       onCancel={() => setConfirmTrashOpen(false)}
     />
   );
+  const relocateDialog = relocateOpen && id && page ? (
+    <RelocateDialog
+      open
+      pageId={id}
+      pageTitle={page.title}
+      source={page.source}
+      onClose={() => setRelocateOpen(false)}
+    />
+  ) : null;
 
   // Collapsed rail — reading gutter + one overflow. Expand, Outline,
   // Assistant and Pin stay first-class; everything that lives behind
@@ -1194,6 +1232,7 @@ export function ArticleRightPane({
       </AnimatePresence>
       </div>
       {confirmTrashDialog}
+      {relocateDialog}
       </>
     );
   }
@@ -1442,6 +1481,19 @@ export function ArticleRightPane({
             <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
           </button>
 
+          {id && (
+            <button
+              type="button"
+              onClick={() => navigate(`/graph?focus=${encodeURIComponent(id)}`)}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+              title="Show this page in the graph"
+              data-testid="show-in-graph-btn"
+            >
+              <GitGraph size={15} className="shrink-0 opacity-70" />
+              <span className="truncate">Show in Graph</span>
+            </button>
+          )}
+
           {settings?.confluenceUrl && page.confluenceId && (
             <a
               href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
@@ -1549,10 +1601,10 @@ export function ArticleRightPane({
             <button
               onClick={handleDelete}
               className="nm-action-destructive mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm"
-              title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
+              title={`Move to trash (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
             >
               <Trash2 size={15} className="shrink-0 opacity-70" />
-              <span className="truncate">Delete</span>
+              <span className="truncate">Move to trash</span>
             </button>
           </details>
         </div>
@@ -1569,8 +1621,23 @@ export function ArticleRightPane({
             </div>
             <div className="flex items-center justify-between gap-3 py-2">
               <dt className="text-muted-foreground">Source</dt>
-              <dd className="font-medium text-foreground/85">
-                {page.source === 'standalone' ? 'Local' : 'Confluence'}
+              <dd className="flex min-w-0 items-center gap-2 font-medium text-foreground/85">
+                <span className="truncate">{page.source === 'standalone' ? 'Local' : 'Confluence'}</span>
+                {canRelocate && !editing && (
+                  <button
+                    type="button"
+                    onClick={() => setRelocateOpen(true)}
+                    data-testid="relocate-btn"
+                    title={
+                      page.source === 'standalone'
+                        ? 'Publish this article into a Confluence space'
+                        : 'Pull this page out of Confluence into a local space'
+                    }
+                    className="shrink-0 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    {page.source === 'standalone' ? 'Move to Confluence' : 'Move to a local space'}
+                  </button>
+                )}
               </dd>
             </div>
             {page.source === 'standalone' && (
@@ -1616,6 +1683,28 @@ export function ArticleRightPane({
           <div className="mt-4">
             <div className="text-[11px] font-semibold text-muted-foreground">Document health</div>
             <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-health-badges">
+              <span
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                data-testid="verification-chip"
+              >
+                <ShieldCheck size={11} aria-hidden="true" />
+                {verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}
+              </span>
+              <button
+                type="button"
+                onClick={() => { void handleVerify(); }}
+                disabled={verifyMutation.isPending}
+                data-testid="verify-btn"
+                aria-busy={verifyMutation.isPending}
+                className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+              >
+                {verifyMutation.isPending ? 'Recording…' : 'Record verification'}
+              </button>
+              {verifyStatusMsg && (
+                <span className="sr-only" role="status" aria-live="polite">
+                  {verifyStatusMsg}
+                </span>
+              )}
               {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
               <EmbeddingStatusBadge
                 embeddingStatus={page.embeddingStatus}
@@ -1752,6 +1841,7 @@ export function ArticleRightPane({
       </div>
     </m.aside>
     {confirmTrashDialog}
+    {relocateDialog}
     </>
   );
 }

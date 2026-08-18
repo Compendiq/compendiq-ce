@@ -28,7 +28,7 @@ interface ShortcutRegistryEntry {
  */
 export const SHORTCUTS: ShortcutRegistryEntry[] = [
   // -- Navigation --
-  { id: 'search', keys: 'ctrl+k', label: 'Jump to page or command', category: 'navigation' },
+  { id: 'search', keys: 'ctrl+k', label: 'Find', category: 'navigation' },
   { id: 'focus-page-search', keys: '/', label: 'Focus page search (on Pages)', category: 'navigation' },
   { id: 'ai-mode', keys: '/ai', label: 'AI mode (inside palette)', category: 'navigation' },
 

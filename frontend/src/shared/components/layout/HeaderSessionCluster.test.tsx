@@ -28,9 +28,10 @@ describe('HeaderFindButton', () => {
     expect(useCommandPaletteStore.getState().isOpen).toBe(true);
   });
 
-  it('is named for the palette, not a second search', () => {
+  it('is named Find, not a second Search', () => {
     render(<HeaderFindButton />, { wrapper });
-    expect(screen.getByRole('button', { name: 'Jump to page or command' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Find' })).toBeInTheDocument();
+    expect(screen.getByText('Find')).toBeInTheDocument();
   });
 });
 
@@ -47,9 +48,10 @@ describe('HeaderSessionCluster', () => {
     expect(screen.getByLabelText(/menu$/i)).toBeInTheDocument();
   });
 
-  it('stands down while the article editor owns the slot', () => {
+  it('stays mounted while the article is being edited', () => {
     useArticleViewStore.setState({ editing: true });
     render(<HeaderSessionCluster />, { wrapper });
-    expect(screen.queryByTestId('header-session-cluster')).not.toBeInTheDocument();
+    expect(screen.getByTestId('header-session-cluster')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Find' })).toBeInTheDocument();
   });
 });

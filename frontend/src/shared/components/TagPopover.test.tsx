@@ -32,6 +32,13 @@ describe('TagPopover', () => {
     expect(screen.getByRole('button', { name: '2 tags' })).toHaveTextContent('2 tags');
   });
 
+  it('hides the count text when iconOnly, and keeps the accessible name', () => {
+    render(<TagPopover {...defaultProps} iconOnly />);
+    const trigger = screen.getByRole('button', { name: '2 tags' });
+    expect(trigger).not.toHaveTextContent('2 tags');
+    expect(trigger.className).toContain('nm-icon-button');
+  });
+
   it('keeps the editor closed until the chip is used', () => {
     render(<TagPopover {...defaultProps} />);
     expect(screen.queryByTestId('tag-editor')).not.toBeInTheDocument();

@@ -86,8 +86,8 @@ export function NotificationDropdown({
     return (
       <div className="flex flex-col items-center justify-center py-10 text-center" data-testid="notification-empty">
         <Inbox size={32} className="mb-3 text-muted-foreground" />
-        <p className="text-sm font-medium">All caught up!</p>
-        <p className="mt-1 text-xs text-muted-foreground">No new notifications</p>
+        <p className="text-sm font-medium">No notifications</p>
+        <p className="mt-1 text-xs text-muted-foreground">New activity will show up here.</p>
       </div>
     );
   }

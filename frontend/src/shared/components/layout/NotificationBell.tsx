@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Popover from '@radix-ui/react-popover';
-import { Bell, Settings } from 'lucide-react';
+import { Bell } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import { NotificationDropdown, type Notification } from './NotificationDropdown';
 import { cn } from '../../lib/cn';
@@ -162,8 +162,13 @@ export function NotificationBell() {
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
         <button
+          type="button"
           className="nm-icon-button relative"
-          aria-label="Notifications"
+          aria-label={
+            unreadCount > 0
+              ? `Notifications, ${unreadCount} unread`
+              : 'Notifications'
+          }
           data-testid="notification-bell"
         >
           <Bell size={18} />
@@ -188,19 +193,8 @@ export function NotificationBell() {
           className="z-50 w-[360px] nm-card-elevated"
         >
           {/* Title bar */}
-          <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+          <div className="border-b border-border px-3 py-2.5">
             <span className="text-sm font-semibold">Notifications</span>
-            <button
-              onClick={() => {
-                navigate('/settings');
-                setOpen(false);
-              }}
-              className="rounded-md p-1 text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
-              aria-label="Notification settings"
-              data-testid="notification-settings"
-            >
-              <Settings size={14} />
-            </button>
           </div>
 
           {/* Content */}

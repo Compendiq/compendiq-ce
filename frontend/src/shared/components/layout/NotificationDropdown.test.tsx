@@ -54,7 +54,9 @@ describe('NotificationDropdown', () => {
       />,
     );
     expect(screen.getByTestId('notification-empty')).toBeInTheDocument();
-    expect(screen.getByText('All caught up!')).toBeInTheDocument();
+    expect(screen.getByText('No notifications')).toBeInTheDocument();
+    expect(screen.getByText('New activity will show up here.')).toBeInTheDocument();
+    expect(screen.queryByText('All caught up!')).not.toBeInTheDocument();
   });
 
   it('renders notification items', () => {

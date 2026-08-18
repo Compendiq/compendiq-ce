@@ -282,6 +282,14 @@ describe('PagesPage', () => {
     expect(kpis.closest('header')).toBeNull();
   });
 
+  it('keeps Trash and New Page out of the 48px header slot', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.getByTestId('trash-link').closest('#app-header-slot')).toBeNull();
+    expect(screen.getByTestId('new-page-button').closest('#app-header-slot')).toBeNull();
+    expect(screen.getByTestId('trash-link').closest('header')).toBeNull();
+    expect(screen.getByTestId('new-page-button').closest('header')).toBeNull();
+  });
+
   it('renders the page title, search input, and filter controls', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     expect(screen.getByText('Pages')).toBeInTheDocument();

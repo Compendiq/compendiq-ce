@@ -110,6 +110,13 @@ describe('NotificationBell', () => {
     });
   });
 
+  it('puts the unread count in the accessible name', async () => {
+    renderBell();
+    await vi.waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Notifications, 1 unread' })).toBeInTheDocument();
+    });
+  });
+
   it('does not show badge when no unread notifications', async () => {
     mockApiFetch = vi.fn().mockResolvedValue({
       items: mockNotifications.map((n) => ({ ...n, read: true })),
@@ -159,9 +166,7 @@ describe('NotificationBell', () => {
     markAll.focus();
     expect(document.activeElement).toBe(markAll);
 
-    const settings = screen.getByTestId('notification-settings');
-    settings.focus();
-    expect(document.activeElement).toBe(settings);
+    expect(screen.queryByTestId('notification-settings')).not.toBeInTheDocument();
   });
 
   it('navigates and dismisses the panel when a notification is clicked', async () => {

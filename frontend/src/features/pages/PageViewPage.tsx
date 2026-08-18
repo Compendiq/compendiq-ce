@@ -2,8 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, X, Save, Upload, Download, ShieldCheck, ThumbsUp, ThumbsDown, AlertTriangle, RefreshCw, GitGraph, ListTree, MoreHorizontal, Pin, Trash2 } from 'lucide-react';
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import { FileText, X, Save, ThumbsUp, ThumbsDown, AlertTriangle, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   usePage,
@@ -15,8 +14,7 @@ import {
   useUnpinPage,
   useDeletePage,
 } from '../../shared/hooks/use-pages';
-import { useSubmitFeedback, useVerifyPage } from '../../shared/hooks/use-standalone';
-import { usePermission } from '../../shared/hooks/use-permission';
+import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
@@ -42,7 +40,6 @@ import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
-import { RelocateDialog } from './RelocateDialog';
 
 function ImageLightbox({
   alt,
@@ -138,35 +135,6 @@ export function PageViewPage() {
   const unpinMutation = useUnpinPage();
   const deleteMutation_page = useDeletePage();
 
-  // #1123. A dedicated global permission, seeded onto editor / space_admin by
-  // migration 086. The control is hidden rather than disabled when denied: CE
-  // ships no UI for granting permissions, so a denied user has no in-product
-  // path to earning it, and the preview endpoint is gated on the same
-  // permission — a rendered control would 403 the moment it was used.
-  const { allowed: canRelocate } = usePermission('pages:relocate');
-  const verifyMutation = useVerifyPage();
-  const [verifyStatusMsg, setVerifyStatusMsg] = useState<string | null>(null);
-
-  const lastVerifiedAt = (page as unknown as Record<string, unknown> | undefined)?.lastVerifiedAt as string | null ?? null;
-  const verifiedDateStr = lastVerifiedAt
-    ? new Date(lastVerifiedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-    : null;
-
-  const handleVerify = useCallback(async () => {
-    if (!id) return;
-    try {
-      await verifyMutation.mutateAsync({ pageId: Number(id) });
-      toast.success('Page verified — next review reminder rescheduled');
-      setVerifyStatusMsg('Page verified');
-      setTimeout(() => setVerifyStatusMsg(null), 3000);
-    } catch (err) {
-      const msg = err instanceof Error && err.message ? err.message : 'Failed to verify page';
-      toast.error(msg);
-      setVerifyStatusMsg(msg);
-      setTimeout(() => setVerifyStatusMsg(null), 3000);
-    }
-  }, [id, verifyMutation]);
-
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
 
   // Hide the helpfulness widget on standalone pages the current user authored
@@ -220,8 +188,6 @@ export function PageViewPage() {
   // Draft awaiting a restore decision (ConfirmDialog replaces native confirm()).
   // While non-null, edit mode is deferred until the user picks a side.
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
-  // Relocate between a local space and Confluence (#1123).
-  const [relocateOpen, setRelocateOpen] = useState(false);
 
   const [headerNumbering, setHeaderNumbering] = useState(() =>
     localStorage.getItem('editor-header-numbering') === 'true',
@@ -289,7 +255,6 @@ export function PageViewPage() {
       setEditorInstance(null);
       setConfirmDiscardOpen(false);
       setConfirmTrashOpen(false);
-      setRelocateOpen(false);
     }
   }, [id, setStoreHeadings]);
 
@@ -717,23 +682,25 @@ export function PageViewPage() {
 
   const tagChip = (
     <TagPopover
-      tags={draftLabels}
+      tags={editing ? draftLabels : (page.labels ?? [])}
       onAddTag={handleAddTag}
       onRemoveTag={handleRemoveTag}
       suggestions={filterOptions?.labels}
       isLoading={labelsMutation.isPending}
+      iconOnly={editing}
     />
   );
   const sessionActions = (
     <>
       <button
+        type="button"
         onClick={handleCancelEditing}
         title="Cancel editing (Esc)"
-        className="nm-button-ghost shrink-0"
+        aria-label="Cancel"
+        className="nm-icon-button nm-action-destructive shrink-0"
         data-testid="cancel-edit-btn"
       >
         <X size={15} aria-hidden="true" />
-        Cancel
       </button>
       <button
         onClick={handleSave}
@@ -762,207 +729,113 @@ export function PageViewPage() {
       transition={{ duration: 0.18 }}
       data-testid="article-page"
     >
-      {/* Format tools + tags + Cancel/Save live in the article column as a
-          sticky strip, not in the 48px app header. The header is outside the
-          scroll container; this bar is inside it, so it needs the #1186
-          under-mask. Table / layout / section strips stay contextual below. */}
-      {editing && (
-        <div className="sticky -top-5 z-30 isolate -mt-5">
-          {/* Under-mask: behind the toolbar (z-[-1]), covering the toolbar's
-              box AND the strip of scroll-container padding above it.
+      {/* Sticky article chassis — same 48px bar in both modes. Write fills
+          it with format tools + the tag chip + Cancel/Save. Read keeps the
+          bar: labels as pills (not a count button) on the left, Edit on the
+          right at the toolbar's 32px control size. Operate verbs stay in
+          the inspector. The 48px app header keeps the title for wayfinding. */}
+      <div className="sticky -top-5 z-30 isolate -mt-5">
+        {/* Under-mask: behind the toolbar (z-[-1]), covering the toolbar's
+            box AND the strip of scroll-container padding above it.
 
-              A sticky box does NOT pin at the scrollport's top edge when the
-              scroll container has top padding: it is clamped to its
-              containing block, which begins *after* that padding. Measured in
-              Chromium, the stuck toolbar's top is AppLayout's scroll-container
-              content-box top — 20px (its pt-5) below the scrollport edge — so
-              article content scrolls up through that strip in full view before
-              the scrollport clips it (#1186). `-top-5` must therefore track
-              that `pt-5`; scroll-padding-mask.test.ts fails if they diverge.
+            A sticky box does NOT pin at the scrollport's top edge when the
+            scroll container has top padding: it is clamped to its
+            containing block, which begins *after* that padding. Measured in
+            Chromium, the stuck toolbar's top is AppLayout's scroll-container
+            content-box top — 20px (its pt-5) below the scrollport edge — so
+            article content scrolls up through that strip in full view before
+            the scrollport clips it (#1186). `-top-5` must therefore track
+            that `pt-5`; scroll-padding-mask.test.ts fails if they diverge.
 
-              Only the block-start edge overhangs. Block-start overflow is
-              clipped by the scrollport and adds no scrollable height, unlike
-              the block-end overhang that inflated /ai's page height (#769).
-              It is deliberately NOT pointer-events-none: the padding strip is
-              paint with nothing else in it, and a mask that opts out of
-              hit-testing there hands clicks to the editor content it just hid. */}
-          <div
-            aria-hidden
-            data-testid="edit-toolbar-mask"
-            className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-card"
-          />
-          <div className="-mx-4 border-b border-border bg-card sm:-mx-6 relative">
-            {editorInstance ? (
-              <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
-                <EditorToolbar
-                  editor={editorInstance}
-                  headerNumbering={headerNumbering}
-                  onToggleHeaderNumbering={toggleHeaderNumbering}
-                  pageProperty={tagChip}
-                  actions={sessionActions}
-                />
-              </div>
-            ) : (
-              <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1200px] items-center justify-end gap-1.5 px-5 sm:px-10">
-                {tagChip}
-                {sessionActions}
-              </div>
-            )}
-            {editorInstance && (
-              <EditorContextToolbars
-                editor={editorInstance}
-                innerClassName="mx-auto max-w-[1200px] px-5 sm:px-10"
-              />
-            )}
-          </div>
-        </div>
-      )}
-      <div>
-        {!editing && (
-        <HeaderHost fallbackClassName="sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6">
-        {(portaled) => (
+            Only the block-start edge overhangs. Block-start overflow is
+            clipped by the scrollport and adds no scrollable height, unlike
+            the block-end overhang that inflated /ai's page height (#769).
+            It is deliberately NOT pointer-events-none: the padding strip is
+            paint with nothing else in it, and a mask that opts out of
+            hit-testing there hands clicks to the editor content it just hid. */}
         <div
-          className={cn(
-            'flex min-w-0 flex-1 items-center justify-between gap-3',
-            !portaled && 'mx-auto min-h-[calc(3rem-1px)] max-w-[1248px] flex-wrap gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16',
-          )}
-        >
-          <span className="min-w-0 truncate text-[15px] font-semibold text-foreground sm:text-lg">
-            {page.title}
-          </span>
-
-          <div className="flex shrink-0 items-center gap-1.5">
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <button
-                  type="button"
-                  className="rounded-md p-1.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="More actions"
-                  title="More actions"
-                  data-testid="page-actions-overflow-btn"
-                >
-                  <MoreHorizontal size={15} />
-                </button>
-              </DropdownMenu.Trigger>
-
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content
-                  align="end"
-                  sideOffset={8}
-                  className="z-50 w-52 nm-card-elevated p-1.5"
-                >
-                  {headings.length > 0 && (
-                    <div className="md:hidden">
-                      <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-[11px] font-semibold text-muted-foreground">
-                        Article outline
-                      </DropdownMenu.Label>
-                      {headings.map((heading) => (
-                        <DropdownMenu.Item
-                          key={heading.id}
-                          onSelect={() => {
-                            const scrollRoot = document.querySelector('[data-scroll-container]') as HTMLElement | null;
-                            const target = document.getElementById(heading.id);
-                            if (!scrollRoot || !target) return;
-                            const top =
-                              scrollRoot.scrollTop +
-                              target.getBoundingClientRect().top -
-                              scrollRoot.getBoundingClientRect().top -
-                              24;
-                            scrollRoot.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
-                          }}
-                          className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
+          aria-hidden
+          data-testid="edit-toolbar-mask"
+          className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-card"
+        />
+        <div className="-mx-4 border-b border-border bg-card sm:-mx-6 relative">
+          {editing && editorInstance ? (
+            <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
+              <EditorToolbar
+                editor={editorInstance}
+                headerNumbering={headerNumbering}
+                onToggleHeaderNumbering={toggleHeaderNumbering}
+                pageProperty={tagChip}
+                actions={sessionActions}
+              />
+            </div>
+          ) : (
+            <div
+              className={cn(
+                'mx-auto flex min-h-[calc(3rem-1px)] max-w-[1200px] items-center gap-1.5 px-5 sm:px-10',
+                editing && 'justify-end',
+              )}
+              {...(!editing
+                ? {
+                    'data-testid': 'article-read-toolbar',
+                    role: 'toolbar',
+                    'aria-label': 'Article actions',
+                  }
+                : {})}
+            >
+              {editing ? (
+                <>
+                  {tagChip}
+                  {sessionActions}
+                </>
+              ) : (
+                <>
+                  {(page.labels ?? []).length > 0 && (
+                    <div
+                      className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-hidden"
+                      data-testid="article-tags-readonly"
+                    >
+                      {(page.labels ?? []).map((label) => (
+                        <span
+                          key={label}
+                          className="inline-flex h-8 shrink-0 items-center rounded-full border border-border bg-background/45 px-2.5 text-xs font-medium text-muted-foreground"
                         >
-                          <ListTree size={14} className="shrink-0" />
-                          <span className="truncate">{heading.text}</span>
-                        </DropdownMenu.Item>
+                          {label}
+                        </span>
                       ))}
-                      <DropdownMenu.Separator className="my-1 h-px bg-border" />
                     </div>
                   )}
-                  <DropdownMenu.Item
-                    onSelect={() => navigate(`/graph?focus=${encodeURIComponent(id ?? '')}`)}
-                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
-                  >
-                    <GitGraph size={14} />
-                    <span>Show in Graph</span>
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    onSelect={handlePinToggle}
-                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
-                  >
-                    <Pin size={14} />
-                    <span>{isPinned ? 'Unpin Page' : 'Pin Page'}</span>
-                  </DropdownMenu.Item>
-                  {canRelocate && (
-                    <DropdownMenu.Item
-                      onSelect={() => setRelocateOpen(true)}
-                      data-testid="relocate-btn"
-                      title={
-                        page.source === 'standalone'
-                          ? 'Publish this article into a Confluence space'
-                          : 'Pull this page out of Confluence into a local space'
-                      }
-                      className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
+                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                    <PresenceAvatarStack viewers={presenceViewers} />
+                    <button
+                      type="button"
+                      onClick={handleStartEditing}
+                      className="nm-button-ghost h-8 shrink-0 px-2.5 text-xs"
+                      data-testid="edit-page-btn"
                     >
-                      {page.source === 'standalone' ? (
-                        <Upload size={14} />
-                      ) : (
-                        <Download size={14} />
-                      )}
-                      <span>
-                        {page.source === 'standalone' ? 'Move to Confluence' : 'Move to local space'}
-                      </span>
-                    </DropdownMenu.Item>
-                  )}
-                  <DropdownMenu.Item
-                    onSelect={() => { void handleVerify(); }}
-                    disabled={verifyMutation.isPending}
-                    data-testid="verify-btn"
-                    aria-busy={verifyMutation.isPending}
-                    aria-label="Mark page as verified"
-                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
-                  >
-                    <ShieldCheck size={14} />
-                    <span>
-                      {verifyMutation.isPending
-                        ? 'Verifying...'
-                        : verifiedDateStr
-                          ? `Verified ${verifiedDateStr}`
-                          : 'Verify'}
-                    </span>
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Separator className="my-1 h-px bg-border" />
-                  <DropdownMenu.Item
-                    onSelect={handleDeletePage}
-                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-destructive outline-none transition-colors data-[highlighted]:bg-destructive/10"
-                  >
-                    <Trash2 size={14} />
-                    <span>Move to Trash</span>
-                  </DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
-
-            {/* Edit is the only sentence in this 48px. Everything else is
-                overflow or the inspector. Ghost so Save can keep the filled
-                teal in write mode. */}
-            <button
-              onClick={handleStartEditing}
-              className="nm-button-ghost shrink-0 max-sm:min-h-11"
-              data-testid="edit-page-btn"
-            >
-              Edit
-              <ShortcutHint shortcutId="toggle-edit" />
-            </button>
-          </div>
-          {verifyStatusMsg && (
-            <span className="sr-only" role="status" aria-live="polite">
-              {verifyStatusMsg}
-            </span>
+                      Edit
+                      <ShortcutHint shortcutId="toggle-edit" />
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {editing && editorInstance && (
+            <EditorContextToolbars
+              editor={editorInstance}
+              innerClassName="mx-auto max-w-[1200px] px-5 sm:px-10"
+            />
           )}
         </div>
-        )}
-        </HeaderHost>
+      </div>
+      <div>
+        {!editing && (
+          <HeaderHost fallbackClassName="mb-1 min-w-0 truncate text-[15px] font-semibold sm:text-lg">
+            <span className="min-w-0 truncate text-[15px] font-semibold text-foreground sm:text-lg">
+              {page.title}
+            </span>
+          </HeaderHost>
         )}
 
         {editing ? (
@@ -1004,6 +877,7 @@ export function PageViewPage() {
               <FileText size={48} className="text-muted-foreground/30" />
               <p className="text-muted-foreground">This page has no content yet.</p>
               <button
+                type="button"
                 onClick={handleStartEditing}
                 className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 data-testid="add-content-btn"
@@ -1019,25 +893,9 @@ export function PageViewPage() {
             className="mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
             data-testid="article-content-shell"
           >
-            <div className="mb-4 flex items-start justify-between gap-3">
-              <h1 className="min-w-0 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
-                {page.title}
-              </h1>
-              <PresenceAvatarStack viewers={presenceViewers} className="mt-1.5 shrink-0" />
-            </div>
-
-            {page.labels.length > 0 && (
-              <div className="mb-10 flex flex-wrap items-center gap-2" data-testid="article-tags-readonly">
-                {page.labels.map((label) => (
-                  <span
-                    key={label}
-                    className="rounded-full border border-border bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            )}
+            <h1 className="mb-4 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
+              {page.title}
+            </h1>
 
             {page.summaryStatus && (
               <ArticleSummary
@@ -1092,19 +950,6 @@ export function PageViewPage() {
           onSave={handleDrawioSave}
           onClose={handleDrawioClose}
           drawioUrl={drawioSettings?.drawioEmbedUrl}
-        />
-      )}
-
-      {/* #1123. Mounted only while open so the preview query — which is a
-          live projection of page state, not a cacheable read — never runs in
-          the background behind a closed dialog. */}
-      {relocateOpen && id && (
-        <RelocateDialog
-          open
-          pageId={id}
-          pageTitle={page.title}
-          source={page.source}
-          onClose={() => setRelocateOpen(false)}
         />
       )}
 
@@ -1185,9 +1030,8 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
       {/* Neutral controls, deliberately. Yes/No is a survey answer, not a
           state readout — green/red here borrowed the connected/disconnected
           vocabulary for the least consequential control on the page (the
-          VerifyButton comment below makes the same argument, twenty lines
-          down). The glyphs differentiate; press feedback comes from the
-          shared quiet-button recipe. */}
+          measurement badges). The glyphs differentiate; press feedback comes
+          from the shared quiet-button recipe. */}
       <div className="flex gap-2">
         <button
           onClick={() => handleFeedback(true)}

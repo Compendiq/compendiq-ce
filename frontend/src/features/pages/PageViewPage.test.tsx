@@ -188,60 +188,8 @@ vi.mock('./use-presence', () => ({
   usePresence: () => ({ viewers: [], selfIsEditing: false, setEditing: vi.fn() }),
 }));
 
-// Relocate (#1123). This file owns the *entry point* — which control renders
-// for which source, and whether the permission gate hides it. The dialog's own
-// behaviour (preview, acknowledgements, request bodies, error recovery) is
-// covered against a stubbed `fetch` in RelocateDialog.test.tsx, so the
-// component is stubbed here rather than dragged through this file's
-// hook-level mocks.
-let mockRelocateAllowed = true;
-vi.mock('../../shared/hooks/use-permission', () => ({
-  usePermission: (permission: string) => ({
-    allowed: permission === 'pages:relocate' ? mockRelocateAllowed : false,
-    loading: false,
-    error: null,
-  }),
-}));
-
-// The real RelocateDialog reads both space listings. This file has no global
-// fetch mock, so without these the hooks reach the network and resolve to
-// whatever a stray per-test `mockResolvedValueOnce` left behind.
-/**
- * Minimal valid `GET /api/pages/:id/relocate/preview` body. The dialog is
- * rendered for real (a stub cannot show that this page hands it the right
- * `source`), so the endpoint it calls has to answer in shape.
- */
-const RELOCATE_PREVIEW = {
-  pageId: 1,
-  title: 'Test Page',
-  source: 'standalone' as const,
-  spaceKey: null,
-  confluenceId: null,
-  target: 'confluence' as const,
-  childCount: 0,
-  subtreeEffect: null,
-  attachmentCount: 0,
-  localVersionCount: 0,
-  accessChange: {
-    from: 'Private article — only tester can read it',
-    to: 'Everyone with access to the chosen Confluence space',
-    gains: [],
-    loses: [],
-    truncated: false,
-  },
-  upstreamDeletion: null,
-};
-
-vi.mock('../../shared/hooks/use-spaces', () => ({
-  useSpaces: () => ({ data: [{ key: 'DEV', name: 'Developer Docs', source: 'confluence' }] }),
-}));
-
 vi.mock('../../shared/hooks/use-standalone', () => ({
   useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useVerifyPage: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  // Needed by the real RelocateDialog, which this file renders rather than
-  // stubs — a stubbed child cannot show that this page hands it the right props.
-  useLocalSpaces: () => ({ data: [{ key: 'HOME', name: 'Home', source: 'local' }] }),
 }));
 
 let capturedShortcuts: Array<{ key: string; keys: string[]; mod?: boolean; alt?: boolean; shift?: boolean; description: string; category: string; action: () => void }> = [];
@@ -373,7 +321,6 @@ describe('PageViewPage', () => {
     mockPageIsError = false;
     mockPageErrorValue = null;
     mockRefetchPage.mockReset();
-    mockRelocateAllowed = true;
     capturedShortcuts = [];
     mockNavigate.mockReset();
     mockUpdatePage.mockReset().mockResolvedValue(undefined);
@@ -382,14 +329,7 @@ describe('PageViewPage', () => {
     mockDeleteMutateAsync.mockReset().mockResolvedValue(undefined);
     mockDraftContent = null;
     vi.mocked(apiFetch).mockClear();
-    // Route by URL rather than resolving `{}` for everything: the relocate
-    // dialog is rendered for real here, and an empty object is a *truthy*
-    // preview, so it renders and then dereferences `accessChange.from`.
-    vi.mocked(apiFetch).mockImplementation(async (url: string) =>
-      (typeof url === 'string' && url.includes('/relocate/preview')
-        ? RELOCATE_PREVIEW
-        : {}) as never,
-    );
+    vi.mocked(apiFetch).mockResolvedValue({} as never);
     localStorage.clear();
     Element.prototype.scrollTo = vi.fn();
     useAiDockStore.setState({ open: false });
@@ -408,18 +348,7 @@ describe('PageViewPage', () => {
     document.body.innerHTML = '';
   });
 
-  function openPageActions() {
-    const trigger = screen.getByTestId('page-actions-overflow-btn');
-    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
-    fireEvent.click(trigger);
-  }
 
-  async function closePageActions() {
-    fireEvent.keyDown(document, { key: 'Escape' });
-    await waitFor(() => {
-      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-    });
-  }
 
   // ---------- fetch-failure vs. genuine 404 (P1) ----------
   // usePage used to be consumed as { data, isLoading } only, so a 500, a
@@ -529,13 +458,25 @@ describe('PageViewPage', () => {
     });
   });
 
-  it('renders the Edit button in the header (action buttons moved to right pane)', () => {
+  it('puts Edit and tags on the sticky article bar, not in the 48px header', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Edit')).toBeInTheDocument();
-    // AI Assistant, Pin, Confluence, Delete are now in ArticleRightPane
-    expect(screen.queryByText('AI Assistant')).not.toBeInTheDocument();
-    expect(screen.queryByText('Delete')).not.toBeInTheDocument();
+    const strip = screen.getByTestId('article-read-toolbar');
+    expect(strip).toContainElement(screen.getByTestId('edit-page-btn'));
+    expect(strip).toContainElement(screen.getByTestId('article-tags-readonly'));
+    expect(screen.getByTestId('article-tags-readonly')).toHaveTextContent('docs');
+    expect(screen.queryByTestId('tag-popover')).not.toBeInTheDocument();
+    expect(screen.getByTestId('edit-page-btn').closest('#app-header-slot')).toBeNull();
+    expect(screen.getByTestId('article-read-toolbar').closest('#app-header-slot')).toBeNull();
+    expect(screen.queryByTestId('show-in-graph-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('verify-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('move-to-trash-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('page-actions-overflow-btn')).not.toBeInTheDocument();
+    // Same sticky chassis as write mode — not a vacant rail and not a title-row chip.
+    const mask = screen.getByTestId('edit-toolbar-mask');
+    expect(mask.parentElement).toContainElement(strip);
+    expect(mask.parentElement!.className).toContain('sticky');
   });
 
   it('resets the app scroll container when the article route renders', async () => {
@@ -582,7 +523,7 @@ describe('PageViewPage', () => {
     fireEvent.click(screen.getByText('Edit'));
 
     expect(screen.getByText('Save')).toBeInTheDocument();
-    expect(screen.getByText('Cancel')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     expect(screen.queryByText('Edit')).not.toBeInTheDocument();
   });
 
@@ -675,13 +616,11 @@ describe('PageViewPage', () => {
     });
   });
 
-  // ---------- labelled Save/Cancel (P1) ----------
-  // These used to be a pair of unlabeled 28px icon glyphs (h-7 w-7, `sr-only`
-  // text) — undershooting the app's own 32px control rule for the most
-  // consequential control on the surface. They're now the app's canonical
-  // labelled-button pair.
+  // ---------- write-mode session cluster ----------
+  // Cancel is the compact red 32px X (toolbar-sized, destructive). Save
+  // stays the labelled primary. Both keep an accessible name.
 
-  it('renders Save and Cancel as labelled nm-button controls, not icon-only glyphs', () => {
+  it('renders a small red Cancel and a labelled Save', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByText('Edit'));
 
@@ -689,8 +628,11 @@ describe('PageViewPage', () => {
     const save = screen.getByTestId('save-page-btn');
 
     expect(cancel).toHaveAccessibleName('Cancel');
-    expect(cancel.className).toContain('nm-button-ghost');
+    expect(cancel).not.toHaveTextContent('Cancel');
+    expect(cancel.className).toContain('nm-icon-button');
+    expect(cancel.className).toContain('nm-action-destructive');
     expect(save).toHaveAccessibleName('Save');
+    expect(save).toHaveTextContent('Save');
     expect(save.className).toContain('nm-button-primary');
   });
 
@@ -866,7 +808,7 @@ describe('PageViewPage', () => {
     // Should enter edit mode (shows Save/Cancel), not navigate to a non-existent route
     await waitFor(() => {
       expect(screen.getByText('Save')).toBeInTheDocument();
-      expect(screen.getByText('Cancel')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     });
     expect(mockNavigate).not.toHaveBeenCalled();
   });
@@ -1160,7 +1102,7 @@ describe('PageViewPage', () => {
       fireEvent.change(screen.getByLabelText('Article editor'), {
         target: { value: '<p>rewritten</p>' },
       });
-      fireEvent.click(screen.getByText('Cancel'));
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
 
       // The discard confirmation appears and the editor stays mounted — the
       // work is NOT thrown away until the user confirms.
@@ -1181,7 +1123,7 @@ describe('PageViewPage', () => {
       fireEvent.change(screen.getByLabelText('Article editor'), {
         target: { value: '<p>rewritten</p>' },
       });
-      fireEvent.click(screen.getByText('Cancel'));
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
 
       await screen.findByText('Discard changes?');
       fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
@@ -1199,7 +1141,7 @@ describe('PageViewPage', () => {
       fireEvent.change(screen.getByLabelText('Article editor'), {
         target: { value: '<p>rewritten</p>' },
       });
-      fireEvent.click(screen.getByText('Cancel'));
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
 
       await screen.findByText('Discard changes?');
       fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
@@ -1216,7 +1158,7 @@ describe('PageViewPage', () => {
 
       fireEvent.click(screen.getByText('Edit'));
       // No edits made — Cancel should exit straight to view mode.
-      fireEvent.click(screen.getByText('Cancel'));
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
 
       await waitFor(() => {
         expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
@@ -1318,7 +1260,7 @@ describe('PageViewPage', () => {
       fireEvent.change(screen.getByLabelText('Article editor'), {
         target: { value: '<p>rewritten page A</p>' },
       });
-      fireEvent.click(screen.getByText('Cancel'));
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
       expect(await screen.findByText('Discard changes?')).toBeInTheDocument();
 
       // Navigate to page B while the discard dialog is still open.
@@ -1454,78 +1396,7 @@ describe('PageViewPage', () => {
     });
   });
 
-  describe('relocate entry point (#1123)', () => {
-    it('offers "Move to Confluence" on a local article', async () => {
-      currentMockPage = { ...mockPage, source: 'standalone', spaceKey: 'HOME', confluenceId: null as unknown as string };
-      render(<PageViewPage />, { wrapper: createWrapper() });
-
-      openPageActions();
-      expect(await screen.findByTestId('relocate-btn')).toHaveTextContent(/Move to Confluence/i);
-      await closePageActions();
-    });
-
-    it('offers "Move to local space" on a Confluence article', async () => {
-      currentMockPage = { ...mockPage, source: 'confluence' };
-      render(<PageViewPage />, { wrapper: createWrapper() });
-
-      openPageActions();
-      expect(await screen.findByTestId('relocate-btn')).toHaveTextContent(/Move to local space/i);
-      await closePageActions();
-    });
-
-    // Hidden, not disabled: `pages:relocate` is seeded onto editor /
-    // space_admin by migration 086 and CE ships no UI for granting
-    // permissions, so a denied user has no in-product path to earning it.
-    it('renders no relocate control without the pages:relocate permission', async () => {
-      mockRelocateAllowed = false;
-      currentMockPage = { ...mockPage, source: 'standalone' };
-      render(<PageViewPage />, { wrapper: createWrapper() });
-
-      openPageActions();
-      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
-      await closePageActions();
-    });
-
-    it('opens the relocate dialog carrying the article’s own source', async () => {
-      currentMockPage = { ...mockPage, source: 'standalone' };
-      render(<PageViewPage />, { wrapper: createWrapper() });
-
-      // The real dialog, not a stand-in: CLAUDE.md puts the mock boundary at
-      // the network, and a stubbed child cannot show that this page hands it
-      // the right `source` — only that it passed *something*.
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      openPageActions();
-      fireEvent.click(screen.getByTestId('relocate-btn'));
-
-      await screen.findByRole('dialog');
-      // `source: 'standalone'` is what makes this the move-to-Confluence
-      // direction; the reverse dialog names an upstream deletion instead.
-      // Queried through `screen` each time rather than held as a node: Radix
-      // re-parents its portal across renders, so a captured reference goes
-      // stale and jsdom throws on the detached node.
-      await waitFor(() => {
-        expect(screen.getByRole('dialog')).toHaveTextContent(/move to confluence/i);
-      });
-
-      // Close before the test ends. Leaving a portal mounted makes RTL's
-      // cleanup race Radix's own teardown.
-      fireEvent.click(screen.getByTestId('relocate-cancel'));
-      await waitFor(() => {
-        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      });
-    });
-
-    it('hides the relocate control while the editor is open', () => {
-      currentMockPage = { ...mockPage, source: 'standalone' };
-      render(<PageViewPage />, { wrapper: createWrapper() });
-
-      fireEvent.click(screen.getByText('Edit'));
-
-      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
-    });
-  });
-
-  describe('critique recommendations: toast, tag buffering & verify accessibility', () => {
+  describe('critique recommendations: toast and tag buffering', () => {
     it('differentiates toast message on save between Confluence and standalone pages', async () => {
       currentMockPage = { ...mockPage, source: 'confluence', confluenceId: '123' };
       render(<PageViewPage />, { wrapper: createWrapper() });
@@ -1554,30 +1425,20 @@ describe('PageViewPage', () => {
       expect(screen.getByTestId('tag-list')).toHaveTextContent('tag1,tag2');
 
       // Cancel editing and confirm discard
-      fireEvent.click(screen.getByText('Cancel'));
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
       const discardBtn = screen.getByRole('button', { name: /discard changes/i });
       fireEvent.click(discardBtn);
 
-      // Returned to view mode: edit mode exited and draft labels cleared
+      // Returned to view mode: the sticky bar stays, draft labels revert
+      // to the published pills (the count-chip lives only in write mode).
       await waitFor(() => {
+        expect(screen.getByTestId('article-read-toolbar')).toBeInTheDocument();
+        expect(screen.queryByTestId('save-page-btn')).not.toBeInTheDocument();
+        expect(screen.getByTestId('article-tags-readonly')).toHaveTextContent('tag1');
         expect(screen.queryByTestId('tag-popover')).not.toBeInTheDocument();
       });
     });
 
-    it('sets aria-busy and updates polite status region during page verification', async () => {
-      currentMockPage = { ...mockPage };
-      render(<PageViewPage />, { wrapper: createWrapper() });
-
-      openPageActions();
-      const verifyBtn = await screen.findByTestId('verify-btn');
-      expect(verifyBtn).toHaveAttribute('aria-busy', 'false');
-
-      fireEvent.click(verifyBtn);
-
-      await waitFor(() => {
-        expect(toast.success).toHaveBeenCalledWith('Page verified — next review reminder rescheduled');
-      });
-    });
   });
 
 });

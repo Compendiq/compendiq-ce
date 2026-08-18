@@ -19,6 +19,11 @@ interface TagPopoverProps {
   isLoading?: boolean;
   /** Additional CSS classes for the trigger */
   className?: string;
+  /**
+   * Icon-only 32px trigger — the article write toolbar's compact form.
+   * The accessible name stays the count label; only the visible text is dropped.
+   */
+  iconOnly?: boolean;
 }
 
 /**
@@ -47,6 +52,7 @@ export function TagPopover({
   suggestions,
   isLoading = false,
   className,
+  iconOnly = false,
 }: TagPopoverProps) {
   const [open, setOpen] = useState(false);
   const editorRef = useRef<TagEditorHandle>(null);
@@ -68,10 +74,16 @@ export function TagPopover({
         type="button"
         data-testid="tag-popover-trigger"
         aria-label={label}
-        className={cn('nm-button-ghost h-8 shrink-0 px-2.5 text-xs', className)}
+        title={label}
+        className={cn(
+          iconOnly
+            ? 'nm-icon-button shrink-0'
+            : 'nm-button-ghost h-8 shrink-0 px-2.5 text-xs',
+          className,
+        )}
       >
         <Tag size={15} className="shrink-0" aria-hidden="true" />
-        {label}
+        {!iconOnly && label}
       </Popover.Trigger>
 
       <Popover.Portal>

@@ -51,6 +51,8 @@ interface PageDetail extends PageSummary {
   summaryError: string | null;
   /** Creator's user id — set for standalone pages, null for Confluence-synced. */
   createdByUserId?: string | number | null;
+  /** Last human verification stamp (`pages.verified_at`). */
+  verifiedAt?: string | null;
 }
 
 interface PaginatedPages {
