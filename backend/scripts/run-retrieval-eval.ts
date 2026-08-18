@@ -183,7 +183,13 @@ async function main(): Promise<void> {
   // the unknown-flag guard is written out of (review r2), applied to the axis's
   // own environment.
   const imageEnv = imageAxis ? readImageAxisEnv() : null;
-  const outPath = arg('out') ?? 'retrieval-eval.json';
+  // The default is PER AXIS. Both axes wrote `retrieval-eval.json`, so an
+  // `--images` run started without `--out` overwrote the text gate's report in
+  // place — the file the runbook tells operators to keep as their `--baseline`,
+  // destroyed by a run that never mentions it. The two reports are not
+  // interchangeable (`assertComparableAxis` refuses the pair outright), so
+  // there is no reading under which sharing one path is useful.
+  const outPath = arg('out') ?? (imageAxis ? 'retrieval-eval-images.json' : 'retrieval-eval.json');
   // Parsed before anything touches the database, so a typo costs nothing.
   // Default 'simple' for EVERY language — never derived from --lang; see
   // fts-config.ts for why the two are separate choices.

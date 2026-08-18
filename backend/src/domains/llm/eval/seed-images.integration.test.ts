@@ -371,6 +371,15 @@ describe.skipIf(!dbAvailable)('prepareImageIndex (#1115 P5b)', () => {
 
     expect(prepared.dimensions).toBe(32);
     expect(prepared.identity).toContain('#32');
+    // The count FIRST, because `every` over an empty log is vacuously true: a
+    // probe that stopped sending anything at all would satisfy the line below
+    // and this case would still certify that the width was requested. Two is
+    // the probe's own contract — it embeds a known image AND a known text and
+    // requires equal widths back, which is what catches a server that templates
+    // images and silently skips text.
+    expect(vl.requests).toHaveLength(2);
+    expect(vl.imageRequests()).toHaveLength(1);
+    expect(vl.textRequests()).toHaveLength(1);
     expect(vl.requests.every((r) => r.body.dimensions === 32)).toBe(true);
   }, 60_000);
 

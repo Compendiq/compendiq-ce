@@ -289,7 +289,10 @@ as `VERDICT: credible improvement` about retrieval logic. The comparison is by
 model, width and the *endpoint half* of `imageIndexIdentity`, never the whole
 string: its head is the provider row's uuid, which the seeder re-creates every
 run, so an identity check would refuse every legitimate re-run and teach
-operators to delete the guard. It is **not in CI and cannot be**: the
+operators to delete the guard. It refuses two **declared** and disagreeing
+`imageEndpointBackend` labels as well, and that one is asymmetric on purpose: an
+absent `EVAL_IMAGE_EMBEDDING_BACKEND` on either side is not compared, because it
+is a label the operator typed rather than something the harness probed. It is **not in CI and cannot be**: the
 `retrieval-eval` job runs `nomic-embed-text`, which is text-only, and no VL
 model is runnable there — so CI keeps testing this axis's plumbing against a
 stub HTTP endpoint (`eval/vl-stub-server.ts`, a real `node:http` server so

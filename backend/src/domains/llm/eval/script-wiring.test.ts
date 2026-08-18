@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { EVAL_KNOWN_FLAGS, EVAL_VALUELESS_FLAGS } from './cli-flags.js';
+import { EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS } from './cli-flags.js';
 
 /**
  * #1114 review r1 — the eval entrypoints are the one place no other test can
@@ -201,6 +201,18 @@ describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
     expect(lang).toBeGreaterThan(-1);
     expect(db).toBeGreaterThan(env);
     expect(db).toBeGreaterThan(lang);
+  });
+
+  it('defaults its report to a DIFFERENT file, so it cannot overwrite a text baseline', () => {
+    // Both axes defaulted to `retrieval-eval.json`, so an --images run started
+    // without --out silently destroyed the text gate's recorded report — the
+    // file the runbook tells operators to keep and pass as --baseline. The two
+    // are not interchangeable: `assertComparableAxis` refuses the pair outright,
+    // so there is no reading under which one path serves both.
+    expect(flat).toContain("arg('out') ?? (imageAxis ? 'retrieval-eval-images.json' : 'retrieval-eval.json')");
+    // …and the flag reference says so, or the default is a fact only the source
+    // carries — the contract EVAL_USAGE is held to for every other flag.
+    expect(EVAL_USAGE).toContain('retrieval-eval-images.json');
   });
 
   it('refuses --deep-search on this axis, before the database is touched (review r2)', () => {

@@ -25,6 +25,7 @@ import {
   partitionPairs,
   queryCostMs,
   type ImageQueryPair,
+  type QueryCost,
 } from './images-metrics.js';
 import { recallAtK } from './metrics.js';
 import { round } from './latency-stats.js';
@@ -176,6 +177,11 @@ function scoresFor(pairs: readonly ImageQueryPair[], arm: 'off' | 'on'): z.infer
   };
 }
 
+/** Both percentiles of one cost figure, at the report's precision. */
+function roundCost(cost: QueryCost): QueryCost {
+  return { p50: round(cost.p50), p95: round(cost.p95) };
+}
+
 function slice(
   pairs: readonly ImageQueryPair[],
   by: (pair: ImageQueryPair) => string,
@@ -215,9 +221,16 @@ export function buildImageAxisReport(input: BuildImageAxisReportInput): ImageAxi
       IMAGE_HIT_TOP_K.map((k) => [`@${k}`, imageNegativeLeakAtK(pairs, k)]),
     ),
     queryCostMs: {
-      off: queryCostMs(pairs, 'off'),
-      on: queryCostMs(pairs, 'on'),
-      deltaPaired: pairedQueryCostDeltaMs(pairs),
+      // Rounded like every other latency figure in the report
+      // (`imageEmbedWallClockMs` above, and `latency-stats.ts`'s own callers):
+      // `performance.now()` answers in fractional milliseconds, so an unrounded
+      // p95 lands in the file as 1843.2749999999996 beside a wall clock written
+      // to two places. One precision convention, or a reader pasting two rows
+      // of this block into an issue gets two different-looking kinds of number.
+      // The metrics themselves stay unrounded — this is the publishing step.
+      off: roundCost(queryCostMs(pairs, 'off')),
+      on: roundCost(queryCostMs(pairs, 'on')),
+      deltaPaired: roundCost(pairedQueryCostDeltaMs(pairs)),
     },
     runsOff: armRuns(pairs, 'off'),
     runsOn: armRuns(pairs, 'on'),

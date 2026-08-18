@@ -340,9 +340,26 @@ function rewriteImageSources(html: string, page: ImageCorpusPage, pageId: number
   return out;
 }
 
-/** `<ATTACHMENTS_DIR>/<dir key>/<file>` for every image the page carries. */
-async function writePageAttachments(page: ImageCorpusPage, pageId: number, corpusDir: string): Promise<void> {
-  const dir = attachmentCacheDir(confluenceAttachmentDirKey(EVAL_PAGE_SOURCE, pageId, null));
+/**
+ * `<ATTACHMENTS_DIR>/<dir key>/<file>` for every image the page carries.
+ *
+ * `confluenceId` is threaded in rather than passed as a literal `null`, even
+ * though `EVAL_PAGE_SOURCE` is `'standalone'` and `confluenceAttachmentDirKey`
+ * therefore ignores it today. The WRITER here and the URL builder in
+ * `rewriteImageSources` have to compute the same directory key or the intake
+ * resolves to a silent `null`, and they can only be checked against each other
+ * if they are handed the same inputs — a hardcoded argument on one side means
+ * the two agree by way of a constant declared eighty lines away rather than by
+ * construction. The row really does carry a non-null `confluence_id` (the
+ * INSERT generates one), so the literal was not even the row's value.
+ */
+async function writePageAttachments(
+  page: ImageCorpusPage,
+  pageId: number,
+  confluenceId: string | null,
+  corpusDir: string,
+): Promise<void> {
+  const dir = attachmentCacheDir(confluenceAttachmentDirKey(EVAL_PAGE_SOURCE, pageId, confluenceId));
   await mkdir(dir, { recursive: true });
   for (const image of page.images) {
     await writeFile(
@@ -439,10 +456,14 @@ export async function seedImageCorpus(
     // untouched by the rewrite, so the tsvector the INSERT built stays correct
     // and the trigger — which fires on `title`/`body_text` only — is not
     // re-run under a different configuration.
-    const bodyHtml = rewriteImageSources(html, page, pageId, inserted.rows[0]!.confluence_id);
+    const confluenceId = inserted.rows[0]!.confluence_id;
+    const bodyHtml = rewriteImageSources(html, page, pageId, confluenceId);
     await query(`UPDATE pages SET body_html = $2 WHERE id = $1`, [pageId, bodyHtml]);
 
-    await writePageAttachments(page, pageId, corpusDir);
+    // The same three inputs the URL builder just got, so the directory the
+    // bytes land in and the directory the intake looks in are computed from one
+    // set of values rather than two that happen to agree.
+    await writePageAttachments(page, pageId, confluenceId, corpusDir);
     const chunks = await embedPage(userId, pageId, page.title, EVAL_SPACE_KEY, bodyHtml);
     if (chunks === 0) textSkipped.push(page.file);
 

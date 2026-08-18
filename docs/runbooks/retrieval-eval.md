@@ -872,7 +872,13 @@ be inferred from the latency.
 measured with different VL checkpoints, which is the model comparison this
 harness does not make — and the guard says so: `--baseline` refuses a pair whose
 `imageModel`, `imageDims` or index endpoint differs, exactly as it refuses a
-pair whose text model differs. (It has to be its own check. The text-model
+pair whose text model differs. It also refuses two **declared** and disagreeing
+`imageEndpointBackend` labels (`mlx` against `llama`), because the same
+checkpoint quantised and computed by two serving stacks is not the same vector
+space (ADR-025 D11) — and that one is deliberately **asymmetric**: an absent
+`EVAL_IMAGE_EMBEDDING_BACKEND` on either side is not compared at all, since it
+is a label the operator typed and not something the harness probed, so a missing
+one is silence rather than a claim to check. (It has to be its own check. The text-model
 guard reads `model`, which is `EVAL_EMBEDDING_MODEL` and identical on both of
 these runs, and both would otherwise pass every other guard: same axis, same
 language, same FTS configuration, same committed corpus sha.) The two are
@@ -901,7 +907,7 @@ axis does not have one.
 | field | |
 |---|---|
 | `imageModel` / `imageDims` / `imageEndpointBackend` | what answered, at what width, on which serving stack |
-| `imageIndexIdentity` / `imageIndexed` | `provider:model@baseUrl#dims`, and whether an HNSW index exists at that width |
+| `imageIndexIdentity` / `imageIndexed` | `provider:model@baseUrl#<requested truncation or native>`, and whether an HNSW index exists at that width. The last segment is the width this run **asked** for, so it reads `#native` with no `EVAL_IMAGE_EMBEDDING_DIMENSIONS` set — the width that came back is `imageDims`, and the two are separate fields on purpose |
 | `imagesEmbedded` / `imagesReused` / `throughputImagesPerSec` | the intake, timed over the sequential image phase alone — one page at a time and with **no inter-page pause**, so this rate describes the *endpoint* |
 | `backfillThroughputImagesPerSec` / `interPageDelayMs` | …and the same intake once the worker's valve is added. `processDirtyPageImages` sleeps `interPageDelayMs` (200 ms) after **every** page and the seeder deliberately does not, so a backfill of the 65-page corpus pays 13 s the raw rate never sees. This is the figure to plan a backfill against; the raw one is the figure to judge the endpoint by |
 | `imageEmbedWallClockMs` | that phase's wall clock — the denominator `throughputImagesPerSec` was computed from |
