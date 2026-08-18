@@ -664,8 +664,13 @@ travels: a diagram names no people.
 **Those four are the one part of this fixture its own protocol does not cover**
 — they are the merger's, written after the six blind slices had been submitted
 (`labeledBy` discloses it, and the `img-06-*` slice keeps them separable), so
-**P5b should replace or extend them with blind-labelled procedural negatives**
-and the ceiling below carries the headroom to do it without moving a bound.
+**replacing or extending them with blind-labelled procedural negatives is still
+owed**. P5b shipped the `--images` axis without doing it, so the debt now sits
+against the **first measurement** rather than against the harness: the operator
+who runs this axis for real is reading `delta.perStyle['image-negative']` over a
+slice four of whose 22 labels were not blind-written, and should say so beside
+the number. The ceiling below carries the headroom to add them without moving a
+bound.
 
 It is a **separate schema and a separate loader** (`ImageFixtureSchema` /
 `loadImageFixture`), never a widened `FixtureSchema`: the two are scored on
@@ -682,8 +687,9 @@ individually exist.
 `computeCorpusManifestSha([IMAGE_CORPUS_DIR])` (the same contract
 `fixture.json` has: a corpus refresh moves the captions these labels were
 written from), the N ≥ 100 floor, ≥ 20 English, 8–26 negatives of which ≥ 4 are
-English and ≥ 8 German (the ceiling carries four rungs of headroom for P5b's
-blind-labelled English negatives, and stays a count rather than a share — a
+English and ≥ 8 German (the ceiling carries four rungs of headroom for the
+blind-labelled English negatives still owed above — P5b did not spend them —
+and stays a count rather than a share, since a
 ratio at N = 307 would silently license 30), no content shape
 below 15%, every image accounted for by a label or by a `notUsable` entry
 carrying the labeller's reason (capped at a **tenth** of the corpus, so an image
@@ -896,7 +902,8 @@ axis does not have one.
 |---|---|
 | `imageModel` / `imageDims` / `imageEndpointBackend` | what answered, at what width, on which serving stack |
 | `imageIndexIdentity` / `imageIndexed` | `provider:model@baseUrl#dims`, and whether an HNSW index exists at that width |
-| `imagesEmbedded` / `imagesReused` / `throughputImagesPerSec` | the intake, timed over the sequential image phase alone — one page at a time, which is what a `processDirtyPageImages` backfill would see |
+| `imagesEmbedded` / `imagesReused` / `throughputImagesPerSec` | the intake, timed over the sequential image phase alone — one page at a time and with **no inter-page pause**, so this rate describes the *endpoint* |
+| `backfillThroughputImagesPerSec` / `interPageDelayMs` | …and the same intake once the worker's valve is added. `processDirtyPageImages` sleeps `interPageDelayMs` (200 ms) after **every** page and the seeder deliberately does not, so a backfill of the 65-page corpus pays 13 s the raw rate never sees. This is the figure to plan a backfill against; the raw one is the figure to judge the endpoint by |
 | `imageEmbedWallClockMs` | that phase's wall clock — the denominator `throughputImagesPerSec` was computed from |
 | `imageLegParticipatingQueries` | queries whose leg-on arm came back with at least one image hit. The run is **refused** below 50% of the fixture, and the console prints the count — read the caveat below this table before quoting a delta |
 | `legOff` / `legOn` | Recall@{1,3,5,10} and MRR per arm |
@@ -904,7 +911,8 @@ axis does not have one.
 | `delta.perStyle` / `delta.perLang` | the same verdict at Recall@5 over each slice, each carrying its own `n` |
 | `imageHitAtK` | did the leg return the *right picture* |
 | `imageNegativeLeakAtK` | did it drag a wrong page in |
-| `queryCostMs` | p50/p95 per arm; the difference is the leg's cost. The two arms of a query run back to back and which one goes **first alternates** on the label index, so each query's first-touch cost lands on both arms rather than all on the off one |
+| `queryCostMs.off` / `.on` | p50/p95 **per arm** — unpaired marginals, i.e. what a request is budgeted against. Their difference is *not* the leg's cost: `p95(on) - p95(off)` is the gap between the slowest query with the leg and a possibly different slowest query without it |
+| `queryCostMs.deltaPaired` | p50/p95 of `on.ms - off.ms` over the **same query** — this is the leg's cost. The two arms of a query run back to back and which one goes **first alternates** on the label index, so each query's first-touch cost lands on both arms rather than all on the off one; a single pair can still come back negative, which is that noise and not a saving |
 | `runsOff` / `runsOn` | both arms' per-query results, so a same-axis `--baseline` compares each |
 
 The top-level `recallAtK` / `mrr` / `runs` carry the **leg-on** arm, because
@@ -928,9 +936,16 @@ floor is 50% rather than "> 0"), or the leg bypassed itself — a VL timeout, an
 open breaker, a `lock_timeout` on the index. `searchImageLeg` records that as
 `degraded_reason = 'image_leg_unavailable'` in `search_analytics`, and this
 runner deliberately writes no analytics rows, so the only trace a run leaves is
-its **warn lines**. Before quoting a delta, grep the run's log for
-`image_leg_unavailable`: a run with a substantial bypass rate clears the floor,
-publishes two arms that were partly the same arm, and understates the leg.
+its **warn lines**. Before quoting a delta, grep the run's log for **both**
+`Image leg bypassed` and `image_leg_unavailable` — neither string alone is
+exhaustive, and the gap is not academic. `searchImageLeg` has three bypass
+warns: two of them carry the `degraded_reason` token, but the one for an
+**unresolvable `image_embedding` assignment** does not, so a run bypassed
+entirely by that path greps clean on the token. And `rag-service`'s image-only
+lede fetch is the mirror image — it carries the token but not the `Image leg
+bypassed` prefix. A run with a substantial bypass rate clears the participation
+floor, publishes two arms that were partly the same arm, and understates the
+leg.
 
 **`imageHit@K` and the paired page delta answer different questions, and the
 interesting runs are the ones where they disagree.** The page delta is what

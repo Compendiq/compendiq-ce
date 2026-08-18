@@ -26,8 +26,11 @@
  *    off arm and biases `queryCostMs` toward UNDERSTATING the leg — the one
  *    direction a rig measuring a feature must never be biased in. The
  *    alternation is deterministic on the label index, so a re-run's per-query
- *    numbers stay comparable, and each pair records the order it was measured
- *    in (`ImageQueryPair.offFirst`).
+ *    numbers stay comparable, and each pair records both the order it was
+ *    measured in (`ImageQueryPair.offFirst`) and each arm's start stamp
+ *    (`ImageArmRun.startedAt`) — the second because the first is recomputed
+ *    from the index and therefore agrees with itself whichever branch below
+ *    runs, so it can pin nothing on its own (review r3).
  * 2. **`imageLeg` is FORCED on both arms**, never toggled through
  *    `admin_settings.rag_image_leg_enabled`. Writing the global setting per
  *    query would change what every other request on the instance retrieves for
@@ -48,8 +51,12 @@
  *    failure mode of this leg — unassigned model, empty index, dead endpoint,
  *    a forcing flag that stopped forcing — produces two identical arms and a
  *    delta of exactly zero, which reads as "the leg does not help" rather than
- *    "the leg never ran". Both directions are guarded: participation on the on
- *    arm has a floor, and the off arm must be clean.
+ *    "the leg never ran". Both directions are guarded, and they are guarded at
+ *    DIFFERENT times: the off arm must be clean and is checked on the FIRST
+ *    pair, because a forcing flag that does not force is a property of this
+ *    code path and every remaining query would answer the same way (review r3);
+ *    participation on the on arm has a fractional floor and is checked after
+ *    the loop, because a bypass is legitimately intermittent.
  */
 import { hybridSearch, getEmbeddingCoverage } from '../services/rag-service.js';
 import {
@@ -245,7 +252,10 @@ async function runArm(
     })),
   );
 
-  return { retrieved: results.map((r) => r.pageId), ms, imageHits };
+  // `startedAt` is what makes the alternation testable: `offFirst` is derived
+  // from the label index and recorded from the same expression, so it agrees
+  // with itself whatever branch below actually ran (review r3).
+  return { retrieved: results.map((r) => r.pageId), ms, startedAt: started, imageHits };
 }
 
 export async function runImageEval(
@@ -271,7 +281,6 @@ export async function runImageEval(
   const off = emptyCounters();
   const on = emptyCounters();
   let imageLegParticipatingQueries = 0;
-  let dirtyOffArm = 0;
   let completed = 0;
 
   for (const [index, label] of fixture.labels.entries()) {
@@ -292,7 +301,23 @@ export async function runImageEval(
       offArm = await runArm(label.query, opts._forceOffArmLegOn === true, opts, off);
     }
 
-    if (offArm.imageHits.length > 0) dirtyOffArm++;
+    // Decision 4, the direction that invalidates the comparison outright, and
+    // it is checked HERE rather than after the loop (review r3). An "off" arm
+    // that came back with image hits means `imageLeg: false` is not forcing the
+    // leg off, which is a property of this code path and not of the endpoint:
+    // it is fully decided by the first query, and every remaining one would
+    // answer the same way. The participation floor below is the opposite case
+    // and stays post-loop, because a bypass is legitimately intermittent.
+    if (offArm.imageHits.length > 0) {
+      throw new ImageLegSilentError(
+        `Query "${label.id}" came back from the leg-off arm carrying ${offArm.imageHits.length} image hit(s) — ` +
+          '`imageLeg: false` did not force the leg off, so both arms are measuring the same pipeline and ' +
+          'every paired verdict would be a coin flip reported as "no credible change". Refused here ' +
+          `rather than after all ${fixture.labels.length} labels: this is a fact about the forcing ` +
+          'flag and not about the endpoint, so the rest of the run would cost two more searches per ' +
+          'remaining label to learn nothing new.',
+      );
+    }
     if (onArm.imageHits.length > 0) imageLegParticipatingQueries++;
 
     pairs.push({
@@ -311,17 +336,7 @@ export async function runImageEval(
 
   const total = fixture.labels.length;
 
-  // Decision 4, the direction that invalidates the comparison outright: an
-  // "off" arm that ran the leg is the same configuration measured twice.
-  if (dirtyOffArm > 0) {
-    throw new ImageLegSilentError(
-      `${dirtyOffArm}/${total} queries came back from the leg-off arm carrying image hits — ` +
-        '`imageLeg: false` did not force the leg off, so both arms measured the same pipeline and ' +
-        'every paired verdict below would be a coin flip reported as "no credible change".',
-    );
-  }
-
-  // …and the direction that makes the whole run a no-op. Checked after the
+  // The direction that makes the whole run a no-op. Checked after the
   // loop rather than per query, because a bypass is legitimately intermittent
   // (a breaker cooling down) and the fraction is what separates that from a
   // leg that never ran.

@@ -557,7 +557,9 @@ async function measureImageAxis(ctx: AxisContext, imageEnv: ImageAxisEnv): Promi
   }
   console.log(
     `indexed ${seeded.imagesEmbedded} images in ${(seeded.imageEmbedWallClockMs / 1000).toFixed(1)}s ` +
-    `(${seeded.throughputImagesPerSec.toFixed(2)} images/s)`,
+    `(${seeded.throughputImagesPerSec.toFixed(2)} images/s sequential; ` +
+    `${seeded.backfillThroughputImagesPerSec.toFixed(2)} images/s once the worker's ` +
+    `${seeded.interPageDelayMs}ms per-page valve is added)`,
   );
   await assertSeededFtsLanguage(ftsLanguage);
   // NOT `language` (review r1). That row is what #1114's latency benchmark
@@ -589,6 +591,8 @@ async function measureImageAxis(ctx: AxisContext, imageEnv: ImageAxisEnv): Promi
     imagesReused: seeded.imagesReused,
     imageEmbedWallClockMs: seeded.imageEmbedWallClockMs,
     throughputImagesPerSec: seeded.throughputImagesPerSec,
+    backfillThroughputImagesPerSec: seeded.backfillThroughputImagesPerSec,
+    interPageDelayMs: seeded.interPageDelayMs,
     run,
   });
   // The top-level scores are the LEG-ON arm — the shipped configuration, since

@@ -50,6 +50,9 @@ const { ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, EVA
 const { loadImageCorpusManifest, IMAGE_CORPUS_DIR } = await import('./corpus-images.js');
 const { resolveAttachmentBytes } = await import('../../../core/services/attachment-store.js');
 const { buildPageImageUrl } = await import('../../../core/services/image-references.js');
+// The worker's own valve, imported rather than spelled: the backfill figure is
+// derived from it, and a literal here would let the two drift (review r3).
+const { INTER_PAGE_DELAY_MS } = await import('../services/image-embedding-service.js');
 
 const dbAvailable = await isDbAvailable();
 const USER = 'aaaaaaaa-1115-4000-8000-000000005115';
@@ -206,6 +209,27 @@ describe.skipIf(!dbAvailable)('image corpus seeder (#1115 P5b)', () => {
       seeded.imagesEmbedded / (seeded.imageEmbedWallClockMs / 1000),
       6,
     );
+  }, 120_000);
+
+  it('publishes the BACKFILL rate separately, because this loop pays no inter-page valve', async () => {
+    // The raw figure above is the endpoint's: the loop embeds one page after
+    // another with nothing in between. `processDirtyPageImages` sleeps
+    // INTER_PAGE_DELAY_MS after every page, so on the 65-page corpus a backfill
+    // pays 13 s this number never sees — calling it "what a backfill would see"
+    // overstated the operator's figure by exactly that (review r3). The valve
+    // is added to the denominator rather than slept here, so the raw rate stays
+    // a statement about the endpoint.
+    const seeded = await seedImageCorpus(USER, { maxPages: MAX_PAGES });
+
+    expect(seeded.interPageDelayMs).toBe(INTER_PAGE_DELAY_MS);
+    expect(seeded.backfillThroughputImagesPerSec).toBeCloseTo(
+      seeded.imagesEmbedded /
+        (seeded.imageEmbedWallClockMs / 1000 + (INTER_PAGE_DELAY_MS / 1000) * seeded.pages),
+      6,
+    );
+    // Strictly slower, always — the valve is a positive addition to the
+    // denominator, and a rate that came back equal would mean it was dropped.
+    expect(seeded.backfillThroughputImagesPerSec).toBeLessThan(seeded.throughputImagesPerSec);
   }, 120_000);
 
   it('REFUSES the run when a page\'s intake fails, instead of measuring a half-filled index', async () => {

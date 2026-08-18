@@ -619,7 +619,14 @@ It seeds a German image corpus through this exact intake — bytes on disk,
 twice on one seeded database, image leg off and on, paired, and decides with
 McNemar exact. It also reports image embed throughput (images/s) and each arm's
 query cost, which are the two operational numbers §5 and §6 above tell you to
-measure before scheduling a backfill or raising `PG_VECTOR_POOL_MAX`.
+measure before scheduling a backfill or raising `PG_VECTOR_POOL_MAX`. Read the
+right half of each: the seeder embeds one page after another with **no pause**,
+so `throughputImagesPerSec` is the endpoint's rate and
+`backfillThroughputImagesPerSec` is the one this section's backfill pays (the
+worker sleeps 200 ms after every page, which the seeder does not). Likewise the
+leg's query cost is `queryCostMs.deltaPaired` — the per-query `on - off` — and
+not the difference between the two per-arm percentiles, which are independent
+summaries of possibly different queries.
 
 Recipe, environment and how to read the report: **`docs/runbooks/retrieval-eval.md`,
 "Image axis (`--images`)"**. It is not in CI (no vision-language model is

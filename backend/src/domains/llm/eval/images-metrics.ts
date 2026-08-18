@@ -55,6 +55,19 @@ export interface ImageArmRun {
   /** Wall clock for this arm's search call; the pair's difference is the leg's cost. */
   ms: number;
   /**
+   * `performance.now()` at the moment this arm's search was issued — which is
+   * to say, WHICH ARM RAN FIRST, observably.
+   *
+   * It exists because `offFirst` below cannot pin the alternation on its own
+   * (review r3). That flag is computed from the label index and recorded from
+   * the same expression, so an assertion on it compares `index % 2 === 0`
+   * against itself and stays green against a runner whose branch was replaced
+   * by an unconditional off-then-on — verified by mutation, 9 of 9 passing. A
+   * start stamp is a fact about the execution rather than about the intent, so
+   * `off.startedAt < on.startedAt` really does read the branch that ran.
+   */
+  startedAt: number;
+  /**
    * Every image hit riding on the returned pages. Always empty on the OFF arm
    * — the runner asserts that rather than assuming it, because a non-empty one
    * would mean `imageLeg: false` did not turn the leg off and the whole pairing
@@ -84,6 +97,9 @@ export interface ImageQueryPair {
    * (its heap and index pages, its chunk rows), so a rig that always ran the
    * off arm first would charge all of that to the off arm and publish the
    * difference as the leg's cost, understating it.
+   *
+   * It is the INTENT; `ImageArmRun.startedAt` is what actually happened, and
+   * the two agreeing is the assertion (review r3).
    */
   offFirst: boolean;
   off: ImageArmRun;
@@ -267,5 +283,27 @@ export interface QueryCost {
  */
 export function queryCostMs(pairs: readonly ImageQueryPair[], arm: ImageArm): QueryCost {
   const samples = pairs.map((p) => p[arm].ms);
+  return { p50: percentile(samples, 0.5), p95: percentile(samples, 0.95) };
+}
+
+/**
+ * The leg's cost as a PAIRED figure: percentiles of `on.ms - off.ms` over the
+ * same query, rather than the difference between two independent marginals.
+ *
+ * The two arms above are unpaired summaries, so `p95(on) - p95(off)` is not any
+ * query's cost — it is the gap between the slowest query with the leg and a
+ * possibly different slowest query without it (review r3). Every other part of
+ * this axis is built out of the pairing (the whole runner exists for it, and
+ * McNemar's precondition is it), and the one metric it was built FOR was
+ * throwing it away before the report was written.
+ *
+ * Both are published. The marginals are what an operator budgets a request
+ * against; this is what the leg costs, and on a query set where the two
+ * disagree the marginals are the ones being read wrong. It can legitimately go
+ * NEGATIVE on a slice — the arms share a rig that warms up, and the alternation
+ * is what keeps that noise from accumulating in one direction.
+ */
+export function pairedQueryCostDeltaMs(pairs: readonly ImageQueryPair[]): QueryCost {
+  const samples = pairs.map((p) => p.on.ms - p.off.ms);
   return { p50: percentile(samples, 0.5), p95: percentile(samples, 0.95) };
 }

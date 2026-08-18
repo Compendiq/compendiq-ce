@@ -27,6 +27,12 @@
  *    is not one a `processDirtyPageImages` backfill would ever reproduce —
  *    that worker walks the backlog one page at a time. The TEXT phase keeps
  *    `seedCorpus`'s `pLimit(5)`, because nothing is being timed there.
+ *    Sequential is not the same as identical, though: the worker also sleeps
+ *    `INTER_PAGE_DELAY_MS` after every page, this loop does not, and calling
+ *    the result "what a backfill would see" overstated it by exactly that much
+ *    per page (review r3). The raw rate stays raw — a valve slept here would
+ *    put a constant inside a number describing the ENDPOINT — and the backfill
+ *    figure is derived beside it from the worker's own constant.
  * 3. **A skip is a bug in the rig, not a fact about the corpus.** Every one of
  *    the 187 vendored images is a raster inside both ceilings
  *    (`corpus-de-images.test.ts` pins that), so `missing`, `unsupported`,
@@ -61,7 +67,11 @@ import { IMAGE_EMBEDDING_TARGET_DIMENSIONS_KEY } from '../../../core/services/im
 import type { VectorColumnTier } from '../../../core/db/vector-column-tier.js';
 import { logger } from '../../../core/utils/logger.js';
 import { embedPage } from '../services/embedding-service.js';
-import { embedPageImages, type ImageEmbedOutcome } from '../services/image-embedding-service.js';
+import {
+  embedPageImages,
+  INTER_PAGE_DELAY_MS,
+  type ImageEmbedOutcome,
+} from '../services/image-embedding-service.js';
 import {
   ensureImageEmbeddingColumn,
   imageIndexIdentityFor,
@@ -252,7 +262,31 @@ export interface ImageSeedResult {
   imagesReused: number;
   /** Wall clock of the sequential image phase alone — the throughput denominator. */
   imageEmbedWallClockMs: number;
+  /**
+   * RAW intake rate: images ÷ that wall clock, sequential, one page at a time.
+   *
+   * NOT what a backfill sees, and the difference is not rounding (review r3).
+   * `processDirtyPageImages` sleeps `INTER_PAGE_DELAY_MS` after every page as a
+   * server-pressure valve, which this loop deliberately does not — it seeds a
+   * disposable database against a dedicated endpoint, and pacing it would put a
+   * constant into the one number that is supposed to describe the endpoint. So
+   * the valve is added back in {@link ImageSeedResult.backfillThroughputImagesPerSec}
+   * rather than being either paid or quietly ignored.
+   */
   throughputImagesPerSec: number;
+  /**
+   * The same intake with the worker's per-page valve added — the figure
+   * `docs/runbooks/image-index.md` §5 sends an operator here for.
+   *
+   * `images ÷ (wall clock + INTER_PAGE_DELAY_MS × pages)`. It is derived rather
+   * than measured, and it is derived from the worker's own exported constant so
+   * a retune of that valve moves this number too. It is the lower of the two on
+   * every corpus, and by a lot on one with few images per page: 200 ms/page
+   * against a page carrying one image is most of that page's cost.
+   */
+  backfillThroughputImagesPerSec: number;
+  /** The valve above, published so the derived figure is self-describing. */
+  interPageDelayMs: number;
   /** All zero on a healthy run; the seeder refuses before returning otherwise. */
   skipped: ImageSkipCounts;
   /** Corpus pages that produced no text chunk. Empty for this corpus. */
@@ -455,14 +489,22 @@ export async function seedImageCorpus(
     );
   }
 
+  // Two rates, because the loop above is not the worker (review r3). The valve
+  // is added to the DENOMINATOR rather than slept inside the timed loop: the
+  // seeder has nothing to be gentle to, and paying it would bake a constant
+  // into the figure that describes the endpoint while making the run 13 s
+  // longer for nothing.
+  const wallClockSec = imageEmbedWallClockMs / 1000;
+  const backfillSec = wallClockSec + (INTER_PAGE_DELAY_MS / 1000) * pages.length;
   return {
     pageIdByFile,
     pages: pages.length,
     imagesEmbedded,
     imagesReused,
     imageEmbedWallClockMs,
-    throughputImagesPerSec:
-      imageEmbedWallClockMs > 0 ? imagesEmbedded / (imageEmbedWallClockMs / 1000) : 0,
+    throughputImagesPerSec: wallClockSec > 0 ? imagesEmbedded / wallClockSec : 0,
+    backfillThroughputImagesPerSec: backfillSec > 0 ? imagesEmbedded / backfillSec : 0,
+    interPageDelayMs: INTER_PAGE_DELAY_MS,
     skipped,
     textSkipped,
   };

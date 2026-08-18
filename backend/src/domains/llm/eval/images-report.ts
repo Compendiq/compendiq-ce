@@ -21,6 +21,7 @@ import {
   imageHitAtK,
   imageNegativeLeakAtK,
   pairedDelta,
+  pairedQueryCostDeltaMs,
   partitionPairs,
   queryCostMs,
   type ImageQueryPair,
@@ -94,8 +95,24 @@ export const ImageAxisReportSchema = z.object({
   imagesEmbedded: z.number().int().nonnegative(),
   imagesReused: z.number().int().nonnegative(),
   imageEmbedWallClockMs: z.number().nonnegative(),
-  /** Images per second, one page at a time — what a backfill would see. */
+  /**
+   * RAW intake rate: images per second, sequential, one page at a time and
+   * with NO inter-page pause. It describes the endpoint.
+   *
+   * Deliberately not labelled "what a backfill would see" any more (review r3):
+   * `processDirtyPageImages` sleeps `INTER_PAGE_DELAY_MS` after every page, and
+   * on a 65-page corpus that is 13 seconds this figure never pays.
+   */
   throughputImagesPerSec: z.number().nonnegative(),
+  /**
+   * …and the same intake WITH that valve — the operational number
+   * `docs/runbooks/image-index.md` §5 tells an operator to read before
+   * scheduling a backfill. Derived from `interPageDelayMs` below, which is the
+   * worker's own exported constant, so the two cannot drift.
+   */
+  backfillThroughputImagesPerSec: z.number().nonnegative(),
+  /** The worker's per-page valve, so the derived rate above is self-describing. */
+  interPageDelayMs: z.number().nonnegative(),
   imageLegParticipatingQueries: z.number().int().nonnegative(),
   legOff: ArmScoresSchema,
   legOn: ArmScoresSchema,
@@ -109,7 +126,21 @@ export const ImageAxisReportSchema = z.object({
   }),
   imageHitAtK: z.record(z.string(), z.number()),
   imageNegativeLeakAtK: z.record(z.string(), z.number()),
-  queryCostMs: z.object({ off: PercentilesSchema, on: PercentilesSchema }),
+  queryCostMs: z.object({
+    off: PercentilesSchema,
+    on: PercentilesSchema,
+    /**
+     * Percentiles of `on.ms - off.ms` over the SAME query.
+     *
+     * The two marginals above are what a request is budgeted against; this is
+     * what the leg costs. `p95(on) - p95(off)` is not any query's cost — it is
+     * the gap between two possibly different queries — and the runner's whole
+     * interleave-and-alternate design exists to make the paired figure
+     * meaningful, so throwing the pairing away at exactly this metric was the
+     * one place the axis stopped being paired (review r3).
+     */
+    deltaPaired: PercentilesSchema,
+  }),
   /**
    * Both arms' per-query results, so a same-axis `--baseline` can compare
    * leg-off against leg-off AND leg-on against leg-on. Without them a
@@ -132,6 +163,8 @@ export interface BuildImageAxisReportInput {
   imagesReused: number;
   imageEmbedWallClockMs: number;
   throughputImagesPerSec: number;
+  backfillThroughputImagesPerSec: number;
+  interPageDelayMs: number;
   run: ImageEvalResult;
 }
 
@@ -167,6 +200,8 @@ export function buildImageAxisReport(input: BuildImageAxisReportInput): ImageAxi
     imagesReused: input.imagesReused,
     imageEmbedWallClockMs: round(input.imageEmbedWallClockMs),
     throughputImagesPerSec: round(input.throughputImagesPerSec),
+    backfillThroughputImagesPerSec: round(input.backfillThroughputImagesPerSec),
+    interPageDelayMs: input.interPageDelayMs,
     imageLegParticipatingQueries: input.run.imageLegParticipatingQueries,
     legOff: scoresFor(pairs, 'off'),
     legOn: scoresFor(pairs, 'on'),
@@ -179,7 +214,11 @@ export function buildImageAxisReport(input: BuildImageAxisReportInput): ImageAxi
     imageNegativeLeakAtK: Object.fromEntries(
       IMAGE_HIT_TOP_K.map((k) => [`@${k}`, imageNegativeLeakAtK(pairs, k)]),
     ),
-    queryCostMs: { off: queryCostMs(pairs, 'off'), on: queryCostMs(pairs, 'on') },
+    queryCostMs: {
+      off: queryCostMs(pairs, 'off'),
+      on: queryCostMs(pairs, 'on'),
+      deltaPaired: pairedQueryCostDeltaMs(pairs),
+    },
     runsOff: armRuns(pairs, 'off'),
     runsOn: armRuns(pairs, 'on'),
   };
@@ -187,6 +226,11 @@ export function buildImageAxisReport(input: BuildImageAxisReportInput): ImageAxi
 
 function signed(value: number): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(4)}`;
+}
+
+/** Signed, in whole milliseconds — a paired latency delta can be negative. */
+function signedMs(value: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(0)}`;
 }
 
 function verdictLine(name: string, delta: PairedDelta): string {
@@ -220,7 +264,9 @@ export function formatImageAxisVerdict(images: ImageAxisReport): string[] {
   );
   lines.push(
     `indexed ${images.imagesEmbedded} images in ${(images.imageEmbedWallClockMs / 1000).toFixed(1)}s ` +
-    `(${images.throughputImagesPerSec.toFixed(2)} images/s, one page at a time)`,
+    `(${images.throughputImagesPerSec.toFixed(2)} images/s sequential, no inter-page pause; ` +
+    `${images.backfillThroughputImagesPerSec.toFixed(2)} images/s for a backfill, which adds ` +
+    `${images.interPageDelayMs}ms per page)`,
   );
   lines.push(`image leg contributed hits to ${images.imageLegParticipatingQueries} queries`);
   lines.push('');
@@ -243,6 +289,13 @@ export function formatImageAxisVerdict(images: ImageAxisReport): string[] {
   lines.push(
     `query cost ms     off p50 ${images.queryCostMs.off.p50.toFixed(0)} / p95 ${images.queryCostMs.off.p95.toFixed(0)}` +
     `   on p50 ${images.queryCostMs.on.p50.toFixed(0)} / p95 ${images.queryCostMs.on.p95.toFixed(0)}`,
+  );
+  // The paired figure on its own line, and labelled as the leg's cost — the
+  // two rows above are independent marginals, so their difference is nobody's
+  // query (review r3).
+  lines.push(
+    `leg cost ms       paired per query: p50 ${signedMs(images.queryCostMs.deltaPaired.p50)} / ` +
+    `p95 ${signedMs(images.queryCostMs.deltaPaired.p95)}`,
   );
   return lines;
 }

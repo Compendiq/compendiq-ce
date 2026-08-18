@@ -207,6 +207,15 @@ describe.skipIf(!dbAvailable)('paired image runner (#1115 P5b)', () => {
     // …and the order inside each pair alternates deterministically on the
     // label index, so the warm-up cost lands on both arms rather than one.
     expect(result.pairs.map((p) => p.offFirst)).toEqual([true, false, true]);
+    // Asserted against WHAT RAN, not against the recorded flag (review r3).
+    // `offFirst` is `index % 2 === 0` and is pushed onto the pair from that same
+    // expression, so the line above compares it with itself: replacing the
+    // branch with an unconditional off-then-on left all 9 tests in this file
+    // green. `startedAt` is stamped inside each arm, so this comparison reads
+    // the branch that actually executed.
+    for (const pair of result.pairs) {
+      expect(pair.off.startedAt < pair.on.startedAt).toBe(pair.offFirst);
+    }
   }, 120_000);
 
   it('records no search_analytics row: each question is asked twice and nobody asked either', async () => {
@@ -304,12 +313,23 @@ describe.skipIf(!dbAvailable)('paired image runner (#1115 P5b)', () => {
     await expect(boom).rejects.toThrow(/0\/1/);
   }, 120_000);
 
-  it('REFUSES a run whose off arm came back carrying image hits', async () => {
+  it('REFUSES a run whose off arm came back carrying image hits, on the FIRST such query', async () => {
     // `imageLeg: false` is the only thing making the pairing a comparison. If
     // it ever stopped forcing the leg off, both arms would measure the same
     // configuration and every verdict would be a coin flip reported as
     // "no credible change".
-    const fixture = fixtureOf([label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] })]);
+    //
+    // Three labels rather than one, because WHEN it refuses is the property
+    // (review r3): a flag that does not force is a fact about the code path and
+    // is fully decided by the first query, so an operator on a real VL endpoint
+    // must not pay all 307 labels × 2 arms to be told the rig was never a pair.
+    // The participation floor beside it stays post-loop — a bypass really can
+    // be intermittent.
+    const fixture = fixtureOf([
+      label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] }),
+      label({ id: 'q2', query: 'Zweite Frage zum selben Korpus' }),
+      label({ id: 'q3', query: 'Dritte Frage zum selben Korpus' }),
+    ]);
 
     const boom = runImageEval(fixture, {
       userId: USER,
@@ -321,6 +341,9 @@ describe.skipIf(!dbAvailable)('paired image runner (#1115 P5b)', () => {
     });
     await expect(boom).rejects.toBeInstanceOf(ImageLegSilentError);
     await expect(boom).rejects.toThrow(/leg-off arm/i);
+    // Two VL query embeds, not six: the first pair's two arms and then nothing.
+    // Counted at the endpoint, which is the one place "it stopped" is visible.
+    expect(vl.textRequests()).toHaveLength(2);
   }, 120_000);
 
   it('refuses a fixture label naming a page the seed never inserted', async () => {

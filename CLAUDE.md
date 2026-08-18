@@ -319,7 +319,12 @@ leg's latency, and a fixed off-then-on order inside each pair does the same
 thing one query at a time: every query's own first touch is paid by the arm
 that runs first, so `queryCostMs` came out biased toward UNDERSTATING the leg.
 The alternation is deterministic on the label index (re-runs stay comparable)
-and each pair records it. Both arms run `recordAnalytics: false`: each question
+and each pair records it — plus **each arm's `startedAt`**, which is what any
+test of the alternation must read: `offFirst` is recomputed from the label
+index and pushed onto the pair from that same expression, so asserting on it
+compares `index % 2 === 0` with itself and stays green against a runner whose
+branch has been replaced by an unconditional off-then-on (verified by
+mutation). Both arms run `recordAnalytics: false`: each question
 is asked twice and only one of the two is a question anybody asked. Everything
 the report publishes per query — vector, rerank, assembly, pin and expansion
 participation — is the **leg-on arm's** count, never a sum over both arms,
@@ -351,7 +356,25 @@ don't report, wherever the two arms would be the same configuration**: an
 intake that skipped an image (the corpus is curated, so a skip is a rig fault),
 a leg contributing hits to under half the queries, or a leg-off arm that came
 back carrying image hits. Each otherwise yields a delta of exactly zero, which
-reads as "the leg does not help" rather than "the leg never ran". `imageHit@K`
+reads as "the leg does not help" rather than "the leg never ran". The last two
+are checked at **different times**, and that is the rule rather than an
+oversight: the dirty off arm refuses on the FIRST such pair, because a forcing
+flag that does not force is a property of the code path and every remaining
+query would answer the same way, while the participation floor is fractional
+and post-loop, because a bypass is legitimately intermittent. **The two
+throughput figures and the two latency figures each come in a raw and an
+operational form, and neither pair may be collapsed.** The seeder embeds one
+page after another with no pause, so `throughputImagesPerSec` describes the
+ENDPOINT; a `processDirtyPageImages` backfill additionally sleeps
+`INTER_PAGE_DELAY_MS` after every page, which is 13 s on the 65-page corpus, so
+that valve is added back into `backfillThroughputImagesPerSec` — derived from
+the worker's own exported constant, never slept inside the timed loop, which
+would put a constant inside a number about the endpoint. And `queryCostMs.off`
+/ `.on` are unpaired marginals: their difference is not any query's cost, so
+the leg's cost is `queryCostMs.deltaPaired`, percentiles of `on.ms - off.ms`
+over the same query — the runner's whole interleave-and-alternate design exists
+for that figure, and the first cut discarded the per-query pairs before the
+report was written. `imageHit@K`
 is denominated over the 285 labels that NAME an image and `imageNegativeLeak@K`
 over the `image-negative` slice alone, because precision and recall folded into
 one number leave neither readable; the first is also bounded above by page

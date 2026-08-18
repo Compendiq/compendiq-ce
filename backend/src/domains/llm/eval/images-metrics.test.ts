@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  armMrr,
   armRuns,
   imageHitAtK,
   imageNegativeLeakAtK,
   pairedDelta,
+  pairedQueryCostDeltaMs,
   partitionPairs,
   queryCostMs,
+  type ImageArmRun,
   type ImageHitRecord,
   type ImageQueryPair,
 } from './images-metrics.js';
@@ -23,16 +26,36 @@ function hit(pageId: number, key: string, similarity: number): ImageHitRecord {
   return { pageId, source: 'confluence', key, similarity };
 }
 
-function pair(over: Partial<ImageQueryPair> & { queryId: string }): ImageQueryPair {
+/**
+ * One arm, completed to the full `ImageArmRun`.
+ *
+ * `startedAt` is a real field on that interface (review r3: it is what makes
+ * the runner's arm ORDER observable, since `offFirst` is recomputed from the
+ * label index), and it decides nothing any metric here reads — so the cases
+ * below keep spelling the two fields they steer and this fills the rest in
+ * rather than every call site carrying a `startedAt: 0`.
+ */
+function arm(spec: Partial<ImageArmRun> = {}): ImageArmRun {
+  return { retrieved: [], ms: 0, startedAt: 0, imageHits: [], ...spec };
+}
+
+function pair(
+  over: Partial<Omit<ImageQueryPair, 'off' | 'on'>> & {
+    queryId: string;
+    off?: Partial<ImageArmRun>;
+    on?: Partial<ImageArmRun>;
+  },
+): ImageQueryPair {
+  const { off, on, ...rest } = over;
   return {
     style: 'image',
     lang: 'de',
     expected: [1],
     expectedImageKeys: [],
     offFirst: true,
-    off: { retrieved: [], ms: 0, imageHits: [] },
-    on: { retrieved: [], ms: 0, imageHits: [] },
-    ...over,
+    ...rest,
+    off: arm(off),
+    on: arm(on),
   };
 }
 
@@ -48,6 +71,29 @@ describe('armRuns', () => {
     expect(recallAtK(armRuns(pairs, 'off'), 1)).toBe(0);
     expect(recallAtK(armRuns(pairs, 'on'), 1)).toBe(1);
     expect(meanReciprocalRank(armRuns(pairs, 'off'))).toBe(0.5);
+  });
+});
+
+describe('armMrr', () => {
+  it('scores each arm SEPARATELY — the two disagreeing is the whole measurement', () => {
+    // Pinned by value, and per arm (review r3). `armMrr` had no direct case,
+    // and the report only checked its two MRR fields for existence: reading
+    // both from the same arm published `legOff.mrr === legOn.mrr` on every run,
+    // i.e. an MRR delta of exactly zero, which reads as "the leg does not
+    // help" — the identical-arms failure every refusal on this axis exists to
+    // prevent — with the suite green.
+    const pairs = [
+      pair({ queryId: 'a', expected: [1], off: { retrieved: [9, 8, 1] }, on: { retrieved: [1, 9] } }),
+    ];
+
+    expect(armMrr(pairs, 'off')).toBeCloseTo(1 / 3, 10);
+    expect(armMrr(pairs, 'on')).toBe(1);
+    expect(armMrr(pairs, 'off')).not.toBe(armMrr(pairs, 'on'));
+  });
+
+  it('is the shared scorer over the projected arm, not a second definition', () => {
+    const pairs = [pair({ queryId: 'a', expected: [7], on: { retrieved: [9, 7] } })];
+    expect(armMrr(pairs, 'on')).toBe(meanReciprocalRank(armRuns(pairs, 'on')));
   });
 });
 
@@ -303,5 +349,39 @@ describe('queryCostMs', () => {
 
   it('answers zeroes for an empty run rather than NaN', () => {
     expect(queryCostMs([], 'on')).toEqual({ p50: 0, p95: 0 });
+  });
+});
+
+describe('pairedQueryCostDeltaMs', () => {
+  it('is the leg\'s cost per QUERY, which the two marginals cannot give you', () => {
+    // The case the marginals get wrong (review r3). Nine queries the leg costs
+    // 10ms on and one slow off-arm outlier: p95(off) is 500 and p95(on) is 90,
+    // so "the difference between the arms" reads as the leg SAVING 410ms,
+    // while every single query paid 10.
+    const pairs = [
+      ...Array.from({ length: 9 }, (_, i) =>
+        pair({ queryId: `q${i}`, off: { ms: 80 }, on: { ms: 90 } })),
+      pair({ queryId: 'slow', off: { ms: 500 }, on: { ms: 510 } }),
+    ];
+
+    expect(queryCostMs(pairs, 'off').p95).toBe(500);
+    expect(queryCostMs(pairs, 'on').p95).toBe(510);
+    expect(pairedQueryCostDeltaMs(pairs)).toEqual({ p50: 10, p95: 10 });
+  });
+
+  it('reports a NEGATIVE delta rather than clamping it — the rig has noise', () => {
+    // Whichever arm runs first pays the query's first touch, so a pair really
+    // can come back faster with the leg on. Clamping would turn the rig's own
+    // noise into a one-sided claim about the leg.
+    const pairs = [
+      pair({ queryId: 'a', off: { ms: 100 }, on: { ms: 60 } }),
+      pair({ queryId: 'b', off: { ms: 100 }, on: { ms: 140 } }),
+    ];
+
+    expect(pairedQueryCostDeltaMs(pairs).p50).toBe(-40);
+  });
+
+  it('answers zeroes for an empty run rather than NaN', () => {
+    expect(pairedQueryCostDeltaMs([])).toEqual({ p50: 0, p95: 0 });
   });
 });
