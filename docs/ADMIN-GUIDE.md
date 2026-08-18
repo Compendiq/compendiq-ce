@@ -709,9 +709,11 @@ semantic and keyword ones. Text retrieval is untouched by all of it: two
 indexes, two models, two failure modes (ADR-025).
 
 **Everything here is off until you assign the model.** An instance that never
-does gets exactly today's behaviour, with no extra latency. Operations —
-serving, probing, re-scanning, changing the model — are
-`docs/runbooks/image-index.md`.
+does gets exactly today's behaviour. The gate itself is not free — every
+hybrid search pays one cached boolean plus one indexed read of the assignment,
+which on an unassigned instance answers first and stops there — but that is a
+round-trip, not a model call. Operations — serving, probing, re-scanning,
+changing the model — are `docs/runbooks/image-index.md`.
 
 The feature spans three sub-tabs, one per question you would actually ask.
 

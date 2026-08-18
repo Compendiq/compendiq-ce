@@ -2760,8 +2760,11 @@ nobody reads the numbers above as if they were ours:
 ### Consequences
 
 - **Two indexes, two models, two failure modes.** An operator who never assigns
-  `image_embedding` gets today's behaviour exactly, including no extra latency:
-  the leg does not run and the query is embedded once.
+  `image_embedding` gets today's behaviour exactly: the leg does not run and the
+  query is embedded once. The shut gate is not free — as shipped in P3 every
+  hybrid search pays one cached boolean plus one indexed read of the assignment,
+  which on an unassigned instance answers first and stops there — but that is a
+  round-trip, not a model call (ADR-012's #1115 amendment).
 - **`page_embeddings` stays text-only by construction (D6)**, so #1116's shadow
   swap, `page_avg_embedding`, MMR, rerank and sibling assembly need no
   image-awareness — now or later.

@@ -1077,7 +1077,7 @@ strict-parsed ('' = unset),
 TTL-cached — the score is measurable (non-null) and below that threshold,
 and no other grounding **materialised**: an assembled sub-page tree,
 fetched external docs, web results that actually came back, or a prior
-**substantive** assistant turn. That stand-down covers **all three**
+**substantive** assistant turn. That stand-down covers **all four**
 reasons, the outage one included: a page tree, attached documents, web
 results and a substantive prior turn are real grounding, and the vector
 index being down takes nothing away from them. Request flags alone never stand the gate

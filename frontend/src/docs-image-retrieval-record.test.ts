@@ -137,6 +137,104 @@ describe('the measured image-axis record is in both places', () => {
   });
 });
 
+describe('the shut image-leg gate is never described as free', () => {
+  /**
+   * Review r2 (minor). `image-leg-search.ts`'s own header names the standing
+   * cost deliberately — "A shut gate is not literally FREE ... every /llm/ask,
+   * every /api/search?mode=hybrid and deep search's original leg pays it on
+   * EVERY deployment" — and ADR-012's #1115 amendment says the same. But
+   * ADR-025's Consequences bullet was written at P0, BEFORE P3 shipped the
+   * gate, and told operators an unassigned instance pays "no extra latency";
+   * P6's new ADMIN-GUIDE section then inherited that sentence.
+   *
+   * The claim matters because it is the one an operator sizing a busy instance
+   * would act on: the leg also budgets a SECOND vector-pool connection, so
+   * "this costs nothing until I turn it on" is the wrong mental model to hand
+   * them. The deleted CLAUDE.md paragraph carried an explicit "don't restate
+   * that as ..." warning about exactly this, which is what made it a docs-only
+   * regression the moment the warning was consolidated away.
+   *
+   * Both halves, so it fails from either side: the retired phrasing is banned,
+   * and the corrected one is required where the question is actually answered.
+   */
+  const GATE_COST_FILES = [
+    'docs/ADMIN-GUIDE.md',
+    'docs/ARCHITECTURE-DECISIONS.md',
+    'docs/architecture/09-flow-rag-chat.md',
+    'docs/runbooks/image-index.md',
+    'CLAUDE.md',
+  ];
+
+  /**
+   * Narrow on purpose. "re-assigning the same pair costs nothing" is correct
+   * prose about a MODEL CHANGE and appears in three of these files; what is
+   * banned is a zero-latency claim about the gate itself.
+   */
+  const ZERO_COST = /\b(no extra latency|no added latency|adds no latency|costs no latency|without any latency)\b/i;
+
+  it.each(GATE_COST_FILES)('%s does not claim the unassigned gate is latency-free', (rel) => {
+    const offenders = read(...rel.split('/'))
+      .split(/(?<=[.;])\s+/)
+      .filter((sentence) => ZERO_COST.test(sentence))
+      .map((sentence) => sentence.replace(/\s+/g, ' ').trim().slice(0, 160));
+    expect(
+      offenders,
+      `${rel}: an unassigned instance still pays one cached boolean plus one ` +
+        'indexed read of the assignment per hybrid search — see the header of ' +
+        'backend/src/domains/llm/services/image-leg-search.ts and ADR-012.',
+    ).toEqual([]);
+  });
+
+  it.each(['docs/ADMIN-GUIDE.md', 'docs/ARCHITECTURE-DECISIONS.md'])(
+    '%s states what the shut gate does cost',
+    (rel) => {
+      expect(read(...rel.split('/'))).toContain('round-trip, not a model call');
+    },
+  );
+
+  it("ADR-025's own Consequences bullet carries it, not just ADR-012's amendment", () => {
+    const adr025 = adr.slice(adr.indexOf('## ADR-025:'));
+    expect(adr025).toContain('round-trip, not a model call');
+  });
+});
+
+describe('09 agrees with itself on how many refusal reasons there are', () => {
+  /**
+   * Review r2 (minor). P4 added `image_only_context` as a fourth reason and P6
+   * updated the list header ("one of **four** reasons") and the sequence-diagram
+   * note ("all four stand down for grounding that MATERIALISED"), but left the
+   * stand-down sentence three paragraphs below reading "all three". The code
+   * gates reason 4 on `!otherGrounding` exactly like the other three
+   * (`llm-ask.ts`), so the document contradicted itself and the code in the
+   * same section.
+   *
+   * The count is load-bearing rather than cosmetic: the stand-down sentence is
+   * the only place 09 says WHICH reasons a materialised grounding suppresses,
+   * so an implementer reading it would leave reason 4 firing beside an attached
+   * document.
+   */
+  const flow = read('docs', 'architecture', '09-flow-rag-chat.md');
+  const flat = flow.replace(/\s+/g, ' ');
+
+  it('declares four reasons', () => {
+    expect(flat).toContain('refuses for **one of four reasons**');
+  });
+
+  it('does not then say the otherGrounding stand-down covers only three', () => {
+    // Scoped to the stand-down claim: "the same one the other three reasons
+    // take", said OF reason 4 about its peers, is correct and must keep passing.
+    const offenders = flat
+      .split(/(?<=[.;]) /)
+      .filter((sentence) => /stand[- ]?down covers[^.;]*\ball three\b/i.test(sentence))
+      .map((sentence) => sentence.trim().slice(0, 160));
+    expect(
+      offenders,
+      'llm-ask.ts gates image_only_context on `!otherGrounding` too — the ' +
+        'stand-down covers all four reasons.',
+    ).toEqual([]);
+  });
+});
+
 describe('the docs put the P4 vision gate in the caller, not in the pick', () => {
   /**
    * Review r1 (major). The P6 sweep's new `03` paragraph said
