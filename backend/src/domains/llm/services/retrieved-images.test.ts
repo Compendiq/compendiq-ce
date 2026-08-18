@@ -158,6 +158,26 @@ describe('pickRetrievedImages — selection order', () => {
     expect(picked.used.map((u) => u.attachmentKey)).toEqual(['b1.png', 'a1.png']);
   });
 
+  it('takes a page’s BEST image even when its hits arrive out of order', async () => {
+    // The per-page re-sort in `orderRetrievedImageCandidates` is defensive —
+    // P3 already emits `imageHits` best-first — and nothing exercised it, so
+    // deleting it left the suite green while the contract silently became
+    // "the FIRST image per page" instead of "the best". At `max: 1` the two
+    // read differently for the first time: with the sort the model is shown
+    // the 0.93 picture, without it the 0.41 one that happens to be listed
+    // first, and D8 forbids any signal that the wrong picture was chosen.
+    pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
+    await writeConfluenceFile('c1', 'weak.png', distinctPng('weak'));
+    await writeConfluenceFile('c1', 'best.png', distinctPng('best'));
+
+    const picked = await pickRetrievedImages(
+      [page(1, [hit('weak.png', 0.41), hit('best.png', 0.93)])],
+      { max: 1 },
+    );
+
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['best.png']);
+  });
+
   it('comes back to a page for its second image once every page has had one', async () => {
     pageRows([
       { id: 1, confluence_id: 'c1', source: 'confluence' },

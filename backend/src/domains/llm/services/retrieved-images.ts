@@ -167,11 +167,26 @@ export interface RetrievedImagesPick {
   skipped: RetrievedImagesSkipped;
 }
 
-const EMPTY: RetrievedImagesPick = {
-  parts: [],
-  used: [],
-  skipped: { missing: 0, invalid: 0, overBudget: 0, duplicate: 0 },
-};
+/**
+ * A FRESH empty pick, per call — never one shared module-level object.
+ *
+ * Three early returns below answer with this, and the value they answer with
+ * is handed straight to the route, which reads `parts`, `used` and every
+ * `skipped` counter off it. A single shared instance would make those three
+ * paths alias one another: one caller pushing a part or incrementing a
+ * counter (a test harness, a future caller folding two picks together) would
+ * corrupt the answer every LATER request on that process gets from the same
+ * branch — a cross-request bug with no failing test near the mutation. The
+ * object costs nothing to build on a path that has already decided to do no
+ * work.
+ */
+function emptyPick(): RetrievedImagesPick {
+  return {
+    parts: [],
+    used: [],
+    skipped: { missing: 0, invalid: 0, overBudget: 0, duplicate: 0 },
+  };
+}
 
 interface Candidate {
   pageId: number;
@@ -230,10 +245,10 @@ export async function pickRetrievedImages(
   opts: { max: number; byteBudget?: number },
 ): Promise<RetrievedImagesPick> {
   const max = Math.floor(opts.max);
-  if (!Number.isFinite(max) || max <= 0) return EMPTY;
+  if (!Number.isFinite(max) || max <= 0) return emptyPick();
 
   const candidates = orderRetrievedImageCandidates(pages);
-  if (candidates.length === 0) return EMPTY;
+  if (candidates.length === 0) return emptyPick();
 
   // ONE identity lookup for every candidate page, before any byte is read.
   // `pages.source` is why it exists: `resolveAttachmentBytes` requires it and
@@ -252,7 +267,7 @@ export async function pickRetrievedImages(
     // still reach the reader as sources — that list is built from the search
     // results and needs nothing from this table.
     logger.warn({ err }, '#1115 P4: could not resolve page identities for retrieved images');
-    return EMPTY;
+    return emptyPick();
   }
 
   const budget = opts.byteBudget ?? RETRIEVED_IMAGES_BYTE_BUDGET;

@@ -2039,11 +2039,16 @@ describe('RetrievalTab — images shown to the model (#1115 P4)', () => {
     await ready();
     await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
 
-    const row = screen.getByTestId('retrieval-ragAnswerMaxImages').closest('div')!;
-    const group = screen.getByTestId('rag-image-leg-enabled').closest('section')!;
-    expect(row).toBeInTheDocument();
-    expect(group.textContent).toMatch(/Text-only chat models never receive images/i);
-    expect(group.textContent).toMatch(/0 turns this off/i);
+    // Scoped to the ROW that owns the input, not to the whole Image
+    // retrieval section: read off the section, both assertions passed for
+    // copy sitting under the leg toggle or the intake cap three controls
+    // away — which is the one thing this case is meant to pin, since the
+    // sentence is only findable where the control is. Same row-scoping
+    // recipe as the calibration-strip adjacency case above.
+    const row = input('ragAnswerMaxImages').closest('div.space-y-1\\.5');
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toMatch(/Text-only chat models never receive images/i);
+    expect(row!.textContent).toMatch(/0 turns this off/i);
   });
 
   it('points at the row where that verdict is shown, instead of leaving it unanswerable', async () => {

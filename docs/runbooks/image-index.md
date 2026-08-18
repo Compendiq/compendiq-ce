@@ -620,8 +620,10 @@ Three ceilings bound it, and they are different numbers for different costs:
 | `RETRIEVED_IMAGES_BYTE_BUDGET` | base64 in one chat request | ~6.7 MB, fixed |
 
 **The first two can diverge, and nothing on the answer says so** (D8 forbids
-it). Above a cap of 4 the model is provably shown at least one picture the
-reader gets no chip for; it can also happen below 4, because the source list
+it). Above a cap of 4 the model **can be** shown a picture the reader gets no
+chip for — ADR-025 D8b's wording, and the accurate one: it takes more than four
+usable candidates to reach, so a cap of 8 over a corpus that offers two diverges
+from nothing. It can also happen below 4, because the source list
 is a flat best-first sort across pages while the attachments are picked
 round-robin, so a round-robin slot can land on a page the flat sort has
 already filled past. The page is still cited either way — what is missing is
