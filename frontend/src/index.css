@@ -1702,12 +1702,17 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   color: var(--color-muted-foreground);
 }
 
-/* Horizontal rules — neutral divider */
-.prose :where(hr) {
+/* Horizontal rules — neutral divider.
+   Padding (not margin) is the hover target so the drag handle can land on
+   a 1px rule. background-clip keeps the painted line 1px tall. */
+.prose :where(hr),
+.tiptap hr {
   border: none;
   height: 1px;
-  background: var(--color-border);
-  margin: 1.5rem 0;
+  margin: 0.5rem 0;
+  padding: 0.85rem 0;
+  background-color: var(--color-border);
+  background-clip: content-box;
 }
 
 /* Tables — flat, subtle styling, horizontally scrollable when wide */
@@ -1741,7 +1746,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 /* Strong & emphasis */
 .prose :where(strong) {
   font-weight: 700;
-  color: var(--color-foreground);
+  color: inherit;
 }
 
 /* Images */
@@ -2542,7 +2547,8 @@ pre:focus-within .code-copy-btn,
 }
 
 .tiptap table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   width: 100%;
   margin: 0;
 }
@@ -2555,6 +2561,19 @@ pre:focus-within .code-copy-btn,
   position: relative;
   font-size: 0.875rem;
   line-height: 1.45;
+}
+
+.tiptap .tableWrapper > table tr:first-child > :first-child {
+  border-top-left-radius: var(--radius-md, 6px);
+}
+.tiptap .tableWrapper > table tr:first-child > :last-child {
+  border-top-right-radius: var(--radius-md, 6px);
+}
+.tiptap .tableWrapper > table tr:last-child > :first-child {
+  border-bottom-left-radius: var(--radius-md, 6px);
+}
+.tiptap .tableWrapper > table tr:last-child > :last-child {
+  border-bottom-right-radius: var(--radius-md, 6px);
 }
 
 .tiptap td > p,

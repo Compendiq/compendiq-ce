@@ -64,7 +64,7 @@ export function containsStructuredInline(doc: PMNode, from: number, to: number):
   let found = false;
   doc.nodesBetween(from, to, (node) => {
     if (found) return false;
-    if (node.isInline && !node.isText && node.type.name !== 'hardBreak') found = true;
+    if (node.isInline && !node.isText && node.type.name !== 'hardBreak' && node.type.name !== 'inlineLucideIcon') found = true;
     return !found;
   });
   return found;

@@ -9,7 +9,6 @@ import {
   Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2, Workflow, Badge,
   ChevronsUpDown, Paperclip, ListTree, ImagePlus, Table2,
   Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb,
-  Baseline,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
   Smile,
 } from 'lucide-react';
@@ -25,6 +24,9 @@ import { insertTableCaption } from './table-cell-selection';
 import { BlockTypeMenu } from './BlockTypeMenu';
 import { EmojiPicker, EmojiPickerContent } from './EmojiPicker';
 export { EmojiPicker };
+import { ColorPickerDropdown } from './EditorColorPicker';
+import { uploadPastedImage } from './editor-image-upload';
+import { toast } from 'sonner';
 import { absorbPortalEscape } from '../../lib/absorb-portal-escape';
 import { cn } from '../../lib/cn';
 
@@ -108,38 +110,18 @@ const PANEL_TYPES = [
   { value: 'tip', label: 'Tip', Icon: Lightbulb, swatch: 'var(--color-success)' },
 ] as const;
 
-/**
- * Text colour and highlight share one palette. The eight original hexes stay
- * so existing marks still read as selected; Brown and Teal fill the two
- * gaps against the Notion / Plane row (grey → brown → warm → cool → red).
- */
-const PRESET_COLORS = [
-  { label: 'Grey', value: '#6b7280' },
-  { label: 'Brown', value: '#b45309' },
-  { label: 'Orange', value: '#f97316' },
-  { label: 'Yellow', value: '#eab308' },
-  { label: 'Green', value: '#22c55e' },
-  { label: 'Teal', value: '#0d9488' },
-  { label: 'Blue', value: '#3b82f6' },
-  { label: 'Purple', value: '#a855f7' },
-  { label: 'Pink', value: '#ec4899' },
-  { label: 'Red', value: '#ef4444' },
-] as const;
-
-const SWATCH_BUTTON =
-  'flex size-6 items-center justify-center rounded-full border outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring';
-
 /* ----------------------------------------------------------- insert menu -- */
 
 /**
  * Two of the insert actions need a value from the user before they can run: an
- * image needs a URL, a status label needs its text and colour.
+ * image needs a file, a status label needs its text and colour.
  *
  * They are Popovers opened FROM the menu rather than forms inside it, and that
  * is not a style choice. A Radix menu is `role="menu"`, whose typeahead
  * swallows printable keystrokes — the same trap documented for the editor block
  * menu, where a free-form Improve input inside a context menu could not be
- * typed into. Anything with a text field has to leave the menu.
+ * typed into. Image uses a file input, but it still lives in that popover so
+ * the menu never hosts an input.
  */
 type PendingPrompt = 'image' | 'status' | 'emoji' | null;
 
@@ -164,9 +146,11 @@ const NONE_FOLDED: FoldedControls = {
 function InsertMenu({
   editor,
   folded = NONE_FOLDED,
+  pageId,
 }: {
   editor: EditorType;
   folded?: FoldedControls;
+  pageId?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<PendingPrompt>(null);
@@ -175,7 +159,7 @@ function InsertMenu({
   // same moment the popover autofocuses its input, and the input loses.
   const pendingRef = useRef<PendingPrompt>(null);
 
-  const [imageUrl, setImageUrl] = useState('');
+  const [imageBusy, setImageBusy] = useState(false);
   const [statusText, setStatusText] = useState('');
   const [statusColor, setStatusColor] = useState('blue');
 
@@ -206,13 +190,20 @@ function InsertMenu({
   const closePrompt = () => {
     pendingRef.current = null;
     setPending(null);
-    setImageUrl('');
+    setImageBusy(false);
     setStatusText('');
     editor.commands?.focus?.();
   };
 
-  const insertImage = () => {
-    const url = imageUrl.trim();
+  const insertImageFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (!pageId) {
+      toast.error('Save the page first to paste images.');
+      return;
+    }
+    setImageBusy(true);
+    const url = await uploadPastedImage(file, pageId);
+    setImageBusy(false);
     if (!url) return;
     editor.chain().focus().setImage({ src: url }).run();
     closePrompt();
@@ -334,11 +325,9 @@ function InsertMenu({
                   Table
                 </DropdownMenu.Item>
 
-                {/* Trailing ellipsis: the platform convention for "this opens a
-                    form", and here the honest signal that a URL is still owed. */}
                 <DropdownMenu.Item onSelect={() => requestPrompt('image')} className={MENU_ITEM}>
                   <ImageIcon size={15} className="shrink-0" />
-                  Image…
+                  Image
                 </DropdownMenu.Item>
 
                 <DropdownMenu.Item
@@ -530,30 +519,27 @@ function InsertMenu({
         >
           {pending === 'image' && (
             <>
-              <label htmlFor="editor-insert-image-url" className="mb-1.5 block text-[12px] font-medium text-foreground">
-                Image URL
-              </label>
+              <p className="mb-1.5 text-[12px] font-medium text-foreground">Upload image</p>
               <input
-                id="editor-insert-image-url"
-                type="url"
-                value={imageUrl}
-                onChange={(e) => setImageUrl(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && insertImage()}
-                placeholder="https://example.com/diagram.png"
-                className="nm-input w-full text-[13px]"
+                id="editor-insert-image-file"
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                aria-label="Choose image file"
+                data-testid="editor-insert-image-file"
+                disabled={imageBusy}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  void insertImageFile(file);
+                  e.target.value = '';
+                }}
+                className="nm-input w-full text-[13px] file:mr-2 file:border-0 file:bg-transparent file:text-[13px] file:font-medium"
               />
-              <div className="mt-2.5 flex justify-end gap-2">
+              <p className="mt-2 text-[12px] text-muted-foreground">
+                PNG, JPEG, GIF, or WebP. Uploaded as an attachment on this page.
+              </p>
+              <div className="mt-2.5 flex justify-end">
                 <button type="button" onClick={closePrompt} aria-label="Cancel image" className="nm-button-ghost">
                   Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={insertImage}
-                  disabled={!imageUrl.trim()}
-                  aria-label="Insert image"
-                  className="nm-button-primary"
-                >
-                  Insert
                 </button>
               </div>
             </>
@@ -623,198 +609,6 @@ function InsertMenu({
           {pending === 'emoji' && (
             <EmojiPickerContent editor={editor} onClose={closePrompt} />
           )}
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
-  );
-}
-
-/* --------------------------------------------------------------- colours -- */
-
-function ColorRow({
-  label,
-  kind,
-  activeColor,
-  onSelect,
-  onReset,
-  onDone,
-}: {
-  label: string;
-  kind: 'text' | 'highlight';
-  activeColor: string | undefined;
-  onSelect: (color: string) => void;
-  onReset: () => void;
-  onDone: () => void;
-}) {
-  const defaultLabel = `Default ${label.toLowerCase()}`;
-  return (
-    <div>
-      <p className="px-0.5 pb-1.5 text-[12px] font-medium uppercase tracking-wider text-muted-foreground">
-        {label}
-      </p>
-      <div className="grid grid-cols-6 gap-1" role="group" aria-label={label}>
-        <button
-          type="button"
-          title={defaultLabel}
-          aria-label={defaultLabel}
-          aria-pressed={!activeColor}
-          onClick={() => {
-            onReset();
-            onDone();
-          }}
-          className={cn(
-            SWATCH_BUTTON,
-            !activeColor ? 'border-foreground' : 'border-border',
-            kind === 'highlight' && 'bg-background',
-          )}
-        >
-          {kind === 'text' ? (
-            <span className="text-[11px] font-semibold text-muted-foreground">A</span>
-          ) : (
-            <span aria-hidden className="relative block size-3">
-              <span className="absolute inset-0 rounded-full border border-muted-foreground/70" />
-              <span className="absolute inset-x-0 top-1/2 h-px -rotate-45 bg-muted-foreground" />
-            </span>
-          )}
-        </button>
-        {PRESET_COLORS.map((c) => {
-          const selected = activeColor === c.value;
-          const swatchLabel = `${c.label} ${kind === 'text' ? 'text' : 'highlight'}`;
-          return (
-            <button
-              key={`${kind}-${c.value}`}
-              type="button"
-              title={swatchLabel}
-              aria-label={swatchLabel}
-              aria-pressed={selected}
-              data-testid="color-picker-swatch"
-              onClick={() => {
-                onSelect(c.value);
-                onDone();
-              }}
-              className={cn(SWATCH_BUTTON, selected ? 'border-foreground' : 'border-border')}
-              style={kind === 'highlight' ? { backgroundColor: c.value } : undefined}
-            >
-              {kind === 'text' && (
-                <span className="text-[11px] font-semibold" style={{ color: c.value }}>
-                  A
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ColorPanel({
-  textColor,
-  highlightColor,
-  onSelectText,
-  onResetText,
-  onSelectHighlight,
-  onResetHighlight,
-  onDone,
-}: {
-  textColor: string | undefined;
-  highlightColor: string | undefined;
-  onSelectText: (color: string) => void;
-  onResetText: () => void;
-  onSelectHighlight: (color: string) => void;
-  onResetHighlight: () => void;
-  onDone: () => void;
-}) {
-  return (
-    <div className="flex w-[11.5rem] flex-col gap-2.5">
-      <ColorRow
-        label="Color"
-        kind="text"
-        activeColor={textColor}
-        onSelect={onSelectText}
-        onReset={onResetText}
-        onDone={onDone}
-      />
-      <ColorRow
-        label="Highlight"
-        kind="highlight"
-        activeColor={highlightColor}
-        onSelect={onSelectHighlight}
-        onReset={onResetHighlight}
-        onDone={onDone}
-      />
-    </div>
-  );
-}
-
-/**
- * One Color control, not two. Notion and Plane put text colour and highlight
- * in the same panel so the author picks a hue, then a role, without hunting
- * for a second trigger. The A-glyph carries both states: fill for highlight,
- * the letter (and the underline) for text colour.
- */
-function ColorPickerDropdown({
-  textColor,
-  highlightColor,
-  onSelectText,
-  onResetText,
-  onSelectHighlight,
-  onResetHighlight,
-}: {
-  textColor: string | undefined;
-  highlightColor: string | undefined;
-  onSelectText: (color: string) => void;
-  onResetText: () => void;
-  onSelectHighlight: (color: string) => void;
-  onResetHighlight: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>
-        <button
-          type="button"
-          {...{ [TOOLBAR_ITEM_ATTR]: '' }}
-          title="Color"
-          aria-label="Color"
-          aria-haspopup="dialog"
-          data-testid="color-picker-trigger"
-          className="nm-icon-button"
-        >
-          <span className="relative flex items-center justify-center">
-            <span
-              className="flex items-center justify-center rounded-[3px] px-px"
-              style={{ backgroundColor: highlightColor || undefined }}
-            >
-              <Baseline size={15} style={textColor ? { color: textColor } : undefined} />
-            </span>
-            {textColor && (
-              <span
-                aria-hidden
-                className="absolute -bottom-1.5 left-0 right-0 h-[3px] rounded-full"
-                style={{ backgroundColor: textColor }}
-              />
-            )}
-          </span>
-        </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          align="start"
-          sideOffset={6}
-          aria-label="Color swatches"
-          className="z-50 nm-card-elevated p-2.5 outline-none"
-        >
-          <ColorPanel
-            textColor={textColor}
-            highlightColor={highlightColor}
-            onSelectText={onSelectText}
-            onResetText={onResetText}
-            onSelectHighlight={onSelectHighlight}
-            onResetHighlight={onResetHighlight}
-            onDone={() => setOpen(false)}
-          />
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
@@ -957,6 +751,7 @@ export function EditorToolbar({
   onToggleHeaderNumbering,
   pageProperty,
   actions,
+  pageId,
 }: {
   editor: EditorType;
   headerNumbering?: boolean;
@@ -964,6 +759,8 @@ export function EditorToolbar({
   /** Page-level property chip (tags). Not a session action. */
   pageProperty?: React.ReactNode;
   actions?: React.ReactNode;
+  /** Saved page id — image upload needs it. New Page leaves this unset. */
+  pageId?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const containerWidth = useToolbarContainerWidth(containerRef);
@@ -1139,6 +936,7 @@ export function EditorToolbar({
           )}
           <InsertMenu
             editor={editor}
+            pageId={pageId}
             folded={{
               underline: !showUnderline,
               strike: !showStrike,

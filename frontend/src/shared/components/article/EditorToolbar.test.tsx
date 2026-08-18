@@ -239,7 +239,7 @@ describe('EditorToolbar', () => {
 
     for (const label of [
       'Table',
-      'Image…',
+      'Image',
       'Diagram',
       'Mermaid diagram',
       'Status label…',
@@ -276,45 +276,18 @@ describe('EditorToolbar', () => {
     expect(glyph(figures)).not.toBe(glyph(children));
   });
 
-  it('opens a popover — not an in-menu field — for the image URL', () => {
+  it('opens a popover — not an in-menu field — for the image file picker', () => {
     // A Radix menu is role="menu", whose typeahead swallows printable keys.
-    // Any text field has to leave the menu. Same trap as the block menu's
+    // Any input has to leave the menu. Same trap as the block menu's
     // free-form Improve input.
     render(<EditorToolbar editor={createMockEditor()} />);
     openInsertMenu();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Image…' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Image' }));
 
-    const field = screen.getByLabelText('Image URL');
+    const field = screen.getByLabelText('Choose image file');
     expect(field).toBeInTheDocument();
+    expect(field).toHaveAttribute('type', 'file');
     expect(field.closest('[role="menu"]')).toBeNull();
-  });
-
-  it('refuses to insert an image with no URL', () => {
-    render(<EditorToolbar editor={createMockEditor()} />);
-    openInsertMenu();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Image…' }));
-    expect(screen.getByRole('button', { name: 'Insert image' })).toBeDisabled();
-  });
-
-  it('inserts an image from the popover', () => {
-    const setImage = vi.fn(() => chain);
-    const chain: Record<string, unknown> = new Proxy({ setImage } as Record<string, unknown>, {
-      get(target, prop: string) {
-        if (prop === 'setImage') return target.setImage;
-        if (prop === 'run') return vi.fn();
-        return () => chain;
-      },
-    });
-    render(<EditorToolbar editor={createMockEditor({ chain: () => chain })} />);
-    openInsertMenu();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Image…' }));
-
-    fireEvent.change(screen.getByLabelText('Image URL'), {
-      target: { value: 'https://example.com/a.png' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Insert image' }));
-
-    expect(setImage).toHaveBeenCalledWith({ src: 'https://example.com/a.png' });
   });
 
   it('offers the status label its colour and its text outside the menu', () => {
