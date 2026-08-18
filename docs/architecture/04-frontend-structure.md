@@ -248,8 +248,18 @@ Four rules are load-bearing:
 - **The byte cost is bounded by the cap, not mitigated.** Chips render on every
   answer, each thumbnail fetches the FULL attachment (ADR-025 adds no
   server-side resize), so the worst case is `MAX_IMAGE_SOURCES` (4) ×
-  `MAX_IMAGE_BYTES` to paint 14px and 32px squares — held down by both
-  attachment routes' `max-age=3600`. Lower the cap if that stops holding.
+  `MAX_IMAGE_BYTES` **per assistant turn on screen**, held down by both
+  attachment routes' `max-age=3600` — and `AiAssistantPage` renders chips for
+  every turn in the thread (Action runs append to one thread), so an N-turn
+  thread multiplies it by N whether the turns were asked live or reopened.
+  This is not a #1361 regression: a five-question live session already pays
+  5 × 4 thumbnails today, with `useAuthenticatedSrc` holding one blob per
+  chip and no dedupe. **#1361 only makes that state reachable in one
+  gesture** — a reopen replays the whole history at once instead of one turn
+  at a time — which is why PR 2 decides whether thumbnails render lazily (see
+  the **PR 2 flag** bullet at the end of the `/ai` page changes section of
+  `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`).
+  Lower the cap if the single-answer case stops holding.
 
 **In Settings → AI Models, the leg has three admin surfaces**, one per question
 an operator actually asks. *Can it run?* — the **Image embedding** row on **LLM

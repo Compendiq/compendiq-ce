@@ -606,7 +606,12 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
   const conversationsQuery = useQuery<Conversation[]>({
     queryKey: ['llm', 'conversations'],
-    queryFn: () => apiFetch<Conversation[]>('/llm/conversations'),
+    // #1361 PR 1: the list endpoint now returns { items, nextCursor }; this
+    // mirror is deleted in PR 2 (the pane owns the query). Tolerate both.
+    queryFn: async () => {
+      const r = await apiFetch<Conversation[] | { items: Conversation[] }>('/llm/conversations');
+      return Array.isArray(r) ? r : r.items;
+    },
     retry: false,
     staleTime: 30_000,
     enabled: hasConsumers,
@@ -673,10 +678,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
       // (llm-ask.ts `StoredChatMessage`), and the route returns the messages
       // JSONB verbatim — so reopening a thread must carry the marker across or
       // the refusal silently downgrades to an ordinary answer on reload, which
-      // is precisely the state #1119 exists to stop rendering. Note the
-      // persisted turn has no `sources`: the backend stores only
-      // {role, content, refused} and drops the "closest matches attached"
-      // sentence with them, so the reloaded turn claims nothing it cannot show.
+      // is precisely the state #1119 exists to stop rendering.
+      // Since #1361 the persisted turn carries its `sources` (the chip
+      // allow-list) — the mapping below reads them; the persisted PROSE still
+      // omits the "closest matches attached" sentence, so a reloaded refusal
+      // never names a list it does not show.
       const conv = await apiFetch<{ messages: Array<{ role: string; content: string; sources?: Source[]; refused?: boolean }>; model: string; id: string }>(`/llm/conversations/${id}`);
       updateThread(threadKey, () => ({
         messages: conv.messages

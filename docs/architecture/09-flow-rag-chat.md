@@ -136,7 +136,7 @@ sequenceDiagram
         end
         PROV-->>BE: done
         BE->>CACHE: setCachedResponse(key, answer)
-        BE->>CONV: upsert message + answer + sources
+        BE->>CONV: append user turn + answer + sources (atomic jsonb ||)
         BE->>PG: INSERT audit_log (tokens, latency, doc_ids)
         BE-->>FE: SSE { done:true, conversationId, sources }
     end
@@ -223,10 +223,22 @@ similarity rather than a similarity of zero.
 Two range traps. `vectorScore` is `1 - (embedding <=> query)` and pgvector's
 cosine distance runs to 2, so the true range is `[-1,1]`; the `/pages` search
 list therefore renders a percentage only for a **positive** similarity. And
-`sources` are never persisted — `saveConversation` writes `ChatMessage[]`, i.e.
-`{role, content}` (see the source-objects note later in this document) — so a
-replayed conversation carries no sources and shows no badge regardless of any
-of this.
+`sources` ARE persisted per assistant turn since #1361 — `saveConversation`
+writes `{role, content, refused?, sources?}` through `toPersistedSources`
+(the chip allow-list: no `score`, no `rerankScore`, `pageId` omitted for
+external/web sources) on the stream, cache-hit and refusal paths alike — so a
+reopened conversation renders its citation chips and its confidence badge
+(computed client-side from `similarity`) exactly as the live answer did; a
+refusal still shows no badge (#1119). An image source (#1115 P3's
+`kind: 'image'` entries) persists its `kind` and `attachmentUrl` together —
+or, when the URL is empty or outside the attachment routes
+(`ATTACHMENT_URL_PATTERN`), the entry is dropped entirely, since its page is
+already carried by the page-shaped entry for the same search result — so a
+reopened answer shows the same thumbnails rather than a duplicate page chip;
+`similarity` on that shape stays `null` either way.
+`GET /llm/conversations/:id` annotates a
+source `unavailable: true` at read time when its page is trashed or no longer
+visible to the caller (`visiblePagesPredicate`, the retrieval path's own rule).
 
 `search_analytics.max_score` deliberately still stores the **fusion** value for
 `hybrid` and `keyword_fallback` rows. Repointing it at `vectorScore` would make
@@ -1093,8 +1105,10 @@ refusal as context) and stripped from the messages sent to the model. A
 refusal is an honest SSE turn via the shared terminal-turn helper
 (`sendCachedSSE` with `cached: false`): the message + the weak sources +
 `refused: true` on the final frame (the #1119 chat surface keys on it; the
-live text names the attached sources, the persisted text — which has no
-source list on reload — does not), persisted to the conversation, never
+live text names the attached sources; the persisted text does not, but since
+#1361 the weak sources ride the persisted turn as structured data and reopen
+under the same "Closest matches — not used" heading), persisted to the
+conversation, never
 cached, no chat completion billed (the query embedding and any rerank call
 already ran — they are the cost of measuring), no `llm_audit_log` row (that
 log attests model calls, matching the cache-hit path). Both scales are
@@ -1950,15 +1964,59 @@ it.** `GET /pages/:id` resolves a `/^\d+$/` id against the integer PK
 `/pages/<confluenceId>` does not 404, it silently opens whichever unrelated
 page holds that PK, which is worse than the not-found this issue fixed.
 Nothing needs the fallback: `/llm/ask` has always emitted `pageId` on
-knowledge-base hits, the other three routes emit only web sources (which carry
-the URL), and sources are **not persisted** with a conversation —
-`llm_conversations.messages` stores `{role, content}` only, so there is no
-back-catalogue of `pageId`-less sources to serve.
+knowledge-base hits, and the other three routes emit only web sources (which
+carry the URL). Persisted sources (#1361) carry the same `pageId`, so the
+back-catalogue has no `pageId`-less KB source either — the rule stands on that
+ground now that sources are stored.
 
 For the same reason the RAG cache key's doc-id list uses `confluenceId`
 falling back to `page:<pageId>` — a set of NULL ids collapses to
 indistinguishable empty strings, and two different sets of standalone pages
 would otherwise share one key.
+
+## Conversation persistence (#1361)
+
+`llm_conversations` is the row behind `/ai/c/:id`. What `POST /llm/ask` writes,
+in order:
+
+- **Stale id → 404, early.** A `conversationId` that is not the caller's answers
+  404 before retrieval and before any SSE header (foreign ids get the same
+  answer). The client drops the id; its next ask starts a fresh row.
+- **`page_ref` at INSERT.** The page a dock conversation started from, resolved
+  through `resolvePageRef` (internal id first, `confluence_id` second,
+  int4-safe) and authorised with `userCanAccessPage`; anything unresolved or
+  unauthorised stores `NULL`. The list joins `pages` (`deleted_at IS NULL`) for
+  `pageTitle`; a trashed page yields no chip. Retrieval never falls back to
+  `page_ref` — origin, not live scope.
+- **Atomic append.** `UPDATE … SET messages = messages || $3::jsonb … RETURNING id`
+  with the new `(user, assistant)` pair only. Concurrent tabs interleave at pair
+  granularity. Zero rows (deleted mid-answer) → the final frame carries
+  `conversationId: null` and the exchange is not resurrected.
+- **Sources per turn** — see *Score semantics* above.
+- **Initial title** — the first question, whitespace-collapsed, cut on a word
+  boundary at ≤ 80 chars with an ellipsis (`initialTitleFromQuestion`);
+  `title_source = 'question'`. `PATCH /llm/conversations/:id { title }` sets
+  `'user'` and does not bump `updated_at` (it would re-bucket the row). Auto-title
+  (PR 3 of #1361) writes only while `title_source = 'question'`.
+- **Replay budget (decision 10).** `selectReplayableHistory` replays the newest
+  whole exchanges within `HISTORY_REPLAY_TOKEN_BUDGET` (4,000 tokens by
+  `estimateTokens`, a constant — not an env var). Pairing is by role: an
+  assistant turn and the user turn before it; a user turn with no assistant after
+  it (what a refused exchange leaves behind) is dropped and never counted. The
+  stream-path final frame carries `historyTruncated: true` when an exchange was
+  dropped, and `GET /llm/conversations/:id` returns the same verdict on reopen.
+
+The read side: `GET /llm/conversations?limit&cursor` is keyset-paged on
+`(updated_at DESC, id DESC)` (`llm_conversations_user_updated_idx`), returns
+`{ items, nextCursor }` with ISO timestamps, `titleSource`, `pageId`, `pageTitle`;
+`GET :id` returns the summary plus `messages` and `historyTruncated`; `DELETE`
+stays idempotent. All history routes are `fastify.authenticate` only — reading or
+deleting your own history is not model consumption, and a user stripped of
+`llm:query` cannot append. Contracts: `ConversationSummarySchema`,
+`ConversationDetailSchema`, `ConversationListQuerySchema`,
+`ConversationListResponseSchema`, `UpdateConversationSchema`, `SourceSchema`,
+`StoredChatMessageSchema` in `@compendiq/contracts`. Design of record:
+`docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`.
 
 ## Cache + stampede protection
 

@@ -2,16 +2,9 @@ import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat, type ChatMessage, type ChatContentPart } from '../../domains/llm/services/openai-compatible-client.js';
-
-/**
- * A persisted conversation turn. `refused` marks a #1105 confidence refusal:
- * it is persistence/UI metadata, STRIPPED before messages are sent to the
- * model (a refusal is not model context — replaying "I am not answering"
- * invites imitation) and excluded from the gate's history exemption (a
- * refusal turn grounds nothing).
- */
-type StoredChatMessage = ChatMessage & { refused?: boolean };
-
+import type { PersistedSource } from '@compendiq/contracts';
+import { toPersistedSources } from '../../domains/llm/services/persisted-source.js';
+import { initialTitleFromQuestion } from '../../domains/llm/services/conversation-title.js';
 import { contentToText } from '../../domains/llm/services/prompts.js';
 import { hybridSearch, buildRagContext, type RetrievalMeta } from '../../domains/llm/services/rag-service.js';
 // #1112: deep search's wrapper around hybridSearch. Its own module, not a
@@ -39,6 +32,7 @@ import { AskRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { selectReplayableHistory } from '../../domains/llm/services/history-budget.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
 import {
   resolveSystemPrompt,
@@ -46,6 +40,7 @@ import {
   sendCachedSSE,
   sanitizeLlmInput,
   resolvePageRef,
+  type ResolvedPageRef,
   resolveImagePart,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
@@ -54,6 +49,15 @@ import {
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
+
+/**
+ * A persisted conversation turn. `refused` marks a #1105 confidence refusal:
+ * it is persistence/UI metadata, STRIPPED before messages are sent to the
+ * model (a refusal is not model context — replaying "I am not answering"
+ * invites imitation) and excluded from the gate's history exemption (a
+ * refusal turn grounds nothing).
+ */
+type StoredChatMessage = ChatMessage & { refused?: boolean; sources?: PersistedSource[] };
 
 /**
  * Why the ask path declined to answer. Emitted as `refusalReason` on the
@@ -144,8 +148,10 @@ const REFUSAL_TEXT: Record<RefusalReason, string> = {
   // matches exist and may well be the right ones, and the reason they were
   // not used is a property of THIS deployment's chat model or its settings.
   // The sentence naming the attachments is the live-only note below, for the
-  // same reason as the other three — a reopened thread carries no sources, so
-  // a persisted "attached below" would point at nothing.
+  // same reason as the other three — the structured `sources` array persists
+  // on reload (#1361) but this prose sentence does not, so a persisted
+  // "attached below" would dangle rather than pointing at the client's own
+  // reload-derived heading.
   image_only_context:
     'The only matches for this question are images, and they were not shown to the assistant.',
 };
@@ -249,16 +255,20 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
 
     // Load conversation history if continuing
     let conversationHistory: StoredChatMessage[] = [];
-    let convId = conversationId;
+    let convId: string | null | undefined = conversationId;
 
     if (convId) {
       const conv = await query<{ messages: StoredChatMessage[] }>(
         'SELECT messages FROM llm_conversations WHERE id = $1 AND user_id = $2',
         [convId, userId],
       );
-      if (conv.rows.length > 0) {
-        conversationHistory = conv.rows[0]!.messages;
+      // #1361: a stale or foreign id is a 404 BEFORE retrieval and before any
+      // SSE header, never a silent 0-row UPDATE later. Foreign ids get the
+      // same answer — do not reveal existence.
+      if (conv.rows.length === 0) {
+        throw fastify.httpErrors.notFound('Conversation not found');
       }
+      conversationHistory = conv.rows[0]!.messages;
     }
 
     // Perform hybrid RAG search — falls back to keyword-only if embedding fails
@@ -342,6 +352,13 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       ragContext = cleanRag;
     }
 
+    // #1361: the page a dock conversation started from, written at INSERT.
+    // Resolved through resolvePageRef (internal id first, then confluence_id,
+    // int4-safe) and AUTHORISED with userCanAccessPage — the ask route never
+    // gated a bare `pageId` before, and the conversation list will read the
+    // page title back. Reused by the includeSubPages branch below when it ran.
+    let resolvedPageRef: ResolvedPageRef | undefined;
+
     // If includeSubPages is enabled and a pageId is provided, augment the RAG context
     // with the sub-page tree content
     let multiPageSuffix = '';
@@ -358,6 +375,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // this a caller with only the global `llm:query` permission could
       // extract the content of any page in a space they cannot access.
       const resolved = await resolvePageRef(body.pageId);
+      resolvedPageRef = resolved;
       if (resolved && (await userCanAccessPage(userId, resolved.id))) {
         const bodyResult = await query<{ body_html: string }>(
           'SELECT body_html FROM pages WHERE id = $1 AND deleted_at IS NULL',
@@ -503,9 +521,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // only by keyword search and none was ever measured (#1117).
     //
     // Note the two are separate FIELDS rather than one redefined field purely
-    // for legibility — `sources` is never persisted (saveConversation below
-    // writes `ChatMessage[]`, i.e. `{role, content}`), so a replayed
-    // conversation carries no sources at all and renders no badge regardless.
+    // for legibility. `sources` IS persisted per assistant turn since #1361 —
+    // through `toPersistedSources`, which keeps what a chip renders and drops
+    // `score`/`rerankScore` — so a reopened conversation renders its chips and
+    // confidence badge (computed client-side from `similarity`).
     const sources = [
       ...searchResults.map((r) => ({
         pageId: r.pageId,
@@ -596,31 +615,58 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         .map(({ _rank, ...source }) => source),
     ];
 
-    // Helper to save/create conversation from a cached answer or a refusal.
-    // The row's `model` column is the THREAD's configured model, not an
-    // attestation that it was invoked — a refusal writes it without a call.
-    const saveConversation = async (answer: string, opts?: { refused?: boolean }) => {
-      const newMessages: StoredChatMessage[] = [
-        ...conversationHistory,
-        { role: 'user', content: question },
-        opts?.refused
-          ? { role: 'assistant', content: answer, refused: true }
-          : { role: 'assistant', content: answer },
-      ];
+    // Helper to save/create conversation from a streamed, cached, or refused
+    // answer. The row's `model` column is the THREAD's configured model, not
+    // an attestation that it was invoked — a refusal writes it without a call.
+    // Returns the id the final frame must carry (null when the row vanished
+    // under us) and whether this call INSERTed (PR 3's auto-title trigger).
+    const persistedSources = toPersistedSources(sources);
+    const pageRefForInsert = async (): Promise<number | null> => {
+      if (!body.pageId) return null;
+      const resolved = resolvedPageRef ?? (await resolvePageRef(body.pageId));
+      if (!resolved) return null;
+      return (await userCanAccessPage(userId, resolved.id)) ? resolved.id : null;
+    };
+    const saveConversation = async (
+      answer: string,
+      opts?: { refused?: boolean },
+    ): Promise<{ id: string | null; inserted: boolean }> => {
+      const assistantTurn: StoredChatMessage = {
+        role: 'assistant',
+        content: answer,
+        ...(opts?.refused ? { refused: true } : {}),
+        ...(persistedSources.length > 0 ? { sources: persistedSources } : {}),
+      };
+      const newTurns: StoredChatMessage[] = [{ role: 'user', content: question }, assistantTurn];
 
       if (convId) {
-        await query(
-          'UPDATE llm_conversations SET messages = $3, updated_at = NOW() WHERE id = $1 AND user_id = $2',
-          [convId, userId, JSON.stringify(newMessages)],
+        // #1361: atomic append. Two tabs asking concurrently interleave at
+        // pair granularity, so history stays well-formed; the whole array is
+        // never read-modify-written. 0 rows means the row was deleted since
+        // the 404 check above — do not resurrect it.
+        const updated = await query<{ id: string }>(
+          `UPDATE llm_conversations
+              SET messages = messages || $3::jsonb, updated_at = NOW()
+            WHERE id = $1 AND user_id = $2
+            RETURNING id`,
+          [convId, userId, JSON.stringify(newTurns)],
         );
-      } else {
-        const insertResult = await query<{ id: string }>(
-          `INSERT INTO llm_conversations (user_id, model, title, messages)
-           VALUES ($1, $2, $3, $4) RETURNING id`,
-          [userId, resolvedModel, question.slice(0, 100), JSON.stringify(newMessages)],
-        );
-        convId = insertResult.rows[0]!.id;
+        if (updated.rows.length === 0) {
+          logger.warn({ conversationId: convId, userId }, 'Conversation vanished mid-answer; exchange not persisted');
+          convId = null;
+          return { id: null, inserted: false };
+        }
+        return { id: convId, inserted: false };
       }
+
+      const pageRef = await pageRefForInsert();
+      const insertResult = await query<{ id: string }>(
+        `INSERT INTO llm_conversations (user_id, model, title, messages, page_ref)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [userId, resolvedModel, initialTitleFromQuestion(question), JSON.stringify(newTurns), pageRef],
+      );
+      convId = insertResult.rows[0]!.id;
+      return { id: convId, inserted: true };
     };
 
     // ── Honest-refusal gate (#1105, widened by #1114's prerequisite) ─────
@@ -757,12 +803,17 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
      * branch becomes the differently-shaped one (`sendCachedSSE`'s own note).
      */
     const emitRefusal = async (reason: RefusalReason) => {
-      // Persisted text and live text diverge DELIBERATELY: saveConversation
-      // stores {role, content, refused} only, so the reload has no source
-      // list to point at — but the live final frame does attach the weak
-      // sources (#1119's hook), and an unexplained chip row under "I am not
-      // answering" reads as sources that were used (#1268 review). Each
-      // surface's text matches what that surface shows.
+      // Persisted TEXT and live TEXT diverge DELIBERATELY, but the sources
+      // do not: saveConversation attaches `persistedSources` to every
+      // assistant turn regardless of `refused` (since #1361), so a reopened
+      // refusal renders the same "Closest matches — not used" chips from the
+      // stored `sources` field. What stays live-only is the "they are
+      // attached below" sentence (REFUSAL_SOURCES_NOTE) — the reload derives
+      // its own heading from the presence of `sources` rather than replaying
+      // stored prose about attachment, and an unexplained chip row under "I
+      // am not answering" with no heading reads as sources that were used
+      // (#1119's hook, #1268 review). Each surface's text matches what that
+      // surface shows.
       // Requested-but-failed grounding is named explicitly: in the reachable
       // "three URLs attached, sidecar down, KB empty" path the URLs are the
       // only thing that failed, and a refusal that answers it with "try
@@ -808,7 +859,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           refusalReason: reason,
           confidence: confidence.score,
           confidenceBasis: confidence.basis,
-          conversationId: convId,
+          conversationId: convId ?? null,
           sources,
         },
         // Nothing was cached — the default `cached: true` would be a lie.
@@ -967,7 +1018,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         await saveConversation(cached.content);
 
         sendCachedSSE(reply, cached.content, {
-          conversationId: convId,
+          conversationId: convId ?? null,
           sources,
         });
         return;
@@ -1032,13 +1083,15 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           ]
           : userTextContent;
 
+      // #1361 (decision 10): replay the newest whole exchanges within a token
+      // budget. Refusal turns never reach the wire (they are persistence/UI
+      // records), and neither do the `refused`/`sources` fields — the walk
+      // strips both. `historyTruncated` rides the final frame so the client
+      // can say older messages are no longer sent.
+      const { replay, truncated: historyTruncated } = selectReplayableHistory(conversationHistory);
       const messages: ChatMessage[] = [
         { role: 'system', content: askPrompt + multiPageSuffix },
-        // Refusal turns are persistence/UI records, not model context —
-        // and the `refused` field must not reach the provider wire.
-        ...conversationHistory.filter((m) => !m.refused).map(
-          ({ role, content }): ChatMessage => ({ role, content }),
-        ),
+        ...replay,
         {
           role: 'user',
           content: userContent,
@@ -1101,8 +1154,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           reply.raw.write(`data: ${JSON.stringify({
             done: true,
             final: true,
-            conversationId: convId,
+            conversationId: convId ?? null,
             sources,
+            ...(historyTruncated ? { historyTruncated: true } : {}),
           })}\n\n`);
         }
       } catch (err) {

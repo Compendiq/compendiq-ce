@@ -172,17 +172,119 @@ export const ApplyImprovementRequestSchema = z.object({
   title: z.string().optional(),
 });
 
-export const ConversationSchema = z.object({
+/**
+ * #1361 — conversation persistence contracts. `title_source` records who
+ * named the row: the trimmed first question, the LLM auto-title (PR 3), or
+ * a user rename — the last is never overwritten.
+ */
+export const TITLE_SOURCES = ['question', 'generated', 'user'] as const;
+export const TitleSourceSchema = z.enum(TITLE_SOURCES);
+export type TitleSource = z.infer<typeof TitleSourceSchema>;
+
+/**
+ * A source persisted beside an assistant turn (the wire `Source` allow-listed
+ * to what a citation chip renders). `pageId` is a positive internal `pages.id`
+ * or ABSENT — the route's `pageId: 0` sentinel for external/web sources is
+ * omitted on persist. `unavailable` is a READ-TIME annotation from
+ * `GET /llm/conversations/:id` (page trashed or no longer visible to the
+ * caller); it is never stored.
+ *
+ * An ABSENT `kind` still means a knowledge-base page or web source — the
+ * #1125 url-keyed discriminator on those two shapes is untouched.
+ * `kind: 'image'` + `attachmentUrl` is #1115 P3's image source, persisted
+ * (#1361) so a reopened answer renders the same thumbnails as the live one.
+ * `similarity` on an image source is always `null`: the hit's own cosine is
+ * cross-modal and sits in a different band than the text cosines beside it
+ * (ADR-025 §8). Deliberately NOT a discriminated union: Zod needs a present
+ * literal on every branch, and the page/web shape deliberately carries none
+ * (#1125 keys those on `url`) — so an absent `kind` has to keep meaning "a
+ * knowledge-base page".
+ *
+ * `attachmentUrl` is restricted to the two authenticated attachment route
+ * prefixes (`ATTACHMENT_URL_PATTERN`), not merely a non-empty string:
+ * `SourceThumbnail` hands it straight to `useAuthenticatedSrc`, which sets
+ * any src NOT starting with `/api/` directly as the rendered `<img src>`, so
+ * an absolute URL stored here would be an unauthenticated outbound request
+ * from the reader's browser on every reopen. Be clear about WHERE that rule
+ * runs: nothing Zod-parses a persisted source today — `toPersistedSources`
+ * builds the row by construction and `GET /llm/conversations/:id` returns
+ * the stored JSON without re-parsing. The runtime gates are the PRODUCER,
+ * which applies this exported pattern before it persists (an entry that
+ * fails it is dropped, see `persisted-source.ts`), and the frontend's
+ * `isImageSource`, which imports the same pattern as the last check before
+ * `<img>`; the schema states the rule so both — and any later writer or
+ * client-side parse — share one definition. The `superRefine` below is the
+ * co-presence half of the same rule: `kind` and `attachmentUrl` come
+ * together, never singly.
+ */
+export const ATTACHMENT_URL_PATTERN = /^\/api\/(local-)?attachments\//;
+
+export const SourceSchema = z.object({
+  pageTitle: z.string(),
+  spaceKey: z.string().nullable().optional(),
+  pageId: z.number().int().positive().optional(),
+  confluenceId: z.string().nullable().optional(),
+  url: z.string().optional(),
+  sectionTitle: z.string().optional(),
+  similarity: z.number().nullable().optional(),
+  unavailable: z.literal(true).optional(),
+  kind: z.literal('image').optional(),
+  attachmentUrl: z.string().regex(ATTACHMENT_URL_PATTERN).optional(),
+}).superRefine((value, ctx) => {
+  if (value.kind === 'image' && value.attachmentUrl === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['attachmentUrl'], message: 'attachmentUrl is required when kind is "image"' });
+  }
+  if (value.attachmentUrl !== undefined && value.kind === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['kind'], message: 'kind must be "image" when attachmentUrl is present' });
+  }
+});
+export type PersistedSource = z.infer<typeof SourceSchema>;
+
+export const StoredChatMessageSchema = z.object({
+  role: z.enum(['user', 'assistant', 'system']),
+  content: z.string(),
+  refused: z.boolean().optional(),
+  sources: z.array(SourceSchema).optional(),
+});
+export type StoredChatMessage = z.infer<typeof StoredChatMessageSchema>;
+
+export const ConversationSummarySchema = z.object({
   id: z.string().uuid(),
+  title: z.string(),
+  titleSource: TitleSourceSchema,
   model: z.string(),
-  title: z.string().nullable(),
-  messages: z.array(z.object({
-    role: z.enum(['user', 'assistant', 'system']),
-    content: z.string(),
-  })),
+  pageId: z.number().int().positive().nullable(),
+  pageTitle: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
+export type ConversationSummary = z.infer<typeof ConversationSummarySchema>;
+
+export const ConversationDetailSchema = ConversationSummarySchema.extend({
+  messages: z.array(StoredChatMessageSchema),
+  /** `selectReplayableHistory(messages).truncated` — the reopen-time half of decision 10. */
+  historyTruncated: z.boolean(),
+});
+export type ConversationDetail = z.infer<typeof ConversationDetailSchema>;
+
+export const ConversationListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(200).optional(),
+});
+export type ConversationListQuery = z.infer<typeof ConversationListQuerySchema>;
+
+export const ConversationListResponseSchema = z.object({
+  items: z.array(ConversationSummarySchema),
+  nextCursor: z.string().nullable(),
+});
+export type ConversationListResponse = z.infer<typeof ConversationListResponseSchema>;
+
+export const UpdateConversationSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+});
+export type UpdateConversationBody = z.infer<typeof UpdateConversationSchema>;
+
+export const ConversationIdParamSchema = z.object({ id: z.string().uuid() });
 
 export const ImprovementSchema = z.object({
   id: z.string().uuid(),
@@ -217,7 +319,6 @@ export type DiagramType = z.infer<typeof GenerateDiagramRequestSchema>['diagramT
 export type AnalyzeQualityRequest = z.infer<typeof AnalyzeQualityRequestSchema>;
 export type ForceEmbedTreeRequest = z.infer<typeof ForceEmbedTreeRequestSchema>;
 export type ApplyImprovementRequest = z.infer<typeof ApplyImprovementRequestSchema>;
-export type Conversation = z.infer<typeof ConversationSchema>;
 export type Improvement = z.infer<typeof ImprovementSchema>;
 export type OllamaModel = z.infer<typeof OllamaModelSchema>;
 export type DocumentFormat = z.infer<typeof DocumentFormatSchema>;

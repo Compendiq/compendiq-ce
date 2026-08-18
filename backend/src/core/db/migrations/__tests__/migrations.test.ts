@@ -224,6 +224,45 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
       expect(result.rows).toHaveLength(1);
       expect(result.rows[0].data_type).toBe('jsonb');
     });
+
+    it('has page_ref (INTEGER FK, ON DELETE SET NULL), title_source, and no page_id (#1361)', async () => {
+      const cols = await query<{ column_name: string; data_type: string; column_default: string | null }>(
+        `SELECT column_name, data_type, column_default
+         FROM information_schema.columns
+         WHERE table_name = 'llm_conversations'`,
+      );
+      const byName = Object.fromEntries(cols.rows.map((r) => [r.column_name, r]));
+      expect(byName.page_id).toBeUndefined();
+      expect(byName.page_ref?.data_type).toBe('integer');
+      expect(byName.title_source?.data_type).toBe('text');
+      expect(byName.title_source?.column_default).toContain('question');
+
+      const fk = await query<{ confdeltype: string; confrelid: string }>(
+        `SELECT confdeltype, confrelid::regclass::text AS confrelid
+         FROM pg_constraint
+         WHERE conrelid = 'llm_conversations'::regclass AND contype = 'f'
+           AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
+                               WHERE attrelid = 'llm_conversations'::regclass AND attname = 'page_ref')]`,
+      );
+      expect(fk.rows).toHaveLength(1);
+      expect(fk.rows[0].confrelid).toBe('pages');
+      expect(fk.rows[0].confdeltype).toBe('n'); // SET NULL
+
+      const check = await query<{ def: string }>(
+        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+         WHERE conrelid = 'llm_conversations'::regclass AND contype = 'c'`,
+      );
+      expect(check.rows.some((r) => r.def.includes("'question'") && r.def.includes("'generated'") && r.def.includes("'user'"))).toBe(true);
+    });
+
+    it('indexes (user_id, updated_at DESC, id DESC) for the conversation list (#1361)', async () => {
+      const idx = await query<{ indexdef: string }>(
+        `SELECT indexdef FROM pg_indexes
+         WHERE tablename = 'llm_conversations' AND indexname = 'llm_conversations_user_updated_idx'`,
+      );
+      expect(idx.rows).toHaveLength(1);
+      expect(idx.rows[0].indexdef).toMatch(/\(user_id, updated_at DESC, id DESC\)/);
+    });
   });
 
   describe('extensions', () => {

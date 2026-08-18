@@ -59,8 +59,9 @@ export function RefusalMark({ className }: { className?: string }) {
  * answer was built from. The backend makes the same distinction in its live
  * text ("The closest partial matches are attached as sources for reference —
  * none matched well enough to use"), and deliberately omits that sentence from
- * the PERSISTED copy, because a reloaded thread carries no sources at all —
- * so this heading renders only when sources are actually present.
+ * the PERSISTED copy. Since #1361 the weak sources themselves ride the
+ * persisted turn as structured data, so this heading renders on a reloaded
+ * refusal too, whenever sources are present — live or replayed alike.
  */
 export const REFUSAL_SOURCES_LABEL = 'Closest matches — not used';
 

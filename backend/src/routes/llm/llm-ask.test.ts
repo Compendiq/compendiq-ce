@@ -577,8 +577,8 @@ describe('POST /api/llm/ask', () => {
       expect(final.confidenceBasis).toBe('similarity');
       // The closest sources still travel — "one of them may still help".
       expect((final.sources as unknown[]).length).toBe(1);
-      // Live text explains the attached chips; persisted text (no sources on
-      // reload) does not — each surface's copy matches what it shows.
+      // Live text explains the attached chips; persisted text does not —
+      // each surface's copy matches what it shows.
       const contentFrame = events.find((f) => typeof f.content === 'string')!;
       expect(contentFrame.content).toContain('attached as sources');
       const upsert = mockQuery.mock.calls.find(
@@ -588,6 +588,13 @@ describe('POST /api/llm/ask', () => {
       const persistedTurn = persisted.find((m) => m.role === 'assistant')!;
       expect(persistedTurn.content).not.toContain('attached as sources');
       expect(persistedTurn.refused).toBe(true);
+      // #1361: the weak sources are persisted as structured data beside the
+      // prose (which still does not promise a list).
+      const persistedSources = persistedTurn.sources as Array<Record<string, unknown>>;
+      expect(Array.isArray(persistedSources)).toBe(true);
+      expect(persistedSources.length).toBeGreaterThan(0);
+      expect(persistedSources[0]).toHaveProperty('pageId');
+      expect(persistedSources[0]).not.toHaveProperty('score');
     });
 
     it('#1115 P3 — a page found ONLY by the image leg never triggers weak_match', async () => {
@@ -954,8 +961,10 @@ describe('POST /api/llm/ask', () => {
       const messages = JSON.parse((insert![1] as unknown[])[3] as string) as Array<{ role: string; content: string }>;
       const assistantTurn = messages.find((m) => m.role === 'assistant')! as { role: string; content: string; refused?: boolean };
       expect(assistantTurn.content).toContain('not answering rather than guessing');
-      // The persisted row has no sources column — the text must not promise
-      // a list that will not exist on reload.
+      // The persisted turn carries its sources as structured data (#1361);
+      // the PROSE must still not promise a list, because the reload derives
+      // its own heading from the presence of `sources` rather than replaying
+      // attachment prose.
       expect(assistantTurn.content.toLowerCase()).not.toContain('listed below');
       // The marker is what keeps this turn out of the model context and out
       // of the gate's history exemption on the next turn.
@@ -1170,6 +1179,240 @@ describe('POST /api/llm/ask', () => {
       expect(messages.some((m) => m.content === 'refusal text here')).toBe(false);
       expect(messages.some((m) => 'refused' in m)).toBe(false);
       expect(messages.some((m) => m.content === 'It uses CI/CD.')).toBe(true);
+    });
+  });
+
+  describe('stale conversationId (#1361)', () => {
+    it('answers 404 before retrieval or any SSE header when the conversation is not the caller\'s', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [] };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'follow-up', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(response.statusCode).toBe(404);
+      expect(response.headers['content-type']).toContain('application/json');
+      expect(JSON.parse(response.body).message).toContain('Conversation not found');
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('persistence shape (#1361)', () => {
+    it('appends a continuation turn atomically with jsonb || and RETURNING id', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [{ messages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }] }] };
+        }
+        return { rows: [{ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('a2'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q2', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(response.statusCode).toBe(200);
+      const update = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE llm_conversations'),
+      )!;
+      expect(update[0]).toContain('messages = messages || $3::jsonb');
+      expect(update[0]).toContain('RETURNING id');
+      const appended = JSON.parse((update[1] as unknown[])[2] as string) as Array<{ role: string; content: string }>;
+      // Only the NEW pair travels — no read-modify-write of the whole array.
+      expect(appended.map((m) => m.role)).toEqual(['user', 'assistant']);
+      expect(appended[1].content).toBe('a2');
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(finals.find((f) => f.final === true)!.conversationId).toBe('5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a');
+    });
+
+    it('carries conversationId: null on the final frame when the append hits 0 rows (deleted mid-answer)', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [{ messages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }] }] };
+        }
+        if (typeof sql === 'string' && sql.includes('UPDATE llm_conversations')) {
+          return { rows: [] };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('a2'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q2', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = finals.find((f) => f.final === true)!;
+      expect('conversationId' in final).toBe(true);
+      expect(final.conversationId).toBeNull();
+      // Nothing was re-INSERTed: the deleted conversation is not resurrected.
+      expect(mockQuery.mock.calls.some((c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'))).toBe(false);
+    });
+
+    it('persists KB sources on the streamed turn without the deprecated score, and omits pageId for an external doc', async () => {
+      mockMcpIsEnabled.mockResolvedValueOnce(true);
+      mockMcpFetchDocumentation.mockResolvedValue({ url: 'https://example.com/doc', title: 'Doc', markdown: 'body' });
+      mockHybridSearch.mockResolvedValue([{
+        pageId: 42, pageTitle: 'Runbook', spaceKey: 'ENG', confluenceId: '123', sectionTitle: 'Rotation',
+        score: 0.9, vectorScore: 0.71, content: 'chunk',
+      }]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'how do we rotate the PAT?', externalUrls: ['https://example.com/doc'] },
+      });
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const messages = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; sources?: Array<Record<string, unknown>> }>;
+      const assistant = messages.find((m) => m.role === 'assistant')!;
+      expect(assistant.sources).toBeDefined();
+      const kb = assistant.sources!.find((s) => s.pageId === 42)!;
+      expect(kb).toEqual({ pageTitle: 'Runbook', spaceKey: 'ENG', pageId: 42, confluenceId: '123', sectionTitle: 'Rotation', similarity: 0.71 });
+      const ext = assistant.sources!.find((s) => s.url === 'https://example.com/doc')!;
+      expect(ext).not.toHaveProperty('pageId');
+      expect(messages.find((m) => m.role === 'user')).not.toHaveProperty('sources');
+    });
+
+    it('persists sources on a cache-hit turn too', async () => {
+      mockGetCachedResponse.mockResolvedValueOnce({ content: 'cached answer' });
+      mockHybridSearch.mockResolvedValue([{ pageId: 7, pageTitle: 'P', spaceKey: 'S', confluenceId: null, score: 0.5, vectorScore: 0.6, content: 'c' }]);
+      mockBuildRagContext.mockReturnValue('ctx');
+
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'cached question' } });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const messages = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; sources?: unknown[] }>;
+      expect(messages.find((m) => m.role === 'assistant')!.sources).toHaveLength(1);
+    });
+
+    it('replays only the newest exchanges within the token budget and flags historyTruncated on the final frame', async () => {
+      // 6 exchanges × (4,000 + 4,000 chars) ≈ 2,000 tokens each; the 4,000-token
+      // budget keeps exactly the newest two.
+      const history: Array<{ role: string; content: string }> = [];
+      for (let n = 1; n <= 6; n++) {
+        history.push({ role: 'user', content: `Q${n} ` + 'x'.repeat(3_996) });
+        history.push({ role: 'assistant', content: `A${n} ` + 'y'.repeat(3_996) });
+      }
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [{ messages: history }] };
+        }
+        return { rows: [{ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('A7'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'Q7', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      const [, , messages] = mockStreamChatClient.mock.calls[0] as [unknown, unknown, Array<{ role: string; content: string }>];
+      const replayed = messages.filter((m) => m.role !== 'system').map((m) => m.content.slice(0, 2));
+      expect(replayed).toEqual(['Q5', 'A5', 'Q6', 'A6', 'Co']); // 'Co' = "Context from knowledge base…" (the current turn)
+      const final = (parseSseBody(response.body) as Array<Record<string, unknown>>).find((f) => f.final === true)!;
+      expect(final.historyTruncated).toBe(true);
+    });
+
+    it('omits historyTruncated when the whole history fits', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [{ messages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }] }] };
+        }
+        return { rows: [{ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('a2'));
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q2', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      const final = (parseSseBody(response.body) as Array<Record<string, unknown>>).find((f) => f.final === true)!;
+      expect('historyTruncated' in final).toBe(false);
+    });
+
+    it('titles a new conversation on a word boundary, never mid-word (#1361)', async () => {
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('ok'));
+      const question = 'What is the recommended procedure for rotating the Confluence personal access token, and who owns it?';
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question } });
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const title = (insert[1] as unknown[])[2] as string;
+      expect(title.length).toBeLessThanOrEqual(81);
+      expect(title.endsWith('…')).toBe(true);
+      expect(question[title.length - 1]).toBe(' '); // the cut fell on a space
+    });
+  });
+
+  describe('page_ref at INSERT (#1361)', () => {
+    function armInsertProbe(opts: { pageRow?: { id: number; confluence_id: string | null; title: string } | null; canAccess: boolean }) {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('FROM pages WHERE id = $1')) {
+          return { rows: opts.pageRow ? [opts.pageRow] : [] };
+        }
+        if (typeof sql === 'string' && sql.includes('FROM pages WHERE confluence_id')) {
+          return { rows: [] };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockUserCanAccessPage.mockResolvedValue(opts.canAccess);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('ok'));
+    }
+    function insertParams(): unknown[] {
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      expect(insert[0]).toContain('page_ref');
+      return insert[1] as unknown[];
+    }
+
+    it('writes the resolved internal id when the caller may see the page', async () => {
+      armInsertProbe({ pageRow: { id: 42, confluence_id: '123', title: 'Doc' }, canAccess: true });
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '42' } });
+      expect(insertParams()[4]).toBe(42);
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 42);
+    });
+
+    it('writes NULL when the caller may not see the page (no title oracle through the list)', async () => {
+      armInsertProbe({ pageRow: { id: 42, confluence_id: '123', title: 'Doc' }, canAccess: false });
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '42' } });
+      expect(insertParams()[4]).toBeNull();
+    });
+
+    it('writes NULL for a Confluence-length id that resolves to nothing, and never int-parses it', async () => {
+      armInsertProbe({ pageRow: null, canAccess: true });
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '12345678901' } });
+      expect(response.statusCode).toBe(200);
+      expect(insertParams()[4]).toBeNull();
+      // resolvePageRef skips the int4 lookup for an 11-digit id
+      expect(mockQuery.mock.calls.some((c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('FROM pages WHERE id = $1'))).toBe(false);
+    });
+
+    it('writes NULL when the ask carries no pageId', async () => {
+      armInsertProbe({ pageRow: null, canAccess: true });
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+      expect(insertParams()[4]).toBeNull();
+      expect(mockUserCanAccessPage).not.toHaveBeenCalled();
     });
   });
 
@@ -1467,7 +1710,11 @@ describe('POST /api/llm/ask', () => {
       expect(sources.every((s) => s.kind === undefined)).toBe(true);
     });
 
-    it('never persists them — sources are not part of the stored conversation', async () => {
+    // #1361: image sources persist WITH their identity (kind + attachmentUrl)
+    // so a reopened conversation renders the same thumbnails the live answer
+    // did — see `toPersistedSources`. They still drop `score`, like every
+    // other persisted source.
+    it('persists image sources with kind and attachmentUrl, and drops score', async () => {
       mockHybridSearch.mockResolvedValue([
         pageWithImages(42, [{ key: 'a.png', similarity: 0.7 }]),
       ]);
@@ -1478,11 +1725,20 @@ describe('POST /api/llm/ask', () => {
         payload: { question: 'q', model: 'llama3' },
       });
 
-      // Nothing written to `llm_conversations` may carry an attachment URL:
-      // the stored shape is `{role, content}` and a replayed conversation
-      // renders no sources at all.
-      const written = JSON.stringify(mockQuery.mock.calls);
-      expect(written).not.toContain('/api/attachments/42/a.png');
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const messages = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; sources?: Array<Record<string, unknown>> }>;
+      const assistant = messages.find((m) => m.role === 'assistant')!;
+      const image = assistant.sources!.find((s) => s.kind === 'image')!;
+      expect(image).toMatchObject({
+        kind: 'image',
+        pageId: 42,
+        pageTitle: 'Page 42',
+        attachmentUrl: '/api/attachments/42/a.png',
+        similarity: null,
+      });
+      expect(image).not.toHaveProperty('score');
     });
   });
 
@@ -2117,6 +2373,22 @@ describe('POST /api/llm/ask', () => {
         // The pictures ride as sources, under #1119's "Closest matches — not
         // used" heading.
         expect((final.sources as Array<Record<string, unknown>>).some((s) => s.kind === 'image')).toBe(true);
+        // #1361: the same image identity is what gets persisted — this is
+        // precisely the refusal where the image sources ARE the whole
+        // grounding (every text row is a synthesised title), so a persist
+        // that dropped `kind`/`attachmentUrl` here would silently downgrade
+        // a reopened refusal to a set of duplicate page chips.
+        const insert = mockQuery.mock.calls.find(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+        )!;
+        const persisted = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; sources?: Array<Record<string, unknown>> }>;
+        const persistedImage = persisted.find((m) => m.role === 'assistant')!.sources!.find((s) => s.kind === 'image')!;
+        expect(persistedImage).toMatchObject({
+          kind: 'image',
+          pageId: 72,
+          attachmentUrl: '/api/attachments/72/sheet.png',
+          similarity: null,
+        });
       });
     }
 

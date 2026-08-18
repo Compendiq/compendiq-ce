@@ -500,13 +500,22 @@ CREATE INDEX idx_page_embeddings_user ON page_embeddings(user_id);
 CREATE TABLE llm_conversations (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  page_id    TEXT,                     -- Optional: linked Confluence page
+  page_id    TEXT,                     -- never written; dropped by 094 (page_ref)
   model      TEXT NOT NULL,
-  title      TEXT,                     -- Auto-generated from first message
+  title      TEXT,                     -- first question, trimmed; auto-title lands in #1361 PR 3
   messages   JSONB NOT NULL DEFAULT '[]',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- 094_llm_conversations_history.sql (#1361)
+ALTER TABLE llm_conversations DROP COLUMN page_id;
+ALTER TABLE llm_conversations
+  ADD COLUMN page_ref INTEGER REFERENCES pages(id) ON DELETE SET NULL,
+  ADD COLUMN title_source TEXT NOT NULL DEFAULT 'question'
+    CHECK (title_source IN ('question', 'generated', 'user'));
+CREATE INDEX IF NOT EXISTS llm_conversations_user_updated_idx
+  ON llm_conversations (user_id, updated_at DESC, id DESC);
 
 -- 008_llm_improvements.sql
 -- (see below)
@@ -1910,6 +1919,20 @@ the provider's body, which stays on
 `UsecaseDefaultSchema` must never gain either. Clearing the assignment is not
 probed: the leg simply goes off, and the index is left in place so re-assigning
 the same pair costs nothing.
+
+### #1361 — conversation persistence adds no use case
+
+ADR-021 is NOT amended with a new use case by #1361. Conversation persistence
+(`page_ref`, per-turn `sources`, atomic append, the `title_source` column, the
+keyset-paged list, `PATCH` rename, the history replay budget) is storage and
+routing, not an outbound model call. The one model call #1361 adds — the
+auto-title (PR 3) — resolves `resolveUsecase('chat')` deliberately, the #1112
+argument: a one-line title is a rewrite any chat model can do, and an eighth
+assignment (after `rerank`, #1104, and `image_embedding`, #1115) would be a knob
+every operator must set before titles work at all.
+It runs after the answer's terminal frame, never in front of it, sanitises its
+inputs, constrains its output, and soft-fails to the word-boundary-trimmed
+question. Design of record: `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`.
 
 ## ADR-022: RAG retrieval honours per-user space permissions
 

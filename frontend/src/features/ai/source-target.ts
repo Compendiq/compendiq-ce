@@ -41,9 +41,9 @@ function parseAbsolute(value: string | null | undefined): URL | null {
  *     non-link is the safe outcome; a wrong page is worse than #1125's
  *     not-found. Nothing is lost by refusing: `/llm/ask` has always emitted
  *     `pageId` on knowledge-base hits, the other three routes only ever emit
- *     web sources (which carry the URL), and sources are not persisted with a
- *     conversation — `llm_conversations.messages` is `{role, content}` only,
- *     so there is no stored back-catalogue of `pageId`-less sources to serve.
+ *     web sources (which carry the URL), and persisted sources (#1361) carry
+ *     the same `pageId`, so the stored back-catalogue has no `pageId`-less KB
+ *     source either.
  *
  * Discrimination is deliberately **not** on `spaceKey === 'Web'`: that is a
  * display label rendered verbatim, and a real Confluence space could be keyed
