@@ -16,9 +16,16 @@ interface AutoTaggerProps {
   currentLabels: string[];
   model?: string;
   className?: string;
+  'aria-label'?: string;
 }
 
-export function AutoTagger({ pageId, currentLabels, model, className }: AutoTaggerProps) {
+export function AutoTagger({
+  pageId,
+  currentLabels,
+  model,
+  className,
+  'aria-label': ariaLabel,
+}: AutoTaggerProps) {
   const queryClient = useQueryClient();
   const [showDialog, setShowDialog] = useState(false);
   const [suggestedTags, setSuggestedTags] = useState<string[]>([]);
@@ -91,6 +98,7 @@ export function AutoTagger({ pageId, currentLabels, model, className }: AutoTagg
         disabled={autoTagMutation.isPending}
         className={className ?? "nm-card nm-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm disabled:opacity-50"}
         title="Suggest tags using AI"
+        aria-label={ariaLabel}
       >
         {autoTagMutation.isPending ? (
           <Loader2 size={14} className="animate-spin" />

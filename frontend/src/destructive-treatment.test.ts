@@ -124,10 +124,13 @@ describe('deleting a page is not promoted by collapsing the inspector', () => {
   // unlabelled glyphs, so the safety around deleting a page became a function
   // of a layout preference.
   it('the collapsed rail carries no delete control', () => {
-    const railStart = pane.indexOf('article-requality-rail-btn');
+    const railStart = pane.indexOf('data-testid="article-right-pane-rail"');
     expect(railStart, 'collapsed rail not found').toBeGreaterThan(-1);
-    const rail = pane.slice(railStart, pane.indexOf('</m.div>', railStart));
+    const railEnd = pane.indexOf('key="expanded-sidebar"', railStart);
+    expect(railEnd, 'expanded pane not found after rail').toBeGreaterThan(railStart);
+    const rail = pane.slice(railStart, railEnd);
     expect(rail, 'Delete is back on the collapsed rail').not.toMatch(/aria-label="Delete page"/);
+    expect(rail, 'Delete handler must stay off the rail').not.toMatch(/handleDelete/);
   });
 
   it('still offers it behind the expanded Danger zone, through the same confirm', () => {

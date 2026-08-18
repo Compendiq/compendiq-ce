@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, X, Save, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, AlertTriangle, RefreshCw, GitGraph, MoreHorizontal, Pin, Trash2 } from 'lucide-react';
+import { FileText, X, Save, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, AlertTriangle, RefreshCw, GitGraph, ListTree, MoreHorizontal, Pin, Trash2 } from 'lucide-react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { toast } from 'sonner';
 import {
@@ -896,6 +896,34 @@ export function PageViewPage() {
                         sideOffset={8}
                         className="z-50 w-52 nm-card-elevated p-1.5"
                       >
+                        {headings.length > 0 && (
+                          <div className="md:hidden">
+                            <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-[11px] font-semibold text-muted-foreground">
+                              Article outline
+                            </DropdownMenu.Label>
+                            {headings.map((heading) => (
+                              <DropdownMenu.Item
+                                key={heading.id}
+                                onSelect={() => {
+                                  const scrollRoot = document.querySelector('[data-scroll-container]') as HTMLElement | null;
+                                  const target = document.getElementById(heading.id);
+                                  if (!scrollRoot || !target) return;
+                                  const top =
+                                    scrollRoot.scrollTop +
+                                    target.getBoundingClientRect().top -
+                                    scrollRoot.getBoundingClientRect().top -
+                                    24;
+                                  scrollRoot.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+                                }}
+                                className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
+                              >
+                                <ListTree size={14} className="shrink-0" />
+                                <span className="truncate">{heading.text}</span>
+                              </DropdownMenu.Item>
+                            ))}
+                            <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                          </div>
+                        )}
                         <DropdownMenu.Item
                           onSelect={() => navigate(`/graph?focus=${encodeURIComponent(id ?? '')}`)}
                           className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
