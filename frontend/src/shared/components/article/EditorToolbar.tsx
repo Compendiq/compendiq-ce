@@ -11,7 +11,7 @@ import {
   Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb,
   Baseline,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
-  Smile, MoreHorizontal,
+  Smile,
 } from 'lucide-react';
 import {
   LAYOUT_PRESETS,
@@ -37,11 +37,12 @@ import { cn } from '../../lib/cn';
  * List of Tables" perhaps twice a year. Two of those icons were even the same
  * glyph for different actions.
  *
- * Frequent operations stay on the surface — marks, lists, colour — and the
- * long tail moves behind two menus that say
- * what they are in words. Nothing was removed: every action the flat row
- * offered is still here, and the two menus put a NAME beside each one, which
- * the icon wall never did.
+ * Frequent operations stay on the surface — marks, colour, lists — and the
+ * long tail moves behind two menus that say what they are in words. Colour
+ * sits immediately left of the bullet list. When the bar is too narrow,
+ * folded tools go into Insert — never a second "…" trigger. Nothing was
+ * removed: every action the flat row offered is still here, and the two
+ * menus put a NAME beside each one, which the icon wall never did.
  *
  * The block-type control is the one genuinely new affordance. The old row
  * showed heading state only as "which of these three icons is lit"; the trigger
@@ -142,7 +143,31 @@ const SWATCH_BUTTON =
  */
 type PendingPrompt = 'image' | 'status' | 'emoji' | null;
 
-function InsertMenu({ editor }: { editor: EditorType }) {
+type FoldedControls = {
+  underline: boolean;
+  strike: boolean;
+  code: boolean;
+  orderedList: boolean;
+  taskList: boolean;
+  align: boolean;
+};
+
+const NONE_FOLDED: FoldedControls = {
+  underline: false,
+  strike: false,
+  code: false,
+  orderedList: false,
+  taskList: false,
+  align: false,
+};
+
+function InsertMenu({
+  editor,
+  folded = NONE_FOLDED,
+}: {
+  editor: EditorType;
+  folded?: FoldedControls;
+}) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<PendingPrompt>(null);
   // Read during the menu's close-autofocus, which fires before the state commit
@@ -153,6 +178,25 @@ function InsertMenu({ editor }: { editor: EditorType }) {
   const [imageUrl, setImageUrl] = useState('');
   const [statusText, setStatusText] = useState('');
   const [statusColor, setStatusColor] = useState('blue');
+
+  const formatState = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      underline: e.isActive('underline'),
+      strike: e.isActive('strike'),
+      code: e.isActive('code'),
+      orderedList: e.isActive('orderedList'),
+      taskList: e.isActive('taskList'),
+    }),
+  });
+
+  const hasFoldedFormat =
+    folded.underline ||
+    folded.strike ||
+    folded.code ||
+    folded.orderedList ||
+    folded.taskList ||
+    folded.align;
 
   const requestPrompt = (kind: Exclude<PendingPrompt, null>) => {
     pendingRef.current = kind;
@@ -216,6 +260,72 @@ function InsertMenu({ editor }: { editor: EditorType }) {
                   if (pendingRef.current) e.preventDefault();
                 }}
               >
+                {hasFoldedFormat && (
+                  <>
+                    <DropdownMenu.Label className={MENU_LABEL}>Format</DropdownMenu.Label>
+                    {folded.underline && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleUnderline().run()}
+                        className={cn(MENU_ITEM, formatState.underline && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <Underline size={15} className="shrink-0" />
+                        Underline
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.strike && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleStrike().run()}
+                        className={cn(MENU_ITEM, formatState.strike && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <Strikethrough size={15} className="shrink-0" />
+                        Strikethrough
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.code && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleCode().run()}
+                        className={cn(MENU_ITEM, formatState.code && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <Code size={15} className="shrink-0" />
+                        Inline Code
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.orderedList && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleOrderedList().run()}
+                        className={cn(MENU_ITEM, formatState.orderedList && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <ListOrdered size={15} className="shrink-0" />
+                        Ordered List
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.taskList && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleTaskList().run()}
+                        className={cn(MENU_ITEM, formatState.taskList && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <CheckSquare size={15} className="shrink-0" />
+                        Task List
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.align && (
+                      <DropdownMenu.Sub>
+                        <DropdownMenu.SubTrigger className={MENU_ITEM}>
+                          <AlignLeft size={15} className="shrink-0" />
+                          Alignment
+                          <ChevronDown size={13} className="ml-auto -rotate-90 opacity-60" />
+                        </DropdownMenu.SubTrigger>
+                        <DropdownMenu.Portal>
+                          <DropdownMenu.SubContent sideOffset={4} className={MENU_CONTENT}>
+                            <AlignmentItems editor={editor} />
+                          </DropdownMenu.SubContent>
+                        </DropdownMenu.Portal>
+                      </DropdownMenu.Sub>
+                    )}
+                    <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                  </>
+                )}
+
                 <DropdownMenu.Item
                   onSelect={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
                   className={MENU_ITEM}
@@ -711,6 +821,51 @@ function ColorPickerDropdown({
   );
 }
 
+function AlignmentItems({ editor }: { editor: EditorType }) {
+  const alignState = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      alignLeft: e.isActive({ textAlign: 'left' }),
+      alignCenter: e.isActive({ textAlign: 'center' }),
+      alignRight: e.isActive({ textAlign: 'right' }),
+      alignJustify: e.isActive({ textAlign: 'justify' }),
+    }),
+  });
+
+  return (
+    <>
+      <DropdownMenu.Item
+        onSelect={() => editor.chain().focus().setTextAlign('left').run()}
+        className={cn(MENU_ITEM, alignState.alignLeft && 'bg-foreground/[0.06] font-medium text-foreground')}
+      >
+        <AlignLeft size={15} className="shrink-0" />
+        Align Left
+      </DropdownMenu.Item>
+      <DropdownMenu.Item
+        onSelect={() => editor.chain().focus().setTextAlign('center').run()}
+        className={cn(MENU_ITEM, alignState.alignCenter && 'bg-foreground/[0.06] font-medium text-foreground')}
+      >
+        <AlignCenter size={15} className="shrink-0" />
+        Align Center
+      </DropdownMenu.Item>
+      <DropdownMenu.Item
+        onSelect={() => editor.chain().focus().setTextAlign('right').run()}
+        className={cn(MENU_ITEM, alignState.alignRight && 'bg-foreground/[0.06] font-medium text-foreground')}
+      >
+        <AlignRight size={15} className="shrink-0" />
+        Align Right
+      </DropdownMenu.Item>
+      <DropdownMenu.Item
+        onSelect={() => editor.chain().focus().setTextAlign('justify').run()}
+        className={cn(MENU_ITEM, alignState.alignJustify && 'bg-foreground/[0.06] font-medium text-foreground')}
+      >
+        <AlignJustify size={15} className="shrink-0" />
+        Justify
+      </DropdownMenu.Item>
+    </>
+  );
+}
+
 function AlignMenuDropdown({ editor }: { editor: EditorType }) {
   const [open, setOpen] = useState(false);
   const activeState = useEditorState({
@@ -757,189 +912,7 @@ function AlignMenuDropdown({ editor }: { editor: EditorType }) {
 
       <DropdownMenu.Portal>
         <DropdownMenu.Content align="start" sideOffset={6} className={MENU_CONTENT}>
-          <DropdownMenu.Item
-            onSelect={() => editor.chain().focus().setTextAlign('left').run()}
-            className={cn(MENU_ITEM, activeState.alignLeft && 'bg-foreground/[0.06] font-medium text-foreground')}
-          >
-            <AlignLeft size={15} className="shrink-0" />
-            Align Left
-          </DropdownMenu.Item>
-          <DropdownMenu.Item
-            onSelect={() => editor.chain().focus().setTextAlign('center').run()}
-            className={cn(MENU_ITEM, activeState.alignCenter && 'bg-foreground/[0.06] font-medium text-foreground')}
-          >
-            <AlignCenter size={15} className="shrink-0" />
-            Align Center
-          </DropdownMenu.Item>
-          <DropdownMenu.Item
-            onSelect={() => editor.chain().focus().setTextAlign('right').run()}
-            className={cn(MENU_ITEM, activeState.alignRight && 'bg-foreground/[0.06] font-medium text-foreground')}
-          >
-            <AlignRight size={15} className="shrink-0" />
-            Align Right
-          </DropdownMenu.Item>
-          <DropdownMenu.Item
-            onSelect={() => editor.chain().focus().setTextAlign('justify').run()}
-            className={cn(MENU_ITEM, activeState.alignJustify && 'bg-foreground/[0.06] font-medium text-foreground')}
-          >
-            <AlignJustify size={15} className="shrink-0" />
-            Justify
-          </DropdownMenu.Item>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
-}
-
-/**
- * The overflow home for controls the responsive fold has no other place to
- * put. Quote/Code block/Divider and Emoji already live in the Insert menu
- * unconditionally, so hiding their toolbar buttons costs nothing — but
- * Strikethrough, Inline Code, Task List, Alignment and Color
- * had NO other home: at the app's own default 1440px layout (both side
- * panels open, ~645px of toolbar width) they vanished with no way to
- * reach them at all (#P2). This renders nothing when every one of them is
- * already visible as its own button.
- */
-function MoreFormattingMenu({
-  editor,
-  activeState,
-  showTaskList,
-  showCode,
-  showStrike,
-  showAlign,
-  showColors,
-}: {
-  editor: EditorType;
-  activeState: {
-    taskList: boolean;
-    code: boolean;
-    strike: boolean;
-    textColor: string | undefined;
-    highlightColor: string | undefined;
-  };
-  showTaskList: boolean;
-  showCode: boolean;
-  showStrike: boolean;
-  showAlign: boolean;
-  showColors: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const close = () => setOpen(false);
-
-  const alignState = useEditorState({
-    editor,
-    selector: ({ editor: e }) => ({
-      alignLeft: e.isActive({ textAlign: 'left' }),
-      alignCenter: e.isActive({ textAlign: 'center' }),
-      alignRight: e.isActive({ textAlign: 'right' }),
-      alignJustify: e.isActive({ textAlign: 'justify' }),
-    }),
-  });
-
-  return (
-    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
-      <DropdownMenu.Trigger asChild>
-        <button
-          type="button"
-          {...{ [TOOLBAR_ITEM_ATTR]: '' }}
-          data-testid="more-formatting-trigger"
-          title="More formatting"
-          aria-label="More formatting"
-          className={menuTriggerClass(open)}
-        >
-          <MoreHorizontal size={15} className="shrink-0" />
-        </button>
-      </DropdownMenu.Trigger>
-
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content align="start" sideOffset={6} className={MENU_CONTENT}>
-          {!showTaskList && (
-            <DropdownMenu.Item
-              onSelect={() => editor.chain().focus().toggleTaskList().run()}
-              className={cn(MENU_ITEM, activeState.taskList && 'bg-foreground/[0.06] font-medium text-foreground')}
-            >
-              <CheckSquare size={15} className="shrink-0" />
-              Task List
-            </DropdownMenu.Item>
-          )}
-          {!showCode && (
-            <DropdownMenu.Item
-              onSelect={() => editor.chain().focus().toggleCode().run()}
-              className={cn(MENU_ITEM, activeState.code && 'bg-foreground/[0.06] font-medium text-foreground')}
-            >
-              <Code size={15} className="shrink-0" />
-              Inline Code
-            </DropdownMenu.Item>
-          )}
-          {!showStrike && (
-            <DropdownMenu.Item
-              onSelect={() => editor.chain().focus().toggleStrike().run()}
-              className={cn(MENU_ITEM, activeState.strike && 'bg-foreground/[0.06] font-medium text-foreground')}
-            >
-              <Strikethrough size={15} className="shrink-0" />
-              Strikethrough
-            </DropdownMenu.Item>
-          )}
-
-          {!showAlign && (
-            <DropdownMenu.Sub>
-              <DropdownMenu.SubTrigger className={MENU_ITEM}>
-                <AlignLeft size={15} className="shrink-0" />
-                Alignment
-                <ChevronDown size={13} className="ml-auto -rotate-90 opacity-60" />
-              </DropdownMenu.SubTrigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.SubContent sideOffset={4} className={MENU_CONTENT}>
-                  <DropdownMenu.Item
-                    onSelect={() => editor.chain().focus().setTextAlign('left').run()}
-                    className={cn(MENU_ITEM, alignState.alignLeft && 'bg-foreground/[0.06] font-medium text-foreground')}
-                  >
-                    <AlignLeft size={15} className="shrink-0" />
-                    Align Left
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    onSelect={() => editor.chain().focus().setTextAlign('center').run()}
-                    className={cn(MENU_ITEM, alignState.alignCenter && 'bg-foreground/[0.06] font-medium text-foreground')}
-                  >
-                    <AlignCenter size={15} className="shrink-0" />
-                    Align Center
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    onSelect={() => editor.chain().focus().setTextAlign('right').run()}
-                    className={cn(MENU_ITEM, alignState.alignRight && 'bg-foreground/[0.06] font-medium text-foreground')}
-                  >
-                    <AlignRight size={15} className="shrink-0" />
-                    Align Right
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    onSelect={() => editor.chain().focus().setTextAlign('justify').run()}
-                    className={cn(MENU_ITEM, alignState.alignJustify && 'bg-foreground/[0.06] font-medium text-foreground')}
-                  >
-                    <AlignJustify size={15} className="shrink-0" />
-                    Justify
-                  </DropdownMenu.Item>
-                </DropdownMenu.SubContent>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Sub>
-          )}
-
-          {!showColors && (
-            <>
-              <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
-              <div className="px-1 pb-0.5 pt-0.5">
-                <ColorPanel
-                  textColor={activeState.textColor}
-                  highlightColor={activeState.highlightColor}
-                  onSelectText={(color) => editor.chain().focus().setColor(color).run()}
-                  onResetText={() => editor.chain().focus().unsetColor().run()}
-                  onSelectHighlight={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
-                  onResetHighlight={() => editor.chain().focus().unsetHighlight().run()}
-                  onDone={close}
-                />
-              </div>
-            </>
-          )}
+          <AlignmentItems editor={editor} />
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
@@ -1003,18 +976,12 @@ export function EditorToolbar({
   // on the right always remain fully visible and accessible across all container widths.
   const showBlockActions = containerWidth >= 1060;
   const showAlign = containerWidth >= 980;
-  const showColors = containerWidth >= 900;
   const showTaskList = containerWidth >= 820;
   const showCode = containerWidth >= 820;
   const showStrike = containerWidth >= 760;
   const showEmojiButton = containerWidth >= 700;
   const showOrderedList = containerWidth >= 640;
   const showUnderline = containerWidth >= 640;
-
-  // Strikethrough, Inline Code, Task List, Alignment and Color
-  // have no other home when the fold hides them — unlike Quote/
-  // Code block/Divider/Emoji, which always live in the Insert menu too.
-  const showMoreFormatting = !(showTaskList && showCode && showStrike && showAlign && showColors);
 
   // Subscribe to editor state so the toggles re-render on selection and
   // formatting changes (#16).
@@ -1038,9 +1005,9 @@ export function EditorToolbar({
 
   return (
     // Single non-wrapping row: actions live on the right, formatting tools on
-    // the left. When the container is narrow, secondary controls gracefully fold
-    // into the Insert dropdown and BlockTypeMenu so the toolbar never generates
-    // horizontal scrollbars or expands the document width.
+    // the left. When the container is narrow, secondary controls fold into
+    // Insert so the toolbar never generates a second overflow trigger,
+    // horizontal scrollbars, or extra document width.
     <div
       ref={containerRef}
       className="flex h-[calc(3rem-1px)] min-h-[calc(3rem-1px)] w-full flex-nowrap items-center justify-between gap-x-1 sm:gap-x-2 py-1 px-1"
@@ -1049,17 +1016,18 @@ export function EditorToolbar({
         ref={rootRef}
         role="toolbar"
         aria-label="Page editor toolbar"
-        // `min-w-0` lets the flex algorithm shrink this group below its
-        // content's natural width when the row is too narrow for the
-        // actions group beside it; without `overflow-x-auto` that shrunk
-        // box does not clip its own children — the default `overflow:
-        // visible` lets them keep painting at full size past the box's
-        // right edge, landing on top of Save/Cancel/Tags rather than
-        // simply overflowing off-screen (#P0 mobile edit toolbar).
-        className="flex min-w-0 flex-nowrap items-center gap-x-0.5 overflow-x-auto sm:gap-x-1"
+        // The marks cluster (`toolbar-scroll`) is the one allowed to
+        // shrink (`min-w-0` + `overflow-x-auto`). Insert sits outside
+        // that scroller as `shrink-0`, so folding tools into it stays
+        // reachable instead of sliding under Tags/Save.
+        className="flex flex-1 flex-nowrap items-center gap-x-0.5 sm:gap-x-1"
         onKeyDown={roving.onKeyDown}
         onFocus={roving.onFocus}
       >
+        <div
+          data-testid="toolbar-scroll"
+          className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-0.5 overflow-x-auto sm:gap-x-1"
+        >
         <ToolbarGroup name="history">
           <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
             <Undo2 size={15} />
@@ -1108,6 +1076,14 @@ export function EditorToolbar({
         <ToolbarSeparator />
 
         <ToolbarGroup name="lists">
+          <ColorPickerDropdown
+            textColor={activeState.textColor}
+            highlightColor={activeState.highlightColor}
+            onSelectText={(color) => editor.chain().focus().setColor(color).run()}
+            onResetText={() => editor.chain().focus().unsetColor().run()}
+            onSelectHighlight={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+            onResetHighlight={() => editor.chain().focus().unsetHighlight().run()}
+          />
           <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
             <List size={15} />
           </ToolbarButton>
@@ -1125,23 +1101,6 @@ export function EditorToolbar({
             <AlignMenuDropdown editor={editor} />
           )}
         </ToolbarGroup>
-
-        {showMoreFormatting && (
-          <>
-            <ToolbarSeparator />
-            <ToolbarGroup name="more-formatting">
-              <MoreFormattingMenu
-                editor={editor}
-                activeState={activeState}
-                showTaskList={showTaskList}
-                showCode={showCode}
-                showStrike={showStrike}
-                showAlign={showAlign}
-                showColors={showColors}
-              />
-            </ToolbarGroup>
-          </>
-        )}
 
         {showBlockActions && (
           <>
@@ -1170,30 +1129,25 @@ export function EditorToolbar({
             </ToolbarGroup>
           </>
         )}
-
-        {showColors && (
-          <>
-            <ToolbarSeparator />
-            <ToolbarGroup name="colors">
-              <ColorPickerDropdown
-                textColor={activeState.textColor}
-                highlightColor={activeState.highlightColor}
-                onSelectText={(color) => editor.chain().focus().setColor(color).run()}
-                onResetText={() => editor.chain().focus().unsetColor().run()}
-                onSelectHighlight={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
-                onResetHighlight={() => editor.chain().focus().unsetHighlight().run()}
-              />
-            </ToolbarGroup>
-          </>
-        )}
+        </div>
 
         <ToolbarSeparator />
 
-        <ToolbarGroup name="insert">
+        <ToolbarGroup name="insert" className="shrink-0">
           {showEmojiButton && (
             <EmojiPicker editor={editor} />
           )}
-          <InsertMenu editor={editor} />
+          <InsertMenu
+            editor={editor}
+            folded={{
+              underline: !showUnderline,
+              strike: !showStrike,
+              code: !showCode,
+              orderedList: !showOrderedList,
+              taskList: !showTaskList,
+              align: !showAlign,
+            }}
+          />
         </ToolbarGroup>
       </div>
 
