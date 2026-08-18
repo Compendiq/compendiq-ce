@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Gauge,
   ListTree,
+  MoreHorizontal,
   PanelRight,
   PanelRightClose,
   Pin,
@@ -18,6 +19,7 @@ import {
   Trash2,
   History,
 } from 'lucide-react';
+
 import { AutoTagger } from '../../../features/pages/AutoTagger';
 import { DockPanel } from '../../../features/ai/dock/DockPanel';
 import { VersionHistory } from '../../../features/pages/VersionHistory';
@@ -357,12 +359,16 @@ export function ArticleRightPane({
 
   const inspectorViewTouchedRef = useRef(false);
   const previousInspectorPageIdRef = useRef(id);
-  // Collapsing this pane drops the outline entirely — the rail carries actions
-  // only. The flyout is what keeps the outline reachable at 40px (#1126).
+  // Collapsing this pane keeps Outline as a first-class rail control. The
+  // flyout is what makes the map usable at 40px (#1126).
   const [outlineFlyoutOpen, setOutlineFlyoutOpen] = useState(false);
+  const [railOverflowOpen, setRailOverflowOpen] = useState(false);
+  const [railOverflowTop, setRailOverflowTop] = useState(0);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const outlineTriggerRef = useRef<HTMLButtonElement>(null);
+  const overflowTriggerRef = useRef<HTMLButtonElement>(null);
+  const railClusterRef = useRef<HTMLDivElement>(null);
   // Escape dismisses the flyout and returns focus to its trigger — which would
   // land on the trigger's focus-to-open handler and reopen what was just
   // dismissed. Set across that one handoff and cleared as soon as focus or the
@@ -776,10 +782,23 @@ export function ArticleRightPane({
     />
   );
 
-  // Collapsed rail — glass pill style
+  // Collapsed rail — reading gutter + one overflow. Expand, Outline,
+  // Assistant and Pin stay first-class; everything that lives behind
+  // "More actions" on the expanded Details tab stays behind one More
+  // control here too. Delete is still absent: collapse must not promote it.
   if (collapsed) {
     const railIconBtn =
       'rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
+    const railMenuItem =
+      'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
+    const assistantHint = formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac());
+    const pinHint = formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac());
+    const closeOutlineUnlessMovingInside = (next: Node | null) => {
+      if (outlineTriggerRef.current?.contains(next)) return;
+      if (document.getElementById('article-outline-flyout')?.contains(next)) return;
+      suppressFlyoutReopenRef.current = false;
+      setOutlineFlyoutOpen(false);
+    };
     return (
       <>
       {/* Positioning context for the outline flyout. `mouseleave` fires on DOM
@@ -787,18 +806,23 @@ export function ArticleRightPane({
           inside this wrapper and the pointer can travel into it without the
           panel closing underneath — WCAG 1.4.13's "hoverable" requirement. */}
       <div
+        ref={railClusterRef}
         className="relative flex shrink-0"
         onMouseLeave={() => {
           suppressFlyoutReopenRef.current = false;
           setOutlineFlyoutOpen(false);
         }}
         onBlur={(e) => {
-          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-          suppressFlyoutReopenRef.current = false;
-          setOutlineFlyoutOpen(false);
+          closeOutlineUnlessMovingInside(e.relatedTarget as Node | null);
         }}
         onKeyDown={(e) => {
-          if (e.key !== 'Escape' || !outlineFlyoutOpen) return;
+          if (e.key !== 'Escape') return;
+          if (railOverflowOpen) {
+            e.stopPropagation();
+            setRailOverflowOpen(false);
+            return;
+          }
+          if (!outlineFlyoutOpen) return;
           // Dismissible (WCAG 1.4.13). Stopped here so the same Escape does not
           // also reach the document listener and exit the article's edit mode.
           e.stopPropagation();
@@ -808,13 +832,14 @@ export function ArticleRightPane({
         }}
       >
       <AnimatePresence mode="wait">
-        <m.div
+        <m.aside
           key="collapsed-rail"
           initial={reduceEffects ? false : { width: 0, opacity: 0 }}
           animate={{ width: 40, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
           className="app-sidebar flex flex-col items-center border-l overflow-hidden"
+          aria-label="Page inspector"
           data-testid="article-right-pane-rail"
         >
           {/* The shortcut lives in the tooltip (and the title below), not glued
@@ -823,217 +848,282 @@ export function ArticleRightPane({
               key — worst of all in the 40px collapsed rail, where it is the
               only other mark on screen. The `title` already carries it, so
               nothing is lost for a mouse user, and `aria-label` for everyone
-              else. */}
-          <div className="flex h-12 w-full flex-col items-center justify-center">
+              else. The left-opening flyout is what a sighted keyboard user
+              gets — native `title` is hover-only. */}
+          <div className="group relative flex h-12 w-full flex-col items-center justify-center">
             <button
               onClick={handleExpandSidebar}
               className={railIconBtn}
-              aria-label="Expand page sidebar"
-              title="Expand sidebar (.)"
+              aria-label="Expand inspector"
+              title="Expand inspector (.)"
             >
               <PanelRight size={16} />
             </button>
+            <span
+              role="tooltip"
+              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+            >
+              Expand inspector · .
+            </span>
           </div>
 
           {/* Outline flyout trigger. Hover OR focus opens it — a hover-only
               reveal would put the outline out of reach of the keyboard
-              entirely (WCAG 2.4.7), and click toggles it for touch. */}
+              entirely (WCAG 2.4.7), and click toggles it for touch. Stays
+              mounted in edit mode: collapsing to write must not hide the map. */}
           {headings.length > 0 && (
             <>
               <div className="my-1 h-px w-6 bg-border" />
-              <button
-                ref={outlineTriggerRef}
-                onMouseEnter={() => {
-                  suppressFlyoutReopenRef.current = false;
-                  setOutlineFlyoutOpen(true);
-                }}
-                onFocus={() => {
-                  if (suppressFlyoutReopenRef.current) return;
-                  setOutlineFlyoutOpen(true);
-                }}
-                onBlur={() => {
-                  suppressFlyoutReopenRef.current = false;
-                }}
-                onClick={() => {
-                  suppressFlyoutReopenRef.current = false;
-                  setOutlineFlyoutOpen((v) => !v);
-                }}
-                className={cn(railIconBtn, outlineFlyoutOpen && 'nm-pill-active text-action')}
-                aria-label="Article outline"
-                aria-expanded={outlineFlyoutOpen}
-                aria-controls="article-outline-flyout"
-                title={`Article outline — ${headings.length} section${headings.length === 1 ? '' : 's'}`}
-                data-testid="article-outline-rail-btn"
-              >
-                <ListTree size={16} />
-              </button>
-            </>
-          )}
-
-          {!editing && page && (
-            <>
-              <div className="my-1 h-px w-6 bg-border" />
-              {/* min-h-0 + overflow-y-auto so the action stack scrolls on
-                  short viewports — without this, the outer overflow-hidden on
-                  the rail would clip the bottom buttons (e.g. Delete). */}
-              <div
-                className="flex min-h-0 w-full flex-1 flex-col items-center gap-0.5 overflow-y-auto p-1"
-                data-testid="article-actions-rail"
-              >
+              <div className="group relative flex w-full justify-center">
                 <button
-                  // #1126: opens the assistant beside the document instead of
-                  // navigating to /ai and losing sight of the page. This is also
-                  // where the dock's focus restore lands when the trigger the
-                  // user pressed was destroyed by opening the dock — this one
-                  // survives every post-open state at >= 1100px.
-                  // #1176: opening is all it does. It used to start a full-page
-                  // rewrite on the same click, which is why it was called "AI
-                  // Improve" and drew a wand.
-                  // Expands the pane onto its Assistant tab. This used to call
-                  // `openDock()`, which after the tab move opened a column that
-                  // no longer renders — a live control that silently did
-                  // nothing.
-                  onClick={() => {
-                    inspectorViewTouchedRef.current = true;
-                    setActiveInspectorView('assistant');
-                    handleExpandSidebar();
+                  ref={outlineTriggerRef}
+                  onMouseEnter={() => {
+                    suppressFlyoutReopenRef.current = false;
+                    setOutlineFlyoutOpen(true);
                   }}
-                  className={railIconBtn}
-                  aria-label="AI Assistant"
-                  title={`AI Assistant (${formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac())})`}
-                  data-testid="article-assistant-rail-btn"
-                  data-ai-assistant-trigger
+                  onFocus={() => {
+                    if (suppressFlyoutReopenRef.current) return;
+                    setOutlineFlyoutOpen(true);
+                  }}
+                  onBlur={() => {
+                    suppressFlyoutReopenRef.current = false;
+                  }}
+                  onClick={() => {
+                    suppressFlyoutReopenRef.current = false;
+                    setOutlineFlyoutOpen((v) => !v);
+                  }}
+                  className={cn(railIconBtn, outlineFlyoutOpen && 'nm-pill-active text-action')}
+                  aria-label="Article outline"
+                  aria-expanded={outlineFlyoutOpen}
+                  aria-controls="article-outline-flyout"
+                  title={`Article outline — ${headings.length} section${headings.length === 1 ? '' : 's'}`}
+                  data-testid="article-outline-rail-btn"
                 >
-                  <Sparkles size={16} />
+                  <ListTree size={16} />
                 </button>
-
-                {aiAutoTagAvailable && id && (
-                  <AutoTagger
-                    pageId={id}
-                    currentLabels={page?.labels ?? []}
-                    className={`${railIconBtn} [&>span]:hidden`}
-                  />
-                )}
-
-                <button
-                  onClick={handleExportPdf}
-                  disabled={exportPdf.isPending}
-                  className={railIconBtn}
-                  aria-label="Export PDF"
-                  title="Export as PDF"
+                <span
+                  role="tooltip"
+                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                 >
-                  {exportPdf.isPending ? (
-                    <Loader2 size={16} className="animate-spin" />
-                  ) : (
-                    <FileDown size={16} />
-                  )}
-                </button>
-
-                <button
-                  onClick={handlePinToggle}
-                  className={cn(
-                    'rounded-lg p-1.5 transition-colors',
-                    isPinned
-                      ? 'nm-pill-active text-action'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                  )}
-                  aria-label={isPinned ? 'Unpin' : 'Pin'}
-                  title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
-                >
-                  <Pin size={16} className={cn(isPinned && 'fill-current')} />
-                </button>
-
-                {id && (
-                  <VersionHistory
-                    pageId={id}
-                    renderTrigger={(historyOpen) => (
-                      <button
-                        type="button"
-                        className={cn(
-                          'rounded-lg p-1.5 transition-colors',
-                          historyOpen
-                            ? 'nm-pill-active text-action'
-                            : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                        )}
-                        aria-label="Version history"
-                        title="Version history"
-                        data-testid="article-history-rail-btn"
-                      >
-                        <History size={16} />
-                      </button>
-                    )}
-                  />
-                )}
-
-                {settings?.confluenceUrl && page.confluenceId && (
-                  <a
-                    href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className={railIconBtn}
-                    aria-label="Open in Confluence"
-                    title="Open in Confluence"
-                  >
-                    <ExternalLink size={16} />
-                  </a>
-                )}
-
-                {page.confluenceId && (
-                  <button
-                    onClick={handleResync}
-                    disabled={resyncMutation.isPending}
-                    className={railIconBtn}
-                    aria-label="Re-sync from Confluence"
-                    title="Re-sync from Confluence"
-                    data-testid="article-resync-rail-btn"
-                  >
-                    <RefreshCw size={16} className={cn(resyncMutation.isPending && 'animate-spin')} />
-                  </button>
-                )}
-
-                <button
-                  onClick={handleReembed}
-                  disabled={reembedMutation.isPending}
-                  className={railIconBtn}
-                  aria-label="Re-embed for RAG"
-                  title="Re-embed for RAG"
-                  data-testid="article-reembed-rail-btn"
-                >
-                  {reembedMutation.isPending ? (
-                    <Loader2 size={16} className="animate-spin" />
-                  ) : (
-                    <Cpu size={16} />
-                  )}
-                </button>
-
-                <button
-                  onClick={handleRequality}
-                  disabled={requalityMutation.isPending}
-                  className={railIconBtn}
-                  aria-label="Re-check quality"
-                  title="Re-check quality"
-                  data-testid="article-requality-rail-btn"
-                >
-                  {requalityMutation.isPending ? (
-                    <Loader2 size={16} className="animate-spin" />
-                  ) : (
-                    <Gauge size={16} />
-                  )}
-                </button>
-
-                {/* Delete is deliberately NOT on the collapsed rail. Expanded,
-                    it sits behind a "Danger zone" disclosure and then a confirm
-                    dialog; collapsing the pane used to PROMOTE it to a
-                    top-level icon in a column of ten unlabelled glyphs, so the
-                    safety around deleting a page became a function of a layout
-                    preference. It stays reachable by expanding the pane, from
-                    the page's own actions, and by its shortcut — none of which
-                    is a stray click away in an icon rail. */}
+                  Article outline · {headings.length}
+                </span>
               </div>
             </>
           )}
-        </m.div>
+
+          <div className="my-1 h-px w-6 bg-border" />
+          <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-0.5 overflow-y-auto p-1">
+            <div className="group relative flex w-full justify-center">
+              <button
+                // #1126: opens the assistant beside the document instead of
+                // navigating to /ai and losing sight of the page. This is also
+                // where the dock's focus restore lands when the trigger the
+                // user pressed was destroyed by opening the dock — this one
+                // survives every post-open state at >= 1100px.
+                // #1176: opening is all it does. It used to start a full-page
+                // rewrite on the same click, which is why it was called "AI
+                // Improve" and drew a wand.
+                // Expands the pane onto its Assistant tab. This used to call
+                // `openDock()`, which after the tab move opened a column that
+                // no longer renders — a live control that silently did
+                // nothing.
+                onClick={() => {
+                  inspectorViewTouchedRef.current = true;
+                  setActiveInspectorView('assistant');
+                  handleExpandSidebar();
+                }}
+                className={railIconBtn}
+                aria-label="AI Assistant"
+                title={`AI Assistant (${assistantHint})`}
+                data-testid="article-assistant-rail-btn"
+                data-ai-assistant-trigger
+              >
+                <Sparkles size={16} className="text-status-ai" />
+              </button>
+              <span
+                role="tooltip"
+                className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+              >
+                AI Assistant · {assistantHint}
+              </span>
+            </div>
+
+            {page && (
+              <div className="group relative flex w-full justify-center">
+                <button
+                  onClick={handlePinToggle}
+                  className={cn(railIconBtn, isPinned && 'nm-pill-active text-action')}
+                  aria-label={isPinned ? 'Unpin page' : 'Pin page'}
+                  aria-pressed={isPinned}
+                  title={`${isPinned ? 'Unpin page' : 'Pin page'} (${pinHint})`}
+                >
+                  <Pin size={16} className={cn(isPinned && 'fill-current')} />
+                </button>
+                <span
+                  role="tooltip"
+                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                >
+                  {isPinned ? 'Unpin page' : 'Pin page'} · {pinHint}
+                </span>
+              </div>
+            )}
+
+            {/* Overflow mirrors expanded Details: Page actions, then
+                Maintenance & AI. Hidden while editing — those verbs are
+                not the writing task. Delete stays off this rail. */}
+            {!editing && page && (
+              <div className="group relative flex w-full justify-center">
+                <button
+                  ref={overflowTriggerRef}
+                  type="button"
+                  className={cn(railIconBtn, railOverflowOpen && 'nm-pill-active text-action')}
+                  aria-label="More page actions"
+                  aria-expanded={railOverflowOpen}
+                  aria-controls="article-rail-overflow"
+                  title="More page actions"
+                  data-testid="article-actions-rail"
+                  onClick={() => {
+                    setRailOverflowOpen((open) => {
+                      const next = !open;
+                      if (next && overflowTriggerRef.current && railClusterRef.current) {
+                        const clusterTop = railClusterRef.current.getBoundingClientRect().top;
+                        setRailOverflowTop(
+                          overflowTriggerRef.current.getBoundingClientRect().top - clusterTop,
+                        );
+                      }
+                      return next;
+                    });
+                  }}
+                >
+                  <MoreHorizontal size={16} />
+                </button>
+                <span
+                  role="tooltip"
+                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                >
+                  More page actions
+                </span>
+              </div>
+            )}
+          </div>
+        </m.aside>
       </AnimatePresence>
+
+      {!editing && page && railOverflowOpen && (
+        <div
+          id="article-rail-overflow"
+          aria-label="More page actions"
+          data-testid="article-rail-overflow"
+          className="absolute right-full z-30 mr-1 w-56 nm-card-elevated p-1.5"
+          style={{ top: railOverflowTop }}
+        >
+                    <div className="px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
+                      Page actions
+                    </div>
+                    {id && (
+                      <VersionHistory
+                        pageId={id}
+                        renderTrigger={() => (
+                          <button
+                            type="button"
+                            className={railMenuItem}
+                            aria-label="Version history"
+                            title="Version history"
+                            data-testid="article-history-rail-btn"
+                          >
+                            <History size={15} className="shrink-0 opacity-70" />
+                            <span className="truncate">Version history</span>
+                          </button>
+                        )}
+                      />
+                    )}
+                    <button
+                      onClick={handleExportPdf}
+                      disabled={exportPdf.isPending}
+                      className={railMenuItem}
+                      aria-label="Export PDF"
+                      title="Export as PDF"
+                    >
+                      {exportPdf.isPending ? (
+                        <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                      ) : (
+                        <FileDown size={15} className="shrink-0 opacity-70" />
+                      )}
+                      <span className="truncate">Export PDF</span>
+                    </button>
+                    {settings?.confluenceUrl && page.confluenceId && (
+                      <a
+                        href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className={railMenuItem}
+                        aria-label="Open in Confluence"
+                        title="Open in Confluence"
+                      >
+                        <ExternalLink size={15} className="shrink-0 opacity-70" />
+                        <span className="truncate">Open in Confluence</span>
+                      </a>
+                    )}
+
+                    <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
+                      Maintenance &amp; AI
+                    </div>
+                    {aiAutoTagAvailable && id && (
+                      <AutoTagger
+                        pageId={id}
+                        currentLabels={page?.labels ?? []}
+                        aria-label="Auto-tag"
+                        className={railMenuItem}
+                      />
+                    )}
+                    {page.confluenceId && (
+                      <button
+                        onClick={handleResync}
+                        disabled={resyncMutation.isPending}
+                        className={railMenuItem}
+                        aria-label="Re-sync from Confluence"
+                        title="Re-sync from Confluence"
+                        data-testid="article-resync-rail-btn"
+                      >
+                        <RefreshCw
+                          size={15}
+                          className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
+                        />
+                        <span className="truncate">Re-sync</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={handleReembed}
+                      disabled={reembedMutation.isPending}
+                      className={railMenuItem}
+                      aria-label="Re-embed for search"
+                      title="Re-embed for search"
+                      data-testid="article-reembed-rail-btn"
+                    >
+                      {reembedMutation.isPending ? (
+                        <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                      ) : (
+                        <Cpu size={15} className="shrink-0 opacity-70" />
+                      )}
+                      <span className="truncate">Re-embed for search</span>
+                    </button>
+                    <button
+                      onClick={handleRequality}
+                      disabled={requalityMutation.isPending}
+                      className={railMenuItem}
+                      aria-label="Re-check quality"
+                      title="Re-check quality"
+                      data-testid="article-requality-rail-btn"
+                    >
+                      {requalityMutation.isPending ? (
+                        <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                      ) : (
+                        <Gauge size={15} className="shrink-0 opacity-70" />
+                      )}
+                      <span className="truncate">Re-check quality</span>
+                    </button>
+        </div>
+      )}
 
       {/* Outline flyout — opens leftward, over the article. `nm-card-elevated`
           is the sanctioned floating-panel surface and is already listed in the
@@ -1406,7 +1496,7 @@ export function ArticleRightPane({
                 onClick={handleReembed}
                 disabled={reembedMutation.isPending}
                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
-                title="Re-embed for RAG"
+                title="Re-embed for search"
                 data-testid="article-reembed-btn"
               >
                 {reembedMutation.isPending ? (

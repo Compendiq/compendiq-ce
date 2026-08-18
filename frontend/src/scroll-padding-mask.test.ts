@@ -17,10 +17,9 @@ import { resolve } from 'path';
  * There are two ways to keep content out of it, and this file enforces both:
  *
  *   (a) COVER IT — reach one padding step past your own box with an opaque
- *       under-mask. NewPagePage's sticky toolbar (the same recipe #1186
- *       first applied to the article editor, before that format bar moved
- *       into the app header — outside the scroll container, so it no longer
- *       needs a mask). The height of that reach is not a free choice: it is
+ *       under-mask. PageViewPage's edit toolbar and NewPagePage's sticky
+ *       toolbar share the same recipe. The height of that reach is not a
+ *       free choice: it is
  *       AppLayout's padding, in another file. It has already drifted once
  *       (pt-4 to pt-5), and a mask that no longer matches fails silently —
  *       the bleed simply returns, thinner. The invariants below read both
@@ -57,6 +56,7 @@ function read(relativePath: string): string {
 }
 
 const appLayoutSource = read('shared/components/layout/AppLayout.tsx');
+const pageViewSource = read('features/pages/PageViewPage.tsx');
 const newPageSource = read('features/pages/NewPagePage.tsx');
 
 /** The classes on AppLayout's main scroll container. */
@@ -82,9 +82,9 @@ const EDIT_TOOLBAR_WRAPPER = 'className="sticky -top-5 z-30 isolate -mt-5"';
  * Located by marker, and tied to the toolbar it belongs to: the reach asserted
  * below is the only place the exact height is pinned, so silently reading some
  * *other* element would leave the real mask free to drift back to a plain box.
- * Every way of not finding the right element throws by name instead. New Page
- * is the remaining in-column sticky format bar; the article editor's bar
- * lives in the app header now.
+ * Every way of not finding the right element throws by name instead. Shared by
+ * PageViewPage's edit toolbar and NewPagePage's sticky toolbar — both use the
+ * identical wrapper/under-mask recipe, so one locator serves both sources.
  */
 function stickyToolbarMaskClasses(source: string, sourceName: string, maskTestId: string): string {
   const wrapperAt = source.indexOf(EDIT_TOOLBAR_WRAPPER);
@@ -122,6 +122,17 @@ describe('nothing shows in the scroll container padding (#1186, #1218)', () => {
     // every mask below can only track one, so the taller one would bleed.
     expect(scrollContainerClasses()).not.toMatch(/(?:^|\s)[a-z-]+:pt-/);
     expect(scrollPaddingTopSteps()).toBeGreaterThan(0);
+  });
+
+  it("the edit toolbar's under-mask reaches exactly that far above the toolbar", () => {
+    const classes = stickyToolbarMaskClasses(pageViewSource, 'PageViewPage.tsx', 'edit-toolbar-mask');
+    expect(classes, `not an under-mask: ${classes}`).toContain('z-[-1]');
+    expect(classes, `mask paints chrome colour, not the pane: ${classes}`).toContain('bg-card');
+    expect(classes, `mask paints the chassis colour over the document: ${classes}`).not.toMatch(/\bbg-background\b/);
+
+    const reach = classes.match(/(?:^|\s)-top-(\d+)(?:\s|$)/);
+    expect(reach, `mask does not reach above its box: ${classes}`).not.toBeNull();
+    expect(Number(reach![1])).toBe(scrollPaddingTopSteps());
   });
 
   it("the New Page sticky toolbar's under-mask reaches exactly that far above the toolbar", () => {

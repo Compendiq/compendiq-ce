@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, X, Save, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, AlertTriangle, RefreshCw, GitGraph, MoreHorizontal, Pin, Trash2 } from 'lucide-react';
+import { FileText, X, Save, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, AlertTriangle, RefreshCw, GitGraph, ListTree, MoreHorizontal, Pin, Trash2 } from 'lucide-react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { toast } from 'sonner';
 import {
@@ -698,6 +698,43 @@ export function PageViewPage() {
     );
   }
 
+  const tagChip = (
+    <TagPopover
+      tags={draftLabels}
+      onAddTag={handleAddTag}
+      onRemoveTag={handleRemoveTag}
+      suggestions={filterOptions?.labels}
+      isLoading={labelsMutation.isPending}
+    />
+  );
+  const sessionActions = (
+    <>
+      <button
+        onClick={handleCancelEditing}
+        title="Cancel editing (Esc)"
+        className="nm-button-ghost shrink-0"
+        data-testid="cancel-edit-btn"
+      >
+        <X size={15} aria-hidden="true" />
+        Cancel
+      </button>
+      <button
+        onClick={handleSave}
+        disabled={updateMutation.isPending}
+        title="Save changes (Ctrl+S)"
+        className="nm-button-primary shrink-0"
+        data-testid="save-page-btn"
+      >
+        {updateMutation.isPending ? (
+          <span className="animate-spin text-xs" aria-hidden="true">…</span>
+        ) : (
+          <Save size={15} aria-hidden="true" />
+        )}
+        {updateMutation.isPending ? 'Saving…' : 'Save'}
+      </button>
+    </>
+  );
+
   return (
     <m.div
       // Enter at opacity:1 for the same reason as PageTransition: an interrupted
@@ -708,82 +745,60 @@ export function PageViewPage() {
       transition={{ duration: 0.18 }}
       data-testid="article-page"
     >
-      {/* Format tools + tags + Cancel/Save live in the 48px app header.
-          The document title stays in the article (the 3xl textarea). Table /
-          layout / section strips stay contextual below — they only exist
-          when the caret is in one of those blocks. */}
+      {/* Format tools + tags + Cancel/Save live in the article column as a
+          sticky strip, not in the 48px app header. The header is outside the
+          scroll container; this bar is inside it, so it needs the #1186
+          under-mask. Table / layout / section strips stay contextual below. */}
       {editing && (
-        <HeaderHost fallbackClassName="border-b border-border bg-card">
-          {(portaled) => {
-            const tagChip = (
-              <TagPopover
-                tags={draftLabels}
-                onAddTag={handleAddTag}
-                onRemoveTag={handleRemoveTag}
-                suggestions={filterOptions?.labels}
-                isLoading={labelsMutation.isPending}
-              />
-            );
-            const sessionActions = (
-              <>
-                <button
-                  onClick={handleCancelEditing}
-                  title="Cancel editing (Esc)"
-                  className="nm-button-ghost shrink-0"
-                  data-testid="cancel-edit-btn"
-                >
-                  <X size={15} aria-hidden="true" />
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  disabled={updateMutation.isPending}
-                  title="Save changes (Ctrl+S)"
-                  className="nm-button-primary shrink-0"
-                  data-testid="save-page-btn"
-                >
-                  {updateMutation.isPending ? (
-                    <span className="animate-spin text-xs" aria-hidden="true">…</span>
-                  ) : (
-                    <Save size={15} aria-hidden="true" />
-                  )}
-                  {updateMutation.isPending ? 'Saving…' : 'Save'}
-                </button>
-              </>
-            );
-            return (
-              <div
-                className={cn(
-                  'flex min-w-0 flex-1 items-center',
-                  !portaled && 'mx-auto min-h-[calc(3rem-1px)] max-w-[1248px] px-4 sm:px-16',
-                )}
-              >
-                {editorInstance ? (
-                  <EditorToolbar
-                    editor={editorInstance}
-                    headerNumbering={headerNumbering}
-                    onToggleHeaderNumbering={toggleHeaderNumbering}
-                    pageProperty={tagChip}
-                    actions={sessionActions}
-                  />
-                ) : (
-                  <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
-                    {tagChip}
-                    {sessionActions}
-                  </div>
-                )}
-              </div>
-            );
-          }}
-        </HeaderHost>
-      )}
+        <div className="sticky -top-5 z-30 isolate -mt-5">
+          {/* Under-mask: behind the toolbar (z-[-1]), covering the toolbar's
+              box AND the strip of scroll-container padding above it.
 
-      {editing && editorInstance && (
-        <EditorContextToolbars
-          editor={editorInstance}
-          className="sticky top-0 z-20 -mx-4 sm:-mx-6"
-          innerClassName="mx-auto max-w-[1248px] px-4 sm:px-16"
-        />
+              A sticky box does NOT pin at the scrollport's top edge when the
+              scroll container has top padding: it is clamped to its
+              containing block, which begins *after* that padding. Measured in
+              Chromium, the stuck toolbar's top is AppLayout's scroll-container
+              content-box top — 20px (its pt-5) below the scrollport edge — so
+              article content scrolls up through that strip in full view before
+              the scrollport clips it (#1186). `-top-5` must therefore track
+              that `pt-5`; scroll-padding-mask.test.ts fails if they diverge.
+
+              Only the block-start edge overhangs. Block-start overflow is
+              clipped by the scrollport and adds no scrollable height, unlike
+              the block-end overhang that inflated /ai's page height (#769).
+              It is deliberately NOT pointer-events-none: the padding strip is
+              paint with nothing else in it, and a mask that opts out of
+              hit-testing there hands clicks to the editor content it just hid. */}
+          <div
+            aria-hidden
+            data-testid="edit-toolbar-mask"
+            className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-card"
+          />
+          <div className="-mx-4 border-b border-border bg-card sm:-mx-6 relative">
+            {editorInstance ? (
+              <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
+                <EditorToolbar
+                  editor={editorInstance}
+                  headerNumbering={headerNumbering}
+                  onToggleHeaderNumbering={toggleHeaderNumbering}
+                  pageProperty={tagChip}
+                  actions={sessionActions}
+                />
+              </div>
+            ) : (
+              <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1200px] items-center justify-end gap-1.5 px-5 sm:px-10">
+                {tagChip}
+                {sessionActions}
+              </div>
+            )}
+            {editorInstance && (
+              <EditorContextToolbars
+                editor={editorInstance}
+                innerClassName="mx-auto max-w-[1200px] px-5 sm:px-10"
+              />
+            )}
+          </div>
+        </div>
       )}
       <div>
         {!editing && (
@@ -896,6 +911,34 @@ export function PageViewPage() {
                         sideOffset={8}
                         className="z-50 w-52 nm-card-elevated p-1.5"
                       >
+                        {headings.length > 0 && (
+                          <div className="md:hidden">
+                            <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-[11px] font-semibold text-muted-foreground">
+                              Article outline
+                            </DropdownMenu.Label>
+                            {headings.map((heading) => (
+                              <DropdownMenu.Item
+                                key={heading.id}
+                                onSelect={() => {
+                                  const scrollRoot = document.querySelector('[data-scroll-container]') as HTMLElement | null;
+                                  const target = document.getElementById(heading.id);
+                                  if (!scrollRoot || !target) return;
+                                  const top =
+                                    scrollRoot.scrollTop +
+                                    target.getBoundingClientRect().top -
+                                    scrollRoot.getBoundingClientRect().top -
+                                    24;
+                                  scrollRoot.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+                                }}
+                                className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
+                              >
+                                <ListTree size={14} className="shrink-0" />
+                                <span className="truncate">{heading.text}</span>
+                              </DropdownMenu.Item>
+                            ))}
+                            <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                          </div>
+                        )}
                         <DropdownMenu.Item
                           onSelect={() => navigate(`/graph?focus=${encodeURIComponent(id ?? '')}`)}
                           className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
