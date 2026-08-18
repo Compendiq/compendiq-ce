@@ -445,15 +445,14 @@ describe('ArticleViewer', () => {
 
     // The ConfluenceChildren TipTap node now renders a React NodeView
     // (ChildrenMacroView) instead of static placeholder text.
-    // Without a page context the component shows "Child Pages" header
-    // and "No child pages" empty state.
+    // The route mock supplies a page id and an empty children payload.
     await waitFor(() => {
       expect(container.querySelector('[data-testid="children-macro-view"]')).toBeTruthy();
     });
 
     const view = container.querySelector('[data-testid="children-macro-view"]')!;
-    expect(view.textContent).toContain('Child Pages');
-    expect(view.textContent).toContain('No child pages');
+    expect(view.textContent).toContain('This page has no children');
+    expect(view.textContent).not.toContain('Children of this page');
   });
 
   // Regression for #876 (defect 2): the ConfluenceAttachments node must be

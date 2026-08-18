@@ -563,7 +563,7 @@ export const ConfluenceChildren = Node.create({
   atom: true,
 
   addAttributes() {
-    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns', 'macro-name'];
     const attrs: Record<string, { default: null; parseHTML: (el: HTMLElement) => string | null }> = {};
     for (const name of paramNames) {
       attrs[name] = {
@@ -580,7 +580,7 @@ export const ConfluenceChildren = Node.create({
 
   renderHTML({ node }) {
     const htmlAttrs: Record<string, string> = { class: 'confluence-children-macro' };
-    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns', 'macro-name'];
     for (const name of paramNames) {
       if (node.attrs[name] != null) htmlAttrs[`data-${name}`] = node.attrs[name];
     }
