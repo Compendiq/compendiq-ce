@@ -6,6 +6,7 @@ import StarterKit from '@tiptap/starter-kit';
 import { Image } from '@tiptap/extension-image';
 import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex, ExtendedTable, BlockShortcutsExtension } from './article-extensions';
+import { CompendiqTableView } from './table-layout-view';
 
 // Helper to extract parseHTML rules from a TipTap extension config
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1218,6 +1219,13 @@ describe('Block in blocks: rich block nesting inside column containers', () => {
     expect(innerSection?.content?.length).toBe(2);
 
     editor.destroy();
+  });
+});
+
+describe('ExtendedTable options', () => {
+  it('keeps required TableOptions and uses CompendiqTableView', () => {
+    expect(ExtendedTable.options.HTMLAttributes).toEqual(expect.any(Object));
+    expect(ExtendedTable.options.View).toBe(CompendiqTableView);
   });
 });
 

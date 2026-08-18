@@ -1385,8 +1385,10 @@ export const TableIndex = Node.create({
  */
 export const ExtendedTable = Table.extend({
   addOptions() {
+    // parent is always defined on Table.extend; optional-call spread would
+    // make required TableOptions fields (HTMLAttributes) optional and fail tsc.
     return {
-      ...this.parent?.(),
+      ...this.parent!(),
       View: CompendiqTableView,
     };
   },
