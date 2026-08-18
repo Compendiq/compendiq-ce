@@ -723,10 +723,11 @@ The feature spans three sub-tabs, one per question you would actually ask.
 difference: **it never inherits the default provider** (the `rerank` rule,
 ADR-021). Leaving it unassigned is how you turn the whole feature off.
 
-- **Assign** a provider + model and press **Save**. The save **probes first and
-  refuses on failure** — it embeds a known image *and* a text and requires the
-  two to come back at the same width. A wrong model here would fill an index
-  with well-formed, meaningless vectors, which is worse than a refusal.
+- **Assign** a provider + model and press **Save use-case assignments**. The
+  save **probes first and refuses on failure** — it embeds a known image *and*
+  a text and requires the two to come back at the same width. A wrong model
+  here would fill an index with well-formed, meaningless vectors, which is
+  worse than a refusal.
 - **Truncate to N dimensions (MRL)** — sent as the `dimensions` parameter on
   every image-embedding request. Leave it empty for the model's native width.
   The 8B needs **4000 or fewer** to stay indexable, and the server must accept
@@ -786,10 +787,11 @@ the screen-reader announcement says a picture was withheld. That is deliberate
 which is how a notice stops being read — and the fact is stated exactly once,
 under that control.
 
-The matched pictures still appear as sources with their thumbnails, so a reader
-can open them. To find out whether your model can see images, look at the chat
-row under **Settings → AI Models → LLM providers**: it shows the verdict, and
-**Re-check** there is how a wrong one is corrected.
+The matched pictures still appear as sources with their thumbnails, and the
+citation opens the page the picture is on — the thumbnail itself is decorative,
+not a link to the file. To find out whether your model can see images, look at
+the chat row under **Settings → AI Models → LLM providers**: it shows the
+verdict, and **Re-check** there is how a wrong one is corrected.
 
 #### What the refusal looks like to a user
 
