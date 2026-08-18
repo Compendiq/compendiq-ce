@@ -154,14 +154,24 @@ templates and never pinned the pictures at all. `corpus-de-images.test.ts` fails
 on the wiring, a leaked caption, a licence outside the allow-list, an unnamed or
 silently-cut author, a missing credit and a body whose sha no longer matches.
 `fixture-de-images.json` is its own file with its own schema and loader (never a
-widened `FixtureSchema`): 307 labels over all 65 pages and 187 images, written
+widened `FixtureSchema`): 309 labels over all 65 pages and 187 images, written
 by blind labellers on a different model from the implementer, in two styles —
 `image`, and `image-negative` distractors with EMPTY `expectedImages`, without
 which a leg that always answers with a picture scores like one that answers
 correctly. `fixture-de-images.test.ts` pins the sha, the counts, the per-language
-negative floors and the caption rule. **Owed:** the four English negatives are
-the merger's rather than a blind labeller's — replacing them with blind-labelled
-ones is **#1370**, and the debt sits against the first measurement.
+negative floors and the caption rule. **The negative slice is blind end to end
+(#1370, done):** the four merger-written English negatives (`img-06-*`) are gone
+and six blind ones took their place (`img-07/08/09-*`, three further independent
+labellers over thirds of the corpus, 24 of the ceiling's 26 rungs now in use).
+The merger adjudicates and never authors — a candidate is kept verbatim or
+rejected, after opening every image on its page — and a labeller's numbering is
+their own candidate order, so a gap in a slice is a rejection. **What that
+leaves owed is the next measurement:** ADR-025's `--images` table was measured on
+the pre-#1370 fixture (307 labels, 22 negatives), so the next run scores a
+different negative slice, must say so beside `delta.perStyle['image-negative']`,
+and cannot pair against those numbers through `--baseline` —
+`pairedBootstrapCi` refuses differing query sets, and no image-axis report is
+committed anyway.
 `--images` is a SECOND AXIS, not a flag on the gate: it answers what the leg
 ADDS, so it seeds a different corpus against a different fixture with its own
 runner, its own report family (`axis: 'images'`) and its own default `--out`

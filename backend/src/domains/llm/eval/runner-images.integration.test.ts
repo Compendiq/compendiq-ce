@@ -322,7 +322,7 @@ describe.skipIf(!dbAvailable)('paired image runner (#1115 P5b)', () => {
     // Three labels rather than one, because WHEN it refuses is the property
     // (review r3): a flag that does not force is a fact about the code path and
     // is fully decided by the first query, so an operator on a real VL endpoint
-    // must not pay all 307 labels × 2 arms to be told the rig was never a pair.
+    // must not pay all 309 labels × 2 arms to be told the rig was never a pair.
     // The participation floor beside it stays post-loop — a bypass really can
     // be intermittent.
     const fixture = fixtureOf([
