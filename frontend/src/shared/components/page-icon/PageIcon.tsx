@@ -12,7 +12,7 @@ const SIZE: Record<PageIconSize, { box: string; lucide: number; emoji: string }>
   title: { box: 'size-9', lucide: 28, emoji: 'text-[32px] leading-none' },
 };
 
-export function pageIconImageUrl(pageId: string | number, sha: string): string {
+function pageIconImageUrl(pageId: string | number, sha: string): string {
   return `/api/pages/${pageId}/icon-image?v=${encodeURIComponent(sha)}`;
 }
 

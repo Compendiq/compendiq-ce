@@ -25,6 +25,13 @@ import { installVirtualizerRectShim } from '../../test-utils';
  * only observable in a real browser against the compiled stylesheet.
  */
 
+/** Title text lives in a span beside an optional PageIcon, inside the <p>. */
+function titleLine(title: HTMLElement): HTMLElement {
+  const line = title.closest('p');
+  if (!line) throw new Error('expected the title to live inside a <p>');
+  return line;
+}
+
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -108,7 +115,7 @@ describe('PagesPage row: mobile title layout', () => {
   it('lets the title row wrap below sm — content-driven, never forced', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const title = await findTitle();
-    const titleRow = title.parentElement as HTMLElement;
+    const titleRow = titleLine(title).parentElement as HTMLElement;
     // The row must be ALLOWED to wrap below sm — without this the badges keep
     // their width and the shrinkable title absorbs the whole deficit — and
     // must NOT wrap at sm+, where the single-line layout is pinned.
@@ -126,7 +133,7 @@ describe('PagesPage row: mobile title layout', () => {
   it('keeps the source/visibility badges in the title row wrap container', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const title = await findTitle();
-    const titleRow = title.parentElement as HTMLElement;
+    const titleRow = titleLine(title).parentElement as HTMLElement;
     // The badges land under the title only if they live in the SAME wrap
     // container. A refactor that moves them out (say, into the trailing
     // cluster) would strand them off-screen or hide them on mobile.
@@ -143,7 +150,7 @@ describe('PagesPage row: mobile title layout', () => {
   it('wraps the pipeline badge below the title block instead of compressing it', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const title = await findTitle();
-    const titleBlock = title.parentElement?.parentElement as HTMLElement;
+    const titleBlock = titleLine(title).parentElement?.parentElement as HTMLElement;
     const button = title.closest('button') as HTMLElement;
     // The pipeline badge ("Not indexed") is a sibling of the title block, so
     // the title-row wrap alone is not enough: the badge would still take its
@@ -297,7 +304,7 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
 
   it('clamps the title block beside the icon instead of wrapping below it', async () => {
     const title = await renderSearchRow();
-    const titleBlock = title.parentElement as HTMLElement;
+    const titleBlock = titleLine(title).parentElement as HTMLElement;
     // `basis-auto` is what makes the wrap content-driven (`flex-1`'s basis of
     // 0 never triggers a line break) — and the clamp is what keeps the block
     // on the icon's line when it does engage: 100% minus the icon's 18px and
@@ -310,7 +317,7 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
 
   it('keeps the similarity chip a shrink-0 sibling of the title block', async () => {
     const title = await renderSearchRow();
-    const titleBlock = title.parentElement as HTMLElement;
+    const titleBlock = titleLine(title).parentElement as HTMLElement;
     const button = title.closest('button') as HTMLElement;
     const chip = screen.getByTitle('Semantic similarity to your query');
     // The chip wraps independently only as a SIBLING of the block, inside the
@@ -324,7 +331,7 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
 
   it('contains the excerpt so the title, not the excerpt, drives the wrap', async () => {
     const title = await renderSearchRow();
-    const titleBlock = title.parentElement as HTMLElement;
+    const titleBlock = titleLine(title).parentElement as HTMLElement;
     const excerpt = screen.getByText(searchExcerpt);
     expect(titleBlock.contains(excerpt)).toBe(true);
     // Without inline-size containment the block's content size is the
