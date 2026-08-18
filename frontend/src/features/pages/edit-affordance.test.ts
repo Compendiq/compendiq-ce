@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
+const inspectorSource = readFileSync(
+  resolve(__dirname, '../../shared/components/article/ArticleRightPane.tsx'),
+  'utf-8',
+);
+
 /**
  * `Edit` is the primary action on `/pages/:id` and was its quietest control:
  * 12px ghost text in a ~24px box, identical in weight to Relocate / Verify /
@@ -51,9 +56,11 @@ describe('the Edit affordance', () => {
     expect(editButton()).toMatch(/shortcutId="toggle-edit"/);
   });
 
-  it('hosts layout presets in the article strip, not the global header', () => {
-    expect(source).toContain('LayoutPresetMenu');
-    expect(source).toContain('useArticleLayoutControls');
+  it('hosts layout presets on the inspector, not the article header strip', () => {
+    expect(source).not.toContain('LayoutPresetMenu');
+    expect(source).not.toContain('useArticleLayoutControls');
+    expect(inspectorSource).toContain('LayoutPresetMenu');
+    expect(inspectorSource).toContain('useArticleLayoutControls');
   });
 
   // The accent belongs to actions, and the only filled teal on this route is
