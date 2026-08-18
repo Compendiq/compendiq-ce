@@ -10,9 +10,11 @@ vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
   writeAttachmentCache: (...args: unknown[]) => mockWriteAttachmentCache(...args),
 }));
 
+const mockIsSystemAdmin = vi.fn().mockResolvedValue(false);
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
   invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
+  isSystemAdmin: (...args: unknown[]) => mockIsSystemAdmin(...args),
 }));
 
 const mockQuery = vi.fn();
@@ -94,6 +96,8 @@ describe('POST /api/pages/:id/images', () => {
     mockQuery.mockReset();
     mockWriteAttachmentCache.mockReset();
     mockWriteAttachmentCache.mockResolvedValue('/data/attachments/42/paste-123-abcd.png');
+    mockIsSystemAdmin.mockReset();
+    mockIsSystemAdmin.mockResolvedValue(false);
     // Default: no query results (tests must set up their own mocks)
     mockQuery.mockResolvedValue({ rows: [] });
   });
@@ -215,7 +219,10 @@ describe('POST /api/pages/:id/images', () => {
 
   it('should return 403 when user does not own the standalone page', async () => {
     mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'other-user', space_key: null }],
+      rows: [{
+        id: 42, source: 'standalone', confluence_id: null,
+        created_by_user_id: 'other-user', space_key: null, visibility: 'private',
+      }],
     });
 
     const response = await app.inject({
@@ -228,6 +235,51 @@ describe('POST /api/pages/:id/images', () => {
     });
 
     expect(response.statusCode).toBe(403);
+  });
+
+  it('should upload to a shared standalone page the user did not create', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: 42, source: 'standalone', confluence_id: null,
+        created_by_user_id: 'other-user', space_key: null, visibility: 'shared',
+      }],
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/images',
+      payload: {
+        dataUri: VALID_PNG_DATA_URI,
+        filename: 'paste-123-abcd.png',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.payload).url).toBe('/api/attachments/42/paste-123-abcd.png');
+    expect(mockWriteAttachmentCache).toHaveBeenCalledOnce();
+  });
+
+  it('should let a system admin upload to a private standalone page they did not create', async () => {
+    mockIsSystemAdmin.mockResolvedValue(true);
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: 42, source: 'standalone', confluence_id: null,
+        created_by_user_id: 'other-user', space_key: null, visibility: 'private',
+      }],
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/images',
+      payload: {
+        dataUri: VALID_PNG_DATA_URI,
+        filename: 'paste-123-abcd.png',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.payload).url).toBe('/api/attachments/42/paste-123-abcd.png');
+    expect(mockWriteAttachmentCache).toHaveBeenCalledOnce();
   });
 
   it('should return 413 when image exceeds 10MB', async () => {
