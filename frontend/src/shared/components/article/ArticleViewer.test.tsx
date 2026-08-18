@@ -451,8 +451,8 @@ describe('ArticleViewer', () => {
     });
 
     const view = container.querySelector('[data-testid="children-macro-view"]')!;
-    expect(view.textContent).toContain('Children of this page');
     expect(view.textContent).toContain('This page has no children');
+    expect(view.textContent).not.toContain('Children of this page');
   });
 
   // Regression for #876 (defect 2): the ConfluenceAttachments node must be

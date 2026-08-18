@@ -67,7 +67,6 @@ describe('ChildrenMacroView', () => {
     renderWithRouter(makeProps());
 
     expect(screen.getByTestId('children-loading')).toBeTruthy();
-    expect(screen.getByText('Children of this page')).toBeTruthy();
     expect(screen.getByText('Loading child pages')).toBeTruthy();
   });
 
@@ -308,7 +307,7 @@ describe('ChildrenMacroView', () => {
     expect(screen.getByText('Child pages will appear on a saved page.')).toBeTruthy();
   });
 
-  it('is a document heading plus rows, not a gadget card', async () => {
+  it('is a document directory without gadget card framing or an injected title', async () => {
     mockApiFetch.mockResolvedValueOnce({ children: [] });
     renderWithRouter(makeProps());
 
@@ -319,6 +318,7 @@ describe('ChildrenMacroView', () => {
     const view = screen.getByTestId('children-macro-view');
     expect(view.classList.contains('border')).toBe(false);
     expect(view.classList.contains('rounded-lg')).toBe(false);
-    expect(screen.getByRole('heading', { level: 3, name: 'Children of this page' })).toBeTruthy();
+    expect(screen.queryByRole('heading')).toBeNull();
+    expect(screen.queryByText('Children of this page')).toBeNull();
   });
 });

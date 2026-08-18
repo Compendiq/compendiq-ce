@@ -38,7 +38,6 @@ function hasUnusedConfluenceParams(attrs: Record<string, unknown>): boolean {
  */
 export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewProps) {
   const { id: pageId } = useParams<{ id: string }>();
-  const headingId = useId();
   const columnsHintId = useId();
   const [children, setChildren] = useState<ChildPage[]>([]);
   const [loading, setLoading] = useState(Boolean(pageId));
@@ -146,54 +145,51 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
       className="confluence-children-view my-4"
       data-testid="children-macro-view"
       data-columns={twoColumns ? '2' : '1'}
-      aria-labelledby={headingId}
+      aria-label="Child pages"
       aria-busy={loading || undefined}
     >
-      <div
-        className="mb-2 flex items-start justify-between gap-3"
-        contentEditable={false}
-      >
-        <h3 id={headingId} className="text-sm font-semibold">
-          Children of this page
-        </h3>
-        {isEditable && (
-          <button
-            type="button"
-            className={cn(
-              'nm-focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium',
-              twoColumns
-                ? 'border-border-interactive bg-background text-foreground border'
-                : 'hover:bg-muted hover:text-foreground border border-transparent text-muted-foreground',
-            )}
-            aria-pressed={twoColumns}
-            aria-describedby={columnsHintId}
-            data-testid="children-columns-toggle"
-            onClick={toggleColumns}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <Columns2 size={14} aria-hidden />
-            Two columns
-          </button>
-        )}
-      </div>
-      {isEditable ? (
-        <p
-          id={columnsHintId}
-          className="text-muted-foreground mb-2 text-xs"
-          data-testid="children-columns-hint"
+      {isEditable && (
+        <div
+          className="mb-2 flex flex-wrap items-center justify-between gap-2"
+          contentEditable={false}
         >
-          Compendiq only. Confluence ignores this.
-        </p>
-      ) : null}
-      {isEditable && unusedParams ? (
-        <p
-          className="text-muted-foreground mb-2 text-xs"
-          data-testid="children-unused-params"
-        >
-          This list is always this page&apos;s children. A pinned parent, count,
-          heading style, and excerpts from Confluence are not shown.
-        </p>
-      ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className={cn(
+                'nm-focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium',
+                twoColumns
+                  ? 'border-border-interactive bg-background text-foreground border'
+                  : 'hover:bg-muted hover:text-foreground border border-transparent text-muted-foreground',
+              )}
+              aria-pressed={twoColumns}
+              aria-describedby={columnsHintId}
+              data-testid="children-columns-toggle"
+              onClick={toggleColumns}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <Columns2 size={14} aria-hidden />
+              Two columns
+            </button>
+            <p
+              id={columnsHintId}
+              className="text-muted-foreground text-xs"
+              data-testid="children-columns-hint"
+            >
+              Compendiq only. Confluence ignores this.
+            </p>
+          </div>
+          {unusedParams && (
+            <p
+              className="text-muted-foreground basis-full text-xs"
+              data-testid="children-unused-params"
+            >
+              This list is always this page&apos;s children. A pinned parent, count,
+              heading style, and excerpts from Confluence are not shown.
+            </p>
+          )}
+        </div>
+      )}
       {loading ? (
         <div
           className={cn(
