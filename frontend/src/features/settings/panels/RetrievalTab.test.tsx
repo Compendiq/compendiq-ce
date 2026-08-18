@@ -1985,3 +1985,91 @@ describe('RetrievalTab — image retrieval (#1115 P3)', () => {
     expect(group.textContent).toMatch(/one extra embedding call per question/i);
   });
 });
+
+describe('RetrievalTab — images shown to the model (#1115 P4)', () => {
+  it('seeds the cap from the server document', async () => {
+    mockApi({ settings: { ...defaultSettings, ragAnswerMaxImages: 5 } });
+    renderTab();
+    await ready();
+
+    await waitFor(() => expect(input('ragAnswerMaxImages').value).toBe('5'));
+  });
+
+  it('defaults to 2 when the server document predates the knob', async () => {
+    mockApi({ settings: defaultSettings });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragAnswerMaxImages').value).toBe('2'));
+  });
+
+  it('saves 0 — the off switch is a value, not an absence', async () => {
+    // The one number that a "falsy means unchanged" diff would drop, and the
+    // only way an operator turns this off without unassigning the model that
+    // fills the index.
+    const puts = mockApi({ settings: { ...defaultSettings, ragAnswerMaxImages: 2 } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragAnswerMaxImages').value).toBe('2'));
+
+    type('ragAnswerMaxImages', '0');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragAnswerMaxImages: 0 });
+  });
+
+  it('lives in the Image retrieval group, beside the leg it depends on', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+
+    const group = screen.getByTestId('rag-image-leg-enabled').closest('section')!;
+    expect(within(group as HTMLElement).getByTestId('retrieval-ragAnswerMaxImages')).toBeInTheDocument();
+  });
+
+  it('says on screen that a text-only chat model never receives images', async () => {
+    // ADR-025 D8: a text-only answer is unqualified — nothing on the answer
+    // says a picture was withheld. This is therefore the ONLY place an
+    // operator can learn that the cap does nothing without a vision-capable
+    // chat model, so it has to be beside the control rather than in a
+    // runbook.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+
+    // Scoped to the ROW that owns the input, not to the whole Image
+    // retrieval section: read off the section, both assertions passed for
+    // copy sitting under the leg toggle or the intake cap three controls
+    // away — which is the one thing this case is meant to pin, since the
+    // sentence is only findable where the control is. Same row-scoping
+    // recipe as the calibration-strip adjacency case above.
+    const row = input('ragAnswerMaxImages').closest('div.space-y-1\\.5');
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toMatch(/Text-only chat models never receive images/i);
+    expect(row!.textContent).toMatch(/0 turns this off/i);
+  });
+
+  it('points at the row where that verdict is shown, instead of leaving it unanswerable', async () => {
+    // Review r2. The sentence above is the only surface stating the vision
+    // dependency, and without a destination it leaves the reader at "can
+    // mine?" — while the verdict, and #1184's Re-check that corrects a wrong
+    // one, sit on the chat row two clicks away. The unassigned notice at the
+    // top of this same Section already links there; the copy that depends on
+    // the answer should too.
+    // Assigned, so the Section's unassigned notice — which carries its own
+    // link to the same route — is not rendered: this asserts the link inside
+    // the helper copy itself, on the deployment where an operator is actually
+    // reading this control.
+    mockApi({ imageEmbedding: assignedImageEmbedding() });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragFetchWidth').value).toBe('10'));
+    expect(screen.queryByTestId('retrieval-image-unassigned')).not.toBeInTheDocument();
+
+    const helper = screen.getByText(/Text-only chat models never receive images/i);
+    const link = within(helper).getByRole('link', { name: /LLM providers/i });
+    expect(link.getAttribute('href')).toContain('?sub=llm');
+  });
+});

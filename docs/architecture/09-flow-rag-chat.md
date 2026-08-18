@@ -107,9 +107,19 @@ sequenceDiagram
         MCP-->>BE: top results (sanitized#59; detections audited — #35;835)
     end
     opt honest-refusal gate (#35;1105, widened by #35;1114's prerequisite)
-        note right of BE: THREE reasons, only ONE of them a threshold verdict:<br/>semantic_index_unavailable (degradedReason = embedding_failed) and<br/>no_context (nothing retrieved) refuse UNGATED — both knobs default<br/>to 0, so gating either would ship it dark#59;<br/>weak_match keeps its per-basis knob, on<br/>computeRetrievalConfidence(results, healthCaveat) —<br/>max rerank relevance (full coverage), else max cosine (vector-led)#59;<br/>all three stand down for grounding that MATERIALISED<br/>(assembled tree / fetched docs / web results / substantive turn)#59;<br/>refusal: honest SSE turn + weak sources + refusalReason on the final<br/>frame, no chat completion, cache never read or written#59;<br/>no_embeddings / partial_embeddings / coverage_unknown still ANSWER
+        note right of BE: THREE reasons decided HERE, only ONE of them a threshold<br/>verdict (a fourth, image_only_context, is decided after the pick — see below):<br/>semantic_index_unavailable (degradedReason = embedding_failed) and<br/>no_context (nothing retrieved) refuse UNGATED — both knobs default<br/>to 0, so gating either would ship it dark#59;<br/>weak_match keeps its per-basis knob, on<br/>computeRetrievalConfidence(results, healthCaveat) —<br/>max rerank relevance (full coverage), else max cosine (vector-led)#59;<br/>all four stand down for grounding that MATERIALISED<br/>(assembled tree / fetched docs / web results / substantive turn)#59;<br/>refusal: honest SSE turn + weak sources + refusalReason on the final<br/>frame, no chat completion, cache never read or written#59;<br/>no_embeddings / partial_embeddings / coverage_unknown still ANSWER
     end
-    note right of BE: rag cache key folds in the deepSearch flag (#35;1112) —<br/>the doc-id list cannot see a RE-ORDERED set, so without it<br/>the two modes would serve each other's answers for the TTL
+    opt retrieved images -> answer parts (#35;1115 P4)
+        note right of BE: FOUR gates, cheapest first — a text-only deployment pays<br/>one cached settings read and stops:<br/>rag_answer_max_images > 0 (default 2, range 0-8, 0 IS the off switch)#59;<br/>some returned page carries imageHits#59;<br/>getVisionCapability(chatProvider, chatModel) === true — the STORED<br/>#35;1154 verdict, never a probe on the hot path#59; false and null both<br/>mean text-only#59; and the bytes must pass validateImage
+        BE->>PG: ONE batched SELECT id, confluence_id, source<br/>for the candidate pages (pageSource is REQUIRED, never inferred)
+        PG-->>BE: page identities
+        BE->>BE: pickRetrievedImages — read bytes off disk (system reader,<br/>post-ACL set only)#59; ROUND-ROBIN: every page's best image before<br/>any page's second#59; validateImage (sniff, 5 MB, 4096px)#59;<br/>skip+count missing / invalid / duplicate bytes / over the base64 budget
+        note right of BE: parts order: text, then the USER's own attachment,<br/>then the retrieved ones#59; ONE system sentence, and only when<br/>a picture really was attached#59; any gate failing = text-only and<br/>UNQUALIFIED (D8): no sentence, no caveat, no degradation copy#59;<br/>retrieved images NEVER join otherGrounding — the pick runs AFTER<br/>the refusal decision, so a refused turn reads no bytes
+    end
+    opt every row is imageTextSynthesized AND nothing was attached (#35;1115 P4)
+        note right of BE: refusalReason 'image_only_context' — the prompt would be a list<br/>of TITLES and a question. Supersedes P3's interim "an image-only hit<br/>set never refuses", which was justified by P4 being about to show the<br/>model the picture. Stands down on otherGrounding#59; never fires on a<br/>MIXED set#59; decided after the pick (it needs the attached count) and<br/>still before any completion#59; images ride as the weak sources
+    end
+    note right of BE: rag cache key folds in the deepSearch flag (#35;1112) —<br/>the doc-id list cannot see a RE-ORDERED set, so without it<br/>the two modes would serve each other's answers for the TTL.<br/>#35;1115 P4 adds the ATTACHED-IMAGE identity for the same reason:<br/>the doc-id list cannot see whether the model could SEE those pages
     note right of BE: response cache is consulted only PAST the gate<br/>(and only for history-free requests) — a low-confidence<br/>question cannot serve a stale cached answer
     BE->>CACHE: getCachedResponse(key)
     alt cache hit
@@ -383,19 +393,39 @@ threshold would refuse.
 **The arm of #1105 the leg DOES move is `no_context`, and that is the trade
 being made** (review r3). That refusal fires on `searchResults.length === 0`,
 so a page this leg made retrievable stands it down: a question that returned an
-honest refusal before P3 can now return an answer. It is intended — an
-image-only hit set never refuses, ADR-025 §5's ruling — and it is the leg
-working, not a leak in the gate. What it costs is worth stating plainly rather
-than leaving to be discovered: until P4 the chat model receives that page's
-TEXT (its chunk 0, or the synthesised title) and **never the picture**, so on
-the sub-`MIN_EMBEDDABLE_TEXT_CHARS` page this leg exists for, the grounding
-behind the answer is a title. That is thin evidence, not absent evidence, which
-is the distinction `no_context` draws — and the `kind: 'image'` source on the
-wire is what puts the evidence the model could not read in front of the reader.
-An operator who would rather those questions kept refusing turns the leg off;
-it is a retrieval decision, not a confidence one. `llm-ask.test.ts` pins the
-answering behaviour with both knobs at 0, so it cannot be confused with the
-`weak_match` cases beside it.
+honest refusal before P3 can now return an answer. It is intended — ADR-025
+§5's ruling — and it is the leg working, not a leak in the gate. `no_context`
+is never the reason for such a set, and that half is settled.
+
+**P4 supersedes the other half of P3's ruling — "an image-only hit set never
+refuses" — and the reason is P3's own argument.** P3 justified answering as
+thin-evidence-not-absent-evidence, and what made it *thin* rather than *absent*
+was that P4 was about to show the model the picture. Where P4 does, the turn
+answers exactly as P3 said. Where it cannot — no vision-capable chat model,
+`rag_answer_max_images` at 0, or every candidate skipped — the chat model
+receives that page's TEXT (its chunk 0, or the synthesised title) and never the
+picture, so on the sub-`MIN_EMBEDDABLE_TEXT_CHARS` page this leg exists for,
+the prompt is a list of titles and a question. That is absent evidence wearing
+a source list.
+
+So the rule is two-way, and it is decided in `llm-ask.ts` after the pick step:
+if **every** returned row is `imageTextSynthesized` **and** zero image parts
+were attached **and** nothing else grounds the turn, the request refuses with
+the new `image_only_context` reason and runs no completion, with the pictures
+beneath it as the closest matches. `every`, never `any`: one real text row is
+grounding, and widening it would refuse ordinary answers whose fifth source
+happens to be a picture. The `otherGrounding` stand-down is the same one the
+other three reasons take — refusing over titles beside a document the user just
+attached would be absurd. The reason is its own rather than one of the three:
+`weak_match` is a measured verdict about relevance and nothing here was
+measured (the pages may match perfectly), and `no_context` is false on its
+face, since retrieval did find pages.
+
+An operator who would rather those questions never reached the answer path at
+all turns the leg off; it is a retrieval decision, not a confidence one.
+`llm-ask.test.ts` pins both arms — attached-and-answers, and each way of
+reaching not-attached — with both confidence knobs at 0, so neither can be
+confused with the `weak_match` cases beside them.
 
 **Failure is a bypass, and it is recorded.** A timeout, an open breaker, an
 assignment pulled mid-flight, an assignment READ that threw, a non-empty PROBE
@@ -451,7 +481,12 @@ page-vs-web discriminator (#1125) is unchanged and an absent `kind` still means
 of the enumerator that parses `<img src>` out of a page body, so the URL the
 browser gets is one the authenticated attachment routes really serve.
 
-**Not in P3:** the chat model still receives no retrieved images. That is P4.
+**What P3 did not do, and P4 does:** the chat model now receives up to
+`rag_answer_max_images` of the matched pictures as `image_url` parts on the
+user turn, when the resolved chat pair has probed vision-capable — see
+["Answer path — retrieved images as model input (#1115 P4)"](#answer-path--retrieved-images-as-model-input-1115-p4)
+below. Everything above is unchanged by it: the sources, the fusion, the
+confidence exclusion and the `no_context` arm are all P3's and all still hold.
 
 ## Multi-query expansion — "deep search" (#1112)
 
@@ -992,7 +1027,21 @@ reasons**, of which only the third consults a knob:
 3. **`weak_match`** — the #1105 verdict proper: a MEASURED score below the
    operator's threshold for this request's basis.
 
-Reasons 1 and 2 are **ungated by design**. Both knobs default to 0, so a
+A **fourth** reason joined them in #1115 P4, and it is deliberately last in
+this list because it is decided later than the other three:
+
+4. **`image_only_context`** — every returned row is an image-only page whose
+   context is a synthesised TITLE, and not one of its pictures could be shown
+   to the model. Ungated like 1 and 2, stands down on `otherGrounding` like
+   all of them, and decided AFTER the pick step (§ "The image leg" and
+   "Answer path" below) because it needs to know how many image parts were
+   actually attached — still before any completion, which is the invariant
+   that matters. Its wording says what happened rather than what is wrong with
+   the corpus: the matches exist and may be the right ones, and the reason
+   they went unused is a property of this deployment's chat model or its
+   settings.
+
+Reasons 1, 2 and 4 are **ungated by design**. Both knobs default to 0, so a
 threshold-gated version of either ships dark in every deployment that never
 opened Settings → Retrieval — including, for reason 1, during the #1116
 re-embed window it exists to disclose. Reason 3 keeps its knob because it
@@ -1509,6 +1558,137 @@ Eight things are load-bearing.
    telling that operator their server is the wrong kind is the opposite of the
    remedy.
 
+## Answer path — retrieved images as model input (#1115 P4)
+
+P3 made a picture retrievable and put it on the wire as a `kind: 'image'`
+source. P4 puts it in the request. `domains/llm/services/retrieved-images.ts`
+turns the `imageHits` riding on the returned `SearchResult`s into `image_url`
+content parts, and `llm-ask.ts` appends them to the user turn.
+
+**The service exists because of the P0 guard, not despite it.**
+`resolveAttachmentBytes` is the system reader — no page visibility, no space
+RBAC, no per-page ACE — and `attachment-store.test.ts` walks `src/routes` and
+fails if any file there so much as names it. That guard is the reason the pick
+lives behind a service boundary: the read is safe *only* because retrieval has
+already applied `visiblePagesPredicate` (and the EE per-page filter) to the
+pages it returned, and the service's whole input is that post-ACL set. Nothing
+was added to an allow-list, because there is no allow-list — the mechanism is
+a directory walk, and `domains/llm` is outside it by construction. A future
+caller that wants these bytes should reach `pickRetrievedImages`, not the
+store.
+
+**Four gates, cheapest first.** `rag_answer_max_images > 0` (a cached
+`admin_settings` read, default **2**, range 0–8); some returned page carries
+`imageHits`; `getVisionCapability(chatProvider, chatModel) === true`; and then
+the bytes themselves. The ordering is what keeps the standing cost on a
+text-only deployment to one cached settings read — the capability table is not
+touched until a picture is actually in play.
+
+The vision check reads the **stored** #1154 verdict and never probes. It is
+the same helper the user-attached image path uses (`getVisionCapability` is
+pure-cache: it returns the stored row and schedules any refresh in the
+background), and the tri-state is not collapsed — `false` (probed and refused)
+and `null` (never established) both mean text-only here, and only `true`
+admits bytes. When the user attached their own image the verdict is already
+known `true`, because `resolveImagePart` threw otherwise, so that branch skips
+the read entirely. A wrong verdict is corrected with **Re-check** on the chat
+row (#1184), not here.
+
+**Selection is round-robin, not best-first.** Every page contributes its best
+image before any page contributes a second, ordered within a round by the
+image's own cross-modal similarity. A flat sort over the flattened hits would
+let one gallery page take both slots at the default cap and hide the second
+page entirely — image COUNT beating image BREADTH, which is the head dilution
+`MAX_IMAGE_HITS_PER_PAGE` bounds inside a page and #1106's best-chunk-only
+rule bounds inside a leg.
+
+**Each candidate passes `validateImage` unforked** — the #1154 gate: format
+sniffed from the bytes, `MAX_IMAGE_BYTES` (5 MB), `MAX_IMAGE_DIMENSION`
+(4096). A corpus image is not a *more* trusted input than an upload; it is a
+less trusted one, since nobody chose to send it. The filename is deliberately
+not passed to it: that function's extension check is an intake signal about a
+claim an uploader made, and here nobody is claiming anything — P2 admitted the
+file to the index on its sniffed format alone, so refusing a badly-named
+attachment would drop a picture the index says is fine. Everything refused is
+skipped and counted, never fatal.
+
+**`RETRIEVED_IMAGES_BYTE_BUDGET` is a constant, not a knob — and derived.**
+A count is something an operator can reason about; a byte ceiling depends on
+what the corpus holds and its failure mode is a provider timing out on a
+request whose size nobody can see. It is the backpressure bound for a path
+that bypasses the LLM queue's sizing by design — the queue counts requests,
+not bytes — so a cap of 8 against a 5 MB intake ceiling would admit ~55 MB of
+base64 into one prompt. The concurrency in front of it is the **SSE stream
+cap** (`llm_max_concurrent_streams_per_user`, hard default 3, raisable to 20),
+not `LLM_CONCURRENCY`: the pick runs on the request path, above the queue.
+
+Its value is `base64Length(MAX_IMAGE_BYTES)` (~6.7 MB), not a literal. It
+shipped as a flat 6 MiB described as "roughly one `MAX_IMAGE_BYTES` image",
+which is 14% short of it — so an image between 4.5 MB and the 5 MB intake
+ceiling was indexed, ranked by the leg and shown to the reader as a source
+while being categorically unshowable to the model. Hitting the budget **skips
+that candidate and keeps going**, never `break`s: candidates come from
+different pages at arbitrary sizes, so stopping deleted a small picture that
+fits because a larger one outranked it — and on an all-image-only set that
+turned an answerable turn into an `image_only_context` refusal. The projected
+length is computed arithmetically, so a candidate that does not fit costs no
+base64 encode.
+
+**Byte-identical pictures are attached once.** P2 indexes images per page, so
+one diagram reused across five pages is five candidates whose identical bytes
+embed identically and therefore carry the same similarity — which sorts them
+adjacent inside a single round. Without the dedupe the model received one
+piece of evidence in both default slots, which is the count-beats-breadth
+failure the round-robin exists to prevent, reached from inside a round rather
+than across them. The digest is over the bytes, not `(source, key)`: the same
+picture is regularly stored under two names in two directories.
+
+**Part order is text, then the USER's attachment, then the retrieved ones.**
+Ordering is the only signal a chat API gives about which picture the question
+is about, and the user chose theirs while the retriever guessed at ours. With
+nothing to attach the content stays a bare **string**, byte-for-byte the shape
+every request had before P4.
+
+**One system-prompt sentence, and only when a picture was really attached:**
+"Some sources are images from the knowledge base; use them as evidence when
+they are relevant to the question." A prompt that announces evidence the
+request does not carry is worse than sending none. Everything else about D8
+follows from that: when any gate fails the answer is text-only and
+**unqualified** — no sentence, no caveat, no badge, no announcement — with the
+pictures still listed as sources so the reader can see what the model could
+not.
+
+**Retrieved images never join `otherGrounding`.** A picture on a page the
+confidence gate has just measured as too weak is more of the same weak match,
+and counting it would let any page carrying a screenshot walk past the
+threshold. The pick step is placed *after* the refusal decision so this cannot
+be got wrong by accident — at that point there is nothing to count, and a
+refused turn reads no image bytes at all.
+
+**The cache key carries the attached-image identity.** The doc-id component
+says which pages ground the answer and nothing about whether the model could
+SEE them, so without it a vision-capable model's image-augmented answer and a
+text-only model's answer over the same pages share one key for the TTL — as do
+the same model's answers either side of an admin moving the cap, or of a
+picture being deleted from one of those pages. It is a count plus a hash of
+the `(pageId, store, key, size)` tuples, and `undefined` when nothing was
+attached, which keeps "no pictures" from colliding with a future "0 pictures".
+It does **not** preserve pre-P4 keys: `hashLlmInputs` writes a `\x00`
+separator per component, so a 15th component moves every digest whether or not
+it is empty, and each deployment cold-starts its answer cache once for one
+`LLM_CACHE_TTL`. Because
+that identity is only known after the pick, `buildRagCacheKey` now runs below
+the refusal gate rather than beside `docIds` — a refusing request builds no
+key at all, which it never needed.
+
+**The audit gains two optional fields**, `retrievedImageCount` and
+`retrievedImageBytes` (raw bytes, not base64), set only when something was
+sent and absent — never 0 — otherwise, so the EE consumer can tell "this call
+site does not report it" from "it reported none". Counts only: no filename, no
+page id, no bytes. `contentToText` already drops image parts, so the token
+estimate and the per-message lengths carry no base64 by construction, and a
+test pins that.
+
 ## Retrieval details
 
 - **Query-instruction prefix (#1114).** Qwen3's embedding models are trained
@@ -1800,3 +1980,5 @@ All of these go through the same provider resolver and sanitization layer:
 - `backend/src/domains/llm/services/llm-cache.ts`
 - `backend/src/core/utils/sanitize-llm-input.ts`
 - `backend/src/domains/confluence/services/subpage-context.ts`
+- `backend/src/domains/llm/services/image-leg-search.ts` (#1115 P3 — the third RRF leg)
+- `backend/src/domains/llm/services/retrieved-images.ts` (#1115 P4 — pick, load and validate the images the chat model is shown; the sanctioned caller of the system attachment reader)

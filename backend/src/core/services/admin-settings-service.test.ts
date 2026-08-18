@@ -40,6 +40,9 @@ import {
   invalidateRagImageIntakeCache,
   getRagImageLegEnabled,
   invalidateRagImageLegCache,
+  getRagAnswerMaxImages,
+  invalidateRagAnswerMaxImagesCache,
+  RAG_ANSWER_MAX_IMAGES_DEFAULT,
   RAG_IMAGES_PER_PAGE_MAX_DEFAULT,
 } from './admin-settings-service.js';
 
@@ -513,6 +516,60 @@ describe('rag_image_leg_enabled (#1115 P3)', () => {
     mockQuery.mockResolvedValue({ rows: [{ setting_value: 'off' }] });
     expect(await getRagImageLegEnabled()).toBe(false);
     expect(await getRagImageLegEnabled()).toBe(false);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('rag_answer_max_images (#1115 P4)', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    invalidateRagAnswerMaxImagesCache();
+  });
+
+  it('defaults to 2 when absent, and on DB failure', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await getRagAnswerMaxImages()).toBe(RAG_ANSWER_MAX_IMAGES_DEFAULT);
+    expect(RAG_ANSWER_MAX_IMAGES_DEFAULT).toBe(2);
+    invalidateRagAnswerMaxImagesCache();
+    mockQuery.mockRejectedValue(new Error('down'));
+    expect(await getRagAnswerMaxImages()).toBe(RAG_ANSWER_MAX_IMAGES_DEFAULT);
+  });
+
+  it('reads 0 as a real value — the off switch, not an absent row', async () => {
+    // The one place this reader differs from `rag_images_per_page_max`, whose
+    // floor is 1. A `'0'` here must resolve to 0 and NOT fall back to the
+    // default, or the panel's own off switch would be unreachable and every
+    // vision-capable deployment would keep sending image bytes.
+    mockQuery.mockResolvedValue({ rows: [{ setting_value: '0' }] });
+    expect(await getRagAnswerMaxImages()).toBe(0);
+  });
+
+  it('accepts the whole [0, 8] range and clamps above it', async () => {
+    for (const [raw, expected] of [
+      ['0', 0], ['1', 1], ['8', 8], ['9', 8], ['400', 8],
+    ] as Array<[string, number]>) {
+      invalidateRagAnswerMaxImagesCache();
+      mockQuery.mockResolvedValue({ rows: [{ setting_value: raw }] });
+      expect(await getRagAnswerMaxImages(), raw).toBe(expected);
+    }
+  });
+
+  it('falls back on a shape the operator cannot have meant', async () => {
+    // A STRICT digit shape, for `rag_images_per_page_max`'s reason read the
+    // other way round: `parseInt('1e3')` is 1, and a permissive parse would
+    // read a fat-fingered row as "show the model one picture" rather than as
+    // a typo. Negatives and decimals fall back for the same reason.
+    for (const raw of ['', '-1', '2.5', '1e3', 'two', ' ']) {
+      invalidateRagAnswerMaxImagesCache();
+      mockQuery.mockResolvedValue({ rows: [{ setting_value: raw }] });
+      expect(await getRagAnswerMaxImages(), raw).toBe(RAG_ANSWER_MAX_IMAGES_DEFAULT);
+    }
+  });
+
+  it('is cached, so the per-request gate costs no round-trip inside the TTL', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ setting_value: '4' }] });
+    expect(await getRagAnswerMaxImages()).toBe(4);
+    expect(await getRagAnswerMaxImages()).toBe(4);
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 });

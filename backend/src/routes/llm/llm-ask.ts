@@ -22,7 +22,15 @@ import { multiQuerySearch } from '../../domains/llm/services/multi-query-search.
 // rag-service with a closed export list, and the formula must stay REAL
 // there (stubbing it would let route and formula drift — #1268 review).
 import { computeRetrievalConfidence } from '../../domains/llm/services/retrieval-confidence.js';
-import { getRagConfidenceThreshold, getRagConfidenceThresholdRerank, getRagContextCharsPerPage } from '../../core/services/admin-settings-service.js';
+import { getRagConfidenceThreshold, getRagConfidenceThresholdRerank, getRagContextCharsPerPage, getRagAnswerMaxImages } from '../../core/services/admin-settings-service.js';
+// #1115 P4: the pick/load/validate step for the images retrieval matched.
+// It lives in `domains/llm` and NOT here because it reads
+// `core/services/attachment-store.ts`'s system reader, which applies no ACL
+// and which `attachment-store.test.ts` forbids any file under `src/routes`
+// from so much as naming. The read is safe only because retrieval has
+// already applied the visibility predicate to the pages it returned.
+import { pickRetrievedImages, retrievedImagesCacheComponent } from '../../domains/llm/services/retrieved-images.js';
+import { getVisionCapability } from '../../domains/llm/services/model-capabilities.js';
 import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import { isEnabled as isMcpDocsEnabled, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
@@ -55,7 +63,37 @@ import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
  * (`degradedReason`, `healthCaveat`, coverage) stay in the info log and the
  * trace, where the operator reads them.
  */
-type RefusalReason = 'semantic_index_unavailable' | 'no_context' | 'weak_match';
+type RefusalReason =
+  | 'semantic_index_unavailable'
+  | 'no_context'
+  | 'weak_match'
+  /**
+   * #1115 P4 — every returned row is an image-only page whose `chunkText` is
+   * a title P3 synthesised, AND not one of their pictures could be shown to
+   * the model. The prompt would carry a list of titles and a question.
+   *
+   * It is deliberately NOT one of the three above. `weak_match` is a measured
+   * verdict about relevance and this is not measured at all — the pages may
+   * be a perfect match; the request simply contains no evidence. `no_context`
+   * is false on its face, since retrieval DID find pages. And it is decided
+   * later than all three: it needs to know how many image parts were actually
+   * attached, which is only known after the pick step — still before any
+   * completion, which is the invariant that matters.
+   */
+  | 'image_only_context';
+
+/**
+ * #1115 P4 — the one sentence added to the system prompt when retrieved
+ * images really were attached.
+ *
+ * Only then. A prompt that announces images the request does not carry is
+ * worse than sending none: it invites the model to describe evidence it was
+ * never given. ADR-025 D8's other half is the same rule from the user's side
+ * — a text-only answer is UNQUALIFIED, with no caveat and no degradation copy
+ * anywhere.
+ */
+const RETRIEVED_IMAGES_PROMPT_SENTENCE =
+  ' Some sources are images from the knowledge base; use them as evidence when they are relevant to the question.';
 
 /**
  * #1115 P3 — how many `kind: 'image'` entries one answer's `sources[]` may
@@ -102,6 +140,14 @@ const REFUSAL_TEXT: Record<RefusalReason, string> = {
     'I could not find any knowledge-base content related to this question, so I am not answering rather than guessing. Try rephrasing, or ask about something the knowledge base covers.',
   weak_match:
     'The knowledge-base passages I found are not a strong enough match to this question to ground an answer, so I am not answering rather than guessing.',
+  // #1115 P4. It says what happened, not what is wrong with the corpus: the
+  // matches exist and may well be the right ones, and the reason they were
+  // not used is a property of THIS deployment's chat model or its settings.
+  // The sentence naming the attachments is the live-only note below, for the
+  // same reason as the other three — a reopened thread carries no sources, so
+  // a persisted "attached below" would point at nothing.
+  image_only_context:
+    'The only matches for this question are images, and they were not shown to the assistant.',
 };
 
 /**
@@ -121,6 +167,11 @@ const REFUSAL_SOURCES_NOTE: Record<RefusalReason, string> = {
     ' The closest partial matches are attached as sources for reference — none matched well enough to use.',
   weak_match:
     ' The closest partial matches are attached as sources for reference — none matched well enough to use.',
+  // #1115 P4: not "none matched well enough" — these matched fine. What the
+  // reader needs is that the pictures themselves are right there to open,
+  // which is the whole remedy this refusal can offer.
+  image_only_context:
+    ' They are attached below as the closest matches.',
 };
 
 export async function llmAskRoutes(fastify: FastifyInstance) {
@@ -428,35 +479,18 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       imageHash = resolved.hash;
     }
 
-    // Check RAG cache with stampede protection (only for new conversations without history)
     // Locally-created pages have confluence_id NULL, and a set of nulls collapses
     // to a run of empty strings in the joined cache key — two different sets of
     // standalone pages would then share a key and serve each other's answer.
     // Fall back to the integer PK, which every page has (#1125).
+    //
+    // The KEY itself is built further down, after the #1115 P4 pick step: it
+    // has to carry which retrieved images the request ended up attaching, and
+    // that is not known until the images have been loaded and validated. The
+    // ordering is safe because every path that reads the key (the cache
+    // lookup, the write, the lock release) sits below the pick, and the
+    // refusal paths above it never touch the cache at all.
     const docIds = searchResults.map((r) => r.confluenceId ?? `page:${r.pageId}`);
-    const ragCacheKey = buildRagCacheKey(resolvedModel, question, docIds, {
-      includeSubPages,
-      pageId: body.pageId,
-      externalUrls,
-      searchWeb: body.searchWeb,
-      provider: chatConfig.providerId,
-      thinking: body.thinking,
-      // #1270 reviews m6 + F9: cached answers are specific to the assembly
-      // CONFIG (the budget — killing assembly must not replay large-context
-      // answers for the TTL) AND to the realized OUTCOME (how many sources
-      // actually assembled — a soft-failed request's chunk-level answer
-      // must not be served under the healthy key for an hour after the
-      // transient recovers).
-      contextChars: await getRagContextCharsPerPage(),
-      assembledPages: searchResults.filter((r) => r.contextText !== undefined).length,
-      pinnedCount: searchResults.filter((r) => r.pinned === true).length,
-      // #1112: the two modes must not serve each other's answers — the doc-id
-      // component cannot see a re-ORDERED set, and sees nothing at all when
-      // expansion soft-fails to the single-query path and later recovers.
-      deepSearch: body.deepSearch,
-      imageHash,
-      referenceText: referenceForLlm,
-    });
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from
     // hybridSearch, typically ~0.033, and since #1106's best-chunk-only
@@ -668,6 +702,14 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     const hasSubstantiveHistory = conversationHistory.some(
       (m) => m.role === 'assistant' && !m.refused,
     );
+    // NOTE the one thing deliberately absent from this list: the images the
+    // retriever found (#1115 P4). `imagePart` is the USER's own attachment
+    // and counts; a picture on a page the gate has just measured as too weak
+    // is not additional grounding, it is more of the same weak match — and
+    // counting it would let any page carrying a screenshot walk past the
+    // threshold. The pick step is placed below the refusal decision so that
+    // this cannot be got wrong by accident: at this point there is nothing to
+    // count.
     const otherGrounding = Boolean(
       subPageContextAssembled
       || externalDocs.length > 0
@@ -706,7 +748,15 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       },
       'RAG retrieval confidence',
     );
-    if (refusalReason !== null) {
+    /**
+     * Emit one refusal turn: persist it, frame it for the live surface, end
+     * the stream. Shared by the three retrieval-health reasons above and by
+     * #1115 P4's `image_only_context` below — the two are decided at
+     * different points (the second needs the pick step's result) but they are
+     * the same RESPONSE, and a hand-rolled twin is how the least-exercised
+     * branch becomes the differently-shaped one (`sendCachedSSE`'s own note).
+     */
+    const emitRefusal = async (reason: RefusalReason) => {
       // Persisted text and live text diverge DELIBERATELY: saveConversation
       // stores {role, content, refused} only, so the reload has no source
       // list to point at — but the live final frame does attach the weak
@@ -731,10 +781,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         groundingFailures.length > 0
           ? ` Note: ${groundingFailures.join(', and ')} — that grounding was unavailable for this answer; retry, or check with an administrator if it persists.`
           : '';
-      const refusalText = REFUSAL_TEXT[refusalReason] + groundingNote;
+      const refusalText = REFUSAL_TEXT[reason] + groundingNote;
       const liveRefusalText =
         sources.length > 0
-          ? refusalText + REFUSAL_SOURCES_NOTE[refusalReason]
+          ? refusalText + REFUSAL_SOURCES_NOTE[reason]
           : refusalText;
       // The refusal is a real assistant turn: persist it (marked `refused`,
       // see StoredChatMessage) so the thread reads coherently on reload, but
@@ -755,7 +805,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           // it an outage refusal is indistinguishable on the wire from "the
           // corpus does not cover this", which is the same conflation the
           // text above exists to undo.
-          refusalReason,
+          refusalReason: reason,
           confidence: confidence.score,
           confidenceBasis: confidence.basis,
           conversationId: convId,
@@ -764,8 +814,149 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         // Nothing was cached — the default `cached: true` would be a lie.
         { cached: false },
       );
+    };
+
+    if (refusalReason !== null) {
+      await emitRefusal(refusalReason);
       return;
     }
+
+    // ── #1115 P4: show the chat model the retrieved images ───────────────
+    //
+    // Four gates, in this order because each one makes the next cheaper, and
+    // the order is what keeps the standing cost on a text-only deployment to
+    // a single cached settings read:
+    //
+    //  1. the cap is above 0 (`rag_answer_max_images`, default 2);
+    //  2. some returned page actually carries image hits — false on every
+    //     deployment with no image leg, and on most questions where there is
+    //     one;
+    //  3. the resolved chat pair has PROBED vision-capable. The tri-state is
+    //     read, never collapsed: `false` (probed and refused) and `null`
+    //     (never established) both mean text-only here, and only `true`
+    //     admits bytes. `getVisionCapability` is the same helper the
+    //     user-attached path uses and is pure-cache — it returns the stored
+    //     verdict and schedules any refresh in the background, so this never
+    //     puts a probe on the hot path. When the user attached their own
+    //     image the verdict is already known: `resolveImagePart` above threw
+    //     unless it was `true`, so re-reading the row would be a query to
+    //     learn something this scope already knows;
+    //  4. and then the pick itself, which loads and validates bytes and skips
+    //     anything it cannot use.
+    //
+    // It runs strictly AFTER the refusal decision above. A refused turn reads
+    // no image bytes at all, and retrieved images never count towards
+    // `otherGrounding` — see the note there.
+    const answerMaxImages = await getRagAnswerMaxImages();
+    const someImageHits = searchResults.some((r) => (r.imageHits?.length ?? 0) > 0);
+    const chatVision =
+      answerMaxImages > 0 && someImageHits
+        ? (imagePart ? true : await getVisionCapability(chatConfig.providerId, resolvedModel))
+        : false;
+    const retrievedImages =
+      chatVision === true
+        ? await pickRetrievedImages(searchResults, { max: answerMaxImages })
+        : { parts: [], used: [], skipped: { missing: 0, invalid: 0, overBudget: 0, duplicate: 0 } };
+    // Log whenever the pick DID something — attached a picture, or refused
+    // one. Review r1: gating on `parts.length > 0 || overBudget > 0` left the
+    // most diagnostic state of all silent — every candidate refused as
+    // missing or invalid (draw.io's XML behind a `.png`, an over-dimension
+    // scan, bytes deleted since the index was built). The audit fields are
+    // deliberately absent in that case and D8 forbids any user-visible
+    // signal, so this line is the only place it is observable, and the
+    // runbook's §7 debugging step points straight at these counters.
+    const skippedTotal =
+      retrievedImages.skipped.missing
+      + retrievedImages.skipped.invalid
+      + retrievedImages.skipped.overBudget
+      + retrievedImages.skipped.duplicate;
+    if (retrievedImages.parts.length > 0 || skippedTotal > 0) {
+      logger.info(
+        {
+          userId,
+          attached: retrievedImages.used.length,
+          bytes: retrievedImages.used.reduce((n, u) => n + u.bytes, 0),
+          skipped: retrievedImages.skipped,
+          cap: answerMaxImages,
+        },
+        // Names the STEP, not one of its outcomes: the line now fires for an
+        // answer that attached nothing because every candidate was refused,
+        // and "attached retrieved images" would be a false claim on exactly
+        // the request an operator is grepping for.
+        '#1115 P4: retrieved-image pick',
+      );
+    }
+
+    // ── The all-image-only rule (#1115 P4) ───────────────────────────────
+    //
+    // A row P3 marked `imageTextSynthesized` carries the page's TITLE as its
+    // `chunkText`, because the page has no text chunk at all — that is the
+    // sub-`MIN_EMBEDDABLE_TEXT_CHARS` page the image leg exists to reach. If
+    // EVERY returned row is one of those and not one picture was attached,
+    // the prompt is a list of titles and a question, and an answer from it is
+    // a guess wearing a source list.
+    //
+    // P3 pinned the opposite ("an image-only hit set never refuses") as an
+    // interim: its own reasoning was thin-evidence-not-absent-evidence, and
+    // the thing that made it thin rather than absent was P4 being about to
+    // show the model the picture. Where P4 cannot — no vision, cap at 0, or
+    // every candidate skipped — that justification is gone with it. Where P4
+    // can, the turn answers exactly as P3 said, which is why this is decided
+    // AFTER the pick.
+    //
+    // `otherGrounding` stands it down for the same reason it stands the other
+    // three down: an attached document, a sub-page tree, fetched URLs, web
+    // results, the user's own image or a substantive prior turn are all real
+    // evidence in the request, and refusing over the titles beside them would
+    // tell a user who has just attached a PDF that there is nothing to go on.
+    // And the rule is EVERY row, never any row — widened to "any", it would
+    // refuse ordinary answers whose fifth source happens to be a picture.
+    if (
+      searchResults.length > 0
+      && retrievedImages.parts.length === 0
+      && !otherGrounding
+      && searchResults.every((r) => r.imageTextSynthesized === true)
+    ) {
+      logger.info(
+        { userId, rows: searchResults.length, cap: answerMaxImages, chatVision },
+        'RAG refusal: image-only context with no image shown to the model',
+      );
+      await emitRefusal('image_only_context');
+      return;
+    }
+
+    // Check RAG cache with stampede protection (only for new conversations
+    // without history). Built HERE rather than beside `docIds` because the
+    // key has to carry which retrieved images the request attached: without
+    // that, a vision-capable model's image-augmented answer and a text-only
+    // model's answer over the same pages share a key for the whole TTL, and
+    // so do the answers either side of an admin moving the cap.
+    const ragCacheKey = buildRagCacheKey(resolvedModel, question, docIds, {
+      includeSubPages,
+      pageId: body.pageId,
+      externalUrls,
+      searchWeb: body.searchWeb,
+      provider: chatConfig.providerId,
+      thinking: body.thinking,
+      // #1270 reviews m6 + F9: cached answers are specific to the assembly
+      // CONFIG (the budget — killing assembly must not replay large-context
+      // answers for the TTL) AND to the realized OUTCOME (how many sources
+      // actually assembled — a soft-failed request's chunk-level answer
+      // must not be served under the healthy key for an hour after the
+      // transient recovers).
+      contextChars: await getRagContextCharsPerPage(),
+      assembledPages: searchResults.filter((r) => r.contextText !== undefined).length,
+      pinnedCount: searchResults.filter((r) => r.pinned === true).length,
+      // #1112: the two modes must not serve each other's answers — the doc-id
+      // component cannot see a re-ORDERED set, and sees nothing at all when
+      // expansion soft-fails to the single-query path and later recovers.
+      deepSearch: body.deepSearch,
+      imageHash,
+      // #1115 P4 — the user's own attachment (`imageHash`) and the retrieved
+      // ones are different inputs, and both belong in the key.
+      retrievedImages: retrievedImagesCacheComponent(retrievedImages.used),
+      referenceText: referenceForLlm,
+    });
 
     let ragLockAcquired = false;
     if (conversationHistory.length === 0) {
@@ -783,11 +974,39 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       }
     }
 
+    /**
+     * #1115 P4 — what the audit records about the pictures, spread into both
+     * `emitLlmAudit` calls below.
+     *
+     * It reports what was SENT, not what was picked or considered: the
+     * numbers exist so an operator can answer "did this answer see the
+     * diagram, and what did that cost?", and a count of candidates answers
+     * neither. Absent — not zero — when nothing was attached, because the EE
+     * writer has to be able to tell "this route does not report it" (every
+     * pre-P4 row) from "it reported none".
+     *
+     * Counts and byte totals only. No key, no page id, no bytes: the entry
+     * flows to an EE audit log, and the picture's own reference is already on
+     * the SSE frame the user received.
+     */
+    const retrievedImageAudit = retrievedImages.used.length > 0
+      ? {
+        retrievedImageCount: retrievedImages.used.length,
+        retrievedImageBytes: retrievedImages.used.reduce((n, u) => n + u.bytes, 0),
+      }
+      : {};
+
     try {
       // Build messages (use resolveSystemPrompt so guardrails are appended)
       let askPrompt = await resolveSystemPrompt(userId, 'ask');
       if (imagePart) {
         askPrompt += ' An image is attached to the user question. Analyze the attached image and use both the image and any knowledge base context to answer the question.';
+      }
+      // #1115 P4 — only when a picture really was attached. See
+      // RETRIEVED_IMAGES_PROMPT_SENTENCE, and ADR-025 D8 for why the negative
+      // case adds nothing at all.
+      if (retrievedImages.parts.length > 0) {
+        askPrompt += RETRIEVED_IMAGES_PROMPT_SENTENCE;
       }
       let userTextContent = `Context from knowledge base:\n\n${ragContext}`;
       if (referenceForLlm) {
@@ -797,9 +1016,21 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       }
       userTextContent += `\n\n---\n\nQuestion: ${sanitizedQuestion}`;
       if (imagePart) userTextContent = `[Attached Image]\n\n${userTextContent}`;
-      const userContent: string | ChatContentPart[] = imagePart
-        ? [{ type: 'text', text: userTextContent }, imagePart]
-        : userTextContent;
+      // Text first, then the USER's own attachment, then the retrieved ones.
+      // Ordering is the only signal a chat API gives about which picture the
+      // question is about, and the user chose theirs while the retriever
+      // guessed at ours. A bare string when there is nothing to attach, so
+      // every text-only request keeps byte-for-byte the shape it had before
+      // P4 — the providers differ in how they handle a one-element parts
+      // array, and none of them had to until now.
+      const userContent: string | ChatContentPart[] =
+        imagePart || retrievedImages.parts.length > 0
+          ? [
+            { type: 'text', text: userTextContent },
+            ...(imagePart ? [imagePart] : []),
+            ...retrievedImages.parts,
+          ]
+          : userTextContent;
 
       const messages: ChatMessage[] = [
         { role: 'system', content: askPrompt + multiPageSuffix },
@@ -864,6 +1095,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             status: 'success',
             promptInjectionDetected,
             sanitized: wasSanitized,
+            ...retrievedImageAudit,
           });
 
           reply.raw.write(`data: ${JSON.stringify({
@@ -895,6 +1127,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             errorMessage: err instanceof Error ? err.message : String(err),
             promptInjectionDetected,
             sanitized: wasSanitized,
+            ...retrievedImageAudit,
           });
           reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
         }
