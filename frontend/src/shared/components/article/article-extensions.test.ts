@@ -80,6 +80,40 @@ describe('article-extensions', () => {
         '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
       );
       expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+      expect(editor.view.dom.querySelector('details')).not.toHaveAttribute('open');
+      editor.destroy();
+    });
+
+    it('does not persist a title click in edit mode', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+      );
+      const details = editor.view.dom.querySelector('details')!;
+      const summary = editor.view.dom.querySelector('summary')!;
+      expect(details).not.toHaveAttribute('open');
+      summary.click();
+      expect(details).toHaveAttribute('open');
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+      editor.destroy();
+    });
+
+    it('persists UI Expand default-open only through setDetailsOpen', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.commands.setDetailsOpen({ pos: 0, open: true })).toBe(true);
+      expect(editor.getHTML()).toMatch(/<details[^>]*\sopen\b/);
+      expect(editor.commands.setDetailsOpen({ pos: 0, open: false })).toBe(true);
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+      editor.destroy();
+    });
+
+    it('refuses setDetailsOpen on a native expand', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.commands.setDetailsOpen({ pos: 0, open: true })).toBe(false);
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
       editor.destroy();
     });
 
@@ -193,6 +227,15 @@ describe('article-extensions', () => {
       const editor = mount('<details data-macro-name="expand"><summary></summary><p>B</p></details>');
       expect(editor.getHTML()).not.toContain('data-expand-placeholder');
       expect(editor.getHTML()).not.toContain('Click here to expand');
+      editor.destroy();
+    });
+
+    it('names an empty summary for assistive tech without storing the name', () => {
+      const editor = mount('<details data-macro-name="expand"><summary></summary><p>B</p></details>');
+      expect(editor.view.dom.querySelector('summary')?.getAttribute('aria-label')).toBe(
+        'Click here to expand...',
+      );
+      expect(editor.getHTML()).not.toContain('aria-label');
       editor.destroy();
     });
 

@@ -248,6 +248,7 @@ describe('EditorToolbar', () => {
       'Code block',
       'Divider',
       'Expand section',
+      'UI Expand',
       'Attachments',
       'Child pages',
       'Caption for selected image',

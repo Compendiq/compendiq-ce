@@ -1756,24 +1756,46 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   margin: 1rem 0;
 }
 
-/* Details/summary (expand macros) */
+/* Details/summary (expand macros). Title is document heading, not a primary
+   action — teal/underline/`user-select: none` burned the interaction accent
+   on every section and blocked copying the title. */
 .prose :where(details) {
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: 0.75rem 1rem;
   margin: 1rem 0;
-  background: oklch(from var(--color-card) l c h / 0.4);
+  background: var(--surface-card);
+  max-width: 100%;
 }
 
 .prose :where(summary) {
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
-  color: var(--color-primary);
-  user-select: none;
+  color: var(--color-foreground);
+  overflow-wrap: anywhere;
 }
 
 .prose :where(summary):hover {
-  text-decoration: underline;
+  color: var(--color-foreground);
+}
+
+.tiptap.ProseMirror[contenteditable='true'] details[data-expand-kind='expand'] > summary::after,
+.tiptap.ProseMirror[contenteditable='true'] details[data-expand-kind='ui-expand'] > summary::after {
+  float: right;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+  pointer-events: none;
+}
+
+.tiptap.ProseMirror[contenteditable='true'] details[data-expand-kind='expand'] > summary::after {
+  content: 'Expand';
+}
+
+.tiptap.ProseMirror[contenteditable='true'] details[data-expand-kind='ui-expand'] > summary::after {
+  content: 'UI Expand';
 }
 
 /*

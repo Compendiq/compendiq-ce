@@ -28,7 +28,6 @@ vi.mock('sonner', () => ({
 }));
 
 import { Editor, clearDraft } from './Editor';
-import { insertExpandSection } from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
 import { TextSelection } from '@tiptap/pm/state';
 import { CellSelection, cellAround } from '@tiptap/pm/tables';
@@ -482,6 +481,7 @@ describe('Editor', () => {
       const html = editor.getHTML();
       expect(html).toContain('<summary></summary>');
       expect(html).not.toContain('Click to expand');
+      expect(html).not.toContain('Content here...');
     });
 
     it('places the caret inside the empty summary', async () => {
@@ -521,14 +521,13 @@ describe('Editor', () => {
     it('inserts a Refined UI Expand with its macro identity intact', async () => {
       const editor = await renderEditorWithToolbar();
 
-      act(() => {
-        insertExpandSection(editor, 'ui-expand');
-      });
+      chooseInsertItem('UI Expand');
 
       const html = editor.getHTML();
       expect(html).toContain('data-macro-name="ui-expand"');
       expect(html).toContain('<summary></summary>');
       expect(html).not.toContain('Click here to expand');
+      expect(html).not.toContain('Content here...');
       expect(editor.state.selection.$from.parent.type.name).toBe('detailsSummary');
     });
   });

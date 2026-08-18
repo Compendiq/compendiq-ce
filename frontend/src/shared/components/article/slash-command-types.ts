@@ -5,7 +5,7 @@ import {
   List, ListOrdered, CheckSquare, Quote, Minus,
   Table as TableIcon, CodeSquare, Workflow, Code,
   Info, TriangleAlert, StickyNote, Lightbulb,
-  ChevronsUpDown, Columns2, Columns3,
+  ChevronsUpDown, SquareChevronDown, Columns2, Columns3,
   ListTree, Badge, Paperclip, Images, Table2,
 } from 'lucide-react';
 import { insertPanel, insertExpandSection } from './article-extensions';
@@ -265,9 +265,9 @@ export const SLASH_COMMAND_ITEMS: readonly SlashCommandItem[] = [
   {
     id: 'expand',
     title: 'Expand section',
-    description: 'Collapsible toggle section (Confluence Expand)',
+    description: 'Starts closed. Native Confluence Expand.',
     category: 'Layout & containers',
-    keywords: ['expand', 'details', 'collapse', 'accordion', 'hidden', 'toggle', 'dropdown'],
+    keywords: ['expand', 'details', 'collapse', 'hidden', 'toggle'],
     Icon: ChevronsUpDown,
     run: (editor, range) => {
       editor.chain().focus().deleteRange(range).run();
@@ -276,11 +276,11 @@ export const SLASH_COMMAND_ITEMS: readonly SlashCommandItem[] = [
   },
   {
     id: 'ui-expand',
-    title: 'UI Expand section',
-    description: 'Refined UI collapsible expand container',
+    title: 'UI Expand',
+    description: 'Starts closed. Refined UI Expand — set Open by default on the block handle.',
     category: 'Layout & containers',
-    keywords: ['ui-expand', 'expand', 'refined', 'collapse', 'accordion', 'toggle'],
-    Icon: ChevronsUpDown,
+    keywords: ['ui-expand', 'refined', 'ui expand'],
+    Icon: SquareChevronDown,
     run: (editor, range) => {
       editor.chain().focus().deleteRange(range).run();
       insertExpandSection(editor, 'ui-expand');

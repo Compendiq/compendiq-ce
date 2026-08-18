@@ -10,7 +10,7 @@ import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import TextAlign from '@tiptap/extension-text-align';
 import { Highlight } from '@tiptap/extension-highlight';
 import { toast } from 'sonner';
-import { ConfluenceSection, ConfluenceColumn, Panel, ConfluenceStatus, ConfluenceUserMention, ExtendedTable } from './article-extensions';
+import { ConfluenceSection, ConfluenceColumn, Panel, ConfluenceStatus, ConfluenceUserMention, ExtendedTable, Details, DetailsSummary } from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
 
 // Mock the SSE transport so "Improve" never hits the network. Capturing the
@@ -123,6 +123,8 @@ function Harness({
       ConfluenceSection,
       ConfluenceColumn,
       Panel,
+      Details,
+      DetailsSummary,
     ],
     content,
     immediatelyRender: false,
@@ -560,6 +562,27 @@ describe('EditorBlockMenu — atomic and macro blocks', () => {
     await mountMenu('<ul><li><p>One</p></li></ul>');
     expect(screen.queryByTitle('Bold (Ctrl+B)')).toBeNull();
     expect(screen.getByTestId('block-menu-delete')).toBeTruthy();
+  });
+
+  it('toggles UI Expand default-open from the handle menu', async () => {
+    const { editor } = await mountMenu(
+      '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+    );
+    const toggle = screen.getByTestId('block-menu-default-open');
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+    expect(editor.getHTML()).toMatch(/<details[^>]*\sopen\b/);
+    expect(screen.getByTestId('block-menu-default-open')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('does not offer default-open on a native expand', async () => {
+    await mountMenu(
+      '<details data-macro-name="expand"><summary>T</summary><p>B</p></details>',
+    );
+    expect(screen.queryByTestId('block-menu-default-open')).toBeNull();
   });
 });
 

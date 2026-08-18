@@ -7,7 +7,7 @@ import {
   Bold, Italic, Underline, Strikethrough, Code, Code2,
   List, ListOrdered, CheckSquare, Quote, Minus, Undo2, Redo2, ChevronDown, Plus,
   Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2, Workflow, Badge,
-  ChevronsUpDown, Paperclip, ListTree, ImagePlus, Table2,
+  ChevronsUpDown, SquareChevronDown, Paperclip, ListTree, ImagePlus, Table2,
   Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
   Smile,
@@ -380,6 +380,11 @@ function InsertMenu({
                 <DropdownMenu.Item onSelect={() => insertExpandSection(editor, 'expand')} className={MENU_ITEM}>
                   <ChevronsUpDown size={15} className="shrink-0" />
                   Expand section
+                </DropdownMenu.Item>
+
+                <DropdownMenu.Item onSelect={() => insertExpandSection(editor, 'ui-expand')} className={MENU_ITEM}>
+                  <SquareChevronDown size={15} className="shrink-0" />
+                  UI Expand
                 </DropdownMenu.Item>
 
                 <DropdownMenu.Sub>
