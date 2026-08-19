@@ -63,10 +63,10 @@ export function PinnedArticlesSection() {
       aria-labelledby="pinned-pages-heading"
       data-testid="pinned-articles-section"
     >
-      <div className="mb-3 flex items-center gap-2">
-        <Pin size={16} className="text-action" aria-hidden="true" />
-        <h2 id="pinned-pages-heading" className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-          Pinned Pages
+      <div className="mb-2 flex items-center gap-2">
+        <Pin size={14} className="text-muted-foreground" aria-hidden="true" />
+        <h2 id="pinned-pages-heading" className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          Pinned
         </h2>
         {/* Tabular figures so the count doesn't jitter as pins come and go.
             Full `text-muted-foreground`: at /70 this measured 3.4:1 on the card
@@ -83,64 +83,51 @@ export function PinnedArticlesSection() {
       </div>
       <div
         id="pinned-pages-grid"
-        className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+        className="flex flex-col gap-1"
       >
         {visiblePins.map((item, i) => (
           <m.div
             key={item.id}
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
             transition={{ delay: entranceDelay(staggerPosition(i, isExpanded)) }}
           >
-            {/* The card was wrapped in a `TiltCard` carrying `card-stack`: a 3D
-                perspective rotation tracking the cursor, a drop-shadow that
-                slid with it, and two offset ghost layers faking a stack of
-                paper that rotated on hover. It is the same gesture the KPI
-                tiles lost — the clearest surviving artefact of the retired
-                neumorphic world, with no counterpart anywhere else in the app.
-                The card below already carries the whole treatment; the wrapper
-                was decoration on top of it. */}
             <div
               role="button"
               tabIndex={0}
               onClick={() => navigate(`/pages/${item.id}`)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/pages/${item.id}`); }}
-              className="group relative flex h-full w-full cursor-pointer flex-col gap-2 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/45"
+              className="group flex w-full cursor-pointer items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-accent"
               data-testid={`pinned-card-${item.id}`}
             >
-              {/* Unpin button */}
+              <div className="min-w-0 flex-1">
+                <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
+                  {item.icon && <PageIcon icon={item.icon} pageId={item.id} size="row" />}
+                  <span className="min-w-0 truncate">{item.title}</span>
+                </p>
+                <div className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">
+                  {item.spaceKey && item.spaceKey !== '__local__' && <span>{item.spaceKey}</span>}
+                  {item.author && (
+                    <span className="flex items-center gap-1">
+                      <User size={10} /> {item.author}
+                    </span>
+                  )}
+                  {item.lastModifiedAt && (
+                    <span className="flex items-center gap-1">
+                      <Clock size={10} /> {new Date(item.lastModifiedAt).toLocaleDateString()}
+                    </span>
+                  )}
+                </div>
+              </div>
               <button
                 onClick={(e) => handleUnpin(e, item.id, item.title)}
-                className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                className="nm-icon-button shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                 aria-label={`Unpin ${item.title}`}
                 data-unpin={item.id}
                 data-testid={`unpin-btn-${item.id}`}
               >
                 <PinOff size={14} />
               </button>
-
-              {/* Title */}
-              <p className="flex items-start gap-1.5 pr-6 font-medium">
-                {item.icon && <PageIcon icon={item.icon} pageId={item.id} size="row" className="mt-0.5" />}
-                <span className="line-clamp-2">{item.title}</span>
-              </p>
-
-              {/* Metadata row */}
-              <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
-                  {item.spaceKey}
-                </span>
-                {item.author && (
-                  <span className="flex items-center gap-1">
-                    <User size={10} /> {item.author}
-                  </span>
-                )}
-                {item.lastModifiedAt && (
-                  <span className="flex items-center gap-1">
-                    <Clock size={10} /> {new Date(item.lastModifiedAt).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
             </div>
           </m.div>
         ))}

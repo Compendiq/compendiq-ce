@@ -212,6 +212,19 @@ describe('AppLayout', () => {
     expect(screen.getByRole('link', { name: 'AI chat, full page' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Graph' })).toBeInTheDocument();
     expect(nav.className).toContain('w-[var(--app-header-height)]');
+    expect(nav.className).toContain('items-center');
+    expect(nav.className).toContain('px-1');
+    const pages = screen.getByRole('link', { name: 'Pages' });
+    const ai = screen.getByRole('link', { name: 'AI chat, full page' });
+    const graph = screen.getByRole('link', { name: 'Graph' });
+    for (const link of [pages, ai, graph]) {
+      expect(link.className).toContain('w-10');
+      expect(link.className).toContain('h-10');
+      expect(link.className).not.toContain('w-full');
+      expect(link.className).not.toContain('w-auto');
+    }
+    const shell = screen.getByTestId('app-shell');
+    expect(shell.className).not.toMatch(/\bgap-/);
     expect(screen.getByTestId('header-chassis-slot').className).toContain(
       'w-[var(--app-header-height)]',
     );

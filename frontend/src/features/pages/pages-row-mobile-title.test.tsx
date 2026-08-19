@@ -71,8 +71,39 @@ const mockPagesResponse = {
       source: 'standalone',
       visibility: 'shared',
     },
+    {
+      id: 'cf-1',
+      spaceKey: 'OPS',
+      title: 'Confluence page',
+      version: 1,
+      parentId: null,
+      labels: [],
+      author: 'Bob',
+      lastModifiedAt: '2025-01-15T00:00:00Z',
+      lastSynced: '2025-01-16T00:00:00Z',
+      embeddingDirty: false,
+      embeddingStatus: 'embedded',
+      embeddedAt: '2025-01-16T00:00:00Z',
+      source: 'confluence',
+    },
+    {
+      id: 'std-2',
+      spaceKey: '__local__',
+      title: 'Private note',
+      version: 1,
+      parentId: null,
+      labels: [],
+      author: 'Alice',
+      lastModifiedAt: '2025-01-15T00:00:00Z',
+      lastSynced: '2025-01-16T00:00:00Z',
+      embeddingDirty: false,
+      embeddingStatus: 'embedded',
+      embeddedAt: '2025-01-16T00:00:00Z',
+      source: 'standalone',
+      visibility: 'private',
+    },
   ],
-  total: 1,
+  total: 3,
   page: 1,
   limit: 50,
   totalPages: 1,
@@ -137,8 +168,8 @@ describe('PagesPage row: mobile title layout', () => {
     // The badges land under the title only if they live in the SAME wrap
     // container. A refactor that moves them out (say, into the trailing
     // cluster) would strand them off-screen or hide them on mobile.
-    const local = screen.getByTestId('badge-local');
-    const shared = screen.getByTestId('badge-shared');
+    const local = screen.getAllByTestId('badge-local')[0];
+    const shared = screen.getAllByTestId('badge-shared')[0];
     expect(local.parentElement).toBe(titleRow);
     expect(shared.parentElement).toBe(titleRow);
     // shrink-0 stays: on a shared line the badges hold their width and the

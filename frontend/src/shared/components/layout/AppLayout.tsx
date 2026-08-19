@@ -432,9 +432,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
         ? { activePreset: activeLayoutPreset, applyPreset: applyLayoutPreset }
         : null}
     >
-    {/* Chassis is the viewport ground. The rounded shell sits inset on
-        desktop and goes edge-to-edge below `md`. Do not swap `app-chassis`
-        for a `bg-*` utility: the inset padding is part of the same contract. */}
+    {/* Chassis is the viewport ground. The rounded shell sits inset on the
+        end and bottom on desktop; the destination rail is flush to the start
+        edge. Edge-to-edge below `md`. Do not swap `app-chassis` for a `bg-*`
+        utility: the inset padding is part of the same contract. */}
     <div data-testid="app-chassis" className="app-chassis flex h-screen flex-col overflow-hidden">
       {/* WCAG 2.4.1 Bypass Blocks (Level A): the first focusable element in the
           whole app, invisible until it earns focus. Without it a keyboard user
@@ -566,7 +567,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {/* Clip to the Q-tile below `md` so hamburger + lockup + Find +
               session cluster fit the 48px. The SVG itself stays the full
               lockup; overflow hides the wordmark rather than squashing it. */}
-          <span className="block h-[22px] w-[22px] overflow-hidden md:w-auto">
+          <span className="block h-[22px] w-[22px] overflow-hidden">
             <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
           </span>
         </Link>
@@ -594,7 +595,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <TrialBanner />
       </div>
 
-      <div data-testid="app-shell" className="app-shell flex min-h-0 flex-1 gap-2 overflow-hidden">
+      <div data-testid="app-shell" className="app-shell flex min-h-0 flex-1 overflow-hidden">
       <MainNavChassisRail />
       <div
         data-testid="panel-wrapper"

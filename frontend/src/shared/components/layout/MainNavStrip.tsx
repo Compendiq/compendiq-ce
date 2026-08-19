@@ -103,8 +103,10 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
 
 /**
  * App destinations on the grey chassis, left of the workspace card.
- * Labels stay visible so this is not an icon-only rail (WCAG 2.5.3).
- * Keyboard shortcuts (g p / g a / g g) remain on AppLayout.
+ * Column width is `--app-header-height` (48px), flush with the workspace —
+ * no gutter between this rail and the article. Labels stay visible so this
+ * is not an icon-only rail (WCAG 2.5.3). Keyboard shortcuts (g p / g a / g g)
+ * remain on AppLayout.
  */
 export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
   const location = useLocation();
@@ -112,7 +114,7 @@ export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
     <nav
       data-testid="main-nav-chassis"
       aria-label="Main navigation"
-      className="hidden w-[var(--app-header-height)] shrink-0 flex-col items-center gap-1 self-stretch pt-0 md:flex"
+      className="hidden box-border w-[var(--app-header-height)] shrink-0 flex-col items-center gap-1 self-stretch px-1 pt-0 md:flex"
     >
       {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut, ariaLabel }) => {
         const active = isActive(location.pathname, path);
@@ -125,7 +127,10 @@ export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
             aria-label={ariaLabel}
             aria-current={active ? 'page' : undefined}
             className={cn(
-              'flex w-full min-h-9 flex-col items-center justify-center gap-0.5 rounded-lg px-0 py-1.5 text-center text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              // Strip is 48px (`--app-header-height`). px-1 on the nav is 4px
+              // on both sides; each control is 40px. 4 + 40 + 4 = 48, so the
+              // three identical boxes sit in the middle with equal gutters.
+              'box-border flex h-10 w-10 shrink-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0 py-1 text-center text-xs font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               active
                 ? 'nav-selection'
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground',

@@ -81,6 +81,9 @@ function summarizeFilterLabels(labels: string[]): string {
 // ---------------------------------------------------------------------------
 
 interface PageListItemProps {
+  showSource?: boolean;
+  showVisibility?: boolean;
+  showQuality?: boolean;
   pageItem: {
     id: string;
     spaceKey: string | null;
@@ -113,11 +116,12 @@ interface PageListItemProps {
 
 const PageListItem = memo(function PageListItem({
   pageItem, index: _index, onNavigate, selected = false, onToggleSelect,
+  showSource = false, showVisibility = false, showQuality = false,
 }: PageListItemProps) {
   return (
     <m.div
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
       transition={{ duration: 0.15 }}
     >
       <div
@@ -135,7 +139,7 @@ const PageListItem = memo(function PageListItem({
           // on the title line, which is the thing it selects.
           'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors max-sm:items-start',
           selected
-            ? 'border-primary/50 bg-primary/[0.07]'
+            ? 'border-border bg-accent'
             : 'border-border bg-card hover:bg-accent',
         )}
         data-testid={`article-hover-${pageItem.id}`}
@@ -189,7 +193,7 @@ const PageListItem = memo(function PageListItem({
                   category, not a state, so it may not borrow the status
                   greens/indigos — the label is the differentiator. The recipe
                   and its measured rationale live in neutral-chip.ts. */}
-              {pageItem.source === 'standalone' ? (
+              {showSource && (pageItem.source === 'standalone' ? (
                 <span
                   className={cn('shrink-0', neutralChipClass)}
                   data-testid="badge-local"
@@ -205,9 +209,8 @@ const PageListItem = memo(function PageListItem({
                 >
                   Confluence
                 </span>
-              )}
-              {/* Visibility badge for standalone articles */}
-              {pageItem.source === 'standalone' && (
+              ))}
+              {showVisibility && pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
                   <span
                     className={cn('shrink-0', neutralChipClass)}
@@ -217,7 +220,6 @@ const PageListItem = memo(function PageListItem({
                     <Globe size={10} /> Shared
                   </span>
                 ) : (
-                  // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                   <span
                     className={cn('shrink-0', neutralChipClass)}
                     data-testid="badge-private"
@@ -258,7 +260,7 @@ const PageListItem = memo(function PageListItem({
             {/* Only when a score EXISTS. A number about the content is not
                 pipeline state and an author acts on it differently — but
                 "Not Scored" IS pipeline state, and PageStateBadge owns that. */}
-            {pageItem.qualityScore !== null && pageItem.qualityScore !== undefined && (
+            {showQuality && pageItem.qualityScore !== null && pageItem.qualityScore !== undefined && (
               <QualityScoreBadge
                 qualityScore={pageItem.qualityScore}
                 qualityStatus={pageItem.qualityStatus}
@@ -309,6 +311,9 @@ const PageListItem = memo(function PageListItem({
   // restored the controlled input's DOM back to unchecked.
   if (prev.selected !== next.selected) return false;
   if (prev.onToggleSelect !== next.onToggleSelect) return false;
+  if (prev.showSource !== next.showSource) return false;
+  if (prev.showVisibility !== next.showVisibility) return false;
+  if (prev.showQuality !== next.showQuality) return false;
   return true;
 });
 
@@ -660,6 +665,17 @@ export function PagesPage() {
   // `?? []` fallback would otherwise mint a new array every render and break
   // the memoisation of every selection callback that depends on it.
   const pageItems = useMemo(() => pagesData?.items ?? [], [pagesData?.items]);
+  const showSourceBadges = useMemo(
+    () => new Set(pageItems.map((p) => p.source)).size > 1,
+    [pageItems],
+  );
+  const showVisibilityBadges = useMemo(() => {
+    const vis = new Set(
+      pageItems.filter((p) => p.source === 'standalone').map((p) => p.visibility ?? 'private'),
+    );
+    return vis.size > 1;
+  }, [pageItems]);
+  const showQualityBadges = Boolean(qualityFilter);
   const scrollMargin = listContainerRef.current?.offsetTop ?? 0;
 
   const toggleSelect = useCallback((id: string, shiftKey: boolean) => {
@@ -745,45 +761,32 @@ export function PagesPage() {
     // page, so the cap should keep content flush-left, not float it.
     <div className="max-w-[1100px] space-y-3">
       <HeaderHost fallbackClassName="mb-1">
-        <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">Pages</h1>
-      </HeaderHost>
-
-      <section
-        aria-labelledby="kb-status-heading"
-        className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2"
-      >
-        <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
-        <KPICards
-          embeddingStatus={embeddingStatusData}
-          spacesCount={spaces?.length ?? 0}
-          lastSynced={syncStatus?.lastSynced}
-          onSync={() => syncMutation.mutate()}
-          isSyncing={syncStatus?.status === 'syncing'}
-        />
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => navigate('/trash')}
-            className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
-            data-testid="trash-link"
-            title="Trash"
-          >
-            <Trash2 size={15} />
-            <span className="hidden sm:inline">Trash</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => navigate('/pages/new')}
-            className="nm-button-ghost h-8 px-3 text-xs sm:text-sm"
-            data-testid="new-page-button"
-          >
-            <Plus size={15} />
-            <span>New Page</span>
-            <ShortcutHint shortcutId="new-page" />
-          </button>
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">Pages</h1>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => navigate('/trash')}
+              className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
+              data-testid="trash-link"
+              title="Trash"
+            >
+              <Trash2 size={15} />
+              <span className="hidden sm:inline">Trash</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/pages/new')}
+              className="nm-button-primary h-8 px-3 text-xs sm:text-sm"
+              data-testid="new-page-button"
+            >
+              <Plus size={15} />
+              <span>New Page</span>
+              <ShortcutHint shortcutId="new-page" />
+            </button>
+          </div>
         </div>
-      </section>
+      </HeaderHost>
 
       {/* Filters */}
       {/* A control row, not a pane. This was a bordered `bg-card` box with
@@ -956,11 +959,8 @@ export function PagesPage() {
           <button
             onClick={() => setShowAdvancedFilters((v) => !v)}
             className={cn(
-              'flex items-center gap-1.5 rounded-md px-3 py-2 text-sm transition-colors',
-              'nm-focus-ring',
-              showAdvancedFilters || activeFilterCount > 0
-                ? 'bg-action/15 text-action'
-                : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
+              'nm-button-ghost flex h-8 items-center gap-1.5 px-3 text-sm',
+              (showAdvancedFilters || activeFilterCount > 0) && 'bg-accent',
             )}
             data-testid="advanced-filters-toggle"
             aria-expanded={showAdvancedFilters}
@@ -969,7 +969,7 @@ export function PagesPage() {
             <Filter size={14} />
             Filters
             {activeFilterCount > 0 && (
-              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-action text-[11px] font-bold text-action-foreground">
+              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-foreground/15 text-[11px] font-semibold tabular-nums">
                 {activeFilterCount}
               </span>
             )}
@@ -1011,7 +1011,18 @@ export function PagesPage() {
 
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div id="advanced-filters-panel" className="grid grid-cols-2 items-end gap-3 border-t border-border pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
+          <div id="advanced-filters-panel" className="space-y-3 border-t border-border pt-3" data-testid="advanced-filters-panel">
+            <section aria-labelledby="kb-status-heading">
+              <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
+              <KPICards
+                embeddingStatus={embeddingStatusData}
+                spacesCount={spaces?.length ?? 0}
+                lastSynced={syncStatus?.lastSynced}
+                onSync={() => syncMutation.mutate()}
+                isSyncing={syncStatus?.status === 'syncing'}
+              />
+            </section>
+            <div className="grid grid-cols-2 items-end gap-3 sm:grid-cols-3 lg:grid-cols-4">
             {/* Author filter */}
             <div className="min-w-40">
               <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
@@ -1129,15 +1140,7 @@ export function PagesPage() {
               />
             </div>
 
-            {/* A "clear everything" control used to live here too — "Clear
-                filters" in filled destructive red — duplicating the pill
-                row's plain-text "Clear all" below under a different label
-                and opposite visual weight, for the identical
-                `clearAllFilters` call. Clearing filters destroys no data,
-                so the destructive-red treatment was also just wrong. The
-                pill row's "Clear all" is now the one control (polish pass,
-                2026-08-17); it sits beside the pills it clears, which the
-                panel does not. */}
+            </div>
           </div>
         )}
 
@@ -1167,7 +1170,7 @@ export function PagesPage() {
                 <button
                   key={f.key}
                   onClick={() => clearFilter(f.key)}
-                  className="inline-flex items-center gap-1 rounded-full bg-action/10 px-2.5 py-0.5 text-xs font-medium text-action"
+                  className="inline-flex items-center gap-1 rounded-full bg-foreground/10 px-2.5 py-0.5 text-xs font-medium text-secondary-foreground"
                   aria-label={`Remove ${f.label} filter`}
                   aria-describedby={ignoredBySemanticSearch ? 'filters-ignored-notice' : undefined}
                   data-testid={`filter-pill-${f.key}`}
@@ -1206,7 +1209,7 @@ export function PagesPage() {
 
       {/* Embedding progress */}
       {embeddingStatusData?.isProcessing && (
-        <div className="rounded-xl border border-border bg-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
+        <div className="flex items-center gap-3 rounded-md border border-border p-3" data-testid="embedding-progress-banner">
           <Loader2 size={16} className="animate-spin text-action" />
           <span className="text-sm">
             Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
@@ -1493,7 +1496,7 @@ export function PagesPage() {
                   ? (search
                       ? `No pages match "${search}" with ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`
                       : `No pages match ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`)
-                  : (search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here')
+                  : (search ? 'Try a different search term' : 'Create a page, or connect a Confluence space to fill this list')
               }
               action={
                 activeFilterCount > 0
@@ -1559,6 +1562,9 @@ export function PagesPage() {
                         onNavigate={navigateToPage}
                         selected={selectedIds.has(pageItem.id)}
                         onToggleSelect={toggleSelect}
+                        showSource={showSourceBadges}
+                        showVisibility={showVisibilityBadges}
+                        showQuality={showQualityBadges}
                       />
                     </div>
                   </div>

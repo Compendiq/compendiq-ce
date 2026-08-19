@@ -638,7 +638,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
 @utility app-chassis {
   background: var(--app-chassis);
-  padding-inline: var(--app-inset);
+  /* Destinations live on the left chassis. A matching inset there stacked a
+     second grey gutter beside the 48px rail; keep the inset on the end and
+     bottom so the workspace card still floats off the right and floor. */
+  padding-inline-start: 0;
+  padding-inline-end: var(--app-inset);
   padding-bottom: var(--app-inset);
   padding-top: 0;
 }
@@ -697,6 +701,9 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   background: transparent;
   border-color: var(--color-border);
   height: var(--app-header-height);
+  min-height: var(--app-header-height);
+  max-height: var(--app-header-height);
+  overflow: hidden;
 }
 
 @utility app-sidebar {

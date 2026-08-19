@@ -265,8 +265,10 @@ describe('PagesPage', () => {
     restoreRects();
   });
 
-  it('renders KPI cards at the top of the page', () => {
+  it('keeps corpus KPIs behind the Filters panel, not on the rest-state home', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('kpi-cards')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     expect(screen.getByTestId('kpi-cards')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-total-articles')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-embedded-pages')).toBeInTheDocument();
@@ -277,6 +279,7 @@ describe('PagesPage', () => {
 
   it('keeps corpus KPIs out of the 48px header slot', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     const kpis = screen.getByTestId('kpi-cards');
     expect(kpis.closest('#app-header-slot')).toBeNull();
     expect(kpis.closest('header')).toBeNull();
@@ -308,11 +311,11 @@ describe('PagesPage', () => {
     ).toBeTruthy();
   });
 
-  it('demotes New Page from the filled primary treatment', () => {
+  it('makes New Page the filled primary action on this route', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const newPage = screen.getByTestId('new-page-button');
-    expect(newPage.className).toContain('nm-button-ghost');
-    expect(newPage.className).not.toContain('nm-button-primary');
+    expect(newPage.className).toContain('nm-button-primary');
+    expect(newPage.className).not.toContain('nm-button-ghost');
   });
 
   it('renders the advanced filters toggle button', () => {
@@ -495,7 +498,7 @@ describe('PagesPage', () => {
 
     const section = await screen.findByTestId('pinned-articles-section');
     expect(section).toBeInTheDocument();
-    expect(screen.getByText('Pinned Pages')).toBeInTheDocument();
+    expect(screen.getByText('Pinned')).toBeInTheDocument();
     expect(screen.getByText('Getting Started Guide')).toBeInTheDocument();
     expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
   });
@@ -1343,8 +1346,8 @@ describe('PagesPage', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     const panel = screen.getByTestId('advanced-filters-panel');
-    expect(panel.className).toContain('grid');
-    expect(panel.className).toContain('grid-cols-2');
+    expect(panel.querySelector('.grid')).not.toBeNull();
+    expect(panel.querySelector('.grid')?.className).toContain('grid-cols-2');
   });
 
   // --- Accessibility: filter pills as focusable buttons ---
@@ -1689,8 +1692,39 @@ describe('PagesPage', () => {
             source: 'standalone',
             visibility,
           },
+          {
+            id: 'cf-companion',
+            spaceKey: 'DEV',
+            title: 'Confluence companion',
+            version: 1,
+            parentId: null,
+            labels: [],
+            author: 'Bob',
+            lastModifiedAt: '2025-01-15T00:00:00Z',
+            lastSynced: '2025-01-16T00:00:00Z',
+            embeddingDirty: false,
+            embeddingStatus: 'embedded',
+            embeddedAt: '2025-01-16T00:00:00Z',
+            source: 'confluence',
+          },
+          {
+            id: 'std-companion',
+            spaceKey: '__local__',
+            title: 'Other visibility',
+            version: 1,
+            parentId: null,
+            labels: [],
+            author: 'Alice',
+            lastModifiedAt: '2025-01-15T00:00:00Z',
+            lastSynced: '2025-01-16T00:00:00Z',
+            embeddingDirty: false,
+            embeddingStatus: 'embedded',
+            embeddedAt: '2025-01-16T00:00:00Z',
+            source: 'standalone',
+            visibility: visibility === 'shared' ? 'private' : 'shared',
+          },
         ],
-        total: 1,
+        total: 3,
         page: 1,
         limit: 50,
         totalPages: 1,
@@ -1755,7 +1789,7 @@ describe('PagesPage', () => {
     it('Local badge is a neutral tint — no borrowed status hue, no bg-muted', async () => {
       mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
-      const badge = await screen.findByTestId('badge-local');
+      const badge = (await screen.findAllByTestId('badge-local'))[0];
       expect(badge).toHaveTextContent('Local');
       expect(badge.className).toContain('bg-foreground/10');
       expect(badge.className).toContain('text-secondary-foreground');
@@ -1779,7 +1813,7 @@ describe('PagesPage', () => {
     it('Shared badge is a neutral tint — no borrowed status hue, no bg-muted', async () => {
       mockPagesWithStandalone('shared');
       render(<PagesPage />, { wrapper: createWrapper() });
-      const badge = await screen.findByTestId('badge-shared');
+      const badge = (await screen.findAllByTestId('badge-shared'))[0];
       expect(badge).toHaveTextContent('Shared');
       expect(badge.className).toContain('bg-foreground/10');
       expect(badge.className).toContain('text-secondary-foreground');
@@ -2050,16 +2084,18 @@ describe('PagesPage', () => {
 
       const headings = screen.getAllByRole('heading').map((h) => h.textContent);
       expect(headings).toContain('Pages');
-      expect(headings).toContain('Knowledge base status');
       expect(headings).toContain('Search and filter pages');
       expect(headings).toContain('Page results');
+      expect(headings).not.toContain('Knowledge base status');
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      expect(screen.getAllByRole('heading').map((h) => h.textContent)).toContain('Knowledge base status');
     });
 
     it('associates each region with its heading', () => {
       const { container } = render(<PagesPage />, { wrapper: createWrapper() });
 
       const labelled = Array.from(container.querySelectorAll('section[aria-labelledby]'));
-      expect(labelled.length).toBeGreaterThanOrEqual(3);
+      expect(labelled.length).toBeGreaterThanOrEqual(2);
       for (const section of labelled) {
         const id = section.getAttribute('aria-labelledby')!;
         expect(container.querySelector(`#${id}`)).not.toBeNull();

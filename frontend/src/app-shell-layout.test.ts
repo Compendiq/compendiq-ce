@@ -111,7 +111,9 @@ describe('Inset shell utilities', () => {
   it('the chassis utility paints the chassis token and applies inset padding', () => {
     const block = extractBlock(css, '@utility app-chassis {');
     expect(block).toMatch(/background:\s*var\(--app-chassis\)/);
-    expect(block).toMatch(/padding-inline:\s*var\(--app-inset\)/);
+    expect(block).toMatch(/padding-inline-start:\s*0/);
+    expect(block).toMatch(/padding-inline-end:\s*var\(--app-inset\)/);
+    expect(block).not.toMatch(/padding-inline:\s*var\(--app-inset\)/);
     expect(block).toMatch(/padding-bottom:\s*var\(--app-inset\)/);
     expect(block).toMatch(/padding-top:\s*0/);
   });
@@ -119,10 +121,13 @@ describe('Inset shell utilities', () => {
   it('the header stays a compact band independent of the chassis inset', () => {
     const block = extractBlock(css, '@utility app-header {');
     expect(block).toMatch(/height:\s*var\(--app-header-height\)/);
+    expect(block).toMatch(/max-height:\s*var\(--app-header-height\)/);
+    expect(block).toMatch(/overflow:\s*hidden/);
     expect(css).toMatch(/--app-header-height:\s*3rem/);
     expect(appLayout).toMatch(/className="app-header[^"]*items-center/);
     expect(appLayout).not.toMatch(/<header[^>]*\bh-12\b/);
     expect(appLayout).not.toMatch(/<header[^>]*\bborder-b\b/);
+    expect(appLayout).not.toMatch(/md:w-auto/);
   });
 
   it('the chassis destination column is as wide as the header is tall', () => {
@@ -261,6 +266,17 @@ describe('AppLayout structure', () => {
     const value = match![1]!;
     expect(value).not.toMatch(/\bp-3\b/);
     expect(value).not.toMatch(/\bgap-2\.5\b/);
+  });
+
+  it('the destination rail sits flush against the workspace, 48px wide', () => {
+    expect(appLayout).toMatch(/data-testid="app-shell"[^>]*className="[^"]*"/);
+    const shellClass = /data-testid="app-shell"[^>]*className="([^"]+)"/.exec(appLayout)?.[1] ?? '';
+    expect(shellClass).not.toMatch(/\bgap-/);
+    const nav = read('shared/components/layout/MainNavStrip.tsx');
+    expect(nav).toContain('w-[var(--app-header-height)]');
+    expect(nav).toContain('items-center');
+    expect(nav).toContain('px-1');
+    expect(nav).toMatch(/h-10 w-10/);
   });
 
   it('mounts the chassis destination rail outside the workspace card', () => {

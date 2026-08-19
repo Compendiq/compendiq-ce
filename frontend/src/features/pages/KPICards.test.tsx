@@ -267,6 +267,22 @@ describe('KPICards', () => {
     expect(card).toHaveTextContent('Last Sync');
     expect(card).toHaveTextContent('Not recorded');
     expect(card).not.toHaveTextContent('Never');
+    expect(card).not.toHaveTextContent('Local pages only');
+  });
+
+  it('does not offer Sync when no Confluence spaces are connected', () => {
+    render(
+      <KPICards
+        embeddingStatus={mockEmbeddingStatus}
+        spacesCount={0}
+        onSync={vi.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    expect(screen.queryByTestId('kpi-sync-btn')).not.toBeInTheDocument();
+    expect(screen.getByTestId('kpi-last-sync')).toHaveTextContent('Local pages only');
+    expect(screen.getByTestId('kpi-last-sync')).not.toHaveTextContent('Never');
   });
 
   it('does not claim zero spaces when the library already has pages', () => {
@@ -278,7 +294,7 @@ describe('KPICards', () => {
       { wrapper: Wrapper },
     );
 
-    expect(screen.getByTestId('kpi-spaces-synced')).toHaveTextContent('in the library');
+    expect(screen.getByTestId('kpi-spaces-synced')).toHaveTextContent('in this library');
     expect(screen.getByTestId('kpi-spaces-synced')).not.toHaveTextContent('0 spaces');
   });
 
