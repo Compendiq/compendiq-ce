@@ -16,7 +16,6 @@ import {
   useUpdatePageIcon,
   useUploadPageIcon,
 } from '../../shared/hooks/use-pages';
-import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
 import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
 import type { SettablePageIcon } from '@compendiq/contracts';
@@ -40,7 +39,6 @@ import { hasSubstantialLede } from '../../shared/lib/article-lede';
 import type { TocHeading } from '../../shared/components/article/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagPopover } from '../../shared/components/TagPopover';
-import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
@@ -879,15 +877,6 @@ export function PageViewPage() {
         </div>
       </div>
       <div>
-        {!editing && (
-          <HeaderHost fallbackClassName="mb-1 min-w-0 truncate text-[15px] font-semibold sm:text-lg">
-            <span className="flex min-w-0 items-center gap-2 text-[15px] font-semibold text-foreground sm:text-lg">
-              <PageIcon icon={page.icon} pageId={page.id} size="row" />
-              <span className="min-w-0 truncate">{page.title}</span>
-            </span>
-          </HeaderHost>
-        )}
-
         {editing ? (
           <>
             <div className="group mx-auto flex max-w-[1200px] items-start gap-3 px-5 pt-4 sm:px-10">

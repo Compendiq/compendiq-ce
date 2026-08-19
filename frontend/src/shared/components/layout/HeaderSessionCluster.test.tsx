@@ -40,9 +40,9 @@ describe('HeaderSessionCluster', () => {
     useArticleViewStore.setState({ editing: false });
   });
 
-  it('renders find, notifications, theme, and account', () => {
+  it('renders notifications, theme, and account — Find lives in the header centre', () => {
     render(<HeaderSessionCluster />, { wrapper });
-    expect(screen.getByTestId('header-find')).toBeInTheDocument();
+    expect(screen.queryByTestId('header-find')).not.toBeInTheDocument();
     expect(screen.getByTestId('notification-bell')).toBeInTheDocument();
     expect(screen.getByLabelText(/Theme:/)).toBeInTheDocument();
     expect(screen.getByLabelText(/menu$/i)).toBeInTheDocument();
@@ -52,6 +52,5 @@ describe('HeaderSessionCluster', () => {
     useArticleViewStore.setState({ editing: true });
     render(<HeaderSessionCluster />, { wrapper });
     expect(screen.getByTestId('header-session-cluster')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Find' })).toBeInTheDocument();
   });
 });

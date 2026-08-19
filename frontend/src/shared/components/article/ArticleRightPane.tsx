@@ -244,10 +244,13 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
  * one interaction. The old arrangement asked the user to learn two different
  * things about the same right-hand edge.
  *
- * Below `md` the assistant is still `AiDockSheet` (a bottom sheet), because
- * this pane does not render at all there — see AppLayout.
+ * Below `md` AppLayout hosts this pane in a right-hand sheet so Outline,
+ * Details and Assistant stay one inspector, rather than leaving the first
+ * two unreachable while Assistant had its own bottom sheet.
  */
 export type InspectorView = 'assistant' | 'outline' | 'details';
+
+export type InspectorPresentation = 'rail' | 'sheet';
 
 export interface InspectorViewRequest {
   view: InspectorView;
@@ -256,8 +259,12 @@ export interface InspectorViewRequest {
 
 export function ArticleRightPane({
   inspectorViewRequest,
+  presentation = 'rail',
+  onRequestClose,
 }: {
   inspectorViewRequest?: InspectorViewRequest | null;
+  presentation?: InspectorPresentation;
+  onRequestClose?: () => void;
 } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -297,7 +304,8 @@ export function ArticleRightPane({
   // why the OR is not needed for that case either.
   const dockOpen = useAiDockStore((s) => s.open);
   const dockLayoutIsWide = useIsDockWideLayout();
-  const collapsed = userCollapsed;
+  const isSheet = presentation === 'sheet';
+  const collapsed = isSheet ? false : userCollapsed;
   const handleExpandSidebar = useCallback(() => {
     toggleSidebar();
   }, [toggleSidebar]);
@@ -545,7 +553,8 @@ export function ArticleRightPane({
 
     scrollRoot.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     setActiveId(headingId);
-  }, []);
+    onRequestClose?.();
+  }, [onRequestClose]);
 
   const expandedTreeRef = useRef<HTMLDivElement>(null);
   const flyoutTreeRef = useRef<HTMLDivElement>(null);
@@ -801,7 +810,7 @@ export function ArticleRightPane({
   // Below the wide breakpoint a 40px rail plus a ~420px dock starves the
   // article, so the rail steps aside entirely and the assistant owns the right
   // side of the pane (#1126). Above it, both fit and both stay.
-  if (dockOpen && !dockLayoutIsWide) return null;
+  if (!isSheet && dockOpen && !dockLayoutIsWide) return null;
 
   // Shared between the collapsed-rail and expanded returns — Radix portals
   // the dialog to <body>, so its position in the tree only matters for state.
@@ -882,7 +891,7 @@ export function ArticleRightPane({
           animate={{ width: 40, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="app-sidebar flex flex-col items-center border-l overflow-hidden"
+          className="app-context-rail flex flex-col items-center overflow-hidden"
           aria-label="Page inspector"
           data-testid="article-right-pane-rail"
         >
@@ -1242,12 +1251,13 @@ export function ArticleRightPane({
     <m.aside
       ref={sidebarRef}
       key="expanded-sidebar"
-      initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-      animate={{ width, opacity: 1 }}
-      transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
+      initial={reduceEffects ? false : isSheet ? { opacity: 0 } : { width: 0, opacity: 0 }}
+      animate={isSheet ? { opacity: 1 } : { width, opacity: 1 }}
+      transition={reduceEffects || isResizing || isSheet ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'app-sidebar relative flex flex-col border-l overflow-hidden',
+        'app-context-rail relative flex flex-col overflow-hidden',
         isResizing && 'select-none',
+        isSheet && 'h-full w-full',
       )}
       data-testid="article-right-pane"
     >
@@ -1372,7 +1382,7 @@ export function ArticleRightPane({
         </button>
         </div>
 
-        {layoutControls && (
+        {layoutControls && !isSheet && (
           <LayoutPresetMenu
             compact
             activePreset={layoutControls.activePreset}
@@ -1380,10 +1390,10 @@ export function ArticleRightPane({
           />
         )}
         <button
-          onClick={toggleSidebar}
+          onClick={isSheet ? onRequestClose : toggleSidebar}
           className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="Collapse page sidebar"
-          title="Collapse sidebar (.)"
+          aria-label={isSheet ? 'Close page inspector' : 'Collapse page sidebar'}
+          title={isSheet ? 'Close inspector' : 'Collapse sidebar (.)'}
         >
           <PanelRightClose size={14} />
         </button>
@@ -1813,7 +1823,7 @@ export function ArticleRightPane({
       </div>
       )}
 
-      {/* Resize handle */}
+      {!isSheet && (
       <div
         role="separator"
         aria-label="Resize page sidebar"
@@ -1839,6 +1849,7 @@ export function ArticleRightPane({
           aria-hidden="true"
         />
       </div>
+      )}
     </m.aside>
     {confirmTrashDialog}
     {relocateDialog}

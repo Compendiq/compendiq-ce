@@ -19,9 +19,18 @@ const MAIN_NAV_ITEMS: readonly {
   label: string;
   path: string;
   shortcut: string;
+  ariaLabel?: string;
 }[] = [
   { icon: BookOpen, label: 'Pages', path: '/', shortcut: 'G then P' },
-  { icon: Bot, label: 'AI', path: '/ai', shortcut: 'G then A' },
+  {
+    icon: Bot,
+    label: 'AI',
+    path: '/ai',
+    shortcut: 'G then A',
+    // Visible label stays "AI" (WCAG 2.5.3). The longer name tells it apart
+    // from the page inspector's Assistant tab, which is a different room.
+    ariaLabel: 'AI chat, full page',
+  },
   { icon: Share2, label: 'Graph', path: '/graph', shortcut: 'G then G' },
 ] as const;
 
@@ -55,14 +64,15 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
       className="flex shrink-0 grow items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
       aria-label="Main navigation"
     >
-      {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut }) => {
+      {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut, ariaLabel }) => {
         const active = isActive(location.pathname, path);
         return (
           <Link
             key={path}
             to={path}
             onClick={onNavigate}
-            title={`${label} (${shortcut})`}
+            title={`${ariaLabel ?? label} (${shortcut})`}
+            aria-label={ariaLabel}
             className={cn(
               'flex h-7 flex-1 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               active
@@ -92,8 +102,52 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
 }
 
 /**
+ * App destinations on the grey chassis, left of the workspace card.
+ * Labels stay visible so this is not an icon-only rail (WCAG 2.5.3).
+ * Keyboard shortcuts (g p / g a / g g) remain on AppLayout.
+ */
+export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
+  const location = useLocation();
+  return (
+    <nav
+      data-testid="main-nav-chassis"
+      aria-label="Main navigation"
+      className="hidden w-14 shrink-0 flex-col items-center gap-1 self-stretch pt-1 md:flex"
+    >
+      {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut, ariaLabel }) => {
+        const active = isActive(location.pathname, path);
+        return (
+          <Link
+            key={path}
+            to={path}
+            onClick={onNavigate}
+            title={`${ariaLabel ?? label} (${shortcut})`}
+            aria-label={ariaLabel}
+            aria-current={active ? 'page' : undefined}
+            className={cn(
+              'flex w-full min-h-9 flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              active
+                ? 'nav-selection'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+            )}
+          >
+            <Icon
+              size={16}
+              className={cn(active && path === '/ai' && 'text-status-ai')}
+              aria-hidden="true"
+            />
+            {label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
+/**
  * Vertical icon-only nav for the collapsed 40 px rail. Same order, same
- * active-state styling, no labels.
+ * active-state styling, no labels. Kept for the mobile drawer; desktop
+ * destinations live on MainNavChassisRail.
  */
 export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
   const location = useLocation();
@@ -102,7 +156,7 @@ export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
       className="flex flex-col items-center gap-1 pt-1"
       aria-label="Main navigation"
     >
-      {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut }) => {
+      {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut, ariaLabel }) => {
         const active = isActive(location.pathname, path);
         return (
           <Link
@@ -115,8 +169,8 @@ export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
                 ? 'nav-selection'
                 : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
             )}
-            title={`${label} (${shortcut})`}
-            aria-label={label}
+            title={`${ariaLabel ?? label} (${shortcut})`}
+            aria-label={ariaLabel ?? label}
           >
             <Icon
               size={16}

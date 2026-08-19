@@ -334,7 +334,14 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      a Tailwind `bg-*` utility composes with them normally again — the old
      "gradients are background-images, so hover:bg-* silently does nothing"
      trap is designed out rather than documented around. */
-  --surface-backdrop: var(--color-background);
+  /* Inset application shell. Chassis is the viewport ground; the rounded
+     workspace and the context rail reuse --color-background so left nav
+     and the AI / Outline / Details pane share one chrome surface. */
+  --app-chassis: #050507;
+  --app-shell-bg: var(--color-background);
+  --app-rail-bg: var(--color-background);
+
+  --surface-backdrop: var(--app-chassis);
   --surface-card: var(--color-card);
   --surface-card-elevated: var(--color-card-elevated);
 
@@ -432,7 +439,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Flat surfaces, light. See the dark block for the reasoning; it applies
      with more force here, because a vertical fall on a near-white pane is
      exactly the range where dense grey text drifts across the AA line. */
-  --surface-backdrop: var(--color-background);
+  --surface-backdrop: var(--app-chassis);
   --surface-card: var(--color-card);
   --surface-card-elevated: var(--color-card-elevated);
 
@@ -548,6 +555,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      [data-theme-type="light"] block above; no overrides. */
 
   --inline-code-color: #7041a8;
+
+  --app-chassis: #eef0f3;
+  --app-shell-bg: var(--color-background);
+  --app-rail-bg: var(--color-background);
 }
 
 /* ---- Light-theme warning-text remap ----
@@ -580,16 +591,80 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   color: var(--color-warning);
 }
 
-/* App chassis — the gradient-lit backdrop, applied to the AppLayout root.
-   `body` carries the same gradient (so the page never flashes a flat slab
+/* App chassis — the viewport ground around the inset shell.
+   `body` carries the same colour (so the page never flashes a flat slab
    before React mounts, and over-scroll in the editor shows the right color),
    but the layout root paints its own copy: it is `h-screen` and would
    otherwise need to be transparent, which makes every future `bg-*` utility
-   on that element a silent regression. A gradient cannot be expressed as a
-   Tailwind `bg-*` utility — those set background-color, and this is a
-   background-image — so it lives here as a named utility. */
+   on that element a silent regression. */
 @utility app-backdrop {
   background: var(--surface-backdrop);
+}
+
+/* Inset / radius / rail gap live on :root so every surface reads one set of
+   values. Mobile is edge-to-edge (0). md is laptop. xl is large desktop.
+   Existing project breakpoints — do not invent a third ladder. */
+:root {
+  --app-inset: 0px;
+  --app-header-height: 2.5rem;
+  --app-shell-radius: 0px;
+  --app-shell-border-width: 0px;
+  --app-rail-gap: 0px;
+  --app-rail-radius: 0px;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --app-inset: 12px;
+    --app-shell-radius: 12px;
+    --app-shell-border-width: 1px;
+    --app-rail-gap: 6px;
+    --app-rail-radius: 10px;
+  }
+}
+
+@media (min-width: 1280px) {
+  :root {
+    --app-inset: 16px;
+    --app-shell-radius: 14px;
+    --app-shell-border-width: 1px;
+    --app-rail-gap: 8px;
+    --app-rail-radius: 12px;
+  }
+}
+
+@utility app-chassis {
+  background: var(--app-chassis);
+  padding-inline: var(--app-inset);
+  padding-bottom: var(--app-inset);
+  padding-top: 0;
+}
+
+@utility app-shell {
+  min-height: 0;
+}
+
+@utility app-workspace {
+  background: var(--app-shell-bg);
+  border: var(--app-shell-border-width) solid var(--color-border);
+  border-radius: var(--app-shell-radius);
+  min-width: 0;
+}
+
+@utility app-body-with-rail {
+  gap: var(--app-rail-gap);
+}
+
+@utility app-context-rail {
+  background: var(--app-rail-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--app-rail-radius);
+}
+
+/* The rail is its own surface; its header strip must not paint the
+   chassis colour over it. */
+.app-context-rail .panel-toolbar {
+  background: transparent;
 }
 
 /* Shell surfaces carry the palette without competing with content. The
@@ -602,8 +677,9 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    is the brightest thing on screen and the navigation recedes without needing
    to be dimmed. */
 @utility app-header {
-  background: var(--color-background);
+  background: transparent;
   border-color: var(--color-border);
+  height: var(--app-header-height);
 }
 
 @utility app-sidebar {

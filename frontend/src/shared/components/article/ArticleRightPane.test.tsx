@@ -482,6 +482,34 @@ describe('ArticleRightPane', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it('as a sheet stays expanded even when the dock flag is set', () => {
+    window.innerWidth = 500;
+    useAiDockStore.setState({ open: true });
+    useUiStore.setState({ articleSidebarCollapsed: true });
+
+    render(
+      <ArticleRightPane presentation="sheet" />,
+      { wrapper: createWrapper() },
+    );
+
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane-rail')).not.toBeInTheDocument();
+    expect(screen.queryByRole('separator', { name: 'Resize page sidebar' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Close page inspector')).toBeInTheDocument();
+  });
+
+  it('as a sheet closes via the header control instead of collapsing to a rail', () => {
+    const onRequestClose = vi.fn();
+    render(
+      <ArticleRightPane presentation="sheet" onRequestClose={onRequestClose} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByLabelText('Close page inspector'));
+    expect(onRequestClose).toHaveBeenCalledOnce();
+    expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+  });
+
   it('falls back to Details when navigating from a structured page to a heading-free page', async () => {
     useArticleViewStore.setState({
       headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
