@@ -233,6 +233,14 @@ describe('AppLayout structure', () => {
     expect(value).not.toMatch(/\bgap-2\.5\b/);
   });
 
+  it('mounts the chassis destination rail outside the workspace card', () => {
+    expect(appLayout).toMatch(/MainNavChassisRail/);
+    const chassisNavAt = appLayout.indexOf('<MainNavChassisRail');
+    const workspaceAt = appLayout.indexOf('data-testid="app-workspace"');
+    expect(chassisNavAt).toBeGreaterThan(-1);
+    expect(chassisNavAt).toBeLessThan(workspaceAt);
+  });
+
   it('does not paint a second fill on the article main inside the workspace card', () => {
     const mainAt = appLayout.indexOf('id="main-content"');
     expect(mainAt).toBeGreaterThan(-1);

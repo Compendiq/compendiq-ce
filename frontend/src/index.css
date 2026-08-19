@@ -337,7 +337,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Inset application shell. Chassis is the viewport ground; the rounded
      workspace and the context rail reuse --color-background so left nav
      and the AI / Outline / Details pane share one chrome surface. */
-  --app-chassis: #08090c;
+  --app-chassis: #050507;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-background);
 

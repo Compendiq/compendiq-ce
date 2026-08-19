@@ -425,12 +425,16 @@ interface SidebarTreeViewProps {
   forceCollapsed?: boolean;
   /** Lets a user explicitly reopen a temporarily compacted rail. */
   onForceExpand?: () => void;
+  /** Pages / AI / Graph live on the chassis on desktop. Keep them inside
+   *  this tree for the mobile drawer and for isolated tests. */
+  embedMainNav?: boolean;
 }
 
 export function SidebarTreeView({
   onNavigate,
   forceCollapsed = false,
   onForceExpand,
+  embedMainNav = true,
 }: SidebarTreeViewProps = {}) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -824,8 +828,7 @@ export function SidebarTreeView({
             <PanelLeft size={16} />
           </button>
 
-          {/* Nav icons */}
-          <MainNavStripCollapsed onNavigate={onNavigate} />
+          {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
           {/* Current scope. Collapsing used to drop every trace of it — not the
               space, not the open page, not the count — so the one question the
@@ -892,11 +895,7 @@ export function SidebarTreeView({
         isResizing && 'select-none',
       )}
     >
-      {/* Global destinations remain visually separate from workspace content.
-          `h-12` rather than `py-2`: this rule, the article context strip's and
-          the inspector's header rule are one line running across the app, so
-          all three are pinned to the same 48px border-box height instead of
-          each being however tall its own content plus padding came out. */}
+      {embedMainNav ? (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
           <MainNavStripExpanded onNavigate={onNavigate} />
           <button
@@ -908,6 +907,18 @@ export function SidebarTreeView({
             <PanelLeftClose size={14} />
           </button>
       </div>
+      ) : (
+      <div className="flex h-8 shrink-0 items-center justify-end px-2 pt-1.5">
+          <button
+            onClick={toggleTreeSidebar}
+            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (,)"
+          >
+            <PanelLeftClose size={14} />
+          </button>
+      </div>
+      )}
 
       {/* Workspace context — the selector is the panel's orientation anchor.
           It used to carry a "Workspace" caption and a `+` above it, together

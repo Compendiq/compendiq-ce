@@ -92,8 +92,51 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
 }
 
 /**
+ * App destinations on the grey chassis, left of the workspace card.
+ * Labels stay visible so this is not an icon-only rail (WCAG 2.5.3).
+ * Keyboard shortcuts (g p / g a / g g) remain on AppLayout.
+ */
+export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
+  const location = useLocation();
+  return (
+    <nav
+      data-testid="main-nav-chassis"
+      aria-label="Main navigation"
+      className="hidden w-14 shrink-0 flex-col items-center gap-1 self-stretch pt-1 md:flex"
+    >
+      {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut }) => {
+        const active = isActive(location.pathname, path);
+        return (
+          <Link
+            key={path}
+            to={path}
+            onClick={onNavigate}
+            title={`${label} (${shortcut})`}
+            aria-current={active ? 'page' : undefined}
+            className={cn(
+              'flex w-full min-h-9 flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              active
+                ? 'nav-selection'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+            )}
+          >
+            <Icon
+              size={16}
+              className={cn(active && path === '/ai' && 'text-status-ai')}
+              aria-hidden="true"
+            />
+            {label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
+/**
  * Vertical icon-only nav for the collapsed 40 px rail. Same order, same
- * active-state styling, no labels.
+ * active-state styling, no labels. Kept for the mobile drawer; desktop
+ * destinations live on MainNavChassisRail.
  */
 export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
   const location = useLocation();

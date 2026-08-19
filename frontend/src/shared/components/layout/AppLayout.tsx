@@ -22,6 +22,7 @@ import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { Logo } from '../Logo';
 import { AppHeaderMain } from './header-slot';
 import { HeaderFindButton, HeaderSessionCluster } from './HeaderSessionCluster';
+import { MainNavChassisRail } from './MainNavStrip';
 import { PageTransition } from './PageTransition';
 import { type LayoutPreset } from './LayoutPresetMenu';
 import { ArticleLayoutControlsProvider } from './article-layout-controls';
@@ -520,16 +521,17 @@ export function AppLayout({ children }: { children: ReactNode }) {
       </header>
 
       {/* Service status & notification banners — streamlined compact container */}
-      <div className="shrink-0 px-4 sm:px-6 space-y-1">
+      <div className="shrink-0 space-y-1 px-3">
         <ServiceStatus />
         <TrialBanner />
       </div>
 
-      <div data-testid="app-shell" className="app-shell flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div data-testid="app-shell" className="app-shell flex min-h-0 flex-1 gap-2 overflow-hidden">
+      <MainNavChassisRail />
       <div
         data-testid="panel-wrapper"
         className={cn(
-          'flex min-h-0 flex-1 overflow-hidden',
+          'flex min-h-0 min-w-0 flex-1 overflow-hidden',
           isArticleRoute && 'app-body-with-rail',
         )}
       >
@@ -539,9 +541,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
             stays visible alongside the Settings section nav. */}
         <div className="hidden md:flex">
           {isSettingsRoute
-            ? <SettingsSidebar />
+            ? <SettingsSidebar embedMainNav={false} />
             : (
               <SidebarTreeView
+                embedMainNav={false}
                 forceCollapsed={forceTreeCollapsed}
                 onForceExpand={() => setMidWidthTreeExpandedOverride(true)}
               />

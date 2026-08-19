@@ -194,6 +194,21 @@ describe('AppLayout', () => {
     expect(header!.contains(screen.getByTestId('header-session-cluster'))).toBe(true);
   });
 
+  it('puts Pages / AI / Graph on the chassis, outside the workspace card', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const nav = screen.getByTestId('main-nav-chassis');
+    expect(nav).toHaveAccessibleName('Main navigation');
+    expect(screen.getByTestId('app-workspace').contains(nav)).toBe(false);
+    expect(screen.getByRole('link', { name: 'Pages' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'AI' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Graph' })).toBeInTheDocument();
+  });
+
   it('puts a Find control in the header that opens the command palette', () => {
     render(
       <AppLayout>
