@@ -20,6 +20,13 @@ describe('PageIconSchema', () => {
       value: 'rocket',
     });
   });
+
+  it('accepts a brand mark', () => {
+    expect(PageIconSchema.parse({ kind: 'brand', value: 'docker' })).toEqual({
+      kind: 'brand',
+      value: 'docker',
+    });
+  });
 });
 
 describe('UpdatePageIconSchema', () => {
@@ -67,6 +74,21 @@ describe('PAGE_LUCIDE_ICON_IDS', () => {
   });
 
   it('covers a broad page-mark set, not a short starter list', () => {
-    expect(PAGE_LUCIDE_ICON_IDS.length).toBeGreaterThanOrEqual(240);
+    expect(PAGE_LUCIDE_ICON_IDS.length).toBeGreaterThanOrEqual(290);
+  });
+});
+
+describe('brand marks', () => {
+  it('accepts a catalogue logo', () => {
+    expect(UpdatePageIconSchema.parse({ icon: { kind: 'brand', value: 'docker' } }).icon).toEqual({
+      kind: 'brand',
+      value: 'docker',
+    });
+  });
+
+  it('rejects an unknown logo slug', () => {
+    expect(() =>
+      UpdatePageIconSchema.parse({ icon: { kind: 'brand', value: 'not-a-logo' } }),
+    ).toThrow();
   });
 });

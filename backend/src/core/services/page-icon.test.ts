@@ -16,5 +16,6 @@ describe('toPageIcon', () => {
     expect(toPageIcon('emoji', '🚀')).toEqual({ kind: 'emoji', value: '🚀' });
     expect(toPageIcon('lucide', 'rocket')).toEqual({ kind: 'lucide', value: 'rocket' });
     expect(toPageIcon('image', 'abc')).toEqual({ kind: 'image', value: 'abc' });
+    expect(toPageIcon('brand', 'docker')).toEqual({ kind: 'brand', value: 'docker' });
   });
 });

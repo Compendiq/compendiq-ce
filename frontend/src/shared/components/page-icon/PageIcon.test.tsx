@@ -23,6 +23,16 @@ describe('PageIcon', () => {
     expect(container.querySelector('svg')).toBeTruthy();
   });
 
+  it('renders a brand logo for a catalogue slug', () => {
+    const { container } = render(<PageIcon icon={{ kind: 'brand', value: 'docker' }} pageId="1" />);
+    expect(container.querySelector('svg')).toBeTruthy();
+  });
+
+  it('renders nothing for an unknown brand slug', () => {
+    const { container } = render(<PageIcon icon={{ kind: 'brand', value: 'not-a-logo' }} pageId="1" />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('renders nothing for an unknown lucide id', () => {
     const { container } = render(<PageIcon icon={{ kind: 'lucide', value: 'not-real' }} pageId="1" />);
     expect(container).toBeEmptyDOMElement();
