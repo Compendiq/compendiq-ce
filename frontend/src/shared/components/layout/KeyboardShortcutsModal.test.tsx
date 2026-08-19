@@ -40,7 +40,7 @@ describe('KeyboardShortcutsModal', () => {
     expect(screen.getByText('New Page')).toBeInTheDocument();
     // Panels
     expect(screen.getByText('Toggle Left Sidebar')).toBeInTheDocument();
-    expect(screen.getByText('Toggle Right Panel')).toBeInTheDocument();
+    expect(screen.getByText('Toggle Page Inspector')).toBeInTheDocument();
     expect(screen.getByText('Zen Mode')).toBeInTheDocument();
     // Editor
     expect(screen.getByText('Save page')).toBeInTheDocument();

@@ -286,7 +286,7 @@ Press `?` or `Ctrl+/` to open the keyboard shortcuts modal. Key shortcuts:
 | Shortcut | Action |
 |----------|--------|
 | `,` | Toggle Left Sidebar |
-| `.` | Toggle Right Panel |
+| `.` | Toggle Page Inspector |
 | `\` | Zen Mode |
 | `Esc` | Close dialog / modal |
 

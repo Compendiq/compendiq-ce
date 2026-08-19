@@ -36,11 +36,9 @@ interface TagPopoverProps {
  * document gets 44px back at every width.
  *
  * The inspector's Details tab is the better *grouping* — tags belong with space,
- * parent and version — but `ArticleRightPane` is `hidden md:flex`, so that would
- * make tagging impossible while editing on a phone, and ADR-010 pins
- * `useIsDockWideLayout()` as the only JS width query in the app, so a second
- * mobile control is not available either. One control that works everywhere beat
- * a better grouping that needs two.
+ * parent and version — and below `md` that tab now lives in the page-inspector
+ * sheet. This chip stays anyway: it is the in-flow control while writing, and a
+ * sheet you have to open is the wrong place to reach for a label.
  *
  * The editor itself is untouched inside — same pills, same autocomplete, same
  * immediate `useUpdatePageLabels` write.

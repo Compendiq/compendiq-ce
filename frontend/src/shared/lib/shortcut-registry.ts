@@ -50,7 +50,7 @@ export const SHORTCUTS: ShortcutRegistryEntry[] = [
 
   // -- Panels --
   { id: 'toggle-sidebar', keys: ',', label: 'Toggle Left Sidebar', category: 'panels' },
-  { id: 'toggle-right-panel', keys: '.', label: 'Toggle Right Panel', category: 'panels' },
+  { id: 'toggle-right-panel', keys: '.', label: 'Toggle Page Inspector', category: 'panels' },
   { id: 'zen-mode', keys: '\\', label: 'Zen Mode', category: 'panels' },
   { id: 'close-modal', keys: 'esc', label: 'Close dialog / modal', category: 'panels' },
 

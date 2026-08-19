@@ -24,7 +24,7 @@ flowchart TB
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
         fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123)"]
         fSpaces["spaces/<br/>settings · new"]
-        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockPanel · AiDockSheet · DockDiffCard (#1126)<br/>tab inside ArticleRightPane, sheet over the article below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
+        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ DockPanel · DockDiffCard (#1126)<br/>tab inside ArticleRightPane; mobile inspector sheet below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
         fGraph["graph/"]
         fSettings["settings/<br/>LoginPage · user + admin"]
         fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)<br/>analytics/ (AnalyticsPage)"]
@@ -106,36 +106,32 @@ flowchart LR
   rules across the window and squeezed the article — the thing the route exists
   for — between two slabs of chrome. It is now the first of three tabs inside
   the inspector, switching instantly like Outline and Details. One right-hand
-  edge, one interaction to learn. `AiDock` still exists but renders the mobile
-  sheet or nothing: `return mobile ? <AiDockSheet /> : null`.
+  edge, one interaction to learn.
 - The tab choice is **local `useState`** in `ArticleRightPane`, not a store: it
   is a per-visit view, and persisting it would open pages onto an AI panel
   nobody asked for. It defaults to Outline, or Details when the page has no
   headings.
 - **"Show me the assistant" is consumed by `AppLayout`.** `openDock()` is still
-  what Alt+I, the AI layout preset and the inspector's rail button raise. Below
-  `md` that opens the sheet. On an article route at `md` and up there is no
-  dock, so an effect turns it into `requestInspectorView('assistant')` plus an
-  expand, and lowers the flag in the same tick — `open` keeps meaning exactly
-  "the mobile sheet is up". Skipping that step is not a no-op: `ArticleRightPane`
-  ORs `open` into its own `collapsed`, so an unconsumed flag collapsed the
-  inspector to a rail at ≥1100px and made the right side vanish entirely
-  between 768 and 1099px, i.e. the keystroke destroyed the panel it was meant
-  to open. Guarded across all four widths in `AppLayout.test.tsx`.
-- `.` closes the sheet while it is open, so the key is never dead; at `md` and
-  up it plainly toggles the pane.
+  what Alt+I, the AI layout preset and the inspector's rail button raise. On an
+  article route at every width an effect turns it into
+  `requestInspectorView('assistant')` plus an expand (desktop) or the inspector
+  sheet (below `md`), and lowers the flag in the same tick — `open` is a
+  request, not a second layout state. Skipping that step is not a no-op: an
+  unconsumed flag used to collapse the inspector to a rail at ≥1100px and make
+  the right side vanish between 768 and 1099px. Guarded across those widths and
+  below `md` in `AppLayout.test.tsx`.
+- `.` toggles the inspector: the sheet below `md`, the detached rail at `md`
+  and up.
 - `useIsDockWideLayout` (`min-width: 1100px`) and `useIsMobileLayout` are the
   app's only JS *width* queries — `use-can-hover` and three one-shot checks
   read `matchMedia` for pointer and motion capability, but every other
   responsive layout decision is a Tailwind class.
-- Below `md` (`useIsMobileLayout`) there is no right side to dock into, so
-  `AiDock` swaps containers: `AiDockSheet` renders the same `DockPanel` as a
-  drag-to-expand bottom sheet over the article, the way the left sidebar
-  already becomes a slide-over there. Two detents (52% / 92% of the viewport),
-  dragged with a hand-rolled Pointer Events handler because the app's
-  `LazyMotion features={domAnimation}` excludes framer's `drag` feature bundle.
-  Unlike the inspector tab, the sheet **is** modal — backdrop, `aria-modal`, Tab trap
-  — because it occludes the document rather than sitting beside it.
+- Below `md` there is no right side to dock into, so the same inspector
+  (`ArticleRightPane` with `presentation="sheet"`) is a right-hand slide-over
+  — Outline, Details and Assistant together, matching the left nav drawer.
+  Chassis **AI** is the full-page `/ai` chat (`aria-label="AI chat, full page"`);
+  the inspector tab is **Assistant**. The laptop-width force-collapse of the
+  page tree is gone: 768–1439 keeps the user's tree preference.
 - `Apply` on a proposed change goes through **`POST /llm/improvements/apply`**,
   not a client-side write into the editor. That route runs `protectMedia` /
   `restoreMedia` (#723) and the column-layout realignment that returns **422**

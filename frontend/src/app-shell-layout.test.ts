@@ -210,18 +210,28 @@ describe('AppLayout structure', () => {
     const mainAt = appLayout.indexOf('id="main-content"');
     expect(sidebarAt).toBeGreaterThan(workspaceAt);
     expect(mainAt).toBeGreaterThan(sidebarAt);
-    const paneAt = appLayout.indexOf('<ArticleRightPane');
+    const paneAt = appLayout.indexOf('<ArticleRightPane', workspaceAt);
     expect(paneAt).toBeGreaterThan(mainAt);
   });
 
   it('mounts the article inspector outside the workspace as the context rail', () => {
     const workspaceAt = appLayout.indexOf('data-testid="app-workspace"');
-    const paneAt = appLayout.indexOf('<ArticleRightPane');
+    const paneAt = appLayout.indexOf('<ArticleRightPane', workspaceAt);
     expect(paneAt).toBeGreaterThan(workspaceAt);
     const afterWorkspace = appLayout.slice(workspaceAt, paneAt);
     // The pane must not sit inside the workspace wrapper: a closing of
     // app-workspace has to appear before ArticleRightPane.
     expect(afterWorkspace).toMatch(/<\/div>/);
+  });
+
+  it('hosts a chassis-level mobile inspector sheet before the workspace', () => {
+    const sheetAt = appLayout.indexOf('aria-label="Page inspector"');
+    const workspaceAt = appLayout.indexOf('data-testid="app-workspace"');
+    expect(sheetAt).toBeGreaterThan(-1);
+    expect(sheetAt).toBeLessThan(workspaceAt);
+    expect(appLayout).toMatch(/presentation="sheet"/);
+    expect(appLayout).not.toMatch(/forceCollapsed/);
+    expect(appLayout).not.toMatch(/forceTreeCollapsed/);
   });
 
   it('does not reintroduce the retired floating-chrome padding on the panel wrapper', () => {

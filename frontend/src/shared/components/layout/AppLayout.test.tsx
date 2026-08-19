@@ -16,18 +16,13 @@ import * as keyboardShortcutsModule from '../../hooks/use-keyboard-shortcuts';
 vi.mock('./SidebarTreeView', () => ({
   SidebarTreeView: ({
     onNavigate: _onNavigate,
-    forceCollapsed,
-    onForceExpand,
   }: {
     onNavigate?: () => void;
-    forceCollapsed?: boolean;
-    onForceExpand?: () => void;
   }) => (
-    <nav data-testid="sidebar-tree-view" data-force-collapsed={forceCollapsed ? 'true' : 'false'}>
+    <nav data-testid="sidebar-tree-view">
       <a href="/pages/first">First page</a>
       <a href="/pages/second">Second page</a>
       <button type="button">Sidebar action</button>
-      {onForceExpand && <button type="button" onClick={onForceExpand}>Override compact sidebar</button>}
     </nav>
   ),
 }));
@@ -35,14 +30,24 @@ vi.mock('./SidebarTreeView', () => ({
 vi.mock('../article/ArticleRightPane', () => ({
   ArticleRightPane: ({
     inspectorViewRequest,
+    presentation,
+    onRequestClose,
   }: {
     inspectorViewRequest?: { view: string; requestId: number } | null;
+    presentation?: 'rail' | 'sheet';
+    onRequestClose?: () => void;
   }) => (
     <div
       data-testid="article-right-pane"
       data-inspector-view={inspectorViewRequest?.view ?? ''}
+      data-presentation={presentation ?? 'rail'}
     >
       Article Right Pane
+      {onRequestClose && (
+        <button type="button" onClick={onRequestClose}>
+          Close inspector
+        </button>
+      )}
     </div>
   ),
 }));
@@ -205,7 +210,7 @@ describe('AppLayout', () => {
     expect(nav).toHaveAccessibleName('Main navigation');
     expect(screen.getByTestId('app-workspace').contains(nav)).toBe(false);
     expect(screen.getByRole('link', { name: 'Pages' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'AI' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'AI chat, full page' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Graph' })).toBeInTheDocument();
   });
 
@@ -445,8 +450,9 @@ describe('AppLayout', () => {
     expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
   });
 
-  it('temporarily compacts the tree beside an expanded inspector at intermediate widths', () => {
+  it('does not force-collapse the tree when the inspector is open at laptop widths', () => {
     window.innerWidth = 900;
+    useUiStore.setState({ treeSidebarCollapsed: false, articleSidebarCollapsed: false });
     render(
       <AppLayout>
         <div>article</div>
@@ -454,12 +460,9 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/pages/123') },
     );
 
-    const sidebar = screen.getByTestId('sidebar-tree-view');
-    expect(sidebar).toHaveAttribute('data-force-collapsed', 'true');
+    expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
     expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
-
-    fireEvent.click(screen.getByText('Override compact sidebar'));
-    expect(sidebar).toHaveAttribute('data-force-collapsed', 'false');
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
 
   it('hides article right pane on non-article routes', () => {
@@ -589,11 +592,7 @@ describe('AppLayout', () => {
 
 
 
-  // #1126: the dock holds the right side of an article route and forces the
-  // article pane into its rail, so `.` toggling the pane's own preference would
-  // change nothing on screen. It closes the dock instead — same intent, and the
-  // user's saved collapse preference is never rewritten by the dock.
-  describe('the `.` shortcut with the AI dock open', () => {
+  describe('the `.` shortcut', () => {
     function captureShortcuts(path: string) {
       let captured: keyboardShortcutsModule.ShortcutDefinition[] = [];
       vi.spyOn(keyboardShortcutsModule, 'useKeyboardShortcuts').mockImplementation((shortcuts) => {
@@ -603,22 +602,32 @@ describe('AppLayout', () => {
       return () => captured.find((s) => s.key === '.')!;
     }
 
-    it('closes the dock rather than leaving the key dead', () => {
-      // Below `md`, where the dock is the bottom sheet and genuinely holds the
-      // screen. At `md` and up this scenario no longer exists: the assistant is
-      // a tab, so AppLayout consumes `open` on an article route the moment it
-      // is raised and `.` goes back to plainly toggling the pane.
+    it('opens the page inspector sheet below md', () => {
       window.innerWidth = 500;
-      useAiDockStore.setState({ open: true });
+      const dotShortcut = captureShortcuts('/pages/page-1');
+
+      expect(screen.queryByRole('dialog', { name: 'Page inspector' })).not.toBeInTheDocument();
+      act(() => dotShortcut().action());
+      expect(screen.getByRole('dialog', { name: 'Page inspector' })).toBeInTheDocument();
+      expect(screen.getByTestId('article-right-pane')).toHaveAttribute(
+        'data-presentation',
+        'sheet',
+      );
+    });
+
+    it('closes the page inspector sheet when it is already open', async () => {
+      window.innerWidth = 500;
       const dotShortcut = captureShortcuts('/pages/page-1');
 
       act(() => dotShortcut().action());
-
-      expect(useAiDockStore.getState().open).toBe(false);
-      expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+      expect(screen.getByRole('dialog', { name: 'Page inspector' })).toBeInTheDocument();
+      act(() => dotShortcut().action());
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog', { name: 'Page inspector' })).not.toBeInTheDocument();
+      });
     });
 
-    it('still toggles the article pane when the dock is closed', () => {
+    it('still toggles the article pane at md and up', () => {
       const dotShortcut = captureShortcuts('/pages/page-1');
 
       act(() => dotShortcut().action());
@@ -766,20 +775,12 @@ describe('AppLayout', () => {
     });
   });
 
-  describe('"show me the assistant" on a layout with no dock', () => {
+  describe('"show me the assistant" on an article route', () => {
     /**
-     * `openDock()` is raised by Alt+I and by the
-     * inspector's rail button. It used to open a third column; the assistant is
-     * a tab in `ArticleRightPane` now and `AiDock` renders only the mobile
-     * sheet, so on every layout at `md` and up the flag has to be consumed and
-     * re-expressed as a tab request.
-     *
-     * Left unconsumed it did not merely no-op. `ArticleRightPane` ORs `open`
-     * into its own `collapsed`, so at >=1100px the keystroke collapsed the
-     * inspector to a rail, and between 768 and 1099px the pane's
-     * `dockOpen && !dockLayoutIsWide` guard returned null and the right side of
-     * the screen disappeared. Measured in a real browser at 1440/1200/900/800
-     * before the fix; these cells are the standing guard.
+     * `openDock()` is raised by Alt+I and by the inspector's rail button.
+     * AppLayout consumes it at every width on an article route and turns it
+     * into: show the inspector, select Assistant. Below `md` that is the
+     * inspector sheet; at `md` and up it is the detached rail.
      */
     beforeEach(() => {
       useAiDockStore.setState({ open: false });
@@ -802,9 +803,6 @@ describe('AppLayout', () => {
             'assistant',
           );
         });
-        // Consumed, not left standing: `open` means "the mobile sheet is up"
-        // and nothing else, so no other consumer has to special-case a second
-        // desktop meaning.
         expect(useAiDockStore.getState().open).toBe(false);
       },
     );
@@ -823,7 +821,7 @@ describe('AppLayout', () => {
       });
     });
 
-    it('below md the flag is left alone — that is the mobile sheet', async () => {
+    it('below md it opens the inspector sheet on Assistant and lowers the flag', async () => {
       window.innerWidth = 500;
       render(<AppLayout>content</AppLayout>, { wrapper: createWrapper('/pages/abc') });
 
@@ -832,8 +830,46 @@ describe('AppLayout', () => {
       });
 
       await waitFor(() => {
-        expect(useAiDockStore.getState().open).toBe(true);
+        expect(screen.getByRole('dialog', { name: 'Page inspector' })).toBeInTheDocument();
       });
+      expect(screen.getByTestId('article-right-pane')).toHaveAttribute(
+        'data-inspector-view',
+        'assistant',
+      );
+      expect(screen.getByTestId('article-right-pane')).toHaveAttribute(
+        'data-presentation',
+        'sheet',
+      );
+      expect(useAiDockStore.getState().open).toBe(false);
+    });
+  });
+
+  describe('mobile page inspector', () => {
+    it('offers an inspector trigger on article routes below md', () => {
+      window.innerWidth = 500;
+      render(<AppLayout><div>article</div></AppLayout>, { wrapper: createWrapper('/pages/123') });
+
+      expect(screen.getByLabelText('Open page inspector')).toBeInTheDocument();
+      expect(screen.queryByRole('dialog', { name: 'Page inspector' })).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByLabelText('Open page inspector'));
+      expect(screen.getByRole('dialog', { name: 'Page inspector' })).toBeInTheDocument();
+      expect(screen.getByTestId('article-right-pane')).toHaveAttribute(
+        'data-presentation',
+        'sheet',
+      );
+    });
+
+    it('does not offer the inspector trigger off article routes', () => {
+      window.innerWidth = 500;
+      render(<AppLayout><div>pages</div></AppLayout>, { wrapper: createWrapper('/') });
+      expect(screen.queryByLabelText('Open page inspector')).not.toBeInTheDocument();
+    });
+
+    it('does not offer the inspector trigger at md and up', () => {
+      window.innerWidth = 1024;
+      render(<AppLayout><div>article</div></AppLayout>, { wrapper: createWrapper('/pages/123') });
+      expect(screen.queryByLabelText('Open page inspector')).not.toBeInTheDocument();
     });
   });
 });

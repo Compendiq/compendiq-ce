@@ -1,7 +1,8 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
-import { Menu, X } from 'lucide-react';
+import { ListTree, Menu, X } from 'lucide-react';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
 import { useUiStore } from '../../../stores/ui-store';
@@ -17,7 +18,6 @@ import {
   type InspectorViewRequest,
 } from '../article/ArticleRightPane';
 import { AiProvider } from '../../../features/ai/AiContext';
-import { AiDock } from '../../../features/ai/dock/AiDock';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { Logo } from '../Logo';
 import { AppHeaderMain } from './header-slot';
@@ -26,9 +26,67 @@ import { MainNavChassisRail } from './MainNavStrip';
 import { PageTransition } from './PageTransition';
 import { type LayoutPreset } from './LayoutPresetMenu';
 import { ArticleLayoutControlsProvider } from './article-layout-controls';
-import { useMediaQuery, useIsMobileLayout } from '../../hooks/use-media-query';
+import { useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
 import { isExistingArticlePath } from '../../lib/article-route';
+
+const overlayFocusableSelector =
+  'a[href], button:not([disabled]), textarea:not([disabled]), ' +
+  'input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Focus containment for a hand-rolled overlay: move focus in on open, trap
+ * Tab, Escape to dismiss, restore focus on close. Same contract the mobile
+ * navigation drawer and the page inspector sheet both need.
+ */
+function useOverlayFocusTrap(
+  open: boolean,
+  panelRef: RefObject<HTMLDivElement | null>,
+  onClose: () => void,
+) {
+  useEffect(() => {
+    if (!open) return;
+    const panel = panelRef.current;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+
+    const getFocusable = () =>
+      panel ? Array.from(panel.querySelectorAll<HTMLElement>(overlayFocusableSelector)) : [];
+
+    (getFocusable()[0] ?? panel)?.focus();
+
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab' || !panel) return;
+      const items = getFocusable();
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+      const active = document.activeElement;
+      if (event.shiftKey) {
+        if (active === first || !panel.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !panel.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      previouslyFocused?.focus?.();
+    };
+  }, [open, onClose, panelRef]);
+}
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
@@ -49,14 +107,14 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const openDock = useAiDockStore((s) => s.openDock);
   const closeDock = useAiDockStore((s) => s.closeDock);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [mobileContextOpen, setMobileContextOpen] = useState(false);
   const [activeLayoutPreset, setActiveLayoutPreset] = useState<LayoutPreset | null>(null);
   const [inspectorViewRequest, setInspectorViewRequest] = useState<InspectorViewRequest | null>(null);
-  const [midWidthTreeExpandedOverride, setMidWidthTreeExpandedOverride] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const mobileSidebarRef = useRef<HTMLDivElement>(null);
+  const mobileContextRef = useRef<HTMLDivElement>(null);
   const previousLayoutPathRef = useRef(location.pathname);
   const isArticleRoute = isExistingArticlePath(location.pathname);
-  const isInspectorCompactLayout = useMediaQuery('(min-width: 768px) and (max-width: 1439px)');
   const isMobileLayout = useIsMobileLayout();
   // On /settings* we swap the Pages tree for a Settings-specific sidebar so
   // the main nav (Pages / AI / Graph) stays accessible — otherwise users land
@@ -65,6 +123,15 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const isSettingsRoute = /^\/settings(\/|$)/.test(location.pathname);
 
   const closeMobileSidebar = useCallback(() => setMobileSidebarOpen(false), []);
+  const closeMobileContext = useCallback(() => setMobileContextOpen(false), []);
+  const openMobileContext = useCallback(() => {
+    setMobileSidebarOpen(false);
+    setMobileContextOpen(true);
+  }, []);
+  const toggleMobileContext = useCallback(() => {
+    setMobileSidebarOpen(false);
+    setMobileContextOpen((open) => !open);
+  }, []);
 
   const requestInspectorView = useCallback((view: InspectorViewRequest['view']) => {
     setInspectorViewRequest((current) => ({
@@ -81,7 +148,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
       setArticleSidebarCollapsed(false);
       closeDock();
       requestInspectorView('outline');
-      setMidWidthTreeExpandedOverride(false);
       return;
     }
 
@@ -90,9 +156,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
       setArticleSidebarCollapsed(false);
       closeDock();
       requestInspectorView('details');
-      // Editing intentionally keeps navigation available even where the
-      // inspector would normally compact it for reading room.
-      setMidWidthTreeExpandedOverride(true);
       return;
     }
 
@@ -100,7 +163,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
       setTreeSidebarCollapsed(true);
       setArticleSidebarCollapsed(true);
       closeDock();
-      setMidWidthTreeExpandedOverride(false);
       return;
     }
 
@@ -112,7 +174,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
     setTreeSidebarCollapsed(false);
     setArticleSidebarCollapsed(false);
     openDock();
-    setMidWidthTreeExpandedOverride(false);
   }, [
     closeDock,
     openDock,
@@ -121,64 +182,35 @@ export function AppLayout({ children }: { children: ReactNode }) {
     setTreeSidebarCollapsed,
   ]);
 
-  // "Show me the assistant" is raised as `openDock()` from three places: Alt+I
-  // in PageViewPage, the AI layout preset above, and the inspector's own rail
-  // button. Below `md` that still means the bottom sheet, which is all `AiDock`
-  // renders now.
+  // "Show me the assistant" is raised as `openDock()` from Alt+I, the AI
+  // layout preset, and the inspector rail. On an article route it is always
+  // consumed here and re-expressed as: show the inspector, select Assistant.
+  // Below `md` that is the page-inspector sheet (Outline / Details / Assistant
+  // together). At `md` and up it is the detached context rail.
   //
-  // At `md` and above it can no longer mean "open the dock", because there is
-  // no dock: the assistant became a tab inside the inspector and `AiDock`
-  // returns null. Left unhandled the flag did real damage — `ArticleRightPane`
-  // ORs it into its own `collapsed`, so at >=1100px Alt+I collapsed the
-  // inspector to a 40px rail, and between 768 and 1099px the pane's
-  // `dockOpen && !dockLayoutIsWide` guard removed the right side of the screen
-  // outright. The keystroke destroyed the panel it was supposed to open.
-  //
-  // So the intent is consumed here and re-expressed as what it now means:
-  // show the inspector, select Assistant. Lowering the flag immediately keeps
-  // `open` meaning exactly one thing again — "the mobile sheet is up" — rather
-  // than a second, contradictory desktop state that every consumer would have
-  // to special-case.
-  // Gated on `isArticleRoute` as well: the inspector exists only there, so off
-  // an article route there is no tab to select and consuming the flag would
-  // just stomp the user's saved pane preference on an unrelated page.
+  // Left unconsumed the flag used to do real damage on desktop — the pane
+  // ORed it into `collapsed` or unmounted itself — and on a phone it opened
+  // an assistant-only bottom sheet while Outline and Details stayed hidden.
+  // Lowering it immediately keeps `open` a request, not a second layout
+  // state. Off an article route there is no inspector to select, so the flag
+  // is left alone.
   useEffect(() => {
-    if (!dockOpen || isMobileLayout || !isArticleRoute) return;
-    setArticleSidebarCollapsed(false);
+    if (!dockOpen || !isArticleRoute) return;
     requestInspectorView('assistant');
+    if (isMobileLayout) {
+      openMobileContext();
+    } else {
+      setArticleSidebarCollapsed(false);
+    }
     closeDock();
   }, [
     closeDock,
     dockOpen,
     isArticleRoute,
     isMobileLayout,
+    openMobileContext,
     requestInspectorView,
     setArticleSidebarCollapsed,
-  ]);
-
-  // At intermediate desktop widths, an expanded inspector temporarily turns
-  // the left navigation into its rail. This never writes to the persisted UI
-  // preference, and the rail's expand control remains an explicit override.
-  const forceTreeCollapsed =
-    isArticleRoute &&
-    isInspectorCompactLayout &&
-    !articleSidebarCollapsed &&
-    !dockOpen &&
-    !midWidthTreeExpandedOverride;
-
-  useEffect(() => {
-    if (
-      midWidthTreeExpandedOverride &&
-      (!isArticleRoute || !isInspectorCompactLayout || articleSidebarCollapsed || dockOpen)
-    ) {
-      setMidWidthTreeExpandedOverride(false);
-    }
-  }, [
-    articleSidebarCollapsed,
-    dockOpen,
-    isArticleRoute,
-    isInspectorCompactLayout,
-    midWidthTreeExpandedOverride,
   ]);
 
   // A manual panel change means the last command is no longer an exact preset.
@@ -201,21 +233,22 @@ export function AppLayout({ children }: { children: ReactNode }) {
     if (previousLayoutPathRef.current === location.pathname) return;
     previousLayoutPathRef.current = location.pathname;
     setActiveLayoutPreset(null);
-    setMidWidthTreeExpandedOverride(false);
   }, [location.pathname]);
 
-  // `.` means "give me the right side of the screen back". While the docked
-  // assistant is open it holds that side and forces the article pane into its
-  // rail, so toggling the pane's own preference would do nothing visible — the
-  // key would read as broken. Closing the dock is the same intent, and it
-  // restores whatever collapse state the user had chosen (#1126).
+  // `.` means "the page inspector". Below `md` that is the inspector sheet;
+  // at `md` and up it is the detached rail. A leftover dock flag is closed
+  // first so the key is never dead if a request is still in flight.
   const toggleRightSide = useCallback(() => {
+    if (isMobileLayout && isArticleRoute) {
+      toggleMobileContext();
+      return;
+    }
     if (isArticleRoute && useAiDockStore.getState().open) {
       useAiDockStore.getState().closeDock();
       return;
     }
     toggleArticleSidebar();
-  }, [isArticleRoute, toggleArticleSidebar]);
+  }, [isArticleRoute, isMobileLayout, toggleArticleSidebar, toggleMobileContext]);
 
   // Toggle both panels at once (zen mode)
   const toggleBothPanels = useCallback(() => {
@@ -247,7 +280,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
     {
       key: '.',
       keys: ['.'],
-      description: 'Toggle right panel (page outline)',
+      description: 'Toggle page inspector',
       category: 'panels',
       action: toggleRightSide,
     },
@@ -337,62 +370,18 @@ export function AppLayout({ children }: { children: ReactNode }) {
     { singleKeyEnabled: singleKeyShortcutsEnabled, onSequenceChange: setPendingSequence },
   );
 
-  // Close mobile sidebar on navigation
+  // Close mobile overlays on navigation
   useEffect(() => {
     setMobileSidebarOpen(false);
+    setMobileContextOpen(false);
   }, [location.pathname]);
 
-  // Focus containment for the mobile slide-over (#942): mirror the hand-rolled
-  // dialog treatment ImageLightbox uses — move focus into the panel on open,
-  // trap Tab within it, restore focus to the trigger on close — plus the
-  // Escape/overlay dismissal. Hand-rolled overlays otherwise strand keyboard
-  // and screen-reader users behind the backdrop with no way out.
-  useEffect(() => {
-    if (!mobileSidebarOpen) return;
-    const panel = mobileSidebarRef.current;
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-
-    const focusableSelector =
-      'a[href], button:not([disabled]), textarea:not([disabled]), ' +
-      'input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
-    const getFocusable = () =>
-      panel ? Array.from(panel.querySelectorAll<HTMLElement>(focusableSelector)) : [];
-
-    // Move focus into the slide-over on open (first control, or the panel).
-    (getFocusable()[0] ?? panel)?.focus();
-
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        closeMobileSidebar();
-        return;
-      }
-      if (event.key !== 'Tab' || !panel) return;
-      const items = getFocusable();
-      const first = items[0];
-      const last = items[items.length - 1];
-      if (!first || !last) {
-        event.preventDefault();
-        panel.focus();
-        return;
-      }
-      const active = document.activeElement;
-      if (event.shiftKey) {
-        if (active === first || !panel.contains(active)) {
-          event.preventDefault();
-          last.focus();
-        }
-      } else if (active === last || !panel.contains(active)) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener('keydown', handleKey);
-    return () => {
-      document.removeEventListener('keydown', handleKey);
-      previouslyFocused?.focus?.();
-    };
-  }, [mobileSidebarOpen, closeMobileSidebar]);
+  useOverlayFocusTrap(mobileSidebarOpen, mobileSidebarRef, closeMobileSidebar);
+  useOverlayFocusTrap(
+    isArticleRoute && isMobileLayout && mobileContextOpen,
+    mobileContextRef,
+    closeMobileContext,
+  );
 
   // Reset scroll to top on every route change (use location.key so it fires
   // on every navigation, including between same-pathname routes like /pages/id1 → /pages/id2)
@@ -485,6 +474,44 @@ export function AppLayout({ children }: { children: ReactNode }) {
         )}
       </AnimatePresence>
 
+      {/* Mobile page inspector — Outline, Details, and Assistant together.
+          Chassis-level so it is not clipped by the shell. Mirrors the left
+          nav drawer: same overlay recipe, opposite edge. */}
+      <AnimatePresence>
+        {isArticleRoute && isMobileLayout && mobileContextOpen && (
+          <>
+            <m.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[2px] md:hidden"
+              onClick={closeMobileContext}
+              aria-hidden="true"
+            />
+            <m.div
+              ref={mobileContextRef}
+              id="mobile-context-sidebar"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Page inspector"
+              tabIndex={-1}
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', stiffness: 400, damping: 35 }}
+              className="fixed inset-y-0 right-0 z-50 flex w-[90vw] max-w-[24rem] flex-col overflow-hidden md:hidden"
+            >
+              <ArticleRightPane
+                inspectorViewRequest={inspectorViewRequest}
+                presentation="sheet"
+                onRequestClose={closeMobileContext}
+              />
+            </m.div>
+          </>
+        )}
+      </AnimatePresence>
+
       {/* Header sits on the grey chassis, outside the brighter workspace
           card — logo, Find, alerts and the user menu are chrome, not
           document. Height is --app-header-height so the side inset can
@@ -494,7 +521,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
           type="button"
-          onClick={() => setMobileSidebarOpen((v) => !v)}
+          onClick={() => {
+            setMobileContextOpen(false);
+            setMobileSidebarOpen((v) => !v);
+          }}
           className="nm-icon-button md:hidden"
           aria-label={mobileSidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
           aria-expanded={mobileSidebarOpen}
@@ -515,7 +545,19 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <AppHeaderMain />
         </div>
         <HeaderFindButton />
-        <div className="flex min-w-0 items-center justify-end">
+        <div className="flex min-w-0 items-center justify-end gap-1">
+          {isArticleRoute && isMobileLayout && (
+            <button
+              type="button"
+              onClick={toggleMobileContext}
+              className="nm-icon-button"
+              aria-label={mobileContextOpen ? 'Close page inspector' : 'Open page inspector'}
+              aria-expanded={mobileContextOpen}
+              aria-controls="mobile-context-sidebar"
+            >
+              {mobileContextOpen ? <X size={18} /> : <ListTree size={18} />}
+            </button>
+          )}
           <HeaderSessionCluster />
         </div>
       </header>
@@ -542,13 +584,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <div className="hidden md:flex">
           {isSettingsRoute
             ? <SettingsSidebar embedMainNav={false} />
-            : (
-              <SidebarTreeView
-                embedMainNav={false}
-                forceCollapsed={forceTreeCollapsed}
-                onForceExpand={() => setMidWidthTreeExpandedOverride(true)}
-              />
-            )}
+            : <SidebarTreeView embedMainNav={false} />}
         </div>
 
           {/* The workspace card is one surface: nav and document share
@@ -621,19 +657,14 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </div>
 
           {/* Detached context rail. Sits on the chassis beside the brighter
-              workspace card, below the header. */}
-          {isArticleRoute && (
-            <div className="hidden min-h-0 self-stretch md:flex">
+              workspace card, below the header. Mounted only at md+ so the
+              mobile sheet below is the single inspector instance — two
+              panes would duplicate tab ids and DockPanel state. */}
+          {isArticleRoute && !isMobileLayout && (
+            <div className="min-h-0 self-stretch">
               <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />
             </div>
           )}
-          {/* No desktop dock column any more: at md and up the assistant is a
-              tab inside ArticleRightPane (owner decision, superseding #1126's
-              third column). `AiDock` still renders here for its MOBILE form —
-              it returns the bottom sheet below md and nothing above it — which
-              is the only reachable assistant on a phone, since the inspector
-              pane itself is `hidden md:flex`. */}
-          {isArticleRoute && <AiDock />}
       </div>
       </div>
 

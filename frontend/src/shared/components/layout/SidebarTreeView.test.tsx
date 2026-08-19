@@ -414,7 +414,7 @@ describe('SidebarTreeView', () => {
     expect(screen.getByLabelText('Expand sidebar')).toBeInTheDocument();
     expect(screen.getByLabelText('Pages')).toBeInTheDocument();
     expect(screen.getByLabelText('Graph')).toBeInTheDocument();
-    expect(screen.getByLabelText('AI')).toBeInTheDocument();
+    expect(screen.getByLabelText('AI chat, full page')).toBeInTheDocument();
   });
 
   it('expands sidebar when collapsed expand button is clicked', () => {
