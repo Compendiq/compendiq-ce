@@ -362,7 +362,7 @@ the backend side.
 ## Styling
 
 - **TailwindCSS 4** with CSS variables for theming. Two themes ship —
-  **Graphite** (dark, `#0d0e11`) and **Paper** (light, `#fbfbfc`) — a neutral
+  **Graphite** (dark, `#141515`) and **Paper** (light, `#fbfbfc`) — a neutral
   flat system carrying one teal accent (`#4dd0e1` / `#0e7490`) as the single
   brand and interaction colour, amber reserved for warning/attention, and
   violet for AI ornament (operable things stay teal). Surfaces are **flat

@@ -189,11 +189,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      Every value is verified by src/workspace-themes.test.ts, which parses these
      tokens and COMPUTES WCAG ratios rather than pinning hex literals. Retune a
      surface and it fails with the measured ratio. */
-  --color-background: #0d0e11;          /* graphite chassis */
-  --color-foreground: #eceef2;          /* near-white, 16.9:1 on bg */
-  --color-card: #16181d;                /* content pane, one value step up */
-  --color-card-foreground: #eceef2;
-  --color-card-elevated: #222630;       /* popovers, dialogs, raised panes */
+  --color-background: #141515;          /* Plane surface-1 — inner chrome */
+  --color-foreground: #e4e6e7;          /* Plane body ink, not near-white */
+  --color-card: #161717;                /* content pane, almost the same field */
+  --color-card-foreground: #e4e6e7;
+  --color-card-elevated: #1e1f1f;       /* popovers, dialogs, raised panes */
   /* Teal — the single brand AND interaction accent: brand mark, primary
      buttons, links, active nav, focus ring. One hue carries both identity and
      every actionable affordance, so "is this clickable?" never depends on
@@ -208,17 +208,17 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-primary-ink: #4dd0e1;
   /* Action ink — the neutral affordance for non-accent buttons: light fill,
      dark text. Leaves teal free to mean "primary action". */
-  --color-action: #eceef2;             /* matches --color-foreground */
-  --color-action-foreground: #0d0e11;
-  --color-action-hover: #ffffff;
-  --color-secondary: #21242b;
-  --color-secondary-foreground: #c9ccd4;
-  --color-muted: #21242b;
+  --color-action: #e4e6e7;             /* matches --color-foreground */
+  --color-action-foreground: #141515;
+  --color-action-hover: #f0f2f3;
+  --color-secondary: #1c1d1d;
+  --color-secondary-foreground: #c5c7c8;
+  --color-muted: #1c1d1d;
   /* Measured against the WORST surface it lands on (the elevated pane),
      not the darkest — sidebar counts, hints and secondary labels inherit it. */
-  --color-muted-foreground: #9ca1ad;
-  --color-accent: #21242b;
-  --color-accent-foreground: #eceef2;
+  --color-muted-foreground: #9b9d9e;
+  --color-accent: #1c1d1d;
+  --color-accent-foreground: #e4e6e7;
   /* Semantic aliases — ALWAYS var() references onto the status tokens below,
      never raw values. ~100 callsites say text-success / text-warning /
      text-destructive, and the vocabulary they speak is the status palette
@@ -239,8 +239,8 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
                          forced-colors mode throws away — this border is what
                          survives. (The retired honey palette used one 1.60:1
                          border for both jobs and did not meet 1.4.11.) */
-  --color-border: #26282f;
-  --color-border-interactive: #6b707b;
+  --color-border: #2a2b2b;
+  --color-border-interactive: #71717a;
   --color-ring: #4dd0e1;
   --color-success: var(--color-status-connected);
   /* Amber is NOT the brand here — it is reserved for warning and attention,
@@ -275,9 +275,9 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --font-sans: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
 
-  /* Code colors — matched against --color-code-bg #0b1420, which sits a step
+  /* Code colors — matched against --color-code-bg, which sits a step
      BELOW --color-card so a code block reads as recessed, not stacked. */
-  --color-code-bg: #0b1420;
+  --color-code-bg: #101111;
   --color-code-keyword: #c69af4;
   --color-code-string: #5ed39b;
   --color-code-function: #8b93f8;
@@ -337,7 +337,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Inset application shell. Chassis is the viewport ground; the rounded
      workspace and the context rail reuse --color-background so left nav
      and the AI / Outline / Details pane share one chrome surface. */
-  --app-chassis: #050507;
+  /* Darkest step on the ladder — the viewport gutter around the workspace.
+     A notch blacker than the chrome so the card detaches without going
+     crushed OLED. */
+  --app-chassis: #080809;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-background);
 
@@ -394,10 +397,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --inline-code-color: #c69af4;
 
   /* Dropdown chevron — dark-theme default. The stroke colour is the
-     dark-theme muted-foreground hex (#91a1b8, URL-escaped to %239ca1ad).
+     dark-theme muted-foreground hex (URL-escaped).
      Light theme overrides this in the [data-theme-type="light"] block. */
-  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca1ad' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239ca1ad' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239b9d9e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239b9d9e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* ===========================
@@ -557,9 +560,9 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --inline-code-color: #7041a8;
 
   /* Chassis must read as the gutter around the workspace card — Paper's
-     hairline is quiet, so the value step carries the detach. #eef0f3 sat
-     too close to #fbfbfc and the rail looked like a broken margin. */
-  --app-chassis: #e4e6eb;
+     hairline is quiet, so the value step carries the detach. Stay darker
+     than #fbfbfc; do not climb back to #eef0f3 (that erased the gutter). */
+  --app-chassis: #eaecf0;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-background);
 }
@@ -609,8 +612,8 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    Existing project breakpoints — do not invent a third ladder. */
 :root {
   --app-inset: 0px;
-  --app-header-height: 3rem;
-  /* Pages / AI / Graph chassis column. 4px wider than the 48px header band
+  --app-header-height: 2.75rem;
+  /* Pages / AI / Graph chassis column. 4px wider than the 44px header band
      so the destination labels sit with a little more air without stretching
      the header itself. */
   --app-nav-rail-width: calc(var(--app-header-height) + 4px);

@@ -149,7 +149,7 @@ function getCanvasColors(isLight: boolean): GraphCanvasColors {
         hoverStroke: 'rgba(23,24,26,0.8)',
       }
     : {
-        // Graphite --color-foreground #eceef2
+        // Graphite --color-foreground #e4e6e7
         label: 'rgba(236,238,242,0.85)',
         title: 'rgba(236,238,242,0.95)',
         badge: 'rgba(236,238,242,0.7)',

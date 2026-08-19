@@ -123,7 +123,7 @@ describe('Inset shell utilities', () => {
     expect(block).toMatch(/height:\s*var\(--app-header-height\)/);
     expect(block).toMatch(/max-height:\s*var\(--app-header-height\)/);
     expect(block).toMatch(/overflow:\s*hidden/);
-    expect(css).toMatch(/--app-header-height:\s*3rem/);
+    expect(css).toMatch(/--app-header-height:\s*2\.75rem/);
     expect(appLayout).toMatch(/className="app-header[^"]*items-center/);
     expect(appLayout).not.toMatch(/<header[^>]*\bh-12\b/);
     expect(appLayout).not.toMatch(/<header[^>]*\bborder-b\b/);
