@@ -535,10 +535,10 @@ describe('EditorToolbar', () => {
       expect(screen.queryByTestId('more-formatting-trigger')).not.toBeInTheDocument();
 
       openInsertMenu();
-      for (const label of ['Underline', 'Strikethrough', 'Inline Code', 'Ordered List', 'Task List', 'Alignment']) {
+      for (const label of ['Underline', 'Strikethrough', 'Inline Code', 'Ordered List', 'Task List', 'Alignment', 'Color…']) {
         expect(screen.getByText(label)).toBeInTheDocument();
       }
-      expect(screen.getByTestId('color-picker-trigger')).toBeInTheDocument();
+      expect(screen.queryByTestId('color-picker-trigger')).not.toBeInTheDocument();
     } finally {
       window.ResizeObserver = originalRO;
     }
@@ -594,6 +594,7 @@ describe('EditorToolbar', () => {
     );
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
     expect(toolbar.className).toContain('flex-1');
+    expect(toolbar.className).toContain('min-w-0');
     // The marks/lists cluster is the only box allowed to shrink (`min-w-0`).
     // Insert stays `shrink-0` so it cannot slide under Tags/Save — folded
     // tools live in Insert, so that trigger has to stay tappable.
@@ -654,7 +655,6 @@ describe('EditorToolbar', () => {
       expect(screen.queryByRole('button', { name: 'Inline Code (Ctrl+E)' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Task List' })).not.toBeInTheDocument();
       expect(screen.queryByTestId('align-menu-trigger')).not.toBeInTheDocument();
-      // Color is a peer of the bullet list — it does not fold.
       expect(screen.getByTestId('color-picker-trigger')).toBeInTheDocument();
 
       openInsertMenu();
@@ -707,6 +707,77 @@ describe('EditorToolbar', () => {
       open(screen.getByText('Alignment'));
       fireEvent.click(screen.getByText('Align Center'));
       expect(setTextAlign).toHaveBeenCalledWith('center');
+    } finally {
+      resize.restore();
+    }
+  });
+
+  it('folds Color and Bullet List into Insert at tighter widths', () => {
+    const resize = resizeTo(400);
+    try {
+      render(<EditorToolbar editor={createMockEditor()} />);
+      resize.apply();
+
+      expect(screen.queryByTestId('color-picker-trigger')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Bullet List (Ctrl+Shift+8)' })).not.toBeInTheDocument();
+
+      openInsertMenu();
+      expect(screen.getByText('Color…')).toBeInTheDocument();
+      expect(screen.getByText('Bullet List')).toBeInTheDocument();
+    } finally {
+      resize.restore();
+    }
+  });
+
+  it('folds against the space left after Tags and Save, not the full pane', () => {
+    const observers: Array<{
+      cb: (entries: Array<{ contentRect: { width: number }; target: Element }>) => void;
+    }> = [];
+    class MockResizeObserver {
+      cb: (entries: Array<{ contentRect: { width: number }; target: Element }>) => void;
+      constructor(cb: (entries: Array<{ contentRect: { width: number }; target: Element }>) => void) {
+        this.cb = cb;
+        observers.push(this);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    const originalRO = window.ResizeObserver;
+    window.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+
+    try {
+      render(
+        <EditorToolbar
+          editor={createMockEditor()}
+          pageProperty={<button type="button">Add tags</button>}
+          actions={<button type="button">Save</button>}
+        />,
+      );
+      const session = screen.getByTestId('toolbar-session');
+      act(() => {
+        // 760px pane with a 220px Tags/Save cluster used to keep Underline
+        // on the bar (760 >= 640) and clip Save. Budget is 540.
+        observers[0]?.cb([{ contentRect: { width: 760 }, target: document.body }]);
+        observers[1]?.cb([{ contentRect: { width: 220 }, target: session }]);
+      });
+
+      expect(screen.queryByRole('button', { name: 'Underline (Ctrl+U)' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
+      expect(screen.getByTestId('toolbar-session').className).toContain('shrink-0');
+    } finally {
+      window.ResizeObserver = originalRO;
+    }
+  });
+
+  it('keeps the Insert trigger labelled by aria-label when the word is dropped', () => {
+    const resize = resizeTo(360);
+    try {
+      render(<EditorToolbar editor={createMockEditor()} />);
+      resize.apply();
+      const trigger = screen.getByTestId('insert-menu-trigger');
+      expect(trigger).toHaveAttribute('aria-label', 'Insert');
+      expect(trigger).not.toHaveTextContent('Insert');
     } finally {
       resize.restore();
     }

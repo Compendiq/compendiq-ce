@@ -102,7 +102,7 @@ function ColorRow({
   );
 }
 
-function ColorPanel({
+export function ColorPanel({
   textColor,
   highlightColor,
   onSelectText,

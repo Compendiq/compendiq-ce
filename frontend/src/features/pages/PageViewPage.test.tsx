@@ -487,10 +487,9 @@ describe('PageViewPage', () => {
     expect(screen.queryByTestId('move-to-trash-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('page-actions-overflow-btn')).not.toBeInTheDocument();
-    // Same sticky chassis as write mode — not a vacant rail and not a title-row chip.
-    const mask = screen.getByTestId('edit-toolbar-mask');
-    expect(mask.parentElement).toContainElement(strip);
-    expect(mask.parentElement!.className).toContain('sticky');
+    // Same chassis as write mode — not a vacant rail and not a title-row chip.
+    expect(strip.closest('[data-testid="article-page"]')).not.toBeNull();
+    expect(strip.closest('[data-testid="article-scroll"]')).toBeNull();
     expect(strip.className).toContain('w-full');
     expect(strip.className).not.toMatch(/max-w-\[1200px\]/);
   });
@@ -503,18 +502,15 @@ describe('PageViewPage', () => {
     expect(heading.closest('#app-header-slot')).toBeNull();
   });
 
-  it('resets the app scroll container when the article route renders', async () => {
-    const scrollContainer = document.createElement('div');
-    scrollContainer.setAttribute('data-scroll-container', '');
-    document.body.appendChild(scrollContainer);
-
-    const scrollSpy = vi.spyOn(scrollContainer, 'scrollTo');
+  it('resets the article scroller when the article route renders', async () => {
+    const scrollSpy = vi.spyOn(HTMLElement.prototype, 'scrollTo');
 
     render(<PageViewPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
     });
+    expect(screen.getByTestId('article-scroll')).toBeInTheDocument();
   });
 
   it('opens the lightbox from article media', async () => {
@@ -936,58 +932,16 @@ describe('PageViewPage', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  // #703 / #769 / #1186 — the sticky edit toolbar lives in the article
-  // column again (not the 48px app header) and carries an opaque bg-card
-  // under-mask. It covers the toolbar's own box, so content scrolling under
-  // the bar cannot show through, and it reaches one scroll-container padding
-  // step above it (#1186 — height pinned against AppLayout in
-  // scroll-padding-mask.test.ts). Overhang is block-start only (#769).
-  describe('sticky edit-toolbar under-mask (#703, #769, #1186)', () => {
-    const NEGATIVE_UTILITY = /(^|[\s:])-(bottom|left|right|inset(-[xy])?)-/;
-    const ARBITRARY_NEGATIVE = /\b(bottom|left|right|inset(-[xy])?)-\[-/;
-
-    const renderEditing = () => {
-      render(<PageViewPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByText('Edit'));
-      return screen.getByTestId('edit-toolbar-mask');
-    };
-
-    it('renders an opaque under-mask behind the edit toolbar', () => {
+  // The 48px strip is a sibling of the article scroller, so content cannot
+  // travel under it and the workspace scrollbar cannot sit beside it.
+  describe('article toolbar sits above the article scroller', () => {
+    it('pins the format toolbar outside the scrolling body', async () => {
       render(<PageViewPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByText('Edit'));
 
-      const mask = screen.getByTestId('edit-toolbar-mask');
-      const toolbar = mask.parentElement;
-      expect(toolbar).not.toBeNull();
-      expect(toolbar!.className).toContain('sticky');
-      expect(toolbar!.className).toContain('-top-5');
-      expect(toolbar!.className).toContain('isolate');
-
-      expect(mask.className).toContain('bg-card');
-      expect(mask.className).not.toContain('bg-card/');
-      expect(mask.className).toContain('z-[-1]');
-      expect(mask.className).toContain('inset-x-0');
-      expect(mask.className).toContain('bottom-0');
-    });
-
-    it('the under-mask covers the scroll padding above the stuck toolbar (#1186)', () => {
-      const mask = renderEditing();
-      expect(mask.className).not.toMatch(/(^|\s)inset-0(\s|$)/);
-      expect(mask.className).toMatch(/(^|\s)-top-\d/);
-    });
-
-    it('the under-mask takes the clicks it occludes, rather than passing them to hidden content', () => {
-      const mask = renderEditing();
-      expect(mask.className).not.toContain('pointer-events-none');
-      expect(mask.style.pointerEvents).toBe('');
-    });
-
-    it('the under-mask does not overhang the block-end or inline edges (#769 phantom scroll)', () => {
-      const mask = renderEditing();
-      expect(mask.className).not.toMatch(NEGATIVE_UTILITY);
-      expect(mask.className).not.toMatch(ARBITRARY_NEGATIVE);
-      expect(mask.style.top).toBe('');
-      expect(mask.style.bottom).toBe('');
+      const toolbar = await screen.findByTestId('editor-toolbar-mock');
+      expect(toolbar.closest('[data-testid="article-scroll"]')).toBeNull();
+      expect(screen.getByTestId('article-scroll').className).toContain('overflow-y-auto');
     });
 
     it('renders the format toolbar with Cancel and Save as its session actions', async () => {

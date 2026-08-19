@@ -620,13 +620,14 @@ export function AppLayout({ children }: { children: ReactNode }) {
               ref={scrollContainerRef}
               data-scroll-container
               className={cn(
-                'flex min-h-0 flex-1 flex-col overflow-y-auto pb-5 pt-5',
-                // Article toolbar is a full-pane hairline; horizontal padding
-                // here would stop it short of the workspace card's right edge.
-                // Body copy keeps its own measure. Other routes keep the inset.
+                'flex min-h-0 flex-1 flex-col',
+                // Article view owns its own scroller below the 48px strip, so
+                // the workspace scrollbar cannot sit beside the toolbar and
+                // make the strip look short of the pane edge. Other routes
+                // keep this container as the page scroller.
                 isArticleRoute
-                  ? '[scrollbar-gutter:stable]'
-                  : 'px-4 sm:px-6 [scrollbar-gutter:stable_both-edges]',
+                  ? 'overflow-hidden'
+                  : 'overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable_both-edges]',
               )}
             >
               <PageTransition>
