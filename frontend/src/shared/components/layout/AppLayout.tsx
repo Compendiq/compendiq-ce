@@ -537,8 +537,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
           card — logo, Find, alerts and the user menu are chrome, not
           document. Height is --app-header-height so the side inset can
           grow without stretching this band. */}
-      <header className="app-header relative z-10 flex shrink-0 items-center gap-3 px-3">
-        <div className="flex min-w-0 items-center gap-3">
+      <header className="app-header relative z-10 flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-3 md:contents">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
           type="button"
@@ -554,7 +554,15 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
 
-        <Link to="/" aria-label="Compendiq home" className="flex shrink-0 items-center group">
+        {/* Same 56px column as MainNavChassisRail so the mark sits on the
+            grey chassis above Pages / AI / Graph instead of a wider header
+            slot that made the rail look off-centre. */}
+        <Link
+          to="/"
+          aria-label="Compendiq home"
+          data-testid="header-chassis-slot"
+          className="flex w-[var(--app-header-height)] shrink-0 items-center justify-center group"
+        >
           {/* Clip to the Q-tile below `md` so hamburger + lockup + Find +
               session cluster fit the 48px. The SVG itself stays the full
               lockup; overflow hides the wordmark rather than squashing it. */}

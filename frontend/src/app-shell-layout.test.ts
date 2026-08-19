@@ -125,6 +125,12 @@ describe('Inset shell utilities', () => {
     expect(appLayout).not.toMatch(/<header[^>]*\bborder-b\b/);
   });
 
+  it('the chassis destination column is as wide as the header is tall', () => {
+    const nav = read('shared/components/layout/MainNavStrip.tsx');
+    expect(appLayout).toContain('w-[var(--app-header-height)]');
+    expect(nav).toContain('w-[var(--app-header-height)]');
+  });
+
   it('the workspace utility is the detached card: bordered, radiused, unshadowed', () => {
     const block = extractBlock(css, '@utility app-workspace {');
     expect(block).toMatch(/background:\s*var\(--app-shell-bg\)/);

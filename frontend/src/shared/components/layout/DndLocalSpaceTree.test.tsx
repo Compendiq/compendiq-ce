@@ -202,6 +202,7 @@ describe('DndLocalSpaceTree', () => {
 
     expect(row.className).toContain('nav-selection');
     expect(row.className).toContain('font-medium');
+    expect(row.className).toContain('outline-none');
     // The three that made it a different control from its twin.
     expect(row.className).not.toContain('nm-pill-active');
     expect(row.className).not.toContain('text-action');

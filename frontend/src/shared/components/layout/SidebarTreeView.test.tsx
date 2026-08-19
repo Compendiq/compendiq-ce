@@ -376,6 +376,7 @@ describe('SidebarTreeView', () => {
     const installRef = screen.getByText('Installation');
     const row = installRef.parentElement!;
     expect(row.className).toContain('nav-selection');
+    expect(row.className).toContain('outline-none');
   });
 
   // #767: tree titles intermittently rendered faux-bold (synthesized weight
@@ -1412,148 +1413,12 @@ describe('SidebarTreeNode memoization', () => {
     expect(screen.queryByTestId('tree-stale-notice')).not.toBeInTheDocument();
   });
 
-  it('surfaces a failed page creation and keeps the typed title', () => {
-    // useCreatePage has no onError, and the catch here used to be commented
-    // "error handled by mutation" — which was true of nothing. A failed create
-    // closed nothing and said nothing.
-    mockCreatePageState = { isPending: false, isError: true, error: new ApiError(409, 'A page with that title already exists (HTTP 409)') };
-
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
-
-    const input = screen.getByLabelText('Title of the new page');
-    fireEvent.change(input, { target: { value: 'Runbooks' } });
-
-    const error = screen.getByTestId('new-page-error');
-    expect(error).toHaveTextContent('A page with that title already exists (HTTP 409)');
-    // Wired to the field, so it is announced with it rather than floating.
-    expect(input).toHaveAttribute('aria-invalid', 'true');
-    expect(input).toHaveAttribute('aria-describedby', error.id);
-    // And the work is not thrown away — retrying is a keystroke, not a retype.
-    expect(input).toHaveValue('Runbooks');
   });
 
-  it('clears a create failure when the title is edited or the field abandoned', () => {
-    mockCreatePageState = { isPending: false, isError: true, error: new ApiError(409, 'Conflict (HTTP 409)') };
-
+  it('does not put a New page control on the tree toolbar', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
-
-    fireEvent.change(screen.getByLabelText('Title of the new page'), { target: { value: 'Runbooks v2' } });
-    expect(mockCreatePageReset).toHaveBeenCalled();
-
-    mockCreatePageReset.mockClear();
-    fireEvent.keyDown(screen.getByLabelText('Title of the new page'), { key: 'Escape' });
-    expect(mockCreatePageReset).toHaveBeenCalled();
-  });
-  });
-
-  it('has a New page button in the tree toolbar', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByRole('button', { name: 'New page' })).toBeInTheDocument();
-    // "Folder" is gone: it promised a container and created a document.
-    expect(screen.queryByRole('button', { name: /folder/i })).not.toBeInTheDocument();
-  });
-
-  it('shows the inline title input when New page is clicked', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    const trigger = screen.getByRole('button', { name: 'New page' });
-    expect(trigger).toHaveAttribute('aria-expanded', 'false');
-
-    fireEvent.click(trigger);
-    expect(screen.getByTestId('new-page-input')).toBeInTheDocument();
-    expect(screen.getByLabelText('Title of the new page')).toBeInTheDocument();
-    expect(trigger).toHaveAttribute('aria-expanded', 'true');
-  });
-
-  // In All Spaces scope, handleCreatePage falls back to the `__local__`
-  // sentinel and the backend stores the resulting page with NO space at all
-  // (pages-crud.ts skips the space lookup for the sentinel, so the final
-  // spaceKey is null) — not "this space", and not a nameable default. The
-  // button used to claim "Create a page in this space" unconditionally, which
-  // was simply false here. Both the tooltip and a visible (non-hover-only)
-  // hint under the input must say so, since a title attribute alone is
-  // unreachable by touch or keyboard.
-  it('names the real destination when no space is selected: an unfiled page', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    const trigger = screen.getByRole('button', { name: 'New page' });
-    expect(trigger).toHaveAttribute('title', 'Create an unfiled page — no space is selected');
-
-    fireEvent.click(trigger);
-    expect(screen.getByTestId('new-page-input')).toHaveTextContent(
-      'Creates an unfiled page — pick a space above to file it there instead.',
-    );
-  });
-
-  // With a space actually selected, the destination is real and nameable —
-  // the tooltip should say which space, not the generic "this space" that
-  // never named anything even in the scoped case, and the unfiled hint must
-  // not appear (there's no destination mismatch to disclose).
-  it('names the selected space when one is selected, and shows no unfiled hint', () => {
-    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    const trigger = screen.getByRole('button', { name: 'New page' });
-    expect(trigger).toHaveAttribute('title', 'Create a page in Operations');
-
-    fireEvent.click(trigger);
-    expect(screen.getByTestId('new-page-input')).not.toHaveTextContent(
-      'Creates an unfiled page',
-    );
-  });
-
-  // The label and the behaviour now agree. `folder` is a real page type that
-  // the embedding, quality and summary workers all skip, so a control saying
-  // "Folder" while creating a `page` promised an unindexed container and
-  // returned an indexed document. The behaviour is deliberately unchanged —
-  // whether this should instead create a true `pageType: 'folder'` is a
-  // product decision with pipeline consequences, not a copy fix.
-  it('creates a page, and says so', async () => {
-    mockCreatePageMutateAsync.mockResolvedValue({ id: 'new-1' });
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
-    const input = screen.getByLabelText('Title of the new page');
-    fireEvent.change(input, { target: { value: 'Runbooks' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    expect(mockCreatePageMutateAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ pageType: 'page', title: 'Runbooks', bodyHtml: '' }),
-    );
-  });
-
-  it('submits from the Create button, which names the action and stays inert until there is a title', () => {
-    mockCreatePageMutateAsync.mockResolvedValue({ id: 'new-2' });
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-
-    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
-
-    // "Create", not "Add" — "Add" beside a title field reads as adding the
-    // title to something rather than creating the page.
-    const create = screen.getByRole('button', { name: 'Create' });
-    expect(create).toBeDisabled();
-
-    fireEvent.change(screen.getByLabelText('Title of the new page'), { target: { value: 'Postmortems' } });
-    expect(create).toBeEnabled();
-    fireEvent.click(create);
-    expect(mockCreatePageMutateAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ pageType: 'page', title: 'Postmortems' }),
-    );
-  });
-
-  it('abandons the inline input on Escape', () => {
-    // This describe block does not reset the create mock between tests.
-    mockCreatePageMutateAsync.mockClear();
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-
-    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
-    const input = screen.getByLabelText('Title of the new page');
-    fireEvent.change(input, { target: { value: 'Half-typed' } });
-    fireEvent.keyDown(input, { key: 'Escape' });
-
+    expect(screen.queryByRole('button', { name: 'New page' })).not.toBeInTheDocument();
     expect(screen.queryByTestId('new-page-input')).not.toBeInTheDocument();
-    expect(mockCreatePageMutateAsync).not.toHaveBeenCalled();
-
-    // Reopening starts clean rather than restoring the abandoned draft.
-    fireEvent.click(screen.getByRole('button', { name: 'New page' }));
-    expect(screen.getByLabelText('Title of the new page')).toHaveValue('');
   });
 
   it('pages with pageType folder navigate on click like normal pages', () => {

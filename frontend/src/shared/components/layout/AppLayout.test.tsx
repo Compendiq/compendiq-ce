@@ -211,6 +211,11 @@ describe('AppLayout', () => {
     expect(screen.getByRole('link', { name: 'Pages' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'AI chat, full page' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Graph' })).toBeInTheDocument();
+    expect(nav.className).toContain('w-[var(--app-header-height)]');
+    expect(screen.getByTestId('header-chassis-slot').className).toContain(
+      'w-[var(--app-header-height)]',
+    );
+    expect(screen.getByTestId('header-chassis-slot').className).toContain('justify-center');
   });
 
   it('puts a Find control in the header that opens the command palette', () => {

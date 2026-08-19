@@ -112,7 +112,7 @@ export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
     <nav
       data-testid="main-nav-chassis"
       aria-label="Main navigation"
-      className="hidden w-14 shrink-0 flex-col items-center gap-1 self-stretch pt-1 md:flex"
+      className="hidden w-[var(--app-header-height)] shrink-0 flex-col items-center gap-1 self-stretch pt-0 md:flex"
     >
       {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut, ariaLabel }) => {
         const active = isActive(location.pathname, path);
@@ -125,7 +125,7 @@ export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
             aria-label={ariaLabel}
             aria-current={active ? 'page' : undefined}
             className={cn(
-              'flex w-full min-h-9 flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'flex w-full min-h-9 flex-col items-center justify-center gap-0.5 rounded-lg px-0 py-1.5 text-center text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               active
                 ? 'nav-selection'
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground',
