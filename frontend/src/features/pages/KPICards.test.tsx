@@ -254,7 +254,7 @@ describe('KPICards', () => {
     expect(screen.getByTestId('kpi-embedding-coverage')).toHaveTextContent('--');
   });
 
-  it('shows "Never" when lastSynced is not provided', () => {
+  it('says Not recorded when lastSynced is missing but pages exist', () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -265,7 +265,21 @@ describe('KPICards', () => {
 
     const card = screen.getByTestId('kpi-last-sync');
     expect(card).toHaveTextContent('Last Sync');
-    expect(card).toHaveTextContent('Never');
+    expect(card).toHaveTextContent('Not recorded');
+    expect(card).not.toHaveTextContent('Never');
+  });
+
+  it('does not claim zero spaces when the library already has pages', () => {
+    render(
+      <KPICards
+        embeddingStatus={mockEmbeddingStatus}
+        spacesCount={0}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    expect(screen.getByTestId('kpi-spaces-synced')).toHaveTextContent('in the library');
+    expect(screen.getByTestId('kpi-spaces-synced')).not.toHaveTextContent('0 spaces');
   });
 
   it('shows relative time for lastSynced', () => {

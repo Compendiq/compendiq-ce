@@ -626,6 +626,12 @@ describe('ArticleRightPane', () => {
       expect(rail).toHaveAttribute('aria-label', 'Page inspector');
     });
 
+    it('names the selected inspector tab in the collapsed rail', () => {
+      renderRail();
+      expect(screen.getByTestId('inspector-rail-current-view')).toHaveTextContent('Details');
+      expect(screen.getByTestId('article-details-rail-btn')).toHaveAccessibleName('Page details');
+    });
+
     it('keeps Expand, Assistant and Pin first-class and parks maintenance behind More', () => {
       renderRail();
 

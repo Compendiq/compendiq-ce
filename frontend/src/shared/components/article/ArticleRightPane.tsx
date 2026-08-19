@@ -844,6 +844,12 @@ export function ArticleRightPane({
       'rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
     const railMenuItem =
       'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
+    const inspectorViewLabel =
+      activeInspectorView === 'assistant'
+        ? 'Assistant'
+        : activeInspectorView === 'outline'
+          ? 'Outline'
+          : 'Details';
     const assistantHint = formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac());
     const pinHint = formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac());
     const closeOutlineUnlessMovingInside = (next: Node | null) => {
@@ -945,7 +951,10 @@ export function ArticleRightPane({
                     suppressFlyoutReopenRef.current = false;
                     setOutlineFlyoutOpen((v) => !v);
                   }}
-                  className={cn(railIconBtn, outlineFlyoutOpen && 'nm-pill-active text-action')}
+                  className={cn(
+                    railIconBtn,
+                    (outlineFlyoutOpen || activeInspectorView === 'outline') && 'nm-pill-active text-action',
+                  )}
                   aria-label="Article outline"
                   aria-expanded={outlineFlyoutOpen}
                   aria-controls="article-outline-flyout"
@@ -985,7 +994,7 @@ export function ArticleRightPane({
                   setActiveInspectorView('assistant');
                   handleExpandSidebar();
                 }}
-                className={railIconBtn}
+                className={cn(railIconBtn, activeInspectorView === 'assistant' && 'nm-pill-active')}
                 aria-label="AI Assistant"
                 title={`AI Assistant (${assistantHint})`}
                 data-testid="article-assistant-rail-btn"
@@ -998,6 +1007,29 @@ export function ArticleRightPane({
                 className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
               >
                 AI Assistant · {assistantHint}
+              </span>
+            </div>
+
+            <div className="group relative flex w-full justify-center">
+              <button
+                type="button"
+                onClick={() => {
+                  inspectorViewTouchedRef.current = true;
+                  setActiveInspectorView('details');
+                  handleExpandSidebar();
+                }}
+                className={cn(railIconBtn, activeInspectorView === 'details' && 'nm-pill-active text-action')}
+                aria-label="Page details"
+                title="Page details"
+                data-testid="article-details-rail-btn"
+              >
+                <FileText size={16} />
+              </button>
+              <span
+                role="tooltip"
+                className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+              >
+                Page details
               </span>
             </div>
 
@@ -1058,6 +1090,12 @@ export function ArticleRightPane({
                 </span>
               </div>
             )}
+            <span
+              data-testid="inspector-rail-current-view"
+              className="mt-auto px-0.5 pb-1 text-center text-[11px] font-medium leading-tight text-foreground"
+            >
+              {inspectorViewLabel}
+            </span>
           </div>
         </m.aside>
       </AnimatePresence>

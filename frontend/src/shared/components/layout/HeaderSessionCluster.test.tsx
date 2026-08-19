@@ -28,10 +28,10 @@ describe('HeaderFindButton', () => {
     expect(useCommandPaletteStore.getState().isOpen).toBe(true);
   });
 
-  it('is named Find, not a second Search', () => {
+  it('is named Find pages & commands, not a second Search', () => {
     render(<HeaderFindButton />, { wrapper });
-    expect(screen.getByRole('button', { name: 'Find' })).toBeInTheDocument();
-    expect(screen.getByText('Find')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Find pages & commands' })).toBeInTheDocument();
+    expect(screen.getByText('Find pages & commands')).toBeInTheDocument();
   });
 });
 
