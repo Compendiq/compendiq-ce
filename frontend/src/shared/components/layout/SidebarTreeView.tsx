@@ -425,8 +425,8 @@ interface SidebarTreeViewProps {
   forceCollapsed?: boolean;
   /** Lets a user explicitly reopen a temporarily compacted rail. */
   onForceExpand?: () => void;
-  /** Pages / AI / Graph live on the chassis on desktop. Keep them inside
-   *  this tree for the mobile drawer and for isolated tests. */
+  /** Pages / AI / Graph live on the chassis on desktop. The mobile drawer
+   *  and isolated tests pass true; AppLayout desktop passes false. */
   embedMainNav?: boolean;
 }
 

@@ -1,16 +1,8 @@
-import {
-  type ReactNode,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from 'react';
-import { createPortal } from 'react-dom';
-import { useLocation } from 'react-router-dom';
-import { APP_HEADER_SLOT_ID, routeHeaderTitle } from './header-slot-utils';
+import { type ReactNode } from 'react';
 
 /**
- * Renders into the app header when AppLayout is mounted; otherwise in place
- * so page tests that skip the shell still see the same heading and actions.
+ * Page heading in the document column. Chrome is Find + session — titles
+ * never portal into the 48px header.
  */
 export function HeaderHost({
   children,
@@ -19,52 +11,6 @@ export function HeaderHost({
   children: ReactNode | ((portaled: boolean) => ReactNode);
   fallbackClassName?: string;
 }) {
-  const [target, setTarget] = useState<HTMLElement | null>(() =>
-    typeof document === 'undefined' ? null : document.getElementById(APP_HEADER_SLOT_ID),
-  );
-
-  useLayoutEffect(() => {
-    setTarget(document.getElementById(APP_HEADER_SLOT_ID));
-  }, []);
-
-  const node = typeof children === 'function' ? children(Boolean(target)) : children;
-  if (target) return createPortal(node, target);
+  const node = typeof children === 'function' ? children(false) : children;
   return <div className={fallbackClassName}>{node}</div>;
-}
-
-/** Slot + fallback title. Lives in the 48px app header. */
-export function AppHeaderMain() {
-  const { pathname } = useLocation();
-  const defaultTitle = routeHeaderTitle(pathname);
-  const slotRef = useRef<HTMLDivElement>(null);
-  const [occupied, setOccupied] = useState(false);
-
-  useLayoutEffect(() => {
-    const el = slotRef.current;
-    if (!el) return;
-    const sync = () => setOccupied(el.childElementCount > 0);
-    sync();
-    const observer = new MutationObserver(sync);
-    observer.observe(el, { childList: true });
-    return () => observer.disconnect();
-  }, []);
-
-  return (
-    // One wayfinding row. The slot is `contents` so a claimed title and the
-    // fallback h1 occupy the same flex track — never a flex-1 hole that
-    // shoves an unclaimed title against the session cluster.
-    <div className="flex min-w-0 flex-1 items-center gap-3">
-      <div
-        ref={slotRef}
-        id={APP_HEADER_SLOT_ID}
-        data-testid="app-header-slot"
-        className="contents"
-      />
-      {!occupied && defaultTitle && (
-        <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">
-          {defaultTitle}
-        </h1>
-      )}
-    </div>
-  );
 }

@@ -20,7 +20,6 @@ import {
 import { AiProvider } from '../../../features/ai/AiContext';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { Logo } from '../Logo';
-import { AppHeaderMain } from './header-slot';
 import { HeaderFindButton, HeaderSessionCluster } from './HeaderSessionCluster';
 import { MainNavChassisRail } from './MainNavStrip';
 import { PageTransition } from './PageTransition';
@@ -467,8 +466,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
               className="fixed inset-y-0 left-0 z-50 w-[85vw] max-w-[20rem] overflow-hidden md:hidden"
             >
               {isSettingsRoute
-                ? <SettingsSidebar onNavigate={closeMobileSidebar} />
-                : <SidebarTreeView onNavigate={closeMobileSidebar} />}
+                ? <SettingsSidebar onNavigate={closeMobileSidebar} embedMainNav />
+                : <SidebarTreeView onNavigate={closeMobileSidebar} embedMainNav />}
             </m.div>
           </>
         )}
@@ -534,15 +533,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </button>
 
         <Link to="/" aria-label="Compendiq home" className="flex shrink-0 items-center group">
-          {/* Clip to the Q-tile below `md` so hamburger + lockup + title +
+          {/* Clip to the Q-tile below `md` so hamburger + lockup + Find +
               session cluster fit the 48px. The SVG itself stays the full
               lockup; overflow hides the wordmark rather than squashing it. */}
           <span className="block h-[22px] w-[22px] overflow-hidden md:w-auto">
             <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
           </span>
         </Link>
-
-        <AppHeaderMain />
         </div>
         <HeaderFindButton />
         <div className="flex min-w-0 items-center justify-end gap-1">

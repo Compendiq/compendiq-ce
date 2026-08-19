@@ -135,7 +135,7 @@ describe('AppLayout', () => {
     expect(header!.querySelector('a[href="/ai"]')).toBeNull();
   });
 
-  it('shows a route title in the header when the page has not claimed the slot', () => {
+  it('does not put a route title in the header', () => {
     render(
       <AppLayout>
         <div>content</div>
@@ -143,20 +143,17 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/ai') },
     );
     const header = document.querySelector('header')!;
-    expect(header.querySelector('h1')?.textContent).toBe('AI');
+    expect(header.querySelector('h1')).toBeNull();
   });
 
-  it('lets a page claim the header slot', () => {
+  it('keeps route titles out of the header', () => {
     render(
       <AppLayout>
-        <div id="from-page">
-          {/* Pages-style claim happens via HeaderHost in the child tree */}
-        </div>
+        <div id="from-page" />
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    // No child claimed the slot — Pages title is the fallback.
-    expect(document.querySelector('header h1')?.textContent).toBe('Pages');
+    expect(document.querySelector('header h1')).toBeNull();
   });
 
   it('renders app logo in top header bar on all routes', () => {
@@ -227,7 +224,7 @@ describe('AppLayout', () => {
     expect(header.querySelector('[data-testid="header-session-cluster"]')!.contains(find!)).toBe(
       false,
     );
-    expect(screen.getByRole('button', { name: 'Find' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Find pages & commands' })).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('header-find'));
     expect(useCommandPaletteStore.getState().isOpen).toBe(true);
   });

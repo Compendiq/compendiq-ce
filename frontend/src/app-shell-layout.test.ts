@@ -251,6 +251,13 @@ describe('AppLayout structure', () => {
     expect(chassisNavAt).toBeLessThan(workspaceAt);
   });
 
+  it('keeps desktop trees off the in-tree Pages/AI/Graph strip', () => {
+    expect(appLayout).toMatch(/SettingsSidebar embedMainNav=\{false\}/);
+    expect(appLayout).toMatch(/SidebarTreeView embedMainNav=\{false\}/);
+    expect(appLayout).toMatch(/SidebarTreeView onNavigate=\{closeMobileSidebar\} embedMainNav/);
+    expect(appLayout).not.toMatch(/AppHeaderMain/);
+  });
+
   it('does not paint a second fill on the article main inside the workspace card', () => {
     const mainAt = appLayout.indexOf('id="main-content"');
     expect(mainAt).toBeGreaterThan(-1);
