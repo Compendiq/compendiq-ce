@@ -804,9 +804,9 @@ export function PageViewPage() {
           data-testid="edit-toolbar-mask"
           className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-card"
         />
-        <div className="-mx-4 border-b border-border bg-card sm:-mx-6 relative">
+        <div className="relative w-full border-b border-border bg-card">
           {editing && editorInstance ? (
-            <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
+            <div className="px-2">
               <EditorToolbar
                 editor={editorInstance}
                 headerNumbering={headerNumbering}
@@ -819,7 +819,7 @@ export function PageViewPage() {
           ) : (
             <div
               className={cn(
-                'mx-auto flex min-h-[calc(3rem-1px)] max-w-[1200px] items-center gap-1.5 px-5 sm:px-10',
+                'flex min-h-[calc(3rem-1px)] w-full items-center gap-1.5 px-2',
                 editing && 'justify-end',
               )}
               {...(!editing
@@ -871,7 +871,7 @@ export function PageViewPage() {
           {editing && editorInstance && (
             <EditorContextToolbars
               editor={editorInstance}
-              innerClassName="mx-auto max-w-[1200px] px-5 sm:px-10"
+              innerClassName="px-2"
             />
           )}
         </div>

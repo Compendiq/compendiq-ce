@@ -122,10 +122,11 @@ flowchart LR
   below `md` in `AppLayout.test.tsx`.
 - `.` toggles the inspector: the sheet below `md`, the detached rail at `md`
   and up.
-- `useIsDockWideLayout` (`min-width: 1100px`) and `useIsMobileLayout` are the
-  app's only JS *width* queries — `use-can-hover` and three one-shot checks
-  read `matchMedia` for pointer and motion capability, but every other
-  responsive layout decision is a Tailwind class.
+- JS *width* queries exist only where the component tree changes:
+  `useIsMobileLayout` (`md`), `useIsDockWideLayout` (`1100px`, dock vs rail),
+  and `useIsInspectorWideLayout` (`xl`, expanded inspector vs 40px rail).
+  `use-can-hover` and three one-shot checks read `matchMedia` for pointer and
+  motion capability; every other responsive layout decision is a Tailwind class.
 - Below `md` there is no right side to dock into, so the same inspector
   (`ArticleRightPane` with `presentation="sheet"`) is a right-hand slide-over
   — Outline, Details and Assistant together, matching the left nav drawer.

@@ -139,12 +139,13 @@ describe('Inset shell utilities', () => {
     expect(block).not.toMatch(/box-shadow:/);
   });
 
-  it('the article rail stretches through the chassis bottom inset to the viewport floor', () => {
-    const block = extractBlock(css, '@utility app-rail-to-floor {');
-    expect(block).toMatch(/height:\s*calc\(100% \+ var\(--app-inset\)\)/);
-    expect(block).toMatch(/margin-bottom:\s*calc\(-1 \* var\(--app-inset\)\)/);
-    expect(appLayout).toMatch(/app-rail-to-floor/);
-    expect(css).toMatch(/\.app-rail-to-floor \.app-context-rail[\s\S]*border-bottom-left-radius:\s*0/);
+  it('the article rail matches the workspace card height, not the viewport floor', () => {
+    const block = extractBlock(css, '@utility app-rail-beside {');
+    expect(block).toMatch(/height:\s*100%/);
+    expect(block).not.toMatch(/margin-bottom:\s*calc\(-1 \* var\(--app-inset\)\)/);
+    expect(appLayout).toMatch(/app-rail-beside/);
+    expect(appLayout).not.toMatch(/app-rail-to-floor/);
+    expect(css).not.toMatch(/\.app-rail-to-floor \.app-context-rail[\s\S]*border-bottom-left-radius:\s*0/);
   });
 
   it('the context rail utility is a bordered, radiused, unshadowed pane', () => {
@@ -169,6 +170,11 @@ describe('Inset shell utilities', () => {
     expect(css).toMatch(/--app-rail-gap:\s*0px/);
     expect(css).toMatch(/@media \(min-width:\s*768px\)[\s\S]*?--app-inset:\s*12px/);
     expect(css).toMatch(/@media \(min-width:\s*1280px\)[\s\S]*?--app-inset:\s*16px/);
+  });
+
+  it('rail radius matches the workspace card so the two siblings share a bottom curve', () => {
+    expect(css).toMatch(/@media \(min-width:\s*768px\)[\s\S]*?--app-shell-radius:\s*12px[\s\S]*?--app-rail-radius:\s*12px/);
+    expect(css).toMatch(/@media \(min-width:\s*1280px\)[\s\S]*?--app-shell-radius:\s*14px[\s\S]*?--app-rail-radius:\s*14px/);
   });
 
   it('does not apply transform on chassis or shell (would trap position:fixed)', () => {

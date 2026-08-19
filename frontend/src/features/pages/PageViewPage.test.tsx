@@ -491,6 +491,8 @@ describe('PageViewPage', () => {
     const mask = screen.getByTestId('edit-toolbar-mask');
     expect(mask.parentElement).toContainElement(strip);
     expect(mask.parentElement!.className).toContain('sticky');
+    expect(strip.className).toContain('w-full');
+    expect(strip.className).not.toMatch(/max-w-\[1200px\]/);
   });
 
   it('keeps the article title in the document, not the header', () => {

@@ -222,14 +222,18 @@ describe('ArticleRightPane', () => {
     reembedIsPending = false;
     requalityIsPending = false;
     localStorage.clear();
-    useUiStore.setState({ articleSidebarCollapsed: false, articleSidebarWidth: 280 });
+    useUiStore.setState({
+      articleSidebarCollapsed: false,
+      articleSidebarLaptopExpanded: false,
+      articleSidebarWidth: 280,
+    });
     useArticleViewStore.setState({ headings: [], editing: false });
     // The dock forces this pane into its rail while open (#1126), so a test
     // that opens it would otherwise change what every later test renders.
     useAiDockStore.setState({ open: false });
     // jsdom's default. `useIsDockWideLayout` reads it via matchMedia, and the
     // pane steps aside entirely below 1100px while the dock is open.
-    window.innerWidth = 1024;
+    window.innerWidth = 1280;
   });
 
   afterEach(() => {
@@ -359,6 +363,33 @@ describe('ArticleRightPane', () => {
 
     fireEvent.click(screen.getByLabelText('Expand inspector'));
 
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+  });
+
+  it('starts collapsed below xl even when the wide-layout preference is expanded', () => {
+    window.innerWidth = 1024;
+    useUiStore.setState({
+      articleSidebarCollapsed: false,
+      articleSidebarLaptopExpanded: false,
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
+  });
+
+  it('expands on laptop via the laptop-expanded flag, not the wide persist', () => {
+    window.innerWidth = 1024;
+    useUiStore.setState({
+      articleSidebarCollapsed: true,
+      articleSidebarLaptopExpanded: false,
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('Expand inspector'));
+
+    expect(useUiStore.getState().articleSidebarLaptopExpanded).toBe(true);
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
 
@@ -634,8 +665,8 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
-    expect(screen.getByTestId('article-assistant-rail-btn')).toBeInTheDocument();
     expect(screen.getByTestId('article-outline-rail-btn')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-assistant-rail-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('article-actions-rail')).not.toBeInTheDocument();
   });
 
@@ -660,12 +691,13 @@ describe('ArticleRightPane', () => {
       expect(screen.getByTestId('article-details-rail-btn').className).not.toMatch(/text-action/);
     });
 
-    it('keeps Expand, Assistant and Pin first-class and parks maintenance behind More', () => {
+    it('keeps Expand and the current view first-class and parks pin and maintenance behind More', () => {
       renderRail();
 
       expect(screen.getByLabelText('Expand inspector')).toBeInTheDocument();
-      expect(screen.getByTestId('article-assistant-rail-btn')).toBeInTheDocument();
-      expect(screen.getByLabelText('Pin page')).toBeInTheDocument();
+      expect(screen.getByTestId('article-details-rail-btn')).toBeInTheDocument();
+      expect(screen.queryByTestId('article-assistant-rail-btn')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Pin page')).not.toBeInTheDocument();
 
       expect(screen.queryByTestId('article-requality-rail-btn')).not.toBeInTheDocument();
       expect(screen.queryByTestId('article-reembed-rail-btn')).not.toBeInTheDocument();
@@ -674,6 +706,8 @@ describe('ArticleRightPane', () => {
 
       fireEvent.click(screen.getByTestId('article-actions-rail'));
 
+      expect(screen.getByTestId('article-assistant-rail-btn')).toBeInTheDocument();
+      expect(screen.getByLabelText('Pin page')).toBeInTheDocument();
       expect(screen.getByTestId('article-requality-rail-btn')).toBeInTheDocument();
       expect(screen.getByTestId('article-reembed-rail-btn')).toBeInTheDocument();
       expect(screen.getByTestId('article-history-rail-btn')).toBeInTheDocument();
@@ -699,8 +733,9 @@ describe('ArticleRightPane', () => {
       expect(mockRequalityPage.mock.calls[0]![0]).toBe('page-1');
     });
 
-    it('expands onto the Assistant tab from the rail trigger', () => {
+    it('expands onto the Assistant tab from More', () => {
       renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
       fireEvent.click(screen.getByTestId('article-assistant-rail-btn'));
 
       expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
@@ -712,6 +747,7 @@ describe('ArticleRightPane', () => {
 
     it('marks Pin as pressed and keeps the shared focus ring', () => {
       renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
       const pin = screen.getByLabelText('Pin page');
       expect(pin).toHaveAttribute('aria-pressed', 'false');
       expect(pin.className).toMatch(/focus-visible:ring-2/);
@@ -719,6 +755,7 @@ describe('ArticleRightPane', () => {
 
     it('paints the rail Assistant mark violet', () => {
       renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
       const trigger = screen.getByTestId('article-assistant-rail-btn');
       const mark = trigger.querySelector('svg');
       expect(mark).not.toBeNull();
@@ -734,11 +771,11 @@ describe('ArticleRightPane', () => {
       renderRail();
 
       const outline = screen.getByTestId('article-outline-rail-btn');
-      const assistant = screen.getByTestId('article-assistant-rail-btn');
+      const expand = screen.getByLabelText('Expand inspector');
       fireEvent.focus(outline);
       expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
 
-      fireEvent.blur(outline, { relatedTarget: assistant });
+      fireEvent.blur(outline, { relatedTarget: expand });
 
       await waitFor(() => {
         expect(screen.queryByTestId('article-outline-flyout')).not.toBeInTheDocument();
@@ -851,13 +888,14 @@ describe('ArticleRightPane', () => {
       renderRail();
       const trigger = screen.getByTestId('article-outline-rail-btn');
 
-      expect(trigger).toHaveAttribute('aria-label', 'Article outline');
+      expect(trigger).toHaveAttribute('aria-label', 'Outline');
       expect(trigger).toHaveAttribute('aria-expanded', 'false');
       expect(trigger).toHaveAttribute('aria-controls', 'article-outline-flyout');
 
       fireEvent.click(trigger);
       expect(trigger).toHaveAttribute('aria-expanded', 'true');
       expect(screen.getByTestId('article-outline-flyout')).toHaveAttribute('id', 'article-outline-flyout');
+      expect(screen.getByTestId('article-outline-flyout')).toHaveTextContent('Same as the Outline tab');
     });
 
     it('navigates to a heading from inside the flyout', () => {

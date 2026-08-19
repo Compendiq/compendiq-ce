@@ -39,7 +39,7 @@ import { toast } from 'sonner';
 import { useUiStore } from '../../../stores/ui-store';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
-import { useIsDockWideLayout } from '../../hooks/use-media-query';
+import { useIsDockWideLayout, useIsInspectorWideLayout } from '../../hooks/use-media-query';
 import {
   useDeletePage,
   usePage,
@@ -279,6 +279,8 @@ export function ArticleRightPane({
 
   const userCollapsed = useUiStore((s) => s.articleSidebarCollapsed);
   const toggleSidebar = useUiStore((s) => s.toggleArticleSidebar);
+  const laptopExpanded = useUiStore((s) => s.articleSidebarLaptopExpanded);
+  const setLaptopExpanded = useUiStore((s) => s.setArticleSidebarLaptopExpanded);
   const width = useUiStore((s) => s.articleSidebarWidth);
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
   const reduceEffects = useReducedMotion();
@@ -304,11 +306,19 @@ export function ArticleRightPane({
   // why the OR is not needed for that case either.
   const dockOpen = useAiDockStore((s) => s.open);
   const dockLayoutIsWide = useIsDockWideLayout();
+  const inspectorWide = useIsInspectorWideLayout();
   const isSheet = presentation === 'sheet';
-  const collapsed = isSheet ? false : userCollapsed;
+  // Below xl the inspector starts as the 40px rail so the article keeps
+  // the workspace. Expand (and Alt+I / layout presets) sets laptopExpanded.
+  const collapsed = isSheet ? false : inspectorWide ? userCollapsed : !laptopExpanded;
   const handleExpandSidebar = useCallback(() => {
-    toggleSidebar();
-  }, [toggleSidebar]);
+    if (!inspectorWide) setLaptopExpanded(true);
+    else if (userCollapsed) toggleSidebar();
+  }, [inspectorWide, setLaptopExpanded, toggleSidebar, userCollapsed]);
+  const handleCollapseSidebar = useCallback(() => {
+    if (!inspectorWide) setLaptopExpanded(false);
+    else if (!userCollapsed) toggleSidebar();
+  }, [inspectorWide, setLaptopExpanded, toggleSidebar, userCollapsed]);
 
   const headings = useArticleViewStore((s) => s.headings);
   const editing = useArticleViewStore((s) => s.editing);
@@ -926,10 +936,9 @@ export function ArticleRightPane({
             </span>
           </div>
 
-          {/* Outline flyout trigger. Hover OR focus opens it — a hover-only
-              reveal would put the outline out of reach of the keyboard
-              entirely (WCAG 2.4.7), and click toggles it for touch. Stays
-              mounted in edit mode: collapsing to write must not hide the map. */}
+          {/* Outline flyout = the Outline tab while collapsed. Hover OR focus
+              opens it (WCAG 2.4.7); click toggles for touch. Stays mounted
+              in edit mode: collapsing to write must not hide the map. */}
           {headings.length > 0 && (
             <>
               <div className="my-1 h-px w-6 bg-border" />
@@ -955,10 +964,10 @@ export function ArticleRightPane({
                     railIconBtn,
                     (outlineFlyoutOpen || activeInspectorView === 'outline') && 'nm-pill-active',
                   )}
-                  aria-label="Article outline"
+                  aria-label="Outline"
                   aria-expanded={outlineFlyoutOpen}
                   aria-controls="article-outline-flyout"
-                  title={`Article outline — ${headings.length} section${headings.length === 1 ? '' : 's'}`}
+                  title={`Outline — ${headings.length} section${headings.length === 1 ? '' : 's'}. Same as the Outline tab.`}
                   data-testid="article-outline-rail-btn"
                 >
                   <ListTree size={16} />
@@ -967,7 +976,7 @@ export function ArticleRightPane({
                   role="tooltip"
                   className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                 >
-                  Article outline · {headings.length}
+                  Outline · {headings.length} · same as the Outline tab
                 </span>
               </div>
             </>
@@ -975,87 +984,49 @@ export function ArticleRightPane({
 
           <div className="my-1 h-px w-6 bg-border" />
           <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-0.5 overflow-y-auto p-1">
-            <div className="group relative flex w-full justify-center">
-              <button
-                // #1126: opens the assistant beside the document instead of
-                // navigating to /ai and losing sight of the page. This is also
-                // where the dock's focus restore lands when the trigger the
-                // user pressed was destroyed by opening the dock — this one
-                // survives every post-open state at >= 1100px.
-                // #1176: opening is all it does. It used to start a full-page
-                // rewrite on the same click, which is why it was called "AI
-                // Improve" and drew a wand.
-                // Expands the pane onto its Assistant tab. This used to call
-                // `openDock()`, which after the tab move opened a column that
-                // no longer renders — a live control that silently did
-                // nothing.
-                onClick={() => {
-                  inspectorViewTouchedRef.current = true;
-                  setActiveInspectorView('assistant');
-                  handleExpandSidebar();
-                }}
-                className={cn(railIconBtn, activeInspectorView === 'assistant' && 'nm-pill-active')}
-                aria-label="AI Assistant"
-                title={`AI Assistant (${assistantHint})`}
-                data-testid="article-assistant-rail-btn"
-                data-ai-assistant-trigger
-              >
-                <Sparkles size={16} className="text-status-ai" />
-              </button>
-              <span
-                role="tooltip"
-                className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-              >
-                AI Assistant · {assistantHint}
-              </span>
-            </div>
-
+            {headings.length === 0 && (
             <div className="group relative flex w-full justify-center">
               <button
                 type="button"
                 onClick={() => {
                   inspectorViewTouchedRef.current = true;
-                  setActiveInspectorView('details');
+                  const next = activeInspectorView === 'assistant' ? 'assistant' : 'details';
+                  setActiveInspectorView(next);
                   handleExpandSidebar();
                 }}
-                className={cn(railIconBtn, activeInspectorView === 'details' && 'nm-pill-active')}
-                aria-label="Page details"
-                title="Page details"
-                data-testid="article-details-rail-btn"
+                className={cn(railIconBtn, 'nm-pill-active')}
+                aria-label={activeInspectorView === 'assistant' ? 'AI Assistant' : 'Page details'}
+                title={
+                  activeInspectorView === 'assistant'
+                    ? `AI Assistant (${assistantHint})`
+                    : 'Page details'
+                }
+                data-testid={
+                  activeInspectorView === 'assistant'
+                    ? 'article-assistant-rail-btn'
+                    : 'article-details-rail-btn'
+                }
+                data-ai-assistant-trigger={activeInspectorView === 'assistant' ? true : undefined}
               >
-                <FileText size={16} />
+                {activeInspectorView === 'assistant' ? (
+                  <Sparkles size={16} className="text-status-ai" />
+                ) : (
+                  <FileText size={16} />
+                )}
               </button>
               <span
                 role="tooltip"
                 className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
               >
-                Page details
+                {activeInspectorView === 'assistant'
+                  ? `AI Assistant · ${assistantHint}`
+                  : 'Page details'}
               </span>
             </div>
-
-            {page && (
-              <div className="group relative flex w-full justify-center">
-                <button
-                  onClick={handlePinToggle}
-                  className={cn(railIconBtn, isPinned && 'nm-pill-active text-action')}
-                  aria-label={isPinned ? 'Unpin page' : 'Pin page'}
-                  aria-pressed={isPinned}
-                  title={`${isPinned ? 'Unpin page' : 'Pin page'} (${pinHint})`}
-                >
-                  <Pin size={16} className={cn(isPinned && 'fill-current')} />
-                </button>
-                <span
-                  role="tooltip"
-                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-                >
-                  {isPinned ? 'Unpin page' : 'Pin page'} · {pinHint}
-                </span>
-              </div>
             )}
 
-            {/* Overflow mirrors expanded Details: Page actions, then
-                Maintenance & AI. Hidden while editing — those verbs are
-                not the writing task. Delete stays off this rail. */}
+            {/* Overflow: pin, other views, page actions, maintenance.
+                Hidden while editing. Delete stays off this rail. */}
             {!editing && page && (
               <div className="group relative flex w-full justify-center">
                 <button
@@ -1109,6 +1080,54 @@ export function ArticleRightPane({
           style={{ top: railOverflowTop }}
         >
                     <div className="px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
+                      Inspector
+                    </div>
+                    {activeInspectorView !== 'assistant' && (
+                      <button
+                        type="button"
+                        className={railMenuItem}
+                        aria-label="AI Assistant"
+                        data-testid="article-assistant-rail-btn"
+                        data-ai-assistant-trigger
+                        onClick={() => {
+                          inspectorViewTouchedRef.current = true;
+                          setActiveInspectorView('assistant');
+                          setRailOverflowOpen(false);
+                          handleExpandSidebar();
+                        }}
+                      >
+                        <Sparkles size={15} className="shrink-0 text-status-ai" />
+                        <span className="truncate">Assistant</span>
+                      </button>
+                    )}
+                    {activeInspectorView !== 'details' && (
+                      <button
+                        type="button"
+                        className={railMenuItem}
+                        aria-label="Page details"
+                        data-testid="article-details-rail-btn"
+                        onClick={() => {
+                          inspectorViewTouchedRef.current = true;
+                          setActiveInspectorView('details');
+                          setRailOverflowOpen(false);
+                          handleExpandSidebar();
+                        }}
+                      >
+                        <FileText size={15} className="shrink-0 opacity-70" />
+                        <span className="truncate">Details</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className={railMenuItem}
+                      aria-label={isPinned ? 'Unpin page' : 'Pin page'}
+                      aria-pressed={isPinned}
+                      onClick={handlePinToggle}
+                    >
+                      <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current')} />
+                      <span className="truncate">{isPinned ? 'Unpin page' : 'Pin page'} · {pinHint}</span>
+                    </button>
+                    <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
                       Page actions
                     </div>
                     {id && (
@@ -1249,6 +1268,9 @@ export function ArticleRightPane({
                   {headings.length} section{headings.length === 1 ? '' : 's'}
                 </span>
               </div>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Same as the Outline tab
+              </p>
               <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/8">
                 <div className="h-full rounded-full bg-action" style={{ width: `${readingProgress}%` }} />
               </div>
@@ -1257,7 +1279,7 @@ export function ArticleRightPane({
               ref={flyoutTreeRef}
               className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-1.5"
               role="tree"
-              aria-label="Article outline"
+              aria-label="Outline"
             >
               {tree.map((node) => (
                 <OutlineNodeItem
@@ -1429,7 +1451,7 @@ export function ArticleRightPane({
           />
         )}
         <button
-          onClick={isSheet ? onRequestClose : toggleSidebar}
+          onClick={isSheet ? onRequestClose : handleCollapseSidebar}
           className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label={isSheet ? 'Close page inspector' : 'Collapse page sidebar'}
           title={isSheet ? 'Close inspector' : 'Collapse sidebar (.)'}

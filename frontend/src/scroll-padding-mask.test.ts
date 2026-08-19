@@ -61,9 +61,14 @@ const newPageSource = read('features/pages/NewPagePage.tsx');
 
 /** The classes on AppLayout's main scroll container. */
 function scrollContainerClasses(): string {
-  const match = appLayoutSource.match(/data-scroll-container[^>]*?className="([^"]+)"/);
-  if (!match) throw new Error('No data-scroll-container element found in AppLayout.tsx');
-  return match[1]!;
+  const at = appLayoutSource.indexOf('data-scroll-container');
+  if (at < 0) throw new Error('No data-scroll-container element found in AppLayout.tsx');
+  const slice = appLayoutSource.slice(at, at + 900);
+  const quoted = slice.match(/className="([^"]+)"/);
+  if (quoted) return quoted[1]!;
+  const composed = slice.match(/className=\{cn\(\s*'([^']+)'/);
+  if (!composed) throw new Error('No className on the scroll container in AppLayout.tsx');
+  return composed[1]!;
 }
 
 /** Its top padding, in Tailwind spacing steps. */
@@ -117,6 +122,11 @@ function stickyToolbarMaskClasses(source: string, sourceName: string, maskTestId
 }
 
 describe('nothing shows in the scroll container padding (#1186, #1218)', () => {
+  it('article routes do not inset the scroll container, so the toolbar can meet the pane edge', () => {
+    expect(appLayoutSource).toMatch(/isArticleRoute\s*\n\s*\? '\s*\[scrollbar-gutter:stable\]'/);
+    expect(appLayoutSource).toMatch(/isArticleRoute \? 'max-w-none'/);
+  });
+
   it('the scroll container declares one unconditional top padding', () => {
     // A breakpoint variant (sm:pt-8) would give the padding two heights while
     // every mask below can only track one, so the taller one would bleed.

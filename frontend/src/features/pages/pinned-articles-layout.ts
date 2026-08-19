@@ -16,9 +16,10 @@
  * was under the old cap with exactly the dashboard they had yesterday.
  *
  * Deliberately a constant rather than a per-breakpoint count: a responsive count
- * would need a JS width query, and the only one in this app is
- * `useIsDockWideLayout()` — every other responsive decision stays a Tailwind
- * class. It would also make the toggle's "N more" label wrong at some widths.
+ * would need a JS width query, and those exist only where the *tree* changes
+ * (`useIsDockWideLayout`, `useIsMobileLayout`, `useIsInspectorWideLayout`) —
+ * every other responsive decision stays a Tailwind class. It would also make
+ * the toggle's "N more" label wrong at some widths.
  */
 export const COLLAPSED_PIN_COUNT = 8;
 

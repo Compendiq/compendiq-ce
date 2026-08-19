@@ -556,7 +556,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
   --inline-code-color: #7041a8;
 
-  --app-chassis: #eef0f3;
+  /* Chassis must read as the gutter around the workspace card — Paper's
+     hairline is quiet, so the value step carries the detach. #eef0f3 sat
+     too close to #fbfbfc and the rail looked like a broken margin. */
+  --app-chassis: #e4e6eb;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-background);
 }
@@ -619,7 +622,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
     --app-shell-radius: 12px;
     --app-shell-border-width: 1px;
     --app-rail-gap: 6px;
-    --app-rail-radius: 10px;
+    --app-rail-radius: 12px;
   }
 }
 
@@ -629,7 +632,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
     --app-shell-radius: 14px;
     --app-shell-border-width: 1px;
     --app-rail-gap: 8px;
-    --app-rail-radius: 12px;
+    --app-rail-radius: 14px;
   }
 }
 
@@ -661,20 +664,18 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   border-radius: var(--app-rail-radius);
 }
 
-/* Header-to-floor: the workspace card keeps chassis bottom inset; the
-   rail stretches through that inset to the viewport edge so Assistant
-   and Details get the remaining height. Bottom corners square because
-   they meet the screen, not another pane. */
-@utility app-rail-to-floor {
+/* Sibling of the workspace card: same height, matching radius, chassis
+   gutter from --app-rail-gap. Do not stretch through the bottom inset —
+   that squared the rail to the viewport and made a short island when
+   height did not fill. */
+@utility app-rail-beside {
   align-self: stretch;
-  height: calc(100% + var(--app-inset));
-  margin-bottom: calc(-1 * var(--app-inset));
+  min-height: 0;
+  height: 100%;
 }
 
-.app-rail-to-floor .app-context-rail {
+.app-rail-beside .app-context-rail {
   height: 100%;
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
 }
 
 /* The rail is its own surface; its header strip must not paint the

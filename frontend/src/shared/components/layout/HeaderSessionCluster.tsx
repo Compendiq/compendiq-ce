@@ -8,9 +8,10 @@ import { UserMenu } from './UserMenu';
 const FIND_LABEL = 'Find pages & commands';
 
 /**
- * Find control for the header. Opens the command palette — pages and
- * commands, not the Pages list filter. The visible label is the name
- * (WCAG 2.5.3). The shortcut hint hides on touch on purpose.
+ * Compact Find control. Opens the command palette — pages and commands,
+ * not the Pages list filter. Icon-only below `sm` so a phone keeps the
+ * shortcut hint off a surface that has no keyboard. Accessible name
+ * starts with the visible "Find" (WCAG 2.5.3).
  */
 export function HeaderFindButton() {
   const open = useCommandPaletteStore((s) => s.open);
@@ -19,21 +20,20 @@ export function HeaderFindButton() {
     <button
       type="button"
       onClick={open}
-      className="flex h-8 w-8 shrink-0 items-center justify-center gap-2 rounded-lg border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:w-80 sm:justify-start sm:px-3"
+      className="nm-icon-button sm:w-auto sm:gap-1 sm:px-2"
       aria-label={FIND_LABEL}
       data-testid="header-find"
     >
-      <Search size={16} aria-hidden="true" className="shrink-0" />
-      <span className="hidden min-w-0 truncate text-sm sm:inline">{FIND_LABEL}</span>
-      <ShortcutHint shortcutId="search" className="ml-auto hidden sm:inline" />
+      <Search size={16} aria-hidden="true" />
+      <span className="hidden text-sm font-medium sm:inline">Find</span>
+      <ShortcutHint shortcutId="search" className="ml-0 hidden sm:inline" />
     </button>
   );
 }
 
 /**
- * Inbox + theme + account. Find sits in the header centre, not here, so
- * the session cluster can stay a right-aligned utility group. Lives in
- * the header landmark so a phone does not have to open the drawer.
+ * Find + inbox + theme + account. Lives in the header landmark so a phone
+ * does not have to open the drawer to reach the session.
  */
 export function HeaderSessionCluster() {
   return (
@@ -41,6 +41,7 @@ export function HeaderSessionCluster() {
       data-testid="header-session-cluster"
       className="flex shrink-0 items-center gap-0.5"
     >
+      <HeaderFindButton />
       <NotificationBell />
       <ThemeToggle />
       <UserMenu align="end" />
