@@ -1668,6 +1668,14 @@ describe('PagesPage', () => {
       expect(items.length).toBeLessThan(200);
     });
 
+    it('paints library rows like the page tree, not as cards', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const item = await screen.findByTestId('article-hover-page-1');
+      expect(item.className).toContain('border-transparent');
+      expect(item.className).toContain('hover:bg-accent');
+      expect(item.className).not.toContain('bg-card');
+    });
+
   });
 
   // ---------------------------------------------------------------------------

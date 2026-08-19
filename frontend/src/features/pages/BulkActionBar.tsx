@@ -50,7 +50,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
       <div
         role="region"
         aria-label={`Actions for ${count} selected ${noun}`}
-        className="flex flex-wrap items-center gap-3 rounded-xl border border-action/40 bg-action/[0.06] px-4 py-3"
+        className="flex flex-wrap items-center gap-2 py-1"
         data-testid="bulk-action-bar"
       >
         {/* Visible copy of the count. Not itself the live region — announcing
@@ -64,7 +64,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
             type="button"
             onClick={() => run('embed')}
             disabled={bulk.isPending}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50"
+            className="nm-button-ghost h-8 gap-1.5 px-2.5 text-sm disabled:opacity-50"
             data-testid="bulk-embed-btn"
           >
             <Database size={14} aria-hidden="true" />
@@ -76,7 +76,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
               type="button"
               onClick={() => run('sync')}
               disabled={bulk.isPending}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50"
+              className="nm-button-ghost h-8 gap-1.5 px-2.5 text-sm disabled:opacity-50"
               data-testid="bulk-sync-btn"
             >
               <RefreshCw size={14} aria-hidden="true" />
@@ -88,7 +88,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
             type="button"
             onClick={() => run('quality')}
             disabled={bulk.isPending}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50"
+            className="nm-button-ghost h-8 gap-1.5 px-2.5 text-sm disabled:opacity-50"
             data-testid="bulk-quality-btn"
           >
             <Gauge size={14} aria-hidden="true" />
@@ -99,7 +99,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
             type="button"
             onClick={() => setPendingDelete(true)}
             disabled={bulk.isPending}
-            className="nm-button-destructive inline-flex items-center gap-1.5 px-3 py-1.5 text-sm"
+            className="nm-action-destructive inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm"
             data-testid="bulk-delete-btn"
           >
             <Trash2 size={14} aria-hidden="true" />
@@ -117,7 +117,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
         <button
           type="button"
           onClick={onClear}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+          className="nm-button-ghost ml-auto h-8 gap-1.5 px-2.5 text-sm"
           data-testid="bulk-clear-btn"
         >
           <X size={14} aria-hidden="true" />
