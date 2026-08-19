@@ -394,11 +394,10 @@ describe('PageViewPage', () => {
     expect(screen.getByText(/this page is still there/i)).toBeInTheDocument();
   });
 
-  it('renders the article title in the header strip and as the document heading', () => {
+  it('renders the article title as the document heading only', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    const titles = screen.getAllByText('Engineering Handbook');
-    expect(titles.length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('Engineering Handbook')).toHaveLength(1);
     expect(screen.getByRole('heading', { level: 1, name: 'Engineering Handbook' })).toBeInTheDocument();
   });
 
@@ -492,6 +491,14 @@ describe('PageViewPage', () => {
     const mask = screen.getByTestId('edit-toolbar-mask');
     expect(mask.parentElement).toContainElement(strip);
     expect(mask.parentElement!.className).toContain('sticky');
+  });
+
+  it('keeps the article title in the document, not the header', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const heading = screen.getByRole('heading', { level: 1, name: mockPage.title });
+    expect(heading.className).toMatch(/text-3xl/);
+    expect(heading.closest('#app-header-slot')).toBeNull();
   });
 
   it('resets the app scroll container when the article route renders', async () => {

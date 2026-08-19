@@ -2,8 +2,8 @@ export const APP_HEADER_SLOT_ID = 'app-header-slot';
 
 /**
  * Route wayfinding for the app header when a page has not claimed the slot.
- * Article and New Page claim the slot themselves (document title / HeaderHost),
- * so they stay null here.
+ * New Page claims the slot itself. The article keeps its title in the
+ * document, so /pages/:id stays null here.
  */
 export function routeHeaderTitle(pathname: string): string | null {
   if (pathname === '/' || pathname === '/pages') return 'Pages';
