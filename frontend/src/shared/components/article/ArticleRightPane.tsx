@@ -882,7 +882,7 @@ export function ArticleRightPane({
           animate={{ width: 40, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="app-sidebar flex flex-col items-center border-l overflow-hidden"
+          className="app-context-rail flex flex-col items-center overflow-hidden"
           aria-label="Page inspector"
           data-testid="article-right-pane-rail"
         >
@@ -1246,7 +1246,7 @@ export function ArticleRightPane({
       animate={{ width, opacity: 1 }}
       transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'app-sidebar relative flex flex-col border-l overflow-hidden',
+        'app-context-rail relative flex flex-col overflow-hidden',
         isResizing && 'select-none',
       )}
       data-testid="article-right-pane"

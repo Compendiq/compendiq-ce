@@ -406,6 +406,9 @@ describe('Both themes declare a complete, symmetric token set', () => {
     '--color-status-ai',
     '--color-status-disconnected',
     '--color-status-inactive',
+    '--app-chassis',
+    '--app-shell-bg',
+    '--app-rail-bg',
   ];
 
   for (const name of required) {
@@ -591,7 +594,7 @@ describe('Flat depth model', () => {
   // override is a second place to get the value ladder wrong, and is how the
   // two themes drifted apart under the retired system.
   it('no light-theme override exists for a shell surface', () => {
-    for (const name of ['app-header', 'app-sidebar', 'panel-toolbar', 'nav-selection']) {
+    for (const name of ['app-header', 'app-sidebar', 'app-chassis', 'app-shell', 'app-context-rail', 'panel-toolbar', 'nav-selection']) {
       const re = new RegExp(`\\[data-theme-type="light"\\]\\s*\\.${name}\\s*\\{`);
       expect(css, `${name} must not have a light-theme override`).not.toMatch(re);
     }

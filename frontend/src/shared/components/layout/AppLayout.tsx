@@ -421,16 +421,17 @@ export function AppLayout({ children }: { children: ReactNode }) {
         ? { activePreset: activeLayoutPreset, applyPreset: applyLayoutPreset }
         : null}
     >
-    {/* `app-backdrop` (index.css) paints the gradient chassis rather than a flat
-        --color-background. It must not be swapped back to a `bg-*` utility:
-        those set background-color, which cannot express the gradient. */}
-    <div className="app-backdrop flex h-screen flex-col overflow-hidden">
+    {/* Chassis is the viewport ground. The rounded shell sits inset on
+        desktop and goes edge-to-edge below `md`. Do not swap `app-chassis`
+        for a `bg-*` utility: the inset padding is part of the same contract. */}
+    <div data-testid="app-chassis" className="app-chassis flex h-screen flex-col overflow-hidden">
       {/* WCAG 2.4.1 Bypass Blocks (Level A): the first focusable element in the
           whole app, invisible until it earns focus. Without it a keyboard user
           who lands on an article route has to tab past the header controls and
           the full sidebar tree before reaching the document — the roving
           tabindex on the tree (sidebar-tree-keyboard.ts) fixes the tree itself,
-          but this is the only way past the header on routes with no tree at all. */}
+          but this is the only way past the header on routes with no tree at all.
+          It lives on the chassis, not inside the overflow-clipped shell. */}
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[60] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
@@ -440,38 +441,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <CommandPalette />
       <KeyboardShortcutsModal />
 
-      {/* Top navigation bar. 48px: the workspace convention, and 10px back from
-          the 58px the neumorphic header needed to give its extrusion room to
-          read. The height is spent on content everywhere else in the app. */}
-      <header className="app-header relative z-10 flex h-12 shrink-0 items-center gap-3 border-b px-3">
-        {/* Mobile hamburger — opens sidebar slide-over */}
-        <button
-          type="button"
-          onClick={() => setMobileSidebarOpen((v) => !v)}
-          className="nm-icon-button mr-2 md:hidden"
-          aria-label={mobileSidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
-          aria-expanded={mobileSidebarOpen}
-          aria-controls="mobile-nav-sidebar"
-        >
-          {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
-        </button>
-
-        <Link to="/" aria-label="Compendiq home" className="flex shrink-0 items-center group">
-          {/* Clip to the Q-tile below `md` so hamburger + lockup + title +
-              session cluster fit the 48px. The SVG itself stays the full
-              lockup; overflow hides the wordmark rather than squashing it. */}
-          <span className="block h-[22px] w-[22px] overflow-hidden md:w-auto">
-            <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
-          </span>
-        </Link>
-
-        {/* Route title and one page claim (article Edit / ⋯). Session tools
-            stay in the landmark; list-page actions live on the page. */}
-        <AppHeaderMain />
-        <HeaderSessionCluster />
-      </header>
-
-      {/* Mobile sidebar slide-over */}
+      {/* Mobile sidebar slide-over — chassis-level so it covers the inset
+          and is not clipped by the shell's overflow:hidden. */}
       <AnimatePresence>
         {mobileSidebarOpen && (
           <>
@@ -513,14 +484,53 @@ export function AppLayout({ children }: { children: ReactNode }) {
         )}
       </AnimatePresence>
 
+      {/* Header sits on the grey chassis, outside the brighter workspace
+          card — logo, Find, alerts and the user menu are chrome, not
+          document. Height is --app-header-height plus the top inset so
+          the controls sit in the middle of this band. */}
+      <header className="app-header relative z-10 flex shrink-0 items-center gap-3 px-3">
+        {/* Mobile hamburger — opens sidebar slide-over */}
+        <button
+          type="button"
+          onClick={() => setMobileSidebarOpen((v) => !v)}
+          className="nm-icon-button mr-2 md:hidden"
+          aria-label={mobileSidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
+          aria-expanded={mobileSidebarOpen}
+          aria-controls="mobile-nav-sidebar"
+        >
+          {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
+        </button>
+
+        <Link to="/" aria-label="Compendiq home" className="flex shrink-0 items-center group">
+          {/* Clip to the Q-tile below `md` so hamburger + lockup + title +
+              session cluster fit the 48px. The SVG itself stays the full
+              lockup; overflow hides the wordmark rather than squashing it. */}
+          <span className="block h-[22px] w-[22px] overflow-hidden md:w-auto">
+            <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
+          </span>
+        </Link>
+
+        {/* Route title and one page claim (article Edit / ⋯). Session tools
+            stay in the landmark; list-page actions live on the page. */}
+        <AppHeaderMain />
+        <HeaderSessionCluster />
+      </header>
+
       {/* Service status & notification banners — streamlined compact container */}
       <div className="shrink-0 px-4 sm:px-6 space-y-1">
         <ServiceStatus />
         <TrialBanner />
       </div>
 
-      {/* Below header: sidebar + content area, edge-to-edge with borders. */}
-      <div data-testid="panel-wrapper" className="flex flex-1 overflow-hidden">
+      <div data-testid="app-shell" className="app-shell flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div
+        data-testid="panel-wrapper"
+        className={cn(
+          'flex min-h-0 flex-1 overflow-hidden',
+          isArticleRoute && 'app-body-with-rail',
+        )}
+      >
+        <div data-testid="app-workspace" className="app-workspace flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {/* Left sidebar — desktop only (mobile uses the slide-over above).
             On /settings* we swap to SettingsSidebar so the main nav strip
             stays visible alongside the Settings section nav. */}
@@ -535,8 +545,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
             )}
         </div>
 
-        {/* Main content area + optional right sidebar */}
-        <div className="flex flex-1 overflow-hidden">
           {/* On an article route the MAIN COLUMN is the content pane. Everywhere
               else the pane is a card sitting on the chassis, but a document is
               not a card: it is the thing you came for, so it takes the surface
@@ -557,7 +565,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             // needs an explicit tabIndex to accept programmatic focus at all.
             tabIndex={-1}
             className={cn(
-              'flex flex-1 flex-col overflow-hidden focus:outline-none',
+              'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden focus:outline-none',
               (isArticleRoute || isSettingsRoute) && 'bg-card',
             )}
           >
@@ -617,21 +625,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
               </PageTransition>
             </div>
           </main>
+        </div>
 
-          {/* Rail then dock, in that order: the assistant is the outermost
-              column. Both are siblings of <main> in the same flex row, so the
-              editor column flex-shrinks around them and each panel scrolls
-              independently — the dock is part of the layout, not an overlay
-              floating above it (#1126). */}
-          {/* Both side columns are desktop-only, matching the left rail's own
-              `hidden md:flex`. Below md they were still laid out as flex
-              siblings of <main>: at 390px the inspector held ~280px of a
-              390px viewport and the document flex-shrank to ~90px, rendering
-              a heading one letter per line. A third column cannot be a column
-              on a phone — and the reading surface is the whole point of the
-              route, so it is the one thing that must not yield. */}
+          {/* Detached context rail. Sits on the chassis beside the brighter
+              workspace card, below the header. */}
           {isArticleRoute && (
-            <div className="hidden md:flex">
+            <div className="hidden min-h-0 self-stretch md:flex">
               <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />
             </div>
           )}
@@ -642,7 +641,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               is the only reachable assistant on a phone, since the inspector
               pane itself is `hidden md:flex`. */}
           {isArticleRoute && <AiDock />}
-        </div>
+      </div>
       </div>
 
       {/* Pending sequence indicator (bottom-right) */}

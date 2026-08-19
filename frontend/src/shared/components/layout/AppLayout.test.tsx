@@ -174,21 +174,24 @@ describe('AppLayout', () => {
     expect(screen.getByRole('img', { name: 'Compendiq' })).toBeInTheDocument();
   });
 
-  it('header spans full width above sidebar and content', () => {
-    const { container } = render(
+  it('header sits on the chassis grey, outside the brighter workspace card', () => {
+    render(
       <AppLayout>
-        <div>content</div>
+        <div>article</div>
       </AppLayout>,
-      { wrapper: createWrapper('/') },
+      { wrapper: createWrapper('/pages/123') },
     );
-    // Root container should be flex-col (vertical stacking: header on top)
-    const rootDiv = container.firstElementChild as HTMLElement;
-    expect(rootDiv.className).toContain('flex-col');
+    const chassis = screen.getByTestId('app-chassis');
+    const shell = screen.getByTestId('app-shell');
+    const workspace = screen.getByTestId('app-workspace');
+    expect(chassis.className).toContain('flex-col');
+    expect(shell.parentElement).toBe(chassis);
 
-    // Header should be a direct child of the root (not nested inside sidebar wrapper)
-    const header = rootDiv.querySelector('header');
+    const header = chassis.querySelector('header');
     expect(header).toBeTruthy();
-    expect(header!.parentElement).toBe(rootDiv);
+    expect(workspace.contains(header!)).toBe(false);
+    expect(workspace.contains(screen.getByTestId('article-right-pane'))).toBe(false);
+    expect(header!.contains(screen.getByTestId('header-session-cluster'))).toBe(true);
   });
 
   it('puts a Find control in the header that opens the command palette', () => {
@@ -476,16 +479,16 @@ describe('AppLayout', () => {
   });
 
   it('root layout container prevents outer scrolling with overflow-hidden', () => {
-    const { container } = render(
+    render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    // The outermost div should clip overflow to prevent body-level scrollbar
-    const rootDiv = container.firstElementChild as HTMLElement;
-    expect(rootDiv.className).toContain('overflow-hidden');
-    expect(rootDiv.className).toContain('h-screen');
+    const chassis = screen.getByTestId('app-chassis');
+    expect(chassis.className).toContain('overflow-hidden');
+    expect(chassis.className).toContain('h-screen');
+    expect(screen.getByTestId('app-shell').className).toContain('overflow-hidden');
   });
 
   it('panel wrapper is edge-to-edge (no padding) for flat chrome layout', () => {
@@ -496,10 +499,49 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/') },
     );
     const panelWrapper = screen.getByTestId('panel-wrapper');
-    // Was p-3 + gap-2.5 in the v0.4-early floating-chrome layout. Now
-    // edge-to-edge, with the scroll container providing inner padding.
+    // Was p-3 + gap-2.5 in the v0.4-early floating-chrome layout. The
+    // inset shell's rail gutter is a CSS variable on article routes, not
+    // those retired magic classes.
     expect(panelWrapper.className).not.toContain('p-3');
     expect(panelWrapper.className).not.toContain('gap-2.5');
+  });
+
+  it('keeps left nav and main content in one workspace; the inspector sits outside it', () => {
+    render(
+      <AppLayout>
+        <div>article</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/123') },
+    );
+    const workspace = screen.getByTestId('app-workspace');
+    const pane = screen.getByTestId('article-right-pane');
+    const main = document.getElementById('main-content');
+    expect(workspace.contains(screen.getByTestId('sidebar-tree-view'))).toBe(true);
+    expect(workspace.contains(main)).toBe(true);
+    expect(workspace.contains(pane)).toBe(false);
+    expect(screen.getByTestId('panel-wrapper').contains(pane)).toBe(true);
+  });
+
+  it('does not detach the inspector on non-article routes', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    expect(screen.getByTestId('app-workspace')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
+    expect(screen.getByTestId('panel-wrapper').className).not.toMatch(/app-body-with-rail/);
+  });
+
+  it('applies the rail gutter only on article routes', () => {
+    render(
+      <AppLayout>
+        <div>article</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/123') },
+    );
+    expect(screen.getByTestId('panel-wrapper').className).toMatch(/app-body-with-rail/);
   });
 
   it('has mobile sidebar toggle button', () => {

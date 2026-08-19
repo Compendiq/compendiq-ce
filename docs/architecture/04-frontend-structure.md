@@ -65,18 +65,40 @@ flowchart TB
     class stores,zAuth,zTheme,zUI,zAV,zDock,zCmd,zKb st
 ```
 
+## Authenticated inset shell
+
+`AppLayout` paints a viewport **chassis** (`--app-chassis`, inset on `md+`)
+around a rounded **app shell**. Inside the shell:
+
+```mermaid
+flowchart TB
+    chassis["viewport chassis --app-chassis"]
+    shell["app shell --app-shell-*"]
+    header["header"]
+    workspace["primary workspace<br/>left nav + main"]
+    rail["context rail --app-rail-*<br/>Outline · Details · Assistant"]
+
+    chassis --> shell
+    shell --> header
+    shell --> workspace
+    shell --> rail
+```
+
+Mobile (`<md`) is edge-to-edge: inset, shell radius and rail gap are 0.
+
 ## Article route panels (#1126)
 
-On `/pages/:id` the shell renders **two** siblings in one flex row, so each
-panel scrolls independently and the editor column shrinks around them rather
-than having anything float above it.
+On `/pages/:id` the shell renders the **workspace** (left nav + main) and a
+**detached context rail** as siblings in one flex row, so each region scrolls
+independently and the editor column shrinks around the rail rather than
+having anything float above it.
 
 ```mermaid
 flowchart LR
-    main["main<br/>[data-scroll-container]<br/>PageViewPage · TipTap"]
+    workspace["workspace<br/>SidebarTreeView | main<br/>[data-scroll-container]<br/>PageViewPage · TipTap"]
     rail["ArticleRightPane<br/>280px pane ⇄ 40px rail<br/>tabs: Assistant · Outline · Details<br/>outline flyout on hover/focus"]
 
-    main --- rail
+    workspace --- rail
 ```
 
 - **The assistant is a tab, not a third column.** #1126 shipped it as its own
