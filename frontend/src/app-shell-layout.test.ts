@@ -116,9 +116,9 @@ describe('Inset shell utilities', () => {
     expect(block).toMatch(/padding-top:\s*0/);
   });
 
-  it('the header absorbs the top inset so its contents sit in the middle of the chrome band', () => {
+  it('the header stays a compact band independent of the chassis inset', () => {
     const block = extractBlock(css, '@utility app-header {');
-    expect(block).toMatch(/height:\s*calc\(var\(--app-header-height\) \+ var\(--app-inset\)\)/);
+    expect(block).toMatch(/height:\s*var\(--app-header-height\)/);
     expect(css).toMatch(/--app-header-height:\s*2\.5rem/);
     expect(appLayout).toMatch(/className="app-header[^"]*items-center/);
     expect(appLayout).not.toMatch(/<header[^>]*\bh-12\b/);
@@ -159,8 +159,8 @@ describe('Inset shell utilities', () => {
     expect(css).toMatch(/--app-inset:\s*0px/);
     expect(css).toMatch(/--app-shell-radius:\s*0px/);
     expect(css).toMatch(/--app-rail-gap:\s*0px/);
-    expect(css).toMatch(/@media \(min-width:\s*768px\)/);
-    expect(css).toMatch(/@media \(min-width:\s*1280px\)/);
+    expect(css).toMatch(/@media \(min-width:\s*768px\)[\s\S]*?--app-inset:\s*12px/);
+    expect(css).toMatch(/@media \(min-width:\s*1280px\)[\s\S]*?--app-inset:\s*16px/);
   });
 
   it('does not apply transform on chassis or shell (would trap position:fixed)', () => {

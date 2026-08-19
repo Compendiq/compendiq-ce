@@ -615,7 +615,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
 @media (min-width: 768px) {
   :root {
-    --app-inset: 6px;
+    --app-inset: 12px;
     --app-shell-radius: 12px;
     --app-shell-border-width: 1px;
     --app-rail-gap: 6px;
@@ -625,7 +625,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
 @media (min-width: 1280px) {
   :root {
-    --app-inset: 10px;
+    --app-inset: 16px;
     --app-shell-radius: 14px;
     --app-shell-border-width: 1px;
     --app-rail-gap: 8px;
@@ -679,9 +679,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 @utility app-header {
   background: transparent;
   border-color: var(--color-border);
-  /* Top inset is absorbed here so logo / Find / alerts / user sit in the
-     middle of the grey chrome band, not under an empty pad. */
-  height: calc(var(--app-header-height) + var(--app-inset));
+  height: var(--app-header-height);
 }
 
 @utility app-sidebar {

@@ -486,8 +486,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
       {/* Header sits on the grey chassis, outside the brighter workspace
           card — logo, Find, alerts and the user menu are chrome, not
-          document. Height is --app-header-height plus the top inset so
-          the controls sit in the middle of this band. */}
+          document. Height is --app-header-height so the side inset can
+          grow without stretching this band. */}
       <header className="app-header relative z-10 flex shrink-0 items-center gap-3 px-3">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
