@@ -119,7 +119,7 @@ describe('Inset shell utilities', () => {
   it('the header stays a compact band independent of the chassis inset', () => {
     const block = extractBlock(css, '@utility app-header {');
     expect(block).toMatch(/height:\s*var\(--app-header-height\)/);
-    expect(css).toMatch(/--app-header-height:\s*2\.5rem/);
+    expect(css).toMatch(/--app-header-height:\s*3rem/);
     expect(appLayout).toMatch(/className="app-header[^"]*items-center/);
     expect(appLayout).not.toMatch(/<header[^>]*\bh-12\b/);
     expect(appLayout).not.toMatch(/<header[^>]*\bborder-b\b/);
@@ -137,6 +137,14 @@ describe('Inset shell utilities', () => {
     const block = extractBlock(css, '@utility app-shell {');
     expect(block).not.toMatch(/border-radius:/);
     expect(block).not.toMatch(/box-shadow:/);
+  });
+
+  it('the article rail stretches through the chassis bottom inset to the viewport floor', () => {
+    const block = extractBlock(css, '@utility app-rail-to-floor {');
+    expect(block).toMatch(/height:\s*calc\(100% \+ var\(--app-inset\)\)/);
+    expect(block).toMatch(/margin-bottom:\s*calc\(-1 \* var\(--app-inset\)\)/);
+    expect(appLayout).toMatch(/app-rail-to-floor/);
+    expect(css).toMatch(/\.app-rail-to-floor \.app-context-rail[\s\S]*border-bottom-left-radius:\s*0/);
   });
 
   it('the context rail utility is a bordered, radiused, unshadowed pane', () => {

@@ -249,15 +249,15 @@ describe('ArticleRightPane', () => {
     expect(screen.getByLabelText('Collapse page sidebar')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('Pin')).toBeInTheDocument();
-    expect(screen.getByText('Open in Confluence')).toBeInTheDocument();
+    expect(screen.getByText('Page details')).toBeInTheDocument();
     expect(screen.getByText('Move to trash')).toBeInTheDocument();
   });
 
-  it('keeps primary actions visible and tucks maintenance and deletion behind disclosures', () => {
+  it('keeps pin and history visible and tucks export, graph and deletion behind disclosures', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Export PDF').closest('details')).toBeNull();
     expect(screen.getByText('Pin').closest('details')).toBeNull();
+    expect(screen.getByText('Version history').closest('details')).toBeNull();
 
     const moreActions = screen.getByText('More actions').closest('details');
     const dangerZone = screen.getByText('Danger zone').closest('details');
@@ -266,8 +266,18 @@ describe('ArticleRightPane', () => {
 
     fireEvent.click(screen.getByText('More actions'));
     expect(moreActions).toHaveAttribute('open');
+    expect(screen.getByText('Export PDF').closest('details')).toBe(moreActions);
+    expect(screen.getByText('Open in Confluence').closest('details')).toBe(moreActions);
+    expect(screen.getByText('Show in Graph').closest('details')).toBe(moreActions);
     fireEvent.click(screen.getByText('Danger zone'));
     expect(dangerZone).toHaveAttribute('open');
+  });
+
+  it('lists page facts above page actions in Details', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    const facts = screen.getByText('Page details');
+    const actions = screen.getByText('Page actions');
+    expect(facts.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('opens on the outline when the page has document structure', () => {
@@ -283,6 +293,22 @@ describe('ArticleRightPane', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
     expect(screen.getByTestId('article-actions')).toBeInTheDocument();
+  });
+
+  it('gives outline expand a 24px out-of-flow hit target', () => {
+    useArticleViewStore.setState({
+      headings: [
+        { id: 'intro', text: 'Introduction', level: 1 },
+        { id: 'setup', text: 'Setup', level: 2 },
+      ],
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    const expand = screen.getByLabelText('Collapse section');
+    expect(expand).toHaveAttribute('aria-hidden', 'true');
+    expect(expand).toHaveAttribute('tabIndex', '-1');
+    expect(expand.className).toMatch(/\bsize-6\b/);
+    expect(expand.className).toMatch(/\babsolute\b/);
   });
 
   it('switches between Outline and Details tabs using Alt+O and Alt+D hotkeys', () => {
@@ -630,6 +656,8 @@ describe('ArticleRightPane', () => {
       renderRail();
       expect(screen.getByTestId('inspector-rail-current-view')).toHaveTextContent('Details');
       expect(screen.getByTestId('article-details-rail-btn')).toHaveAccessibleName('Page details');
+      expect(screen.getByTestId('article-details-rail-btn').className).toMatch(/nm-pill-active/);
+      expect(screen.getByTestId('article-details-rail-btn').className).not.toMatch(/text-action/);
     });
 
     it('keeps Expand, Assistant and Pin first-class and parks maintenance behind More', () => {
@@ -1067,6 +1095,7 @@ describe('ArticleRightPane', () => {
 
   it('uses confluenceId (not internal id) in the "Open in Confluence" link', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('More actions'));
 
     const link = screen.getByText('Open in Confluence').closest('a');
     expect(link).toBeInTheDocument();
@@ -1175,6 +1204,7 @@ describe('ArticleRightPane', () => {
   // --- PDF Export ---
   it('renders the Export PDF button', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('More actions'));
 
     expect(screen.getByText('Export PDF')).toBeInTheDocument();
   });
@@ -1188,6 +1218,7 @@ describe('ArticleRightPane', () => {
     globalThis.URL.revokeObjectURL = revokeObjectURLSpy;
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('More actions'));
     fireEvent.click(screen.getByText('Export PDF'));
 
     await waitFor(() => {
@@ -1201,6 +1232,7 @@ describe('ArticleRightPane', () => {
 
   it('shows this page in the graph from Details', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('More actions'));
 
     fireEvent.click(screen.getByTestId('show-in-graph-btn'));
     expect(mockNavigate).toHaveBeenCalledWith('/graph?focus=page-1');

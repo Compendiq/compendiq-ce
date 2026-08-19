@@ -173,12 +173,12 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         aria-expanded={hasChildren ? isOpen : undefined}
         data-heading-id={heading.id}
         className={cn(
-          'group flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          'group relative flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
             ? 'nav-selection font-medium'
             : 'text-muted-foreground hover:bg-muted hover:text-foreground',
         )}
-        style={{ paddingLeft: `${level * 12 + 6}px` }}
+        style={{ paddingLeft: `${level * 12 + 28}px` }}
         onClick={() => onNavigate(heading.id)}
         onFocus={() => onFocus(heading.id)}
         onKeyDown={(e) => {
@@ -186,24 +186,24 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
           onKeyDown(e, heading.id);
         }}
       >
-        {hasChildren ? (
+        {hasChildren && (
           <button
             type="button"
             tabIndex={-1}
+            aria-hidden="true"
+            aria-label={isOpen ? 'Collapse section' : 'Expand section'}
             onClick={(e) => {
               e.stopPropagation();
               onToggleCollapsed(heading.id);
             }}
-            className="flex size-4 shrink-0 items-center justify-center rounded p-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label={isOpen ? 'Collapse section' : 'Expand section'}
+            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground"
+            style={{ left: `${level * 12 + 2}px` }}
           >
             <ChevronRight
-              size={13}
+              size={14}
               className={cn('transition-transform duration-150', isOpen && 'rotate-90')}
             />
           </button>
-        ) : (
-          <span className="size-4 shrink-0" />
         )}
         <span className="truncate" title={heading.text}>
           {heading.text}
@@ -866,7 +866,7 @@ export function ArticleRightPane({
           panel closing underneath — WCAG 1.4.13's "hoverable" requirement. */}
       <div
         ref={railClusterRef}
-        className="relative flex shrink-0"
+        className="relative flex h-full shrink-0"
         onMouseLeave={() => {
           suppressFlyoutReopenRef.current = false;
           setOutlineFlyoutOpen(false);
@@ -897,7 +897,7 @@ export function ArticleRightPane({
           animate={{ width: 40, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="app-context-rail flex flex-col items-center overflow-hidden"
+          className="app-context-rail flex h-full flex-col items-center overflow-hidden"
           aria-label="Page inspector"
           data-testid="article-right-pane-rail"
         >
@@ -953,7 +953,7 @@ export function ArticleRightPane({
                   }}
                   className={cn(
                     railIconBtn,
-                    (outlineFlyoutOpen || activeInspectorView === 'outline') && 'nm-pill-active text-action',
+                    (outlineFlyoutOpen || activeInspectorView === 'outline') && 'nm-pill-active',
                   )}
                   aria-label="Article outline"
                   aria-expanded={outlineFlyoutOpen}
@@ -1018,7 +1018,7 @@ export function ArticleRightPane({
                   setActiveInspectorView('details');
                   handleExpandSidebar();
                 }}
-                className={cn(railIconBtn, activeInspectorView === 'details' && 'nm-pill-active text-action')}
+                className={cn(railIconBtn, activeInspectorView === 'details' && 'nm-pill-active')}
                 aria-label="Page details"
                 title="Page details"
                 data-testid="article-details-rail-btn"
@@ -1061,7 +1061,7 @@ export function ArticleRightPane({
                 <button
                   ref={overflowTriggerRef}
                   type="button"
-                  className={cn(railIconBtn, railOverflowOpen && 'nm-pill-active text-action')}
+                  className={cn(railIconBtn, railOverflowOpen && 'nm-pill-active')}
                   aria-label="More page actions"
                   aria-expanded={railOverflowOpen}
                   aria-controls="article-rail-overflow"
@@ -1295,7 +1295,8 @@ export function ArticleRightPane({
       className={cn(
         'app-context-rail relative flex flex-col overflow-hidden',
         isResizing && 'select-none',
-        isSheet && 'h-full w-full',
+        'h-full',
+        isSheet && 'w-full',
       )}
       data-testid="article-right-pane"
     >
@@ -1469,13 +1470,145 @@ export function ArticleRightPane({
         aria-labelledby="page-context-tab-details"
         className="min-h-0 flex-1 overflow-y-auto scroll-mask"
       >
-      {/* AI-Tagging — available in BOTH read and edit mode (#354).
-          Authors want to apply labels while editing without leaving the
-          editor; readers want to discover labels for re-tagging. The other
-          actions (Improve, Export, Delete) stay read-mode-only because they
-          act on the saved page state. */}
+      {page && (
+        <div className="px-3 py-4">
+          <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
+          <dl className="mt-2 divide-y divide-border/45 text-xs">
+            <div className="flex items-center justify-between gap-3 py-2">
+              <dt className="text-muted-foreground">Space</dt>
+              <dd className="truncate font-medium text-foreground/85">{page.spaceKey}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3 py-2">
+              <dt className="text-muted-foreground">Source</dt>
+              <dd className="flex min-w-0 items-center gap-2 font-medium text-foreground/85">
+                <span className="truncate">{page.source === 'standalone' ? 'Local' : 'Confluence'}</span>
+                {canRelocate && !editing && (
+                  <button
+                    type="button"
+                    onClick={() => setRelocateOpen(true)}
+                    data-testid="relocate-btn"
+                    title={
+                      page.source === 'standalone'
+                        ? 'Publish this article into a Confluence space'
+                        : 'Pull this page out of Confluence into a local space'
+                    }
+                    className="shrink-0 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    {page.source === 'standalone' ? 'Move to Confluence' : 'Move to a local space'}
+                  </button>
+                )}
+              </dd>
+            </div>
+            {page.source === 'standalone' && (
+              <div className="flex items-center justify-between gap-3 py-2">
+                <dt className="text-muted-foreground">Visibility</dt>
+                <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                  {page.visibility === 'shared' ? (
+                    <><Globe size={13} className="text-muted-foreground" /> Shared</>
+                  ) : (
+                    <><Lock size={13} className="text-muted-foreground" /> Private</>
+                  )}
+                </dd>
+              </div>
+            )}
+            {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
+              <div className="flex items-center justify-between gap-3 py-2">
+                <dt className="text-muted-foreground">Draft</dt>
+                <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                  <AlertCircle size={13} className="text-muted-foreground" /> Unpublished draft
+                </dd>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-3 py-2">
+              <dt className="text-muted-foreground">Type</dt>
+              <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                {page.pageType === 'folder'
+                  ? <><FolderOpen size={13} className="text-muted-foreground" /> Folder</>
+                  : <><FileText size={13} className="text-muted-foreground" /> Article</>}
+              </dd>
+            </div>
+            {page.author && (
+              <div className="flex items-center justify-between gap-3 py-2">
+                <dt className="text-muted-foreground">Author</dt>
+                <dd className="truncate font-medium text-foreground/85">{page.author}</dd>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-3 py-2">
+              <dt className="text-muted-foreground">Version</dt>
+              <dd className="font-medium tabular-nums text-foreground/85">v{page.version}</dd>
+            </div>
+          </dl>
+
+          <div className="mt-4">
+            <div className="text-[11px] font-semibold text-muted-foreground">Document health</div>
+            <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-health-badges">
+              <span
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                data-testid="verification-chip"
+              >
+                <ShieldCheck size={11} aria-hidden="true" />
+                {verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}
+              </span>
+              <button
+                type="button"
+                onClick={() => { void handleVerify(); }}
+                disabled={verifyMutation.isPending}
+                data-testid="verify-btn"
+                aria-busy={verifyMutation.isPending}
+                className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+              >
+                {verifyMutation.isPending ? 'Recording…' : 'Record verification'}
+              </button>
+              {verifyStatusMsg && (
+                <span className="sr-only" role="status" aria-live="polite">
+                  {verifyStatusMsg}
+                </span>
+              )}
+              {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
+              <EmbeddingStatusBadge
+                embeddingStatus={page.embeddingStatus}
+                embeddingDirty={page.embeddingDirty}
+                embeddedAt={page.embeddedAt}
+                embeddingError={page.embeddingError}
+                onRetry={handleReembed}
+              />
+              {page.qualityScore !== undefined && page.qualityScore !== null && (
+                <QualityScoreBadge
+                  qualityScore={page.qualityScore}
+                  qualityStatus={page.qualityStatus ?? null}
+                  qualityCompleteness={page.qualityCompleteness}
+                  qualityClarity={page.qualityClarity}
+                  qualityStructure={page.qualityStructure}
+                  qualityAccuracy={page.qualityAccuracy}
+                  qualityReadability={page.qualityReadability}
+                  qualitySummary={page.qualitySummary}
+                  qualityAnalyzedAt={page.qualityAnalyzedAt}
+                  qualityError={page.qualityError}
+                />
+              )}
+            </div>
+          </div>
+
+          {page.labels.length > 0 && (
+            <div className="mt-4">
+              <div className="text-[11px] font-semibold text-muted-foreground">Labels</div>
+              <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-labels">
+                {page.labels.map((label) => (
+                  <span
+                    key={label}
+                    className="inline-flex items-center rounded-full border border-border bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {page && id && aiAutoTagAvailable && editing && (
-        <div className="px-2 pb-3 pt-4" data-testid="article-actions-edit">
+        <div className="border-t border-border px-2 pb-3 pt-4" data-testid="article-actions-edit">
           <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
             Page actions
           </div>
@@ -1487,9 +1620,8 @@ export function ArticleRightPane({
         </div>
       )}
 
-      {/* Action buttons — primary collaboration and history actions top-level */}
       {!editing && page && (
-        <div className="space-y-0.5 px-2 pb-3 pt-4" data-testid="article-actions">
+        <div className="space-y-0.5 border-t border-border px-2 pb-3 pt-4" data-testid="article-actions">
           <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
             Page actions
           </div>
@@ -1529,45 +1661,6 @@ export function ArticleRightPane({
             <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
           </button>
 
-          {id && (
-            <button
-              type="button"
-              onClick={() => navigate(`/graph?focus=${encodeURIComponent(id)}`)}
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-              title="Show this page in the graph"
-              data-testid="show-in-graph-btn"
-            >
-              <GitGraph size={15} className="shrink-0 opacity-70" />
-              <span className="truncate">Show in Graph</span>
-            </button>
-          )}
-
-          {settings?.confluenceUrl && page.confluenceId && (
-            <a
-              href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
-              target="_blank"
-              rel="noreferrer"
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-            >
-              <ExternalLink size={15} className="shrink-0 opacity-70" />
-              <span className="truncate">Open in Confluence</span>
-            </a>
-          )}
-
-          <button
-            onClick={handleExportPdf}
-            disabled={exportPdf.isPending}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
-            title="Export as PDF"
-          >
-            {exportPdf.isPending ? (
-              <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-            ) : (
-              <FileDown size={15} className="shrink-0 opacity-70" />
-            )}
-            <span className="truncate">Export PDF</span>
-          </button>
-
           <details className="group mt-2 border-t border-border pt-2">
             <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <ChevronRight
@@ -1579,6 +1672,45 @@ export function ArticleRightPane({
               <span className="text-[11px] font-normal opacity-70">Maintenance &amp; AI</span>
             </summary>
             <div className="mt-1 space-y-0.5">
+              {id && (
+                <button
+                  type="button"
+                  onClick={() => navigate(`/graph?focus=${encodeURIComponent(id)}`)}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                  title="Show this page in the graph"
+                  data-testid="show-in-graph-btn"
+                >
+                  <GitGraph size={15} className="shrink-0 opacity-70" />
+                  <span className="truncate">Show in Graph</span>
+                </button>
+              )}
+
+              {settings?.confluenceUrl && page.confluenceId && (
+                <a
+                  href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                >
+                  <ExternalLink size={15} className="shrink-0 opacity-70" />
+                  <span className="truncate">Open in Confluence</span>
+                </a>
+              )}
+
+              <button
+                onClick={handleExportPdf}
+                disabled={exportPdf.isPending}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+                title="Export as PDF"
+              >
+                {exportPdf.isPending ? (
+                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                ) : (
+                  <FileDown size={15} className="shrink-0 opacity-70" />
+                )}
+                <span className="truncate">Export PDF</span>
+              </button>
+
               {id && aiAutoTagAvailable && (
                 <AutoTagger
                   pageId={id}
@@ -1655,144 +1787,6 @@ export function ArticleRightPane({
               <span className="truncate">Move to trash</span>
             </button>
           </details>
-        </div>
-      )}
-
-      {/* Page facts are structured for scanning; rendered in both read and edit modes */}
-      {page && (
-        <div className="border-t border-border px-3 py-4">
-          <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
-          <dl className="mt-2 divide-y divide-border/45 text-xs">
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Space</dt>
-              <dd className="truncate font-medium text-foreground/85">{page.spaceKey}</dd>
-            </div>
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Source</dt>
-              <dd className="flex min-w-0 items-center gap-2 font-medium text-foreground/85">
-                <span className="truncate">{page.source === 'standalone' ? 'Local' : 'Confluence'}</span>
-                {canRelocate && !editing && (
-                  <button
-                    type="button"
-                    onClick={() => setRelocateOpen(true)}
-                    data-testid="relocate-btn"
-                    title={
-                      page.source === 'standalone'
-                        ? 'Publish this article into a Confluence space'
-                        : 'Pull this page out of Confluence into a local space'
-                    }
-                    className="shrink-0 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                  >
-                    {page.source === 'standalone' ? 'Move to Confluence' : 'Move to a local space'}
-                  </button>
-                )}
-              </dd>
-            </div>
-            {page.source === 'standalone' && (
-              <div className="flex items-center justify-between gap-3 py-2">
-                <dt className="text-muted-foreground">Visibility</dt>
-                <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
-                  {page.visibility === 'shared' ? (
-                    <><Globe size={13} className="text-muted-foreground" /> Shared</>
-                  ) : (
-                    <><Lock size={13} className="text-muted-foreground" /> Private</>
-                  )}
-                </dd>
-              </div>
-            )}
-            {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
-              <div className="flex items-center justify-between gap-3 py-2">
-                <dt className="text-muted-foreground">Draft</dt>
-                <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
-                  <AlertCircle size={13} className="text-muted-foreground" /> Unpublished draft
-                </dd>
-              </div>
-            )}
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Type</dt>
-              <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
-                {page.hasChildren
-                  ? <><FolderOpen size={13} className="text-muted-foreground" /> Folder</>
-                  : <><FileText size={13} className="text-muted-foreground" /> Article</>}
-              </dd>
-            </div>
-            {page.author && (
-              <div className="flex items-center justify-between gap-3 py-2">
-                <dt className="text-muted-foreground">Author</dt>
-                <dd className="truncate font-medium text-foreground/85">{page.author}</dd>
-              </div>
-            )}
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Version</dt>
-              <dd className="font-medium tabular-nums text-foreground/85">v{page.version}</dd>
-            </div>
-          </dl>
-
-          <div className="mt-4">
-            <div className="text-[11px] font-semibold text-muted-foreground">Document health</div>
-            <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-health-badges">
-              <span
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-                data-testid="verification-chip"
-              >
-                <ShieldCheck size={11} aria-hidden="true" />
-                {verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}
-              </span>
-              <button
-                type="button"
-                onClick={() => { void handleVerify(); }}
-                disabled={verifyMutation.isPending}
-                data-testid="verify-btn"
-                aria-busy={verifyMutation.isPending}
-                className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
-              >
-                {verifyMutation.isPending ? 'Recording…' : 'Record verification'}
-              </button>
-              {verifyStatusMsg && (
-                <span className="sr-only" role="status" aria-live="polite">
-                  {verifyStatusMsg}
-                </span>
-              )}
-              {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
-              <EmbeddingStatusBadge
-                embeddingStatus={page.embeddingStatus}
-                embeddingDirty={page.embeddingDirty}
-                embeddedAt={page.embeddedAt}
-                embeddingError={page.embeddingError}
-                onRetry={handleReembed}
-              />
-              {page.qualityScore !== undefined && page.qualityScore !== null && (
-                <QualityScoreBadge
-                  qualityScore={page.qualityScore}
-                  qualityStatus={page.qualityStatus ?? null}
-                  qualityCompleteness={page.qualityCompleteness}
-                  qualityClarity={page.qualityClarity}
-                  qualityStructure={page.qualityStructure}
-                  qualityAccuracy={page.qualityAccuracy}
-                  qualityReadability={page.qualityReadability}
-                  qualitySummary={page.qualitySummary}
-                  qualityAnalyzedAt={page.qualityAnalyzedAt}
-                  qualityError={page.qualityError}
-                />
-              )}
-            </div>
-          </div>
-
-          {page.labels.length > 0 && (
-            <div className="mt-4">
-              <div className="text-[11px] font-semibold text-muted-foreground">Labels</div>
-              <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-labels">
-                {page.labels.map((label) => (
-                  <span
-                    key={label}
-                    className="nm-pill-active rounded-full px-2 py-0.5 text-[11px] text-muted-foreground"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
       </div>

@@ -658,7 +658,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               mobile sheet below is the single inspector instance — two
               panes would duplicate tab ids and DockPanel state. */}
           {isArticleRoute && !isMobileLayout && (
-            <div className="min-h-0 self-stretch">
+            <div className="app-rail-to-floor min-h-0">
               <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />
             </div>
           )}

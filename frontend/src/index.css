@@ -606,7 +606,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    Existing project breakpoints — do not invent a third ladder. */
 :root {
   --app-inset: 0px;
-  --app-header-height: 2.5rem;
+  --app-header-height: 3rem;
   --app-shell-radius: 0px;
   --app-shell-border-width: 0px;
   --app-rail-gap: 0px;
@@ -659,6 +659,22 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   background: var(--app-rail-bg);
   border: 1px solid var(--color-border);
   border-radius: var(--app-rail-radius);
+}
+
+/* Header-to-floor: the workspace card keeps chassis bottom inset; the
+   rail stretches through that inset to the viewport edge so Assistant
+   and Details get the remaining height. Bottom corners square because
+   they meet the screen, not another pane. */
+@utility app-rail-to-floor {
+  align-self: stretch;
+  height: calc(100% + var(--app-inset));
+  margin-bottom: calc(-1 * var(--app-inset));
+}
+
+.app-rail-to-floor .app-context-rail {
+  height: 100%;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 /* The rail is its own surface; its header strip must not paint the
