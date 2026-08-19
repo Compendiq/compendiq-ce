@@ -152,15 +152,18 @@ describe('hasAdvancedFilters', () => {
   );
 
   // Space, search, sort, mode and page live outside the advanced panel — they
-  // must not force it open. Nor must `source`: its <select> sits in the
-  // always-visible top row, so opening the panel for it would reveal a panel
-  // that has nothing to do with the filter that is set.
-  it.each(['space=DEV', 'search=runbook', 'sort=title', 'mode=hybrid', 'page=2', 'source=standalone'])(
+  // must not force it open. `source` lives inside the panel now, so a
+  // `?source=` link has to open it.
+  it.each(['space=DEV', 'search=runbook', 'sort=title', 'mode=hybrid', 'page=2'])(
     'is false for %s',
     (queryString) => {
       expect(hasAdvancedFilters(readFilterState(new URLSearchParams(queryString)))).toBe(false);
     },
   );
+
+  it('is true for a source filter (the control lives in the panel)', () => {
+    expect(hasAdvancedFilters(readFilterState(new URLSearchParams('source=standalone')))).toBe(true);
+  });
 });
 
 describe('shouldAdoptUrlSearch', () => {

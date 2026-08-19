@@ -555,14 +555,14 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
 
-        {/* Same 56px column as MainNavChassisRail so the mark sits on the
-            grey chassis above Pages / AI / Graph instead of a wider header
-            slot that made the rail look off-centre. */}
+        {/* Same column as MainNavChassisRail so the mark sits on the grey
+            chassis above Pages / AI / Graph instead of a wider header slot
+            that made the rail look off-centre. */}
         <Link
           to="/"
           aria-label="Compendiq home"
           data-testid="header-chassis-slot"
-          className="flex w-[var(--app-header-height)] shrink-0 items-center justify-center group"
+          className="flex w-[var(--app-nav-rail-width)] shrink-0 items-center justify-center group"
         >
           {/* Clip to the Q-tile below `md` so hamburger + lockup + Find +
               session cluster fit the 48px. The SVG itself stays the full

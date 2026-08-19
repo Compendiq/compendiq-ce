@@ -74,26 +74,23 @@ describe('PinnedArticlesSection', () => {
     expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
   });
 
-  it('renders nothing when no pins exist', async () => {
+  it('shows a cue when no pins exist', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(emptyPinnedResponse), {
         headers: { 'Content-Type': 'application/json' },
       });
     });
 
-    const { container } = render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
 
-    // Wait for query to settle
-    await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalled();
-    });
-
-    // Should render nothing
-    expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
-    expect(container.innerHTML).toBe('');
+    expect(await screen.findByTestId('pinned-empty-cue')).toHaveTextContent(
+      'Pin a page from the article to jump back here.',
+    );
+    expect(screen.getByTestId('pinned-articles-section')).toBeInTheDocument();
+    expect(screen.queryByTestId(/^pinned-card-/)).not.toBeInTheDocument();
   });
 
-  it('shows space key and author on pinned cards without excerpt', async () => {
+  it('shows space key on pinned rows without excerpt or author', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(mockPinnedResponse), {
         headers: { 'Content-Type': 'application/json' },
@@ -105,7 +102,7 @@ describe('PinnedArticlesSection', () => {
     await screen.findByTestId('pinned-articles-section');
 
     expect(screen.getByText('DEV')).toBeInTheDocument();
-    expect(screen.getByText('Alice')).toBeInTheDocument();
+    expect(screen.queryByText('Alice')).not.toBeInTheDocument();
     expect(screen.queryByText('This is a getting started guide for new developers.')).not.toBeInTheDocument();
   });
 
@@ -137,10 +134,19 @@ describe('PinnedArticlesSection', () => {
     await screen.findByTestId('pinned-articles-section');
 
     const row = screen.getByTestId('pinned-card-page-1');
+    expect(row.tagName).toBe('A');
+    expect(row).toHaveAttribute('href', '/pages/page-1');
     expect(row.className).toContain('rounded-md');
     expect(row.className).not.toContain('rounded-xl');
     expect(row.className).not.toContain('h-full');
-    expect(document.getElementById('pinned-pages-grid')?.className).toContain('flex-col');
+    expect(row.className).not.toContain('bg-card');
+    expect(row.className).toContain('border-transparent');
+    expect(row.className).toContain('hover:bg-accent');
+    expect(row.className).not.toMatch(/(?<!forced-colors:)border-border-interactive/);
+    const grid = document.getElementById('pinned-pages-grid')?.className ?? '';
+    expect(grid).toContain('grid');
+    expect(grid).toContain('xl:grid-cols-4');
+    expect(grid).toContain('sm:grid-cols-2');
   });
 
   it('shows unpin button on each card', async () => {

@@ -211,7 +211,7 @@ describe('AppLayout', () => {
     expect(screen.getByRole('link', { name: 'Pages' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'AI chat, full page' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Graph' })).toBeInTheDocument();
-    expect(nav.className).toContain('w-[var(--app-header-height)]');
+    expect(nav.className).toContain('w-[var(--app-nav-rail-width)]');
     expect(nav.className).toContain('items-center');
     expect(nav.className).toContain('px-1');
     const pages = screen.getByRole('link', { name: 'Pages' });
@@ -226,7 +226,7 @@ describe('AppLayout', () => {
     const shell = screen.getByTestId('app-shell');
     expect(shell.className).not.toMatch(/\bgap-/);
     expect(screen.getByTestId('header-chassis-slot').className).toContain(
-      'w-[var(--app-header-height)]',
+      'w-[var(--app-nav-rail-width)]',
     );
     expect(screen.getByTestId('header-chassis-slot').className).toContain('justify-center');
   });

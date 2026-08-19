@@ -130,10 +130,11 @@ describe('Inset shell utilities', () => {
     expect(appLayout).not.toMatch(/md:w-auto/);
   });
 
-  it('the chassis destination column is as wide as the header is tall', () => {
+  it('the chassis destination column is 4px wider than the header is tall', () => {
     const nav = read('shared/components/layout/MainNavStrip.tsx');
-    expect(appLayout).toContain('w-[var(--app-header-height)]');
-    expect(nav).toContain('w-[var(--app-header-height)]');
+    expect(css).toMatch(/--app-nav-rail-width:\s*calc\(var\(--app-header-height\) \+ 4px\)/);
+    expect(appLayout).toContain('w-[var(--app-nav-rail-width)]');
+    expect(nav).toContain('w-[var(--app-nav-rail-width)]');
   });
 
   it('the workspace utility is the detached card: bordered, radiused, unshadowed', () => {
@@ -268,12 +269,12 @@ describe('AppLayout structure', () => {
     expect(value).not.toMatch(/\bgap-2\.5\b/);
   });
 
-  it('the destination rail sits flush against the workspace, 48px wide', () => {
+  it('the destination rail sits flush against the workspace, 4px past the header band', () => {
     expect(appLayout).toMatch(/data-testid="app-shell"[^>]*className="[^"]*"/);
     const shellClass = /data-testid="app-shell"[^>]*className="([^"]+)"/.exec(appLayout)?.[1] ?? '';
     expect(shellClass).not.toMatch(/\bgap-/);
     const nav = read('shared/components/layout/MainNavStrip.tsx');
-    expect(nav).toContain('w-[var(--app-header-height)]');
+    expect(nav).toContain('w-[var(--app-nav-rail-width)]');
     expect(nav).toContain('items-center');
     expect(nav).toContain('px-1');
     expect(nav).toMatch(/h-10 w-10/);

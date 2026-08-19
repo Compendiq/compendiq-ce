@@ -312,7 +312,7 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     // `useSemanticSearch = !!(search && searchMode !== 'keyword')` gates the
     // whole search-results section — keyword mode never renders this row.
-    fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+    fireEvent.change(screen.getByPlaceholderText('Find pages…'), {
       target: { value: 'postgres' },
     });
     fireEvent.click(screen.getByTestId('search-mode-semantic'));

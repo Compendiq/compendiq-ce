@@ -22,6 +22,7 @@ import {
   applyFilterPatch,
   hasAdvancedFilters,
   shouldAdoptUrlSearch,
+  FILTER_DEFAULTS,
   type PageFilterState,
 } from './pages-filter-params';
 import { cn } from '../../shared/lib/cn';
@@ -33,6 +34,7 @@ import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
+import { FIND_LABEL, FIND_PLACEHOLDER, LIBRARY_HEADING, SEARCH_MODE_LABELS } from './pages-find';
 
 // User-facing labels for the wire values of PageSourceEnum. Shared between the
 // source-filter <option>s and the active-filter pill so they never diverge.
@@ -548,7 +550,7 @@ export function PagesPage() {
     {
       key: '/',
       keys: ['/'],
-      description: 'Focus page search',
+      description: 'Focus Find',
       category: 'navigation',
       action: focusSearchInput,
     },
@@ -613,7 +615,7 @@ export function PagesPage() {
   const filtersIgnoredMessage = useMemo(() => {
     if (!useSemanticSearch || ignoredFilters.length === 0) return '';
     const summary = summarizeFilterLabels(ignoredFilters.map((f) => f.label));
-    return `Semantic and hybrid search ignore your active filters — ${summary}. They apply to keyword search only.`;
+    return `Best match ignores your other filters — ${summary}. They apply to Exact words only.`;
   }, [useSemanticSearch, ignoredFilters]);
 
   // The pill keys are the URL param names, so a pill clears exactly the param
@@ -762,7 +764,7 @@ export function PagesPage() {
     <div className="max-w-[1100px] space-y-3">
       <HeaderHost fallbackClassName="mb-1">
         <div className="flex min-w-0 items-center justify-between gap-3">
-          <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">Pages</h1>
+          <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">{LIBRARY_HEADING}</h1>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             <button
               type="button"
@@ -797,21 +799,17 @@ export function PagesPage() {
           first viewport to say "these things belong together", which their
           adjacency already said. */}
       <section aria-labelledby="kb-filters-heading" className="space-y-3">
-        <h2 id="kb-filters-heading" className="sr-only">Search and filter pages</h2>
+        <h2 id="kb-filters-heading" className="sr-only">Find and filter pages</h2>
         <div className="flex flex-wrap items-center gap-3">
-          {/* Search */}
+          {/* Find — the start-page primary. Source, sort and KPI sit behind
+              Filters so first paint is Find, space scope, then the list. */}
           <div className="relative flex-1 min-w-48">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input
               ref={searchInputRef as RefObject<HTMLInputElement>}
               type="text"
-              placeholder="Search pages..."
-              // The one control in this section with no aria-label — every
-              // sibling (space/source/sort selects, the mode toggle, every
-              // advanced field) already has one; this is the field the
-              // route's own `/` shortcut exists to focus (polish pass,
-              // 2026-08-17).
-              aria-label="Search pages"
+              placeholder={FIND_PLACEHOLDER}
+              aria-label={FIND_LABEL}
               value={search}
               onChange={(e) => {
                 const val = e.target.value;
@@ -837,7 +835,7 @@ export function PagesPage() {
                   e.preventDefault();
                   e.stopPropagation();
                   setSearchInput('');
-                  setFilters({ search: '', page: 1, mode: 'keyword', ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
+                  setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                 }
               }}
               className="nm-input pl-10 pr-10"
@@ -846,7 +844,7 @@ export function PagesPage() {
               <button
                 onClick={() => {
                   setSearchInput('');
-                  setFilters({ search: '', page: 1, mode: 'keyword', ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
+                  setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                   searchInputRef.current?.focus();
                 }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
@@ -868,41 +866,42 @@ export function PagesPage() {
             )}
           </div>
 
-          {/* Search mode toggle — keyword / semantic / hybrid.
-
-              Hidden until there is a query (or a non-default mode from the
-              URL). Picking an IR algorithm is not a landing decision; the
-              list field is. A `?mode=hybrid` deep link still reveals it so
-              the restored state is visible. Neutral fill plus weight carries
-              "selected"; the accent stays spent on actions. */}
-          {(search || searchMode !== 'keyword') && (
+          {/* Retrieval mode — Best match (hybrid) is the default, matching
+              header Find. Exact words is the escape hatch. Meaning only
+              (semantic) stays off the peer row until an index exists, or
+              when a deep link already asked for it. */}
+          {(search || searchMode !== FILTER_DEFAULTS.mode) && (
           <div
             className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
             data-testid="search-mode-toggle"
             role="group"
-            aria-label="Search mode"
+            aria-label="Find mode"
+            aria-describedby="find-mode-hint"
           >
-              {(['keyword', 'semantic', 'hybrid'] as const).map((m) => (
+              {([
+                'hybrid',
+                'keyword',
+                ...((searchMode === 'semantic'
+                  || embeddingStatusData == null
+                  || embeddingStatusData.embeddedPages > 0
+                  || embeddingStatusData.totalEmbeddings > 0)
+                  ? (['semantic'] as const)
+                  : []),
+              ] as const).map((m) => (
                 <button
                   key={m}
                   data-testid={`search-mode-${m}`}
                   onClick={() => setFilters({ mode: m, page: 1 })}
                   aria-pressed={searchMode === m}
                   className={cn(
-                    'rounded-sm px-2.5 py-1 text-xs font-medium capitalize transition-colors',
+                    'rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
                     'nm-focus-ring',
                     searchMode === m
                       ? 'nm-pill-active'
-                      // `nm-pill-active` carries its own 1px border; matching it here
-                      // with a same-width *transparent* border (rather than no border
-                      // at all) keeps every segment's box size identical, so selecting
-                      // a mode doesn't reflow the other two by the border's width (was
-                      // 24px inactive vs 26px active, shifting all three horizontally
-                      // on every click — polish pass, 2026-08-17).
                       : 'border border-transparent text-muted-foreground hover:text-foreground',
                   )}
                 >
-                  {m}
+                  {SEARCH_MODE_LABELS[m]}
                 </button>
               ))}
               {searchResults.isLoadingEnhanced && (
@@ -921,38 +920,6 @@ export function PagesPage() {
             {spaces?.map((s) => (
               <option key={s.key} value={s.key}>{s.name}</option>
             ))}
-          </select>
-
-          <select
-            value={sourceFilter}
-            onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
-            className="nm-select-md w-32 shrink-0"
-            data-testid="filter-source"
-            aria-label="Filter by source"
-          >
-            <option value="">All Sources</option>
-            {PageSourceEnum.options.map((source) => (
-              <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
-            ))}
-          </select>
-
-          {/* Divider between the filters (space/source) and Sort. It used to
-              sit between Sort and Filters instead, which visually grouped
-              Sort with the advanced-filters toggle rather than separating
-              it — Sort isn't a filter (polish pass, 2026-08-17). */}
-          <div className="hidden h-6 w-px bg-border/60 sm:block" aria-hidden="true" data-testid="source-sort-divider" />
-
-          <select
-            value={sort}
-            onChange={(e) => setFilters({ sort: e.target.value as typeof sort })}
-            className="nm-select-md w-40 shrink-0"
-            aria-label="Sort pages"
-          >
-            <option value="modified">Last Modified</option>
-            <option value="title">Title</option>
-            <option value="author">Author</option>
-            <option value="quality">Quality Score</option>
-            <option value="relevance">Relevance</option>
           </select>
 
           {/* Advanced filters toggle */}
@@ -976,6 +943,11 @@ export function PagesPage() {
           </button>
 
         </div>
+        {(search || searchMode !== FILTER_DEFAULTS.mode) && (
+          <p id="find-mode-hint" className="text-xs text-muted-foreground">
+            Best match uses meaning and words. Exact words matches the text you type.
+          </p>
+        )}
 
         {/* sr-only live-region announcer for the #945 honesty notice below.
             Always mounted (only its text content changes) rather than
@@ -1023,6 +995,38 @@ export function PagesPage() {
               />
             </section>
             <div className="grid grid-cols-2 items-end gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            <div className="min-w-32">
+              <label htmlFor="filter-source-select" className="mb-1 block text-xs text-muted-foreground">Source</label>
+              <select
+                id="filter-source-select"
+                value={sourceFilter}
+                onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
+                className="nm-select-md w-full"
+                data-testid="filter-source"
+                aria-label="Filter by source"
+              >
+                <option value="">All Sources</option>
+                {PageSourceEnum.options.map((source) => (
+                  <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
+                ))}
+              </select>
+            </div>
+            <div className="min-w-40">
+              <label htmlFor="filter-sort-select" className="mb-1 block text-xs text-muted-foreground">Sort</label>
+              <select
+                id="filter-sort-select"
+                value={sort}
+                onChange={(e) => setFilters({ sort: e.target.value as typeof sort })}
+                className="nm-select-md w-full"
+                aria-label="Sort pages"
+              >
+                <option value="modified">Last Modified</option>
+                <option value="title">Title</option>
+                <option value="author">Author</option>
+                <option value="quality">Quality Score</option>
+                <option value="relevance">Relevance</option>
+              </select>
+            </div>
             {/* Author filter */}
             <div className="min-w-40">
               <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
@@ -1228,7 +1232,8 @@ export function PagesPage() {
         </div>
       )}
 
-      {/* Pinned Pages — after Find, not before it. */}
+      {/* Pinned — after Find, then the list. Filters (source, sort, KPI)
+          sit in the panel above, not between Find and pins. */}
       <PinnedArticlesSection />
 
       {/* No-embeddings warning for semantic/hybrid search */}
@@ -1334,7 +1339,7 @@ export function PagesPage() {
               <>
                 <p className="text-sm text-muted-foreground" data-testid="search-results-count">
                   {searchResults.total} {searchResults.total === 1 ? 'result' : 'results'}
-                  <span className="ml-2 text-xs capitalize text-muted-foreground/60">({searchMode})</span>
+                  <span className="ml-2 text-xs text-muted-foreground/60">({SEARCH_MODE_LABELS[searchMode]})</span>
                 </p>
                 <div className="space-y-2">
                   {displayItems.map((item, i) => (
