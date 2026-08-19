@@ -806,13 +806,26 @@ describe('SidebarTreeView', () => {
 
   // The caption said "Workspace" while the control selects a SPACE — the noun
   // the API, the dropdown's own Confluence/Local headings and Confluence itself
-  // all use. It should not come back under either name: the selector states its
-  // own scope on two lines, which is all a caption could have said.
+  // all use. It should not come back under either name: the selector names the
+  // current scope on the chip itself.
   it('renders no caption above the space selector', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
     // The selector itself still names the current scope.
     expect(screen.getByTestId('space-selector-toggle')).toHaveTextContent('All Spaces');
+  });
+
+  it('sits the space selector left of collapse, at the collapse control height', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper() });
+    const selector = screen.getByTestId('space-selector-toggle');
+    const collapse = screen.getByLabelText('Collapse sidebar');
+    expect(selector.compareDocumentPosition(collapse) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(selector.className).toMatch(/\bh-8\b/);
+    expect(selector).not.toHaveTextContent('Every connected space');
+    expect(collapse.parentElement).toContainElement(selector);
+    expect(collapse.parentElement!.className).toMatch(/\bh-12\b/);
+    expect(collapse.parentElement!.className).toContain('panel-toolbar');
   });
 
   it('shows collapse sidebar button in expanded sidebar header', () => {

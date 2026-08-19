@@ -895,7 +895,7 @@ export function SidebarTreeView({
         isResizing && 'select-none',
       )}
     >
-      {embedMainNav ? (
+      {embedMainNav && (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
           <MainNavStripExpanded onNavigate={onNavigate} />
           <button
@@ -907,58 +907,33 @@ export function SidebarTreeView({
             <PanelLeftClose size={14} />
           </button>
       </div>
-      ) : (
-      <div className="flex h-8 shrink-0 items-center justify-end px-2 pt-1.5">
-          <button
-            onClick={toggleTreeSidebar}
-            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar (,)"
-          >
-            <PanelLeftClose size={14} />
-          </button>
-      </div>
       )}
 
-      {/* Workspace context — the selector is the panel's orientation anchor.
-          It used to carry a "Workspace" caption and a `+` above it, together
-          costing 101px of panel height to introduce one control. Both are gone,
-          and neither is a loss. The caption named the section "Workspace" while
-          the control selects a SPACE — the noun the API, the dropdown's own
-          Confluence/Local headers and Confluence itself all use — so it was
-          teaching the wrong word; and the selector states its own scope on two
-          lines ("All Spaces" / "Every connected space"), which is what a
-          caption would have had to say. The `+` was a second entrance to
-          `/spaces/new` that the dropdown already offers by name at its foot,
-          where creating a space belongs: beside the list of the ones you have. */}
-      <div className="shrink-0 px-2 py-2">
-        <div ref={spaceDropdownRef} className="relative">
+      {/* Space selector + collapse share the 48px chrome line that the
+          article toolbar and inspector tab row also draw (`h-12` + `border-b`).
+          Scope lives on the chip; source/key stay in the title. New Space
+          stays at the foot of the dropdown. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+        <div ref={spaceDropdownRef} className="relative min-w-0 flex-1">
           <button
             // Routed through closeSpaceDropdown on the way shut so the filter
             // clears here too — wiring only useClickOutside to it left a
             // filtered list behind whenever you closed with the toggle.
             onClick={() => (spaceDropdownOpen ? closeSpaceDropdown() : setSpaceDropdownOpen(true))}
             data-testid="space-selector-toggle"
-            className="panel-context group flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:border-primary/55"
+            className="panel-context group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg px-2 text-left transition-colors hover:bg-[var(--glass-pill-hover)]"
             aria-expanded={spaceDropdownOpen}
+            title={
+              selectedSpaceOption
+                ? `${selectedSpaceOption.source === 'local' ? 'Local' : 'Confluence'} · ${selectedSpaceOption.key}`
+                : 'Every connected space'
+            }
           >
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary-ink">
-              <SelectedSpaceGlyph size={14} />
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary-ink">
+              <SelectedSpaceGlyph size={13} />
             </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-medium text-foreground">
-                {selectedSpaceOption?.name ?? 'All Spaces'}
-              </span>
-              <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                {/* "Every connected space", not "Browse every connected
-                    workspace": the old string did not fit its own line at any
-                    sidebar width — the panel truncated its own copy — and it
-                    called a space a workspace, which is the mix-up the removed
-                    caption above was teaching. */}
-                {selectedSpaceOption
-                  ? `${selectedSpaceOption.source === 'local' ? 'Local' : 'Confluence'} · ${selectedSpaceOption.key}`
-                  : 'Every connected space'}
-              </span>
+            <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
+              {selectedSpaceOption?.name ?? 'All Spaces'}
             </span>
             <ChevronsUpDown size={13} className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
           </button>
@@ -1135,6 +1110,16 @@ export function SidebarTreeView({
             </div>
           )}
         </div>
+        {!embedMainNav && (
+          <button
+            onClick={toggleTreeSidebar}
+            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (,)"
+          >
+            <PanelLeftClose size={14} />
+          </button>
+        )}
       </div>
 
       {/* A compact navigation shortcut; the Pages dashboard remains the rich
