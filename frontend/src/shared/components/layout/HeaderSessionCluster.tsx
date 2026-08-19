@@ -6,10 +6,10 @@ import { ThemeToggle } from './ThemeToggle';
 import { UserMenu } from './UserMenu';
 
 /**
- * Quiet find control for the 48px header. Opens the existing command palette
- * — it is not the Pages corpus search. The word "Find" is the visible name
- * from `sm` up; below that the control is icon-only and the accessible name
- * stays "Find". The shortcut hint hides on touch on purpose.
+ * Find control for the header. Opens the existing command palette — it is
+ * not the Pages corpus search. Styled as a centred well so the header has
+ * a clear middle, the way a search field does. The accessible name stays
+ * "Find". The shortcut hint hides on touch on purpose.
  */
 export function HeaderFindButton() {
   const open = useCommandPaletteStore((s) => s.open);
@@ -18,22 +18,21 @@ export function HeaderFindButton() {
     <button
       type="button"
       onClick={open}
-      className="nm-icon-button sm:w-auto sm:gap-1 sm:px-2"
+      className="flex h-8 w-8 shrink-0 items-center justify-center gap-2 rounded-lg border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:w-80 sm:justify-start sm:px-3"
       aria-label="Find"
       data-testid="header-find"
     >
-      <Search size={16} aria-hidden="true" />
-      <span className="hidden text-xs font-medium sm:inline">Find</span>
-      <ShortcutHint shortcutId="search" className="ml-0" />
+      <Search size={16} aria-hidden="true" className="shrink-0" />
+      <span className="hidden min-w-0 truncate text-sm sm:inline">Find</span>
+      <ShortcutHint shortcutId="search" className="ml-auto hidden sm:inline" />
     </button>
   );
 }
 
 /**
- * Find + inbox + theme + account. Lives in the header landmark so a phone
- * does not have to open the drawer to reach the session. Stays mounted while
- * the article is being edited — the format tools live in the article column,
- * not this bar.
+ * Inbox + theme + account. Find sits in the header centre, not here, so
+ * the session cluster can stay a right-aligned utility group. Lives in
+ * the header landmark so a phone does not have to open the drawer.
  */
 export function HeaderSessionCluster() {
   return (
@@ -41,7 +40,6 @@ export function HeaderSessionCluster() {
       data-testid="header-session-cluster"
       className="flex shrink-0 items-center gap-0.5"
     >
-      <HeaderFindButton />
       <NotificationBell />
       <ThemeToggle />
       <UserMenu align="end" />

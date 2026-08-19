@@ -204,6 +204,9 @@ describe('AppLayout', () => {
     const header = document.querySelector('header')!;
     const find = header.querySelector('[data-testid="header-find"]');
     expect(find).toBeTruthy();
+    expect(header.querySelector('[data-testid="header-session-cluster"]')!.contains(find!)).toBe(
+      false,
+    );
     expect(screen.getByRole('button', { name: 'Find' })).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('header-find'));
     expect(useCommandPaletteStore.getState().isOpen).toBe(true);

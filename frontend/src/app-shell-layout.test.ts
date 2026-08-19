@@ -233,6 +233,13 @@ describe('AppLayout structure', () => {
     expect(value).not.toMatch(/\bgap-2\.5\b/);
   });
 
+  it('does not paint a second fill on the article main inside the workspace card', () => {
+    const mainAt = appLayout.indexOf('id="main-content"');
+    expect(mainAt).toBeGreaterThan(-1);
+    const mainBlock = appLayout.slice(mainAt, appLayout.indexOf('</main>', mainAt));
+    expect(mainBlock).not.toMatch(/bg-card/);
+  });
+
   it('still owns a single main scroll container', () => {
     const matches = appLayout.match(/data-scroll-container/g) ?? [];
     expect(matches).toHaveLength(1);

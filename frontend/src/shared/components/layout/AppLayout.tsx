@@ -21,7 +21,7 @@ import { AiDock } from '../../../features/ai/dock/AiDock';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { Logo } from '../Logo';
 import { AppHeaderMain } from './header-slot';
-import { HeaderSessionCluster } from './HeaderSessionCluster';
+import { HeaderFindButton, HeaderSessionCluster } from './HeaderSessionCluster';
 import { PageTransition } from './PageTransition';
 import { type LayoutPreset } from './LayoutPresetMenu';
 import { ArticleLayoutControlsProvider } from './article-layout-controls';
@@ -488,12 +488,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
           card — logo, Find, alerts and the user menu are chrome, not
           document. Height is --app-header-height so the side inset can
           grow without stretching this band. */}
-      <header className="app-header relative z-10 flex shrink-0 items-center gap-3 px-3">
+      <header className="app-header relative z-10 grid shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-3">
+        <div className="flex min-w-0 items-center gap-3">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
           type="button"
           onClick={() => setMobileSidebarOpen((v) => !v)}
-          className="nm-icon-button mr-2 md:hidden"
+          className="nm-icon-button md:hidden"
           aria-label={mobileSidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
           aria-expanded={mobileSidebarOpen}
           aria-controls="mobile-nav-sidebar"
@@ -510,10 +511,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
           </span>
         </Link>
 
-        {/* Route title and one page claim (article Edit / ⋯). Session tools
-            stay in the landmark; list-page actions live on the page. */}
         <AppHeaderMain />
-        <HeaderSessionCluster />
+        </div>
+        <HeaderFindButton />
+        <div className="flex min-w-0 items-center justify-end">
+          <HeaderSessionCluster />
+        </div>
       </header>
 
       {/* Service status & notification banners — streamlined compact container */}
@@ -545,29 +548,16 @@ export function AppLayout({ children }: { children: ReactNode }) {
             )}
         </div>
 
-          {/* On an article route the MAIN COLUMN is the content pane. Everywhere
-              else the pane is a card sitting on the chassis, but a document is
-              not a card: it is the thing you came for, so it takes the surface
-              edge to edge and the chassis stops showing through around it.
-
-              This is why the scroll container's own padding is left untouched
-              here — inside a `bg-card` main it is already the pane's colour, so
-              the whole #1186 sticky-mask / #1218 min-h-0 mechanism keeps working
-              unchanged rather than needing a route-specific padding override. */}
-          {/* Article AND settings routes make the MAIN COLUMN the content pane.
-              Both are reading-and-editing surfaces you sit inside rather than
-              dashboards you scan, so the surface belongs to the column and the
-              chassis stops showing through around a floating card. Every other
-              route keeps its cards on the chassis. */}
+          {/* The workspace card is one surface: nav and document share
+              --app-shell-bg. Painting <main> as bg-card made a second fill
+              inside the same rounded card. The chassis is now the ground,
+              so the card does not need a pane-within-pane. */}
           <main
             id="main-content"
             // Not natively focusable — the skip link above targets this id and
             // needs an explicit tabIndex to accept programmatic focus at all.
             tabIndex={-1}
-            className={cn(
-              'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden focus:outline-none',
-              (isArticleRoute || isSettingsRoute) && 'bg-card',
-            )}
+            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden focus:outline-none"
           >
             <div ref={scrollContainerRef} data-scroll-container className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable_both-edges]">
               <PageTransition>
