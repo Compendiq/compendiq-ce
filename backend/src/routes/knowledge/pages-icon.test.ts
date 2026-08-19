@@ -129,6 +129,16 @@ describe('PATCH /api/pages/:id/icon', () => {
     expect(mockDelete).toHaveBeenCalledWith(42);
   });
 
+  it('accepts a catalogue brand slug', async () => {
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/pages/42/icon',
+      payload: { icon: { kind: 'brand', value: 'docker' } },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ icon: { kind: 'brand', value: 'docker' } });
+  });
+
   it('rejects an unknown lucide id', async () => {
     const response = await app.inject({
       method: 'PATCH',

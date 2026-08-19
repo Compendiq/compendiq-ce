@@ -1,13 +1,14 @@
 import { useRef, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
-import { Smile, Shapes, ImagePlus, Trash2 } from 'lucide-react';
+import { Smile, Shapes, ImagePlus, Trash2, Hexagon } from 'lucide-react';
+import { BrandIconGrid } from './BrandIconGrid';
 import type { PageIcon as PageIconValue, SettablePageIcon } from '@compendiq/contracts';
 import { EmojiPickerContent } from '../article/EmojiPicker';
 import { absorbPortalEscape } from '../../lib/absorb-portal-escape';
 import { LucideIconGrid } from './LucideIconGrid';
 import { cn } from '../../lib/cn';
 
-type PickerTab = 'emoji' | 'icons' | 'upload';
+type PickerTab = 'emoji' | 'icons' | 'logos' | 'upload';
 
 export function PageIconPicker({
   icon,
@@ -40,12 +41,13 @@ export function PageIconPicker({
         <Popover.Content
           align="start"
           sideOffset={8}
-          className="nm-card-elevated z-50 w-80 p-2.5"
+          className="nm-card-elevated z-50 w-96 p-2.5"
           onEscapeKeyDown={(event) => absorbPortalEscape(event, () => onOpenChange(false))}
           onOpenAutoFocus={(event) => event.preventDefault()}
         >
           <div className="mb-2 flex items-center gap-1" role="tablist" aria-label="Icon type">
             <TabButton current={tab} id="icons" onSelect={setTab} icon={Shapes} label="Icons" />
+            <TabButton current={tab} id="logos" onSelect={setTab} icon={Hexagon} label="Logos" />
             <TabButton current={tab} id="emoji" onSelect={setTab} icon={Smile} label="Emoji" />
             <TabButton current={tab} id="upload" onSelect={setTab} icon={ImagePlus} label="Upload" />
           </div>
@@ -58,6 +60,13 @@ export function PageIconPicker({
             <LucideIconGrid
               selected={icon?.kind === 'lucide' ? icon.value : null}
               onPick={(value) => onSelect({ kind: 'lucide', value })}
+            />
+          )}
+
+          {tab === 'logos' && (
+            <BrandIconGrid
+              selected={icon?.kind === 'brand' ? icon.value : null}
+              onPick={(value) => onSelect({ kind: 'brand', value })}
             />
           )}
 

@@ -1,6 +1,10 @@
 import { z } from 'zod';
+import { isPageBrandIconId } from './page-brand-icons.js';
 
-export const PageIconKindEnum = z.enum(['emoji', 'lucide', 'image']);
+export { PAGE_BRAND_ICONS, PAGE_BRAND_ICON_IDS, getPageBrandIcon, isPageBrandIconId } from './page-brand-icons.js';
+export type { PageBrandIconId } from './page-brand-icons.js';
+
+export const PageIconKindEnum = z.enum(['emoji', 'lucide', 'image', 'brand']);
 export type PageIconKind = z.infer<typeof PageIconKindEnum>;
 
 /**
@@ -274,6 +278,61 @@ export const PAGE_LUCIDE_ICONS = [
   { value: 'party-popper', label: 'Celebrate' },
   { value: 'ticket', label: 'Ticket' },
   { value: 'clapperboard', label: 'Scene' },
+  { value: 'chart-line', label: 'Line chart' },
+  { value: 'chart-pie', label: 'Pie chart' },
+  { value: 'chart-area', label: 'Area chart' },
+  { value: 'table', label: 'Table' },
+  { value: 'table-2', label: 'Spreadsheet table' },
+  { value: 'sigma', label: 'Sigma' },
+  { value: 'function-square', label: 'Function' },
+  { value: 'variable', label: 'Variable' },
+  { value: 'regex', label: 'Regex' },
+  { value: 'component', label: 'Component' },
+  { value: 'blocks', label: 'Blocks' },
+  { value: 'app-window', label: 'Window' },
+  { value: 'network', label: 'Graph' },
+  { value: 'ethernet-port', label: 'Ethernet' },
+  { value: 'hard-hat', label: 'Hard hat' },
+  { value: 'rainbow', label: 'Rainbow' },
+  { value: 'pentagon', label: 'Pentagon' },
+  { value: 'hexagon', label: 'Hexagon' },
+  { value: 'triangle', label: 'Triangle' },
+  { value: 'diamond', label: 'Diamond' },
+  { value: 'asterisk', label: 'Asterisk' },
+  { value: 'infinity', label: 'Infinity' },
+  { value: 'equal', label: 'Equal' },
+  { value: 'plus', label: 'Plus' },
+  { value: 'minus', label: 'Minus' },
+  { value: 'x', label: 'Close' },
+  { value: 'check', label: 'Check' },
+  { value: 'thumbs-up', label: 'Thumbs up' },
+  { value: 'thumbs-down', label: 'Thumbs down' },
+  { value: 'hand', label: 'Hand' },
+  { value: 'pointer', label: 'Pointer' },
+  { value: 'mouse-pointer-2', label: 'Cursor' },
+  { value: 'volume-2', label: 'Volume' },
+  { value: 'contrast', label: 'Contrast' },
+  { value: 'sun-moon', label: 'Day night' },
+  { value: 'eclipse', label: 'Eclipse' },
+  { value: 'orbit', label: 'Orbit' },
+  { value: 'earth', label: 'Earth' },
+  { value: 'cuboid', label: 'Cube' },
+  { value: 'file-pen', label: 'Edit file' },
+  { value: 'file-search', label: 'Search file' },
+  { value: 'book-copy', label: 'Copy book' },
+  { value: 'wand-sparkles', label: 'Wand' },
+  { value: 'sparkle', label: 'Sparkle' },
+  { value: 'shield-check', label: 'Shield check' },
+  { value: 'shield-alert', label: 'Shield alert' },
+  { value: 'user-check', label: 'User check' },
+  { value: 'user-plus', label: 'Add user' },
+  { value: 'voicemail', label: 'Voicemail' },
+  { value: 'brain-circuit', label: 'Neural' },
+  { value: 'bot-message-square', label: 'Chat bot' },
+  { value: 'messages-square', label: 'Threads' },
+  { value: 'folder-git-2', label: 'Git folder' },
+  { value: 'git-compare', label: 'Compare' },
+  { value: 'ampersand', label: 'And' },
 ] as const;
 
 export type PageLucideIconId = (typeof PAGE_LUCIDE_ICONS)[number]['value'];
@@ -288,13 +347,13 @@ export function isPageLucideIconId(value: string): value is PageLucideIconId {
   return LUCIDE_ID_SET.has(value);
 }
 
-/** One persisted page mark. `value` is the emoji, the Lucide id, or the image sha. */
+/** One persisted page mark. `value` is the emoji, Lucide id, brand slug, or image sha. */
 export const PageIconSchema = z.object({
   kind: PageIconKindEnum,
   value: z.string().min(1).max(128),
 });
 export type PageIcon = z.infer<typeof PageIconSchema>;
-export type SettablePageIcon = { kind: 'emoji' | 'lucide'; value: string };
+export type SettablePageIcon = { kind: 'emoji' | 'lucide' | 'brand'; value: string };
 
 /** PATCH /pages/:id/icon — image marks go through POST /pages/:id/icon-image. */
 export const UpdatePageIconSchema = z.object({
@@ -311,6 +370,10 @@ export const UpdatePageIconSchema = z.object({
       z.object({
         kind: z.literal('lucide'),
         value: z.string().refine(isPageLucideIconId, 'Unknown icon'),
+      }),
+      z.object({
+        kind: z.literal('brand'),
+        value: z.string().refine(isPageBrandIconId, 'Unknown logo'),
       }),
     ])
     .nullable(),

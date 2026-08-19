@@ -56,7 +56,11 @@ describe('PageTitleIcon', () => {
     expect(screen.getByTestId('page-icon-lucide-grid')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Emoji/i })).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByRole('tab', { name: /Upload/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Logos/i })).toBeInTheDocument();
     expect(screen.getByTestId('page-icon-lucide-grid').querySelectorAll('button').length).toBeGreaterThan(200);
+    fireEvent.click(screen.getByRole('tab', { name: /Logos/i }));
+    expect(screen.getByTestId('page-icon-brand-grid')).toBeInTheDocument();
+    expect(screen.getByLabelText('Docker')).toBeInTheDocument();
   });
 
   it('shows the existing mark as Change page icon', () => {

@@ -1,6 +1,8 @@
 import type { PageIcon as PageIconValue } from '@compendiq/contracts';
+import { getPageBrandIcon } from '@compendiq/contracts';
 import { useAuthenticatedSrc } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
+import { BrandMark } from './BrandMark';
 import { getPageLucideIcon } from './page-lucide-icons';
 
 export type PageIconSize = 'row' | 'title';
@@ -50,6 +52,19 @@ export function PageIcon({
         className={cn('inline-flex shrink-0 items-center justify-center text-foreground', dim.box, className)}
       >
         <Glyph size={dim.lucide} strokeWidth={size === 'title' ? 1.5 : 2} />
+      </span>
+    );
+  }
+
+  if (icon.kind === 'brand') {
+    const mark = getPageBrandIcon(icon.value);
+    if (!mark) return null;
+    return (
+      <span
+        aria-hidden="true"
+        className={cn('inline-flex shrink-0 items-center justify-center text-foreground', dim.box, className)}
+      >
+        <BrandMark path={mark.path} size={dim.lucide} />
       </span>
     );
   }
