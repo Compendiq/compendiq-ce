@@ -257,12 +257,14 @@ describe('the shipped image fixture (#1115 P5c)', () => {
     const negatives = fixture.labels.filter((l) => l.style === 'image-negative');
     expect(negatives.length).toBeGreaterThanOrEqual(8);
     // 26 rather than the 20 this first shipped with, and moved deliberately:
-    // the four English distractors below are an addition, not a rebalancing,
-    // and at 307 labels 22 is 7.2% of the fixture — the same share the German
-    // slice already carried, nowhere near abstention dominating the measure.
-    // The four spare rungs are headroom for P5b to replace those merger-written
-    // English negatives with blind-labelled procedural ones without touching
-    // this bound. The floor stays 8. Still a count and not a percentage, for
+    // the English distractors below are an addition, not a rebalancing, and at
+    // 309 labels 24 is 7.8% of the fixture — the same share the German slice
+    // already carried, nowhere near abstention dominating the measure. Those
+    // spare rungs were headroom for replacing the merger-written English
+    // negatives with blind-labelled procedural ones without touching this
+    // bound, and #1370 spent two of the four: the merger's four img-06-* are
+    // gone and six blind ones (img-07/08/09-*) took their place, so 24 of 26
+    // are in use. The floor stays 8. Still a count and not a percentage, for
     // the reason written above it: a ratio would silently license 30.
     expect(negatives.length).toBeLessThanOrEqual(26);
     expect(negatives.every((l) => l.expectedImages.length === 0)).toBe(true);

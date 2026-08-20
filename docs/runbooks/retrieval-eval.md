@@ -640,8 +640,8 @@ this repository's own **AGPL-3.0** (root `LICENSE`).
 
 ### Image fixture (#1115 P5c)
 
-`fixture-de-images.json` labels that corpus: **307 queries over all 65 pages and
-all 187 images**, written by six independent vision-capable agents on a
+`fixture-de-images.json` labels that corpus: **309 queries over all 65 pages and
+all 187 images**, written by independent vision-capable agents on a
 different model from the implementer, one disjoint page slice each, blind to the
 retrieval code — the owner's #1102 amendment. It is `query → page AND the image
 on that page that answers it`, so it carries `expectedImages[]` beside
@@ -655,26 +655,39 @@ one that returns the right picture.
 18 negatives were German, so the cross-lingual slice the fixture certifies as
 reportable on its own — the case a shared VL space is claimed for and the text
 leg cannot serve — was 100% positives and scored an always-answers leg exactly
-like a correct one. Review r2 added four English ones (`img-06-*`, the merger's
-own slice rather than a blind labeller's, spread one per content shape), and the
-guard is now **per language** as well as whole-fixture, so a slice cannot go
-all-positive again and "add English distractors" cannot be satisfied by
-re-languaging the German ones. Writing them is a pixel job like any other label:
-the first draft asked how long a Daily Scrum may last, which `scrum__1.png`
-answers on its face — it prints "15-minute event" beside the Daily Scrum — so an
-attribution question took its place. Attribution and dates are the shape that
-travels: a diagram names no people.
+like a correct one. Review r2 added four English ones (`img-06-*`) written by the
+**merger**, and the guard is now **per language** as well as whole-fixture, so a
+slice cannot go all-positive again and "add English distractors" cannot be
+satisfied by re-languaging the German ones. Writing them is a pixel job like any
+other label: the first draft asked how long a Daily Scrum may last, which
+`scrum__1.png` answers on its face — it prints "15-minute event" beside the
+Daily Scrum — so an attribution question took its place. Attribution and dates
+are the shape that travels: a diagram names no people.
 
-**Those four are the one part of this fixture its own protocol does not cover**
-— they are the merger's, written after the six blind slices had been submitted
-(`labeledBy` discloses it, and the `img-06-*` slice keeps them separable), so
-**replacing or extending them with blind-labelled procedural negatives is still
-owed**. P5b shipped the `--images` axis without doing it, so the debt now sits
-against the **first measurement** rather than against the harness: the operator
-who runs this axis for real is reading `delta.perStyle['image-negative']` over a
-slice four of whose 22 labels were not blind-written, and should say so beside
-the number. The ceiling below carries the headroom to add them without moving a
-bound.
+**Those four were the one part of this fixture its own protocol did not cover,
+and #1370 replaced them.** They were the merger's, written after the six blind
+slices had been submitted, so they were not independent of the retrieval code's
+author on the very class the leg is measured *against*. Three further
+independent agents — one per third of the corpus, given the pages, the manifest
+captions and the image bytes and nothing else — produced eleven candidates, of
+which **six** were merged verbatim as `img-07-*` / `img-08-*` / `img-09-*`
+(dieselmotor, extreme-programming, golden-gate-bridge, osi-modell,
+schloss-neuschwanstein, zellkern — four content shapes, six pages). The four
+`img-06-*` are **gone** and their ids are never reused; a labeller's slice
+numbering is their own candidate order, so a **gap** in a slice is a candidate
+the merger rejected. The merger's job here is adjudication only: every kept
+candidate was re-checked by opening each of its page's images (the `scrum__1.png`
+trap above is exactly what that check is for) and verifying its page text really
+answers it, and a candidate is kept **verbatim or not at all** — an "improved"
+query is no longer blind.
+
+So the English negative slice is now blind end-to-end. What remains owed is
+smaller and belongs to the next operator: **the numbers below were measured on
+the pre-#1370 fixture** (307 labels, 22 negatives, 4 of them merger-written), so
+the next `--images` run must say so beside `delta.perStyle['image-negative']` —
+it is scoring a different 24-label negative slice. It cannot be compared through
+`--baseline` either: `pairedBootstrapCi` throws on differing query sets, and no
+image-axis report is committed to point at anyway. Re-run both arms.
 
 It is a **separate schema and a separate loader** (`ImageFixtureSchema` /
 `loadImageFixture`), never a widened `FixtureSchema`: the two are scored on
@@ -691,10 +704,11 @@ individually exist.
 `computeCorpusManifestSha([IMAGE_CORPUS_DIR])` (the same contract
 `fixture.json` has: a corpus refresh moves the captions these labels were
 written from), the N ≥ 100 floor, ≥ 20 English, 8–26 negatives of which ≥ 4 are
-English and ≥ 8 German (the ceiling carries four rungs of headroom for the
-blind-labelled English negatives still owed above — P5b did not spend them —
-and stays a count rather than a share, since a
-ratio at N = 307 would silently license 30), no content shape
+English and ≥ 8 German (the ceiling carried four rungs of headroom for the
+blind-labelled English negatives above; #1370 spent **two** of them — six blind
+labels replaced four merger-written ones, so 24 of 26 are in use — and it stays
+a count rather than a share, since a
+ratio at N = 309 would silently license 30), no content shape
 below 15%, every image accounted for by a label or by a `notUsable` entry
 carrying the labeller's reason (capped at a **tenth** of the corpus, so an image
 can be dropped on the record but the *measured* set cannot quietly shrink), and
@@ -971,7 +985,7 @@ the win/loss table before believing it.
 
 **Read a low `imageHit@K` against `legOn.recallAtK["@10"]` first, though**, and
 know its denominator: it is scored over the **285 labels that name an image**
-(the 22 `image-negative`s are excluded — their correct image answer is "none",
+(the 24 `image-negative`s are excluded — their correct image answer is "none",
 and they are measured by `imageNegativeLeak@K` instead), and only over the image
 hits riding on the **top-10 pages the on arm returned**. An expected image
 always belongs to one of its own label's expected pages (`loadImageFixture`
@@ -986,8 +1000,8 @@ the headline and leaks there is buying recall with precision.
 `delta.perStyle` is where that shows up as one table: `image` is the class the
 leg exists for, `image-negative` the class it must not help. A headline
 improvement that is really a leak shows up as those two rows disagreeing. Every
-slice prints its own `n` — the English slice is 58 labels and the negatives 22,
-so a p value there is not the same evidence as one over all 307.
+slice prints its own `n` — the English slice is 60 labels and the negatives 24,
+so a p value there is not the same evidence as one over all 309.
 
 **Correct for multiplicity before quoting a slice.** The console prints four Ks
 plus four slice rows, which is eight chances to find a p below 0.05 in one run,
@@ -1030,7 +1044,11 @@ against. Local shim, so read the section immediately above before quoting any
 of it.
 
 **Configuration.** `--images` on the #1366 harness at dev `8b07d9e4`. 65 pages /
-187 images / 307 labels (249 de, 58 en; 22 `image-negative`). Text side
+187 images / 307 labels (249 de, 58 en; 22 `image-negative`) — **the pre-#1370
+fixture**, four of whose English negatives were merger-written; the shipped
+fixture is now 309 labels with 24 negatives, so these numbers cannot be re-run
+as a `--baseline` pair and the slice rows below are not the slice a run today
+prints. Text side
 Qwen3-Embedding-4B, `fts=german`, no rerank, no deep search. Both arms paired
 per query in one process, McNemar exact.
 
@@ -1066,8 +1084,11 @@ comment with the raw reports:
 
 **What it did NOT settle.** `IMAGE_PAGE_FANOUT`, `minImageLegParticipation` and
 `rag_answer_max_images` are still by-analogy defaults — this corpus is too easy
-to retune them against. And the English `image-negative` slice is four labels
-written by the merger rather than a blind labeller (**#1370**).
+to retune them against. And the English `image-negative` slice it scored was
+four labels written by the merger rather than a blind labeller — **#1370** has
+since replaced them with six blind-labelled ones, which is why the next run of
+this axis measures a different negative slice and must say so beside
+`delta.perStyle['image-negative']`.
 
 ## The `vocabulary-gap` slice (#1112)
 

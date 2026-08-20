@@ -159,14 +159,19 @@ templates and never pinned the pictures at all. `corpus-de-images.test.ts` fails
 on the wiring, a leaked caption, a licence outside the allow-list, an unnamed or
 silently-cut author, a missing credit and a body whose sha no longer matches.
 `fixture-de-images.json` is its own file with its own schema and loader (never a
-widened `FixtureSchema`): 307 labels over all 65 pages and 187 images, written
+widened `FixtureSchema`): 309 labels over all 65 pages and 187 images, written
 by blind labellers on a different model from the implementer, in two styles —
 `image`, and `image-negative` distractors with EMPTY `expectedImages`, without
 which a leg that always answers with a picture scores like one that answers
 correctly. `fixture-de-images.test.ts` pins the sha, the counts, the per-language
-negative floors and the caption rule. **Owed:** the four English negatives are
-the merger's rather than a blind labeller's — replacing them with blind-labelled
-ones is **#1370**, and the debt sits against the first measurement.
+negative floors and the caption rule. **The negative slice is blind end to end
+(#1370, done):** six blind labels (`img-07/08/09-*`) replace the four
+merger-written ones; the merger only adjudicates verbatim candidates, so a
+labeller's numbering gap records a rejection. ADR-025's `--images` table used
+the old 307-label, 22-negative fixture: the next run must identify its changed
+negative slice beside `delta.perStyle['image-negative']` and cannot pair against
+those numbers through `--baseline` (`pairedBootstrapCi` rejects differing query
+sets); no image-axis report is committed.
 `--images` is a SECOND AXIS, not a flag on the gate: it answers what the leg
 ADDS, so it seeds a different corpus against a different fixture with its own
 runner, its own report family (`axis: 'images'`) and its own default `--out`

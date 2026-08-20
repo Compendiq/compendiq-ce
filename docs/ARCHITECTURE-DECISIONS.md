@@ -2712,7 +2712,8 @@ Phase-1 text embedder and the VL model embeds images only.
 #### B. Image axis
 
 2026-08-18, `--images`, the #1366 harness, dev `8b07d9e4`. 65 pages / 187
-images / 307 labels (249 de, 58 en; 22 image-negative); text side
+images / 307 labels (249 de, 58 en; 22 image-negative — the **pre-#1370**
+fixture; the shipped one is 309 / 24); text side
 Qwen3-Embedding-4B; `fts=german`; no rerank; leg on/off paired per query in one
 process; McNemar exact. Local shim — the D11 caveat applies.
 
@@ -2746,8 +2747,15 @@ numbers. The production run decides.**
 Full comment, with the raw reports:
 <https://github.com/Compendiq/compendiq-ce/issues/1115#issuecomment-5322826145>.
 
-**Debts these numbers leave open.** The English `image-negative` slice is four
-labels written by the merger rather than a blind labeller (**#1370**). And
+**Debts these numbers leave open.** The English `image-negative` slice these
+numbers were scored on was four labels written by the merger rather than a blind
+labeller; **#1370** has since replaced them with six blind-labelled ones
+(`img-07/08/09-*`), so the fixture is 309 labels with 24 negatives and **the
+table above was measured on the pre-#1370 fixture**. A run today therefore
+scores a different negative slice: say so beside
+`delta.perStyle['image-negative']`, and do not try to pair the two through
+`--baseline` — `pairedBootstrapCi` refuses run sets that are not the same
+queries, and no image-axis report is committed to pair against anyway. And
 `IMAGE_PAGE_FANOUT` (4), `minImageLegParticipation` and `rag_answer_max_images`
 are still **by-analogy** defaults: this corpus is too easy to retune them
 against, so they wait on the production run.
