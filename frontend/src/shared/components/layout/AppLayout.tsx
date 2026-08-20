@@ -565,7 +565,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
           className="flex w-[var(--app-nav-rail-width)] shrink-0 items-center justify-center group"
         >
           {/* Clip to the Q-tile below `md` so hamburger + lockup + Find +
-              session cluster fit the 48px. The SVG itself stays the full
+              session cluster fit the 60px. The SVG itself stays the full
               lockup; overflow hides the wordmark rather than squashing it. */}
           <span className="block h-[22px] w-[22px] overflow-hidden">
             <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />

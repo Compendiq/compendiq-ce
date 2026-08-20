@@ -128,8 +128,8 @@ export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
             aria-current={active ? 'page' : undefined}
             className={cn(
               // Strip is `--app-nav-rail-width` (52px). px-1 on the nav is 4px
-              // on both sides; each control stays 40px, centred in the extra
-              // 4px so the labels have a little more air.
+              // on both sides; each 40px control remains centred with 2px of
+              // breathing room on either side.
               'box-border flex h-10 w-10 shrink-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0 py-1 text-center text-xs font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               active
                 ? 'nav-selection'

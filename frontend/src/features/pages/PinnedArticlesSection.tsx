@@ -3,12 +3,13 @@ import { Link } from 'react-router-dom';
 import { m } from 'framer-motion';
 import { Pin, PinOff, ChevronDown, ChevronUp } from 'lucide-react';
 import { toast } from 'sonner';
-import { usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
+import { usePinPage, usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
 import { COLLAPSED_PIN_COUNT, entranceDelay, staggerPosition } from './pinned-articles-layout';
 import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 
 export function PinnedArticlesSection() {
   const { data: pinnedData } = usePinnedPages();
+  const pinMutation = usePinPage();
   const unpinMutation = useUnpinPage();
   // Ephemeral on purpose: the collapsed strip is the dashboard's default shape,
   // so every visit starts there and expanding is one keystroke away.
@@ -35,9 +36,7 @@ export function PinnedArticlesSection() {
   const isExpanded = expanded && overflow > 0;
   const visiblePins = isExpanded ? pinnedData.items : pinnedData.items.slice(0, COLLAPSED_PIN_COUNT);
 
-  const handleUnpin = (e: React.MouseEvent, pageId: string, title: string) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleUnpin = (pageId: string, title: string) => {
     // The card carrying the focused button is about to unmount, which drops
     // focus to <body> and sends a keyboard user back to the top of the
     // document. Cheap to survive at eight cards; with the cap gone (#1130) it
@@ -49,7 +48,14 @@ export function PinnedArticlesSection() {
 
     unpinMutation.mutate(pageId, {
       onSuccess: () => {
-        toast.success(`Unpinned "${title}"`);
+        toast.success(`Unpinned "${title}"`, {
+          action: {
+            label: 'Undo',
+            onClick: () => pinMutation.mutate(pageId, {
+              onError: (err) => toast.error(err instanceof Error ? err.message : 'Could not restore pin'),
+            }),
+          },
+        });
         // The successor may itself have unmounted by now (a refetch reordered
         // the list); falling back to the section keeps focus in place either way.
         if (successor?.isConnected) successor.focus();
@@ -68,10 +74,10 @@ export function PinnedArticlesSection() {
       aria-labelledby="pinned-pages-heading"
       data-testid="pinned-articles-section"
     >
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <Pin size={14} className="text-muted-foreground" aria-hidden="true" />
         <h2 id="pinned-pages-heading" className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-          Pinned
+          Pinned pages
         </h2>
         <span
           className="font-mono text-xs tabular-nums text-muted-foreground"
@@ -81,6 +87,7 @@ export function PinnedArticlesSection() {
           {total}
         </span>
         <span className="sr-only">{total} pinned</span>
+        <span className="text-xs text-muted-foreground">Your saved pages for quick access</span>
       </div>
       <div
         id="pinned-pages-grid"
@@ -93,29 +100,35 @@ export function PinnedArticlesSection() {
             animate={{ opacity: 1 }}
             transition={{ delay: entranceDelay(staggerPosition(i, isExpanded)) }}
           >
-            <Link
-              to={`/pages/${item.id}`}
-              onKeyDown={(e) => {
-                if (e.key === ' ') {
-                  e.preventDefault();
-                  e.currentTarget.click();
-                }
-              }}
-              className="nm-focus-ring group flex w-full cursor-pointer items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left text-foreground no-underline transition-colors hover:bg-accent forced-colors:border-border-interactive"
+            <div
+              className="group flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-accent focus-within:bg-accent forced-colors:border-border-interactive"
               data-testid={`pinned-card-${item.id}`}
             >
-              <div className="min-w-0 flex-1">
+              <Link
+                to={`/pages/${item.id}`}
+                onKeyDown={(e) => {
+                  if (e.key === ' ') {
+                    e.preventDefault();
+                    e.currentTarget.click();
+                  }
+                }}
+                className="nm-focus-ring min-w-0 flex-1 text-foreground no-underline"
+              >
                 <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
                   {item.icon && <PageIcon icon={item.icon} pageId={item.id} size="row" />}
                   <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
                 </p>
-                {item.spaceKey && item.spaceKey !== '__local__' && (
-                  <p className="mt-0.5 truncate text-xs text-muted-foreground">{item.spaceKey}</p>
-                )}
-              </div>
+                {(item.spaceKey && item.spaceKey !== '__local__') || item.lastModifiedAt ? (
+                  <p className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                    {item.spaceKey && item.spaceKey !== '__local__' && <span>{item.spaceKey}</span>}
+                    {item.spaceKey && item.spaceKey !== '__local__' && item.lastModifiedAt && <span aria-hidden="true">·</span>}
+                    {item.lastModifiedAt && <span>Updated {new Date(item.lastModifiedAt).toLocaleDateString()}</span>}
+                  </p>
+                ) : null}
+              </Link>
               <button
                 type="button"
-                onClick={(e) => handleUnpin(e, item.id, item.title)}
+                onClick={() => handleUnpin(item.id, item.title)}
                 className="nm-icon-button shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100"
                 aria-label={`Unpin ${item.title}`}
                 data-unpin={item.id}
@@ -123,7 +136,7 @@ export function PinnedArticlesSection() {
               >
                 <PinOff size={14} />
               </button>
-            </Link>
+            </div>
           </m.div>
         ))}
       </div>
