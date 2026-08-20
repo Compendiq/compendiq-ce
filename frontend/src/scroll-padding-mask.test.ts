@@ -59,18 +59,6 @@ const appLayoutSource = read('shared/components/layout/AppLayout.tsx');
 const pageViewSource = read('features/pages/PageViewPage.tsx');
 const newPageSource = read('features/pages/NewPagePage.tsx');
 
-/** The classes on AppLayout's main scroll container. */
-function scrollContainerClasses(): string {
-  const at = appLayoutSource.indexOf('data-scroll-container');
-  if (at < 0) throw new Error('No data-scroll-container element found in AppLayout.tsx');
-  const slice = appLayoutSource.slice(at, at + 900);
-  const quoted = slice.match(/className="([^"]+)"/);
-  if (quoted) return quoted[1]!;
-  const composed = slice.match(/className=\{cn\(\s*'([^']+)'/);
-  if (!composed) throw new Error('No className on the scroll container in AppLayout.tsx');
-  return composed[1]!;
-}
-
 /** Its top padding, in Tailwind spacing steps (non-article branch). */
 function scrollPaddingTopSteps(): number {
   const match = appLayoutSource.match(
