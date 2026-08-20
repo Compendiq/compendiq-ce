@@ -17,21 +17,21 @@ describe('Logo', () => {
     expect(wordmark!.getAttribute('fill')).toBe('currentColor');
   });
 
-  // Not "the AI signal", as this was called until the accent moved to teal —
+  // Not "the AI signal" —
   // the magnifier stroke is the brand accent. Violet is the AI signal, and the
   // mark identifies the product rather than labelling an AI affordance. The
   // distinction matters because it is the reason the stroke must NOT inherit:
   // an identity is fixed, a control's colour follows its meaning.
-  it('keeps the teal magnifier stroke hard-coded rather than inheriting', () => {
+  it('keeps the Steel magnifier stroke hard-coded rather than inheriting', () => {
     const { container } = render(<Logo />);
-    const accents = container.querySelectorAll('[stroke="#4dd0e1"], [stroke="#4DD0E1"]');
+    const accents = container.querySelectorAll('[stroke="#86aec8"], [stroke="#86AEC8"]');
     expect(accents.length).toBe(2);
   });
 
   // The mark is mirrored in public/*.svg and the generated favicons, which
   // render with no CSS custom properties available — so no retired palette
   // value may survive anywhere in the component either. Steel joined honey on
-  // that list once the accent moved to teal; both generations shipped a mark
+  // that list once the accent moved away from the legacy Steel pair; both generations shipped a mark
   // that lagged the palette, which is why this list only ever grows.
   // `src/logo-color-parity.test.ts` checks the four mirrors on disk.
   it('carries no retired palette values', () => {

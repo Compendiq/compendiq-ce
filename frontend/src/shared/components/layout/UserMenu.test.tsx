@@ -264,7 +264,7 @@ describe('UserMenu', () => {
     }
   });
 
-  // Identity, not an action: teal is reserved for actions. Neutral chip, never
+  // Identity, not an action: Steel is reserved for actions. Neutral chip, never
   // amber (AI) and never the filled accent.
   it('user avatar is a neutral chip, not an accent or amber mark', () => {
     mockUser = { username: 'simon', role: 'user' };

@@ -37,7 +37,7 @@ import { cn } from '../../shared/lib/cn';
  *
  * ## Colour
  *
- * Teal when active, like `+ Sub-pages`: under ADR-010 the accent marks
+ * Steel when active, like `+ Sub-pages`: under ADR-010 the accent marks
  * "you can operate this". Violet is reserved for "an AI does this" and would
  * misdescribe what is a retrieval mode — the expansion call is incidental, the
  * user is choosing how the knowledge base is searched.

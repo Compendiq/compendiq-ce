@@ -102,7 +102,7 @@ describe('ChildrenMacroView', () => {
     expect(screen.getByTestId('children-macro-view').getAttribute('data-columns')).toBe('1');
     expect(screen.queryByTestId('children-columns-toggle')).toBeNull();
 
-    // Notion-style page links: body colour + underline. The teal prose-link
+    // Notion-style page links: body colour + underline. The accent prose-link
     // colour and the old padded row (`px-2`) are the two things that made
     // this read as chrome rather than document. Hover uses the same accent
     // fill as PagesPage / the page tree — a background change, not a border.
@@ -348,7 +348,7 @@ describe('ChildrenMacroView', () => {
 describe('ChildrenMacroView link treatment', () => {
   const css = readFileSync(resolve(__dirname, '../../../index.css'), 'utf-8');
 
-  it('overrides prose teal links with an inherited, always-underlined title', () => {
+  it('overrides prose accent links with an inherited, always-underlined title', () => {
     expect(css).toMatch(
       /\.prose \.confluence-children-view a[\s\S]*?color:\s*inherit[\s\S]*?text-decoration:\s*underline/,
     );

@@ -211,11 +211,11 @@ export function ArticleSummary({
   // Summarized state: show the full banner
   if (summaryStatus !== 'summarized' || !summaryHtml) return null;
 
-  // Violet, not teal, for every part of this block. ADR-010 reserves violet for
-  // AI and teal for brand + interaction; this block used to switch families
+  // Violet, not Steel, for every part of this block. ADR-010 reserves violet for
+  // AI and Steel for brand + interaction; this block used to switch families
   // between states — status-ai while pending, primary once delivered — so the
-  // same Sparkles glyph read violet in the Assistant tab and teal here, one
-  // click apart on the same route. Teal additionally implied the card was a
+  // same Sparkles glyph read violet in the Assistant tab and Steel here, one
+  // click apart on the same route. Steel additionally implied the card was a
   // control.
   return (
     <div

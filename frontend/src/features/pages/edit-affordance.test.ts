@@ -62,7 +62,7 @@ describe('the Edit affordance', () => {
     expect(inspectorSource).toContain('useArticleLayoutControls');
   });
 
-  // The accent belongs to actions, and the only filled teal on this route is
+  // The accent belongs to actions, and the only filled Steel on this route is
   // the setup banner's. A second filled button would move the competition
   // rather than end it.
   it('is not the filled primary', () => {

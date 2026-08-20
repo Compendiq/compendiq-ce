@@ -156,7 +156,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   if (!migration && pending) {
     return (
       // Every phase card wears border-status-embedding/30: this surface IS
-      // the embedding pipeline, and teal is its reserved hue (ADR-010). It
+      // the embedding pipeline, and Steel is its reserved hue (ADR-010). It
       // used to be the informational indigo, which names no state.
       <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
         <p>

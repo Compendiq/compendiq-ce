@@ -120,7 +120,7 @@ describe('QualityScoreBadge', () => {
     const badge = screen.getByTestId('quality-score-badge');
     // Quality is a measurement, not a pipeline state. Painting it in the status
     // palette put a page scoring 65 in the same amber as a space mid-sync, and
-    // one scoring 74 in the same teal as "embedding", on the densest scanning
+    // one scoring 74 in the same Steel as "embedding", on the densest scanning
     // surface in the app. If this fails, that regression is back.
     expect(badge.className).not.toMatch(
       /status-(connected|syncing|embedding|disconnected)/,

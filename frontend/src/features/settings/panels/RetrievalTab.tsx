@@ -1480,7 +1480,7 @@ function CalibrationNotice({
 }
 
 /**
- * The neutral "off" marker. Deliberately slate rather than amber or teal: this
+ * The neutral "off" marker. Deliberately slate rather than amber or Steel: this
  * is a resting state, not a warning and not an action.
  */
 function OffChip() {
