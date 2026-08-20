@@ -74,7 +74,7 @@ describe('PinnedArticlesSection', () => {
     expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
   });
 
-  it('shows a cue when no pins exist', async () => {
+  it('renders nothing when no pins exist', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(emptyPinnedResponse), {
         headers: { 'Content-Type': 'application/json' },
@@ -83,10 +83,10 @@ describe('PinnedArticlesSection', () => {
 
     render(<PinnedArticlesSection />, { wrapper: createWrapper() });
 
-    expect(await screen.findByTestId('pinned-empty-cue')).toHaveTextContent(
-      'Pin a page from the article to jump back here.',
-    );
-    expect(screen.getByTestId('pinned-articles-section')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('pinned-empty-cue')).not.toBeInTheDocument();
     expect(screen.queryByTestId(/^pinned-card-/)).not.toBeInTheDocument();
   });
 

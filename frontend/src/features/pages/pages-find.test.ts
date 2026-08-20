@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { FIND_LABEL, FIND_PLACEHOLDER, LIBRARY_HEADING, SEARCH_MODE_LABELS } from './pages-find';
 
 describe('start-page Find copy', () => {
-  it('uses the same verb as the header Find control', () => {
-    expect(FIND_LABEL.startsWith('Find')).toBe(true);
-    expect(FIND_PLACEHOLDER.startsWith('Find')).toBe(true);
+  it('does not share a verb with the header Find control', () => {
+    expect(FIND_LABEL.startsWith('Find')).toBe(false);
+    expect(FIND_PLACEHOLDER.startsWith('Find')).toBe(false);
+    expect(FIND_LABEL).toBe('Filter this list');
+    expect(FIND_PLACEHOLDER).toBe('Filter this list');
   });
 
   it('names retrieval modes in plain language', () => {

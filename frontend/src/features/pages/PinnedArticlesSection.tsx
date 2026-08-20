@@ -7,8 +7,6 @@ import { usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
 import { COLLAPSED_PIN_COUNT, entranceDelay, staggerPosition } from './pinned-articles-layout';
 import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 
-const EMPTY_CUE = 'Pin a page from the article to jump back here.';
-
 export function PinnedArticlesSection() {
   const { data: pinnedData } = usePinnedPages();
   const unpinMutation = useUnpinPage();
@@ -24,6 +22,12 @@ export function PinnedArticlesSection() {
   }
 
   const total = pinnedData.items.length;
+  // An empty cue on every visit costs a band before the list and teaches
+  // nothing the Pin action on the article does not already say. Hide the
+  // section until there is something to jump back to.
+  if (total === 0) {
+    return null;
+  }
   const overflow = total - COLLAPSED_PIN_COUNT;
   // Derived, not the raw flag: unpinning back below the cut-off unmounts the
   // toggle, and a latched `expanded` would then silently re-expand the section
@@ -69,25 +73,15 @@ export function PinnedArticlesSection() {
         <h2 id="pinned-pages-heading" className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           Pinned
         </h2>
-        {total > 0 && (
-          <>
-            <span
-              className="font-mono text-xs tabular-nums text-muted-foreground"
-              data-testid="pinned-count"
-              aria-hidden="true"
-            >
-              {total}
-            </span>
-            <span className="sr-only">{total} pinned</span>
-          </>
-        )}
+        <span
+          className="font-mono text-xs tabular-nums text-muted-foreground"
+          data-testid="pinned-count"
+          aria-hidden="true"
+        >
+          {total}
+        </span>
+        <span className="sr-only">{total} pinned</span>
       </div>
-      {total === 0 ? (
-        <p className="text-xs text-muted-foreground" data-testid="pinned-empty-cue">
-          {EMPTY_CUE}
-        </p>
-      ) : (
-      <>
       <div
         id="pinned-pages-grid"
         className="grid grid-cols-1 gap-x-1 gap-y-0.5 sm:grid-cols-2 xl:grid-cols-4"
@@ -113,7 +107,7 @@ export function PinnedArticlesSection() {
               <div className="min-w-0 flex-1">
                 <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
                   {item.icon && <PageIcon icon={item.icon} pageId={item.id} size="row" />}
-                  <span className="min-w-0 truncate">{item.title}</span>
+                  <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
                 </p>
                 {item.spaceKey && item.spaceKey !== '__local__' && (
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">{item.spaceKey}</p>
@@ -154,8 +148,6 @@ export function PinnedArticlesSection() {
             )}
           </button>
         </div>
-      )}
-      </>
       )}
     </section>
   );

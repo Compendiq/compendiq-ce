@@ -1,9 +1,10 @@
 /**
- * Start-page Find copy. Header Find (command palette) and this field share
- * the verb; the field is pages-only, the header is pages and commands.
+ * Library list filter copy. Header Find (command palette) stays "Find" —
+ * pages and commands. This field only filters the list on this route, so it
+ * must not share that verb.
  */
-export const FIND_LABEL = 'Find pages';
-export const FIND_PLACEHOLDER = 'Find pages…';
+export const FIND_LABEL = 'Filter this list';
+export const FIND_PLACEHOLDER = 'Filter this list';
 export const LIBRARY_HEADING = 'Library';
 
 export const SEARCH_MODE_LABELS = {

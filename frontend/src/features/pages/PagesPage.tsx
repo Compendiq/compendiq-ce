@@ -86,6 +86,12 @@ interface PageListItemProps {
   showSource?: boolean;
   showVisibility?: boolean;
   showQuality?: boolean;
+  /** When false, hide idle "Not indexed" so an unindexed corpus is not a wall of chips. */
+  showIdleEmbedding?: boolean;
+  /** True once any row is selected — row checkboxes stay visible for the rest of the pass. */
+  selectionArmed?: boolean;
+  /** Space display name when known; the key is the fallback. */
+  spaceName?: string | null;
   pageItem: {
     id: string;
     spaceKey: string | null;
@@ -119,6 +125,7 @@ interface PageListItemProps {
 const PageListItem = memo(function PageListItem({
   pageItem, index: _index, onNavigate, selected = false, onToggleSelect,
   showSource = false, showVisibility = false, showQuality = false,
+  showIdleEmbedding = false, selectionArmed = false, spaceName = null,
 }: PageListItemProps) {
   return (
     <m.div
@@ -134,7 +141,7 @@ const PageListItem = memo(function PageListItem({
           // the pressed recipe (`bg-accent`), not an extra border — that
           // competed with hover and failed forced-colors without the
           // transparent 1px that becomes `--color-border-interactive`.
-          'nm-focus-ring flex w-full items-center gap-3 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors max-sm:items-start forced-colors:border-border-interactive',
+          'group nm-focus-ring flex w-full items-center gap-3 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors max-sm:items-start forced-colors:border-border-interactive',
           selected
             ? 'bg-accent'
             : 'hover:bg-accent',
@@ -151,8 +158,14 @@ const PageListItem = memo(function PageListItem({
             onChange={() => { /* click handler owns this; keeps React controlled */ }}
             aria-label={`Select ${pageItem.title}`}
             // The 2px nudge centres the 16px box on the title's ~20px line
-            // when the row top-aligns below `sm`.
-            className="size-4 shrink-0 cursor-pointer accent-[var(--color-primary)] max-sm:mt-0.5"
+            // when the row top-aligns below `sm`. On pointer devices the box
+            // stays in the tree (keyboard, tests) but recedes until hover,
+            // focus, or an active selection — so the resting scan is titles.
+            // Touch has no hover, so the box stays visible below `sm`.
+            className={cn(
+              'size-4 shrink-0 cursor-pointer accent-[var(--color-primary)] max-sm:mt-0.5',
+              !selected && !selectionArmed && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
+            )}
             data-testid={`page-select-${pageItem.id}`}
           />
         )}
@@ -184,7 +197,7 @@ const PageListItem = memo(function PageListItem({
                   is what made forty rows look like forty cards. */}
               <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
                 {pageItem.icon && <PageIcon icon={pageItem.icon} pageId={pageItem.id} size="row" />}
-                <span className="min-w-0 truncate">{pageItem.title}</span>
+                <span className="min-w-0 truncate" title={pageItem.title}>{pageItem.title}</span>
               </p>
               {/* Source badge. Neutral, like Private below: a source is a
                   category, not a state, so it may not borrow the status
@@ -228,32 +241,40 @@ const PageListItem = memo(function PageListItem({
               )}
             </div>
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              {pageItem.spaceKey !== '__local__' && <span>{pageItem.spaceKey}</span>}
+              {pageItem.spaceKey !== '__local__' && (
+                <span title={pageItem.spaceKey ?? undefined}>{spaceName || pageItem.spaceKey}</span>
+              )}
               {pageItem.author && <span>{pageItem.author}</span>}
               {pageItem.lastModifiedAt && (
                 <span>{new Date(pageItem.lastModifiedAt).toLocaleDateString()}</span>
               )}
             </div>
           </div>
-          {/* Trailing status cluster. `hidden sm:flex` because none of these
-              can shrink: at 390px they held their width, drove the title's
-              `min-w-0` block to zero, and rendered on top of the badges inside
-              it — the row showed five overlapping pills and no title.
+          {/* Labels before pipeline chips: identity, then category, then the
+              one state that discriminates. `hidden sm:flex` because none of
+              these can shrink: at 390px they held their width, drove the
+              title's `min-w-0` block to zero, and rendered on top of the
+              badges inside it — the row showed five overlapping pills and
+              no title.
 
               Hidden rather than dropped, so they stay in the DOM for tests and
               for assistive tech, and so the same row markup serves both widths.
               The facts are not lost on mobile: every one of them is on the page
               itself, which is one tap away. */}
-          {/* One pipeline badge, at every width, and it renders NOTHING when the
-              page is healthy or the job was deliberately skipped. This replaces
-              three near-duplicate pills ("Skipped / Skipped / Not Embedded");
-              the severity ladder and the reasoning live in PageStateBadge. */}
-          <PageStateBadge
-            embeddingDirty={pageItem.embeddingDirty}
-            summaryStatus={pageItem.summaryStatus}
-            qualityStatus={pageItem.qualityStatus}
-          />
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
+            {pageItem.labels.length > 0 && (
+              <div className="flex gap-1">
+                {pageItem.labels.slice(0, 3).map((label) => (
+                  <span
+                    key={label}
+                    className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                    data-testid="label-chip"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            )}
             {/* Only when a score EXISTS. A number about the content is not
                 pipeline state and an author acts on it differently — but
                 "Not Scored" IS pipeline state, and PageStateBadge owns that. */}
@@ -275,20 +296,16 @@ const PageListItem = memo(function PageListItem({
                 which this row already prints as a date three lines above. Two
                 renderings of one field read as two facts. It stays on the page
                 detail and preview surfaces, where no raw date sits beside it. */}
-            {pageItem.labels.length > 0 && (
-              <div className="flex gap-1">
-                {pageItem.labels.slice(0, 3).map((label) => (
-                  <span
-                    key={label}
-                    className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
-                    data-testid="label-chip"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            )}
           </div>
+          {/* One pipeline badge, at every width, and it renders NOTHING when
+              the page is healthy, the job was skipped, or idle "Not indexed"
+              is suppressed on this list. Failures still show. */}
+          <PageStateBadge
+            embeddingDirty={pageItem.embeddingDirty}
+            summaryStatus={pageItem.summaryStatus}
+            qualityStatus={pageItem.qualityStatus}
+            showIdleEmbedding={showIdleEmbedding}
+          />
         </button>
       </div>
     </m.div>
@@ -311,6 +328,9 @@ const PageListItem = memo(function PageListItem({
   if (prev.showSource !== next.showSource) return false;
   if (prev.showVisibility !== next.showVisibility) return false;
   if (prev.showQuality !== next.showQuality) return false;
+  if (prev.showIdleEmbedding !== next.showIdleEmbedding) return false;
+  if (prev.selectionArmed !== next.selectionArmed) return false;
+  if (prev.spaceName !== next.spaceName) return false;
   return true;
 });
 
@@ -545,7 +565,7 @@ export function PagesPage() {
     {
       key: '/',
       keys: ['/'],
-      description: 'Focus Find',
+      description: 'Filter this list',
       category: 'navigation',
       action: focusSearchInput,
     },
@@ -673,6 +693,15 @@ export function PagesPage() {
     return vis.size > 1;
   }, [pageItems]);
   const showQualityBadges = Boolean(qualityFilter);
+  const showIdleEmbedding = embeddingStatus === 'pending';
+  const selectionArmed = selectedIds.size > 0;
+  const spaceNameByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of spaces ?? []) {
+      if (s.key && s.name) map.set(s.key, s.name);
+    }
+    return map;
+  }, [spaces]);
   const scrollMargin = listContainerRef.current?.offsetTop ?? 0;
 
   const toggleSelect = useCallback((id: string, shiftKey: boolean) => {
@@ -794,10 +823,11 @@ export function PagesPage() {
           first viewport to say "these things belong together", which their
           adjacency already said. */}
       <section aria-labelledby="kb-filters-heading" className="space-y-3">
-        <h2 id="kb-filters-heading" className="sr-only">Find and filter pages</h2>
+        <h2 id="kb-filters-heading" className="sr-only">Filter pages</h2>
         <div className="flex flex-wrap items-center gap-3">
-          {/* Find — the start-page primary. Source, sort and KPI sit behind
-              Filters so first paint is Find, space scope, then the list. */}
+          {/* List filter — the start-page primary. Source, sort and KPI sit
+              behind Filters so first paint is this field, space scope, then
+              the list. Header Find (command palette) is a different control. */}
           <div className="relative flex-1 min-w-48">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input
@@ -870,7 +900,7 @@ export function PagesPage() {
             className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
             data-testid="search-mode-toggle"
             role="group"
-            aria-label="Find mode"
+            aria-label="Search mode"
             aria-describedby="find-mode-hint"
           >
               {([
@@ -1227,8 +1257,8 @@ export function PagesPage() {
         </div>
       )}
 
-      {/* Pinned — after Find, then the list. Filters (source, sort, KPI)
-          sit in the panel above, not between Find and pins. */}
+      {/* Pinned — after the list filter, then the list. Filters (source,
+          sort, KPI) sit in the panel above, not between the field and pins. */}
       <PinnedArticlesSection />
 
       {/* No-embeddings warning for semantic/hybrid search */}
@@ -1353,7 +1383,7 @@ export function PagesPage() {
                         <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
                           <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
                             {item.icon && <PageIcon icon={item.icon} pageId={item.id} size="row" />}
-                            <span className="min-w-0 truncate">{item.title}</span>
+                            <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
                           </p>
                           {/* `contain:inline-size` zeroes the excerpt's
                               contribution to the block's intrinsic width.
@@ -1511,8 +1541,13 @@ export function PagesPage() {
             {/* Select-all + bulk actions. The four /pages/bulk/* endpoints
                 shipped with no UI, so re-embedding a large space meant one
                 row at a time. */}
-            <div className="mb-3 space-y-3">
-              <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+            <div className={cn(selectionArmed && 'mb-3 space-y-3')}>
+              <label
+                className={cn(
+                  'flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground',
+                  !selectionArmed && 'sr-only',
+                )}
+              >
                 <input
                   type="checkbox"
                   checked={allVisibleSelected}
@@ -1567,6 +1602,9 @@ export function PagesPage() {
                         showSource={showSourceBadges}
                         showVisibility={showVisibilityBadges}
                         showQuality={showQualityBadges}
+                        showIdleEmbedding={showIdleEmbedding}
+                        selectionArmed={selectionArmed}
+                        spaceName={pageItem.spaceKey ? spaceNameByKey.get(pageItem.spaceKey) ?? null : null}
                       />
                     </div>
                   </div>
