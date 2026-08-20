@@ -538,39 +538,32 @@ export function AppLayout({ children }: { children: ReactNode }) {
           the same outer frame visible on the left, right and bottom. It sits
           outside the brighter workspace card. Height is --app-header-height
           so the side inset can grow without stretching this band. */}
-      <header className="app-header relative z-10 flex shrink-0 items-center gap-2">
-        <div className="flex min-w-0 items-center gap-3 md:contents">
-        {/* Mobile hamburger — opens sidebar slide-over */}
-        <button
-          type="button"
-          onClick={() => {
-            setMobileContextOpen(false);
-            setMobileSidebarOpen((v) => !v);
-          }}
-          className="nm-icon-button md:hidden"
-          aria-label={mobileSidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
-          aria-expanded={mobileSidebarOpen}
-          aria-controls="mobile-nav-sidebar"
-        >
-          {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
-        </button>
+      <header className="app-header relative z-10 flex shrink-0 items-center justify-between px-3">
+        <div className="flex min-w-0 items-center gap-3">
+          {/* Mobile hamburger — opens sidebar slide-over */}
+          <button
+            type="button"
+            onClick={() => {
+              setMobileContextOpen(false);
+              setMobileSidebarOpen((v) => !v);
+            }}
+            className="nm-icon-button md:hidden"
+            aria-label={mobileSidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
+            aria-expanded={mobileSidebarOpen}
+            aria-controls="mobile-nav-sidebar"
+          >
+            {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
+          </button>
 
-        {/* Same column as MainNavChassisRail so the mark sits on the grey
-            chassis above Pages / AI / Graph instead of a wider header slot
-            that made the rail look off-centre. */}
-        <Link
-          to="/"
-          aria-label="Compendiq home"
-          data-testid="header-chassis-slot"
-          className="flex w-[var(--app-nav-rail-width)] shrink-0 items-center justify-center group"
-        >
-          {/* Clip to the Q-tile below `md` so hamburger + lockup + session
-              controls fit the 60px. The SVG itself stays the full
-              lockup; overflow hides the wordmark rather than squashing it. */}
-          <span className="block h-[22px] w-[22px] overflow-hidden">
-            <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
-          </span>
-        </Link>
+          {/* Full horizontal lockup (Q-tile + Compendiq wordmark) */}
+          <Link
+            to="/"
+            aria-label="Compendiq home"
+            data-testid="header-chassis-slot"
+            className="flex items-center rounded-md transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Logo className="h-6 w-auto text-foreground" title="Compendiq" />
+          </Link>
         </div>
         <div className="ml-auto flex min-w-0 items-center justify-end gap-1">
           {isArticleRoute && isMobileLayout && (

@@ -225,10 +225,8 @@ describe('AppLayout', () => {
     }
     const shell = screen.getByTestId('app-shell');
     expect(shell.className).not.toMatch(/\bgap-/);
-    expect(screen.getByTestId('header-chassis-slot').className).toContain(
-      'w-[var(--app-nav-rail-width)]',
-    );
-    expect(screen.getByTestId('header-chassis-slot').className).toContain('justify-center');
+    expect(screen.getByTestId('header-chassis-slot')).toBeInTheDocument();
+    expect(screen.getByLabelText('Compendiq home')).toBeInTheDocument();
   });
 
   it('keeps the command palette out of persistent header chrome', () => {
