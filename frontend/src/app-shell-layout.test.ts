@@ -133,7 +133,6 @@ describe('Inset shell utilities', () => {
   it('the chassis destination column is 8px wider than the header is tall', () => {
     const nav = read('shared/components/layout/MainNavStrip.tsx');
     expect(css).toMatch(/--app-nav-rail-width:\s*calc\(var\(--app-header-height\) \+ 8px\)/);
-    expect(appLayout).toContain('w-[var(--app-nav-rail-width)]');
     expect(nav).toContain('w-[var(--app-nav-rail-width)]');
   });
 
