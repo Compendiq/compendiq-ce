@@ -18,6 +18,7 @@ import { BulkActionBar } from './BulkActionBar';
 import { bulkWireId } from '../../shared/hooks/use-bulk-page-actions';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { LibrarySpaceFilter } from './LibrarySpaceFilter';
+import { LibrarySortFilter } from './LibrarySortFilter';
 import {
   readFilterState,
   applyFilterPatch,
@@ -1585,16 +1586,13 @@ export function PagesPage() {
                   Select pages
                 </button>
               )}
-              <label className="ml-auto flex items-center gap-2 text-xs">
-                <span>Sort</span>
-                <select id="filter-sort-select" value={sort} onChange={(e) => setFilters({ sort: e.target.value as typeof sort })} className="nm-select-md h-8 min-w-36" aria-label="Sort pages">
-                  <option value="modified">Last Modified</option>
-                  <option value="title">Title</option>
-                  <option value="author">Author</option>
-                  <option value="quality">Quality Score</option>
-                  <option value="relevance">Relevance</option>
-                </select>
-              </label>
+              <div className="ml-auto flex items-center gap-1.5 text-xs">
+                <span className="text-muted-foreground">Sort</span>
+                <LibrarySortFilter
+                  value={sort}
+                  onChange={(newSort) => setFilters({ sort: newSort, page: 1 })}
+                />
+              </div>
             </div>
             {/* Select-all + bulk actions. The four /pages/bulk/* endpoints
                 shipped with no UI, so re-embedding a large space meant one

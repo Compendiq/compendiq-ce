@@ -597,7 +597,7 @@ export function SidebarTreeView({
         setTreeSidebarWidth(treeSidebarWidth + 16);
       } else if (e.key === 'Home') {
         e.preventDefault();
-        setTreeSidebarWidth(280);
+        setTreeSidebarWidth(282);
       }
     },
     [treeSidebarWidth, setTreeSidebarWidth],
@@ -1365,7 +1365,7 @@ export function SidebarTreeView({
         aria-valuetext={`${treeSidebarWidth} pixels`}
         tabIndex={0}
         onMouseDown={handleResizeStart}
-        onDoubleClick={() => setTreeSidebarWidth(280)}
+        onDoubleClick={() => setTreeSidebarWidth(282)}
         onKeyDown={handleResizeKeyDown}
         className={cn(
           'group absolute bottom-0 right-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-end outline-none',

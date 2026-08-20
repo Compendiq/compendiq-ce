@@ -722,12 +722,6 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   background: var(--color-card);
 }
 
-@media (min-width: 768px) {
-  .app-content-pane {
-    border-left: 1px solid var(--color-border);
-  }
-}
-
 /* Panel composition primitives. Sidebars share the same chassis, but their
    internal hierarchy comes from quiet chrome, a single context control, and
    section rhythm rather than a stack of card-like containers. */
