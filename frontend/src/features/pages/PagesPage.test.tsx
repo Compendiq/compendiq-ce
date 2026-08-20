@@ -300,6 +300,20 @@ describe('PagesPage', () => {
     expect(screen.getByPlaceholderText(FIND_PLACEHOLDER)).toBeInTheDocument();
     expect(screen.getByLabelText(FIND_LABEL)).toBeInTheDocument();
     expect(screen.getByTestId('advanced-filters-toggle')).toBeInTheDocument();
+    expect(screen.getByTestId('library-filter-panel')).toHaveClass('bg-background', 'border');
+    expect(screen.getByTestId('page-search-field')).toHaveClass('basis-full');
+  });
+
+  it('frames browse results as one table-like work surface', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    await screen.findByText('Test Page');
+    expect(screen.getByTestId('library-results-panel')).toHaveClass(
+      'overflow-hidden',
+      'rounded-lg',
+      'border',
+      'bg-background',
+    );
   });
 
   it('shows the space name on a list row, not only the key', async () => {
@@ -534,6 +548,16 @@ describe('PagesPage', () => {
     // Find is the first content control; pinned follows it.
     const comparison = filtersToggle.compareDocumentPosition(section);
     expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('gives the page search field the full command-surface row at every breakpoint', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('page-search-field')).toHaveClass(
+      'basis-full',
+      'min-w-full',
+    );
+    expect(screen.getByLabelText(FIND_LABEL)).toHaveClass('h-10', 'text-sm');
   });
 
   describe('error state (pages query failed)', () => {
@@ -1721,10 +1745,11 @@ describe('PagesPage', () => {
       expect(items.length).toBeLessThan(200);
     });
 
-    it('paints library rows like the page tree, not as cards', async () => {
+    it('paints library rows as divided rows inside the shared results surface', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       const item = await screen.findByTestId('article-hover-page-1');
-      expect(item.className).toContain('border-transparent');
+      expect(item.className).toContain('border-b');
+      expect(item.className).toContain('border-border');
       expect(item.className).toContain('hover:bg-accent');
       expect(item.className).not.toContain('bg-card');
     });

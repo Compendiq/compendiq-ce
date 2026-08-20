@@ -32,6 +32,8 @@ describe('HeaderFindButton', () => {
     render(<HeaderFindButton />, { wrapper });
     expect(screen.getByRole('button', { name: 'Find pages & commands' })).toBeInTheDocument();
     expect(screen.getByText('Find')).toBeInTheDocument();
+    expect(screen.getByText('pages and commands')).toBeInTheDocument();
+    expect(screen.getByTestId('header-find')).toHaveClass('app-find-trigger');
   });
 });
 

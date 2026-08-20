@@ -141,7 +141,7 @@ const PageListItem = memo(function PageListItem({
           // the pressed recipe (`bg-accent`), not an extra border — that
           // competed with hover and failed forced-colors without the
           // transparent 1px that becomes `--color-border-interactive`.
-          'group nm-focus-ring flex w-full items-center gap-3 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors max-sm:items-start forced-colors:border-border-interactive',
+          'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors max-sm:items-start',
           selected
             ? 'bg-accent'
             : 'hover:bg-accent',
@@ -803,7 +803,7 @@ export function PagesPage() {
     // at wide viewports — the eye had nothing to bind them across. No
     // `mx-auto`: this is a workspace pane beside a sidebar, not a centered
     // page, so the cap should keep content flush-left, not float it.
-    <div className="max-w-[1100px] space-y-3">
+    <div className="max-w-[1180px] space-y-5">
       <HeaderHost fallbackClassName="mb-1">
         <div className="flex min-w-0 items-center justify-between gap-3">
           <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">{LIBRARY_HEADING}</h1>
@@ -840,13 +840,20 @@ export function PagesPage() {
           are already legible as controls, and the box was spending ~90px of the
           first viewport to say "these things belong together", which their
           adjacency already said. */}
-      <section aria-labelledby="kb-filters-heading" className="space-y-3">
+      <section
+        aria-labelledby="kb-filters-heading"
+        className="space-y-3 rounded-lg border border-border bg-background p-3 sm:p-4"
+        data-testid="library-filter-panel"
+      >
         <h2 id="kb-filters-heading" className="sr-only">Filter pages</h2>
         <div className="flex flex-wrap items-center gap-3">
           {/* List filter — the start-page primary. Source, sort and KPI sit
               behind Filters so first paint is this field, space scope, then
               the list. Header Find (command palette) is a different control. */}
-          <div className="relative flex-1 min-w-48">
+          <div
+            className="relative min-w-full basis-full flex-1"
+            data-testid="page-search-field"
+          >
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input
               ref={searchInputRef as RefObject<HTMLInputElement>}
@@ -881,7 +888,7 @@ export function PagesPage() {
                   setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                 }
               }}
-              className="nm-input pl-10 pr-10"
+              className="nm-input h-10 pl-10 pr-10 text-sm"
             />
             {search ? (
               <button
@@ -1045,7 +1052,7 @@ export function PagesPage() {
 
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div id="advanced-filters-panel" className="space-y-4 border-t border-border pt-3" data-testid="advanced-filters-panel">
+          <div id="advanced-filters-panel" className="space-y-4 rounded-md border border-border bg-card p-3" data-testid="advanced-filters-panel">
             <fieldset className="space-y-2">
               <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Content</legend>
               <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-3">
@@ -1337,7 +1344,7 @@ export function PagesPage() {
       ) : (
       <>
       {/* Page list — semantic/hybrid search results */}
-      <section aria-labelledby="kb-results-heading">
+      <section aria-labelledby="kb-results-heading" className="space-y-3">
       <h2 id="kb-results-heading" className="sr-only">Page results</h2>
       {useSemanticSearch ? (
         <>
@@ -1366,11 +1373,11 @@ export function PagesPage() {
               />
             ) : (
               <>
-                <p className="text-sm text-muted-foreground" data-testid="search-results-count">
+                <p className="text-sm font-medium text-foreground" data-testid="search-results-count">
                   {searchResults.total} {searchResults.total === 1 ? 'result' : 'results'}
                   <span className="ml-2 text-xs text-muted-foreground/60">({SEARCH_MODE_LABELS[searchMode]})</span>
                 </p>
-                <div className="space-y-0.5">
+                <div className="overflow-hidden rounded-lg border border-border bg-background">
                   {displayItems.map((item, i) => (
                     <m.div
                       key={item.id}
@@ -1380,7 +1387,7 @@ export function PagesPage() {
                     >
                       <button
                         onClick={() => navigate(`/pages/${item.id}`)}
-                        className="nm-focus-ring flex w-full items-center gap-3 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-accent max-sm:items-start max-sm:flex-wrap max-sm:gap-y-1 forced-colors:border-border-interactive"
+                        className="nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 hover:bg-accent max-sm:items-start max-sm:flex-wrap max-sm:gap-y-1"
                         data-testid={`article-hover-${item.id}`}
                       >
                         <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
@@ -1541,7 +1548,8 @@ export function PagesPage() {
             />
           ) : (
             <>
-            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
+            <div data-testid="library-results-panel" className="overflow-hidden rounded-lg border border-border bg-background">
+            <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
               <span>{pagesData.total} {pagesData.total === 1 ? 'page' : 'pages'}</span>
               {selectedSpace && <><span aria-hidden="true"> · </span><span>{selectedSpace.name}</span></>}
               <label className="ml-auto flex items-center gap-2 text-xs">
@@ -1558,7 +1566,7 @@ export function PagesPage() {
             {/* Select-all + bulk actions. The four /pages/bulk/* endpoints
                 shipped with no UI, so re-embedding a large space meant one
                 row at a time. */}
-            <div className="mb-3 space-y-3">
+            <div className="space-y-3 border-b border-border px-3 py-2.5">
               {!selectionArmed && (
                 <button type="button" onClick={() => setSelectionMode(true)} className="nm-button-ghost h-8 px-2.5 text-xs" data-testid="enter-selection-mode">
                   Select pages
@@ -1614,7 +1622,7 @@ export function PagesPage() {
                       transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
                     }}
                   >
-                    <div className="pb-0.5">
+                    <div>
                       <PageListItem
                         pageItem={pageItem}
                         index={virtualRow.index}
@@ -1632,6 +1640,7 @@ export function PagesPage() {
                   </div>
                 );
               })}
+            </div>
             </div>
             </>
           )}

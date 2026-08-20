@@ -20,13 +20,16 @@ export function HeaderFindButton() {
     <button
       type="button"
       onClick={open}
-      className="nm-icon-button sm:w-auto sm:gap-1 sm:px-2"
+      className="nm-icon-button app-find-trigger"
       aria-label={FIND_LABEL}
       data-testid="header-find"
     >
       <Search size={16} aria-hidden="true" />
-      <span className="hidden text-sm font-medium sm:inline">Find</span>
-      <ShortcutHint shortcutId="search" className="ml-0 hidden sm:inline" />
+      <span className="hidden min-w-0 flex-1 items-baseline gap-1 text-left text-sm sm:flex">
+        <span className="font-medium text-foreground">Find</span>
+        <span className="truncate text-muted-foreground">pages and commands</span>
+      </span>
+      <ShortcutHint shortcutId="search" className="ml-auto hidden sm:inline" />
     </button>
   );
 }

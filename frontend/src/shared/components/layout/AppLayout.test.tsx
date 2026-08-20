@@ -249,6 +249,17 @@ describe('AppLayout', () => {
     expect(useCommandPaletteStore.getState().isOpen).toBe(true);
   });
 
+  it('separates route content from the surrounding workspace chrome', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+
+    expect(document.getElementById('main-content')).toHaveClass('app-content-pane');
+  });
+
   it('keeps session chrome in the header landmark', () => {
     render(
       <AppLayout>

@@ -614,16 +614,16 @@ export function AppLayout({ children }: { children: ReactNode }) {
             : <SidebarTreeView embedMainNav={false} />}
         </div>
 
-          {/* The workspace card is one surface: nav and document share
-              --app-shell-bg. Painting <main> as bg-card made a second fill
-              inside the same rounded card. The chassis is now the ground,
-              so the card does not need a pane-within-pane. */}
+          {/* Navigation is quiet chrome; <main> is the brighter content pane.
+              They remain one clipped workspace composition, separated by a
+              single value step and hairline rather than nested cards or
+              elevation. */}
           <main
             id="main-content"
             // Not natively focusable — the skip link above targets this id and
             // needs an explicit tabIndex to accept programmatic focus at all.
             tabIndex={-1}
-            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden focus:outline-none"
+            className="app-content-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden focus:outline-none"
           >
             <div
               ref={scrollContainerRef}

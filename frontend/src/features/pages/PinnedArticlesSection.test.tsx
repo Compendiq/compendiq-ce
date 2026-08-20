@@ -141,7 +141,7 @@ describe('PinnedArticlesSection', () => {
     expect(titleElement.className).not.toContain('line-clamp-2');
   });
 
-  it('renders pinned pages as list rows, not a card gallery', async () => {
+  it('renders pinned pages as compact saved-item cards inside the shelf', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(mockPinnedResponse), {
         headers: { 'Content-Type': 'application/json' },
@@ -158,10 +158,10 @@ describe('PinnedArticlesSection', () => {
     expect(row.className).toContain('rounded-md');
     expect(row.className).not.toContain('rounded-xl');
     expect(row.className).not.toContain('h-full');
-    expect(row.className).not.toContain('bg-card');
-    expect(row.className).toContain('border-transparent');
+    expect(row.className).toContain('bg-card');
+    expect(row.className).toContain('border-border');
     expect(row.className).toContain('hover:bg-accent');
-    expect(row.className).not.toMatch(/(?<!forced-colors:)border-border-interactive/);
+    expect(row.className).toContain('hover:border-border-interactive');
     const grid = document.getElementById('pinned-pages-grid')?.className ?? '';
     expect(grid).toContain('grid');
     expect(grid).toContain('xl:grid-cols-4');
@@ -389,6 +389,7 @@ describe('PinnedArticlesSection', () => {
     expect(section.tagName).toBe('SECTION');
     expect(section).toHaveAttribute('aria-labelledby', 'pinned-pages-heading');
     expect(document.getElementById('pinned-pages-heading')).toHaveTextContent('Pinned');
+    expect(section).toHaveClass('rounded-lg', 'border', 'bg-background');
   });
 
   // Unpinning unmounts the card that owns the focused button. Without a
