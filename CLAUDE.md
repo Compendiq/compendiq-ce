@@ -160,18 +160,13 @@ by blind labellers on a different model from the implementer, in two styles —
 which a leg that always answers with a picture scores like one that answers
 correctly. `fixture-de-images.test.ts` pins the sha, the counts, the per-language
 negative floors and the caption rule. **The negative slice is blind end to end
-(#1370, done):** the four merger-written English negatives (`img-06-*`) are gone
-and six blind ones took their place (`img-07/08/09-*`, three further independent
-labellers over thirds of the corpus, 24 of the ceiling's 26 rungs now in use).
-The merger adjudicates and never authors — a candidate is kept verbatim or
-rejected, after opening every image on its page — and a labeller's numbering is
-their own candidate order, so a gap in a slice is a rejection. **What that
-leaves owed is the next measurement:** ADR-025's `--images` table was measured on
-the pre-#1370 fixture (307 labels, 22 negatives), so the next run scores a
-different negative slice, must say so beside `delta.perStyle['image-negative']`,
-and cannot pair against those numbers through `--baseline` —
-`pairedBootstrapCi` refuses differing query sets, and no image-axis report is
-committed anyway.
+(#1370, done):** six blind labels (`img-07/08/09-*`) replace the four
+merger-written ones; the merger only adjudicates verbatim candidates, so a
+labeller's numbering gap records a rejection. ADR-025's `--images` table used
+the old 307-label, 22-negative fixture: the next run must identify its changed
+negative slice beside `delta.perStyle['image-negative']` and cannot pair against
+those numbers through `--baseline` (`pairedBootstrapCi` rejects differing query
+sets); no image-axis report is committed.
 `--images` is a SECOND AXIS, not a flag on the gate: it answers what the leg
 ADDS, so it seeds a different corpus against a different fixture with its own
 runner, its own report family (`axis: 'images'`) and its own default `--out`
