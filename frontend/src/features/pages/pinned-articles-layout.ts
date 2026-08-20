@@ -11,9 +11,8 @@
  *
  * There is no cap on pinning any more — the server accepts as many as the user
  * wants. This strip sits after Find and before the page list, so an ungoverned
- * grid at 30+ pins pushes the actual work below the fold. Eight is two rows at
- * the widest breakpoint, and it leaves every user who was under the old cap
- * with exactly the dashboard they had yesterday.
+ * grid at 30+ pins pushes the actual work below the fold. Four is one row at
+ * the widest breakpoint, which keeps pins a jump-back-in strip, not a second list.
  *
  * Deliberately a constant rather than a per-breakpoint count: a responsive count
  * would need a JS width query, and those exist only where the *tree* changes
@@ -21,7 +20,7 @@
  * every other responsive decision stays a Tailwind class. It would also make
  * the toggle's "N more" label wrong at some widths.
  */
-export const COLLAPSED_PIN_COUNT = 8;
+export const COLLAPSED_PIN_COUNT = 4;
 
 /**
  * Entrance delay for the card at `index`, in seconds.
