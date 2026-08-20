@@ -49,10 +49,10 @@ describe('ThemeTab', () => {
     expect(screen.getByText('Graphite')).toBeInTheDocument();
     expect(screen.getByText('Paper')).toBeInTheDocument();
     expect(
-      screen.getByText('Neutral graphite surfaces with one teal accent'),
+      screen.getByText('Neutral graphite surfaces with one Steel accent'),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('Neutral paper surfaces with one teal accent'),
+      screen.getByText('Neutral paper surfaces with one Steel accent'),
     ).toBeInTheDocument();
   });
 

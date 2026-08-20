@@ -22,22 +22,19 @@
 @import "@fontsource-variable/jetbrains-mono/index.css";
 
 /* ============================================
-   Compendiq — Mineral Steel (dark + light)
+   Compendiq — Graphite / Paper with Steel
 
-   A mineral slate-and-steel system. Deep blue-green ink carries the dark
-   workspace; softly warmed sage paper carries the light workspace. Steel
-   remains the single brand + interaction accent, amber is held back for
-   warning and attention, and violet marks AI. Dark is primary; light is a
-   fully designed sibling rather than a mechanical inversion.
+   A calm, neutral workspace system inspired by the value discipline of Plane
+   and Linear. Five flat surfaces form the depth ladder; one desaturated steel
+   blue carries brand and interaction. Amber remains warning-only, violet
+   marks AI, and green/red retain success/failure semantics. Graphite and Paper
+   are composed siblings, not mechanical inversions.
 
-   Supersedes the Graphite Honey / Honey Linen pair (neutral graphite + honey
-   #F9C74F). Compendiq's neumorphic depth model is kept — the `nm-*` recipes
-   are unchanged in structure, retuned from a warm honey-tinted highlight to a
-   cool slate one so the extrusion reads correctly against navy.
-
-   NOTE: this palette intentionally no longer mirrors
-   compendiq-landing/src/styles/tokens.css. Cross-surface brand parity
-   (ADR-010) is broken until the landing page adopts the same steel tokens.
+   The eight production roles are documented in ADR-010 v0.7. Keep their
+   values centralised here: Canvas (`--app-chassis`), Chrome
+   (`--app-header-bg`), Workspace (`--color-background`), Pane
+   (`--color-card`), Raised (`--color-card-elevated`), Border,
+   Interactive border, and Accent (`--color-primary`).
    ============================================ */
 
 /* Base font: browser default 16px. The May-2026 UI/UX audit ran on a 15px
@@ -85,14 +82,14 @@ body {
 
 /* Text selection. There was no ::selection rule at all, which left the single
    highest-frequency interaction in an editor rendering at the UA default —
-   Chrome's #0075FF-ish blue — in a palette declared neutral-plus-one-teal, and
+   Chrome's #0075FF-ish blue — in a palette declared neutral-plus-one-steel, and
    untested for contrast in either theme.
 
    The accent is mixed down to 28% rather than used neat: selection sits BEHIND
    text that keeps its own colour, so it has to stay light enough for
    `--color-text` to clear 4.5:1 on top of it in both themes. `color-mix` in
-   oklab keeps that ratio predictable when the teal is retuned, which is the
-   whole reason the two themes carry different teals in the first place.
+   oklab keeps that ratio predictable when the steel accent is retuned, which
+   is why the two themes carry independently tuned Steel values.
 
    Not set on a dark/light branch: both themes composite the same accent over
    their own surface, so one rule tracks both. */
@@ -176,7 +173,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 @theme {
   /* Default theme: Graphite — the dark half of Compendiq's workspace system.
 
-     A neutral graphite chassis carrying one teal accent. Surfaces are FLAT:
+     A neutral graphite chassis carrying one Steel accent. Surfaces are FLAT:
      a pane is distinguished from its chassis by a value step and a 1px
      hairline, never by extrusion, gradient or glow. That is the whole depth
      model, and it is what makes ~20 routes of dense list, form and document
@@ -189,36 +186,36 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      Every value is verified by src/workspace-themes.test.ts, which parses these
      tokens and COMPUTES WCAG ratios rather than pinning hex literals. Retune a
      surface and it fails with the measured ratio. */
-  --color-background: #141515;          /* Plane surface-1 — inner chrome */
-  --color-foreground: #e4e6e7;          /* Plane body ink, not near-white */
-  --color-card: #161717;                /* content pane, almost the same field */
-  --color-card-foreground: #e4e6e7;
-  --color-card-elevated: #1e1f1f;       /* popovers, dialogs, raised panes */
-  /* Teal — the single brand AND interaction accent: brand mark, primary
+  --color-background: #0f0f10;          /* Workspace — navigation and AI rail */
+  --color-foreground: #e7e9eb;          /* Graphite ink */
+  --color-card: #161617;                /* Pane — softened document and route content */
+  --color-card-foreground: #e7e9eb;
+  --color-card-elevated: #1b1b1d;       /* Raised — popovers and dialogs */
+  /* Steel — the single brand AND interaction accent: brand mark, primary
      buttons, links, active nav, focus ring. One hue carries both identity and
      every actionable affordance, so "is this clickable?" never depends on
      telling two similar accents apart. */
-  --color-primary: #4dd0e1;
-  --color-primary-foreground: #05242b;  /* ink on the teal fill */
-  --color-primary-gradient-start: #4dd0e1;
-  --color-primary-gradient-end: #4dd0e1; /* flat: the canon has no gradient fills */
-  --color-primary-glow: rgba(77, 208, 225, 0.26);
-  /* Teal clears AA as text on every dark surface unaided, so ink and fill
-     are the same value here (the light theme needs a darkened sibling). */
-  --color-primary-ink: #4dd0e1;
+  --color-primary: #86aec8;
+  --color-primary-foreground: #07131f;  /* ink on the Steel fill */
+  --color-primary-gradient-start: #86aec8;
+  --color-primary-gradient-end: #86aec8; /* flat: the canon has no gradient fills */
+  --color-primary-glow: rgba(134, 174, 200, 0.26);
+  /* Steel clears AA as text on every dark surface unaided, so ink and fill
+     are the same value. */
+  --color-primary-ink: #86aec8;
   /* Action ink — the neutral affordance for non-accent buttons: light fill,
-     dark text. Leaves teal free to mean "primary action". */
-  --color-action: #e4e6e7;             /* matches --color-foreground */
-  --color-action-foreground: #141515;
+     dark text. Leaves Steel free to mean "primary action". */
+  --color-action: #e7e9eb;             /* matches --color-foreground */
+  --color-action-foreground: #0f0f10;
   --color-action-hover: #f0f2f3;
   --color-secondary: #1c1d1d;
   --color-secondary-foreground: #c5c7c8;
   --color-muted: #1c1d1d;
   /* Measured against the WORST surface it lands on (the elevated pane),
      not the darkest — sidebar counts, hints and secondary labels inherit it. */
-  --color-muted-foreground: #9b9d9e;
+  --color-muted-foreground: #a0a4aa;
   --color-accent: #1c1d1d;
-  --color-accent-foreground: #e4e6e7;
+  --color-accent-foreground: #e7e9eb;
   /* Semantic aliases — ALWAYS var() references onto the status tokens below,
      never raw values. ~100 callsites say text-success / text-warning /
      text-destructive, and the vocabulary they speak is the status palette
@@ -232,16 +229,16 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      --color-border      hairline separators, table cells, prose rules. Quiet
                          by design; it draws structure, not boundaries.
      --color-border-interactive  the visible edge of anything you can operate.
-                         3.81:1 on bg / 3.26:1 on the elevated pane, so it
+                         3.96:1 on Workspace / 3.56:1 on Raised, so it
                          clears WCAG 1.4.11's 3:1 non-text floor on every
                          surface it appears on. The neumorphic recipe leans on
                          shadow for depth, and shadow is exactly what
                          forced-colors mode throws away — this border is what
                          survives. (The retired honey palette used one 1.60:1
                          border for both jobs and did not meet 1.4.11.) */
-  --color-border: #2a2b2b;
+  --color-border: #2a2a2d;
   --color-border-interactive: #71717a;
-  --color-ring: #4dd0e1;
+  --color-ring: #86aec8;
   --color-success: var(--color-status-connected);
   /* Amber is NOT the brand here — it is reserved for warning and attention,
      which is what makes it readable as a signal when it appears. */
@@ -258,7 +255,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      affordance. All ≥4.5:1 on both --color-background and --color-card. */
   --color-status-connected: #4ade80;
   --color-status-syncing: #fbbf24;
-  --color-status-embedding: #4dd0e1;
+  --color-status-embedding: #86aec8;
   --color-status-ai: #c084fc;
   --color-status-disconnected: #f87171;
   --color-status-inactive: #8b8f99;
@@ -343,11 +340,12 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Darkest step on the ladder — the viewport gutter around the workspace.
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
-  --app-chassis: #080809;
-  /* Shared header chrome. Slightly lighter than the viewport chassis and
-     darker than the workspace chrome, so top bars read as neutral framing
-     rather than another content pane. */
-  --app-header-bg: #101111;
+  --app-chassis: #09090a;
+  /* Internal panel-header chrome. Slightly lighter than the viewport chassis
+     and darker than the workspace chrome, so toolbars read as neutral framing
+     rather than another content pane. The top app header uses --app-chassis
+     to complete the continuous outer frame. */
+  --app-header-bg: #0c0c0d;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-background);
 
@@ -462,47 +460,38 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
 /* ---- Theme: Paper — the light half of the workspace system ----
    Not an inverted dark shell and not an independent palette: the same
-   three-step ladder (chassis → pane → elevated) with light-theme values. Every
+   five-step ladder (canvas → chrome → workspace → pane → raised) with light-theme values. Every
    surface, ink and status hue is the counterpart of the dark token above it,
    which is what lets both themes share one set of shell utilities. */
 [data-theme="paper"] {
-  /* A light ground, not a grey one. This went #f7f7f8 -> #f1f1f3 to widen the
-     ground-to-pane step, which the finish review was right to ask for — but at
-     #f1f1f3 the app read as grey rather than light, which is the opposite of
-     the named craft bar. Linear and Plane both sit near-white and carry the
-     pane edge on the HAIRLINE instead of a value step; `--color-border` below
-     is tuned to do that work here.
-     Owner decision (2026-08-06), taste over the reviewer's measurement: the
-     step is deliberately small again, and the border is what separates. */
-  --color-background: #fbfbfc;          /* paper chassis / sidebar ground */
+  /* Paper keeps the working region softly off-white rather than full white,
+     while giving the outer Canvas a visible cool-grey frame. Workspace stays
+     one small value step below Pane; the hairline reinforces their boundary
+     without turning the document into a card. */
+  --color-background: #f7f7f8;          /* Workspace — navigation and AI rail */
   --color-foreground: #17181a;          /* ink */
-  --color-card: #ffffff;                /* content pane */
+  --color-card: #fafafb;                /* softened content pane */
   --color-card-foreground: #17181a;
-  /* Elevated must differ from `card`, or an overlay over a pane rests entirely
-     on its shadow — and in forced-colors mode, where shadow is discarded,
-     on nothing at all. Slightly cool rather than brighter: white is already
-     the ceiling on this side, so elevation reads as a cleaner surface. */
-  --color-card-elevated: #fdfdfe;
-  --color-primary: #0e7490;             /* teal — the light-theme sibling */
+  /* Reserve true white for floating content. It separates an overlay from the
+     softened reading pane even when forced-colors discards the shadow. */
+  --color-card-elevated: #ffffff;
+  --color-primary: #3f627c;             /* Steel — the light-theme sibling */
   --color-primary-foreground: #ffffff;
-  --color-primary-gradient-start: #0e7490;
-  --color-primary-gradient-end: #0e7490; /* flat: the canon has no gradient fills */
-  --color-primary-glow: rgba(14, 116, 144, 0.22);
-  /* Unlike dark — where fill and ink are one value — the light theme keeps a
-     darkened sibling for TEXT. --color-primary clears 5.39:1 on the background;
-     this text-specific ink lands at 6.30:1.
-     Use it for links, eyebrow labels, and anywhere steel is a text color;
-     keep --color-primary for fills (buttons, pills, borders). */
-  --color-primary-ink: #0b6378;
+  --color-primary-gradient-start: #3f627c;
+  --color-primary-gradient-end: #3f627c; /* flat: the canon has no gradient fills */
+  --color-primary-glow: rgba(63, 98, 124, 0.22);
+  /* This Steel value clears AA as both fill and text (6.04:1 on Workspace,
+     6.20:1 on Pane), so Paper does not need a separate darker text sibling. */
+  --color-primary-ink: #3f627c;
   /* Action ink — the neutral affordance for non-accent buttons. Deep ink on
-     paper, mirroring dark's inverted pair; leaves teal free for "primary". */
+     paper, mirroring dark's inverted pair; leaves Steel free for "primary". */
   --color-action: #17181a;             /* matches --color-foreground */
   --color-action-foreground: #ffffff;
   --color-action-hover: #2a2c30;
   --color-secondary: #eeeef0;
   --color-secondary-foreground: #35373b;
   --color-muted: #eeeef0;
-  /* Measured against the WORST surface it lands on (white card), not the
+  /* Measured against the WORST surface it lands on (white Raised), not the
      grey chassis. */
   --color-muted-foreground: #63666d;
   --color-accent: #e8e8eb;
@@ -518,12 +507,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-destructive-foreground: #ffffff;
   /* Same two-weight split as dark: a quiet hairline for structure, and an
      interactive edge that clears 1.4.11's 3:1 on both background and card.
-     The hairline is a step stronger than it would otherwise be (#e2e2e6 ->
-     #dcdce1): with the ground moved to near-white, the pane boundary rests on
-     this border rather than on a value step, so it has to actually be visible.
+     The pane boundary rests on this hairline as well as a deliberately small
+     value step, so it has to remain visible without reading like a control.
      It is still a separator, NOT an operable edge — that stays
      --color-border-interactive, which the 3:1 test measures. */
-  --color-border: #dcdce1;
+  --color-border: #dedfe3;
   /* Darkened twice. First with the chassis: at #8b8f98 it measured 2.87:1 on
      the new ground, under 1.4.11's 3:1 floor. Then again, because #848892
      cleared the chassis and the card but measured **2.90:1 on the hovered
@@ -531,11 +519,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      bearing exactly when the pointer is on it.
      The guard had been measuring against the chassis and the card only, so
      the ADR's "≥3:1 on every surface" was a claim no test checked. It checks
-     all four Paper surfaces now. #7d818b is the value with headroom rather
-     than the first that squeaks past: 3.19 accent / 3.90 card / 3.77 bg /
-     3.46 muted. */
+     all five Paper surfaces now. #7d818b is the value with headroom rather
+     than the first that squeaks past: 3.19 accent / 3.74 Pane / 3.90 Raised /
+     3.64 Workspace / 3.37 muted. */
   --color-border-interactive: #7d818b;
-  --color-ring: #0e7490;
+  --color-ring: #3f627c;
   --color-success: var(--color-status-connected);
   --color-warning: var(--color-status-syncing);
   /* Indigo = informational, light sibling — see the dark block's note. */
@@ -545,13 +533,13 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      and card. Same role assignment as dark: steel = embedding, violet = AI. */
   --color-status-connected: #16794a;
   --color-status-syncing: #8a5a00;
-  --color-status-embedding: #0b6378;
+  --color-status-embedding: #3f627c;
   --color-status-ai: #7041a8;
   --color-status-disconnected: #c03434;
   --color-status-inactive: #63666d;
 
   /* Code colors — matched against --color-code-bg #eceef1, a neutral tint of the
-     background so a code block reads as recessed against the white pane. */
+     background so a code block reads as recessed against the off-white pane. */
   --color-code-bg: #eceef1;
   --color-code-keyword: #7041a8;
   --color-code-string: #18754a;
@@ -566,14 +554,13 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
   --inline-code-color: #7041a8;
 
-  /* Chassis must read as the gutter around the workspace card — Paper's
-     hairline is quiet, so the value step carries the detach. Stay darker
-     than #fbfbfc; do not climb back to #eef0f3 (that erased the gutter). */
-  --app-chassis: #eaecf0;
-  /* Plane-like cool grey for the app header and panel toolbars. This stays a
-     token because the same chrome appears above navigation, trees, settings,
-     and the article inspector. */
-  --app-header-bg: #f0f1f3;
+  /* Canvas is the cool-grey gutter around the near-white workspace card. */
+  --app-chassis: #eeeff0;
+  /* Plane-like cool grey for internal panel headers and toolbars. This stays
+     a token because the same chrome appears above navigation, trees, settings,
+     and the article inspector. The top app header remains Canvas so the outer
+     frame has one colour on all four sides. */
+  --app-header-bg: #f5f5f6;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-background);
 }
@@ -706,17 +693,15 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   background: var(--app-header-bg);
 }
 
-/* Shell surfaces carry the palette without competing with content. The
-   header is slightly denser than the canvas; sidebars are one tonal step
-   deeper, creating stable wayfinding without glass or a heavy shadow. */
-/* Chrome is the GROUND, content is the PANE. `--app-header-bg` carries the
-   header and toolbars while the sidebar keeps `--color-background`; the
-   content pane sits one value step up and is separated by a hairline, never by
-   a shadow. That inversion is the core move of the workspace canon: it is why
-   the document you are reading is the brightest thing on screen and the
-   navigation recedes without needing to be dimmed. */
+/* Shell surfaces carry the palette without competing with content. The top
+   app header continues the Canvas around the workspace on all four sides;
+   internal panel headers use Chrome and sidebars use Workspace, creating
+   stable wayfinding without glass or a heavy shadow. Content is the Pane: it
+   sits one value step up and is separated by a hairline, never by a shadow.
+   That ladder is why the document you are reading is the brightest thing on
+   screen and navigation recedes without needing to be dimmed. */
 @utility app-header {
-  background: var(--app-header-bg);
+  background: var(--app-chassis);
   border-color: var(--color-border);
   height: var(--app-header-height);
   min-height: var(--app-header-height);
@@ -1129,7 +1114,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   justify-content: center;
   gap: 0.375rem;
   /* The secondary button: a quiet outlined surface matching the primary's
-     box metrics. Hover fills it without turning the whole control teal — a
+     box metrics. Hover fills it without turning the whole control Steel — a
      secondary action that borrows the primary color would compete with the
      action next to it. */
   padding: 0.375rem 0.75rem;
@@ -1169,7 +1154,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   }
 }
 
-/* The teal focus-visible ring, standalone — for a one-off control that needs
+/* The Steel focus-visible ring, standalone — for a one-off control that needs
    nm-button-ghost's/nm-icon-button's focus mechanic without the rest of
    either recipe (e.g. a segmented-control pill or a bare toggle button).
    Tailwind's own generated `focus-visible:outline-*` utility classes do not
@@ -1177,7 +1162,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    generated `.focus-visible\:outline-ring` rule is present in the served
    CSS with correct :focus-visible nesting, yet a live keyboard-Tab check
    showed outline-color still resolving to transparent/currentColor rather
-   than the teal token) — reuse the hand-authored mechanism the rest of this
+   than the Steel token) — reuse the hand-authored mechanism the rest of this
    file already proves out, rather than a second unproven path to the same
    color (polish pass, 2026-08-17). */
 @utility nm-focus-ring {
@@ -1488,8 +1473,8 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    and — unlike a background — a border survives `forced-colors: active`, where
    the OS repaints every fill and a fill-only pressed state disappears entirely.
 
-   Deliberately NOT the teal accent. `nm-pill-active` states the rule: the accent
-   is reserved for actions, and a formatting row where six toggles light up teal
+   Deliberately NOT the Steel accent. `nm-pill-active` states the rule: the accent
+   is reserved for actions, and a formatting row where six toggles light up Steel
    reads as six primary buttons rather than as state.
 
    WHY THIS IS NOT NESTED INSIDE `@utility nm-icon-button`, where it belongs by
@@ -2390,7 +2375,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 }
 
 /* Notion-style page links: inherit the article colour and stay underlined.
-   `.prose :where(a)` paints every link teal and only underlines on hover —
+   `.prose :where(a)` paints every link Steel and only underlines on hover —
    that treatment is chrome, not a document title. */
 .prose .confluence-children-view a,
 .tiptap .confluence-children-view a {

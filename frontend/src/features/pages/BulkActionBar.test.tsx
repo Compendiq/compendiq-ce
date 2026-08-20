@@ -84,7 +84,7 @@ describe('BulkActionBar', () => {
     expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('2 pages selected');
   });
 
-  it('uses ghost row actions, not a filled teal bar', () => {
+  it('uses ghost row actions, not a filled accent bar', () => {
     render(
       <BulkActionBar selectedIds={['1']} confluenceCount={1} onClear={vi.fn()} />,
       { wrapper: createWrapper() },

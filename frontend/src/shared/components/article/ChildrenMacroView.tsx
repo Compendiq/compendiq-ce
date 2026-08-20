@@ -101,7 +101,7 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
 
   function renderTitle(child: ChildPage) {
     // Same hover language as PagesPage / the page tree: a flat accent fill,
-    // never a border, lift, or teal. Padding is always on so the fill has
+    // never a border, lift, or Steel. Padding is always on so the fill has
     // somewhere to land without a layout shift; `px-1.5` not `px-2` — the
     // latter is the old chrome row this directory was stripped of.
     const titleClass = cn(

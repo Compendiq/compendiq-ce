@@ -534,10 +534,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
         )}
       </AnimatePresence>
 
-      {/* Header sits on the grey chassis, outside the brighter workspace
-          card — logo, alerts and the user menu are chrome, not
-          document. Height is --app-header-height so the side inset can
-          grow without stretching this band. */}
+      {/* Header continues the chassis colour across the top edge, completing
+          the same outer frame visible on the left, right and bottom. It sits
+          outside the brighter workspace card. Height is --app-header-height
+          so the side inset can grow without stretching this band. */}
       <header className="app-header relative z-10 flex shrink-0 items-center gap-2">
         <div className="flex min-w-0 items-center gap-3 md:contents">
         {/* Mobile hamburger — opens sidebar slide-over */}

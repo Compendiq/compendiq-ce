@@ -11,8 +11,8 @@ import { join, relative } from 'node:path';
  * `ring-<colour>/<n>` composites the ring against whatever is behind it, so the
  * opacity comes straight off the ratio:
  *
- *   ring-ring        #0e7490 on #ffffff  ->  5.36:1   PASS
- *   ring-ring/50     #87bac8 on #ffffff  ->  2.13:1   FAIL
+ *   ring-ring        #3f627c on #ffffff  ->  6.46:1   PASS
+ *   ring-ring/50     #9fb0bd on #ffffff  ->  2.23:1   FAIL
  *
  * 76 focus rings across 38 files were fractional, so roughly half the app's
  * focus indicators failed in Paper — including the default `ring-ring/50` used
@@ -86,7 +86,7 @@ describe('focus indicators clear WCAG 1.4.11', () => {
   });
 
   it('no focus ring uses fractional opacity', () => {
-    // Not a style rule. `ring-ring/50` composites to 2.13:1 on Paper's card —
+    // Not a style rule. `ring-ring/50` composites below 3:1 on Paper's card —
     // the alpha comes directly off the ratio, and because the composite depends
     // on the ground, a value that squeaks past on one surface fails on a tinted
     // row. Full opacity is the only spelling that holds everywhere.

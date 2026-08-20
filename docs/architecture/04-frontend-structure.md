@@ -68,18 +68,20 @@ flowchart TB
 ## Authenticated inset shell
 
 `AppLayout` paints a viewport **chassis** (`--app-chassis`, inset on `md+`)
-around a rounded **app shell**. Inside the shell:
+around a rounded **app shell**. The top app header also paints the chassis, so
+the outer frame is continuous on all four sides; internal panel toolbars paint
+Chrome (`--app-header-bg`). The composition is:
 
 ```mermaid
 flowchart TB
     chassis["viewport chassis --app-chassis"]
     shell["app shell --app-shell-*"]
-    header["header"]
+    header["top app header --app-chassis"]
     workspace["primary workspace<br/>left nav + main"]
     rail["context rail --app-rail-*<br/>Outline · Details · Assistant"]
 
+    chassis --> header
     chassis --> shell
-    shell --> header
     shell --> workspace
     shell --> rail
 ```
@@ -362,19 +364,22 @@ the backend side.
 ## Styling
 
 - **TailwindCSS 4** with CSS variables for theming. Two themes ship —
-  **Graphite** (dark, `#141515`) and **Paper** (light, `#fbfbfc`) — a neutral
-  flat system carrying one teal accent (`#4dd0e1` / `#0e7490`) as the single
-  brand and interaction colour, amber reserved for warning/attention, and
-  violet for AI ornament (operable things stay teal). Surfaces are **flat
+  **Graphite** (dark, `#0F0F10` workspace / `#161617` pane / `#09090A` canvas) and **Paper**
+  (light, `#F7F7F8` workspace / `#FAFAFB` pane / `#EEEFF0` canvas) — a neutral flat system
+  carrying one Steel accent (`#86AEC8` / `#3F627C`) as the single brand and
+  interaction colour, amber reserved for warning/attention, and violet for AI
+  ornament (operable things stay Steel). Surfaces are **flat
   colours**: `--surface-backdrop`, `--surface-card` and
   `--surface-card-elevated` are plain values, so a `hover:bg-*` utility
   composes normally — the gradient-as-background-image trap of the previous
-  palette is designed out. See ADR-010 v0.6 for the decision, which supersedes
+  palette is designed out. See ADR-010 v0.7 for the current values and roles;
+  its structural rules continue v0.6, which superseded
   the neumorphic depth model of v0.4/v0.5 and the v0.3-era glassmorphic
   surfaces before it.
-- **Chrome is the ground, content is the pane.** Sidebar, header and toolbars
-  paint `--color-background`; the content pane sits one value step up. This is
-  why the document is the brightest thing on screen and navigation recedes.
+- **The frame, workspace, Chrome, and Pane each have one job.** Canvas paints
+  the outer frame and top app header, Workspace paints navigation, Chrome
+  paints internal panel toolbars, and the content pane sits one value step up.
+  This is why the document is the brightest thing on screen and navigation recedes.
   Both themes are the same token-driven ladder — there are deliberately **no**
   `[data-theme-type="light"]` shell overrides, and a test fails if one returns.
 - **Two border weights, split by role.** `--color-border` is the quiet

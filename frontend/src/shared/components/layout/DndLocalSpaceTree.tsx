@@ -144,10 +144,10 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
           // It had drifted on the one state that matters most. The active row
           // here was `nm-pill-active text-action font-medium scale-[1.01]`
           // against the plain tree's `nav-selection font-medium`: a different
-          // field, teal text where the other has none, and a `scale` — which
+          // field, accent text where the other has none, and a `scale` — which
           // ADR-010 retired outright ("no lift, no scale, no glass"; hover and
           // press are background and border changes). Selecting a page in a
-          // local space nudged the row 1% larger and lit it teal; selecting one
+          // local space nudged the row 1% larger and lit it with the accent; selecting one
           // in a Confluence space did neither. Same panel, same gesture.
           // pr-7 (28px), mirroring the left gutter exactly: a 24px control
           // plus the same 2px edge margin and 2px title gap the chevron gets

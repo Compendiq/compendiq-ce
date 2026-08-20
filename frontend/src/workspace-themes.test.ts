@@ -191,6 +191,28 @@ describe('Theme preference follows the OS by default', () => {
   });
 });
 
+describe('Eye-comfort reading surface hierarchy', () => {
+  it('lifts the Graphite pane clearly above its near-black workspace', () => {
+    const workspace = token(darkBlock, '--color-background');
+    const pane = token(darkBlock, '--color-card');
+    const raised = token(darkBlock, '--color-card-elevated');
+
+    expect(luminance(pane)).toBeGreaterThan(luminance(workspace));
+    expect(contrast(pane, workspace)).toBeGreaterThanOrEqual(1.05);
+    expect(luminance(raised)).toBeGreaterThan(luminance(pane));
+  });
+
+  it('keeps the Paper pane off pure white while remaining above its workspace', () => {
+    const workspace = token(lightBlock, '--color-background');
+    const pane = token(lightBlock, '--color-card');
+    const raised = token(lightBlock, '--color-card-elevated');
+
+    expect(pane).not.toBe('#ffffff');
+    expect(luminance(pane)).toBeGreaterThan(luminance(workspace));
+    expect(luminance(pane)).toBeLessThan(luminance(raised));
+  });
+});
+
 describe('Measured contrast — Graphite (dark)', () => {
   const bg = token(darkBlock, '--color-background');
   const card = token(darkBlock, '--color-card');
@@ -292,13 +314,11 @@ describe('Measured contrast — Paper (light)', () => {
     }
   });
 
-  // Unlike dark, the light theme keeps a DARKENED accent for text: the fill
-  // itself sits too close to the 4.5:1 floor on near-white to be body type.
-  it('primary-ink is a distinct, darker value than the primary fill', () => {
+  // Paper's desaturated Steel fill is already dark enough to serve as text;
+  // keep measuring the text role independently so a future retune cannot
+  // silently drop it under AA.
+  it('primary-ink clears AA on every light surface', () => {
     const ink = token(lightBlock, '--color-primary-ink');
-    const fill = token(lightBlock, '--color-primary');
-    expect(ink).not.toBe(fill);
-    expect(luminance(ink)).toBeLessThan(luminance(fill));
     for (const [name, surface] of Object.entries(surfaces)) {
       expectContrast(`primary-ink on ${name}`, ink, surface, 4.5);
     }
@@ -644,11 +664,11 @@ describe('Colour carries meaning, and only its own', () => {
   const badgeSource = readFileSync(badgePath, 'utf-8');
 
   // Quality is a measurement, not a pipeline state. It used to be painted with
-  // the status palette — ≥70 in `status-embedding` (teal) and ≥50 in
+  // the status palette — ≥70 in `status-embedding` (Steel) and ≥50 in
   // `status-syncing` (amber) — so on the Pages list a page scoring 65 wore the
-  // same amber as a space mid-sync, and one scoring 74 the same teal as
+  // same amber as a space mid-sync, and one scoring 74 the same Steel as
   // "embedding". Those are the two most tightly reserved hues in the system
-  // (amber = warning only, teal = brand AND interaction), on the densest
+  // (amber = warning only, Steel = brand AND interaction), on the densest
   // scanning surface in the app.
   //
   // This guard lives beside the palette rather than only in the component's own
@@ -827,7 +847,7 @@ describe('Colour carries meaning, and only its own', () => {
 
   it('text selection is styled from the accent, in both themes', () => {
     // With no ::selection rule the editor's highest-frequency interaction
-    // rendered at the UA default blue, in a palette declared neutral-plus-teal.
+    // rendered at the UA default blue, in a palette declared neutral-plus-Steel.
     const selection = /::selection\s*\{([^}]*)\}/.exec(css);
     expect(selection, 'no ::selection rule found').not.toBeNull();
     expect(selection![1]).toMatch(/var\(--color-primary\)/);

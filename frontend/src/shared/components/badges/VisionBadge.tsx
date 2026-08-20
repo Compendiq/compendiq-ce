@@ -15,9 +15,9 @@ import { cn } from '../../lib/cn';
  * every first paint for an unseen model.
  *
  * Neutral in every state: ADR-010 reserves amber for warning/attention and
- * teal for the interaction accent, and a capability verdict is neither — it is
+ * Steel for the interaction accent, and a capability verdict is neither — it is
  * a static readout, so the three labels are the differentiator. (The "Vision"
- * state used to wear the teal, which made a badge read as a control.)
+ * state used to wear the accent, which made a badge read as a control.)
  */
 
 interface VisionStateConfig {
