@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe, AlertTriangle } from 'lucide-react';
+import { Search, FileText, Plus, ChevronLeft, ChevronRight, ChevronDown, FolderOpen, Filter, X, List, Loader2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { PageSourceEnum, type PageSource, type PageIcon as PageIconValue } from '@compendiq/contracts';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
@@ -17,6 +17,7 @@ import { KPICards } from './KPICards';
 import { BulkActionBar } from './BulkActionBar';
 import { bulkWireId } from '../../shared/hooks/use-bulk-page-actions';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
+import { LibrarySpaceFilter } from './LibrarySpaceFilter';
 import {
   readFilterState,
   applyFilterPatch,
@@ -34,7 +35,7 @@ import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
-import { FIND_LABEL, FIND_PLACEHOLDER, LIBRARY_HEADING, SEARCH_MODE_LABELS } from './pages-find';
+import { FIND_LABEL, FIND_PLACEHOLDER, LIBRARY_HEADING, SEARCH_MODE_DESCRIPTIONS, SEARCH_MODE_LABELS } from './pages-find';
 
 // User-facing labels for the wire values of PageSourceEnum. Shared between the
 // source-filter <option>s and the active-filter pill so they never diverge.
@@ -385,6 +386,7 @@ export function PagesPage() {
   // from the URL so a deep link (or a back-navigation) starts in sync.
   const [searchInput, setSearchInput] = useState(filters.search);
   const search = searchInput;
+  const hasActiveQuery = search.trim().length > 0;
 
   // Open the advanced panel when the URL arrives carrying one of its filters —
   // otherwise the user lands on a short result set whose cause is hidden.
@@ -499,7 +501,7 @@ export function PagesPage() {
   }, [qualityFilter]);
 
   // Semantic/hybrid search — only active when there's a search query AND mode is not 'keyword'
-  const useSemanticSearch = !!(search && searchMode !== 'keyword');
+  const useSemanticSearch = hasActiveQuery && searchMode !== 'keyword';
 
   // Keep the /pages query key atomic: `search` is debounced, so the `sort` that
   // feeds the key must track the DEBOUNCED term, not the raw one. Otherwise the
@@ -536,6 +538,14 @@ export function PagesPage() {
     spaceKey: spaceKey || undefined,
     page,
   });
+  const isKeywordUpdating = searchMode === 'keyword' && hasActiveQuery
+    && (searchInput !== debouncedSearch || isFetchingPages);
+  const searchProgressLabel = isKeywordUpdating
+    ? 'Updating'
+    : (searchResults.isLoadingEnhanced
+        ? 'Improving'
+        : (searchResults.isLoadingImmediate && hasActiveQuery ? 'Searching' : ''));
+  const searchResultsBusy = searchProgressLabel.length > 0;
 
   const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
@@ -624,6 +634,7 @@ export function PagesPage() {
     () => activeFilters.filter((f) => f.key !== 'space'),
     [activeFilters],
   );
+  const advancedFilterCount = ignoredFilters.length;
 
   // Single source of truth for the #945 honesty notice, read by both the
   // visible <p> and the sr-only live-region announcer below it — computed
@@ -631,12 +642,29 @@ export function PagesPage() {
   const filtersIgnoredMessage = useMemo(() => {
     if (!useSemanticSearch || ignoredFilters.length === 0) return '';
     const summary = summarizeFilterLabels(ignoredFilters.map((f) => f.label));
-    return `${SEARCH_MODE_LABELS[searchMode]} ignores your other filters — ${summary}. They apply to Exact words only.`;
+    const noun = ignoredFilters.length === 1 ? 'filter' : 'filters';
+    return `${SEARCH_MODE_LABELS[searchMode]} paused ${ignoredFilters.length} advanced ${noun} — ${summary}. Switch to Keyword to apply them.`;
   }, [useSemanticSearch, ignoredFilters, searchMode]);
 
-  const useExactWordsWithFilters = useCallback(() => {
+  const useKeywordWithFilters = useCallback(() => {
     setFilters({ mode: 'keyword', page: 1 });
   }, [setFilters]);
+
+  const modeHint = useMemo(() => {
+    if (searchMode === 'keyword') return SEARCH_MODE_DESCRIPTIONS.keyword;
+    if (advancedFilterCount > 0) {
+      const noun = advancedFilterCount === 1 ? 'filter' : 'filters';
+      if (hasActiveQuery) return `${advancedFilterCount} advanced ${noun} paused. Switch to Keyword to apply them.`;
+      return `${advancedFilterCount} advanced ${noun} apply while browsing and will pause when ${SEARCH_MODE_LABELS[searchMode]} search starts.`;
+    }
+    return SEARCH_MODE_DESCRIPTIONS[searchMode];
+  }, [advancedFilterCount, hasActiveQuery, searchMode]);
+
+  const filterStatus = advancedFilterCount === 0
+    ? ''
+    : (searchMode === 'keyword'
+        ? `${advancedFilterCount} active`
+        : (hasActiveQuery ? `${advancedFilterCount} paused` : `${advancedFilterCount} Keyword-only`));
 
   const clearIgnoredFilters = useCallback(() => {
     setFilters({
@@ -802,17 +830,7 @@ export function PagesPage() {
       <HeaderHost fallbackClassName="mb-1">
         <div className="flex min-w-0 items-center justify-between gap-3">
           <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">{LIBRARY_HEADING}</h1>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => navigate('/trash')}
-              className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
-              data-testid="trash-link"
-              title="Trash"
-            >
-              <Trash2 size={15} />
-              <span className="hidden sm:inline">Trash</span>
-            </button>
+          <div className="flex shrink-0 items-center">
             <button
               type="button"
               onClick={() => navigate('/pages/new')}
@@ -827,23 +845,31 @@ export function PagesPage() {
         </div>
       </HeaderHost>
 
-      {/* Find is a control row, not a second work surface. The results pane is
-          the Library's one durable boundary; proximity groups its controls. */}
+      {/* Pins are the Library's quickest return path, so keep them in the
+          first viewport above discovery controls. Active queries still hide
+          the strip so search hands directly to its results. */}
+      {!hasActiveQuery && <PinnedArticlesSection />}
+
+      {/* Search leads discovery after the quick-return strip. The results pane
+          is the Library's one durable boundary; proximity groups the
+          supporting scope and mode controls. */}
       <section
         aria-labelledby="kb-filters-heading"
         className="space-y-3"
         data-testid="library-filter-panel"
       >
         <h2 id="kb-filters-heading" className="sr-only">Filter pages</h2>
-        <div className="flex flex-wrap items-center gap-3">
-          {/* List filter — the start-page primary. Source, sort and KPI sit
-              behind Filters so first paint is this field, space scope, then
-              the list. Header Find (command palette) is a different control. */}
-          <div
-            className="relative min-w-full basis-full flex-1"
-            data-testid="page-search-field"
-          >
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        {/* Query, retrieval mode and scope are one command surface. The query
+            leads; the supporting controls stay inside the same surface and
+            wrap beneath it on narrow screens without changing DOM order. */}
+        <div
+          className="library-search-surface mx-auto flex w-full max-w-5xl flex-col gap-2 rounded-xl p-2.5 sm:flex-row sm:items-center sm:gap-1 sm:p-2"
+          data-testid="page-search-field"
+          role="search"
+          aria-label="Library pages"
+        >
+          <div className="flex h-11 min-w-0 flex-1 items-center gap-2 px-2 sm:h-10">
+            <Search size={18} className="shrink-0 text-action" aria-hidden="true" />
             <input
               ref={searchInputRef as RefObject<HTMLInputElement>}
               type="text"
@@ -865,11 +891,6 @@ export function PagesPage() {
                 }
               }}
               onKeyDown={(e) => {
-                // The universal convention on search inputs, missing here —
-                // the only way out was the 18px clear `×`. Mirrors the clear
-                // button's own effect; consumed so a page-level Escape
-                // handler doesn't also fire on the same keystroke
-                // (polish pass, 2026-08-17).
                 if (e.key === 'Escape' && search) {
                   e.preventDefault();
                   e.stopPropagation();
@@ -877,47 +898,54 @@ export function PagesPage() {
                   setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                 }
               }}
-              className="nm-input h-8 pl-10 pr-10 text-sm"
+              className="h-9 min-w-0 flex-1 border-0 bg-transparent px-0 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
             />
+            {searchProgressLabel && (
+              <span
+                className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground"
+                role="status"
+                aria-live="polite"
+                data-testid="search-updating-status"
+              >
+                <Loader2
+                  size={13}
+                  className="animate-spin text-action"
+                  data-testid={searchResults.isLoadingEnhanced ? 'search-enhanced-loading' : undefined}
+                  aria-hidden="true"
+                />
+                <span className="hidden sm:inline">{searchProgressLabel}</span>
+              </span>
+            )}
             {search ? (
               <button
+                type="button"
                 onClick={() => {
                   setSearchInput('');
                   setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                   searchInputRef.current?.focus();
                 }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
+                className="nm-icon-button shrink-0"
                 data-testid="search-clear"
                 aria-label="Clear search"
+                title="Clear search"
               >
-                <X size={14} />
+                <X size={15} aria-hidden="true" />
               </button>
             ) : (
-              // The `/` shortcut that focuses this field was completely
-              // undiscoverable — "New Page" carries a visible hint chip, this
-              // field (the only other shortcut on the route) carried nothing.
-              // Same slot the clear button uses once there's a query to clear,
-              // so the two never compete for space (polish pass, 2026-08-17).
-              <ShortcutHint
-                shortcutId="focus-page-search"
-                className="pointer-events-none absolute right-3 top-1/2 ml-0 -translate-y-1/2"
-              />
+              <ShortcutHint shortcutId="focus-page-search" className="pointer-events-none shrink-0" />
             )}
           </div>
 
-          {/* Retrieval is declared before a query, rather than revealed only
-              after one. Best match intentionally searches the selected scope
-              without advanced constraints; Exact words is the constrained
-              browse path. */}
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground">Find by</span>
+          <span className="hidden h-5 w-px shrink-0 bg-border sm:block" aria-hidden="true" />
+
+          <div className="grid w-full gap-1.5 sm:flex sm:w-auto sm:shrink-0 sm:items-center sm:gap-1">
             <div
-            className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
-            data-testid="search-mode-toggle"
-            role="group"
-            aria-label="Find by"
-            aria-describedby="find-mode-hint"
-          >
+              className="library-search-modes flex w-full min-w-0 items-center gap-0.5 rounded-md p-0.5 sm:w-auto"
+              data-testid="search-mode-toggle"
+              role="group"
+              aria-label="Search strategy"
+              aria-describedby="find-mode-hint"
+            >
               {([
                 'hybrid',
                 'keyword',
@@ -929,62 +957,67 @@ export function PagesPage() {
                   : []),
               ] as const).map((m) => (
                 <button
+                  type="button"
                   key={m}
                   data-testid={`search-mode-${m}`}
                   onClick={() => setFilters({ mode: m, page: 1 })}
                   aria-pressed={searchMode === m}
                   className={cn(
-                    'rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
-                    'nm-focus-ring',
+                    'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:flex-none sm:px-2.5 sm:text-xs',
                     searchMode === m
-                      ? 'nm-pill-active'
-                      : 'border border-transparent text-muted-foreground hover:text-foreground',
+                      ? 'library-search-mode-active'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                   )}
                 >
                   {SEARCH_MODE_LABELS[m]}
                 </button>
               ))}
-              {searchResults.isLoadingEnhanced && (
-                <Loader2 size={14} className="ml-1 animate-spin text-action" data-testid="search-enhanced-loading" />
-              )}
+            </div>
+            <div className="flex w-full items-center gap-1 sm:w-auto">
+              <LibrarySpaceFilter
+                spaces={spaces}
+                selectedKey={spaceKey}
+                selectedName={selectedSpace?.name}
+                onSelect={(value) => {
+                  setFilters({ space: value, page: 1 });
+                  setForcePageList(false);
+                }}
+              />
+
+              <button
+                type="button"
+                onClick={() => setShowAdvancedFilters((v) => !v)}
+                className={cn(
+                  'library-search-select flex h-11 shrink-0 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground sm:h-8 sm:px-2 sm:text-xs',
+                  (showAdvancedFilters || advancedFilterCount > 0) && 'bg-accent text-foreground',
+                  hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && 'text-warning',
+                )}
+                data-testid="advanced-filters-toggle"
+                aria-label={filterStatus ? `Filters, ${filterStatus}` : 'Filters'}
+                title={filterStatus ? `Filters (${filterStatus})` : 'Filters'}
+                aria-expanded={showAdvancedFilters}
+                aria-controls="advanced-filters-panel"
+              >
+                <Filter size={15} aria-hidden="true" />
+                <span>Filters</span>
+                {filterStatus && (
+                  <span className="rounded bg-foreground/10 px-1.5 py-0.5 text-xs font-semibold tabular-nums" aria-hidden="true">
+                    {filterStatus}
+                  </span>
+                )}
+                <ChevronDown
+                  size={12}
+                  className={cn('ml-auto shrink-0 transition-transform', showAdvancedFilters && 'rotate-180')}
+                  data-testid="advanced-filters-chevron"
+                  aria-hidden="true"
+                />
+              </button>
             </div>
           </div>
-
-          <select
-            value={spaceKey}
-            onChange={(e) => { setFilters({ space: e.target.value, page: 1 }); setForcePageList(false); }}
-            className="nm-select-md w-40 shrink-0"
-            aria-label="Filter by space"
-          >
-            <option value="">All Spaces</option>
-            {spaces?.map((s) => (
-              <option key={s.key} value={s.key}>{s.name}</option>
-            ))}
-          </select>
-
-          {/* Advanced filters toggle */}
-          <button
-            onClick={() => setShowAdvancedFilters((v) => !v)}
-            className={cn(
-              'nm-button-ghost flex h-8 items-center gap-1.5 px-3 text-sm',
-              (showAdvancedFilters || activeFilterCount > 0) && 'bg-accent',
-            )}
-            data-testid="advanced-filters-toggle"
-            aria-expanded={showAdvancedFilters}
-            aria-controls="advanced-filters-panel"
-          >
-            <Filter size={14} />
-            Filters
-            {activeFilterCount > 0 && (
-              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-foreground/15 text-[11px] font-semibold tabular-nums">
-                {activeFilterCount}
-              </span>
-            )}
-          </button>
-
         </div>
-        <p id="find-mode-hint" className="text-xs text-muted-foreground">
-          Best match searches meaning and words across the selected space or library. Advanced filters apply with Exact words.
+
+        <p id="find-mode-hint" className="mx-auto max-w-5xl px-1 text-xs text-muted-foreground">
+          {modeHint}
         </p>
 
         {/* sr-only live-region announcer for the #945 honesty notice below.
@@ -1000,142 +1033,165 @@ export function PagesPage() {
           {filtersIgnoredMessage}
         </span>
 
-        {/* Best match remains intentionally unconstrained. When a search is
-            active, name the saved filters and provide the constrained path. */}
+        {/* Hybrid and Semantic intentionally leave advanced filters paused.
+            Name the exact saved filters and provide the constrained path
+            without silently switching search strategy. */}
         {filtersIgnoredMessage && (
           <div
-            id="filters-ignored-notice"
+            id="filters-paused-notice"
             className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
             data-testid="filters-ignored-notice"
           >
             <AlertTriangle size={12} className="shrink-0 text-warning" aria-hidden="true" />
             <span>{filtersIgnoredMessage}</span>
-            <button type="button" onClick={useExactWordsWithFilters} className="nm-button-ghost h-7 px-2 text-xs" data-testid="use-exact-words-with-filters">
-              Use Exact words
+            <button type="button" onClick={useKeywordWithFilters} className="nm-button-ghost h-7 px-2 text-xs" data-testid="use-keyword-with-filters">
+              Switch to Keyword
             </button>
-            <button type="button" onClick={clearIgnoredFilters} className="nm-button-ghost h-7 px-2 text-xs" data-testid="clear-ignored-filters">
-              Clear ignored filters
+            <button type="button" onClick={clearIgnoredFilters} className="nm-button-ghost h-7 px-2 text-xs" data-testid="clear-paused-filters">
+              Clear paused filters
             </button>
           </div>
         )}
 
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div id="advanced-filters-panel" className="space-y-4 border-t border-border pt-3" data-testid="advanced-filters-panel">
-            <fieldset className="space-y-2">
-              <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Content</legend>
-              <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-3">
-            <div className="min-w-32">
-              <label htmlFor="filter-source-select" className="mb-1 block text-xs text-muted-foreground">Source</label>
-              <select
-                id="filter-source-select"
-                value={sourceFilter}
-                onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
-                className="nm-select-md w-full"
-                data-testid="filter-source"
-                aria-label="Filter by source"
-              >
-                <option value="">All Sources</option>
-                {PageSourceEnum.options.map((source) => (
-                  <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
-                ))}
-              </select>
-            </div>
-            {/* Author filter */}
-            <div className="min-w-40">
-              <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
-              <select
-                id="filter-author-select"
-                value={author}
-                onChange={(e) => setFilters({ author: e.target.value, page: 1 })}
-                className="nm-select-md w-full"
-                data-testid="filter-author"
-              >
-                <option value="">All Authors</option>
-                {filterOptions?.authors.map((a) => (
-                  <option key={a} value={a}>{a}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Labels filter */}
-            <div className="min-w-40">
-              <label htmlFor="filter-labels-select" className="mb-1 block text-xs text-muted-foreground">Labels</label>
-              <select
-                id="filter-labels-select"
-                value={labels}
-                onChange={(e) => setFilters({ labels: e.target.value, page: 1 })}
-                className="nm-select-md w-full"
-                data-testid="filter-labels"
-              >
-                <option value="">All Labels</option>
-                {filterOptions?.labels.map((l) => (
-                  <option key={l} value={l}>{l}</option>
-                ))}
-              </select>
-            </div>
-
+          <div
+            id="advanced-filters-panel"
+            className="rounded-lg bg-card p-3"
+            data-testid="advanced-filters-panel"
+          >
+            <div className="mb-3 flex min-h-8 flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Refine results</h3>
+                <p className="text-xs text-muted-foreground">
+                  {advancedFilterCount > 0
+                    ? (searchMode === 'keyword' || !hasActiveQuery
+                        ? `${advancedFilterCount} active`
+                        : `${advancedFilterCount} paused`)
+                    : 'Advanced filters apply to Keyword search'}
+                </p>
               </div>
-            </fieldset>
-            <fieldset className="space-y-2">
-              <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Time &amp; quality</legend>
-              <div className="grid grid-cols-2 items-end gap-3 sm:grid-cols-4">
-            {/* Freshness filter */}
-            <div className="min-w-32">
-              <label htmlFor="filter-freshness-select" className="mb-1 block text-xs text-muted-foreground">Freshness</label>
-              <select
-                id="filter-freshness-select"
-                value={freshness}
-                onChange={(e) => setFilters({ freshness: e.target.value, page: 1 })}
-                className="nm-select-md w-full"
-                data-testid="filter-freshness"
-              >
-                <option value="">Any</option>
-                <option value="fresh">Fresh (&lt;7 days)</option>
-                <option value="recent">Recent (7-30 days)</option>
-                <option value="aging">Aging (30-90 days)</option>
-                <option value="stale">Stale (&gt;90 days)</option>
-              </select>
-            </div>
-            <div className="min-w-36">
-              <label htmlFor="filter-quality-select" className="mb-1 block text-xs text-muted-foreground">Quality</label>
-              <select id="filter-quality-select" value={qualityFilter} onChange={(e) => setFilters({ quality: e.target.value, page: 1 })} className="nm-select-md w-full" data-testid="filter-quality">
-                <option value="">Any</option><option value="excellent">Excellent (90-100)</option><option value="good">Good (70-89)</option><option value="needs-work">Needs Work (50-69)</option><option value="poor">Poor (0-49)</option>
-              </select>
-            </div>
-            <div className="min-w-36">
-              <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified From</label>
-              <input id="filter-date-from-input" type="date" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} className="nm-select-md w-full !bg-none" data-testid="filter-date-from" />
-            </div>
-            <div className="min-w-36">
-              <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified To</label>
-              <input id="filter-date-to-input" type="date" value={dateToInput} onChange={(e) => setDateToInput(e.target.value)} className="nm-select-md w-full !bg-none" data-testid="filter-date-to" />
+              {advancedFilterCount > 0 && (
+                <button type="button" onClick={clearIgnoredFilters} className="nm-button-ghost h-7 px-2 text-xs">
+                  Clear filters
+                </button>
+              )}
             </div>
 
+            {!hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-muted/50 px-2.5 py-2 text-xs text-muted-foreground" data-testid="filters-keyword-preview-note">
+                <span>These filters apply while browsing and will pause when {SEARCH_MODE_LABELS[searchMode]} search starts.</span>
+                <button type="button" onClick={useKeywordWithFilters} className="nm-button-ghost h-7 px-2 text-xs">
+                  Keep them active with Keyword
+                </button>
               </div>
-            </fieldset>
-            <fieldset className="space-y-2">
-              <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Index</legend>
-              <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2">
-            {/* Embedding status filter */}
-            <div className="min-w-36">
-              <label htmlFor="filter-embedding-select" className="mb-1 block text-xs text-muted-foreground">Embedding</label>
-              <select
-                id="filter-embedding-select"
-                value={embeddingStatus}
-                onChange={(e) => setFilters({ embedding: e.target.value, page: 1 })}
-                className="nm-select-md w-full"
-                data-testid="filter-embedding"
-              >
-                <option value="">Any</option>
-                <option value="pending">Needs Embedding</option>
-                <option value="done">Embedded</option>
-              </select>
+            )}
+
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,5fr)]">
+              <fieldset className="space-y-2">
+                <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Content</legend>
+                <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+                  <div className="min-w-32">
+                    <label htmlFor="filter-source-select" className="mb-1 block text-xs text-muted-foreground">Source</label>
+                    <select
+                      id="filter-source-select"
+                      value={sourceFilter}
+                      onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
+                      className="nm-select-md w-full"
+                      data-testid="filter-source"
+                      aria-label="Filter by source"
+                    >
+                      <option value="">All sources</option>
+                      {PageSourceEnum.options.map((source) => (
+                        <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="min-w-40">
+                    <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
+                    <select
+                      id="filter-author-select"
+                      value={author}
+                      onChange={(e) => setFilters({ author: e.target.value, page: 1 })}
+                      className="nm-select-md w-full"
+                      data-testid="filter-author"
+                    >
+                      <option value="">All authors</option>
+                      {filterOptions?.authors.map((a) => (
+                        <option key={a} value={a}>{a}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="min-w-40">
+                    <label htmlFor="filter-labels-select" className="mb-1 block text-xs text-muted-foreground">Label</label>
+                    <select
+                      id="filter-labels-select"
+                      value={labels}
+                      onChange={(e) => setFilters({ labels: e.target.value, page: 1 })}
+                      className="nm-select-md w-full"
+                      data-testid="filter-labels"
+                    >
+                      <option value="">All labels</option>
+                      {filterOptions?.labels.map((label) => (
+                        <option key={label} value={label}>{label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </fieldset>
+
+              <fieldset className="space-y-2">
+                <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Status &amp; date</legend>
+                <div className="grid grid-cols-2 items-end gap-2 sm:grid-cols-3 xl:grid-cols-5">
+                  <div className="min-w-32">
+                    <label htmlFor="filter-freshness-select" className="mb-1 block text-xs text-muted-foreground">Freshness</label>
+                    <select
+                      id="filter-freshness-select"
+                      value={freshness}
+                      onChange={(e) => setFilters({ freshness: e.target.value, page: 1 })}
+                      className="nm-select-md w-full"
+                      data-testid="filter-freshness"
+                    >
+                      <option value="">Any</option>
+                      <option value="fresh">Fresh (&lt;7 days)</option>
+                      <option value="recent">Recent (7-30 days)</option>
+                      <option value="aging">Aging (30-90 days)</option>
+                      <option value="stale">Stale (&gt;90 days)</option>
+                    </select>
+                  </div>
+                  <div className="min-w-36">
+                    <label htmlFor="filter-quality-select" className="mb-1 block text-xs text-muted-foreground">Quality</label>
+                    <select id="filter-quality-select" value={qualityFilter} onChange={(e) => setFilters({ quality: e.target.value, page: 1 })} className="nm-select-md w-full" data-testid="filter-quality">
+                      <option value="">Any</option><option value="excellent">Excellent (90-100)</option><option value="good">Good (70-89)</option><option value="needs-work">Needs Work (50-69)</option><option value="poor">Poor (0-49)</option>
+                    </select>
+                  </div>
+                  <div className="min-w-36">
+                    <label htmlFor="filter-embedding-select" className="mb-1 block text-xs text-muted-foreground">Embedding</label>
+                    <select
+                      id="filter-embedding-select"
+                      value={embeddingStatus}
+                      onChange={(e) => setFilters({ embedding: e.target.value, page: 1 })}
+                      className="nm-select-md w-full"
+                      data-testid="filter-embedding"
+                    >
+                      <option value="">Any</option>
+                      <option value="pending">Needs Embedding</option>
+                      <option value="done">Embedded</option>
+                    </select>
+                  </div>
+                  <div className="min-w-36">
+                    <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified from</label>
+                    <input id="filter-date-from-input" type="date" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} className="nm-select-md w-full !bg-none" data-testid="filter-date-from" />
+                  </div>
+                  <div className="min-w-36">
+                    <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified to</label>
+                    <input id="filter-date-to-input" type="date" value={dateToInput} onChange={(e) => setDateToInput(e.target.value)} className="nm-select-md w-full !bg-none" data-testid="filter-date-to" />
+                  </div>
+                </div>
+              </fieldset>
             </div>
 
-              </div>
-            </fieldset>
-            <details className="border-t border-border pt-3">
+            <details className="mt-3 border-t border-border pt-3">
               <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
                 Index health and sync
               </summary>
@@ -1180,7 +1236,7 @@ export function PagesPage() {
                   onClick={() => clearFilter(f.key)}
                   className="nm-button-ghost h-7 gap-1 px-2 text-xs font-medium"
                   aria-label={`Remove ${f.label} filter`}
-                  aria-describedby={ignoredBySemanticSearch ? 'filters-ignored-notice' : undefined}
+                  aria-describedby={ignoredBySemanticSearch ? 'filters-paused-notice' : undefined}
                   data-testid={`filter-pill-${f.key}`}
                 >
                   {f.label}
@@ -1199,6 +1255,10 @@ export function PagesPage() {
         )}
       </section>
 
+      {/* Browsing support stays out of the active-search path: once a query is
+          present, warnings and results follow the command surface directly. */}
+      {!hasActiveQuery && (
+        <>
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (
         <div className="space-y-2 py-1">
@@ -1236,9 +1296,8 @@ export function PagesPage() {
         </div>
       )}
 
-      {/* Pinned — after the list filter, then the list. Filters (source,
-          sort, KPI) sit in the panel above, not between the field and pins. */}
-      <PinnedArticlesSection />
+        </>
+      )}
 
       {/* No-embeddings warning for semantic/hybrid search */}
       {search && searchMode !== 'keyword' && !searchResults.hasEmbeddings && (
@@ -1280,7 +1339,7 @@ export function PagesPage() {
       )}
 
       {/* Space home content (when enabled and a space is selected) */}
-      {showHomeContent && !forcePageList ? (
+      {showHomeContent && !forcePageList && !hasActiveQuery ? (
         homePageLoading ? (
           <div className="h-96 animate-pulse rounded-md bg-foreground/5" />
         ) : homePage ? (
@@ -1313,7 +1372,7 @@ export function PagesPage() {
       ) : (
       <>
       {/* Page list — semantic/hybrid search results */}
-      <section aria-labelledby="kb-results-heading" className="space-y-3">
+      <section aria-labelledby="kb-results-heading" className="space-y-3" aria-busy={searchResultsBusy} data-testid="library-results-region">
       <h2 id="kb-results-heading" className="sr-only">Page results</h2>
       {useSemanticSearch ? (
         <>
@@ -1332,7 +1391,7 @@ export function PagesPage() {
                 title={searchResults.hasEmbeddings ? 'No pages found' : 'No matching pages'}
                 description={
                   searchResults.hasEmbeddings
-                    ? 'Try a different search term or switch to keyword mode'
+                    ? 'Try a different search term or switch to Keyword'
                     // Zero embeddings: the banner above already says keyword
                     // fallback ran, so acknowledge both facts — the query
                     // matched nothing AND semantic search is unavailable
@@ -1645,6 +1704,7 @@ export function PagesPage() {
       </section>
       </>
       )}
+
     </div>
   );
 }

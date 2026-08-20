@@ -1,7 +1,7 @@
 import { type ReactNode } from 'react';
 
 /**
- * Page heading in the document column. Chrome is Find + session — titles
+ * Page heading in the document column. Chrome is navigation + session — titles
  * never portal into the 48px header.
  */
 export function HeaderHost({

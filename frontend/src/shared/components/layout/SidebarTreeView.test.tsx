@@ -435,6 +435,26 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('4 pages')).toBeInTheDocument();
   });
 
+  it('keeps Trash in the expanded page-tree footer', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const trash = screen.getByRole('button', { name: 'Trash' });
+
+    expect(trash).toHaveAttribute('data-testid', 'sidebar-trash');
+    fireEvent.click(trash);
+    expect(mockNavigate).toHaveBeenCalledWith('/trash');
+  });
+
+  it('keeps Trash reachable when the page tree is collapsed', () => {
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const trash = screen.getByRole('button', { name: 'Trash' });
+
+    expect(trash).toHaveAttribute('data-testid', 'sidebar-trash-collapsed');
+    expect(trash).toHaveClass('nm-icon-button');
+    fireEvent.click(trash);
+    expect(mockNavigate).toHaveBeenCalledWith('/trash');
+  });
+
   it('opens space dropdown and shows confluence and local space options', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByText('All Spaces'));

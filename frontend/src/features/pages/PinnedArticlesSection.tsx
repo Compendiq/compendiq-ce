@@ -145,7 +145,7 @@ export function PinnedArticlesSection() {
       </div>
 
       {overflow > 0 && (
-        <div className="mt-2 flex justify-end border-t border-border pt-2">
+        <div className="mt-2 flex justify-end">
           <button
             onClick={() => setExpanded((prev) => !prev)}
             aria-expanded={isExpanded}

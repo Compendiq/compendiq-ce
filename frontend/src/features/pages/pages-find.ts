@@ -1,14 +1,16 @@
-/**
- * Library list filter copy. Header Find (command palette) stays "Find" —
- * pages and commands. This field only filters the list on this route, so it
- * must not share that verb.
- */
-export const FIND_LABEL = 'Filter this list';
-export const FIND_PLACEHOLDER = 'Filter this list';
+/** The Library's local search surface; Ctrl/Cmd+K remains the global palette. */
+export const FIND_LABEL = 'Search library pages';
+export const FIND_PLACEHOLDER = 'Search your library';
 export const LIBRARY_HEADING = 'Library';
 
 export const SEARCH_MODE_LABELS = {
-  hybrid: 'Best match',
-  keyword: 'Exact words',
-  semantic: 'Meaning only',
+  hybrid: 'Hybrid',
+  keyword: 'Keyword',
+  semantic: 'Semantic',
+} as const;
+
+export const SEARCH_MODE_DESCRIPTIONS = {
+  hybrid: 'Combines meaning and keyword signals. Space applies; advanced filters require Keyword.',
+  keyword: 'Matches terms and applies Space plus every advanced filter.',
+  semantic: 'Matches meaning similarity. Space applies; advanced filters require Keyword.',
 } as const;
