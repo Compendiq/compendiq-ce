@@ -141,7 +141,7 @@ const PageListItem = memo(function PageListItem({
           // the pressed recipe (`bg-accent`), not an extra border — that
           // competed with hover and failed forced-colors without the
           // transparent 1px that becomes `--color-border-interactive`.
-          'group nm-focus-ring flex w-full items-center gap-3 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors max-sm:items-start forced-colors:border-border-interactive',
+          'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors max-sm:items-start',
           selected
             ? 'bg-accent'
             : 'hover:bg-accent',
@@ -634,11 +634,6 @@ export function PagesPage() {
     return `${SEARCH_MODE_LABELS[searchMode]} ignores your other filters — ${summary}. They apply to Exact words only.`;
   }, [useSemanticSearch, ignoredFilters, searchMode]);
 
-  // Show the consequence of combining a semantic mode and an advanced filter
-  // before a query starts returning results. Once a search is active, the
-  // fuller notice below names every ignored filter instead.
-  const hasPendingModeFilterConflict = searchMode !== 'keyword' && ignoredFilters.length > 0;
-
   const useExactWordsWithFilters = useCallback(() => {
     setFilters({ mode: 'keyword', page: 1 });
   }, [setFilters]);
@@ -803,7 +798,7 @@ export function PagesPage() {
     // at wide viewports — the eye had nothing to bind them across. No
     // `mx-auto`: this is a workspace pane beside a sidebar, not a centered
     // page, so the cap should keep content flush-left, not float it.
-    <div className="max-w-[1100px] space-y-3">
+    <div className="max-w-[1180px] space-y-5">
       <HeaderHost fallbackClassName="mb-1">
         <div className="flex min-w-0 items-center justify-between gap-3">
           <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">{LIBRARY_HEADING}</h1>
@@ -832,21 +827,22 @@ export function PagesPage() {
         </div>
       </HeaderHost>
 
-      {/* Filters */}
-      {/* A control row, not a pane. This was a bordered `bg-card` box with
-          `p-4`, stacked directly under another bordered box (the status strip)
-          and above the list's own bordered rows — three nested container
-          levels before the first page. Controls do not need a container: they
-          are already legible as controls, and the box was spending ~90px of the
-          first viewport to say "these things belong together", which their
-          adjacency already said. */}
-      <section aria-labelledby="kb-filters-heading" className="space-y-3">
+      {/* Find is a control row, not a second work surface. The results pane is
+          the Library's one durable boundary; proximity groups its controls. */}
+      <section
+        aria-labelledby="kb-filters-heading"
+        className="space-y-3"
+        data-testid="library-filter-panel"
+      >
         <h2 id="kb-filters-heading" className="sr-only">Filter pages</h2>
         <div className="flex flex-wrap items-center gap-3">
           {/* List filter — the start-page primary. Source, sort and KPI sit
               behind Filters so first paint is this field, space scope, then
               the list. Header Find (command palette) is a different control. */}
-          <div className="relative flex-1 min-w-48">
+          <div
+            className="relative min-w-full basis-full flex-1"
+            data-testid="page-search-field"
+          >
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input
               ref={searchInputRef as RefObject<HTMLInputElement>}
@@ -881,7 +877,7 @@ export function PagesPage() {
                   setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                 }
               }}
-              className="nm-input pl-10 pr-10"
+              className="nm-input h-8 pl-10 pr-10 text-sm"
             />
             {search ? (
               <button
@@ -909,16 +905,17 @@ export function PagesPage() {
             )}
           </div>
 
-          {/* Retrieval mode — Best match (hybrid) is the default, matching
-              header Find. Exact words is the escape hatch. Meaning only
-              (semantic) stays off the peer row until an index exists, or
-              when a deep link already asked for it. */}
-          {(search || searchMode !== FILTER_DEFAULTS.mode || hasPendingModeFilterConflict) && (
-          <div
+          {/* Retrieval is declared before a query, rather than revealed only
+              after one. Best match intentionally searches the selected scope
+              without advanced constraints; Exact words is the constrained
+              browse path. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">Find by</span>
+            <div
             className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
             data-testid="search-mode-toggle"
             role="group"
-            aria-label="Search mode"
+            aria-label="Find by"
             aria-describedby="find-mode-hint"
           >
               {([
@@ -951,7 +948,7 @@ export function PagesPage() {
                 <Loader2 size={14} className="ml-1 animate-spin text-action" data-testid="search-enhanced-loading" />
               )}
             </div>
-          )}
+          </div>
 
           <select
             value={spaceKey}
@@ -986,24 +983,9 @@ export function PagesPage() {
           </button>
 
         </div>
-        {(search || searchMode !== FILTER_DEFAULTS.mode) && (
-          <p id="find-mode-hint" className="text-xs text-muted-foreground">
-            Best match uses meaning and words. Exact words matches the text you type.
-          </p>
-        )}
-
-        {hasPendingModeFilterConflict && !filtersIgnoredMessage && (
-          <div
-            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
-            data-testid="search-mode-filter-warning"
-          >
-            <AlertTriangle size={12} className="shrink-0 text-warning" aria-hidden="true" />
-            <span>{SEARCH_MODE_LABELS[searchMode]} won’t use your advanced filters. Choose Exact words to narrow results.</span>
-            <button type="button" onClick={useExactWordsWithFilters} className="nm-button-ghost h-7 px-2 text-xs" data-testid="use-exact-words-before-search">
-              Use Exact words
-            </button>
-          </div>
-        )}
+        <p id="find-mode-hint" className="text-xs text-muted-foreground">
+          Best match searches meaning and words across the selected space or library. Advanced filters apply with Exact words.
+        </p>
 
         {/* sr-only live-region announcer for the #945 honesty notice below.
             Always mounted (only its text content changes) rather than
@@ -1018,14 +1000,8 @@ export function PagesPage() {
           {filtersIgnoredMessage}
         </span>
 
-        {/* Honest notice: every filter in `ignoredFilters` above is silently
-            ignored by semantic and hybrid search (#945's original scope was
-            "advanced filters"; the harden pass folded Space in too — #1351
-            later took it back out once the backend started honoring it — see
-            the comments on `activeFilters`/`ignoredFilters`). Placed here,
-            ahead of the advanced panel and the pill row, so it is the first
-            thing seen after switching mode rather than something a user has
-            to scroll past two other blocks to find. */}
+        {/* Best match remains intentionally unconstrained. When a search is
+            active, name the saved filters and provide the constrained path. */}
         {filtersIgnoredMessage && (
           <div
             id="filters-ignored-notice"
@@ -1337,7 +1313,7 @@ export function PagesPage() {
       ) : (
       <>
       {/* Page list — semantic/hybrid search results */}
-      <section aria-labelledby="kb-results-heading">
+      <section aria-labelledby="kb-results-heading" className="space-y-3">
       <h2 id="kb-results-heading" className="sr-only">Page results</h2>
       {useSemanticSearch ? (
         <>
@@ -1366,11 +1342,11 @@ export function PagesPage() {
               />
             ) : (
               <>
-                <p className="text-sm text-muted-foreground" data-testid="search-results-count">
+                <p className="text-sm font-medium text-foreground" data-testid="search-results-count">
                   {searchResults.total} {searchResults.total === 1 ? 'result' : 'results'}
                   <span className="ml-2 text-xs text-muted-foreground/60">({SEARCH_MODE_LABELS[searchMode]})</span>
                 </p>
-                <div className="space-y-0.5">
+                <div className="overflow-hidden rounded-lg border border-border bg-background">
                   {displayItems.map((item, i) => (
                     <m.div
                       key={item.id}
@@ -1380,7 +1356,7 @@ export function PagesPage() {
                     >
                       <button
                         onClick={() => navigate(`/pages/${item.id}`)}
-                        className="nm-focus-ring flex w-full items-center gap-3 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-accent max-sm:items-start max-sm:flex-wrap max-sm:gap-y-1 forced-colors:border-border-interactive"
+                        className="nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 hover:bg-accent max-sm:items-start max-sm:flex-wrap max-sm:gap-y-1"
                         data-testid={`article-hover-${item.id}`}
                       >
                         <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
@@ -1541,9 +1517,15 @@ export function PagesPage() {
             />
           ) : (
             <>
-            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
+            <div data-testid="library-results-panel" className="overflow-hidden rounded-lg border border-border bg-background">
+            <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
               <span>{pagesData.total} {pagesData.total === 1 ? 'page' : 'pages'}</span>
               {selectedSpace && <><span aria-hidden="true"> · </span><span>{selectedSpace.name}</span></>}
+              {!selectionArmed && (
+                <button type="button" onClick={() => setSelectionMode(true)} className="nm-button-ghost h-8 px-2.5 text-xs" data-testid="enter-selection-mode">
+                  Select pages
+                </button>
+              )}
               <label className="ml-auto flex items-center gap-2 text-xs">
                 <span>Sort</span>
                 <select id="filter-sort-select" value={sort} onChange={(e) => setFilters({ sort: e.target.value as typeof sort })} className="nm-select-md h-8 min-w-36" aria-label="Sort pages">
@@ -1558,12 +1540,8 @@ export function PagesPage() {
             {/* Select-all + bulk actions. The four /pages/bulk/* endpoints
                 shipped with no UI, so re-embedding a large space meant one
                 row at a time. */}
-            <div className="mb-3 space-y-3">
-              {!selectionArmed && (
-                <button type="button" onClick={() => setSelectionMode(true)} className="nm-button-ghost h-8 px-2.5 text-xs" data-testid="enter-selection-mode">
-                  Select pages
-                </button>
-              )}
+            {selectionArmed && (
+            <div className="space-y-3 border-b border-border px-3 py-2.5">
               <label
                 className={cn(
                   'flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground',
@@ -1592,6 +1570,7 @@ export function PagesPage() {
                 onClear={clearSelection}
               />
             </div>
+            )}
 
             <div
               ref={listContainerRef}
@@ -1614,7 +1593,7 @@ export function PagesPage() {
                       transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
                     }}
                   >
-                    <div className="pb-0.5">
+                    <div>
                       <PageListItem
                         pageItem={pageItem}
                         index={virtualRow.index}
@@ -1632,6 +1611,7 @@ export function PagesPage() {
                   </div>
                 );
               })}
+            </div>
             </div>
             </>
           )}
