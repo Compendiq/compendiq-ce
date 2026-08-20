@@ -4,6 +4,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { COLLAPSED_PIN_COUNT } from './pinned-articles-layout';
+import { toast } from 'sonner';
+
+vi.mock('sonner', () => ({
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
+}));
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -69,7 +74,7 @@ describe('PinnedArticlesSection', () => {
 
     const section = await screen.findByTestId('pinned-articles-section');
     expect(section).toBeInTheDocument();
-    expect(screen.getByText('Pinned')).toBeInTheDocument();
+    expect(screen.getByText('Pinned pages')).toBeInTheDocument();
     expect(screen.getByText('Getting Started Guide')).toBeInTheDocument();
     expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
   });
@@ -106,6 +111,20 @@ describe('PinnedArticlesSection', () => {
     expect(screen.queryByText('This is a getting started guide for new developers.')).not.toBeInTheDocument();
   });
 
+  it('explains that pins are a saved collection and includes each pin’s update date', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify(mockPinnedResponse), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    await screen.findByTestId('pinned-articles-section');
+
+    expect(screen.getByText('Your saved pages for quick access')).toBeInTheDocument();
+    expect(screen.getAllByText(/Updated/)).toHaveLength(2);
+  });
+
   it('renders title with line-clamp-2 allowing multiline title up to 2 lines', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(mockPinnedResponse), {
@@ -134,8 +153,8 @@ describe('PinnedArticlesSection', () => {
     await screen.findByTestId('pinned-articles-section');
 
     const row = screen.getByTestId('pinned-card-page-1');
-    expect(row.tagName).toBe('A');
-    expect(row).toHaveAttribute('href', '/pages/page-1');
+    expect(row.tagName).toBe('DIV');
+    expect(row.querySelector('a')).toHaveAttribute('href', '/pages/page-1');
     expect(row.className).toContain('rounded-md');
     expect(row.className).not.toContain('rounded-xl');
     expect(row.className).not.toContain('h-full');
@@ -204,6 +223,28 @@ describe('PinnedArticlesSection', () => {
     });
   });
 
+  it('offers Undo after unpinning', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if ((init?.method ?? 'GET') === 'DELETE' && url.includes('/pages/page-1/pin')) {
+        return new Response(JSON.stringify({ message: 'Page unpinned', pageId: 'page-1' }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify(mockPinnedResponse), { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    fireEvent.click(await screen.findByTestId('unpin-btn-page-1'));
+
+    await waitFor(() => {
+      expect(toast.success).toHaveBeenCalledWith(
+        'Unpinned "Getting Started Guide"',
+        expect.objectContaining({ action: expect.objectContaining({ label: 'Undo' }) }),
+      );
+    });
+  });
+
   // ── Unbounded pins (#1130) ───────────────────────────────────────────────
   // The server-side cap is gone, so the section has to stay a dashboard strip
   // rather than a wall of cards. It collapses to COLLAPSED_PIN_COUNT and hands
@@ -258,7 +299,7 @@ describe('PinnedArticlesSection', () => {
     const toggle = screen.getByTestId('pinned-expand-toggle');
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     // The label names how many are hidden, so the count is never a guess.
-    expect(toggle).toHaveTextContent('22 more');
+    expect(toggle).toHaveTextContent(`${30 - COLLAPSED_PIN_COUNT} more`);
 
     fireEvent.click(toggle);
 

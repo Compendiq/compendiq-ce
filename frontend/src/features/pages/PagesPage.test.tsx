@@ -508,7 +508,7 @@ describe('PagesPage', () => {
 
     const section = await screen.findByTestId('pinned-articles-section');
     expect(section).toBeInTheDocument();
-    expect(screen.getByText('Pinned')).toBeInTheDocument();
+    expect(screen.getByText('Pinned pages')).toBeInTheDocument();
     expect(screen.getByText('Getting Started Guide')).toBeInTheDocument();
     expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
   });
@@ -1317,6 +1317,48 @@ describe('PagesPage', () => {
       expect(liveRegion).toHaveTextContent(/ignores your other filters/);
     });
 
+    it('offers a direct switch to Exact words that keeps the active filters', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'kubernetes' } });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+      fireEvent.click(await screen.findByTestId('use-exact-words-with-filters'));
+
+      expect(screen.getByTestId('search-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByTestId('filter-pill-freshness')).toBeInTheDocument();
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+    });
+
+    it('warns about advanced filters before a semantic search starts and offers Exact words', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+      expect(screen.getByTestId('search-mode-filter-warning')).toHaveTextContent('Best match won’t use your advanced filters');
+      fireEvent.click(screen.getByTestId('use-exact-words-before-search'));
+
+      expect(screen.getByTestId('search-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.queryByTestId('search-mode-filter-warning')).not.toBeInTheDocument();
+    });
+
+    it('can clear only filters ignored by semantic search while keeping Space scope', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await waitFor(() => expect(screen.getByRole('option', { name: 'Development' })).toBeInTheDocument());
+      fireEvent.change(screen.getByRole('combobox', { name: /filter by space/i }), { target: { value: 'DEV' } });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'kubernetes' } });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+      fireEvent.click(await screen.findByTestId('clear-ignored-filters'));
+
+      expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
+      expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+    });
+
     it('summarizes more than 3 genuinely-ignored filters, but never counts Space toward the truncation (#1351)', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
@@ -1345,23 +1387,25 @@ describe('PagesPage', () => {
 
   // --- Visual divider test ---
 
-  it('parks source and sort behind Filters on first paint', () => {
+  it('parks source behind Filters and puts sort with results', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     expect(screen.queryByTestId('filter-source')).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: /sort pages/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     expect(screen.getByTestId('filter-source')).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: /sort pages/i })).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: /sort pages/i })).not.toBeInTheDocument();
   });
 
   // --- Grid layout test ---
 
-  it('renders advanced filters in a grid layout', () => {
+  it('groups advanced filters into named grids', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     const panel = screen.getByTestId('advanced-filters-panel');
     expect(panel.querySelector('.grid')).not.toBeNull();
-    expect(panel.querySelector('.grid')?.className).toContain('grid-cols-2');
+    expect(screen.getByRole('group', { name: 'Content' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Time & quality' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Index' })).toBeInTheDocument();
   });
 
   // --- Accessibility: filter pills as focusable buttons ---
@@ -1585,12 +1629,12 @@ describe('PagesPage', () => {
   // their controls (no htmlFor/id). Screen readers announced these as unnamed
   // "combobox"/"edit" fields. These tests pin the aria-label + label/for wiring.
   describe('filter control accessible names (#946)', () => {
-    it('top-row space select exposes an accessible name; source and sort live in Filters', () => {
+    it('top-row space select exposes an accessible name; source lives in Filters', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(screen.getByRole('combobox', { name: /filter by space/i })).toBeInTheDocument();
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       expect(screen.getByRole('combobox', { name: /filter by source/i })).toBeInTheDocument();
-      expect(screen.getByRole('combobox', { name: /sort pages/i })).toBeInTheDocument();
+      expect(screen.queryByRole('combobox', { name: /sort pages/i })).not.toBeInTheDocument();
     });
 
     // Every other control in the section already had one; the search field —
@@ -2110,7 +2154,7 @@ describe('PagesPage', () => {
       expect(headings).toContain('Page results');
       expect(headings).not.toContain('Knowledge base status');
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      expect(screen.getAllByRole('heading').map((h) => h.textContent)).toContain('Knowledge base status');
+      expect(screen.getByText('Index health and sync')).toBeInTheDocument();
     });
 
     it('associates each region with its heading', () => {
@@ -2162,14 +2206,15 @@ describe('PagesPage', () => {
       expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
     });
 
-    it('keeps select-all out of the resting scan until a row is checked', async () => {
+    it('reveals an intentional selection mode before any row is checked', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
+      expect(screen.getByTestId('enter-selection-mode')).toBeInTheDocument();
       const selectAll = screen.getByTestId('select-all-pages');
       expect(selectAll.closest('label')?.className).toContain('sr-only');
 
-      fireEvent.click(screen.getByLabelText('Select Test Page'));
+      fireEvent.click(screen.getByTestId('enter-selection-mode'));
 
       await waitFor(() => {
         expect(screen.getByTestId('select-all-pages').closest('label')?.className).not.toContain('sr-only');

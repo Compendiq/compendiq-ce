@@ -393,6 +393,7 @@ export function PagesPage() {
   // Bulk selection. Held as a Set of page ids so toggling stays O(1) and the
   // memoised PageListItem only re-renders for rows whose own state changed.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
   const lastToggledId = useRef<string | null>(null);
 
   // Debounce the search term before it reaches the keyword /pages query.
@@ -630,8 +631,24 @@ export function PagesPage() {
   const filtersIgnoredMessage = useMemo(() => {
     if (!useSemanticSearch || ignoredFilters.length === 0) return '';
     const summary = summarizeFilterLabels(ignoredFilters.map((f) => f.label));
-    return `Best match ignores your other filters — ${summary}. They apply to Exact words only.`;
-  }, [useSemanticSearch, ignoredFilters]);
+    return `${SEARCH_MODE_LABELS[searchMode]} ignores your other filters — ${summary}. They apply to Exact words only.`;
+  }, [useSemanticSearch, ignoredFilters, searchMode]);
+
+  // Show the consequence of combining a semantic mode and an advanced filter
+  // before a query starts returning results. Once a search is active, the
+  // fuller notice below names every ignored filter instead.
+  const hasPendingModeFilterConflict = searchMode !== 'keyword' && ignoredFilters.length > 0;
+
+  const useExactWordsWithFilters = useCallback(() => {
+    setFilters({ mode: 'keyword', page: 1 });
+  }, [setFilters]);
+
+  const clearIgnoredFilters = useCallback(() => {
+    setFilters({
+      author: '', labels: '', freshness: '', embedding: '', quality: '',
+      from: '', to: '', source: '', page: 1,
+    });
+  }, [setFilters]);
 
   // The pill keys are the URL param names, so a pill clears exactly the param
   // it renders — no second mapping table to drift out of sync.
@@ -694,7 +711,7 @@ export function PagesPage() {
   }, [pageItems]);
   const showQualityBadges = Boolean(qualityFilter);
   const showIdleEmbedding = embeddingStatus === 'pending';
-  const selectionArmed = selectedIds.size > 0;
+  const selectionArmed = selectionMode || selectedIds.size > 0;
   const spaceNameByKey = useMemo(() => {
     const map = new Map<string, string>();
     for (const s of spaces ?? []) {
@@ -738,6 +755,7 @@ export function PagesPage() {
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
+    setSelectionMode(false);
     lastToggledId.current = null;
   }, []);
 
@@ -895,7 +913,7 @@ export function PagesPage() {
               header Find. Exact words is the escape hatch. Meaning only
               (semantic) stays off the peer row until an index exists, or
               when a deep link already asked for it. */}
-          {(search || searchMode !== FILTER_DEFAULTS.mode) && (
+          {(search || searchMode !== FILTER_DEFAULTS.mode || hasPendingModeFilterConflict) && (
           <div
             className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
             data-testid="search-mode-toggle"
@@ -974,6 +992,19 @@ export function PagesPage() {
           </p>
         )}
 
+        {hasPendingModeFilterConflict && !filtersIgnoredMessage && (
+          <div
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
+            data-testid="search-mode-filter-warning"
+          >
+            <AlertTriangle size={12} className="shrink-0 text-warning" aria-hidden="true" />
+            <span>{SEARCH_MODE_LABELS[searchMode]} won’t use your advanced filters. Choose Exact words to narrow results.</span>
+            <button type="button" onClick={useExactWordsWithFilters} className="nm-button-ghost h-7 px-2 text-xs" data-testid="use-exact-words-before-search">
+              Use Exact words
+            </button>
+          </div>
+        )}
+
         {/* sr-only live-region announcer for the #945 honesty notice below.
             Always mounted (only its text content changes) rather than
             mounting/unmounting the notice itself with aria-live on it — some
@@ -996,30 +1027,28 @@ export function PagesPage() {
             thing seen after switching mode rather than something a user has
             to scroll past two other blocks to find. */}
         {filtersIgnoredMessage && (
-          <p
+          <div
             id="filters-ignored-notice"
-            className="flex items-start gap-1.5 text-xs text-muted-foreground"
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
             data-testid="filters-ignored-notice"
           >
-            <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+            <AlertTriangle size={12} className="shrink-0 text-warning" aria-hidden="true" />
             <span>{filtersIgnoredMessage}</span>
-          </p>
+            <button type="button" onClick={useExactWordsWithFilters} className="nm-button-ghost h-7 px-2 text-xs" data-testid="use-exact-words-with-filters">
+              Use Exact words
+            </button>
+            <button type="button" onClick={clearIgnoredFilters} className="nm-button-ghost h-7 px-2 text-xs" data-testid="clear-ignored-filters">
+              Clear ignored filters
+            </button>
+          </div>
         )}
 
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div id="advanced-filters-panel" className="space-y-3 border-t border-border pt-3" data-testid="advanced-filters-panel">
-            <section aria-labelledby="kb-status-heading">
-              <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
-              <KPICards
-                embeddingStatus={embeddingStatusData}
-                spacesCount={spaces?.length ?? 0}
-                lastSynced={syncStatus?.lastSynced}
-                onSync={() => syncMutation.mutate()}
-                isSyncing={syncStatus?.status === 'syncing'}
-              />
-            </section>
-            <div className="grid grid-cols-2 items-end gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          <div id="advanced-filters-panel" className="space-y-4 border-t border-border pt-3" data-testid="advanced-filters-panel">
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Content</legend>
+              <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-3">
             <div className="min-w-32">
               <label htmlFor="filter-source-select" className="mb-1 block text-xs text-muted-foreground">Source</label>
               <select
@@ -1034,22 +1063,6 @@ export function PagesPage() {
                 {PageSourceEnum.options.map((source) => (
                   <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
                 ))}
-              </select>
-            </div>
-            <div className="min-w-40">
-              <label htmlFor="filter-sort-select" className="mb-1 block text-xs text-muted-foreground">Sort</label>
-              <select
-                id="filter-sort-select"
-                value={sort}
-                onChange={(e) => setFilters({ sort: e.target.value as typeof sort })}
-                className="nm-select-md w-full"
-                aria-label="Sort pages"
-              >
-                <option value="modified">Last Modified</option>
-                <option value="title">Title</option>
-                <option value="author">Author</option>
-                <option value="quality">Quality Score</option>
-                <option value="relevance">Relevance</option>
               </select>
             </div>
             {/* Author filter */}
@@ -1086,6 +1099,11 @@ export function PagesPage() {
               </select>
             </div>
 
+              </div>
+            </fieldset>
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Time &amp; quality</legend>
+              <div className="grid grid-cols-2 items-end gap-3 sm:grid-cols-4">
             {/* Freshness filter */}
             <div className="min-w-32">
               <label htmlFor="filter-freshness-select" className="mb-1 block text-xs text-muted-foreground">Freshness</label>
@@ -1103,7 +1121,26 @@ export function PagesPage() {
                 <option value="stale">Stale (&gt;90 days)</option>
               </select>
             </div>
+            <div className="min-w-36">
+              <label htmlFor="filter-quality-select" className="mb-1 block text-xs text-muted-foreground">Quality</label>
+              <select id="filter-quality-select" value={qualityFilter} onChange={(e) => setFilters({ quality: e.target.value, page: 1 })} className="nm-select-md w-full" data-testid="filter-quality">
+                <option value="">Any</option><option value="excellent">Excellent (90-100)</option><option value="good">Good (70-89)</option><option value="needs-work">Needs Work (50-69)</option><option value="poor">Poor (0-49)</option>
+              </select>
+            </div>
+            <div className="min-w-36">
+              <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified From</label>
+              <input id="filter-date-from-input" type="date" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} className="nm-select-md w-full !bg-none" data-testid="filter-date-from" />
+            </div>
+            <div className="min-w-36">
+              <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified To</label>
+              <input id="filter-date-to-input" type="date" value={dateToInput} onChange={(e) => setDateToInput(e.target.value)} className="nm-select-md w-full !bg-none" data-testid="filter-date-to" />
+            </div>
 
+              </div>
+            </fieldset>
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Index</legend>
+              <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2">
             {/* Embedding status filter */}
             <div className="min-w-36">
               <label htmlFor="filter-embedding-select" className="mb-1 block text-xs text-muted-foreground">Embedding</label>
@@ -1120,56 +1157,22 @@ export function PagesPage() {
               </select>
             </div>
 
-            {/* Quality score filter */}
-            <div className="min-w-36">
-              <label htmlFor="filter-quality-select" className="mb-1 block text-xs text-muted-foreground">Quality</label>
-              <select
-                id="filter-quality-select"
-                value={qualityFilter}
-                onChange={(e) => setFilters({ quality: e.target.value, page: 1 })}
-                className="nm-select-md w-full"
-                data-testid="filter-quality"
-              >
-                <option value="">Any</option>
-                <option value="excellent">Excellent (90-100)</option>
-                <option value="good">Good (70-89)</option>
-                <option value="needs-work">Needs Work (50-69)</option>
-                <option value="poor">Poor (0-49)</option>
-              </select>
-            </div>
-
-            {/* Date range */}
-            <div className="min-w-36">
-              <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified From</label>
-              <input
-                id="filter-date-from-input"
-                type="date"
-                value={dateFromInput}
-                onChange={(e) => setDateFromInput(e.target.value)}
-                // nm-select-md paints a dropdown chevron for the border/height/
-                // focus-ring recipe it's borrowed here for; a date input has its
-                // own native calendar-picker icon in that exact spot, and the
-                // two rendered side by side at 390px (polish pass, 2026-08-17).
-                // `!` forces this past nm-select-md's own background-image —
-                // same specificity, and cascade order between a hand-authored
-                // @utility and a built-in Tailwind utility isn't safe to assume.
-                className="nm-select-md w-full !bg-none"
-                data-testid="filter-date-from"
-              />
-            </div>
-            <div className="min-w-36">
-              <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified To</label>
-              <input
-                id="filter-date-to-input"
-                type="date"
-                value={dateToInput}
-                onChange={(e) => setDateToInput(e.target.value)}
-                className="nm-select-md w-full !bg-none"
-                data-testid="filter-date-to"
-              />
-            </div>
-
-            </div>
+              </div>
+            </fieldset>
+            <details className="border-t border-border pt-3">
+              <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
+                Index health and sync
+              </summary>
+              <div className="mt-3">
+                <KPICards
+                  embeddingStatus={embeddingStatusData}
+                  spacesCount={spaces?.length ?? 0}
+                  lastSynced={syncStatus?.lastSynced}
+                  onSync={() => syncMutation.mutate()}
+                  isSyncing={syncStatus?.status === 'syncing'}
+                />
+              </div>
+            </details>
           </div>
         )}
 
@@ -1538,10 +1541,29 @@ export function PagesPage() {
             />
           ) : (
             <>
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
+              <span>{pagesData.total} {pagesData.total === 1 ? 'page' : 'pages'}</span>
+              {selectedSpace && <><span aria-hidden="true"> · </span><span>{selectedSpace.name}</span></>}
+              <label className="ml-auto flex items-center gap-2 text-xs">
+                <span>Sort</span>
+                <select id="filter-sort-select" value={sort} onChange={(e) => setFilters({ sort: e.target.value as typeof sort })} className="nm-select-md h-8 min-w-36" aria-label="Sort pages">
+                  <option value="modified">Last Modified</option>
+                  <option value="title">Title</option>
+                  <option value="author">Author</option>
+                  <option value="quality">Quality Score</option>
+                  <option value="relevance">Relevance</option>
+                </select>
+              </label>
+            </div>
             {/* Select-all + bulk actions. The four /pages/bulk/* endpoints
                 shipped with no UI, so re-embedding a large space meant one
                 row at a time. */}
-            <div className={cn(selectionArmed && 'mb-3 space-y-3')}>
+            <div className="mb-3 space-y-3">
+              {!selectionArmed && (
+                <button type="button" onClick={() => setSelectionMode(true)} className="nm-button-ghost h-8 px-2.5 text-xs" data-testid="enter-selection-mode">
+                  Select pages
+                </button>
+              )}
               <label
                 className={cn(
                   'flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground',
