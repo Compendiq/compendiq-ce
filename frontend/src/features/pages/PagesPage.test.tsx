@@ -300,7 +300,7 @@ describe('PagesPage', () => {
     expect(screen.getByPlaceholderText(FIND_PLACEHOLDER)).toBeInTheDocument();
     expect(screen.getByLabelText(FIND_LABEL)).toBeInTheDocument();
     expect(screen.getByTestId('advanced-filters-toggle')).toBeInTheDocument();
-    expect(screen.getByTestId('library-filter-panel')).toHaveClass('bg-background', 'border');
+    expect(screen.getByTestId('library-filter-panel')).not.toHaveClass('bg-background', 'border');
     expect(screen.getByTestId('page-search-field')).toHaveClass('basis-full');
   });
 
@@ -557,7 +557,7 @@ describe('PagesPage', () => {
       'basis-full',
       'min-w-full',
     );
-    expect(screen.getByLabelText(FIND_LABEL)).toHaveClass('h-10', 'text-sm');
+    expect(screen.getByLabelText(FIND_LABEL)).toHaveClass('h-8', 'text-sm');
   });
 
   describe('error state (pages query failed)', () => {
@@ -1355,16 +1355,16 @@ describe('PagesPage', () => {
       expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
     });
 
-    it('warns about advanced filters before a semantic search starts and offers Exact words', async () => {
+    it('explains the unconstrained Best match contract before a search starts', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
 
-      expect(screen.getByTestId('search-mode-filter-warning')).toHaveTextContent('Best match won’t use your advanced filters');
-      fireEvent.click(screen.getByTestId('use-exact-words-before-search'));
+      expect(screen.getByText(/Best match searches meaning and words/i)).toBeInTheDocument();
+      expect(screen.queryByTestId('search-mode-filter-warning')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('search-mode-keyword'));
 
       expect(screen.getByTestId('search-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
-      expect(screen.queryByTestId('search-mode-filter-warning')).not.toBeInTheDocument();
     });
 
     it('can clear only filters ignored by semantic search while keeping Space scope', async () => {
@@ -1535,9 +1535,10 @@ describe('PagesPage', () => {
       });
     }
 
-    it('hides the retrieval-mode toggle until there is a query', () => {
+    it('declares the retrieval-mode choice before there is a query', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      expect(screen.queryByTestId('search-mode-toggle')).not.toBeInTheDocument();
+      expect(screen.getByTestId('search-mode-toggle')).toBeInTheDocument();
+      expect(screen.getByText('Find by')).toBeInTheDocument();
     });
 
     it('renders Best match and Exact words, with Meaning only when an index exists', () => {
@@ -2227,7 +2228,7 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
-      expect(screen.getByTestId('select-all-pages')).toBeInTheDocument();
+      expect(screen.queryByTestId('select-all-pages')).not.toBeInTheDocument();
       expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
     });
 
@@ -2236,13 +2237,12 @@ describe('PagesPage', () => {
       await screen.findByText('Test Page');
 
       expect(screen.getByTestId('enter-selection-mode')).toBeInTheDocument();
-      const selectAll = screen.getByTestId('select-all-pages');
-      expect(selectAll.closest('label')?.className).toContain('sr-only');
+      expect(screen.queryByTestId('select-all-pages')).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByTestId('enter-selection-mode'));
 
       await waitFor(() => {
-        expect(screen.getByTestId('select-all-pages').closest('label')?.className).not.toContain('sr-only');
+        expect(screen.getByTestId('select-all-pages')).toBeInTheDocument();
       });
     });
 
@@ -2291,6 +2291,7 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
+      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       fireEvent.click(screen.getByTestId('select-all-pages'));
 
       await waitFor(() => {
@@ -2302,6 +2303,7 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
+      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       const selectAll = screen.getByTestId('select-all-pages');
       fireEvent.click(selectAll);
       expect(await screen.findByTestId('bulk-action-bar')).toBeInTheDocument();
@@ -2316,6 +2318,7 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
+      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       const selectAll = screen.getByTestId('select-all-pages') as HTMLInputElement;
       expect(selectAll.indeterminate).toBe(false);
 
@@ -2417,6 +2420,7 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Synced Page');
 
+      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       fireEvent.click(screen.getByTestId('select-all-pages'));
       fireEvent.click(await screen.findByTestId('bulk-embed-btn'));
 

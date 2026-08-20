@@ -73,10 +73,10 @@ export function PinnedArticlesSection() {
       tabIndex={-1}
       aria-labelledby="pinned-pages-heading"
       data-testid="pinned-articles-section"
-      className="rounded-lg border border-border bg-background p-3 sm:p-4"
+      className="border-y border-border py-2"
     >
-      <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="flex size-7 items-center justify-center rounded-md bg-muted text-foreground">
+      <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 px-1">
+        <span className="flex size-6 items-center justify-center text-muted-foreground">
           <Pin size={14} aria-hidden="true" />
         </span>
         <h2 id="pinned-pages-heading" className="text-sm font-semibold text-foreground">
@@ -90,11 +90,11 @@ export function PinnedArticlesSection() {
           {total}
         </span>
         <span className="sr-only">{total} pinned</span>
-        <span className="hidden text-xs text-muted-foreground sm:inline">Your saved pages for quick access</span>
+        <span className="hidden text-xs text-muted-foreground sm:inline">Quick return</span>
       </div>
       <div
         id="pinned-pages-grid"
-        className="grid grid-cols-1 gap-x-1 gap-y-0.5 sm:grid-cols-2 xl:grid-cols-4"
+        className="grid grid-cols-1 gap-x-1 sm:grid-cols-2 xl:grid-cols-4"
       >
         {visiblePins.map((item, i) => (
           <m.div
@@ -104,7 +104,7 @@ export function PinnedArticlesSection() {
             transition={{ delay: entranceDelay(staggerPosition(i, isExpanded)) }}
           >
             <div
-              className="group flex w-full items-center gap-2 rounded-md border border-border bg-card px-3 py-2.5 text-left transition-colors hover:border-border-interactive hover:bg-accent focus-within:border-border-interactive focus-within:bg-accent"
+              className="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent focus-within:bg-accent"
               data-testid={`pinned-card-${item.id}`}
             >
               <Link
@@ -122,7 +122,7 @@ export function PinnedArticlesSection() {
                   <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
                 </p>
                 {(item.spaceKey && item.spaceKey !== '__local__') || item.lastModifiedAt ? (
-                  <p className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                  <p className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
                     {item.spaceKey && item.spaceKey !== '__local__' && <span>{item.spaceKey}</span>}
                     {item.spaceKey && item.spaceKey !== '__local__' && item.lastModifiedAt && <span aria-hidden="true">·</span>}
                     {item.lastModifiedAt && <span>Updated {new Date(item.lastModifiedAt).toLocaleDateString()}</span>}
@@ -145,7 +145,7 @@ export function PinnedArticlesSection() {
       </div>
 
       {overflow > 0 && (
-        <div className="mt-3 flex justify-end border-t border-border pt-3">
+        <div className="mt-2 flex justify-end border-t border-border pt-2">
           <button
             onClick={() => setExpanded((prev) => !prev)}
             aria-expanded={isExpanded}
