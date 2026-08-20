@@ -103,7 +103,7 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
 
 /**
  * App destinations on the grey chassis, left of the workspace card.
- * Column width is `--app-nav-rail-width` (header height + 4px), flush with
+ * Column width is `--app-nav-rail-width` (header height + 8px), flush with
  * the workspace — no gutter between this rail and the article. Labels stay
  * visible so this is not an icon-only rail (WCAG 2.5.3). Keyboard shortcuts
  * (g p / g a / g g) remain on AppLayout.

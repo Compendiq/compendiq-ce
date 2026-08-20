@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth-store';
 import { forgetLastConfluenceSpace } from '../../features/pages/last-confluence-space';
+import { forgetRecentLibrarySpaces } from '../../features/pages/library-space-history';
 import { SETUP_STATUS_QUERY_KEY } from './useSetupStatus';
 
 /**
@@ -45,6 +46,7 @@ export function useClearCacheOnLogout(): void {
       // mutation can't surface to whoever logs in next in this tab.
       queryClient.getMutationCache().clear();
       forgetLastConfluenceSpace();
+      forgetRecentLibrarySpaces();
     }
     wasAuthenticated.current = isAuthenticated;
   }, [isAuthenticated, queryClient]);

@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { HeaderFindButton, HeaderSessionCluster } from './HeaderSessionCluster';
-import { useCommandPaletteStore } from '../../../stores/command-palette-store';
+import { HeaderSessionCluster } from './HeaderSessionCluster';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -17,34 +16,14 @@ function wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-describe('HeaderFindButton', () => {
-  beforeEach(() => {
-    useCommandPaletteStore.setState({ isOpen: false });
-  });
-
-  it('opens the existing command palette', () => {
-    render(<HeaderFindButton />, { wrapper });
-    fireEvent.click(screen.getByTestId('header-find'));
-    expect(useCommandPaletteStore.getState().isOpen).toBe(true);
-  });
-
-  it('is named Find pages & commands, not a second Search', () => {
-    render(<HeaderFindButton />, { wrapper });
-    expect(screen.getByRole('button', { name: 'Find pages & commands' })).toBeInTheDocument();
-    expect(screen.getByText('Find')).toBeInTheDocument();
-    expect(screen.getByText('pages and commands')).toBeInTheDocument();
-    expect(screen.getByTestId('header-find')).toHaveClass('app-find-trigger');
-  });
-});
-
 describe('HeaderSessionCluster', () => {
   beforeEach(() => {
     useArticleViewStore.setState({ editing: false });
   });
 
-  it('renders Find, notifications, theme, and account on the right', () => {
+  it('renders notifications, theme, and account without a global search bar', () => {
     render(<HeaderSessionCluster />, { wrapper });
-    expect(screen.getByTestId('header-find')).toBeInTheDocument();
+    expect(screen.queryByTestId('header-find')).not.toBeInTheDocument();
     expect(screen.getByTestId('notification-bell')).toBeInTheDocument();
     expect(screen.getByLabelText(/Theme:/)).toBeInTheDocument();
     expect(screen.getByLabelText(/menu$/i)).toBeInTheDocument();

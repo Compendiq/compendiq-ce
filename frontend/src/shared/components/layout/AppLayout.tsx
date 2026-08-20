@@ -535,7 +535,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       </AnimatePresence>
 
       {/* Header sits on the grey chassis, outside the brighter workspace
-          card — logo, Find, alerts and the user menu are chrome, not
+          card — logo, alerts and the user menu are chrome, not
           document. Height is --app-header-height so the side inset can
           grow without stretching this band. */}
       <header className="app-header relative z-10 flex shrink-0 items-center gap-2">
@@ -564,8 +564,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
           data-testid="header-chassis-slot"
           className="flex w-[var(--app-nav-rail-width)] shrink-0 items-center justify-center group"
         >
-          {/* Clip to the Q-tile below `md` so hamburger + lockup + Find +
-              session cluster fit the 60px. The SVG itself stays the full
+          {/* Clip to the Q-tile below `md` so hamburger + lockup + session
+              controls fit the 60px. The SVG itself stays the full
               lockup; overflow hides the wordmark rather than squashing it. */}
           <span className="block h-[22px] w-[22px] overflow-hidden">
             <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />

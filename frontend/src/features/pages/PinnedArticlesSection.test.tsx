@@ -368,6 +368,14 @@ describe('PinnedArticlesSection', () => {
     });
   });
 
+  it('keeps the expand action visually attached without an extra divider', async () => {
+    mockPins(COLLAPSED_PIN_COUNT + 1);
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    const toggle = await screen.findByTestId('pinned-expand-toggle');
+    expect(toggle.parentElement).not.toHaveClass('border-t', 'border-border');
+  });
+
   it('states the count for a screen reader, not just as a bare number', async () => {
     mockPins(30);
 

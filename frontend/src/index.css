@@ -294,10 +294,12 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      `transparent` for every in-flow surface, and depth is carried by the value
      step plus the 1px hairline.
 
-     Shadow survives in exactly one place — content that floats ABOVE the page
-     and needs to be read as detached from it: popovers, dropdowns, dialogs,
-     command palette, toasts. Those use --shadow-overlay, which is a real
-     shadow with an offset and a soft blur, not a halo.
+     Shadow survives as one token family. Content that floats ABOVE the page
+     and needs to be read as detached from it — popovers, dropdowns, dialogs,
+     command palette, toasts — uses --shadow-overlay. The Library's centered
+     search command surface is the sole in-flow exception and uses the shallow
+     --shadow-overlay-sm without a simultaneous border. Both are offset, soft
+     shadows rather than halos.
 
      Keeping the token names transparent rather than deleting them is
      deliberate: it makes every stale `box-shadow: … var(--nm-shadow-out)`
@@ -311,8 +313,9 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --nm-highlight-hover: transparent;
   --nm-shadow-in: transparent;
 
-  /* The one real shadow in the system. Offset + soft blur (never a zero-offset
-     halo), tuned so an overlay reads as floating on a near-black chassis. */
+  /* The one shadow family in the system. Offset + soft blur (never a
+     zero-offset halo), tuned so an overlay reads as floating on a near-black
+     chassis; the -sm sibling supports the Library search exception above. */
   --shadow-overlay:
     0 8px 24px -6px rgba(0, 0, 0, 0.6),
     0 2px 6px -2px rgba(0, 0, 0, 0.4);
@@ -341,6 +344,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
   --app-chassis: #080809;
+  /* Shared header chrome. Slightly lighter than the viewport chassis and
+     darker than the workspace chrome, so top bars read as neutral framing
+     rather than another content pane. */
+  --app-header-bg: #101111;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-background);
 
@@ -563,6 +570,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      hairline is quiet, so the value step carries the detach. Stay darker
      than #fbfbfc; do not climb back to #eef0f3 (that erased the gutter). */
   --app-chassis: #eaecf0;
+  /* Plane-like cool grey for the app header and panel toolbars. This stays a
+     token because the same chrome appears above navigation, trees, settings,
+     and the article inspector. */
+  --app-header-bg: #f0f1f3;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-background);
 }
@@ -613,9 +624,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 :root {
   --app-inset: 0px;
   --app-header-height: 2.75rem;
-  /* Pages / AI / Graph chassis column: 4px wider than the header band, which
-     gives destination labels room without stretching the header itself. */
-  --app-nav-rail-width: calc(var(--app-header-height) + 4px);
+  /* Pages / AI / Graph chassis column: 8px wider than the header band (52px
+     at the compact 44px header), giving the labelled destinations 2px of
+     breathing room outside their 40px controls after the rail's padding. */
+  --app-nav-rail-width: calc(var(--app-header-height) + 8px);
   --app-shell-radius: 0px;
   --app-shell-border-width: 0px;
   --app-rail-gap: 0px;
@@ -688,23 +700,23 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   height: 100%;
 }
 
-/* The rail is its own surface; its header strip must not paint the
-   chassis colour over it. */
+/* Context-rail headers share the same neutral chrome as every other panel
+   header; the token keeps that band coherent across detached surfaces. */
 .app-context-rail .panel-toolbar {
-  background: transparent;
+  background: var(--app-header-bg);
 }
 
 /* Shell surfaces carry the palette without competing with content. The
    header is slightly denser than the canvas; sidebars are one tonal step
    deeper, creating stable wayfinding without glass or a heavy shadow. */
-/* Chrome is the GROUND, content is the PANE. The chassis colour carries the
-   header, sidebar and every toolbar; the content pane sits one value step up
-   from it and is separated by a hairline, never by a shadow. That inversion is
-   the core move of the workspace canon: it is why the document you are reading
-   is the brightest thing on screen and the navigation recedes without needing
-   to be dimmed. */
+/* Chrome is the GROUND, content is the PANE. `--app-header-bg` carries the
+   header and toolbars while the sidebar keeps `--color-background`; the
+   content pane sits one value step up and is separated by a hairline, never by
+   a shadow. That inversion is the core move of the workspace canon: it is why
+   the document you are reading is the brightest thing on screen and the
+   navigation recedes without needing to be dimmed. */
 @utility app-header {
-  background: transparent;
+  background: var(--app-header-bg);
   border-color: var(--color-border);
   height: var(--app-header-height);
   min-height: var(--app-header-height);
@@ -735,7 +747,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    internal hierarchy comes from quiet chrome, a single context control, and
    section rhythm rather than a stack of card-like containers. */
 @utility panel-toolbar {
-  background: var(--color-background);
+  background: var(--app-header-bg);
   border-color: var(--color-border);
 }
 
@@ -1216,27 +1228,55 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   }
 }
 
-/* Linear/Plane-style command trigger: compact on phones, a genuine search
-   affordance once the header has room. This stays a button (it opens the
-   command palette) while borrowing the width and boundary of an input so the
-   product's primary wayfinding action is visible at a glance. */
-.app-find-trigger {
-  flex-shrink: 0;
+/* Library search is a compound command surface rather than a decorated input:
+   query, retrieval mode, space scope and filters belong to one task. Its real
+   edge keeps that relationship legible in both themes; the flat treatment
+   avoids combining a border and elevation on the same surface. */
+.library-search-surface {
+  background: var(--surface-card-elevated, var(--color-card-elevated, var(--color-card)));
+  border: 1px solid var(--color-border-interactive);
+  outline: 2px solid transparent;
+  outline-offset: 2px;
 }
 
-@media (min-width: 640px) {
-  .app-find-trigger {
-    width: clamp(15rem, 30vw, 24rem);
-    justify-content: flex-start;
-    gap: 0.5rem;
-    padding-inline: 0.75rem;
-    border-color: var(--color-border-interactive);
-    background: var(--color-card);
-    color: var(--color-muted-foreground);
+.library-search-surface:has(input[type='text']:focus-visible) {
+  outline-color: var(--color-ring);
+}
+
+.library-search-select {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  transition:
+    background-color 50ms ease-out,
+    color 50ms ease-out;
+}
+
+.library-search-select:focus-within {
+  outline-color: var(--color-ring);
+}
+
+.library-search-modes {
+  background: color-mix(in srgb, var(--color-background) 76%, transparent);
+}
+
+.library-search-mode-active {
+  border-color: var(--color-action);
+  background: var(--color-action);
+  color: var(--color-action-foreground);
+}
+
+@media (forced-colors: active) {
+  .library-search-surface {
+    border: 1px solid ButtonText;
   }
 
-  .app-find-trigger:hover {
-    border-color: var(--color-primary);
+  .library-search-select {
+    border: 1px solid ButtonText;
+  }
+
+  .library-search-mode-active {
+    border-color: Highlight;
+    color: Highlight;
   }
 }
 

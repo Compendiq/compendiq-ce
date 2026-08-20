@@ -130,11 +130,20 @@ describe('Inset shell utilities', () => {
     expect(appLayout).not.toMatch(/md:w-auto/);
   });
 
-  it('the chassis destination column is 4px wider than the header is tall', () => {
+  it('the chassis destination column is 8px wider than the header is tall', () => {
     const nav = read('shared/components/layout/MainNavStrip.tsx');
-    expect(css).toMatch(/--app-nav-rail-width:\s*calc\(var\(--app-header-height\) \+ 4px\)/);
+    expect(css).toMatch(/--app-nav-rail-width:\s*calc\(var\(--app-header-height\) \+ 8px\)/);
     expect(appLayout).toContain('w-[var(--app-nav-rail-width)]');
     expect(nav).toContain('w-[var(--app-nav-rail-width)]');
+  });
+
+  it('uses one neutral header token for the app and panel chrome', () => {
+    const appHeader = extractBlock(css, '@utility app-header {');
+    const panelToolbar = extractBlock(css, '@utility panel-toolbar {');
+    expect(css).toMatch(/--app-header-bg:\s*#101111/);
+    expect(css).toMatch(/--app-header-bg:\s*#f0f1f3/);
+    expect(appHeader).toMatch(/background:\s*var\(--app-header-bg\)/);
+    expect(panelToolbar).toMatch(/background:\s*var\(--app-header-bg\)/);
   });
 
   it('the workspace utility is the detached card: bordered, radiused, unshadowed', () => {
@@ -213,7 +222,7 @@ describe('AppLayout structure', () => {
     expect(headerAt).toBeLessThan(workspaceAt);
   });
 
-  it('puts logo, find, alerts and the user menu on the chassis, outside the brighter workspace', () => {
+  it('puts logo, alerts and the user menu on the chassis, outside the brighter workspace', () => {
     const chassisAt = appLayout.indexOf('data-testid="app-chassis"');
     const workspaceAt = appLayout.indexOf('data-testid="app-workspace"');
     const headerAt = appLayout.indexOf('<header');

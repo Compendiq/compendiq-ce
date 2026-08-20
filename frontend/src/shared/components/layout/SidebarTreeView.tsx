@@ -11,6 +11,7 @@ import {
   Globe,
   Pin,
   Settings,
+  Trash2,
   AlertTriangle,
   RefreshCw,
 } from 'lucide-react';
@@ -822,6 +823,24 @@ export function SidebarTreeView({
             </span>
           </div>
 
+          <button
+            type="button"
+            onClick={() => {
+              navigate('/trash');
+              onNavigate?.();
+            }}
+            className={cn(
+              'nm-icon-button mb-2 mt-auto shrink-0',
+              location.pathname === '/trash' && 'nav-selection',
+            )}
+            aria-label="Trash"
+            aria-current={location.pathname === '/trash' ? 'page' : undefined}
+            title="Trash (G then T)"
+            data-testid="sidebar-trash-collapsed"
+          >
+            <Trash2 size={15} aria-hidden="true" />
+          </button>
+
         </m.aside>
       </AnimatePresence>
     );
@@ -1306,13 +1325,31 @@ export function SidebarTreeView({
         )}
       </div>
 
-      {/* Scope count. Out of the scroller so it stays visible under a long tree. */}
+      {/* Scope count + low-frequency storage navigation. Out of the scroller
+          so both stay visible under a long tree. Trash belongs with the page
+          corpus, but not beside the Library's primary New Page action. */}
       <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t px-2 py-1.5">
-        <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
           {treeData
             ? `${treeData.total} ${treeData.total === 1 ? 'page' : 'pages'}${treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}`
             : ''}
         </span>
+        <button
+          type="button"
+          onClick={() => {
+            navigate('/trash');
+            onNavigate?.();
+          }}
+          className={cn(
+            'nm-button-ghost h-7 shrink-0 px-2 text-xs text-muted-foreground',
+            location.pathname === '/trash' && 'nav-selection text-foreground',
+          )}
+          aria-current={location.pathname === '/trash' ? 'page' : undefined}
+          data-testid="sidebar-trash"
+        >
+          <Trash2 size={13} aria-hidden="true" />
+          Trash
+        </button>
       </div>
 
       {/* Resize handle */}

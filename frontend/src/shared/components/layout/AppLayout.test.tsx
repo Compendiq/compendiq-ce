@@ -231,7 +231,7 @@ describe('AppLayout', () => {
     expect(screen.getByTestId('header-chassis-slot').className).toContain('justify-center');
   });
 
-  it('puts a Find control in the header that opens the command palette', () => {
+  it('keeps the command palette out of persistent header chrome', () => {
     render(
       <AppLayout>
         <div>content</div>
@@ -239,14 +239,8 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/ai') },
     );
     const header = document.querySelector('header')!;
-    const find = header.querySelector('[data-testid="header-find"]');
-    expect(find).toBeTruthy();
-    expect(header.querySelector('[data-testid="header-session-cluster"]')!.contains(find!)).toBe(
-      true,
-    );
-    expect(screen.getByRole('button', { name: 'Find pages & commands' })).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('header-find'));
-    expect(useCommandPaletteStore.getState().isOpen).toBe(true);
+    expect(header.querySelector('[data-testid="header-find"]')).toBeNull();
+    expect(header.querySelector('[data-testid="header-session-cluster"]')).toBeTruthy();
   });
 
   it('separates route content from the surrounding workspace chrome', () => {
