@@ -613,10 +613,9 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 :root {
   --app-inset: 0px;
   --app-header-height: 2.75rem;
-  /* Pages / AI / Graph chassis column. 14px wider than the 44px header band
-     so the destination labels sit with a little more air without stretching
-     the header itself. */
-  --app-nav-rail-width: calc(var(--app-header-height) + 14px);
+  /* Pages / AI / Graph chassis column: 4px wider than the header band, which
+     gives destination labels room without stretching the header itself. */
+  --app-nav-rail-width: calc(var(--app-header-height) + 4px);
   --app-shell-radius: 0px;
   --app-shell-border-width: 0px;
   --app-rail-gap: 0px;
