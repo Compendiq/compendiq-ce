@@ -12,6 +12,12 @@ interface UiState {
   treeSidebarSpaceKey: string | undefined;
   treeSidebarWidth: number;
   articleSidebarCollapsed: boolean;
+  /**
+   * Below `xl` the inspector starts collapsed so the article keeps the
+   * workspace. Wide layouts still use `articleSidebarCollapsed`. This flag
+   * is the laptop expand (layout presets, Alt+I, the expand control).
+   */
+  articleSidebarLaptopExpanded: boolean;
   articleSidebarWidth: number;
   /** When false, single-key shortcuts (no Ctrl/Alt) are suppressed (WCAG 2.1.4). */
   singleKeyShortcutsEnabled: boolean;
@@ -27,6 +33,7 @@ interface UiState {
   setTreeSidebarWidth: (width: number) => void;
   toggleArticleSidebar: () => void;
   setArticleSidebarCollapsed: (collapsed: boolean) => void;
+  setArticleSidebarLaptopExpanded: (expanded: boolean) => void;
   setArticleSidebarWidth: (width: number) => void;
   setSingleKeyShortcutsEnabled: (enabled: boolean) => void;
   setVimModeEnabled: (enabled: boolean) => void;
@@ -46,6 +53,7 @@ export const useUiStore = create<UiState>()(
       // widening alone just moves the panel's cost onto the article.
       treeSidebarWidth: 280,
       articleSidebarCollapsed: false,
+      articleSidebarLaptopExpanded: false,
       // 360, not 280: at the old default the Assistant tab's prose column
       // measured ~233px after the pane's own chrome — a third of the app's
       // enforced 640px/~80-char article reading measure, for the one surface
@@ -70,6 +78,7 @@ export const useUiStore = create<UiState>()(
       setTreeSidebarWidth: (width) => set({ treeSidebarWidth: Math.max(180, Math.min(600, width)) }),
       toggleArticleSidebar: () => set((s) => ({ articleSidebarCollapsed: !s.articleSidebarCollapsed })),
       setArticleSidebarCollapsed: (collapsed) => set({ articleSidebarCollapsed: collapsed }),
+      setArticleSidebarLaptopExpanded: (expanded) => set({ articleSidebarLaptopExpanded: expanded }),
       setArticleSidebarWidth: (width) => set({ articleSidebarWidth: Math.max(200, Math.min(1200, width)) }),
       setSingleKeyShortcutsEnabled: (enabled) => set({ singleKeyShortcutsEnabled: enabled }),
       setVimModeEnabled: (enabled) => set({ vimModeEnabled: enabled }),

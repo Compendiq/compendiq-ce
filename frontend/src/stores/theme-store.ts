@@ -59,7 +59,7 @@ export const THEMES: ThemeMeta[] = [
     // Hex values must match the rendered surfaces in index.css — the picker
     // chip is the only way users see a surface before applying the theme, and
     // a test compares these against the tokens rather than trusting either.
-    preview: { bg: '#0d0e11', card: '#16181d', primary: '#4dd0e1', accent: '#eceef2' },
+    preview: { bg: '#141515', card: '#161717', primary: '#4dd0e1', accent: '#e4e6e7' },
   },
   {
     id: 'paper',

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, RouterProvider, createMemoryRouter, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 import { PagesPage } from './PagesPage';
+import { FIND_LABEL, FIND_PLACEHOLDER } from './pages-find';
 import { installVirtualizerRectShim } from '../../test-utils';
 
 // No <Toaster/> is mounted in these unit tests (it lives at the app root,
@@ -15,14 +16,14 @@ vi.mock('sonner', () => ({
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), info: vi.fn() }),
 }));
 
-function createWrapper() {
+function createWrapper(initialEntries: string[] = ['/']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={initialEntries}>
           {/* Provide the scroll container that PagesPage looks for via
               document.querySelector('[data-scroll-container]') */}
           <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
@@ -265,8 +266,10 @@ describe('PagesPage', () => {
     restoreRects();
   });
 
-  it('renders KPI cards at the top of the page', () => {
+  it('keeps corpus KPIs behind the Filters panel, not on the rest-state home', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('kpi-cards')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     expect(screen.getByTestId('kpi-cards')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-total-articles')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-embedded-pages')).toBeInTheDocument();
@@ -277,6 +280,7 @@ describe('PagesPage', () => {
 
   it('keeps corpus KPIs out of the 48px header slot', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     const kpis = screen.getByTestId('kpi-cards');
     expect(kpis.closest('#app-header-slot')).toBeNull();
     expect(kpis.closest('header')).toBeNull();
@@ -292,27 +296,36 @@ describe('PagesPage', () => {
 
   it('renders the page title, search input, and filter controls', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    expect(screen.getByText('Pages')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Search pages...')).toBeInTheDocument();
+    expect(screen.getByText('Library')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(FIND_PLACEHOLDER)).toBeInTheDocument();
+    expect(screen.getByLabelText(FIND_LABEL)).toBeInTheDocument();
     expect(screen.getByTestId('advanced-filters-toggle')).toBeInTheDocument();
+  });
+
+  it('shows the space name on a list row, not only the key', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    await screen.findByText('Test Page');
+    const row = screen.getByTestId('article-hover-page-1');
+    expect(row).toHaveTextContent('Development');
+    expect(row).not.toHaveTextContent('DEV');
   });
 
   it('puts the list search before pinned pages', async () => {
     vi.restoreAllMocks();
     mockFetchWithPinnedPages(mockPinnedResponse);
     render(<PagesPage />, { wrapper: createWrapper() });
-    const search = screen.getByLabelText('Search pages');
+    const search = screen.getByLabelText(FIND_LABEL);
     const pinned = await screen.findByTestId('pinned-articles-section');
     expect(
       search.compareDocumentPosition(pinned) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
-  it('demotes New Page from the filled primary treatment', () => {
+  it('makes New Page the filled primary action on this route', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const newPage = screen.getByTestId('new-page-button');
-    expect(newPage.className).toContain('nm-button-ghost');
-    expect(newPage.className).not.toContain('nm-button-primary');
+    expect(newPage.className).toContain('nm-button-primary');
+    expect(newPage.className).not.toContain('nm-button-ghost');
   });
 
   it('renders the advanced filters toggle button', () => {
@@ -495,19 +508,19 @@ describe('PagesPage', () => {
 
     const section = await screen.findByTestId('pinned-articles-section');
     expect(section).toBeInTheDocument();
-    expect(screen.getByText('Pinned Pages')).toBeInTheDocument();
+    expect(screen.getByText('Pinned')).toBeInTheDocument();
     expect(screen.getByText('Getting Started Guide')).toBeInTheDocument();
     expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
   });
 
-  it('does not render pinned articles section when user has no pinned pages', async () => {
+  it('does not render a pinned section when the user has no pinned pages', async () => {
     vi.restoreAllMocks();
     mockFetchWithPinnedPages(emptyPinnedResponse);
     render(<PagesPage />, { wrapper: createWrapper() });
 
-    // Wait for page list to render so all queries are settled
     await screen.findByText('Test Page');
     expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pinned-empty-cue')).not.toBeInTheDocument();
   });
 
   it('renders the filters section before pinned articles', async () => {
@@ -632,9 +645,9 @@ describe('PagesPage', () => {
     it('shows "Try a different search term" when search is active', async () => {
       vi.restoreAllMocks();
       mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
-      render(<PagesPage />, { wrapper: createWrapper() });
+      render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
       // Type in the search box
-      const searchInput = screen.getByPlaceholderText('Search pages...');
+      const searchInput = screen.getByPlaceholderText(FIND_PLACEHOLDER);
       fireEvent.change(searchInput, { target: { value: 'nonexistent' } });
       expect(await screen.findByText('Try a different search term')).toBeInTheDocument();
     });
@@ -642,8 +655,8 @@ describe('PagesPage', () => {
     it('hides "Go to Settings" action when search is active', async () => {
       vi.restoreAllMocks();
       mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
-      render(<PagesPage />, { wrapper: createWrapper() });
-      const searchInput = screen.getByPlaceholderText('Search pages...');
+      render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
+      const searchInput = screen.getByPlaceholderText(FIND_PLACEHOLDER);
       fireEvent.change(searchInput, { target: { value: 'nonexistent' } });
       // Wait for re-render
       await screen.findByText('Try a different search term');
@@ -701,11 +714,11 @@ describe('PagesPage', () => {
       it('mentions both the search term and the filter when both are active', async () => {
         vi.restoreAllMocks();
         mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
-        render(<PagesPage />, { wrapper: createWrapper() });
+        render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
         fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
-        fireEvent.change(screen.getByPlaceholderText('Search pages...'), { target: { value: 'zzznotathing' } });
+        fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'zzznotathing' } });
 
         expect(await screen.findByText('No pages match "zzznotathing" with Freshness: Stale (>90 days)')).toBeInTheDocument();
       });
@@ -789,7 +802,7 @@ describe('PagesPage', () => {
       // `useSemanticSearch = !!(search && searchMode !== 'keyword')` gates the
       // whole search-results section, so keyword mode never renders a result
       // row at all.
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'redis' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
@@ -878,7 +891,7 @@ describe('PagesPage', () => {
       vi.restoreAllMocks();
       const fetchSpy = mockFetchWithEmptySearch(hasEmbeddings);
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'nonexistent topic' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
@@ -933,7 +946,7 @@ describe('PagesPage', () => {
 
     function renderSemanticSearch() {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'runbook' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
@@ -1034,14 +1047,14 @@ describe('PagesPage', () => {
 
   it('shows search clear button when search has text', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    const input = screen.getByPlaceholderText('Search pages...');
+    const input = screen.getByPlaceholderText(FIND_PLACEHOLDER);
     fireEvent.change(input, { target: { value: 'test query' } });
     expect(screen.getByTestId('search-clear')).toBeInTheDocument();
   });
 
   it('clears search when clear button is clicked', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+    const input = screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'test query' } });
     expect(input.value).toBe('test query');
 
@@ -1134,7 +1147,7 @@ describe('PagesPage', () => {
 
       // Switch to semantic mode and enter a query — the backend now ignores
       // the filter, so the UI must say so.
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
@@ -1146,7 +1159,7 @@ describe('PagesPage', () => {
 
     it('does not show the notice in semantic mode when no advanced filters are active', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
@@ -1186,11 +1199,11 @@ describe('PagesPage', () => {
       // Keyword mode: Space genuinely filters results, so no notice yet.
       expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
 
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
-      await waitFor(() => expect(screen.getByPlaceholderText('Search pages...')).toHaveValue('kubernetes'));
+      await waitFor(() => expect(screen.getByPlaceholderText(FIND_PLACEHOLDER)).toHaveValue('kubernetes'));
 
       // Space is the ONLY active filter, and the backend now applies it in
       // semantic/hybrid mode too — no filter is genuinely ignored, so the
@@ -1207,7 +1220,7 @@ describe('PagesPage', () => {
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
 
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
@@ -1264,7 +1277,7 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
@@ -1295,13 +1308,13 @@ describe('PagesPage', () => {
       expect(liveRegion).toHaveAttribute('aria-live', 'polite');
       expect(liveRegion).toHaveTextContent('');
 
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
 
       await screen.findByTestId('filters-ignored-notice');
-      expect(liveRegion).toHaveTextContent(/ignore your active filters/);
+      expect(liveRegion).toHaveTextContent(/ignores your other filters/);
     });
 
     it('summarizes more than 3 genuinely-ignored filters, but never counts Space toward the truncation (#1351)', async () => {
@@ -1315,7 +1328,7 @@ describe('PagesPage', () => {
       fireEvent.change(screen.getByTestId('filter-author'), { target: { value: 'Alice' } });
       expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
 
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
@@ -1332,9 +1345,13 @@ describe('PagesPage', () => {
 
   // --- Visual divider test ---
 
-  it('renders a visual divider between the filter selects and Sort (not between Sort and Filters)', () => {
+  it('parks source and sort behind Filters on first paint', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('source-sort-divider')).toBeInTheDocument();
+    expect(screen.queryByTestId('filter-source')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: /sort pages/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    expect(screen.getByTestId('filter-source')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /sort pages/i })).toBeInTheDocument();
   });
 
   // --- Grid layout test ---
@@ -1343,8 +1360,8 @@ describe('PagesPage', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     const panel = screen.getByTestId('advanced-filters-panel');
-    expect(panel.className).toContain('grid');
-    expect(panel.className).toContain('grid-cols-2');
+    expect(panel.querySelector('.grid')).not.toBeNull();
+    expect(panel.querySelector('.grid')?.className).toContain('grid-cols-2');
   });
 
   // --- Accessibility: filter pills as focusable buttons ---
@@ -1373,7 +1390,7 @@ describe('PagesPage', () => {
 
   it('focuses the search input after clearing search', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+    const input = screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'test query' } });
 
     fireEvent.click(screen.getByTestId('search-clear'));
@@ -1392,13 +1409,13 @@ describe('PagesPage', () => {
   describe('search input does not steal focus on landing', () => {
     it('does not focus the search input on mount', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      const input = screen.getByPlaceholderText('Search pages...');
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER);
       expect(document.activeElement).not.toBe(input);
     });
 
     it('focuses the search input on "/"', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      const input = screen.getByPlaceholderText('Search pages...');
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER);
       expect(document.activeElement).not.toBe(input);
 
       fireEvent.keyDown(document, { key: '/' });
@@ -1408,7 +1425,7 @@ describe('PagesPage', () => {
 
     it('does not hijack "/" while already typing in an editable field', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement;
       input.focus();
       fireEvent.change(input, { target: { value: 'a/b' } });
 
@@ -1445,7 +1462,7 @@ describe('PagesPage', () => {
 
   describe('search mode toggle (#506)', () => {
     function typeSearch() {
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'runbook' },
       });
     }
@@ -1455,33 +1472,29 @@ describe('PagesPage', () => {
       expect(screen.queryByTestId('search-mode-toggle')).not.toBeInTheDocument();
     });
 
-    it('renders three search mode buttons (keyword, semantic, hybrid)', () => {
+    it('renders Best match and Exact words, with Meaning only when an index exists', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       typeSearch();
-      expect(screen.getByTestId('search-mode-keyword')).toBeInTheDocument();
-      expect(screen.getByTestId('search-mode-semantic')).toBeInTheDocument();
-      expect(screen.getByTestId('search-mode-hybrid')).toBeInTheDocument();
+      expect(screen.getByTestId('search-mode-keyword')).toHaveTextContent('Exact words');
+      expect(screen.getByTestId('search-mode-hybrid')).toHaveTextContent('Best match');
+      expect(screen.getByTestId('search-mode-semantic')).toHaveTextContent('Meaning only');
     });
 
-    it('defaults to keyword mode as active', () => {
+    it('defaults to Best match (hybrid) as active', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       typeSearch();
-      const keyword = screen.getByTestId('search-mode-keyword');
-      expect(keyword).toHaveAttribute('aria-pressed', 'true');
-      // A segmented control: the active segment is the raised one on the track
-      // (`nm-pill-active`). It used to be a near-black `bg-action` fill with a
-      // shadow and ring, which made picking a retrieval strategy louder than
-      // the page's primary action.
-      expect(keyword.className).toContain('nm-pill-active');
+      const hybrid = screen.getByTestId('search-mode-hybrid');
+      expect(hybrid).toHaveAttribute('aria-pressed', 'true');
+      expect(hybrid.className).toContain('nm-pill-active');
     });
 
     it('marks inactive buttons with aria-pressed=false', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       typeSearch();
       const semantic = screen.getByTestId('search-mode-semantic');
-      const hybrid = screen.getByTestId('search-mode-hybrid');
+      const keyword = screen.getByTestId('search-mode-keyword');
       expect(semantic).toHaveAttribute('aria-pressed', 'false');
-      expect(hybrid).toHaveAttribute('aria-pressed', 'false');
+      expect(keyword).toHaveAttribute('aria-pressed', 'false');
     });
 
     it('switches active mode on click', () => {
@@ -1503,8 +1516,8 @@ describe('PagesPage', () => {
     it('distinguishes the active segment from the inactive ones', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       typeSearch();
-      const active = screen.getByTestId('search-mode-keyword');
-      const inactive = screen.getByTestId('search-mode-semantic');
+      const active = screen.getByTestId('search-mode-hybrid');
+      const inactive = screen.getByTestId('search-mode-keyword');
 
       expect(active.className).toContain('nm-pill-active');
       expect(inactive.className).not.toContain('nm-pill-active');
@@ -1525,6 +1538,7 @@ describe('PagesPage', () => {
   describe('source filter (#873)', () => {
     it('renders the Local option with the contract value "standalone", not "local"', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       const select = screen.getByTestId('filter-source') as HTMLSelectElement;
       const localOption = Array.from(select.options).find((o) => o.textContent === 'Local');
       expect(localOption).toBeTruthy();
@@ -1536,6 +1550,7 @@ describe('PagesPage', () => {
       vi.restoreAllMocks();
       const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
       render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
 
       const select = screen.getByTestId('filter-source') as HTMLSelectElement;
       const localOption = Array.from(select.options).find((o) => o.textContent === 'Local');
@@ -1553,6 +1568,7 @@ describe('PagesPage', () => {
 
     it('shows the user-facing label "Local" (not the wire value) in the active-filter pill', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       const select = screen.getByTestId('filter-source') as HTMLSelectElement;
       fireEvent.change(select, { target: { value: 'standalone' } });
 
@@ -1569,9 +1585,10 @@ describe('PagesPage', () => {
   // their controls (no htmlFor/id). Screen readers announced these as unnamed
   // "combobox"/"edit" fields. These tests pin the aria-label + label/for wiring.
   describe('filter control accessible names (#946)', () => {
-    it('top-row space/source/sort selects expose an accessible name', () => {
+    it('top-row space select exposes an accessible name; source and sort live in Filters', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(screen.getByRole('combobox', { name: /filter by space/i })).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       expect(screen.getByRole('combobox', { name: /filter by source/i })).toBeInTheDocument();
       expect(screen.getByRole('combobox', { name: /sort pages/i })).toBeInTheDocument();
     });
@@ -1581,7 +1598,7 @@ describe('PagesPage', () => {
     // one exception, named only by its placeholder (polish pass, 2026-08-17).
     it('the search field exposes an accessible name (was placeholder-only)', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      expect(screen.getByRole('textbox', { name: /search pages/i })).toBeInTheDocument();
+      expect(screen.getByRole('textbox', { name: FIND_LABEL })).toBeInTheDocument();
     });
 
     it('advanced-panel labels are programmatically associated with their controls', () => {
@@ -1612,7 +1629,7 @@ describe('PagesPage', () => {
       expect(screen.getByText('/')).toBeInTheDocument();
       expect(screen.queryByTestId('search-clear')).not.toBeInTheDocument();
 
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), { target: { value: 'kubernetes' } });
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'kubernetes' } });
 
       expect(screen.getByTestId('search-clear')).toBeInTheDocument();
       expect(screen.queryByText('/')).not.toBeInTheDocument();
@@ -1620,7 +1637,7 @@ describe('PagesPage', () => {
 
     it('Escape clears a populated search field', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement;
       fireEvent.change(input, { target: { value: 'kubernetes' } });
       expect(input.value).toBe('kubernetes');
 
@@ -1631,7 +1648,7 @@ describe('PagesPage', () => {
 
     it('Escape on an already-empty search field is a no-op', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement;
 
       // Should not throw, and should not, say, clear an unrelated filter.
       expect(() => fireEvent.keyDown(input, { key: 'Escape' })).not.toThrow();
@@ -1658,6 +1675,14 @@ describe('PagesPage', () => {
       // Virtual scrolling should render fewer items than total (only visible + overscan)
       // In jsdom the exact count depends on mocked dimensions; just verify fewer than 200
       expect(items.length).toBeLessThan(200);
+    });
+
+    it('paints library rows like the page tree, not as cards', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const item = await screen.findByTestId('article-hover-page-1');
+      expect(item.className).toContain('border-transparent');
+      expect(item.className).toContain('hover:bg-accent');
+      expect(item.className).not.toContain('bg-card');
     });
 
   });
@@ -1689,8 +1714,39 @@ describe('PagesPage', () => {
             source: 'standalone',
             visibility,
           },
+          {
+            id: 'cf-companion',
+            spaceKey: 'DEV',
+            title: 'Confluence companion',
+            version: 1,
+            parentId: null,
+            labels: [],
+            author: 'Bob',
+            lastModifiedAt: '2025-01-15T00:00:00Z',
+            lastSynced: '2025-01-16T00:00:00Z',
+            embeddingDirty: false,
+            embeddingStatus: 'embedded',
+            embeddedAt: '2025-01-16T00:00:00Z',
+            source: 'confluence',
+          },
+          {
+            id: 'std-companion',
+            spaceKey: '__local__',
+            title: 'Other visibility',
+            version: 1,
+            parentId: null,
+            labels: [],
+            author: 'Alice',
+            lastModifiedAt: '2025-01-15T00:00:00Z',
+            lastSynced: '2025-01-16T00:00:00Z',
+            embeddingDirty: false,
+            embeddingStatus: 'embedded',
+            embeddedAt: '2025-01-16T00:00:00Z',
+            source: 'standalone',
+            visibility: visibility === 'shared' ? 'private' : 'shared',
+          },
         ],
-        total: 1,
+        total: 3,
         page: 1,
         limit: 50,
         totalPages: 1,
@@ -1755,7 +1811,7 @@ describe('PagesPage', () => {
     it('Local badge is a neutral tint — no borrowed status hue, no bg-muted', async () => {
       mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
-      const badge = await screen.findByTestId('badge-local');
+      const badge = (await screen.findAllByTestId('badge-local'))[0];
       expect(badge).toHaveTextContent('Local');
       expect(badge.className).toContain('bg-foreground/10');
       expect(badge.className).toContain('text-secondary-foreground');
@@ -1779,7 +1835,7 @@ describe('PagesPage', () => {
     it('Shared badge is a neutral tint — no borrowed status hue, no bg-muted', async () => {
       mockPagesWithStandalone('shared');
       render(<PagesPage />, { wrapper: createWrapper() });
-      const badge = await screen.findByTestId('badge-shared');
+      const badge = (await screen.findAllByTestId('badge-shared'))[0];
       expect(badge).toHaveTextContent('Shared');
       expect(badge.className).toContain('bg-foreground/10');
       expect(badge.className).toContain('text-secondary-foreground');
@@ -1843,9 +1899,9 @@ describe('PagesPage', () => {
     it('debounces keyword search: only the final term fires a /pages request', async () => {
       vi.restoreAllMocks();
       const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
-      render(<PagesPage />, { wrapper: createWrapper() });
+      render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
 
-      const input = screen.getByPlaceholderText('Search pages...');
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER);
       // Four rapid keystrokes — the debounce must collapse them to one request.
       fireEvent.change(input, { target: { value: 'k' } });
       fireEvent.change(input, { target: { value: 'ku' } });
@@ -1872,7 +1928,7 @@ describe('PagesPage', () => {
       const fetchSpy = mockFetchWithSearchAndPages();
       render(<PagesPage />, { wrapper: createWrapper() });
 
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
@@ -1928,7 +1984,7 @@ describe('PagesPage', () => {
       it('first keystroke does not fire an immediate sort=relevance request before the 300ms debounce', async () => {
         vi.restoreAllMocks();
         const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
-        render(<PagesPage />, { wrapper: createWrapper() });
+        render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
 
         // Flush the initial browse-list query (sort=modified, no search).
         await act(async () => { await vi.advanceTimersByTimeAsync(0); });
@@ -1937,7 +1993,7 @@ describe('PagesPage', () => {
         // One character. onChange flips `sort` to 'relevance' synchronously; the
         // debounced term is still ''. The query sort must track the DEBOUNCED
         // term, so the key must not change and no request may fire yet.
-        fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
           target: { value: 'k' },
         });
         // Flush microtasks WITHOUT advancing to the 300ms debounce boundary.
@@ -1961,11 +2017,11 @@ describe('PagesPage', () => {
       it('clear button does not fire a request carrying the stale search term', async () => {
         vi.restoreAllMocks();
         const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
-        render(<PagesPage />, { wrapper: createWrapper() });
+        render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
         await act(async () => { await vi.advanceTimersByTimeAsync(0); });
 
         // Type a term and let its debounced request actually fire.
-        fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
           target: { value: 'kube' },
         });
         await act(async () => { await vi.advanceTimersByTimeAsync(300); });
@@ -2029,7 +2085,7 @@ describe('PagesPage', () => {
       mockFetchWithMultiplePages(3);
       render(<PagesPage />, { wrapper: createWrapper() });
 
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
@@ -2049,17 +2105,19 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
 
       const headings = screen.getAllByRole('heading').map((h) => h.textContent);
-      expect(headings).toContain('Pages');
-      expect(headings).toContain('Knowledge base status');
-      expect(headings).toContain('Search and filter pages');
+      expect(headings).toContain('Library');
+      expect(headings).toContain('Filter pages');
       expect(headings).toContain('Page results');
+      expect(headings).not.toContain('Knowledge base status');
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      expect(screen.getAllByRole('heading').map((h) => h.textContent)).toContain('Knowledge base status');
     });
 
     it('associates each region with its heading', () => {
       const { container } = render(<PagesPage />, { wrapper: createWrapper() });
 
       const labelled = Array.from(container.querySelectorAll('section[aria-labelledby]'));
-      expect(labelled.length).toBeGreaterThanOrEqual(3);
+      expect(labelled.length).toBeGreaterThanOrEqual(2);
       for (const section of labelled) {
         const id = section.getAttribute('aria-labelledby')!;
         expect(container.querySelector(`#${id}`)).not.toBeNull();
@@ -2082,13 +2140,13 @@ describe('PagesPage', () => {
         </QueryClientProvider>,
       );
 
-      const input = await screen.findByPlaceholderText('Search pages...');
+      const input = await screen.findByPlaceholderText(FIND_PLACEHOLDER);
       expect((input as HTMLInputElement).value).toBe('runbook');
     });
 
     it('starts empty when no search param is present', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      const input = await screen.findByPlaceholderText('Search pages...');
+      const input = await screen.findByPlaceholderText(FIND_PLACEHOLDER);
       expect((input as HTMLInputElement).value).toBe('');
     });
   });
@@ -2102,6 +2160,20 @@ describe('PagesPage', () => {
 
       expect(screen.getByTestId('select-all-pages')).toBeInTheDocument();
       expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
+    });
+
+    it('keeps select-all out of the resting scan until a row is checked', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Test Page');
+
+      const selectAll = screen.getByTestId('select-all-pages');
+      expect(selectAll.closest('label')?.className).toContain('sr-only');
+
+      fireEvent.click(screen.getByLabelText('Select Test Page'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('select-all-pages').closest('label')?.className).not.toContain('sr-only');
+      });
     });
 
     it('reveals the action bar when a row is checked', async () => {
@@ -2417,6 +2489,7 @@ describe('PagesPage filter persistence (#1124)', () => {
 
   it('writes a filter selection into the URL', async () => {
     renderAt('/');
+    fireEvent.click(await screen.findByTestId('advanced-filters-toggle'));
     await screen.findByTestId('filter-source');
 
     fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
@@ -2446,6 +2519,7 @@ describe('PagesPage filter persistence (#1124)', () => {
 
   it('returns to page 1 when a filter changes', async () => {
     renderAt('/?page=4');
+    fireEvent.click(await screen.findByTestId('advanced-filters-toggle'));
     await screen.findByTestId('filter-source');
 
     fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'confluence' } });
@@ -2473,6 +2547,7 @@ describe('PagesPage filter persistence (#1124)', () => {
         <RouterProvider router={router} />
       </QueryClientProvider>,
     );
+    fireEvent.click(await screen.findByTestId('advanced-filters-toggle'));
     await screen.findByTestId('filter-source');
 
     fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
@@ -2504,6 +2579,7 @@ describe('PagesPage filter persistence (#1124)', () => {
     );
     await screen.findByText('Test Page');
 
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
     await waitFor(() => expect(router.state.location.search).toContain('source=standalone'));
 
@@ -2522,7 +2598,7 @@ describe('PagesPage filter persistence (#1124)', () => {
   // no round-trip coverage of their own.
   it('round-trips the search mode through the URL', async () => {
     renderAt('/');
-    fireEvent.change(await screen.findByPlaceholderText('Search pages...'), {
+    fireEvent.change(await screen.findByPlaceholderText(FIND_PLACEHOLDER), {
       target: { value: 'runbook' },
     });
     await screen.findByTestId('search-mode-semantic');
@@ -2533,9 +2609,9 @@ describe('PagesPage filter persistence (#1124)', () => {
   });
 
   it('restores the search mode from the URL', async () => {
-    renderAt('/?mode=hybrid');
+    renderAt('/?search=runbook&mode=keyword');
     await waitFor(() => {
-      expect(screen.getByTestId('search-mode-hybrid')).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByTestId('search-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
     });
   });
 
@@ -2636,7 +2712,7 @@ describe('PagesPage filter persistence (#1124)', () => {
       renderAt('/');
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
 
-      const input = screen.getByPlaceholderText('Search pages...');
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER);
       fireEvent.change(input, { target: { value: 'k' } });
       fireEvent.change(input, { target: { value: 'ku' } });
       fireEvent.change(input, { target: { value: 'kub' } });
@@ -2654,7 +2730,7 @@ describe('PagesPage filter persistence (#1124)', () => {
       renderAt('/?search=runbook');
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
 
-      expect((screen.getByPlaceholderText('Search pages...') as HTMLInputElement).value).toBe('runbook');
+      expect((screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement).value).toBe('runbook');
     });
 
     it('removes the term from the URL when the search is cleared', async () => {

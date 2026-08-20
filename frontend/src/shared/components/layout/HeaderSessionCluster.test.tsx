@@ -31,7 +31,7 @@ describe('HeaderFindButton', () => {
   it('is named Find pages & commands, not a second Search', () => {
     render(<HeaderFindButton />, { wrapper });
     expect(screen.getByRole('button', { name: 'Find pages & commands' })).toBeInTheDocument();
-    expect(screen.getByText('Find pages & commands')).toBeInTheDocument();
+    expect(screen.getByText('Find')).toBeInTheDocument();
   });
 });
 
@@ -40,9 +40,9 @@ describe('HeaderSessionCluster', () => {
     useArticleViewStore.setState({ editing: false });
   });
 
-  it('renders notifications, theme, and account — Find lives in the header centre', () => {
+  it('renders Find, notifications, theme, and account on the right', () => {
     render(<HeaderSessionCluster />, { wrapper });
-    expect(screen.queryByTestId('header-find')).not.toBeInTheDocument();
+    expect(screen.getByTestId('header-find')).toBeInTheDocument();
     expect(screen.getByTestId('notification-bell')).toBeInTheDocument();
     expect(screen.getByLabelText(/Theme:/)).toBeInTheDocument();
     expect(screen.getByLabelText(/menu$/i)).toBeInTheDocument();

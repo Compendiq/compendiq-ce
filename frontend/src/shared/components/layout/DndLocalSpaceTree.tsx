@@ -154,7 +154,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
           // on the left. See the grip below for why it moved to this edge.
           'group relative flex items-center rounded-md h-7 pr-7 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'nav-selection font-medium'
+            ? 'nav-selection font-medium outline-none'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         // See SidebarTreeNode for why the gutter is built this way. The grip

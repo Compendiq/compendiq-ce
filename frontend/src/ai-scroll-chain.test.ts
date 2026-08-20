@@ -64,9 +64,14 @@ const aiPageSource = read(AI_PAGE);
  * that scrolls when any row below it refuses to shrink.
  */
 function scrollContainerClasses(): string {
-  const match = appLayoutSource.match(/data-scroll-container[^>]*?className="([^"]+)"/);
-  if (!match) throw new Error(`No data-scroll-container element found in ${APP_LAYOUT}`);
-  return match[1]!;
+  const at = appLayoutSource.indexOf('data-scroll-container');
+  if (at < 0) throw new Error(`No data-scroll-container element found in ${APP_LAYOUT}`);
+  const slice = appLayoutSource.slice(at, at + 900);
+  const quoted = slice.match(/className="([^"]+)"/);
+  if (quoted) return quoted[1]!;
+  const composed = slice.match(/className=\{cn\(\s*'([^']+)'/);
+  if (!composed) throw new Error(`No className on the scroll container in ${APP_LAYOUT}`);
+  return composed[1]!;
 }
 
 /** PageTransition's pass-through wrapper, on the path of every route. */

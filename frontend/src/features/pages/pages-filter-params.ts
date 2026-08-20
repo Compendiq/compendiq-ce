@@ -46,7 +46,7 @@ export const FILTER_DEFAULTS: PageFilterState = {
   to: '',
   source: '',
   sort: 'modified',
-  mode: 'keyword',
+  mode: 'hybrid',
   page: 1,
 };
 
@@ -63,9 +63,7 @@ export const ADVANCED_FILTER_KEYS = [
   'quality',
   'from',
   'to',
-  // `source` deliberately absent: its <select> lives in the always-visible top
-  // row, so a `?source=` link opening the advanced panel would reveal a panel
-  // that has nothing to do with the filter that is set.
+  'source',
 ] as const satisfies readonly (keyof PageFilterState)[];
 
 const SORT_KEYS: readonly SortKey[] = ['title', 'modified', 'author', 'quality', 'relevance'];

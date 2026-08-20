@@ -69,7 +69,7 @@ describe('PinnedArticlesSection', () => {
 
     const section = await screen.findByTestId('pinned-articles-section');
     expect(section).toBeInTheDocument();
-    expect(screen.getByText('Pinned Pages')).toBeInTheDocument();
+    expect(screen.getByText('Pinned')).toBeInTheDocument();
     expect(screen.getByText('Getting Started Guide')).toBeInTheDocument();
     expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
   });
@@ -81,19 +81,16 @@ describe('PinnedArticlesSection', () => {
       });
     });
 
-    const { container } = render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
 
-    // Wait for query to settle
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalled();
+      expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
     });
-
-    // Should render nothing
-    expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
-    expect(container.innerHTML).toBe('');
+    expect(screen.queryByTestId('pinned-empty-cue')).not.toBeInTheDocument();
+    expect(screen.queryByTestId(/^pinned-card-/)).not.toBeInTheDocument();
   });
 
-  it('shows space key and author on pinned cards without excerpt', async () => {
+  it('shows space key on pinned rows without excerpt or author', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(mockPinnedResponse), {
         headers: { 'Content-Type': 'application/json' },
@@ -105,7 +102,7 @@ describe('PinnedArticlesSection', () => {
     await screen.findByTestId('pinned-articles-section');
 
     expect(screen.getByText('DEV')).toBeInTheDocument();
-    expect(screen.getByText('Alice')).toBeInTheDocument();
+    expect(screen.queryByText('Alice')).not.toBeInTheDocument();
     expect(screen.queryByText('This is a getting started guide for new developers.')).not.toBeInTheDocument();
   });
 
@@ -121,11 +118,11 @@ describe('PinnedArticlesSection', () => {
     await screen.findByTestId('pinned-articles-section');
 
     const titleElement = screen.getByText('Getting Started Guide');
-    expect(titleElement.className).toContain('line-clamp-2');
-    expect(titleElement.className).not.toContain('truncate');
+    expect(titleElement.className).toContain('truncate');
+    expect(titleElement.className).not.toContain('line-clamp-2');
   });
 
-  it('stretches every card to fill its grid row so uneven content does not leave ragged heights', async () => {
+  it('renders pinned pages as list rows, not a card gallery', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(mockPinnedResponse), {
         headers: { 'Content-Type': 'application/json' },
@@ -136,12 +133,20 @@ describe('PinnedArticlesSection', () => {
 
     await screen.findByTestId('pinned-articles-section');
 
-    // jsdom performs no layout, so this is a proxy for the real assertion:
-    // grid items stretch to the row's height by default, and only a card
-    // that also claims h-full actually fills that height instead of sizing
-    // to its own (shorter) content and leaving empty space in its cell.
-    expect(screen.getByTestId('pinned-card-page-1').className).toContain('h-full');
-    expect(screen.getByTestId('pinned-card-page-2').className).toContain('h-full');
+    const row = screen.getByTestId('pinned-card-page-1');
+    expect(row.tagName).toBe('A');
+    expect(row).toHaveAttribute('href', '/pages/page-1');
+    expect(row.className).toContain('rounded-md');
+    expect(row.className).not.toContain('rounded-xl');
+    expect(row.className).not.toContain('h-full');
+    expect(row.className).not.toContain('bg-card');
+    expect(row.className).toContain('border-transparent');
+    expect(row.className).toContain('hover:bg-accent');
+    expect(row.className).not.toMatch(/(?<!forced-colors:)border-border-interactive/);
+    const grid = document.getElementById('pinned-pages-grid')?.className ?? '';
+    expect(grid).toContain('grid');
+    expect(grid).toContain('xl:grid-cols-4');
+    expect(grid).toContain('sm:grid-cols-2');
   });
 
   it('shows unpin button on each card', async () => {
@@ -342,7 +347,7 @@ describe('PinnedArticlesSection', () => {
     const section = await screen.findByTestId('pinned-articles-section');
     expect(section.tagName).toBe('SECTION');
     expect(section).toHaveAttribute('aria-labelledby', 'pinned-pages-heading');
-    expect(document.getElementById('pinned-pages-heading')).toHaveTextContent('Pinned Pages');
+    expect(document.getElementById('pinned-pages-heading')).toHaveTextContent('Pinned');
   });
 
   // Unpinning unmounts the card that owns the focused button. Without a
@@ -463,7 +468,7 @@ describe('PinnedArticlesSection', () => {
     const section = await screen.findByTestId('pinned-articles-section');
     expect(section.tagName).toBe('SECTION');
     expect(section).toHaveAttribute('aria-labelledby', 'pinned-pages-heading');
-    expect(document.getElementById('pinned-pages-heading')).toHaveTextContent('Pinned Pages');
+    expect(document.getElementById('pinned-pages-heading')).toHaveTextContent('Pinned');
   });
 
   // Unpinning unmounts the card that owns the focused button. Without a

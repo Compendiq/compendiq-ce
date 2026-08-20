@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { PagesPage } from './PagesPage';
+import { FIND_PLACEHOLDER } from './pages-find';
 import { installVirtualizerRectShim } from '../../test-utils';
 
 /**
@@ -32,14 +33,14 @@ function titleLine(title: HTMLElement): HTMLElement {
   return line;
 }
 
-function createWrapper() {
+function createWrapper(initialEntries: string[] = ['/']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={initialEntries}>
           {/* Scroll container PagesPage finds via [data-scroll-container] */}
           <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
             {children}
@@ -71,8 +72,39 @@ const mockPagesResponse = {
       source: 'standalone',
       visibility: 'shared',
     },
+    {
+      id: 'cf-1',
+      spaceKey: 'OPS',
+      title: 'Confluence page',
+      version: 1,
+      parentId: null,
+      labels: [],
+      author: 'Bob',
+      lastModifiedAt: '2025-01-15T00:00:00Z',
+      lastSynced: '2025-01-16T00:00:00Z',
+      embeddingDirty: false,
+      embeddingStatus: 'embedded',
+      embeddedAt: '2025-01-16T00:00:00Z',
+      source: 'confluence',
+    },
+    {
+      id: 'std-2',
+      spaceKey: '__local__',
+      title: 'Private note',
+      version: 1,
+      parentId: null,
+      labels: [],
+      author: 'Alice',
+      lastModifiedAt: '2025-01-15T00:00:00Z',
+      lastSynced: '2025-01-16T00:00:00Z',
+      embeddingDirty: false,
+      embeddingStatus: 'embedded',
+      embeddedAt: '2025-01-16T00:00:00Z',
+      source: 'standalone',
+      visibility: 'private',
+    },
   ],
-  total: 1,
+  total: 3,
   page: 1,
   limit: 50,
   totalPages: 1,
@@ -137,8 +169,8 @@ describe('PagesPage row: mobile title layout', () => {
     // The badges land under the title only if they live in the SAME wrap
     // container. A refactor that moves them out (say, into the trailing
     // cluster) would strand them off-screen or hide them on mobile.
-    const local = screen.getByTestId('badge-local');
-    const shared = screen.getByTestId('badge-shared');
+    const local = screen.getAllByTestId('badge-local')[0];
+    const shared = screen.getAllByTestId('badge-shared')[0];
     expect(local.parentElement).toBe(titleRow);
     expect(shared.parentElement).toBe(titleRow);
     // shrink-0 stays: on a shared line the badges hold their width and the
@@ -147,8 +179,14 @@ describe('PagesPage row: mobile title layout', () => {
     expect(shared.className).toContain('shrink-0');
   });
 
-  it('wraps the pipeline badge below the title block instead of compressing it', async () => {
+  it('hides idle Not indexed at rest so the list is titles, not pipeline noise', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
+    await findTitle();
+    expect(screen.queryByTestId('page-state-badge')).not.toBeInTheDocument();
+  });
+
+  it('wraps the pipeline badge below the title block instead of compressing it', async () => {
+    render(<PagesPage />, { wrapper: createWrapper(['/?embedding=pending']) });
     const title = await findTitle();
     const titleBlock = titleLine(title).parentElement?.parentElement as HTMLElement;
     const button = title.closest('button') as HTMLElement;
@@ -169,6 +207,12 @@ describe('PagesPage row: mobile title layout', () => {
     // inside the button — rendered at every width, as page-state.ts documents.
     expect(button.contains(stateBadge)).toBe(true);
     expect(titleBlock.contains(stateBadge)).toBe(false);
+  });
+
+  it('exposes the full title when the visible line truncates', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const title = await findTitle();
+    expect(title).toHaveAttribute('title', pageTitle);
   });
 
   it('keeps the select checkbox on the title line when the row grows', async () => {
@@ -281,7 +325,7 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     // `useSemanticSearch = !!(search && searchMode !== 'keyword')` gates the
     // whole search-results section — keyword mode never renders this row.
-    fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+    fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
       target: { value: 'postgres' },
     });
     fireEvent.click(screen.getByTestId('search-mode-semantic'));

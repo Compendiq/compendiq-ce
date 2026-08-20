@@ -22,6 +22,7 @@ import {
   applyFilterPatch,
   hasAdvancedFilters,
   shouldAdoptUrlSearch,
+  FILTER_DEFAULTS,
   type PageFilterState,
 } from './pages-filter-params';
 import { cn } from '../../shared/lib/cn';
@@ -33,6 +34,7 @@ import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
+import { FIND_LABEL, FIND_PLACEHOLDER, LIBRARY_HEADING, SEARCH_MODE_LABELS } from './pages-find';
 
 // User-facing labels for the wire values of PageSourceEnum. Shared between the
 // source-filter <option>s and the active-filter pill so they never diverge.
@@ -81,6 +83,15 @@ function summarizeFilterLabels(labels: string[]): string {
 // ---------------------------------------------------------------------------
 
 interface PageListItemProps {
+  showSource?: boolean;
+  showVisibility?: boolean;
+  showQuality?: boolean;
+  /** When false, hide idle "Not indexed" so an unindexed corpus is not a wall of chips. */
+  showIdleEmbedding?: boolean;
+  /** True once any row is selected — row checkboxes stay visible for the rest of the pass. */
+  selectionArmed?: boolean;
+  /** Space display name when known; the key is the fallback. */
+  spaceName?: string | null;
   pageItem: {
     id: string;
     spaceKey: string | null;
@@ -113,30 +124,27 @@ interface PageListItemProps {
 
 const PageListItem = memo(function PageListItem({
   pageItem, index: _index, onNavigate, selected = false, onToggleSelect,
+  showSource = false, showVisibility = false, showQuality = false,
+  showIdleEmbedding = false, selectionArmed = false, spaceName = null,
 }: PageListItemProps) {
   return (
     <m.div
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
       transition={{ duration: 0.15 }}
     >
       <div
         className={cn(
-          // A list row, not a card: px-3 py-2 and a 6px corner. `p-4` plus a
-          // 12px radius is card geometry, and forty of them stacked reads as a
-          // gallery of tiles rather than a list you scan down.
-          //
-          // Hover tints the row instead of colouring its border. An accent
-          // border on hover competes with `selected`, which is the state that
-          // actually needs to be seen across a long list.
-          // `items-start` below sm: when the badge cluster wraps the row grows
-          // past one line, and a centred checkbox drifts down to the author/
-          // date line. Top-aligned (plus the input's own 2px nudge) it stays
-          // on the title line, which is the thing it selects.
-          'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors max-sm:items-start',
+          // Same row as the page tree and the pinned strip: no card fill, no
+          // hairline around every item. A stacked `bg-card` + `border-border`
+          // list is forty tiles; the rail is a scan of titles. Selected is
+          // the pressed recipe (`bg-accent`), not an extra border — that
+          // competed with hover and failed forced-colors without the
+          // transparent 1px that becomes `--color-border-interactive`.
+          'group nm-focus-ring flex w-full items-center gap-3 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors max-sm:items-start forced-colors:border-border-interactive',
           selected
-            ? 'border-primary/50 bg-primary/[0.07]'
-            : 'border-border bg-card hover:bg-accent',
+            ? 'bg-accent'
+            : 'hover:bg-accent',
         )}
         data-testid={`article-hover-${pageItem.id}`}
       >
@@ -150,8 +158,14 @@ const PageListItem = memo(function PageListItem({
             onChange={() => { /* click handler owns this; keeps React controlled */ }}
             aria-label={`Select ${pageItem.title}`}
             // The 2px nudge centres the 16px box on the title's ~20px line
-            // when the row top-aligns below `sm`.
-            className="size-4 shrink-0 cursor-pointer accent-[var(--color-primary)] max-sm:mt-0.5"
+            // when the row top-aligns below `sm`. On pointer devices the box
+            // stays in the tree (keyboard, tests) but recedes until hover,
+            // focus, or an active selection — so the resting scan is titles.
+            // Touch has no hover, so the box stays visible below `sm`.
+            className={cn(
+              'size-4 shrink-0 cursor-pointer accent-[var(--color-primary)] max-sm:mt-0.5',
+              !selected && !selectionArmed && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
+            )}
             data-testid={`page-select-${pageItem.id}`}
           />
         )}
@@ -183,13 +197,13 @@ const PageListItem = memo(function PageListItem({
                   is what made forty rows look like forty cards. */}
               <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
                 {pageItem.icon && <PageIcon icon={pageItem.icon} pageId={pageItem.id} size="row" />}
-                <span className="min-w-0 truncate">{pageItem.title}</span>
+                <span className="min-w-0 truncate" title={pageItem.title}>{pageItem.title}</span>
               </p>
               {/* Source badge. Neutral, like Private below: a source is a
                   category, not a state, so it may not borrow the status
                   greens/indigos — the label is the differentiator. The recipe
                   and its measured rationale live in neutral-chip.ts. */}
-              {pageItem.source === 'standalone' ? (
+              {showSource && (pageItem.source === 'standalone' ? (
                 <span
                   className={cn('shrink-0', neutralChipClass)}
                   data-testid="badge-local"
@@ -205,9 +219,8 @@ const PageListItem = memo(function PageListItem({
                 >
                   Confluence
                 </span>
-              )}
-              {/* Visibility badge for standalone articles */}
-              {pageItem.source === 'standalone' && (
+              ))}
+              {showVisibility && pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
                   <span
                     className={cn('shrink-0', neutralChipClass)}
@@ -217,7 +230,6 @@ const PageListItem = memo(function PageListItem({
                     <Globe size={10} /> Shared
                   </span>
                 ) : (
-                  // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                   <span
                     className={cn('shrink-0', neutralChipClass)}
                     data-testid="badge-private"
@@ -229,36 +241,44 @@ const PageListItem = memo(function PageListItem({
               )}
             </div>
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              {pageItem.spaceKey !== '__local__' && <span>{pageItem.spaceKey}</span>}
+              {pageItem.spaceKey !== '__local__' && (
+                <span title={pageItem.spaceKey ?? undefined}>{spaceName || pageItem.spaceKey}</span>
+              )}
               {pageItem.author && <span>{pageItem.author}</span>}
               {pageItem.lastModifiedAt && (
                 <span>{new Date(pageItem.lastModifiedAt).toLocaleDateString()}</span>
               )}
             </div>
           </div>
-          {/* Trailing status cluster. `hidden sm:flex` because none of these
-              can shrink: at 390px they held their width, drove the title's
-              `min-w-0` block to zero, and rendered on top of the badges inside
-              it — the row showed five overlapping pills and no title.
+          {/* Labels before pipeline chips: identity, then category, then the
+              one state that discriminates. `hidden sm:flex` because none of
+              these can shrink: at 390px they held their width, drove the
+              title's `min-w-0` block to zero, and rendered on top of the
+              badges inside it — the row showed five overlapping pills and
+              no title.
 
               Hidden rather than dropped, so they stay in the DOM for tests and
               for assistive tech, and so the same row markup serves both widths.
               The facts are not lost on mobile: every one of them is on the page
               itself, which is one tap away. */}
-          {/* One pipeline badge, at every width, and it renders NOTHING when the
-              page is healthy or the job was deliberately skipped. This replaces
-              three near-duplicate pills ("Skipped / Skipped / Not Embedded");
-              the severity ladder and the reasoning live in PageStateBadge. */}
-          <PageStateBadge
-            embeddingDirty={pageItem.embeddingDirty}
-            summaryStatus={pageItem.summaryStatus}
-            qualityStatus={pageItem.qualityStatus}
-          />
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
+            {pageItem.labels.length > 0 && (
+              <div className="flex gap-1">
+                {pageItem.labels.slice(0, 3).map((label) => (
+                  <span
+                    key={label}
+                    className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                    data-testid="label-chip"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            )}
             {/* Only when a score EXISTS. A number about the content is not
                 pipeline state and an author acts on it differently — but
                 "Not Scored" IS pipeline state, and PageStateBadge owns that. */}
-            {pageItem.qualityScore !== null && pageItem.qualityScore !== undefined && (
+            {showQuality && pageItem.qualityScore !== null && pageItem.qualityScore !== undefined && (
               <QualityScoreBadge
                 qualityScore={pageItem.qualityScore}
                 qualityStatus={pageItem.qualityStatus}
@@ -276,20 +296,16 @@ const PageListItem = memo(function PageListItem({
                 which this row already prints as a date three lines above. Two
                 renderings of one field read as two facts. It stays on the page
                 detail and preview surfaces, where no raw date sits beside it. */}
-            {pageItem.labels.length > 0 && (
-              <div className="flex gap-1">
-                {pageItem.labels.slice(0, 3).map((label) => (
-                  <span
-                    key={label}
-                    className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
-                    data-testid="label-chip"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            )}
           </div>
+          {/* One pipeline badge, at every width, and it renders NOTHING when
+              the page is healthy, the job was skipped, or idle "Not indexed"
+              is suppressed on this list. Failures still show. */}
+          <PageStateBadge
+            embeddingDirty={pageItem.embeddingDirty}
+            summaryStatus={pageItem.summaryStatus}
+            qualityStatus={pageItem.qualityStatus}
+            showIdleEmbedding={showIdleEmbedding}
+          />
         </button>
       </div>
     </m.div>
@@ -309,6 +325,12 @@ const PageListItem = memo(function PageListItem({
   // restored the controlled input's DOM back to unchecked.
   if (prev.selected !== next.selected) return false;
   if (prev.onToggleSelect !== next.onToggleSelect) return false;
+  if (prev.showSource !== next.showSource) return false;
+  if (prev.showVisibility !== next.showVisibility) return false;
+  if (prev.showQuality !== next.showQuality) return false;
+  if (prev.showIdleEmbedding !== next.showIdleEmbedding) return false;
+  if (prev.selectionArmed !== next.selectionArmed) return false;
+  if (prev.spaceName !== next.spaceName) return false;
   return true;
 });
 
@@ -543,7 +565,7 @@ export function PagesPage() {
     {
       key: '/',
       keys: ['/'],
-      description: 'Focus page search',
+      description: 'Filter this list',
       category: 'navigation',
       action: focusSearchInput,
     },
@@ -608,7 +630,7 @@ export function PagesPage() {
   const filtersIgnoredMessage = useMemo(() => {
     if (!useSemanticSearch || ignoredFilters.length === 0) return '';
     const summary = summarizeFilterLabels(ignoredFilters.map((f) => f.label));
-    return `Semantic and hybrid search ignore your active filters — ${summary}. They apply to keyword search only.`;
+    return `Best match ignores your other filters — ${summary}. They apply to Exact words only.`;
   }, [useSemanticSearch, ignoredFilters]);
 
   // The pill keys are the URL param names, so a pill clears exactly the param
@@ -660,6 +682,26 @@ export function PagesPage() {
   // `?? []` fallback would otherwise mint a new array every render and break
   // the memoisation of every selection callback that depends on it.
   const pageItems = useMemo(() => pagesData?.items ?? [], [pagesData?.items]);
+  const showSourceBadges = useMemo(
+    () => new Set(pageItems.map((p) => p.source)).size > 1,
+    [pageItems],
+  );
+  const showVisibilityBadges = useMemo(() => {
+    const vis = new Set(
+      pageItems.filter((p) => p.source === 'standalone').map((p) => p.visibility ?? 'private'),
+    );
+    return vis.size > 1;
+  }, [pageItems]);
+  const showQualityBadges = Boolean(qualityFilter);
+  const showIdleEmbedding = embeddingStatus === 'pending';
+  const selectionArmed = selectedIds.size > 0;
+  const spaceNameByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of spaces ?? []) {
+      if (s.key && s.name) map.set(s.key, s.name);
+    }
+    return map;
+  }, [spaces]);
   const scrollMargin = listContainerRef.current?.offsetTop ?? 0;
 
   const toggleSelect = useCallback((id: string, shiftKey: boolean) => {
@@ -729,7 +771,7 @@ export function PagesPage() {
   const virtualizer = useVirtualizer({
     count: pageItems.length,
     getScrollElement: () => scrollElement,
-    estimateSize: () => 80,
+    estimateSize: () => 52,
     overscan: 5,
     scrollMargin,
     useFlushSync: false, // Required for React 19
@@ -745,45 +787,32 @@ export function PagesPage() {
     // page, so the cap should keep content flush-left, not float it.
     <div className="max-w-[1100px] space-y-3">
       <HeaderHost fallbackClassName="mb-1">
-        <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">Pages</h1>
-      </HeaderHost>
-
-      <section
-        aria-labelledby="kb-status-heading"
-        className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2"
-      >
-        <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
-        <KPICards
-          embeddingStatus={embeddingStatusData}
-          spacesCount={spaces?.length ?? 0}
-          lastSynced={syncStatus?.lastSynced}
-          onSync={() => syncMutation.mutate()}
-          isSyncing={syncStatus?.status === 'syncing'}
-        />
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => navigate('/trash')}
-            className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
-            data-testid="trash-link"
-            title="Trash"
-          >
-            <Trash2 size={15} />
-            <span className="hidden sm:inline">Trash</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => navigate('/pages/new')}
-            className="nm-button-ghost h-8 px-3 text-xs sm:text-sm"
-            data-testid="new-page-button"
-          >
-            <Plus size={15} />
-            <span>New Page</span>
-            <ShortcutHint shortcutId="new-page" />
-          </button>
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">{LIBRARY_HEADING}</h1>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => navigate('/trash')}
+              className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
+              data-testid="trash-link"
+              title="Trash"
+            >
+              <Trash2 size={15} />
+              <span className="hidden sm:inline">Trash</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/pages/new')}
+              className="nm-button-primary h-8 px-3 text-xs sm:text-sm"
+              data-testid="new-page-button"
+            >
+              <Plus size={15} />
+              <span>New Page</span>
+              <ShortcutHint shortcutId="new-page" />
+            </button>
+          </div>
         </div>
-      </section>
+      </HeaderHost>
 
       {/* Filters */}
       {/* A control row, not a pane. This was a bordered `bg-card` box with
@@ -794,21 +823,18 @@ export function PagesPage() {
           first viewport to say "these things belong together", which their
           adjacency already said. */}
       <section aria-labelledby="kb-filters-heading" className="space-y-3">
-        <h2 id="kb-filters-heading" className="sr-only">Search and filter pages</h2>
+        <h2 id="kb-filters-heading" className="sr-only">Filter pages</h2>
         <div className="flex flex-wrap items-center gap-3">
-          {/* Search */}
+          {/* List filter — the start-page primary. Source, sort and KPI sit
+              behind Filters so first paint is this field, space scope, then
+              the list. Header Find (command palette) is a different control. */}
           <div className="relative flex-1 min-w-48">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input
               ref={searchInputRef as RefObject<HTMLInputElement>}
               type="text"
-              placeholder="Search pages..."
-              // The one control in this section with no aria-label — every
-              // sibling (space/source/sort selects, the mode toggle, every
-              // advanced field) already has one; this is the field the
-              // route's own `/` shortcut exists to focus (polish pass,
-              // 2026-08-17).
-              aria-label="Search pages"
+              placeholder={FIND_PLACEHOLDER}
+              aria-label={FIND_LABEL}
               value={search}
               onChange={(e) => {
                 const val = e.target.value;
@@ -834,7 +860,7 @@ export function PagesPage() {
                   e.preventDefault();
                   e.stopPropagation();
                   setSearchInput('');
-                  setFilters({ search: '', page: 1, mode: 'keyword', ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
+                  setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                 }
               }}
               className="nm-input pl-10 pr-10"
@@ -843,7 +869,7 @@ export function PagesPage() {
               <button
                 onClick={() => {
                   setSearchInput('');
-                  setFilters({ search: '', page: 1, mode: 'keyword', ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
+                  setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                   searchInputRef.current?.focus();
                 }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
@@ -865,41 +891,42 @@ export function PagesPage() {
             )}
           </div>
 
-          {/* Search mode toggle — keyword / semantic / hybrid.
-
-              Hidden until there is a query (or a non-default mode from the
-              URL). Picking an IR algorithm is not a landing decision; the
-              list field is. A `?mode=hybrid` deep link still reveals it so
-              the restored state is visible. Neutral fill plus weight carries
-              "selected"; the accent stays spent on actions. */}
-          {(search || searchMode !== 'keyword') && (
+          {/* Retrieval mode — Best match (hybrid) is the default, matching
+              header Find. Exact words is the escape hatch. Meaning only
+              (semantic) stays off the peer row until an index exists, or
+              when a deep link already asked for it. */}
+          {(search || searchMode !== FILTER_DEFAULTS.mode) && (
           <div
             className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
             data-testid="search-mode-toggle"
             role="group"
             aria-label="Search mode"
+            aria-describedby="find-mode-hint"
           >
-              {(['keyword', 'semantic', 'hybrid'] as const).map((m) => (
+              {([
+                'hybrid',
+                'keyword',
+                ...((searchMode === 'semantic'
+                  || embeddingStatusData == null
+                  || embeddingStatusData.embeddedPages > 0
+                  || embeddingStatusData.totalEmbeddings > 0)
+                  ? (['semantic'] as const)
+                  : []),
+              ] as const).map((m) => (
                 <button
                   key={m}
                   data-testid={`search-mode-${m}`}
                   onClick={() => setFilters({ mode: m, page: 1 })}
                   aria-pressed={searchMode === m}
                   className={cn(
-                    'rounded-sm px-2.5 py-1 text-xs font-medium capitalize transition-colors',
+                    'rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
                     'nm-focus-ring',
                     searchMode === m
                       ? 'nm-pill-active'
-                      // `nm-pill-active` carries its own 1px border; matching it here
-                      // with a same-width *transparent* border (rather than no border
-                      // at all) keeps every segment's box size identical, so selecting
-                      // a mode doesn't reflow the other two by the border's width (was
-                      // 24px inactive vs 26px active, shifting all three horizontally
-                      // on every click — polish pass, 2026-08-17).
                       : 'border border-transparent text-muted-foreground hover:text-foreground',
                   )}
                 >
-                  {m}
+                  {SEARCH_MODE_LABELS[m]}
                 </button>
               ))}
               {searchResults.isLoadingEnhanced && (
@@ -920,47 +947,12 @@ export function PagesPage() {
             ))}
           </select>
 
-          <select
-            value={sourceFilter}
-            onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
-            className="nm-select-md w-32 shrink-0"
-            data-testid="filter-source"
-            aria-label="Filter by source"
-          >
-            <option value="">All Sources</option>
-            {PageSourceEnum.options.map((source) => (
-              <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
-            ))}
-          </select>
-
-          {/* Divider between the filters (space/source) and Sort. It used to
-              sit between Sort and Filters instead, which visually grouped
-              Sort with the advanced-filters toggle rather than separating
-              it — Sort isn't a filter (polish pass, 2026-08-17). */}
-          <div className="hidden h-6 w-px bg-border/60 sm:block" aria-hidden="true" data-testid="source-sort-divider" />
-
-          <select
-            value={sort}
-            onChange={(e) => setFilters({ sort: e.target.value as typeof sort })}
-            className="nm-select-md w-40 shrink-0"
-            aria-label="Sort pages"
-          >
-            <option value="modified">Last Modified</option>
-            <option value="title">Title</option>
-            <option value="author">Author</option>
-            <option value="quality">Quality Score</option>
-            <option value="relevance">Relevance</option>
-          </select>
-
           {/* Advanced filters toggle */}
           <button
             onClick={() => setShowAdvancedFilters((v) => !v)}
             className={cn(
-              'flex items-center gap-1.5 rounded-md px-3 py-2 text-sm transition-colors',
-              'nm-focus-ring',
-              showAdvancedFilters || activeFilterCount > 0
-                ? 'bg-action/15 text-action'
-                : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
+              'nm-button-ghost flex h-8 items-center gap-1.5 px-3 text-sm',
+              (showAdvancedFilters || activeFilterCount > 0) && 'bg-accent',
             )}
             data-testid="advanced-filters-toggle"
             aria-expanded={showAdvancedFilters}
@@ -969,13 +961,18 @@ export function PagesPage() {
             <Filter size={14} />
             Filters
             {activeFilterCount > 0 && (
-              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-action text-[11px] font-bold text-action-foreground">
+              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-foreground/15 text-[11px] font-semibold tabular-nums">
                 {activeFilterCount}
               </span>
             )}
           </button>
 
         </div>
+        {(search || searchMode !== FILTER_DEFAULTS.mode) && (
+          <p id="find-mode-hint" className="text-xs text-muted-foreground">
+            Best match uses meaning and words. Exact words matches the text you type.
+          </p>
+        )}
 
         {/* sr-only live-region announcer for the #945 honesty notice below.
             Always mounted (only its text content changes) rather than
@@ -1011,7 +1008,50 @@ export function PagesPage() {
 
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div id="advanced-filters-panel" className="grid grid-cols-2 items-end gap-3 border-t border-border pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
+          <div id="advanced-filters-panel" className="space-y-3 border-t border-border pt-3" data-testid="advanced-filters-panel">
+            <section aria-labelledby="kb-status-heading">
+              <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
+              <KPICards
+                embeddingStatus={embeddingStatusData}
+                spacesCount={spaces?.length ?? 0}
+                lastSynced={syncStatus?.lastSynced}
+                onSync={() => syncMutation.mutate()}
+                isSyncing={syncStatus?.status === 'syncing'}
+              />
+            </section>
+            <div className="grid grid-cols-2 items-end gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            <div className="min-w-32">
+              <label htmlFor="filter-source-select" className="mb-1 block text-xs text-muted-foreground">Source</label>
+              <select
+                id="filter-source-select"
+                value={sourceFilter}
+                onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
+                className="nm-select-md w-full"
+                data-testid="filter-source"
+                aria-label="Filter by source"
+              >
+                <option value="">All Sources</option>
+                {PageSourceEnum.options.map((source) => (
+                  <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
+                ))}
+              </select>
+            </div>
+            <div className="min-w-40">
+              <label htmlFor="filter-sort-select" className="mb-1 block text-xs text-muted-foreground">Sort</label>
+              <select
+                id="filter-sort-select"
+                value={sort}
+                onChange={(e) => setFilters({ sort: e.target.value as typeof sort })}
+                className="nm-select-md w-full"
+                aria-label="Sort pages"
+              >
+                <option value="modified">Last Modified</option>
+                <option value="title">Title</option>
+                <option value="author">Author</option>
+                <option value="quality">Quality Score</option>
+                <option value="relevance">Relevance</option>
+              </select>
+            </div>
             {/* Author filter */}
             <div className="min-w-40">
               <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
@@ -1129,15 +1169,7 @@ export function PagesPage() {
               />
             </div>
 
-            {/* A "clear everything" control used to live here too — "Clear
-                filters" in filled destructive red — duplicating the pill
-                row's plain-text "Clear all" below under a different label
-                and opposite visual weight, for the identical
-                `clearAllFilters` call. Clearing filters destroys no data,
-                so the destructive-red treatment was also just wrong. The
-                pill row's "Clear all" is now the one control (polish pass,
-                2026-08-17); it sits beside the pills it clears, which the
-                panel does not. */}
+            </div>
           </div>
         )}
 
@@ -1167,7 +1199,7 @@ export function PagesPage() {
                 <button
                   key={f.key}
                   onClick={() => clearFilter(f.key)}
-                  className="inline-flex items-center gap-1 rounded-full bg-action/10 px-2.5 py-0.5 text-xs font-medium text-action"
+                  className="nm-button-ghost h-7 gap-1 px-2 text-xs font-medium"
                   aria-label={`Remove ${f.label} filter`}
                   aria-describedby={ignoredBySemanticSearch ? 'filters-ignored-notice' : undefined}
                   data-testid={`filter-pill-${f.key}`}
@@ -1179,7 +1211,7 @@ export function PagesPage() {
             })}
             <button
               onClick={clearAllFilters}
-              className="rounded-sm text-xs text-muted-foreground hover:text-foreground nm-focus-ring"
+              className="nm-button-ghost h-7 px-2 text-xs"
               data-testid="clear-all-pill-filters"
             >
               Clear all
@@ -1190,10 +1222,10 @@ export function PagesPage() {
 
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (
-        <div className="rounded-xl border border-border bg-card p-3">
+        <div className="space-y-2 py-1">
           <div className="flex items-center justify-between text-sm">
             <span>Syncing {syncStatus.progress.space}...</span>
-            <span>{syncStatus.progress.current}/{syncStatus.progress.total}</span>
+            <span className="tabular-nums text-muted-foreground">{syncStatus.progress.current}/{syncStatus.progress.total}</span>
           </div>
           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
             <div
@@ -1206,7 +1238,7 @@ export function PagesPage() {
 
       {/* Embedding progress */}
       {embeddingStatusData?.isProcessing && (
-        <div className="rounded-xl border border-border bg-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
+        <div className="flex items-center gap-3 py-1" data-testid="embedding-progress-banner">
           <Loader2 size={16} className="animate-spin text-action" />
           <span className="text-sm">
             Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
@@ -1225,7 +1257,8 @@ export function PagesPage() {
         </div>
       )}
 
-      {/* Pinned Pages — after Find, not before it. */}
+      {/* Pinned — after the list filter, then the list. Filters (source,
+          sort, KPI) sit in the panel above, not between the field and pins. */}
       <PinnedArticlesSection />
 
       {/* No-embeddings warning for semantic/hybrid search */}
@@ -1270,7 +1303,7 @@ export function PagesPage() {
       {/* Space home content (when enabled and a space is selected) */}
       {showHomeContent && !forcePageList ? (
         homePageLoading ? (
-          <div className="rounded-xl border border-border bg-card h-96 animate-pulse" />
+          <div className="h-96 animate-pulse rounded-md bg-foreground/5" />
         ) : homePage ? (
           <m.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
             <div className="flex items-center justify-between">
@@ -1278,13 +1311,13 @@ export function PagesPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => navigate(`/pages/${homePage.id}`)}
-                  className="rounded-xl border border-border bg-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+                  className="nm-button-ghost h-8 gap-1.5 px-2.5 text-sm"
                 >
                   <FileText size={14} /> View Full Page
                 </button>
                 <button
                   onClick={() => setForcePageList(true)}
-                  className="rounded-xl border border-border bg-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+                  className="nm-button-ghost h-8 gap-1.5 px-2.5 text-sm"
                   data-testid="show-page-list"
                 >
                   <List size={14} /> Show All Pages
@@ -1292,7 +1325,7 @@ export function PagesPage() {
               </div>
             </div>
             <SanitizedHtml
-              className={`rounded-xl border border-border bg-card prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
+              className={`prose max-w-none py-2${isLight ? '' : ' prose-invert'}`}
               html={homeBodyHtml}
               additionalAllowedAttrs={['data-diagram-name', 'data-drawio', 'data-color', 'data-layout', 'data-layout-type', 'data-cell-width', 'data-border']}
             />
@@ -1308,7 +1341,7 @@ export function PagesPage() {
           {searchResults.isLoadingImmediate && searchResults.immediateResults.length === 0 ? (
             <div className="space-y-2">
               {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="rounded-md border border-border bg-card h-14 animate-pulse" />
+                <div key={i} className="h-11 animate-pulse rounded-md bg-foreground/5" />
               ))}
             </div>
           ) : (() => {
@@ -1316,6 +1349,7 @@ export function PagesPage() {
             return displayItems.length === 0 ? (
               <EmptyState
                 icon={FolderOpen}
+                className="border-0 bg-transparent"
                 title={searchResults.hasEmbeddings ? 'No pages found' : 'No matching pages'}
                 description={
                   searchResults.hasEmbeddings
@@ -1331,25 +1365,25 @@ export function PagesPage() {
               <>
                 <p className="text-sm text-muted-foreground" data-testid="search-results-count">
                   {searchResults.total} {searchResults.total === 1 ? 'result' : 'results'}
-                  <span className="ml-2 text-xs capitalize text-muted-foreground/60">({searchMode})</span>
+                  <span className="ml-2 text-xs text-muted-foreground/60">({SEARCH_MODE_LABELS[searchMode]})</span>
                 </p>
-                <div className="space-y-2">
+                <div className="space-y-0.5">
                   {displayItems.map((item, i) => (
                     <m.div
                       key={item.id}
-                      initial={{ opacity: 0, y: 4 }}
-                      animate={{ opacity: 1, y: 0 }}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
                       transition={{ duration: 0.15, delay: i * 0.02 }}
                     >
                       <button
                         onClick={() => navigate(`/pages/${item.id}`)}
-                        className="flex w-full items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-accent max-sm:items-start max-sm:flex-wrap max-sm:gap-y-1"
+                        className="nm-focus-ring flex w-full items-center gap-3 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-accent max-sm:items-start max-sm:flex-wrap max-sm:gap-y-1 forced-colors:border-border-interactive"
                         data-testid={`article-hover-${item.id}`}
                       >
                         <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
                           <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
                             {item.icon && <PageIcon icon={item.icon} pageId={item.id} size="row" />}
-                            <span className="min-w-0 truncate">{item.title}</span>
+                            <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
                           </p>
                           {/* `contain:inline-size` zeroes the excerpt's
                               contribution to the block's intrinsic width.
@@ -1428,7 +1462,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
-                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
+                className="nm-icon-button disabled:opacity-30"
               >
                 <ChevronLeft size={16} />
               </button>
@@ -1439,7 +1473,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.min(searchResults.totalPages, page + 1) })}
                 disabled={page >= searchResults.totalPages}
                 aria-label="Next page"
-                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
+                className="nm-icon-button disabled:opacity-30"
               >
                 <ChevronRight size={16} />
               </button>
@@ -1450,14 +1484,14 @@ export function PagesPage() {
         <>
           {/* Page list — keyword/browse mode (original) */}
           {isLoading ? (
-            <div className="space-y-3">
+            <div className="space-y-0.5">
               {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="rounded-xl border border-border bg-card h-16 animate-pulse" />
+                <div key={i} className="h-11 animate-pulse rounded-md bg-foreground/5" />
               ))}
             </div>
           ) : pagesError && !pagesData ? (
             <div
-              className="flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm"
+              className="flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
               data-testid="pages-error-state"
             >
               <AlertTriangle size={18} className="mt-0.5 shrink-0 text-destructive" />
@@ -1487,13 +1521,14 @@ export function PagesPage() {
             // corpus is the one case where it, and `search`, are both empty.
             <EmptyState
               icon={FolderOpen}
+              className="border-0 bg-transparent"
               title="No pages found"
               description={
                 activeFilterCount > 0
                   ? (search
                       ? `No pages match "${search}" with ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`
                       : `No pages match ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`)
-                  : (search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here')
+                  : (search ? 'Try a different search term' : 'Create a page, or connect a Confluence space to fill this list')
               }
               action={
                 activeFilterCount > 0
@@ -1506,8 +1541,13 @@ export function PagesPage() {
             {/* Select-all + bulk actions. The four /pages/bulk/* endpoints
                 shipped with no UI, so re-embedding a large space meant one
                 row at a time. */}
-            <div className="mb-3 space-y-3">
-              <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+            <div className={cn(selectionArmed && 'mb-3 space-y-3')}>
+              <label
+                className={cn(
+                  'flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground',
+                  !selectionArmed && 'sr-only',
+                )}
+              >
                 <input
                   type="checkbox"
                   checked={allVisibleSelected}
@@ -1552,13 +1592,19 @@ export function PagesPage() {
                       transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
                     }}
                   >
-                    <div className="pb-2">
+                    <div className="pb-0.5">
                       <PageListItem
                         pageItem={pageItem}
                         index={virtualRow.index}
                         onNavigate={navigateToPage}
                         selected={selectedIds.has(pageItem.id)}
                         onToggleSelect={toggleSelect}
+                        showSource={showSourceBadges}
+                        showVisibility={showVisibilityBadges}
+                        showQuality={showQualityBadges}
+                        showIdleEmbedding={showIdleEmbedding}
+                        selectionArmed={selectionArmed}
+                        spaceName={pageItem.spaceKey ? spaceNameByKey.get(pageItem.spaceKey) ?? null : null}
                       />
                     </div>
                   </div>
@@ -1575,7 +1621,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
-                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
+                className="nm-icon-button disabled:opacity-30"
               >
                 <ChevronLeft size={16} />
               </button>
@@ -1586,7 +1632,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.min(pagesData.totalPages, page + 1) })}
                 disabled={page >= pagesData.totalPages}
                 aria-label="Next page"
-                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
+                className="nm-icon-button disabled:opacity-30"
               >
                 <ChevronRight size={16} />
               </button>

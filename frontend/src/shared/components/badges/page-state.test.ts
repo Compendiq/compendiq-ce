@@ -52,6 +52,24 @@ describe('resolvePageState', () => {
     expect(state?.tone).toBe('idle');
   });
 
+  it('can silence idle Not indexed without hiding failures or in-flight work', () => {
+    expect(resolvePageState({ embeddingDirty: true, showIdleEmbedding: false })).toBeNull();
+    expect(
+      resolvePageState({
+        embeddingDirty: true,
+        qualityStatus: 'failed',
+        showIdleEmbedding: false,
+      })?.label,
+    ).toBe('Quality failed');
+    expect(
+      resolvePageState({
+        embeddingDirty: true,
+        summaryStatus: 'summarizing',
+        showIdleEmbedding: false,
+      })?.label,
+    ).toBe('Processing');
+  });
+
   it('reports in-flight work from either pipeline', () => {
     expect(resolvePageState({ summaryStatus: 'summarizing' })?.label).toBe('Processing');
     expect(resolvePageState({ qualityStatus: 'analyzing' })?.label).toBe('Processing');

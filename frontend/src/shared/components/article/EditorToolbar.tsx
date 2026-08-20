@@ -10,7 +10,7 @@ import {
   ChevronsUpDown, Paperclip, ListTree, ImagePlus, Table2,
   Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
-  Smile,
+  Smile, Baseline,
 } from 'lucide-react';
 import {
   LAYOUT_PRESETS,
@@ -24,7 +24,7 @@ import { insertTableCaption } from './table-cell-selection';
 import { BlockTypeMenu } from './BlockTypeMenu';
 import { EmojiPicker, EmojiPickerContent } from './EmojiPicker';
 export { EmojiPicker };
-import { ColorPickerDropdown } from './EditorColorPicker';
+import { ColorPickerDropdown, ColorPanel } from './EditorColorPicker';
 import { uploadPastedImage } from './editor-image-upload';
 import { toast } from 'sonner';
 import { absorbPortalEscape } from '../../lib/absorb-portal-escape';
@@ -123,7 +123,7 @@ const PANEL_TYPES = [
  * typed into. Image uses a file input, but it still lives in that popover so
  * the menu never hosts an input.
  */
-type PendingPrompt = 'image' | 'status' | 'emoji' | null;
+type PendingPrompt = 'image' | 'status' | 'emoji' | 'color' | null;
 
 type FoldedControls = {
   underline: boolean;
@@ -132,6 +132,8 @@ type FoldedControls = {
   orderedList: boolean;
   taskList: boolean;
   align: boolean;
+  color: boolean;
+  bulletList: boolean;
 };
 
 const NONE_FOLDED: FoldedControls = {
@@ -141,16 +143,20 @@ const NONE_FOLDED: FoldedControls = {
   orderedList: false,
   taskList: false,
   align: false,
+  color: false,
+  bulletList: false,
 };
 
 function InsertMenu({
   editor,
   folded = NONE_FOLDED,
   pageId,
+  showLabel = true,
 }: {
   editor: EditorType;
   folded?: FoldedControls;
   pageId?: string;
+  showLabel?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<PendingPrompt>(null);
@@ -171,6 +177,9 @@ function InsertMenu({
       code: e.isActive('code'),
       orderedList: e.isActive('orderedList'),
       taskList: e.isActive('taskList'),
+      bulletList: e.isActive('bulletList'),
+      textColor: e.getAttributes('textStyle').color as string | undefined,
+      highlightColor: e.getAttributes('highlight').color as string | undefined,
     }),
   });
 
@@ -180,7 +189,9 @@ function InsertMenu({
     folded.code ||
     folded.orderedList ||
     folded.taskList ||
-    folded.align;
+    folded.align ||
+    folded.color ||
+    folded.bulletList;
 
   const requestPrompt = (kind: Exclude<PendingPrompt, null>) => {
     pendingRef.current = kind;
@@ -236,7 +247,7 @@ function InsertMenu({
                 className={menuTriggerClass(open)}
               >
                 <Plus size={15} className="shrink-0" />
-                Insert
+                {showLabel && 'Insert'}
                 <ChevronDown size={13} className="shrink-0 opacity-60" />
               </button>
             </DropdownMenu.Trigger>
@@ -297,6 +308,24 @@ function InsertMenu({
                       >
                         <CheckSquare size={15} className="shrink-0" />
                         Task List
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.color && (
+                      <DropdownMenu.Item
+                        onSelect={() => requestPrompt('color')}
+                        className={MENU_ITEM}
+                      >
+                        <Baseline size={15} className="shrink-0" />
+                        Color…
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.bulletList && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleBulletList().run()}
+                        className={cn(MENU_ITEM, formatState.bulletList && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <List size={15} className="shrink-0" />
+                        Bullet List
                       </DropdownMenu.Item>
                     )}
                     {folded.align && (
@@ -498,14 +527,18 @@ function InsertMenu({
           sideOffset={6}
           className={cn(
             'z-50 nm-card-elevated outline-none',
-            pending === 'emoji' ? 'w-80 p-2.5 rounded-lg border border-border' : 'w-64 p-3',
+            pending === 'emoji' ? 'w-80 p-2.5 rounded-lg border border-border'
+              : pending === 'color' ? 'w-auto p-2.5'
+                : 'w-64 p-3',
           )}
           aria-label={
             pending === 'image'
               ? 'Insert image'
               : pending === 'status'
                 ? 'Insert status label'
-                : 'Emoji Picker'
+                : pending === 'color'
+                  ? 'Color swatches'
+                  : 'Emoji Picker'
           }
           onOpenAutoFocus={(e) => {
             // Focus the field, not the panel. Radix's default lands on the
@@ -608,6 +641,18 @@ function InsertMenu({
 
           {pending === 'emoji' && (
             <EmojiPickerContent editor={editor} onClose={closePrompt} />
+          )}
+
+          {pending === 'color' && (
+            <ColorPanel
+              textColor={formatState.textColor}
+              highlightColor={formatState.highlightColor}
+              onSelectText={(color) => editor.chain().focus().setColor(color).run()}
+              onResetText={() => editor.chain().focus().unsetColor().run()}
+              onSelectHighlight={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+              onResetHighlight={() => editor.chain().focus().unsetHighlight().run()}
+              onDone={closePrompt}
+            />
           )}
         </Popover.Content>
       </Popover.Portal>
@@ -715,9 +760,8 @@ function AlignMenuDropdown({ editor }: { editor: EditorType }) {
 
 /* --------------------------------------------------------------- toolbar -- */
 
-function useToolbarContainerWidth(ref: React.RefObject<HTMLDivElement | null>) {
-  // Default to 1200 so tests (in jsdom) and initial SSR render include all controls.
-  const [width, setWidth] = useState<number>(1200);
+function useElementWidth(ref: React.RefObject<HTMLElement | null>, fallback: number) {
+  const [width, setWidth] = useState(fallback);
 
   useEffect(() => {
     const el = ref.current;
@@ -763,22 +807,28 @@ export function EditorToolbar({
   pageId?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const containerWidth = useToolbarContainerWidth(containerRef);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  // Default 1200 so tests / first paint include every control; folding then
+  // subtracts the measured Tags/Save cluster so those buttons stay fully on
+  // the right instead of being pushed past the pane edge.
+  const containerWidth = useElementWidth(containerRef, 1200);
+  const actionsWidth = useElementWidth(actionsRef, 0);
+  const toolsBudget = Math.max(0, containerWidth - actionsWidth);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const roving = useToolbarRovingFocus(rootRef);
 
-  // Responsive folding based on actual available toolbar container width:
-  // Thresholds start folding secondary tools early so Save/Cancel actions and tags
-  // on the right always remain fully visible and accessible across all container widths.
-  const showBlockActions = containerWidth >= 1060;
-  const showAlign = containerWidth >= 980;
-  const showTaskList = containerWidth >= 820;
-  const showCode = containerWidth >= 820;
-  const showStrike = containerWidth >= 760;
-  const showEmojiButton = containerWidth >= 700;
-  const showOrderedList = containerWidth >= 640;
-  const showUnderline = containerWidth >= 640;
+  const showBlockActions = toolsBudget >= 1060;
+  const showAlign = toolsBudget >= 980;
+  const showTaskList = toolsBudget >= 820;
+  const showCode = toolsBudget >= 820;
+  const showStrike = toolsBudget >= 760;
+  const showEmojiButton = toolsBudget >= 700;
+  const showOrderedList = toolsBudget >= 640;
+  const showUnderline = toolsBudget >= 640;
+  const showColor = toolsBudget >= 520;
+  const showBulletList = toolsBudget >= 460;
+  const showInsertLabel = toolsBudget >= 400;
 
   // Subscribe to editor state so the toggles re-render on selection and
   // formatting changes (#16).
@@ -807,7 +857,7 @@ export function EditorToolbar({
     // horizontal scrollbars, or extra document width.
     <div
       ref={containerRef}
-      className="flex h-[calc(3rem-1px)] min-h-[calc(3rem-1px)] w-full flex-nowrap items-center justify-between gap-x-1 sm:gap-x-2 py-1 px-1"
+      className="flex h-[calc(3rem-1px)] min-h-[calc(3rem-1px)] min-w-0 w-full flex-nowrap items-center justify-between gap-x-1 overflow-hidden sm:gap-x-2 py-1 px-1"
     >
       <div
         ref={rootRef}
@@ -817,7 +867,7 @@ export function EditorToolbar({
         // shrink (`min-w-0` + `overflow-x-auto`). Insert sits outside
         // that scroller as `shrink-0`, so folding tools into it stays
         // reachable instead of sliding under Tags/Save.
-        className="flex flex-1 flex-nowrap items-center gap-x-0.5 sm:gap-x-1"
+        className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-0.5 sm:gap-x-1"
         onKeyDown={roving.onKeyDown}
         onFocus={roving.onFocus}
       >
@@ -873,17 +923,21 @@ export function EditorToolbar({
         <ToolbarSeparator />
 
         <ToolbarGroup name="lists">
-          <ColorPickerDropdown
-            textColor={activeState.textColor}
-            highlightColor={activeState.highlightColor}
-            onSelectText={(color) => editor.chain().focus().setColor(color).run()}
-            onResetText={() => editor.chain().focus().unsetColor().run()}
-            onSelectHighlight={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
-            onResetHighlight={() => editor.chain().focus().unsetHighlight().run()}
-          />
-          <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
-            <List size={15} />
-          </ToolbarButton>
+          {showColor && (
+            <ColorPickerDropdown
+              textColor={activeState.textColor}
+              highlightColor={activeState.highlightColor}
+              onSelectText={(color) => editor.chain().focus().setColor(color).run()}
+              onResetText={() => editor.chain().focus().unsetColor().run()}
+              onSelectHighlight={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+              onResetHighlight={() => editor.chain().focus().unsetHighlight().run()}
+            />
+          )}
+          {showBulletList && (
+            <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
+              <List size={15} />
+            </ToolbarButton>
+          )}
           {showOrderedList && (
             <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={activeState.orderedList} title="Ordered List (Ctrl+Shift+7)">
               <ListOrdered size={15} />
@@ -937,6 +991,7 @@ export function EditorToolbar({
           <InsertMenu
             editor={editor}
             pageId={pageId}
+            showLabel={showInsertLabel}
             folded={{
               underline: !showUnderline,
               strike: !showStrike,
@@ -944,13 +999,19 @@ export function EditorToolbar({
               orderedList: !showOrderedList,
               taskList: !showTaskList,
               align: !showAlign,
+              color: !showColor,
+              bulletList: !showBulletList,
             }}
           />
         </ToolbarGroup>
       </div>
 
       {(pageProperty || actions) && (
-        <div className="ml-auto flex flex-nowrap shrink-0 items-center gap-1.5 pl-2">
+        <div
+          ref={actionsRef}
+          data-testid="toolbar-session"
+          className="ml-auto flex flex-nowrap shrink-0 items-center gap-1.5 pl-2"
+        >
           {pageProperty && (
             <div role="group" aria-label="Page properties">
               {pageProperty}

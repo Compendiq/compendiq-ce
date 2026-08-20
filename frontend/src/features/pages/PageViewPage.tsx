@@ -110,7 +110,10 @@ function ImageLightbox({
 }
 
 function scrollArticleToTop() {
-  const container = document.querySelector('[data-scroll-container]') as HTMLElement | null;
+  const container = (
+    document.querySelector('[data-testid="article-scroll"]')
+    ?? document.querySelector('[data-scroll-container]')
+  ) as HTMLElement | null;
   if (!container) return;
   container.scrollTop = 0;
   container.scrollTo?.({ top: 0, left: 0, behavior: 'auto' });
@@ -774,39 +777,17 @@ export function PageViewPage() {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
       data-testid="article-page"
+      className="flex min-h-0 flex-1 flex-col"
     >
-      {/* Sticky article chassis — same 48px bar in both modes. Write fills
-          it with format tools + the tag chip + Cancel/Save. Read keeps the
-          bar: labels as pills (not a count button) on the left, Edit on the
-          right at the toolbar's 32px control size. Operate verbs stay in
-          the inspector. The 48px app header keeps the title for wayfinding. */}
-      <div className="sticky -top-5 z-30 isolate -mt-5">
-        {/* Under-mask: behind the toolbar (z-[-1]), covering the toolbar's
-            box AND the strip of scroll-container padding above it.
-
-            A sticky box does NOT pin at the scrollport's top edge when the
-            scroll container has top padding: it is clamped to its
-            containing block, which begins *after* that padding. Measured in
-            Chromium, the stuck toolbar's top is AppLayout's scroll-container
-            content-box top — 20px (its pt-5) below the scrollport edge — so
-            article content scrolls up through that strip in full view before
-            the scrollport clips it (#1186). `-top-5` must therefore track
-            that `pt-5`; scroll-padding-mask.test.ts fails if they diverge.
-
-            Only the block-start edge overhangs. Block-start overflow is
-            clipped by the scrollport and adds no scrollable height, unlike
-            the block-end overhang that inflated /ai's page height (#769).
-            It is deliberately NOT pointer-events-none: the padding strip is
-            paint with nothing else in it, and a mask that opts out of
-            hit-testing there hands clicks to the editor content it just hid. */}
-        <div
-          aria-hidden
-          data-testid="edit-toolbar-mask"
-          className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-card"
-        />
-        <div className="-mx-4 border-b border-border bg-card sm:-mx-6 relative">
+      {/* Pinned article chassis — same 48px bar in both modes, OUTSIDE the
+          article scroller so the strip meets the pane's right edge. Write
+          fills it with format tools + the tag chip + Cancel/Save. Read
+          keeps the bar: labels as pills on the left, Edit on the right.
+          Operate verbs stay in the inspector. */}
+      <div className="relative z-30 shrink-0">
+        <div className="relative w-full border-b border-border bg-card">
           {editing && editorInstance ? (
-            <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
+            <div className="px-2">
               <EditorToolbar
                 editor={editorInstance}
                 headerNumbering={headerNumbering}
@@ -819,7 +800,7 @@ export function PageViewPage() {
           ) : (
             <div
               className={cn(
-                'mx-auto flex min-h-[calc(3rem-1px)] max-w-[1200px] items-center gap-1.5 px-5 sm:px-10',
+                'flex min-h-[calc(3rem-1px)] w-full items-center gap-1.5 px-2',
                 editing && 'justify-end',
               )}
               {...(!editing
@@ -871,12 +852,15 @@ export function PageViewPage() {
           {editing && editorInstance && (
             <EditorContextToolbars
               editor={editorInstance}
-              innerClassName="mx-auto max-w-[1200px] px-5 sm:px-10"
+              innerClassName="px-2"
             />
           )}
         </div>
       </div>
-      <div>
+      <div
+        data-testid="article-scroll"
+        className="min-h-0 flex-1 overflow-y-auto pb-5 [scrollbar-gutter:stable]"
+      >
         {editing ? (
           <>
             <div className="group mx-auto flex max-w-[1200px] items-start gap-3 px-5 pt-4 sm:px-10">

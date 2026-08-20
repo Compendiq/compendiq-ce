@@ -10,15 +10,16 @@
  * How many pins the section shows before it asks to be expanded.
  *
  * There is no cap on pinning any more — the server accepts as many as the user
- * wants. But this section sits above the filter bar and the page list on the
- * dashboard, so an ungoverned grid at 30+ pins pushes the actual work below the
- * fold. Eight is two rows at the widest breakpoint, and it leaves every user who
- * was under the old cap with exactly the dashboard they had yesterday.
+ * wants. This strip sits after Find and before the page list, so an ungoverned
+ * grid at 30+ pins pushes the actual work below the fold. Eight is two rows at
+ * the widest breakpoint, and it leaves every user who was under the old cap
+ * with exactly the dashboard they had yesterday.
  *
  * Deliberately a constant rather than a per-breakpoint count: a responsive count
- * would need a JS width query, and the only one in this app is
- * `useIsDockWideLayout()` — every other responsive decision stays a Tailwind
- * class. It would also make the toggle's "N more" label wrong at some widths.
+ * would need a JS width query, and those exist only where the *tree* changes
+ * (`useIsDockWideLayout`, `useIsMobileLayout`, `useIsInspectorWideLayout`) —
+ * every other responsive decision stays a Tailwind class. It would also make
+ * the toggle's "N more" label wrong at some widths.
  */
 export const COLLAPSED_PIN_COUNT = 8;
 

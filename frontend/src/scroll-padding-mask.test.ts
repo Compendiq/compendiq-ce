@@ -59,18 +59,12 @@ const appLayoutSource = read('shared/components/layout/AppLayout.tsx');
 const pageViewSource = read('features/pages/PageViewPage.tsx');
 const newPageSource = read('features/pages/NewPagePage.tsx');
 
-/** The classes on AppLayout's main scroll container. */
-function scrollContainerClasses(): string {
-  const match = appLayoutSource.match(/data-scroll-container[^>]*?className="([^"]+)"/);
-  if (!match) throw new Error('No data-scroll-container element found in AppLayout.tsx');
-  return match[1]!;
-}
-
-/** Its top padding, in Tailwind spacing steps. */
+/** Its top padding, in Tailwind spacing steps (non-article branch). */
 function scrollPaddingTopSteps(): number {
-  const classes = scrollContainerClasses();
-  const match = classes.match(/(?:^|\s)pt-(\d+)(?:\s|$)/);
-  if (!match) throw new Error(`No unconditional pt-* on the scroll container: ${classes}`);
+  const match = appLayoutSource.match(
+    /overflow-y-auto[^']*pt-(\d+)/,
+  );
+  if (!match) throw new Error('No pt-* on the non-article scroll container branch');
   return Number(match[1]);
 }
 
@@ -117,22 +111,22 @@ function stickyToolbarMaskClasses(source: string, sourceName: string, maskTestId
 }
 
 describe('nothing shows in the scroll container padding (#1186, #1218)', () => {
-  it('the scroll container declares one unconditional top padding', () => {
-    // A breakpoint variant (sm:pt-8) would give the padding two heights while
-    // every mask below can only track one, so the taller one would bleed.
-    expect(scrollContainerClasses()).not.toMatch(/(?:^|\s)[a-z-]+:pt-/);
-    expect(scrollPaddingTopSteps()).toBeGreaterThan(0);
+  it('article routes do not inset the scroll container, so the toolbar can meet the pane edge', () => {
+    expect(appLayoutSource).toMatch(/isArticleRoute\s*\n\s*\? 'overflow-hidden'/);
+    expect(appLayoutSource).toMatch(/isArticleRoute \? 'max-w-none'/);
+    expect(pageViewSource).toContain('data-testid="article-scroll"');
+    expect(pageViewSource).toMatch(/overflow-y-auto[^"]*\[scrollbar-gutter:stable\]/);
   });
 
-  it("the edit toolbar's under-mask reaches exactly that far above the toolbar", () => {
-    const classes = stickyToolbarMaskClasses(pageViewSource, 'PageViewPage.tsx', 'edit-toolbar-mask');
-    expect(classes, `not an under-mask: ${classes}`).toContain('z-[-1]');
-    expect(classes, `mask paints chrome colour, not the pane: ${classes}`).toContain('bg-card');
-    expect(classes, `mask paints the chassis colour over the document: ${classes}`).not.toMatch(/\bbg-background\b/);
+  it('the non-article scroll container declares one top padding', () => {
+    expect(scrollPaddingTopSteps()).toBeGreaterThan(0);
+    expect(appLayoutSource).not.toMatch(/(?:^|\s)[a-z-]+:pt-/);
+  });
 
-    const reach = classes.match(/(?:^|\s)-top-(\d+)(?:\s|$)/);
-    expect(reach, `mask does not reach above its box: ${classes}`).not.toBeNull();
-    expect(Number(reach![1])).toBe(scrollPaddingTopSteps());
+  it("the article toolbar is pinned above the article scroller, so it needs no padding under-mask", () => {
+    expect(pageViewSource).not.toContain('edit-toolbar-mask');
+    expect(pageViewSource).not.toContain('sticky -top-5');
+    expect(pageViewSource).toContain('data-testid="article-scroll"');
   });
 
   it("the New Page sticky toolbar's under-mask reaches exactly that far above the toolbar", () => {

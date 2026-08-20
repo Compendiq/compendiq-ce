@@ -5,9 +5,9 @@ import { useState, useEffect } from 'react';
  *
  * Every other responsive decision in this app is a Tailwind class, and that is
  * still the right default — reach for this only when the *component tree* has
- * to change, not just its styling. The docked assistant (#1126) is the first
- * such case: below the wide breakpoint the article rail is not restyled, it is
- * not rendered, because a 40px rail plus a 420px dock starves the editor.
+ * to change, not just its styling. The docked assistant (#1126) was the first
+ * such case; the inspector's laptop default-collapse is the second (`xl`:
+ * expanded inspector vs 40px rail).
  *
  * Cleanup mirrors `use-can-hover.ts`, which is the existing template here.
  *
@@ -53,6 +53,18 @@ export function useIsDockWideLayout(): boolean {
  * 48rem)` exactly at the boundary — 768px is desktop in both.
  */
 export const MD_QUERY = '(min-width: 768px)';
+
+/**
+ * Width at which the article can carry an expanded inspector beside the
+ * tree. Below `xl` the inspector starts collapsed (40px rail) so the
+ * document keeps the workspace card.
+ */
+export const INSPECTOR_WIDE_QUERY = '(min-width: 1280px)';
+
+/** True when the expanded inspector is the default, not the exception. */
+export function useIsInspectorWideLayout(): boolean {
+  return useMediaQuery(INSPECTOR_WIDE_QUERY);
+}
 
 /**
  * True below `md`, where the shell has no right pane to dock into and the

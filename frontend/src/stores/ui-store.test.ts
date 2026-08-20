@@ -11,6 +11,7 @@ describe('ui-store', () => {
       treeSidebarSpaceKey: undefined,
       treeSidebarWidth: 256,
       articleSidebarCollapsed: false,
+      articleSidebarLaptopExpanded: false,
       articleSidebarWidth: 360,
       singleKeyShortcutsEnabled: true,
       vimModeEnabled: false,

@@ -20,12 +20,12 @@ import {
 import { AiProvider } from '../../../features/ai/AiContext';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { Logo } from '../Logo';
-import { HeaderFindButton, HeaderSessionCluster } from './HeaderSessionCluster';
+import { HeaderSessionCluster } from './HeaderSessionCluster';
 import { MainNavChassisRail } from './MainNavStrip';
 import { PageTransition } from './PageTransition';
 import { type LayoutPreset } from './LayoutPresetMenu';
 import { ArticleLayoutControlsProvider } from './article-layout-controls';
-import { useIsMobileLayout } from '../../hooks/use-media-query';
+import { useIsInspectorWideLayout, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
 import { isExistingArticlePath } from '../../lib/article-route';
 
@@ -101,6 +101,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const articleSidebarCollapsed = useUiStore((s) => s.articleSidebarCollapsed);
   const setTreeSidebarCollapsed = useUiStore((s) => s.setTreeSidebarCollapsed);
   const setArticleSidebarCollapsed = useUiStore((s) => s.setArticleSidebarCollapsed);
+  const setArticleSidebarLaptopExpanded = useUiStore((s) => s.setArticleSidebarLaptopExpanded);
   const singleKeyShortcutsEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
   const dockOpen = useAiDockStore((s) => s.open);
   const openDock = useAiDockStore((s) => s.openDock);
@@ -115,6 +116,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const previousLayoutPathRef = useRef(location.pathname);
   const isArticleRoute = isExistingArticlePath(location.pathname);
   const isMobileLayout = useIsMobileLayout();
+  const inspectorWide = useIsInspectorWideLayout();
+  const articleSidebarLaptopExpanded = useUiStore((s) => s.articleSidebarLaptopExpanded);
   // On /settings* we swap the Pages tree for a Settings-specific sidebar so
   // the main nav (Pages / AI / Graph) stays accessible — otherwise users land
   // in Settings with no in-rail path back to the rest of the app, since the
@@ -145,6 +148,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
     if (preset === 'reading') {
       setTreeSidebarCollapsed(true);
       setArticleSidebarCollapsed(false);
+      setArticleSidebarLaptopExpanded(true);
       closeDock();
       requestInspectorView('outline');
       return;
@@ -153,6 +157,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
     if (preset === 'editing') {
       setTreeSidebarCollapsed(false);
       setArticleSidebarCollapsed(false);
+      setArticleSidebarLaptopExpanded(true);
       closeDock();
       requestInspectorView('details');
       return;
@@ -161,6 +166,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
     if (preset === 'focus') {
       setTreeSidebarCollapsed(true);
       setArticleSidebarCollapsed(true);
+      setArticleSidebarLaptopExpanded(false);
       closeDock();
       return;
     }
@@ -172,12 +178,14 @@ export function AppLayout({ children }: { children: ReactNode }) {
     // into the tab selection on every layout that has an inspector.
     setTreeSidebarCollapsed(false);
     setArticleSidebarCollapsed(false);
+    setArticleSidebarLaptopExpanded(true);
     openDock();
   }, [
     closeDock,
     openDock,
     requestInspectorView,
     setArticleSidebarCollapsed,
+    setArticleSidebarLaptopExpanded,
     setTreeSidebarCollapsed,
   ]);
 
@@ -200,6 +208,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       openMobileContext();
     } else {
       setArticleSidebarCollapsed(false);
+      setArticleSidebarLaptopExpanded(true);
     }
     closeDock();
   }, [
@@ -210,6 +219,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
     openMobileContext,
     requestInspectorView,
     setArticleSidebarCollapsed,
+    setArticleSidebarLaptopExpanded,
   ]);
 
   // A manual panel change means the last command is no longer an exact preset.
@@ -246,8 +256,20 @@ export function AppLayout({ children }: { children: ReactNode }) {
       useAiDockStore.getState().closeDock();
       return;
     }
+    if (isArticleRoute && !inspectorWide) {
+      setArticleSidebarLaptopExpanded(!articleSidebarLaptopExpanded);
+      return;
+    }
     toggleArticleSidebar();
-  }, [isArticleRoute, isMobileLayout, toggleArticleSidebar, toggleMobileContext]);
+  }, [
+    articleSidebarLaptopExpanded,
+    inspectorWide,
+    isArticleRoute,
+    isMobileLayout,
+    setArticleSidebarLaptopExpanded,
+    toggleArticleSidebar,
+    toggleMobileContext,
+  ]);
 
   // Toggle both panels at once (zen mode)
   const toggleBothPanels = useCallback(() => {
@@ -410,9 +432,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
         ? { activePreset: activeLayoutPreset, applyPreset: applyLayoutPreset }
         : null}
     >
-    {/* Chassis is the viewport ground. The rounded shell sits inset on
-        desktop and goes edge-to-edge below `md`. Do not swap `app-chassis`
-        for a `bg-*` utility: the inset padding is part of the same contract. */}
+    {/* Chassis is the viewport ground. The rounded shell sits inset on the
+        end and bottom on desktop; the destination rail is flush to the start
+        edge. Edge-to-edge below `md`. Do not swap `app-chassis` for a `bg-*`
+        utility: the inset padding is part of the same contract. */}
     <div data-testid="app-chassis" className="app-chassis flex h-screen flex-col overflow-hidden">
       {/* WCAG 2.4.1 Bypass Blocks (Level A): the first focusable element in the
           whole app, invisible until it earns focus. Without it a keyboard user
@@ -515,8 +538,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
           card — logo, Find, alerts and the user menu are chrome, not
           document. Height is --app-header-height so the side inset can
           grow without stretching this band. */}
-      <header className="app-header relative z-10 grid shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-3">
-        <div className="flex min-w-0 items-center gap-3">
+      <header className="app-header relative z-10 flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-3 md:contents">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
           type="button"
@@ -532,17 +555,24 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
 
-        <Link to="/" aria-label="Compendiq home" className="flex shrink-0 items-center group">
+        {/* Same column as MainNavChassisRail so the mark sits on the grey
+            chassis above Pages / AI / Graph instead of a wider header slot
+            that made the rail look off-centre. */}
+        <Link
+          to="/"
+          aria-label="Compendiq home"
+          data-testid="header-chassis-slot"
+          className="flex w-[var(--app-nav-rail-width)] shrink-0 items-center justify-center group"
+        >
           {/* Clip to the Q-tile below `md` so hamburger + lockup + Find +
               session cluster fit the 48px. The SVG itself stays the full
               lockup; overflow hides the wordmark rather than squashing it. */}
-          <span className="block h-[22px] w-[22px] overflow-hidden md:w-auto">
+          <span className="block h-[22px] w-[22px] overflow-hidden">
             <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
           </span>
         </Link>
         </div>
-        <HeaderFindButton />
-        <div className="flex min-w-0 items-center justify-end gap-1">
+        <div className="ml-auto flex min-w-0 items-center justify-end gap-1">
           {isArticleRoute && isMobileLayout && (
             <button
               type="button"
@@ -565,7 +595,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <TrialBanner />
       </div>
 
-      <div data-testid="app-shell" className="app-shell flex min-h-0 flex-1 gap-2 overflow-hidden">
+      <div data-testid="app-shell" className="app-shell flex min-h-0 flex-1 overflow-hidden">
       <MainNavChassisRail />
       <div
         data-testid="panel-wrapper"
@@ -595,7 +625,20 @@ export function AppLayout({ children }: { children: ReactNode }) {
             tabIndex={-1}
             className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden focus:outline-none"
           >
-            <div ref={scrollContainerRef} data-scroll-container className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable_both-edges]">
+            <div
+              ref={scrollContainerRef}
+              data-scroll-container
+              className={cn(
+                'flex min-h-0 flex-1 flex-col',
+                // Article view owns its own scroller below the 48px strip, so
+                // the workspace scrollbar cannot sit beside the toolbar and
+                // make the strip look short of the pane edge. Other routes
+                // keep this container as the page scroller.
+                isArticleRoute
+                  ? 'overflow-hidden'
+                  : 'overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable_both-edges]',
+              )}
+            >
               <PageTransition>
                 {/* flex flex-1 flex-col so pages that opt in (e.g. /ai) can use
                     flex-1 on a child to fill the available scroll height
@@ -645,7 +688,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
                     overflow-y-auto in #1218 (it spilled 39px at 1440x560
                     before). A new one is the thing to check when adding a
                     height-capping page. */}
-                <div className={cn('mx-auto flex w-full min-h-0 flex-1 flex-col', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
+                <div className={cn('mx-auto flex w-full min-h-0 flex-1 flex-col', isArticleRoute ? 'max-w-none' : 'max-w-7xl')}>
                   {children}
                 </div>
               </PageTransition>
@@ -658,7 +701,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               mobile sheet below is the single inspector instance — two
               panes would duplicate tab ids and DockPanel state. */}
           {isArticleRoute && !isMobileLayout && (
-            <div className="min-h-0 self-stretch">
+            <div className="app-rail-beside min-h-0">
               <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />
             </div>
           )}

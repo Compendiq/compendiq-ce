@@ -84,6 +84,16 @@ describe('BulkActionBar', () => {
     expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('2 pages selected');
   });
 
+  it('uses ghost row actions, not a filled teal bar', () => {
+    render(
+      <BulkActionBar selectedIds={['1']} confluenceCount={1} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+    expect(screen.getByTestId('bulk-action-bar').className).not.toContain('border-action');
+    expect(screen.getByTestId('bulk-embed-btn').className).toContain('nm-button-ghost');
+    expect(screen.getByTestId('bulk-delete-btn').className).toContain('nm-action-destructive');
+  });
+
   it('posts the selected ids to the embed endpoint', async () => {
     render(
       <BulkActionBar selectedIds={['1', '2', '3']} confluenceCount={0} onClear={vi.fn()} />,

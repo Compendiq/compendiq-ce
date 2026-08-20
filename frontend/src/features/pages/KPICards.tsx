@@ -24,8 +24,8 @@ const stagger = {
 };
 
 const fadeUp = {
-  initial: { opacity: 0, y: 16 },
-  animate: { opacity: 1, y: 0 },
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
 };
 
 // ---------- Embedding Coverage Ring ----------
@@ -129,8 +129,8 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
           {spacesCount > 0
             ? `across ${spacesCount} ${spacesCount === 1 ? 'space' : 'spaces'}`
             : totalPages > 0
-              ? 'in the library'
-              : 'No spaces connected'}
+              ? 'in this library'
+              : 'No Confluence spaces'}
         </span>
       </m.div>
 
@@ -161,15 +161,19 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
         data-testid="kpi-last-sync"
       >
         <Clock size={14} className="shrink-0 text-muted-foreground" />
-        <span className="text-muted-foreground">Last Sync</span>
+        <span className="text-muted-foreground">
+          {spacesCount > 0 || lastSynced ? 'Last Sync' : 'Sync'}
+        </span>
         <span className="font-semibold">
           {lastSynced
             ? formatRelativeTime(lastSynced)
-            : totalPages > 0
-              ? 'Not recorded'
-              : 'Nothing mirrored yet'}
+            : spacesCount === 0 && totalPages > 0
+              ? 'Local pages only'
+              : totalPages > 0
+                ? 'Not recorded'
+                : 'Nothing mirrored yet'}
         </span>
-        {onSync && (
+        {onSync && spacesCount > 0 && (
           <button
             type="button"
             onClick={onSync}

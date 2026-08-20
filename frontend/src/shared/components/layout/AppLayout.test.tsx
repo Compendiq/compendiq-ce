@@ -79,8 +79,10 @@ vi.mock('../../hooks/use-media-query', () => ({
   useMediaQuery: () => window.innerWidth >= 768 && window.innerWidth <= 1439,
   useIsMobileLayout: () => window.innerWidth < 768,
   useIsDockWideLayout: () => window.innerWidth >= 1100,
+  useIsInspectorWideLayout: () => window.innerWidth >= 1280,
   MD_QUERY: '(min-width: 768px)',
   DOCK_WIDE_QUERY: '(min-width: 1100px)',
+  INSPECTOR_WIDE_QUERY: '(min-width: 1280px)',
 }));
 
 function createWrapper(initialPath = '/') {
@@ -209,6 +211,24 @@ describe('AppLayout', () => {
     expect(screen.getByRole('link', { name: 'Pages' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'AI chat, full page' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Graph' })).toBeInTheDocument();
+    expect(nav.className).toContain('w-[var(--app-nav-rail-width)]');
+    expect(nav.className).toContain('items-center');
+    expect(nav.className).toContain('px-1');
+    const pages = screen.getByRole('link', { name: 'Pages' });
+    const ai = screen.getByRole('link', { name: 'AI chat, full page' });
+    const graph = screen.getByRole('link', { name: 'Graph' });
+    for (const link of [pages, ai, graph]) {
+      expect(link.className).toContain('w-10');
+      expect(link.className).toContain('h-10');
+      expect(link.className).not.toContain('w-full');
+      expect(link.className).not.toContain('w-auto');
+    }
+    const shell = screen.getByTestId('app-shell');
+    expect(shell.className).not.toMatch(/\bgap-/);
+    expect(screen.getByTestId('header-chassis-slot').className).toContain(
+      'w-[var(--app-nav-rail-width)]',
+    );
+    expect(screen.getByTestId('header-chassis-slot').className).toContain('justify-center');
   });
 
   it('puts a Find control in the header that opens the command palette', () => {
@@ -222,7 +242,7 @@ describe('AppLayout', () => {
     const find = header.querySelector('[data-testid="header-find"]');
     expect(find).toBeTruthy();
     expect(header.querySelector('[data-testid="header-session-cluster"]')!.contains(find!)).toBe(
-      false,
+      true,
     );
     expect(screen.getByRole('button', { name: 'Find pages & commands' })).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('header-find'));
@@ -625,11 +645,23 @@ describe('AppLayout', () => {
     });
 
     it('still toggles the article pane at md and up', () => {
+      window.innerWidth = 1440;
       const dotShortcut = captureShortcuts('/pages/page-1');
 
       act(() => dotShortcut().action());
 
       expect(useUiStore.getState().articleSidebarCollapsed).toBe(true);
+    });
+
+    it('toggles the laptop expand flag below xl instead of the wide persist', () => {
+      window.innerWidth = 1024;
+      useUiStore.setState({ articleSidebarLaptopExpanded: false });
+      const dotShortcut = captureShortcuts('/pages/page-1');
+
+      act(() => dotShortcut().action());
+
+      expect(useUiStore.getState().articleSidebarLaptopExpanded).toBe(true);
+      expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
     });
 
     it('leaves the pane toggle alone off article routes', () => {
