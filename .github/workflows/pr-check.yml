@@ -3,6 +3,7 @@ name: PR Check
 on:
   pull_request:
     branches: [dev, main]
+  workflow_dispatch:
 
 # Cancel in-progress runs for the same PR — saves CI minutes on rapid pushes
 concurrency:
