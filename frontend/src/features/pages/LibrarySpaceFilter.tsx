@@ -81,6 +81,7 @@ export function LibrarySpaceFilter({ spaces = [], selectedKey, selectedName, onS
   const moveActive = useCallback((nextIndex: number, moveFocus: boolean) => {
     const bounded = Math.max(0, Math.min(nextIndex, visibleOptions.length - 1));
     setActiveIndex(bounded);
+    optionRefs.current[bounded]?.scrollIntoView?.({ block: 'nearest' });
     if (moveFocus) optionRefs.current[bounded]?.focus();
   }, [visibleOptions.length]);
 

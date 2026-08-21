@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { KPICards } from './KPICards';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
@@ -64,37 +64,14 @@ describe('KPICards', () => {
     expect(segments.indexOf(lastSync)).toBe(segments.length - 1);
   });
 
-  it('offers the sync action inside the Last Sync tile', () => {
-    const onSync = vi.fn();
+  it('renders Last Sync as ambient status without button clutter', () => {
     render(
-      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} onSync={onSync} />,
+      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} lastSynced="2026-03-10T10:00:00Z" />,
       { wrapper: Wrapper },
     );
 
-    const btn = screen.getByTestId('kpi-sync-btn');
-    expect(screen.getByTestId('kpi-last-sync')).toContainElement(btn);
-    expect(btn.className).not.toContain('nm-button-ghost');
-    expect(btn.className).toContain('border-transparent');
-    fireEvent.click(btn);
-    expect(onSync).toHaveBeenCalledOnce();
-  });
-
-  it('disables the sync action while a sync is running', () => {
-    render(
-      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} onSync={vi.fn()} isSyncing />,
-      { wrapper: Wrapper },
-    );
-
-    expect(screen.getByTestId('kpi-sync-btn')).toBeDisabled();
-    expect(screen.getByTestId('kpi-sync-btn')).toHaveTextContent('Syncing...');
-  });
-
-  it('omits the sync action when no handler is supplied', () => {
-    render(
-      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} />,
-      { wrapper: Wrapper },
-    );
-
+    const lastSync = screen.getByTestId('kpi-last-sync');
+    expect(lastSync).toBeInTheDocument();
     expect(screen.queryByTestId('kpi-sync-btn')).not.toBeInTheDocument();
   });
 
@@ -272,12 +249,11 @@ describe('KPICards', () => {
     expect(card).not.toHaveTextContent('Local pages only');
   });
 
-  it('does not offer Sync when no Confluence spaces are connected', () => {
+  it('renders Local pages only when no Confluence spaces are connected', () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
         spacesCount={0}
-        onSync={vi.fn()}
       />,
       { wrapper: Wrapper },
     );

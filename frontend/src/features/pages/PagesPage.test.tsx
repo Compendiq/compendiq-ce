@@ -308,7 +308,7 @@ describe('PagesPage', () => {
       'overflow-hidden',
       'rounded-lg',
       'border',
-      'bg-background',
+      'bg-card',
     );
   });
 
@@ -691,6 +691,7 @@ describe('PagesPage', () => {
       mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(await screen.findByText('Go to Settings')).toBeInTheDocument();
+      expect(screen.getByText('Create a Page')).toBeInTheDocument();
     });
 
     it('shows "Try a different search term" when search is active', async () => {
@@ -906,7 +907,7 @@ describe('PagesPage', () => {
       ]);
 
       expect(await screen.findByText('Search Hit A', undefined, { timeout: 2000 })).toBeInTheDocument();
-      expect(screen.getByTestId('enter-selection-mode-search')).toBeInTheDocument();
+      expect(screen.getByTestId('select-all-search-pages')).toBeInTheDocument();
 
       // Click row selection checkbox
       const checkboxA = screen.getByTestId('page-select-101');
@@ -1416,7 +1417,7 @@ describe('PagesPage', () => {
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
 
-      expect(screen.getAllByText(/apply while browsing and will pause when Hybrid search starts/i)).toHaveLength(2);
+      expect(screen.getByText(/apply while browsing and will pause when Hybrid search starts/i)).toBeInTheDocument();
       expect(screen.getByTestId('advanced-filters-toggle')).toHaveAccessibleName('Filters, 1 Keyword-only');
       expect(screen.queryByTestId('search-mode-filter-warning')).not.toBeInTheDocument();
       fireEvent.click(screen.getByTestId('search-mode-keyword'));
@@ -1562,8 +1563,10 @@ describe('PagesPage', () => {
 
   // --- Performance: memoized page list items (#521) ---
 
-  // --- Search mode toggle visual differentiation (#506) ---
-
+  // --- Search mode toggle (#506) ---
+  //
+  // Three search modes: Keyword (Postgres FTS), Semantic (pgvector cosine),
+  // and Hybrid (RRF fusion). Toggle appears directly on the search bar.
   describe('search mode toggle (#506)', () => {
     function typeSearch() {
       fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
@@ -1571,17 +1574,24 @@ describe('PagesPage', () => {
       });
     }
 
-    it('declares the retrieval-mode choice in the advanced filters panel', () => {
+    it('surfaces inline search mode toggle directly in the search bar', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const barToggle = screen.getByTestId('search-mode-toggle');
+      expect(barToggle).toBeInTheDocument();
+      expect(screen.getByTestId('search-mode-hybrid')).toHaveAttribute('aria-pressed', 'true');
+      fireEvent.click(screen.getByTestId('search-mode-keyword'));
+      expect(screen.getByTestId('search-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('does not duplicate the search strategy in the advanced filters panel', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      expect(screen.getByRole('group', { name: 'Search strategy' })).toBeInTheDocument();
-      expect(screen.getByTestId('advanced-filters-panel')).toContainElement(screen.getByTestId('search-mode-toggle'));
-      expect(screen.getByText('Search strategy')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-strategy-fieldset')).not.toBeInTheDocument();
+      expect(screen.getByTestId('advanced-filters-panel')).not.toContainElement(screen.getByTestId('search-mode-toggle'));
     });
 
     it('renders Hybrid and Keyword, with Semantic only when an index exists', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       typeSearch();
       expect(screen.getByTestId('search-mode-keyword')).toHaveTextContent('Keyword');
       expect(screen.getByTestId('search-mode-hybrid')).toHaveTextContent('Hybrid');
@@ -1590,7 +1600,6 @@ describe('PagesPage', () => {
 
     it('defaults to Hybrid as active', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       typeSearch();
       const hybrid = screen.getByTestId('search-mode-hybrid');
       expect(hybrid).toHaveAttribute('aria-pressed', 'true');
@@ -1599,7 +1608,6 @@ describe('PagesPage', () => {
 
     it('marks inactive buttons with aria-pressed=false', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       typeSearch();
       const semantic = screen.getByTestId('search-mode-semantic');
       const keyword = screen.getByTestId('search-mode-keyword');
@@ -1609,7 +1617,6 @@ describe('PagesPage', () => {
 
     it('switches active mode on click', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       typeSearch();
       const semantic = screen.getByTestId('search-mode-semantic');
       fireEvent.click(semantic);
@@ -1626,7 +1633,6 @@ describe('PagesPage', () => {
     // neither of which this system has outside overlays and focus.
     it('distinguishes the active segment from the inactive ones', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       typeSearch();
       const active = screen.getByTestId('search-mode-hybrid');
       const inactive = screen.getByTestId('search-mode-keyword');
@@ -2280,22 +2286,17 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
-      expect(screen.queryByTestId('select-all-pages')).not.toBeInTheDocument();
+      expect(screen.getByTestId('select-all-pages')).toBeInTheDocument();
       expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
     });
 
-    it('reveals an intentional selection mode before any row is checked', async () => {
+    it('provides a permanent master checkbox in the header', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
-      expect(screen.getByTestId('enter-selection-mode')).toBeInTheDocument();
-      expect(screen.queryByTestId('select-all-pages')).not.toBeInTheDocument();
-
-      fireEvent.click(screen.getByTestId('enter-selection-mode'));
-
-      await waitFor(() => {
-        expect(screen.getByTestId('select-all-pages')).toBeInTheDocument();
-      });
+      const selectAll = screen.getByTestId('select-all-pages');
+      expect(selectAll).toBeInTheDocument();
+      expect(selectAll).not.toBeChecked();
     });
 
     it('reveals the action bar when a row is checked', async () => {
@@ -2343,7 +2344,6 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
-      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       fireEvent.click(screen.getByTestId('select-all-pages'));
 
       await waitFor(() => {
@@ -2355,7 +2355,6 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
-      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       const selectAll = screen.getByTestId('select-all-pages');
       fireEvent.click(selectAll);
       expect(await screen.findByTestId('bulk-action-bar')).toBeInTheDocument();
@@ -2370,7 +2369,6 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
-      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       const selectAll = screen.getByTestId('select-all-pages') as HTMLInputElement;
       expect(selectAll.indeterminate).toBe(false);
 
@@ -2472,7 +2470,6 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Synced Page');
 
-      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       fireEvent.click(screen.getByTestId('select-all-pages'));
       fireEvent.click(await screen.findByTestId('bulk-embed-btn'));
 
@@ -2890,6 +2887,87 @@ describe('PagesPage filter persistence (#1124)', () => {
       expect(bulkBar).toBeInTheDocument();
       expect(bulkBar).toHaveClass('fixed', 'bottom-6', 'nm-card-elevated');
       expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('1 page selected');
+    });
+
+    it('supports contiguous range multi-selection with Shift+ArrowDown', async () => {
+      mockFetchWithPages(makeManyPages(4));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const firstRowBtn = screen.getByTestId('page-row-button-page-1');
+
+      // Shift+ArrowDown from row 0 to row 1 extends selection to both items
+      fireEvent.keyDown(firstRowBtn, { key: 'ArrowDown', shiftKey: true });
+      expect(await screen.findByTestId('bulk-action-bar')).toBeInTheDocument();
+      expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('2 pages selected');
+    });
+
+    it('hands off focus from search input to first result row on Enter', async () => {
+      mockFetchWithPages(makeManyPages(3));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const searchInput = screen.getByPlaceholderText(FIND_PLACEHOLDER);
+      const firstRowBtn = screen.getByTestId('page-row-button-page-1');
+
+      fireEvent.keyDown(searchInput, { key: 'Enter' });
+      expect(document.activeElement).toBe(firstRowBtn);
+    });
+
+    it('supports Home and End keys in browse rows', async () => {
+      mockFetchWithPages(makeManyPages(4));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const firstRowBtn = screen.getByTestId('page-row-button-page-1');
+      const lastRowBtn = screen.getByTestId('page-row-button-page-4');
+
+      fireEvent.keyDown(firstRowBtn, { key: 'End' });
+      expect(lastRowBtn).toHaveAttribute('tabIndex', '0');
+
+      fireEvent.keyDown(lastRowBtn, { key: 'Home' });
+      expect(firstRowBtn).toHaveAttribute('tabIndex', '0');
+    });
+
+    it('exposes ARIA feed semantics with row count, posinset, and setsize', async () => {
+      mockFetchWithPages(makeManyPages(3));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const feed = screen.getByRole('feed', { name: 'Pages list' });
+      expect(feed).toHaveAttribute('aria-rowcount', '3');
+
+      const firstRow = feed.querySelector('[data-row-index="0"]');
+      expect(firstRow).toHaveAttribute('role', 'article');
+      expect(firstRow).toHaveAttribute('aria-rowindex', '1');
+      expect(firstRow).toHaveAttribute('aria-posinset', '1');
+      expect(firstRow).toHaveAttribute('aria-setsize', '3');
+    });
+
+    it('binds min and max constraints across modified from/to date inputs', async () => {
+      mockFetchWithPages(makeManyPages(2));
+      renderAt('/?from=2026-08-01&to=2026-08-15');
+
+      const fromInput = await screen.findByTestId('filter-date-from');
+      const toInput = screen.getByTestId('filter-date-to');
+
+      expect(fromInput).toHaveAttribute('max', '2026-08-15');
+      expect(toInput).toHaveAttribute('min', '2026-08-01');
+    });
+
+    it('clamps out-of-bounds page parameter back to page 1 when totalPages shrinks', async () => {
+      mockFetchWithPages({
+        items: makeManyPages(2).items,
+        total: 2,
+        page: 1,
+        limit: 20,
+        totalPages: 1,
+      });
+      renderAt('/?page=5');
+
+      await waitFor(() => {
+        expect(probe()).not.toContain('page=5');
+      });
     });
   });
 });

@@ -21,22 +21,29 @@ interface LibrarySortFilterProps {
   value: SortKey;
   onChange: (sort: SortKey) => void;
   className?: string;
+  /** When false, hides the 'Relevance' sort option since it requires an active search term. */
+  hasSearchQuery?: boolean;
 }
 
-export function LibrarySortFilter({ value, onChange, className }: LibrarySortFilterProps) {
+export function LibrarySortFilter({ value, onChange, className, hasSearchQuery = true }: LibrarySortFilterProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
+  const options = useMemo(
+    () => (hasSearchQuery ? SORT_OPTIONS : SORT_OPTIONS.filter((opt) => opt.value !== 'relevance')),
+    [hasSearchQuery],
+  );
+
   const selectedOption = useMemo(
-    () => SORT_OPTIONS.find((opt) => opt.value === value) ?? SORT_OPTIONS[0]!,
-    [value],
+    () => options.find((opt) => opt.value === value) ?? options[0]!,
+    [options, value],
   );
 
   useEffect(() => {
-    const selectedIndex = SORT_OPTIONS.findIndex((opt) => opt.value === value);
+    const selectedIndex = options.findIndex((opt) => opt.value === value);
     setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
-  }, [open, value]);
+  }, [open, options, value]);
 
   const selectSort = useCallback((sort: SortKey) => {
     onChange(sort);
@@ -44,10 +51,10 @@ export function LibrarySortFilter({ value, onChange, className }: LibrarySortFil
   }, [onChange]);
 
   const moveActive = useCallback((nextIndex: number, moveFocus: boolean) => {
-    const bounded = Math.max(0, Math.min(nextIndex, SORT_OPTIONS.length - 1));
+    const bounded = Math.max(0, Math.min(nextIndex, options.length - 1));
     setActiveIndex(bounded);
     if (moveFocus) optionRefs.current[bounded]?.focus();
-  }, []);
+  }, [options.length]);
 
   const handleOptionKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (event.key === 'ArrowDown') {
@@ -61,12 +68,12 @@ export function LibrarySortFilter({ value, onChange, className }: LibrarySortFil
       moveActive(0, true);
     } else if (event.key === 'End') {
       event.preventDefault();
-      moveActive(SORT_OPTIONS.length - 1, true);
+      moveActive(options.length - 1, true);
     } else if (event.key === 'Escape') {
       event.preventDefault();
       setOpen(false);
     }
-  }, [moveActive]);
+  }, [moveActive, options.length]);
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
@@ -104,7 +111,7 @@ export function LibrarySortFilter({ value, onChange, className }: LibrarySortFil
           data-testid="sort-filter-menu"
           onOpenAutoFocus={(event) => {
             event.preventDefault();
-            const index = Math.max(0, SORT_OPTIONS.findIndex((opt) => opt.value === value));
+            const index = Math.max(0, options.findIndex((opt) => opt.value === value));
             optionRefs.current[index]?.focus();
           }}
         >
@@ -117,7 +124,7 @@ export function LibrarySortFilter({ value, onChange, className }: LibrarySortFil
             aria-label="Sort options"
             className="p-1 space-y-0.5"
           >
-            {SORT_OPTIONS.map((opt, index) => {
+            {options.map((opt, index) => {
               const selected = opt.value === value;
               const active = index === activeIndex;
               return (

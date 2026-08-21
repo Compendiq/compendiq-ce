@@ -54,4 +54,17 @@ describe('LibrarySpaceFilter', () => {
     const firstRegular = document.getElementById('library-space-option-SP1')!;
     expect(recent.compareDocumentPosition(firstRegular) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
+
+  it('scrolls active option into view when navigating via arrow keys in search', async () => {
+    const scrollMock = vi.fn();
+    Element.prototype.scrollIntoView = scrollMock;
+
+    render(<LibrarySpaceFilter spaces={spaces} selectedKey="" onSelect={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId('space-filter-control'));
+    const search = await screen.findByRole('combobox', { name: 'Search spaces' });
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+
+    expect(scrollMock).toHaveBeenCalledWith({ block: 'nearest' });
+  });
 });

@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { m } from 'framer-motion';
 import { RefreshCw, Database, Gauge, Trash2, X, Loader2 } from 'lucide-react';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button } from '../../shared/components/Button';
 import { useBulkPageAction, type BulkAction } from '../../shared/hooks/use-bulk-page-actions';
+import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 
 interface BulkActionBarProps {
   /**
@@ -33,7 +34,53 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
 
   const count = selectedIds.length;
   const noun = count === 1 ? 'page' : 'pages';
-  const run = (action: BulkAction) => bulk.mutate({ action, ids: selectedIds });
+  const run = useCallback((action: BulkAction) => bulk.mutate({ action, ids: selectedIds }), [bulk, selectedIds]);
+
+  const shortcuts = useMemo<ShortcutDefinition[]>(() => {
+    if (count === 0 || bulk.isPending || pendingDelete) return [];
+    const list: ShortcutDefinition[] = [
+      {
+        key: 'e',
+        keys: ['e', 'E'],
+        description: 'Re-embed selected pages',
+        category: 'actions',
+        action: () => run('embed'),
+      },
+      {
+        key: 'q',
+        keys: ['q', 'Q'],
+        description: 'Re-analyze quality of selected pages',
+        category: 'actions',
+        action: () => run('quality'),
+      },
+      {
+        key: 'Delete',
+        keys: ['Delete', 'Backspace'],
+        description: 'Move selected pages to trash',
+        category: 'actions',
+        action: () => setPendingDelete(true),
+      },
+      {
+        key: 'Escape',
+        keys: ['Escape'],
+        description: 'Clear page selection',
+        category: 'actions',
+        action: onClear,
+      },
+    ];
+    if (confluenceCount > 0) {
+      list.push({
+        key: 's',
+        keys: ['s', 'S'],
+        description: 'Re-sync selected Confluence pages',
+        category: 'actions',
+        action: () => run('sync'),
+      });
+    }
+    return list;
+  }, [count, bulk.isPending, pendingDelete, confluenceCount, onClear, run]);
+
+  useKeyboardShortcuts(shortcuts);
 
   // Mounted whether or not anything is selected. A live region that appears at
   // the same moment as its own text is not announced by most screen readers —
@@ -51,34 +98,40 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
     <>
       {liveRegion}
       <m.div
-        initial={{ opacity: 0, y: 12 }}
+        initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.15, ease: 'easeOut' }}
+        exit={{ opacity: 0, y: 16 }}
+        transition={{ duration: 0.18, ease: 'easeOut' }}
         role="region"
         aria-label={`Actions for ${count} selected ${noun}`}
-        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 nm-card-elevated flex flex-wrap items-center gap-2.5 rounded-xl px-4 py-2 max-w-[calc(100vw-2rem)]"
+        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 nm-card-elevated flex items-center gap-1.5 sm:gap-2.5 rounded-2xl px-2 py-1.5 sm:px-3 sm:py-2 max-w-[calc(100vw-1.5rem)] shadow-overlay border border-border overflow-x-auto no-scrollbar"
         data-testid="bulk-action-bar"
       >
-        {/* Visible copy of the count. Not itself the live region — announcing
-            is `liveRegion`'s job, and marking both would say it twice. */}
-        <span className="text-sm font-medium shrink-0" data-testid="bulk-selection-count">
-          {count} {noun} selected
-        </span>
+        {/* Selection count badge */}
+        <div className="flex items-center gap-1.5 rounded-lg bg-muted/80 px-2 sm:px-2.5 py-1 text-foreground shrink-0 select-none">
+          <span className="text-xs font-semibold tabular-nums" data-testid="bulk-selection-count">
+            {count} {noun} selected
+          </span>
+        </div>
 
         <span aria-hidden="true" className="h-4 w-px bg-border shrink-0" />
 
-        <div className="flex flex-wrap items-center gap-1.5">
+        {/* Bulk action buttons */}
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
           <Button
             type="button"
             onClick={() => run('embed')}
             disabled={bulk.isPending}
             variant="ghost"
             size="sm"
-            className="nm-button-ghost"
-            leftIcon={<Database size={14} aria-hidden="true" />}
+            className="nm-button-ghost h-7 px-2 sm:px-2.5 text-xs shrink-0"
+            leftIcon={<Database size={13} aria-hidden="true" />}
             data-testid="bulk-embed-btn"
+            title="Re-embed selected pages (E)"
+            aria-label="Re-embed selected pages"
           >
-            Re-embed
+            <span>Re-embed</span>
+            <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground xl:inline-flex">E</kbd>
           </Button>
 
           {confluenceCount > 0 && (
@@ -88,11 +141,14 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
               disabled={bulk.isPending}
               variant="ghost"
               size="sm"
-              className="nm-button-ghost"
-              leftIcon={<RefreshCw size={14} aria-hidden="true" />}
+              className="nm-button-ghost h-7 px-2 sm:px-2.5 text-xs shrink-0"
+              leftIcon={<RefreshCw size={13} aria-hidden="true" />}
               data-testid="bulk-sync-btn"
+              title="Re-sync selected Confluence pages (S)"
+              aria-label="Re-sync selected Confluence pages"
             >
-              Re-sync {confluenceCount < count && `(${confluenceCount})`}
+              <span>Re-sync{confluenceCount < count ? ` (${confluenceCount})` : ''}</span>
+              <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground xl:inline-flex">S</kbd>
             </Button>
           )}
 
@@ -102,11 +158,14 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
             disabled={bulk.isPending}
             variant="ghost"
             size="sm"
-            className="nm-button-ghost"
-            leftIcon={<Gauge size={14} aria-hidden="true" />}
+            className="nm-button-ghost h-7 px-2 sm:px-2.5 text-xs shrink-0"
+            leftIcon={<Gauge size={13} aria-hidden="true" />}
             data-testid="bulk-quality-btn"
+            title="Re-analyze quality of selected pages (Q)"
+            aria-label="Re-analyze quality of selected pages"
           >
-            Re-analyze quality
+            <span><span className="hidden lg:inline">Re-analyze </span>Quality</span>
+            <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground xl:inline-flex">Q</kbd>
           </Button>
 
           <Button
@@ -115,19 +174,22 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
             disabled={bulk.isPending}
             variant="destructive-ghost"
             size="sm"
-            className="nm-action-destructive"
-            leftIcon={<Trash2 size={14} aria-hidden="true" />}
+            className="nm-action-destructive h-7 px-2 sm:px-2.5 text-xs shrink-0"
+            leftIcon={<Trash2 size={13} aria-hidden="true" />}
             data-testid="bulk-delete-btn"
+            title="Move selected pages to trash (Del)"
+            aria-label="Move selected pages to trash"
           >
-            Move to trash
+            <span><span className="hidden md:inline">Move to </span>Trash</span>
+            <kbd className="ml-1.5 hidden rounded border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[11px] text-destructive xl:inline-flex">Del</kbd>
           </Button>
         </div>
 
         {bulk.isPending && (
-          <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
-            <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-            Working...
-          </span>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0 px-1" role="status" aria-live="polite">
+            <Loader2 size={13} className="animate-spin text-action" aria-hidden="true" />
+            <span className="hidden sm:inline font-medium">Working…</span>
+          </div>
         )}
 
         <Button
@@ -135,11 +197,14 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
           onClick={onClear}
           variant="ghost"
           size="sm"
-          className="nm-button-ghost ml-auto"
-          leftIcon={<X size={14} aria-hidden="true" />}
+          className="nm-button-ghost h-7 px-2 sm:px-2.5 text-xs shrink-0 ml-auto"
+          leftIcon={<X size={13} aria-hidden="true" />}
           data-testid="bulk-clear-btn"
+          title="Clear selection (Esc)"
+          aria-label="Clear selection"
         >
-          Clear selection
+          <span>Clear<span className="hidden sm:inline"> selection</span></span>
+          <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground xl:inline-flex">Esc</kbd>
         </Button>
       </m.div>
 

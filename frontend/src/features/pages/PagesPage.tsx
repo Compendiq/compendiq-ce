@@ -5,9 +5,9 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, ChevronLeft, ChevronRight, ChevronDown, FolderOpen, Filter, X, List, Loader2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
-import { PageSourceEnum, type PageSource, type PageIcon as PageIconValue } from '@compendiq/contracts';
+import { type PageSource, type PageIcon as PageIconValue } from '@compendiq/contracts';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
-import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
+import { useSpaces, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useSearch } from '../../shared/hooks/use-search';
 import { EmptyState } from '../../shared/components/feedback/EmptyState';
@@ -19,6 +19,7 @@ import { bulkWireId } from '../../shared/hooks/use-bulk-page-actions';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { LibrarySpaceFilter } from './LibrarySpaceFilter';
 import { LibrarySortFilter } from './LibrarySortFilter';
+import { LibraryFilterDropdown, type FilterDropdownOption } from './LibraryFilterDropdown';
 import {
   readFilterState,
   applyFilterPatch,
@@ -68,6 +69,34 @@ const QUALITY_LABELS: Record<string, string> = {
   poor: 'Poor (0-49)',
 };
 
+const SOURCE_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'All sources' },
+  { value: 'confluence', label: 'Confluence' },
+  { value: 'standalone', label: 'Local' },
+];
+
+const FRESHNESS_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'Any' },
+  { value: 'fresh', label: 'Fresh (<7 days)' },
+  { value: 'recent', label: 'Recent (7-30 days)' },
+  { value: 'aging', label: 'Aging (30-90 days)' },
+  { value: 'stale', label: 'Stale (>90 days)' },
+];
+
+const QUALITY_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'Any' },
+  { value: 'excellent', label: 'Excellent (90-100)' },
+  { value: 'good', label: 'Good (70-89)' },
+  { value: 'needs-work', label: 'Needs Work (50-69)' },
+  { value: 'poor', label: 'Poor (0-49)' },
+];
+
+const EMBEDDING_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'Any' },
+  { value: 'pending', label: 'Needs Embedding' },
+  { value: 'done', label: 'Embedded' },
+];
+
 /**
  * "A, B" for up to 3 labels; "A, B, C, and N more" beyond that. Shared by the
  * #945 semantic-search honesty notice and the filtered-to-zero empty state
@@ -90,8 +119,6 @@ interface PageListItemProps {
   showQuality?: boolean;
   /** When false, hide idle "Not indexed" so an unindexed corpus is not a wall of chips. */
   showIdleEmbedding?: boolean;
-  /** True once any row is selected — row checkboxes stay visible for the rest of the pass. */
-  selectionArmed?: boolean;
   /** Space display name when known; the key is the fallback. */
   spaceName?: string | null;
   pageItem: {
@@ -130,7 +157,7 @@ interface PageListItemProps {
 const PageListItem = memo(function PageListItem({
   pageItem, index: _index, onNavigate, selected = false, onToggleSelect,
   showSource = false, showVisibility = false, showQuality = false,
-  showIdleEmbedding = false, selectionArmed = false, spaceName = null,
+  showIdleEmbedding = false, spaceName = null,
   tabIndex = 0, onKeyDown, onFocus,
 }: PageListItemProps) {
   return (
@@ -144,12 +171,10 @@ const PageListItem = memo(function PageListItem({
           // Same row as the page tree and the pinned strip: no card fill, no
           // hairline around every item. A stacked `bg-card` + `border-border`
           // list is forty tiles; the rail is a scan of titles. Selected is
-          // the pressed recipe (`bg-accent`), not an extra border — that
-          // competed with hover and failed forced-colors without the
-          // transparent 1px that becomes `--color-border-interactive`.
+          // tinted with a subtle Steel accent, while hover stays neutral.
           'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors max-sm:items-start',
           selected
-            ? 'bg-accent'
+            ? 'bg-[color-mix(in_oklab,var(--color-primary)_12%,transparent)] hover:bg-[color-mix(in_oklab,var(--color-primary)_18%,transparent)]'
             : 'hover:bg-accent',
         )}
         data-testid={`article-hover-${pageItem.id}`}
@@ -165,13 +190,13 @@ const PageListItem = memo(function PageListItem({
             onChange={() => { /* click handler owns this; keeps React controlled */ }}
             aria-label={`Select ${pageItem.title}`}
             // The 2px nudge centres the 16px box on the title's ~20px line
-            // when the row top-aligns below `sm`. On pointer devices the box
-            // stays in the tree (keyboard, tests) but recedes until hover,
-            // focus, or an active selection — so the resting scan is titles.
-            // Touch has no hover, so the box stays visible below `sm`.
+            // when the row top-aligns below `sm`. Checkbox is subtly visible at
+            // rest, highlighting on hover/focus, and fully solid when selected.
             className={cn(
-              'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5',
-              !selected && !selectionArmed && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
+              'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5 transition-opacity',
+              selected
+                ? 'opacity-100'
+                : 'opacity-40 hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
             )}
             data-testid={`page-select-${pageItem.id}`}
           />
@@ -323,25 +348,35 @@ const PageListItem = memo(function PageListItem({
     </m.div>
   );
 }, (prev, next) => {
-  // Only re-render if the page-item data changed
+  // Only re-render if the page-item data or relevant row props changed
   if (prev.pageItem.id !== next.pageItem.id) return false;
+  if (prev.pageItem.title !== next.pageItem.title) return false;
   if (prev.pageItem.version !== next.pageItem.version) return false;
+  if (prev.pageItem.icon !== next.pageItem.icon) return false;
+  if (prev.pageItem.author !== next.pageItem.author) return false;
+  if (prev.pageItem.lastModifiedAt !== next.pageItem.lastModifiedAt) return false;
+  if (prev.pageItem.source !== next.pageItem.source) return false;
+  if (prev.pageItem.visibility !== next.pageItem.visibility) return false;
+  if (prev.pageItem.spaceKey !== next.pageItem.spaceKey) return false;
   if (prev.pageItem.embeddingDirty !== next.pageItem.embeddingDirty) return false;
   if (prev.pageItem.qualityScore !== next.pageItem.qualityScore) return false;
   if (prev.pageItem.qualityStatus !== next.pageItem.qualityStatus) return false;
+  if (prev.pageItem.qualityError !== next.pageItem.qualityError) return false;
+  if (prev.pageItem.qualityAnalyzedAt !== next.pageItem.qualityAnalyzedAt) return false;
   if (prev.pageItem.summaryStatus !== next.pageItem.summaryStatus) return false;
+  if (prev.pageItem.labels !== next.pageItem.labels && prev.pageItem.labels.join(',') !== next.pageItem.labels.join(',')) return false;
   if (prev.index !== next.index) return false;
   // Selection is row-local render state, not page data. Omitting it here made
   // the checkbox permanently unclickable-looking: the Set updated and the
   // action bar counted correctly, but the row skipped its re-render, so React
   // restored the controlled input's DOM back to unchecked.
   if (prev.selected !== next.selected) return false;
+  if (prev.onNavigate !== next.onNavigate) return false;
   if (prev.onToggleSelect !== next.onToggleSelect) return false;
   if (prev.showSource !== next.showSource) return false;
   if (prev.showVisibility !== next.showVisibility) return false;
   if (prev.showQuality !== next.showQuality) return false;
   if (prev.showIdleEmbedding !== next.showIdleEmbedding) return false;
-  if (prev.selectionArmed !== next.selectionArmed) return false;
   if (prev.spaceName !== next.spaceName) return false;
   if (prev.tabIndex !== next.tabIndex) return false;
   if (prev.onKeyDown !== next.onKeyDown) return false;
@@ -409,7 +444,6 @@ export function PagesPage() {
   // Bulk selection. Held as a Set of page ids so toggling stays O(1) and the
   // memoised PageListItem only re-renders for rows whose own state changed.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
-  const [selectionMode, setSelectionMode] = useState(false);
   const lastToggledId = useRef<string | null>(null);
 
   // Debounce the search term before it reaches the keyword /pages query.
@@ -491,6 +525,16 @@ export function PagesPage() {
   const { data: spaces } = useSpaces();
   const { data: filterOptions } = usePageFilterOptions();
 
+  const authorOptions = useMemo<FilterDropdownOption[]>(() => [
+    { value: '', label: 'All authors' },
+    ...(filterOptions?.authors ?? []).map((a) => ({ value: a, label: a })),
+  ], [filterOptions?.authors]);
+
+  const labelOptions = useMemo<FilterDropdownOption[]>(() => [
+    { value: '', label: 'All labels' },
+    ...(filterOptions?.labels ?? []).map((l) => ({ value: l, label: l })),
+  ], [filterOptions?.labels]);
+
   // Determine if we should show the space home page content
   const selectedSpace = useMemo(
     () => (spaceKey ? spaces?.find((s) => s.key === spaceKey) : undefined),
@@ -561,7 +605,6 @@ export function PagesPage() {
         : (searchResults.isLoadingImmediate && hasActiveQuery ? 'Searching' : ''));
   const searchResultsBusy = searchProgressLabel.length > 0;
 
-  const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
   const { data: embeddingStatusData } = useEmbeddingStatus();
   const queryClient = useQueryClient();
@@ -664,16 +707,6 @@ export function PagesPage() {
     setFilters({ mode: 'keyword', page: 1 });
   }, [setFilters]);
 
-  const modeHint = useMemo(() => {
-    if (searchMode === 'keyword') return SEARCH_MODE_DESCRIPTIONS.keyword;
-    if (advancedFilterCount > 0) {
-      const noun = advancedFilterCount === 1 ? 'filter' : 'filters';
-      if (hasActiveQuery) return `${advancedFilterCount} advanced ${noun} paused. Switch to Keyword to apply them.`;
-      return `${advancedFilterCount} advanced ${noun} apply while browsing and will pause when ${SEARCH_MODE_LABELS[searchMode]} search starts.`;
-    }
-    return SEARCH_MODE_DESCRIPTIONS[searchMode];
-  }, [advancedFilterCount, hasActiveQuery, searchMode]);
-
   const filterStatus = advancedFilterCount === 0
     ? ''
     : (searchMode === 'keyword'
@@ -753,7 +786,6 @@ export function PagesPage() {
   }, [pageItems]);
   const showQualityBadges = Boolean(qualityFilter);
   const showIdleEmbedding = embeddingStatus === 'pending';
-  const selectionArmed = selectionMode || selectedIds.size > 0;
   const spaceNameByKey = useMemo(() => {
     const map = new Map<string, string>();
     for (const s of spaces ?? []) {
@@ -818,7 +850,6 @@ export function PagesPage() {
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
-    setSelectionMode(false);
     lastToggledId.current = null;
   }, []);
 
@@ -855,25 +886,67 @@ export function PagesPage() {
   });
 
   const [focusedRowIndex, setFocusedRowIndex] = useState<number>(0);
+  const pendingFocusIndexRef = useRef<number | null>(null);
+
+  // Clamp out-of-bounds page parameter back to 1 when a filter reduces totalPages
+  useEffect(() => {
+    if (pagesData && pagesData.totalPages > 0 && page > pagesData.totalPages) {
+      setFilters({ page: 1 });
+    }
+  }, [pagesData, page, setFilters]);
+
+  // Ensure focus is restored to the virtual row once it mounts after an async scroll jump
+  useEffect(() => {
+    if (pendingFocusIndexRef.current !== null) {
+      const idx = pendingFocusIndexRef.current;
+      const el = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${idx}"] button[type="button"]`);
+      if (el) {
+        el.focus();
+        pendingFocusIndexRef.current = null;
+      }
+    }
+  });
 
   const handleRowKeyDown = useCallback((index: number, id: string, e: React.KeyboardEvent<HTMLButtonElement>) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       const nextIndex = Math.min(pageItems.length - 1, index + 1);
       setFocusedRowIndex(nextIndex);
+      pendingFocusIndexRef.current = nextIndex;
       virtualizer.scrollToIndex(nextIndex);
+      if (e.shiftKey && nextIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const nextId = pageItems[nextIndex]?.id;
+        if (nextId) toggleSelect(nextId, true);
+      }
       requestAnimationFrame(() => {
         const nextEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${nextIndex}"] button[type="button"]`);
-        nextEl?.focus();
+        if (nextEl) {
+          nextEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
       });
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       const prevIndex = Math.max(0, index - 1);
       setFocusedRowIndex(prevIndex);
+      pendingFocusIndexRef.current = prevIndex;
       virtualizer.scrollToIndex(prevIndex);
+      if (e.shiftKey && prevIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const prevId = pageItems[prevIndex]?.id;
+        if (prevId) toggleSelect(prevId, true);
+      }
       requestAnimationFrame(() => {
         const prevEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${prevIndex}"] button[type="button"]`);
-        prevEl?.focus();
+        if (prevEl) {
+          prevEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
       });
     } else if (e.key === ' ' || e.key === 'Spacebar') {
       e.preventDefault();
@@ -881,22 +954,30 @@ export function PagesPage() {
     } else if (e.key === 'Home') {
       e.preventDefault();
       setFocusedRowIndex(0);
+      pendingFocusIndexRef.current = 0;
       virtualizer.scrollToIndex(0);
       requestAnimationFrame(() => {
         const firstEl = listContainerRef.current?.querySelector<HTMLButtonElement>('[data-row-index="0"] button[type="button"]');
-        firstEl?.focus();
+        if (firstEl) {
+          firstEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
       });
     } else if (e.key === 'End') {
       e.preventDefault();
       const lastIndex = pageItems.length - 1;
       setFocusedRowIndex(lastIndex);
+      pendingFocusIndexRef.current = lastIndex;
       virtualizer.scrollToIndex(lastIndex);
       requestAnimationFrame(() => {
         const lastEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${lastIndex}"] button[type="button"]`);
-        lastEl?.focus();
+        if (lastEl) {
+          lastEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
       });
     }
-  }, [pageItems.length, toggleSelect, virtualizer]);
+  }, [pageItems, selectedIds, toggleSelect, virtualizer]);
 
   const [focusedSearchRowIndex, setFocusedSearchRowIndex] = useState<number>(0);
 
@@ -905,19 +986,44 @@ export function PagesPage() {
       e.preventDefault();
       const nextIndex = Math.min(total - 1, index + 1);
       setFocusedSearchRowIndex(nextIndex);
+      if (e.shiftKey && nextIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const nextId = currentAddressableItems[nextIndex]?.id;
+        if (nextId) toggleSelect(nextId, true);
+      }
       const nextEl = document.querySelector<HTMLButtonElement>(`[data-search-row-index="${nextIndex}"] button[type="button"]`);
       nextEl?.focus();
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       const prevIndex = Math.max(0, index - 1);
       setFocusedSearchRowIndex(prevIndex);
+      if (e.shiftKey && prevIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const prevId = currentAddressableItems[prevIndex]?.id;
+        if (prevId) toggleSelect(prevId, true);
+      }
       const prevEl = document.querySelector<HTMLButtonElement>(`[data-search-row-index="${prevIndex}"] button[type="button"]`);
       prevEl?.focus();
     } else if (e.key === ' ' || e.key === 'Spacebar') {
       e.preventDefault();
       toggleSelect(id, e.shiftKey);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setFocusedSearchRowIndex(0);
+      const firstEl = document.querySelector<HTMLButtonElement>('[data-search-row-index="0"] button[type="button"]');
+      firstEl?.focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      const lastIndex = total - 1;
+      setFocusedSearchRowIndex(lastIndex);
+      const lastEl = document.querySelector<HTMLButtonElement>(`[data-search-row-index="${lastIndex}"] button[type="button"]`);
+      lastEl?.focus();
     }
-  }, [toggleSelect]);
+  }, [currentAddressableItems, selectedIds, toggleSelect]);
 
   return (
     // max-w-[1100px], matching the app's 1200px document-column convention:
@@ -936,8 +1042,6 @@ export function PagesPage() {
               embeddingStatus={embeddingStatusData}
               spacesCount={spaces?.length ?? 0}
               lastSynced={syncStatus?.lastSynced}
-              onSync={() => syncMutation.mutate()}
-              isSyncing={syncStatus?.status === 'syncing'}
             />
             <button
               type="button"
@@ -1004,6 +1108,14 @@ export function PagesPage() {
                   e.stopPropagation();
                   setSearchInput('');
                   setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
+                } else if (e.key === 'Enter' || e.key === 'ArrowDown') {
+                  const firstRow = document.querySelector<HTMLButtonElement>(
+                    '[data-search-row-index="0"] button[type="button"], [data-row-index="0"] button[type="button"]',
+                  );
+                  if (firstRow) {
+                    e.preventDefault();
+                    firstRow.focus();
+                  }
                 }
               }}
               className="h-9 min-w-0 flex-1 border-0 bg-transparent px-0 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
@@ -1047,6 +1159,42 @@ export function PagesPage() {
           <span className="hidden h-5 w-px shrink-0 bg-border sm:block" aria-hidden="true" />
 
           <div className="flex w-full items-center gap-1.5 sm:w-auto sm:shrink-0">
+            {/* Inline search strategy switcher */}
+            <div
+              className="library-search-modes inline-flex items-center gap-0.5 rounded-md p-0.5 shrink-0"
+              data-testid="search-mode-toggle"
+              role="group"
+              aria-label="Search strategy"
+            >
+              {([
+                'hybrid',
+                'keyword',
+                ...((searchMode === 'semantic'
+                  || embeddingStatusData == null
+                  || embeddingStatusData.embeddedPages > 0
+                  || embeddingStatusData.totalEmbeddings > 0)
+                  ? (['semantic'] as const)
+                  : []),
+              ] as const).map((m) => (
+                <button
+                  type="button"
+                  key={m}
+                  data-testid={`search-mode-${m}`}
+                  onClick={() => setFilters({ mode: m, page: 1 })}
+                  aria-pressed={searchMode === m}
+                  title={SEARCH_MODE_DESCRIPTIONS[m]}
+                  className={cn(
+                    'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2.5 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:flex-none sm:px-2.5 sm:py-1 sm:text-xs',
+                    searchMode === m
+                      ? 'library-search-mode-active font-semibold shadow-xs'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                  )}
+                >
+                  {SEARCH_MODE_LABELS[m]}
+                </button>
+              ))}
+            </div>
+
             <LibrarySpaceFilter
               spaces={spaces}
               selectedKey={spaceKey}
@@ -1062,7 +1210,7 @@ export function PagesPage() {
               onClick={() => setShowAdvancedFilters((v) => !v)}
               className={cn(
                 'library-search-select flex h-11 shrink-0 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground sm:h-8 sm:px-2.5 sm:text-xs',
-                (showAdvancedFilters || advancedFilterCount > 0 || searchMode !== 'hybrid') && 'bg-accent text-foreground',
+                (showAdvancedFilters || advancedFilterCount > 0) && 'bg-accent text-foreground',
                 hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && 'text-warning',
               )}
               data-testid="advanced-filters-toggle"
@@ -1073,11 +1221,6 @@ export function PagesPage() {
             >
               <Filter size={14} aria-hidden="true" />
               <span>Filters</span>
-              {searchMode !== 'hybrid' && (
-                <span className="rounded bg-accent/80 px-1.5 py-0.5 text-xs font-semibold text-action tabular-nums" aria-hidden="true">
-                  {SEARCH_MODE_LABELS[searchMode]}
-                </span>
-              )}
               {filterStatus && (
                 <span className="rounded bg-foreground/10 px-1.5 py-0.5 text-xs font-semibold tabular-nums" aria-hidden="true">
                   {filterStatus}
@@ -1130,10 +1273,10 @@ export function PagesPage() {
         {showAdvancedFilters && (
           <div
             id="advanced-filters-panel"
-            className="rounded-lg bg-card p-3"
+            className="rounded-xl border border-border bg-card p-4 sm:p-5"
             data-testid="advanced-filters-panel"
           >
-            <div className="mb-3 flex min-h-8 flex-wrap items-center justify-between gap-2">
+            <div className="mb-4 flex min-h-8 flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
               <div>
                 <h3 className="text-sm font-semibold text-foreground">Refine results</h3>
                 <p className="text-xs text-muted-foreground">
@@ -1145,14 +1288,14 @@ export function PagesPage() {
                 </p>
               </div>
               {advancedFilterCount > 0 && (
-                <button type="button" onClick={clearIgnoredFilters} className="nm-button-ghost h-7 px-2 text-xs">
+                <button type="button" onClick={clearIgnoredFilters} className="nm-button-ghost h-7 px-2.5 text-xs">
                   Clear filters
                 </button>
               )}
             </div>
 
             {!hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && (
-              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-muted/50 px-2.5 py-2 text-xs text-muted-foreground" data-testid="filters-keyword-preview-note">
+              <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground" data-testid="filters-keyword-preview-note">
                 <span>These filters apply while browsing and will pause when {SEARCH_MODE_LABELS[searchMode]} search starts.</span>
                 <button type="button" onClick={useKeywordWithFilters} className="nm-button-ghost h-7 px-2 text-xs">
                   Keep them active with Keyword
@@ -1160,156 +1303,148 @@ export function PagesPage() {
               </div>
             )}
 
+            {/* 2-row spacious filter grid with generous horizontal padding & space */}
             <div className="space-y-4">
-              {/* Search strategy section */}
-              <div className="space-y-2" data-testid="search-strategy-fieldset">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                  Search strategy
-                </span>
-                <div className="flex flex-wrap items-center gap-3">
-                  <div
-                    className="library-search-modes inline-flex w-full min-w-0 items-center gap-0.5 rounded-md p-0.5 sm:w-auto"
-                    data-testid="search-mode-toggle"
-                    role="group"
-                    aria-label="Search strategy"
-                    aria-describedby="find-mode-hint"
-                  >
-                    {([
-                      'hybrid',
-                      'keyword',
-                      ...((searchMode === 'semantic'
-                        || embeddingStatusData == null
-                        || embeddingStatusData.embeddedPages > 0
-                        || embeddingStatusData.totalEmbeddings > 0)
-                        ? (['semantic'] as const)
-                        : []),
-                    ] as const).map((m) => (
-                      <button
-                        type="button"
-                        key={m}
-                        data-testid={`search-mode-${m}`}
-                        onClick={() => setFilters({ mode: m, page: 1 })}
-                        aria-pressed={searchMode === m}
-                        className={cn(
-                          'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2.5 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:flex-none sm:px-3 sm:py-1.5 sm:text-xs',
-                          searchMode === m
-                            ? 'library-search-mode-active'
-                            : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-                        )}
-                      >
-                        {SEARCH_MODE_LABELS[m]}
-                      </button>
-                    ))}
+              <fieldset className="space-y-2">
+                <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  Content
+                </legend>
+                <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-3">
+                  {/* Row 1: Source, Author, Label */}
+                  <div className="min-w-0">
+                    <label htmlFor="filter-source-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Source
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-source-select"
+                      label="Source"
+                      ariaLabel="Filter by source"
+                      value={sourceFilter}
+                      options={SOURCE_OPTIONS}
+                      onChange={(val) => setFilters({ source: val as PageSource | '', page: 1 })}
+                      placeholder="All sources"
+                      testId="filter-source"
+                    />
                   </div>
-                  <p id="find-mode-hint" className="text-xs text-muted-foreground">
-                    {modeHint}
-                  </p>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-author-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Author
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-author-select"
+                      label="Author"
+                      value={author}
+                      options={authorOptions}
+                      onChange={(val) => setFilters({ author: val, page: 1 })}
+                      placeholder="All authors"
+                      testId="filter-author"
+                      searchable
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-labels-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Label
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-labels-select"
+                      label="Label"
+                      value={labels}
+                      options={labelOptions}
+                      onChange={(val) => setFilters({ labels: val, page: 1 })}
+                      placeholder="All labels"
+                      testId="filter-labels"
+                      searchable
+                    />
+                  </div>
                 </div>
-              </div>
+              </fieldset>
 
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,5fr)]">
-                <fieldset className="space-y-2">
-                  <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Content</legend>
-                  <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
-                    <div className="min-w-32">
-                      <label htmlFor="filter-source-select" className="mb-1 block text-xs text-muted-foreground">Source</label>
-                      <select
-                        id="filter-source-select"
-                        value={sourceFilter}
-                        onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
-                        className="nm-select-md w-full"
-                        data-testid="filter-source"
-                        aria-label="Filter by source"
-                      >
-                        <option value="">All sources</option>
-                        {PageSourceEnum.options.map((source) => (
-                          <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="min-w-40">
-                      <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
-                      <select
-                        id="filter-author-select"
-                        value={author}
-                        onChange={(e) => setFilters({ author: e.target.value, page: 1 })}
-                        className="nm-select-md w-full"
-                        data-testid="filter-author"
-                      >
-                        <option value="">All authors</option>
-                        {filterOptions?.authors.map((a) => (
-                          <option key={a} value={a}>{a}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="min-w-40">
-                      <label htmlFor="filter-labels-select" className="mb-1 block text-xs text-muted-foreground">Label</label>
-                      <select
-                        id="filter-labels-select"
-                        value={labels}
-                        onChange={(e) => setFilters({ labels: e.target.value, page: 1 })}
-                        className="nm-select-md w-full"
-                        data-testid="filter-labels"
-                      >
-                        <option value="">All labels</option>
-                        {filterOptions?.labels.map((label) => (
-                          <option key={label} value={label}>{label}</option>
-                        ))}
-                      </select>
-                    </div>
+              <fieldset className="space-y-2">
+                <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  Status &amp; date
+                </legend>
+                <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-5">
+                  {/* Row 2: Freshness, Quality, Embedding, From, To */}
+                  <div className="min-w-0">
+                    <label htmlFor="filter-freshness-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Freshness
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-freshness-select"
+                      label="Freshness"
+                      value={freshness}
+                      options={FRESHNESS_OPTIONS}
+                      onChange={(val) => setFilters({ freshness: val, page: 1 })}
+                      placeholder="Any"
+                      testId="filter-freshness"
+                    />
                   </div>
-                </fieldset>
 
-                <fieldset className="space-y-2">
-                  <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Status &amp; date</legend>
-                  <div className="grid grid-cols-2 items-end gap-2 sm:grid-cols-3 xl:grid-cols-5">
-                    <div className="min-w-32">
-                      <label htmlFor="filter-freshness-select" className="mb-1 block text-xs text-muted-foreground">Freshness</label>
-                      <select
-                        id="filter-freshness-select"
-                        value={freshness}
-                        onChange={(e) => setFilters({ freshness: e.target.value, page: 1 })}
-                        className="nm-select-md w-full"
-                        data-testid="filter-freshness"
-                      >
-                        <option value="">Any</option>
-                        <option value="fresh">Fresh (&lt;7 days)</option>
-                        <option value="recent">Recent (7-30 days)</option>
-                        <option value="aging">Aging (30-90 days)</option>
-                        <option value="stale">Stale (&gt;90 days)</option>
-                      </select>
-                    </div>
-                    <div className="min-w-36">
-                      <label htmlFor="filter-quality-select" className="mb-1 block text-xs text-muted-foreground">Quality</label>
-                      <select id="filter-quality-select" value={qualityFilter} onChange={(e) => setFilters({ quality: e.target.value, page: 1 })} className="nm-select-md w-full" data-testid="filter-quality">
-                        <option value="">Any</option><option value="excellent">Excellent (90-100)</option><option value="good">Good (70-89)</option><option value="needs-work">Needs Work (50-69)</option><option value="poor">Poor (0-49)</option>
-                      </select>
-                    </div>
-                    <div className="min-w-36">
-                      <label htmlFor="filter-embedding-select" className="mb-1 block text-xs text-muted-foreground">Embedding</label>
-                      <select
-                        id="filter-embedding-select"
-                        value={embeddingStatus}
-                        onChange={(e) => setFilters({ embedding: e.target.value, page: 1 })}
-                        className="nm-select-md w-full"
-                        data-testid="filter-embedding"
-                      >
-                        <option value="">Any</option>
-                        <option value="pending">Needs Embedding</option>
-                        <option value="done">Embedded</option>
-                      </select>
-                    </div>
-                    <div className="min-w-36">
-                      <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified from</label>
-                      <input id="filter-date-from-input" type="date" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} className="nm-input h-8 text-xs w-full" data-testid="filter-date-from" aria-label="Modified from" />
-                    </div>
-                    <div className="min-w-36">
-                      <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified to</label>
-                      <input id="filter-date-to-input" type="date" value={dateToInput} onChange={(e) => setDateToInput(e.target.value)} className="nm-input h-8 text-xs w-full" data-testid="filter-date-to" aria-label="Modified to" />
-                    </div>
+                  <div className="min-w-0">
+                    <label htmlFor="filter-quality-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Quality
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-quality-select"
+                      label="Quality"
+                      value={qualityFilter}
+                      options={QUALITY_OPTIONS}
+                      onChange={(val) => setFilters({ quality: val, page: 1 })}
+                      placeholder="Any"
+                      testId="filter-quality"
+                    />
                   </div>
-                </fieldset>
-              </div>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-embedding-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Embedding
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-embedding-select"
+                      label="Embedding"
+                      value={embeddingStatus}
+                      options={EMBEDDING_OPTIONS}
+                      onChange={(val) => setFilters({ embedding: val, page: 1 })}
+                      placeholder="Any"
+                      testId="filter-embedding"
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-date-from-input" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Modified from
+                    </label>
+                    <input
+                      id="filter-date-from-input"
+                      type="date"
+                      value={dateFromInput}
+                      max={dateToInput || undefined}
+                      onChange={(e) => setDateFromInput(e.target.value)}
+                      className="nm-input h-9 w-full px-3 py-1.5 text-xs"
+                      data-testid="filter-date-from"
+                      aria-label="Modified from"
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-date-to-input" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Modified to
+                    </label>
+                    <input
+                      id="filter-date-to-input"
+                      type="date"
+                      value={dateToInput}
+                      min={dateFromInput || undefined}
+                      onChange={(e) => setDateToInput(e.target.value)}
+                      className="nm-input h-9 w-full px-3 py-1.5 text-xs"
+                      data-testid="filter-date-to"
+                      aria-label="Modified to"
+                    />
+                  </div>
+                </div>
+              </fieldset>
             </div>
           </div>
         )}
@@ -1507,44 +1642,36 @@ export function PagesPage() {
               />
             ) : (
               <>
-                <div data-testid="library-search-results-panel" className="overflow-hidden rounded-lg border border-border bg-background">
-                  <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground" data-testid="search-results-context" aria-live="polite">
-                    <span data-testid="search-results-count">
-                      {searchResults.total} {searchResults.total === 1 ? 'result' : 'results'}
-                      <span className="ml-1.5 text-xs text-muted-foreground/70">({SEARCH_MODE_LABELS[searchMode]})</span>
-                    </span>
-                    {selectedSpace && <><span aria-hidden="true"> · </span><span>{selectedSpace.name}</span></>}
-                    {!selectionArmed && (
-                      <button type="button" onClick={() => setSelectionMode(true)} className="nm-button-ghost h-8 px-2.5 text-xs" data-testid="enter-selection-mode-search">
-                        Select pages
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Select-all when selection is armed */}
-                  {selectionArmed && (
-                    <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm text-muted-foreground">
-                      <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-                        <input
-                          type="checkbox"
-                          checked={allVisibleSelected}
-                          ref={(el) => {
-                            if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
-                          }}
-                          onChange={toggleSelectAll}
-                          aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
-                          className="size-4 cursor-pointer accent-[var(--color-action)]"
-                          data-testid="select-all-search-pages"
-                        />
-                        Select all on this page
-                      </label>
-                      {visibleSelectedIds.length > 0 && (
-                        <span className="text-xs font-medium text-muted-foreground">
-                          {visibleSelectedIds.length} {visibleSelectedIds.length === 1 ? 'page' : 'pages'} selected
-                        </span>
+                <div data-testid="library-search-results-panel" className="overflow-hidden rounded-lg border border-border bg-card">
+                  <div className="panel-toolbar flex flex-wrap items-center gap-3 border-b border-border px-3 py-2 text-xs text-muted-foreground" data-testid="search-results-context" aria-live="polite">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
+                        }}
+                        onChange={toggleSelectAll}
+                        aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
+                        className="size-4 shrink-0 cursor-pointer accent-[var(--color-action)]"
+                        data-testid="select-all-search-pages"
+                      />
+                      <span className="font-medium text-foreground" data-testid="search-results-count">
+                        {visibleSelectedIds.length > 0 ? (
+                          `${visibleSelectedIds.length} of ${currentIds.length} selected`
+                        ) : (
+                          `${searchResults.total} ${searchResults.total === 1 ? 'result' : 'results'}`
+                        )}
+                        <span className="ml-1.5 font-normal text-muted-foreground/70">({SEARCH_MODE_LABELS[searchMode]})</span>
+                      </span>
+                      {selectedSpace && (
+                        <>
+                          <span aria-hidden="true" className="text-muted-foreground/60">·</span>
+                          <span className="truncate">{selectedSpace.name}</span>
+                        </>
                       )}
                     </div>
-                  )}
+                  </div>
 
                   <BulkActionBar
                     selectedIds={visibleSelectedIds}
@@ -1552,59 +1679,64 @@ export function PagesPage() {
                     onClear={clearSelection}
                   />
 
-                  <div>
+                  <div role="list" aria-label="Search results">
                     {displayItems.map((item, i) => {
                       const itemId = String(item.id);
                       const isSelected = selectedIds.has(itemId);
                       return (
                         <m.div
                           key={item.id}
+                          role="listitem"
                           initial={{ opacity: 0 }}
                           animate={{ opacity: 1 }}
                           transition={{ duration: 0.15, delay: i * 0.02 }}
                           data-search-row-index={i}
                         >
-                          <div
-                            className={cn(
-                              'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 max-sm:items-start',
-                              isSelected ? 'bg-accent' : 'hover:bg-accent',
-                            )}
-                            data-testid={`article-hover-${item.id}`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              tabIndex={-1}
-                              onClick={(e) => toggleSelect(itemId, e.shiftKey)}
-                              onChange={() => {}}
-                              aria-label={`Select ${item.title}`}
+                            <div
                               className={cn(
-                                'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5',
-                                !isSelected && !selectionArmed && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
+                                'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 max-sm:items-start',
+                                isSelected
+                                  ? 'bg-[color-mix(in_oklab,var(--color-primary)_12%,transparent)] hover:bg-[color-mix(in_oklab,var(--color-primary)_18%,transparent)]'
+                                  : 'hover:bg-accent',
                               )}
-                              data-testid={`page-select-${item.id}`}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => navigate(`/pages/${item.id}`)}
-                              tabIndex={focusedSearchRowIndex === i ? 0 : -1}
-                              onFocus={() => setFocusedSearchRowIndex(i)}
-                              onKeyDown={(e) => handleSearchRowKeyDown(i, itemId, displayItems.length, e)}
-                              className="nm-focus-ring flex min-w-0 flex-1 items-center gap-3 text-left max-sm:flex-wrap max-sm:gap-y-1 rounded-sm"
+                              data-testid={`article-hover-${item.id}`}
                             >
-                              <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
-                                <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
-                                  {item.icon && <PageIcon icon={item.icon} pageId={itemId} size="row" />}
-                                  <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
-                                </p>
-                                {item.excerpt && (
-                                  <SanitizedHtml
-                                    html={item.excerpt}
-                                    allowedTags={['mark']}
-                                    allowedAttrs={[]}
-                                    className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-foreground/10 [&_mark]:font-medium [&_mark]:text-foreground"
-                                  />
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                tabIndex={-1}
+                                onClick={(e) => toggleSelect(itemId, e.shiftKey)}
+                                onChange={() => {}}
+                                aria-label={`Select ${item.title}`}
+                                className={cn(
+                                  'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5 transition-opacity',
+                                  isSelected
+                                    ? 'opacity-100'
+                                    : 'opacity-40 hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
                                 )}
+                                data-testid={`page-select-${item.id}`}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/pages/${item.id}`)}
+                                tabIndex={focusedSearchRowIndex === i ? 0 : -1}
+                                onFocus={() => setFocusedSearchRowIndex(i)}
+                                onKeyDown={(e) => handleSearchRowKeyDown(i, itemId, displayItems.length, e)}
+                                className="nm-focus-ring flex min-w-0 flex-1 items-center gap-3 text-left max-sm:flex-wrap max-sm:gap-y-1 rounded-sm"
+                              >
+                                <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
+                                  <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
+                                    {item.icon && <PageIcon icon={item.icon} pageId={itemId} size="row" />}
+                                    <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
+                                  </p>
+                                  {item.excerpt && (
+                                    <SanitizedHtml
+                                      html={item.excerpt}
+                                      allowedTags={['mark']}
+                                      allowedAttrs={[]}
+                                      className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-action/15 [&_mark]:font-medium [&_mark]:text-foreground"
+                                    />
+                                  )}
                                 {item.spaceKey && (
                                   <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                                     {item.spaceKey !== '__local__' ? (
@@ -1632,7 +1764,7 @@ export function PagesPage() {
                               {item.similarity !== null && item.similarity > 0 && (
                                 <span
                                   title="Semantic similarity to your query"
-                                  className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground border border-border/40"
+                                  className="shrink-0 rounded bg-muted/80 px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground border border-border/50"
                                 >
                                   {(item.similarity * 100).toFixed(0)}%
                                 </span>
@@ -1691,27 +1823,18 @@ export function PagesPage() {
               <div className="flex-1">
                 <p className="font-medium text-destructive">Couldn't load pages</p>
                 <p className="mt-1 text-muted-foreground">{pagesError.message}</p>
+                <button
+                  onClick={() => refetchPages()}
+                  disabled={isFetchingPages}
+                  className="nm-focus-ring flex items-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid="pages-error-retry"
+                >
+                  {isFetchingPages && <Loader2 size={12} className="animate-spin" />}
+                  {isFetchingPages ? 'Retrying…' : 'Retry'}
+                </button>
               </div>
-              <button
-                onClick={() => refetchPages()}
-                disabled={isFetchingPages}
-                className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
-                data-testid="pages-error-retry"
-              >
-                {isFetchingPages && <Loader2 size={12} className="animate-spin" />}
-                {isFetchingPages ? 'Retrying…' : 'Retry'}
-              </button>
             </div>
           ) : !pagesData?.items.length ? (
-            // Filters first, search second, corpus-emptiness last (harden
-            // pass, 2026-08-17): an empty result set with active filters was
-            // reported as "Sync your Confluence spaces to see pages here",
-            // sending the user to Settings for a problem their own filters
-            // caused, with no mention of the filters and no way to clear
-            // them from this screen. `activeFilterCount` already reflects
-            // exactly what's filtering this list (Space included, since it
-            // now participates in `activeFilters` above) — a real empty
-            // corpus is the one case where it, and `search`, are both empty.
             <EmptyState
               icon={FolderOpen}
               className="border-0 bg-transparent"
@@ -1728,109 +1851,113 @@ export function PagesPage() {
                   ? { label: 'Clear filters', onClick: clearAllFilters }
                   : (!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined)
               }
+              secondaryAction={
+                activeFilterCount === 0 && !search
+                  ? { label: 'Create a Page', onClick: () => navigate('/pages/new') }
+                  : undefined
+              }
             />
           ) : (
             <>
-            <div data-testid="library-results-panel" className="overflow-hidden rounded-lg border border-border bg-background">
-            <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
-              <span>{pagesData.total} {pagesData.total === 1 ? 'page' : 'pages'}</span>
-              {selectedSpace && <><span aria-hidden="true"> · </span><span>{selectedSpace.name}</span></>}
-              {!selectionArmed && (
-                <button type="button" onClick={() => setSelectionMode(true)} className="nm-button-ghost h-8 px-2.5 text-xs" data-testid="enter-selection-mode">
-                  Select pages
-                </button>
-              )}
-              <div className="ml-auto flex items-center gap-1.5 text-xs">
-                <span className="text-muted-foreground">Sort</span>
-                <LibrarySortFilter
-                  value={sort}
-                  onChange={(newSort) => setFilters({ sort: newSort, page: 1 })}
-                />
-              </div>
-            </div>
-            {/* Select-all when selection is armed */}
-            {selectionArmed && (
-              <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm text-muted-foreground">
-                <label
-                  className={cn(
-                    'flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground',
-                    !selectionArmed && 'sr-only',
-                  )}
-                >
-                  <input
-                    type="checkbox"
-                    checked={allVisibleSelected}
-                    ref={(el) => {
-                      // Partial selection is a third state; without it the box
-                      // reads "nothing selected" while rows plainly are.
-                      if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
-                    }}
-                    onChange={toggleSelectAll}
-                    aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
-                    className="size-4 cursor-pointer accent-[var(--color-action)]"
-                    data-testid="select-all-pages"
-                  />
-                  Select all on this page
-                </label>
-                {visibleSelectedIds.length > 0 && (
-                  <span className="text-xs font-medium text-muted-foreground">
-                    {visibleSelectedIds.length} {visibleSelectedIds.length === 1 ? 'page' : 'pages'} selected
-                  </span>
-                )}
-              </div>
-            )}
-
-            <BulkActionBar
-              selectedIds={visibleSelectedIds}
-              confluenceCount={selectedConfluenceCount}
-              onClear={clearSelection}
-            />
-
-            <div
-              ref={listContainerRef}
-              data-testid="virtual-list-container"
-              style={{ position: 'relative', height: virtualizer.getTotalSize() }}
-            >
-              {virtualizer.getVirtualItems().map((virtualRow) => {
-                const pageItem = pageItems[virtualRow.index];
-                if (!pageItem) return null;
-                return (
-                  <div
-                    key={pageItem.id}
-                    data-index={virtualRow.index}
-                    data-row-index={virtualRow.index}
-                    ref={virtualizer.measureElement}
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '100%',
-                      transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
-                    }}
-                  >
-                    <div>
-                      <PageListItem
-                        pageItem={pageItem}
-                        index={virtualRow.index}
-                        onNavigate={navigateToPage}
-                        selected={selectedIds.has(pageItem.id)}
-                        onToggleSelect={toggleSelect}
-                        showSource={showSourceBadges}
-                        showVisibility={showVisibilityBadges}
-                        showQuality={showQualityBadges}
-                        showIdleEmbedding={showIdleEmbedding}
-                        selectionArmed={selectionArmed}
-                        spaceName={pageItem.spaceKey ? spaceNameByKey.get(pageItem.spaceKey) ?? null : null}
-                        tabIndex={focusedRowIndex === virtualRow.index ? 0 : -1}
-                        onFocus={() => setFocusedRowIndex(virtualRow.index)}
-                        onKeyDown={(e) => handleRowKeyDown(virtualRow.index, pageItem.id, e)}
-                      />
-                    </div>
+              <div data-testid="library-results-panel" className="overflow-hidden rounded-lg border border-border bg-card">
+                <div className="panel-toolbar flex flex-wrap items-center gap-3 border-b border-border px-3 py-2 text-xs text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      ref={(el) => {
+                        // Partial selection is a third state; without it the box
+                        // reads "nothing selected" while rows plainly are.
+                        if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
+                      }}
+                      onChange={toggleSelectAll}
+                      aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
+                      className="size-4 shrink-0 cursor-pointer accent-[var(--color-action)]"
+                      data-testid="select-all-pages"
+                    />
+                    <span className="font-medium text-foreground" data-testid="browse-results-count">
+                      {visibleSelectedIds.length > 0 ? (
+                        `${visibleSelectedIds.length} of ${currentIds.length} selected`
+                      ) : (
+                        `${pagesData.total} ${pagesData.total === 1 ? 'page' : 'pages'}`
+                      )}
+                    </span>
+                    {selectedSpace && (
+                      <>
+                        <span aria-hidden="true" className="text-muted-foreground/60">·</span>
+                        <span className="truncate">{selectedSpace.name}</span>
+                      </>
+                    )}
                   </div>
-                );
-              })}
-            </div>
-            </div>
+
+                  <div className="ml-auto flex items-center gap-1.5 text-xs">
+                    <span className="text-muted-foreground">Sort</span>
+                    <LibrarySortFilter
+                      value={sort}
+                      onChange={(newSort) => setFilters({ sort: newSort, page: 1 })}
+                      hasSearchQuery={hasActiveQuery}
+                    />
+                  </div>
+                </div>
+
+                <BulkActionBar
+                  selectedIds={visibleSelectedIds}
+                  confluenceCount={selectedConfluenceCount}
+                  onClear={clearSelection}
+                />
+
+                <div
+                  ref={listContainerRef}
+                  data-testid="virtual-list-container"
+                  role="feed"
+                  aria-label="Pages list"
+                  aria-rowcount={pagesData.total}
+                  aria-busy={isLoading}
+                  style={{ position: 'relative', height: virtualizer.getTotalSize() }}
+                >
+                  {virtualizer.getVirtualItems().map((virtualRow) => {
+                    const pageItem = pageItems[virtualRow.index];
+                    if (!pageItem) return null;
+                    return (
+                      <div
+                        key={pageItem.id}
+                        data-index={virtualRow.index}
+                        data-row-index={virtualRow.index}
+                        role="article"
+                        aria-rowindex={virtualRow.index + 1}
+                        aria-posinset={virtualRow.index + 1}
+                        aria-setsize={pagesData.total}
+                        ref={virtualizer.measureElement}
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
+                        }}
+                      >
+                        <div>
+                          <PageListItem
+                            pageItem={pageItem}
+                            index={virtualRow.index}
+                            onNavigate={navigateToPage}
+                            selected={selectedIds.has(pageItem.id)}
+                            onToggleSelect={toggleSelect}
+                            showSource={showSourceBadges}
+                            showVisibility={showVisibilityBadges}
+                            showQuality={showQualityBadges}
+                            showIdleEmbedding={showIdleEmbedding}
+                            spaceName={pageItem.spaceKey ? spaceNameByKey.get(pageItem.spaceKey) ?? null : null}
+                            tabIndex={focusedRowIndex === virtualRow.index ? 0 : -1}
+                            onFocus={() => setFocusedRowIndex(virtualRow.index)}
+                            onKeyDown={(e) => handleRowKeyDown(virtualRow.index, pageItem.id, e)}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </>
           )}
 

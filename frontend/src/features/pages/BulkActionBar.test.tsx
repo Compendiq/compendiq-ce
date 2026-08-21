@@ -298,4 +298,108 @@ describe('BulkActionBar', () => {
     });
     expect(toastMock.success).not.toHaveBeenCalled();
   });
+
+  it('triggers embed via "e" keyboard shortcut', async () => {
+    render(
+      <BulkActionBar selectedIds={['1', '2']} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.keyDown(document, { key: 'e' });
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith('/pages/bulk/embed', {
+        method: 'POST',
+        body: JSON.stringify({ ids: ['1', '2'] }),
+      });
+    });
+  });
+
+  it('triggers quality analysis via "q" keyboard shortcut', async () => {
+    render(
+      <BulkActionBar selectedIds={['5']} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.keyDown(document, { key: 'q' });
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith('/pages/bulk/quality', expect.anything());
+    });
+  });
+
+  it('triggers sync via "s" keyboard shortcut when Confluence pages are selected', async () => {
+    render(
+      <BulkActionBar selectedIds={['1', '2']} confluenceCount={2} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.keyDown(document, { key: 's' });
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith('/pages/bulk/sync', {
+        method: 'POST',
+        body: JSON.stringify({ ids: ['1', '2'] }),
+      });
+    });
+  });
+
+  it('clears selection via "Escape" keyboard shortcut', () => {
+    const onClear = vi.fn();
+    render(
+      <BulkActionBar selectedIds={['1']} confluenceCount={0} onClear={onClear} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClear).toHaveBeenCalled();
+  });
+
+  it('opens delete confirmation via "Delete" keyboard shortcut', async () => {
+    render(
+      <BulkActionBar selectedIds={['1', '2']} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.keyDown(document, { key: 'Delete' });
+    expect(await screen.findByText('Move 2 pages to trash?')).toBeInTheDocument();
+  });
+
+  it('provides accessible labels and tooltips for all action buttons', () => {
+    render(
+      <BulkActionBar selectedIds={['1', '2']} confluenceCount={1} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    const embedBtn = screen.getByTestId('bulk-embed-btn');
+    expect(embedBtn).toHaveAttribute('aria-label', 'Re-embed selected pages');
+    expect(embedBtn).toHaveAttribute('title', 'Re-embed selected pages (E)');
+
+    const syncBtn = screen.getByTestId('bulk-sync-btn');
+    expect(syncBtn).toHaveAttribute('aria-label', 'Re-sync selected Confluence pages');
+    expect(syncBtn).toHaveAttribute('title', 'Re-sync selected Confluence pages (S)');
+
+    const qualityBtn = screen.getByTestId('bulk-quality-btn');
+    expect(qualityBtn).toHaveAttribute('aria-label', 'Re-analyze quality of selected pages');
+    expect(qualityBtn).toHaveAttribute('title', 'Re-analyze quality of selected pages (Q)');
+
+    const deleteBtn = screen.getByTestId('bulk-delete-btn');
+    expect(deleteBtn).toHaveAttribute('aria-label', 'Move selected pages to trash');
+    expect(deleteBtn).toHaveAttribute('title', 'Move selected pages to trash (Del)');
+
+    const clearBtn = screen.getByTestId('bulk-clear-btn');
+    expect(clearBtn).toHaveAttribute('aria-label', 'Clear selection');
+    expect(clearBtn).toHaveAttribute('title', 'Clear selection (Esc)');
+  });
+
+  it('renders a floating bar with rounded-2xl and shadow-overlay', () => {
+    render(
+      <BulkActionBar selectedIds={['1']} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    const bar = screen.getByTestId('bulk-action-bar');
+    expect(bar).toHaveClass('fixed', 'bottom-6', 'nm-card-elevated', 'rounded-2xl', 'shadow-overlay');
+  });
 });
+
