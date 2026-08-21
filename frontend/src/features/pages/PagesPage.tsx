@@ -1875,6 +1875,9 @@ export function PagesPage() {
             <div
               ref={listContainerRef}
               data-testid="virtual-list-container"
+              role="feed"
+              aria-label="Pages list"
+              aria-rowcount={pagesData.total}
               style={{ position: 'relative', height: virtualizer.getTotalSize() }}
             >
               {virtualizer.getVirtualItems().map((virtualRow) => {
@@ -1885,6 +1888,8 @@ export function PagesPage() {
                     key={pageItem.id}
                     data-index={virtualRow.index}
                     data-row-index={virtualRow.index}
+                    role="article"
+                    aria-rowindex={virtualRow.index + 1}
                     ref={virtualizer.measureElement}
                     style={{
                       position: 'absolute',

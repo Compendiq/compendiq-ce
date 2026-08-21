@@ -103,7 +103,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
         transition={{ duration: 0.15, ease: 'easeOut' }}
         role="region"
         aria-label={`Actions for ${count} selected ${noun}`}
-        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 nm-card-elevated flex flex-wrap items-center gap-2.5 rounded-xl px-4 py-2 max-w-[calc(100vw-2rem)]"
+        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 nm-card-elevated flex items-center gap-2.5 rounded-xl px-3 sm:px-4 py-2 max-w-[calc(100vw-2rem)] max-sm:max-w-[calc(100vw-1rem)] max-sm:overflow-x-auto no-scrollbar"
         data-testid="bulk-action-bar"
       >
         {/* Visible copy of the count. Not itself the live region — announcing
@@ -114,7 +114,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
 
         <span aria-hidden="true" className="h-4 w-px bg-border shrink-0" />
 
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex items-center gap-1.5 shrink-0">
           <Button
             type="button"
             onClick={() => run('embed')}

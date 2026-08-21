@@ -2941,5 +2941,18 @@ describe('PagesPage filter persistence (#1124)', () => {
       fireEvent.keyDown(lastRowBtn, { key: 'Home' });
       expect(firstRowBtn).toHaveAttribute('tabIndex', '0');
     });
+
+    it('exposes ARIA feed semantics with row count and row indices', async () => {
+      mockFetchWithPages(makeManyPages(3));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const feed = screen.getByRole('feed', { name: 'Pages list' });
+      expect(feed).toHaveAttribute('aria-rowcount', '3');
+
+      const firstRow = feed.querySelector('[data-row-index="0"]');
+      expect(firstRow).toHaveAttribute('role', 'article');
+      expect(firstRow).toHaveAttribute('aria-rowindex', '1');
+    });
   });
 });
