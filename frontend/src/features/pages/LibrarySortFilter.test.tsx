@@ -56,4 +56,16 @@ describe('LibrarySortFilter', () => {
     fireEvent.click(secondOption);
     expect(onChange).toHaveBeenCalledWith('title');
   });
+
+  it('omits Relevance option when hasSearchQuery is false', () => {
+    render(<LibrarySortFilter value="modified" onChange={vi.fn()} hasSearchQuery={false} />);
+
+    fireEvent.click(screen.getByTestId('sort-filter-control'));
+
+    expect(screen.queryByRole('option', { name: 'Relevance' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Last Modified' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Title' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Author' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Quality Score' })).toBeInTheDocument();
+  });
 });

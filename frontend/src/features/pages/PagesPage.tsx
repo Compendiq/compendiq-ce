@@ -1745,6 +1745,7 @@ export function PagesPage() {
                 <LibrarySortFilter
                   value={sort}
                   onChange={(newSort) => setFilters({ sort: newSort, page: 1 })}
+                  hasSearchQuery={hasActiveQuery}
                 />
               </div>
             </div>

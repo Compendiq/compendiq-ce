@@ -298,4 +298,70 @@ describe('BulkActionBar', () => {
     });
     expect(toastMock.success).not.toHaveBeenCalled();
   });
+
+  it('triggers embed via "e" keyboard shortcut', async () => {
+    render(
+      <BulkActionBar selectedIds={['1', '2']} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.keyDown(document, { key: 'e' });
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith('/pages/bulk/embed', {
+        method: 'POST',
+        body: JSON.stringify({ ids: ['1', '2'] }),
+      });
+    });
+  });
+
+  it('triggers quality analysis via "q" keyboard shortcut', async () => {
+    render(
+      <BulkActionBar selectedIds={['5']} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.keyDown(document, { key: 'q' });
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith('/pages/bulk/quality', expect.anything());
+    });
+  });
+
+  it('triggers sync via "s" keyboard shortcut when Confluence pages are selected', async () => {
+    render(
+      <BulkActionBar selectedIds={['1', '2']} confluenceCount={2} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.keyDown(document, { key: 's' });
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith('/pages/bulk/sync', {
+        method: 'POST',
+        body: JSON.stringify({ ids: ['1', '2'] }),
+      });
+    });
+  });
+
+  it('clears selection via "Escape" keyboard shortcut', () => {
+    const onClear = vi.fn();
+    render(
+      <BulkActionBar selectedIds={['1']} confluenceCount={0} onClear={onClear} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClear).toHaveBeenCalled();
+  });
+
+  it('opens delete confirmation via "Delete" keyboard shortcut', async () => {
+    render(
+      <BulkActionBar selectedIds={['1', '2']} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.keyDown(document, { key: 'Delete' });
+    expect(await screen.findByText('Move 2 pages to trash?')).toBeInTheDocument();
+  });
 });

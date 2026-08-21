@@ -126,7 +126,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
         <span className="font-semibold tabular-nums">
           {embeddingStatus ? <AnimatedCounter value={totalPages} /> : '--'}
         </span>
-        <span className="text-xs text-muted-foreground hidden lg:inline" data-testid="kpi-spaces-synced">
+        <span className="text-xs text-muted-foreground hidden xl:inline" data-testid="kpi-spaces-synced">
           {spacesCount > 0
             ? `across ${spacesCount} ${spacesCount === 1 ? 'space' : 'spaces'}`
             : totalPages > 0
