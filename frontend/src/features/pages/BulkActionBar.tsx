@@ -56,7 +56,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
         transition={{ duration: 0.15, ease: 'easeOut' }}
         role="region"
         aria-label={`Actions for ${count} selected ${noun}`}
-        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 nm-card-elevated flex flex-wrap items-center gap-2.5 rounded-xl px-4 py-2 shadow-lg max-w-[calc(100vw-2rem)]"
+        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 nm-card-elevated flex flex-wrap items-center gap-2.5 rounded-xl px-4 py-2 max-w-[calc(100vw-2rem)]"
         data-testid="bulk-action-bar"
       >
         {/* Visible copy of the count. Not itself the live region — announcing
