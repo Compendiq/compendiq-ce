@@ -7,6 +7,7 @@ import {
 import { toast } from 'sonner';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { neutralChipInk } from '../../shared/components/badges/neutral-chip';
+import { Button } from '../../shared/components/Button';
 
 // --- Types ---
 
@@ -448,14 +449,15 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
           <div className="flex items-center justify-between border-t border-border px-5 py-4">
             <div>
               {isEditMode && !showDeleteConfirm && (
-                <button
+                <Button
                   onClick={() => setShowDeleteConfirm(true)}
-                  className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-3 py-1.5 text-sm text-destructive hover:bg-destructive/20"
+                  variant="destructive-ghost"
+                  size="sm"
+                  leftIcon={<Trash2 size={14} />}
                   data-testid="delete-role-btn"
                 >
-                  <Trash2 size={14} />
                   Delete Role
-                </button>
+                </Button>
               )}
               {isEditMode && showDeleteConfirm && (
                 <div className="flex items-center gap-2">
@@ -463,41 +465,44 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
                     <AlertTriangle size={12} />
                     Delete this role?
                   </span>
-                  <button
+                  <Button
                     onClick={handleDelete}
                     disabled={deleteMutation.isPending}
-                    className="flex items-center gap-1 rounded-md bg-destructive px-2.5 py-1 text-xs text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+                    isLoading={deleteMutation.isPending}
+                    variant="destructive"
+                    size="sm"
+                    leftIcon={!deleteMutation.isPending ? <Check size={13} /> : undefined}
                     data-testid="confirm-delete-btn"
                   >
-                    {deleteMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
                     Confirm
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     onClick={() => setShowDeleteConfirm(false)}
-                    className="rounded-md bg-foreground/5 px-2.5 py-1 text-xs hover:bg-foreground/10"
+                    variant="ghost"
+                    size="sm"
                     data-testid="cancel-delete-btn"
                   >
                     Cancel
-                  </button>
+                  </Button>
                 </div>
               )}
             </div>
             <div className="flex items-center gap-2">
               <Dialog.Close asChild>
-                <button className="nm-button-ghost">
+                <Button variant="secondary" className="nm-button-ghost">
                   Cancel
-                </button>
+                </Button>
               </Dialog.Close>
               {activeSection === 'edit' && (
-                <button
+                <Button
                   onClick={handleSubmit}
                   disabled={!canSubmit}
-                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+                  isLoading={isPending}
+                  variant="primary"
                   data-testid="submit-role-btn"
                 >
-                  {isPending && <Loader2 size={14} className="animate-spin" />}
                   {isEditMode ? 'Save' : 'Create'}
-                </button>
+                </Button>
               )}
             </div>
           </div>

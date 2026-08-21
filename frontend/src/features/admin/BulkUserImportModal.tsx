@@ -47,6 +47,7 @@ import type {
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 
 // ── Local fetch helper ─────────────────────────────────────────────────────
 // Mirrors the WebhooksTab / IpAllowlistTab pattern — we bypass `apiFetch`
@@ -486,25 +487,23 @@ function PreviewStep({
       </fieldset>
 
       <div className="flex justify-end gap-2 border-t border-border pt-4">
-        <button
-          type="button"
+        <Button
           onClick={onBack}
-          className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5"
+          variant="secondary"
           data-testid="bulk-import-back"
           disabled={applying}
         >
           Back
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
           onClick={onSubmit}
           disabled={applying || summary.valid === 0}
-          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={applying}
+          variant="primary"
           data-testid="bulk-import-submit"
         >
-          {applying && <Loader2 size={14} className="animate-spin" />}
           Import {summary.valid} user{summary.valid === 1 ? '' : 's'}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -545,14 +544,13 @@ function PreviewFailedStep({
         <div>{message}</div>
       </div>
       <div className="flex justify-end">
-        <button
-          type="button"
+        <Button
           onClick={onBack}
-          className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5"
+          variant="secondary"
           data-testid="bulk-import-error-back"
         >
           Back
-        </button>
+        </Button>
       </div>
     </div>
   );

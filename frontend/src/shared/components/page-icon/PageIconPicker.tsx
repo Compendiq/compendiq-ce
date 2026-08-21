@@ -7,6 +7,7 @@ import { EmojiPickerContent } from '../article/EmojiPicker';
 import { absorbPortalEscape } from '../../lib/absorb-portal-escape';
 import { LucideIconGrid } from './LucideIconGrid';
 import { cn } from '../../lib/cn';
+import { Button } from '../Button';
 
 type PickerTab = 'emoji' | 'icons' | 'logos' | 'upload';
 
@@ -84,14 +85,17 @@ export function PageIconPicker({
                   event.target.value = '';
                 }}
               />
-              <button
+              <Button
                 type="button"
-                className="nm-button-ghost h-8 w-full text-sm"
+                variant="primary"
+                size="sm"
+                className="w-full"
                 disabled={uploading}
+                isLoading={uploading}
                 onClick={() => fileRef.current?.click()}
               >
                 {uploading ? 'Uploading…' : 'Choose image'}
-              </button>
+              </Button>
               <p className="text-muted-foreground text-xs">
                 PNG, JPEG, or WebP. Shown square at the title and as a small mark in lists.
               </p>
@@ -104,15 +108,17 @@ export function PageIconPicker({
           )}
 
           {icon && (
-            <button
+            <Button
               type="button"
-              className="nm-action-destructive mt-2 inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs"
+              variant="destructive-ghost"
+              size="sm"
+              className="nm-action-destructive mt-2 w-full justify-start"
               onClick={onRemove}
+              leftIcon={<Trash2 size={14} aria-hidden />}
               data-testid="page-icon-remove"
             >
-              <Trash2 size={14} aria-hidden />
               Remove icon
-            </button>
+            </Button>
           )}
         </Popover.Content>
       </Popover.Portal>

@@ -15,6 +15,7 @@ import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { improveMarkdownToHtml } from '../../../shared/components/article/improve-markdown';
 import { toast } from 'sonner';
 import { cn } from '../../../shared/lib/cn';
+import { Button } from '../../../shared/components/Button';
 import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 // ---------------------------------------------------------------------------
@@ -302,19 +303,18 @@ export function GenerateSavePanel({
       </div>
 
       <div className="flex items-center gap-2 pt-1">
-        <button
+        <Button
+          type="button"
+          variant="primary"
+          size="md"
           onClick={handleSave}
           disabled={isSaving || !title.trim() || !spaceKey}
-          className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          isLoading={isSaving}
+          leftIcon={<Save size={14} />}
           data-testid="generate-save-button"
         >
-          {isSaving ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Save size={14} />
-          )}
           {isSaving ? 'Saving...' : isLocalSpace ? 'Save Locally' : 'Save to Confluence'}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -566,16 +566,17 @@ function GenerateModeInputContent() {
             // composer wider than a narrow viewport.
             className="min-w-0 grow basis-40 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
           />
-          <button
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
             onClick={handleSubmit}
             disabled={isStreaming || attachments.isBusy || !input.trim() || !model}
+            isLoading={isStreaming}
             aria-label={isStreaming ? 'Sending...' : 'Send message'}
-            // self-end keeps Send on the last line of a grown prompt instead of
-            // floating it in the middle of the text block.
-            className="shrink-0 self-end flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
-          >
-            {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-          </button>
+            className="shrink-0 self-end h-8 px-3"
+            leftIcon={<Send size={14} />}
+          />
         </div>
       </div>
     </>

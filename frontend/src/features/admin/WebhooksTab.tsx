@@ -41,6 +41,7 @@ import { WEBHOOK_EVENT_TYPES } from '@compendiq/contracts';
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 
 // ── Local fetch helper ─────────────────────────────────────────────────────
 // We bypass `apiFetch` for the same reason as IpAllowlistTab: the backend
@@ -201,15 +202,14 @@ function WebhooksTabInner() {
             receiver must verify it before trusting the payload.
           </p>
         </div>
-        <button
-          type="button"
+        <Button
           onClick={() => setModal({ kind: 'create' })}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          variant="secondary"
+          leftIcon={<Plus size={15} />}
           data-testid="webhooks-new-btn"
         >
-          <Plus size={14} />
           New webhook
-        </button>
+        </Button>
       </div>
 
       {/* Non-dismissible notice about signing */}
@@ -801,26 +801,26 @@ function CreateEditDialog({
       </div>
 
       <div className="mt-5 flex items-center justify-end gap-2 border-t border-border pt-4">
-        <button
-          type="button"
+        <Button
           onClick={onClose}
-          className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+          variant="ghost"
+          size="sm"
         >
           Cancel
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
           onClick={() => {
             setInlineError(null);
             mutation.mutate();
           }}
           disabled={!canSubmit || mutation.isPending}
-          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={mutation.isPending}
+          variant="primary"
+          size="sm"
           data-testid="webhook-save-btn"
         >
-          {mutation.isPending && <Loader2 size={14} className="animate-spin" />}
           {mode === 'create' ? 'Create' : 'Save'}
-        </button>
+        </Button>
       </div>
     </DialogShell>
   );
@@ -955,27 +955,27 @@ function RotateSecretDialog({
       </div>
 
       <div className="mt-5 flex items-center justify-end gap-2 border-t border-border pt-4">
-        <button
-          type="button"
+        <Button
           onClick={onClose}
-          className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+          variant="ghost"
+          size="sm"
         >
           {result ? 'Done' : 'Cancel'}
-        </button>
+        </Button>
         {!result && (
-          <button
-            type="button"
+          <Button
             onClick={() => {
               setError(null);
               mutation.mutate();
             }}
             disabled={!canSubmit || mutation.isPending}
-            className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+            isLoading={mutation.isPending}
+            variant="primary"
+            size="sm"
             data-testid="webhook-rotate-submit-btn"
           >
-            {mutation.isPending && <Loader2 size={14} className="animate-spin" />}
             Rotate secret
-          </button>
+          </Button>
         )}
       </div>
     </DialogShell>
@@ -1101,31 +1101,28 @@ function TestDeliveryDialog({ subscription, onClose }: TestDialogProps) {
       </div>
 
       <div className="mt-5 flex items-center justify-end gap-2 border-t border-border pt-4">
-        <button
-          type="button"
+        <Button
           onClick={onClose}
-          className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+          variant="ghost"
+          size="sm"
         >
           Close
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
           onClick={() => {
             setResult(null);
             setError(null);
             mutation.mutate();
           }}
           disabled={!eventType || mutation.isPending}
-          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={mutation.isPending}
+          variant="primary"
+          size="sm"
+          leftIcon={!mutation.isPending ? <TestTube2 size={14} /> : undefined}
           data-testid="webhook-test-submit-btn"
         >
-          {mutation.isPending ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <TestTube2 size={14} />
-          )}
           Send test
-        </button>
+        </Button>
       </div>
     </DialogShell>
   );

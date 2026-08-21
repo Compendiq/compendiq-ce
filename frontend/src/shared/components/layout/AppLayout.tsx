@@ -560,7 +560,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             to="/"
             aria-label="Compendiq home"
             data-testid="header-chassis-slot"
-            className="flex items-center rounded-md transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex items-center md:ml-2 rounded-md transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Logo className="h-6 w-auto text-foreground" title="Compendiq" />
           </Link>

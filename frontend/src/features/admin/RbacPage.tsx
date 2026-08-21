@@ -4,11 +4,12 @@ import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
   Shield, Users, FolderOpen, Plus, Trash2,
-  UserPlus, Loader2, Lock, ShieldCheck, Pencil,
+  UserPlus, Lock, ShieldCheck, Pencil,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { neutralChipInk } from '../../shared/components/badges/neutral-chip';
+import { Button, IconButton } from '../../shared/components/Button';
 import { useAuthStore } from '../../stores/auth-store';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { CustomRoleEditor } from './CustomRoleEditor';
@@ -232,14 +233,14 @@ function RolesTab() {
     return (
       <div className="space-y-3">
         {advancedRbac && (
-          <button
+          <Button
             onClick={handleCreate}
-            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            variant="secondary"
+            leftIcon={<Plus size={15} />}
             data-testid="create-custom-role-btn"
           >
-            <Plus size={16} />
             Create Custom Role
-          </button>
+          </Button>
         )}
         <div className="nm-card py-12 text-center text-sm text-muted-foreground">
           No roles configured
@@ -258,14 +259,14 @@ function RolesTab() {
   return (
     <div className="space-y-3" data-testid="roles-list">
       {advancedRbac && (
-        <button
+        <Button
           onClick={handleCreate}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          variant="secondary"
+          leftIcon={<Plus size={15} />}
           data-testid="create-custom-role-btn"
         >
-          <Plus size={16} />
           Create Custom Role
-        </button>
+        </Button>
       )}
       {roles.map((role, i) => (
         <m.div
@@ -287,14 +288,14 @@ function RolesTab() {
               </span>
             )}
             {!role.isSystem && advancedRbac && (
-              <button
+              <IconButton
                 onClick={() => handleEdit(role)}
-                className="rounded p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                variant="ghost"
+                size="sm"
+                icon={<Pencil size={13} />}
                 aria-label={`Edit ${role.displayName}`}
                 data-testid={`edit-role-${role.id}`}
-              >
-                <Pencil size={14} />
-              </button>
+              />
             )}
           </div>
           <div className="mt-2 flex flex-wrap gap-1">
@@ -376,14 +377,14 @@ function GroupsTab() {
     <div className="space-y-4" data-testid="groups-list">
       {/* Create group button */}
       {!showCreateForm ? (
-        <button
+        <Button
           onClick={() => setShowCreateForm(true)}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          variant="secondary"
+          leftIcon={<Plus size={15} />}
           data-testid="create-group-btn"
         >
-          <Plus size={16} />
           New Group
-        </button>
+        </Button>
       ) : (
         <div className="nm-card p-4 space-y-3" data-testid="create-group-form">
           <input
@@ -404,21 +405,23 @@ function GroupsTab() {
             data-testid="group-desc-input"
           />
           <div className="flex gap-2">
-            <button
+            <Button
               onClick={handleCreateGroup}
               disabled={!newGroupName.trim() || createMutation.isPending}
-              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              isLoading={createMutation.isPending}
+              variant="primary"
+              size="sm"
               data-testid="submit-group"
             >
-              {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}
               Create
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={() => setShowCreateForm(false)}
-              className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+              variant="ghost"
+              size="sm"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -452,24 +455,26 @@ function GroupsTab() {
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <button
+                <Button
                   onClick={() => setExpandedGroupId(
                     expandedGroupId === group.id ? null : group.id,
                   )}
-                  className="flex items-center gap-1 rounded-md bg-foreground/5 px-2 py-1 text-xs hover:bg-foreground/10"
+                  variant="ghost"
+                  size="sm"
+                  leftIcon={<UserPlus size={13} />}
                   data-testid={`toggle-members-${group.id}`}
                 >
-                  <UserPlus size={12} />
                   {expandedGroupId === group.id ? 'Hide' : 'Members'}
-                </button>
-                <button
+                </Button>
+                <IconButton
                   onClick={() => deleteMutation.mutate(group.id)}
                   disabled={deleteMutation.isPending}
-                  className="flex items-center gap-1 rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive hover:bg-destructive/20 disabled:opacity-50"
+                  variant="destructive-ghost"
+                  size="sm"
+                  icon={<Trash2 size={13} />}
+                  aria-label={`Delete ${group.name}`}
                   data-testid={`delete-group-${group.id}`}
-                >
-                  <Trash2 size={12} />
-                </button>
+                />
               </div>
             </div>
 
@@ -490,14 +495,16 @@ function GroupsTab() {
                         <option key={u.id} value={u.id}>{u.username}</option>
                       ))}
                   </select>
-                  <button
+                  <Button
                     onClick={() => handleAddMember(group.id)}
                     disabled={!selectedUserId || addMemberMutation.isPending}
-                    className="rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+                    isLoading={addMemberMutation.isPending}
+                    variant="secondary"
+                    size="sm"
                     data-testid={`add-member-btn-${group.id}`}
                   >
                     Add
-                  </button>
+                  </Button>
                 </div>
 
                 {/* Member list */}
@@ -592,14 +599,14 @@ function SpacePermissionsTab() {
         <div className="space-y-4">
           {/* Add assignment button */}
           {!showAssignForm ? (
-            <button
+            <Button
               onClick={() => setShowAssignForm(true)}
-              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              variant="secondary"
+              leftIcon={<Plus size={15} />}
               data-testid="add-assignment-btn"
             >
-              <Plus size={16} />
               Assign Role
-            </button>
+            </Button>
           ) : (
             <div className="nm-card p-4 space-y-3" data-testid="assign-role-form">
               <div className="grid grid-cols-3 gap-3">
@@ -647,21 +654,23 @@ function SpacePermissionsTab() {
                 </div>
               </div>
               <div className="flex gap-2">
-                <button
+                <Button
                   onClick={handleAssign}
                   disabled={!principalId || !roleId || assignMutation.isPending}
-                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+                  isLoading={assignMutation.isPending}
+                  variant="primary"
+                  size="sm"
                   data-testid="submit-assignment"
                 >
-                  {assignMutation.isPending && <Loader2 size={14} className="animate-spin" />}
                   Assign
-                </button>
-                <button
+                </Button>
+                <Button
                   onClick={() => setShowAssignForm(false)}
-                  className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+                  variant="ghost"
+                  size="sm"
                 >
                   Cancel
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -696,15 +705,15 @@ function SpacePermissionsTab() {
                       <td className="px-4 py-2.5">{assignment.principalName ?? assignment.principalId}</td>
                       <td className="px-4 py-2.5 text-muted-foreground">{assignment.roleDisplayName}</td>
                       <td className="px-4 py-2.5">
-                        <button
+                        <IconButton
                           onClick={() => removeMutation.mutate({ spaceKey: selectedSpace, assignmentId: assignment.id })}
                           disabled={removeMutation.isPending}
-                          className="rounded-md p-1 text-destructive/70 hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                          variant="destructive-ghost"
+                          size="sm"
+                          icon={<Trash2 size={13} />}
                           aria-label="Remove assignment"
                           data-testid={`remove-assignment-${assignment.id}`}
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        />
                       </td>
                     </tr>
                   ))}

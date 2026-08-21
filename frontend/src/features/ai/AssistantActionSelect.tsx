@@ -3,14 +3,12 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
   BookOpen,
   Check,
-  ChevronDown,
   ClipboardList,
   FileCode2,
   FilePlus2,
   GitBranch,
   ListPlus,
   ListTree,
-  MessageSquare,
   ScanText,
   ShieldAlert,
   SpellCheck2,
@@ -25,6 +23,8 @@ import {
 } from './improvement-types';
 import { CREATE_SKILLS, type CreateSkillId } from './create-skills';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
+import { SkillsIcon } from '../../shared/components/SkillsIcon';
 
 export type CreateSkillAction = 'create-spec' | 'create-guide' | 'create-notes' | 'create-postmortem' | 'create-custom';
 export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate' | CreateSkillAction;
@@ -33,7 +33,7 @@ interface ActionDefinition {
   id: AssistantAction;
   label: string;
   description: string;
-  Icon: LucideIcon;
+  Icon: LucideIcon | typeof SkillsIcon;
 }
 
 const IMPROVEMENT_ICONS: Record<ImprovementType, LucideIcon> = {
@@ -56,7 +56,7 @@ const CHAT_ACTION: ActionDefinition = {
   id: 'ask',
   label: 'Q&A',
   description: 'Ask your synced knowledge base',
-  Icon: MessageSquare,
+  Icon: SkillsIcon,
 };
 
 const IMPROVEMENT_ACTIONS: ActionDefinition[] = IMPROVEMENT_TYPES.map((type) => ({
@@ -134,9 +134,9 @@ function ActionItem({ action, selected, onSelect }: {
     <DropdownMenu.Item
       onSelect={() => onSelect(action.id)}
       className={cn(
-        'flex cursor-default select-none items-start gap-2.5 rounded-md px-2.5 py-2 outline-none',
-        'data-[highlighted]:bg-foreground/[0.06] data-[highlighted]:text-foreground',
-        selected && 'bg-foreground/[0.06]',
+        'flex cursor-pointer select-none items-start gap-2.5 rounded-md px-2.5 py-2 outline-none text-foreground transition-colors',
+        'data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground',
+        selected && 'bg-accent/60 font-medium',
       )}
       data-testid={`assistant-action-${action.id}`}
     >
@@ -178,22 +178,21 @@ export function AssistantActionSelect({
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="icon"
           disabled={disabled}
           aria-label={`Selected action: ${current.label}`}
           title={`Selected action: ${current.label}`}
           className={cn(
-            'flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs font-medium text-foreground',
-            'transition-colors hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+            'h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground',
             className,
           )}
           data-testid="assistant-action-select"
         >
-          <Icon size={14} className="text-muted-foreground" aria-hidden />
-          <span>{current.label}</span>
-          <ChevronDown size={12} className="text-muted-foreground" aria-hidden />
-        </button>
+          <Icon size={16} aria-hidden />
+          <span className="sr-only">{current.label}</span>
+        </Button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content

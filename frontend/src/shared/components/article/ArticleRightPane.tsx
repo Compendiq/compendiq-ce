@@ -32,6 +32,7 @@ import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
+import { Button } from '../Button';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { getShortcutHint, formatKeysForPlatform } from '../../lib/shortcut-registry';
 import { isMac as detectMac } from '../../lib/platform';
@@ -1755,51 +1756,63 @@ export function ArticleRightPane({
 
               {/* Re-sync from Confluence — only for Confluence-sourced articles.
                   Locally-authored pages have no upstream to pull from. */}
-              {page.confluenceId && (
-                <button
+              {page?.confluenceId && (
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={handleResync}
                   disabled={resyncMutation.isPending}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+                  className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
                   title="Re-sync from Confluence"
                   data-testid="article-resync-btn"
+                  leftIcon={
+                    <RefreshCw
+                      size={15}
+                      className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
+                    />
+                  }
                 >
-                  <RefreshCw
-                    size={15}
-                    className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
-                  />
                   <span className="truncate">Re-sync</span>
-                </button>
+                </Button>
               )}
 
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={handleReembed}
                 disabled={reembedMutation.isPending}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+                className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
                 title="Re-embed for search"
                 data-testid="article-reembed-btn"
+                leftIcon={
+                  reembedMutation.isPending ? (
+                    <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                  ) : (
+                    <Cpu size={15} className="shrink-0 opacity-70" />
+                  )
+                }
               >
-                {reembedMutation.isPending ? (
-                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-                ) : (
-                  <Cpu size={15} className="shrink-0 opacity-70" />
-                )}
                 <span className="truncate">Re-embed</span>
-              </button>
+              </Button>
 
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={handleRequality}
                 disabled={requalityMutation.isPending}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+                className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
                 title="Re-check quality"
                 data-testid="article-requality-btn"
+                leftIcon={
+                  requalityMutation.isPending ? (
+                    <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                  ) : (
+                    <Gauge size={15} className="shrink-0 opacity-70" />
+                  )
+                }
               >
-                {requalityMutation.isPending ? (
-                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-                ) : (
-                  <Gauge size={15} className="shrink-0 opacity-70" />
-                )}
                 <span className="truncate">Re-check Quality</span>
-              </button>
+              </Button>
             </div>
           </details>
 
@@ -1812,14 +1825,16 @@ export function ArticleRightPane({
               />
               Danger zone
             </summary>
-            <button
+            <Button
+              variant="destructive-ghost"
+              size="sm"
               onClick={handleDelete}
-              className="nm-action-destructive mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm"
+              className="nm-action-destructive mt-0.5 w-full justify-start gap-2"
               title={`Move to trash (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
+              leftIcon={<Trash2 size={15} className="shrink-0 opacity-70" />}
             >
-              <Trash2 size={15} className="shrink-0 opacity-70" />
               <span className="truncate">Move to trash</span>
-            </button>
+            </Button>
           </details>
         </div>
       )}
