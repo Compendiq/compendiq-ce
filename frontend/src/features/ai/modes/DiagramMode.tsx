@@ -6,6 +6,7 @@ import { AssistantActionSelect } from '../AssistantActionSelect';
 import { MermaidDiagram } from '../../../shared/components/diagrams/MermaidDiagram';
 import { cn } from '../../../shared/lib/cn';
 import { apiFetch } from '../../../shared/lib/api';
+import { Button } from '../../../shared/components/Button';
 import { toast } from 'sonner';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
 import { useArticleViewStore } from '../../../stores/article-view-store';
@@ -109,19 +110,18 @@ export function DiagramPreview() {
       <MermaidDiagram code={diagramCode} className="mt-4" />
       {page && pageId && (
         <div className="mt-2 space-y-1.5">
-          <button
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
             onClick={handleInsertDiagram}
             disabled={isInsertingDiagram || editing}
-            title={editing ? 'Save or cancel editing to insert diagram' : 'Insert diagram into page'}
-            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            data-testid="diagram-insert-button"
+            isLoading={isInsertingDiagram}
+            leftIcon={<FileInput size={14} />}
+            data-testid="diagram-insert-btn"
           >
-            {isInsertingDiagram ? (
-              <><Loader2 size={14} className="animate-spin" /> Inserting...</>
-            ) : (
-              <><FileInput size={14} /> Use in page</>
-            )}
-          </button>
+            Use in page
+          </Button>
           {editing && (
             <p className="text-xs text-muted-foreground" data-testid="diagram-editing-notice">
               Save or cancel editing to insert this diagram into the page.
@@ -212,17 +212,20 @@ function DiagramModeInputContent() {
           className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
           data-testid="diagram-instruction"
         />
-      <button
-        type="button"
-        onClick={() => void handleDiagram()}
-        disabled={isStreaming || !page || !model}
-        aria-label={isStreaming ? 'Processing diagram' : 'Generate Diagram'}
-        className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-        data-testid="diagram-send"
-      >
-        {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-        <span className="sr-only">Generate Diagram</span>
-      </button>
+        <Button
+          type="button"
+          variant="primary"
+          size="sm"
+          onClick={() => void handleDiagram()}
+          disabled={isStreaming || !page || !model}
+          isLoading={isStreaming}
+          aria-label={isStreaming ? 'Processing diagram' : 'Generate Diagram'}
+          className="shrink-0 self-end h-8 px-2.5"
+          leftIcon={<Send size={14} />}
+          data-testid="diagram-send"
+        >
+          <span className="sr-only">Generate Diagram</span>
+        </Button>
       </div>
     </div>
   );

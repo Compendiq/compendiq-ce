@@ -6,6 +6,7 @@ import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { SpaceHomePicker } from './SpaceHomePicker';
+import { Button, IconButton } from '../../shared/components/Button';
 
 interface AvailableSpace {
   key: string;
@@ -126,18 +127,16 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
         <p className="text-sm text-muted-foreground">
           Select which Confluence spaces to sync and monitor.
         </p>
-        <button
+        <Button
           onClick={() => fetchSpaces()}
           disabled={loadingAvailable}
-          className="nm-button-ghost px-3 py-1.5"
+          isLoading={loadingAvailable}
+          variant="secondary"
+          size="sm"
+          leftIcon={!loadingAvailable ? <RefreshCw size={14} /> : undefined}
         >
-          {loadingAvailable ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <RefreshCw size={14} />
-          )}
           Fetch Spaces
-        </button>
+        </Button>
       </div>
 
       {/* Show space home content toggle */}
@@ -221,16 +220,15 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
                 )}
                 {/* #721: Remove action — only shown for synced spaces. */}
                 {space.lastSynced && (
-                  <button
-                    type="button"
+                  <IconButton
                     onClick={(e) => { e.stopPropagation(); handleRemoveSpace(space.key, space.name); }}
                     disabled={removeSpace.isPending}
-                    aria-label={`Remove ${space.name}`}
-                    className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    variant="destructive-ghost"
+                    size="icon-sm"
+                    label={`Remove ${space.name}`}
                     title="Remove this space and its synced pages"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                    icon={<Trash2 size={14} />}
+                  />
                 )}
               </div>
             );
@@ -245,24 +243,23 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
       {/* Actions */}
       <div className="flex items-center gap-3">
         {/* #721: Save enabled at zero — admin may intentionally clear all spaces. */}
-        <button
+        <Button
           onClick={handleSave}
-          className="nm-button-primary"
+          variant="primary"
+          size="sm"
         >
           Save Selection ({selected.size})
-        </button>
-        <button
+        </Button>
+        <Button
           onClick={() => syncMutation.mutate()}
           disabled={selected.size === 0 || syncMutation.isPending}
-          className="nm-button-ghost"
+          isLoading={syncMutation.isPending}
+          variant="secondary"
+          size="sm"
+          leftIcon={!syncMutation.isPending ? <RefreshCw size={14} /> : undefined}
         >
-          {syncMutation.isPending ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <RefreshCw size={14} />
-          )}
           Sync Selected
-        </button>
+        </Button>
       </div>
 
       {/* #721 remove confirmation. Copy mirrors the backend reality

@@ -26,6 +26,7 @@ import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
 import { useClickOutside } from '../../hooks/use-click-outside';
 import { useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
+import { Button, IconButton } from '../Button';
 import { PageIcon } from '../page-icon/PageIcon';
 import type { PageTreeItem } from '../../hooks/use-pages';
 import type { TreeNode } from './sidebar-types';
@@ -823,8 +824,7 @@ export function SidebarTreeView({
             </span>
           </div>
 
-          <button
-            type="button"
+          <IconButton
             onClick={() => {
               navigate('/trash');
               onNavigate?.();
@@ -833,13 +833,12 @@ export function SidebarTreeView({
               'nm-icon-button mb-2 mt-auto shrink-0',
               location.pathname === '/trash' && 'nav-selection',
             )}
-            aria-label="Trash"
+            label="Trash"
             aria-current={location.pathname === '/trash' ? 'page' : undefined}
             title="Trash (G then T)"
-            data-testid="sidebar-trash-collapsed"
-          >
-            <Trash2 size={15} aria-hidden="true" />
-          </button>
+            testid="sidebar-trash-collapsed"
+            icon={<Trash2 size={15} aria-hidden="true" />}
+          />
 
         </m.aside>
       </AnimatePresence>
@@ -1264,14 +1263,17 @@ export function SidebarTreeView({
                 ? treeError.message
                 : 'The request did not complete. Your pages are still there.'}
             </p>
-            <button
+            <Button
               onClick={() => refetchTree()}
               disabled={isFetchingTree}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:opacity-40"
+              isLoading={isFetchingTree}
+              variant="secondary"
+              size="sm"
+              leftIcon={!isFetchingTree ? <RefreshCw size={12} aria-hidden="true" /> : undefined}
+              className="mt-3"
             >
-              <RefreshCw size={12} className={cn(isFetchingTree && 'animate-spin')} aria-hidden="true" />
               {isFetchingTree ? 'Retrying' : 'Try again'}
-            </button>
+            </Button>
           </div>
         ) : tree.length === 0 ? (
           <div className="flex flex-col items-center px-3 py-8 text-center">
@@ -1285,13 +1287,15 @@ export function SidebarTreeView({
               {treeSidebarSpaceKey ? 'This space has no content.' : 'Sync a Confluence space to get started.'}
             </p>
             {!treeSidebarSpaceKey && (
-              <button
+              <Button
                 onClick={() => navigate('/settings')}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action hover:bg-action hover:text-action-foreground transition-colors"
+                variant="secondary"
+                size="sm"
+                leftIcon={<Plus size={12} />}
+                className="mt-3"
               >
-                <Plus size={12} />
                 Sync a Space
-              </button>
+              </Button>
             )}
           </div>
         ) : isLocalSpace ? (
@@ -1347,22 +1351,23 @@ export function SidebarTreeView({
             ? `${treeData.total} ${treeData.total === 1 ? 'page' : 'pages'}${treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}`
             : ''}
         </span>
-        <button
-          type="button"
+        <Button
           onClick={() => {
             navigate('/trash');
             onNavigate?.();
           }}
+          variant="ghost"
+          size="sm"
           className={cn(
-            'nm-button-ghost h-7 shrink-0 px-2 text-xs text-muted-foreground',
+            'h-7 shrink-0 px-2 text-xs text-muted-foreground',
             location.pathname === '/trash' && 'nav-selection text-foreground',
           )}
           aria-current={location.pathname === '/trash' ? 'page' : undefined}
+          leftIcon={<Trash2 size={13} aria-hidden="true" />}
           data-testid="sidebar-trash"
         >
-          <Trash2 size={13} aria-hidden="true" />
           Trash
-        </button>
+        </Button>
       </div>
 
       {/* Resize handle */}

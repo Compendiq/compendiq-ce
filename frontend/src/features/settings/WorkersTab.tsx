@@ -6,6 +6,7 @@ import { m, useReducedMotion } from 'framer-motion';
 import { apiFetch } from '../../shared/lib/api';
 import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
+import { Button } from '../../shared/components/Button';
 import { cn } from '../../shared/lib/cn';
 
 // ---------------------------------------------------------------------------
@@ -251,37 +252,43 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
           {status && <StatusBadge state={workerState} />}
         </div>
         <div className="flex items-center gap-1.5">
-          <button
+          <Button
             onClick={() => runNow.mutate()}
             disabled={runNow.isPending}
-            className="inline-flex items-center gap-1 rounded-lg border border-action bg-transparent px-2.5 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+            isLoading={runNow.isPending}
+            variant="secondary"
+            size="sm"
+            leftIcon={!runNow.isPending ? <Play size={12} /> : undefined}
             title="Process pending items now"
             data-testid={`${statusKey}-run-now`}
           >
-            {runNow.isPending ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
             Run Now
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={() => setConfirmRescanOpen(true)}
             disabled={rescan.isPending}
-            className="flex items-center gap-1 rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-foreground/10 transition-colors disabled:opacity-50"
+            isLoading={rescan.isPending}
+            variant="ghost"
+            size="sm"
+            leftIcon={!rescan.isPending ? <RotateCcw size={12} /> : undefined}
             title="Reset all pages to re-process"
             data-testid={`${statusKey}-rescan`}
           >
-            {rescan.isPending ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
             Rescan All
-          </button>
+          </Button>
           {hasResetFailed && status && status.failed > 0 && (
-            <button
+            <Button
               onClick={() => resetFailed.mutate()}
               disabled={resetFailed.isPending}
-              className="flex items-center gap-1 rounded-lg bg-destructive/10 px-2.5 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 transition-colors disabled:opacity-50"
+              isLoading={resetFailed.isPending}
+              variant="destructive-ghost"
+              size="sm"
+              leftIcon={!resetFailed.isPending ? <RotateCcw size={12} /> : undefined}
               title="Retry failed items"
               data-testid={`${statusKey}-retry-failed`}
             >
-              {resetFailed.isPending ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
               Retry Failed
-            </button>
+            </Button>
           )}
         </div>
       </div>

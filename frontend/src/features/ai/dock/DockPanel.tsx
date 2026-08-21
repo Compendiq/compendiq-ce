@@ -20,6 +20,7 @@ import { useDockActions } from './use-dock-actions';
 import { AssistantActionSelect, resolveAssistantAction } from '../AssistantActionSelect';
 import { CREATE_SKILLS, getCreateSkill, type CreateSkillId } from '../create-skills';
 import { cn } from '../../../shared/lib/cn';
+import { Button } from '../../../shared/components/Button';
 
 // This filter helps native file pickers offer the full attachment surface. It
 // does not decide what is accepted: `useAttachments` routes and validates the
@@ -501,19 +502,22 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             data-testid="ai-dock-input"
           />
           {isStreaming ? (
-            <button
+            <Button
               type="button"
+              variant="destructive-ghost"
+              size="sm"
               onClick={() => abortRef.current?.abort()}
               aria-label="Stop response"
               title="Stop response"
-              className="flex shrink-0 self-end items-center rounded-md border border-destructive/70 bg-destructive/10 px-2.5 py-1.5 text-sm font-medium text-destructive transition-all hover:bg-destructive/20 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="shrink-0 self-end h-8 px-2.5"
               data-testid="ai-dock-stop"
-            >
-              <Square size={13} className="fill-current" aria-hidden />
-            </button>
+              leftIcon={<Square size={13} className="fill-current" aria-hidden />}
+            />
           ) : (
-            <button
+            <Button
               type="button"
+              variant="primary"
+              size="sm"
               onClick={() => void sendSelectedAction()}
               disabled={
                 !model
@@ -523,11 +527,10 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                 || (selectedAction !== 'diagram' && isBusy)
               }
               aria-label={`Send with ${selectedAction}`}
-              className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-all hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              className="shrink-0 self-end h-8 px-2.5"
               data-testid="ai-dock-send"
-            >
-              <Send size={14} aria-hidden />
-            </button>
+              leftIcon={<Send size={14} aria-hidden />}
+            />
           )}
         </div>
       </div>

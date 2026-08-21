@@ -36,6 +36,7 @@ import type {
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 
 // Local fetch helper — same shape as BulkUserImportModal so the 404-on-
@@ -345,17 +346,15 @@ function UserBulkActionDialogInner({
             )}
 
             <div className="flex justify-end gap-2 border-t border-border pt-4">
-              <button
-                type="button"
+              <Button
                 onClick={handleClose}
-                className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5"
+                variant="secondary"
                 data-testid="bulk-action-cancel"
                 disabled={submitMutation.isPending}
               >
                 Cancel
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
                 onClick={() => {
                   setErrorMessage(null);
                   setIsMissingOverlay(false);
@@ -365,14 +364,12 @@ function UserBulkActionDialogInner({
                   });
                 }}
                 disabled={submitDisabled}
-                className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+                isLoading={submitMutation.isPending}
+                variant="primary"
                 data-testid="bulk-action-submit"
               >
-                {submitMutation.isPending && (
-                  <Loader2 size={14} className="animate-spin" />
-                )}
                 Apply
-              </button>
+              </Button>
             </div>
           </div>
         </Dialog.Content>

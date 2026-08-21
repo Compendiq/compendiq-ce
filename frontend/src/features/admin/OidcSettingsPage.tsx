@@ -10,6 +10,7 @@ import type { LicenseInfoResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { neutralChipInk } from '../../shared/components/badges/neutral-chip';
+import { Button, IconButton } from '../../shared/components/Button';
 import { checkRedirectUriOrigin } from './oidc-redirect-uri';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -246,19 +247,16 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
               data-testid="oidc-issuer-url"
               disabled={disabled}
             />
-            <button
+            <Button
               onClick={handleTest}
               disabled={disabled || !issuerUrl || testMutation.isPending}
-              className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-3 py-2 text-sm hover:bg-foreground/10 disabled:opacity-50"
+              isLoading={testMutation.isPending}
+              variant="secondary"
+              leftIcon={!testMutation.isPending ? <TestTube2 size={14} /> : undefined}
               data-testid="oidc-test-btn"
             >
-              {testMutation.isPending ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <TestTube2 size={14} />
-              )}
               Test
-            </button>
+            </Button>
           </div>
           {testResult && (
             <m.div
@@ -425,15 +423,15 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
           />
           Enable SSO
         </label>
-        <button
+        <Button
           onClick={handleSave}
           disabled={disabled || saveMutation.isPending}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={saveMutation.isPending}
+          variant="primary"
           data-testid="oidc-save-btn"
         >
-          {saveMutation.isPending && <Loader2 size={14} className="animate-spin" />}
           Save Configuration
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -506,15 +504,15 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
 
       {/* Create mapping */}
       {!showForm ? (
-        <button
+        <Button
           onClick={() => setShowForm(true)}
           disabled={disabled}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          variant="secondary"
+          leftIcon={<Plus size={15} />}
           data-testid="create-mapping-btn"
         >
-          <Plus size={16} />
           New Mapping
-        </button>
+        </Button>
       ) : (
         <m.div
           initial={{ opacity: 0, y: -8 }}
@@ -570,21 +568,23 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
             </div>
           </div>
           <div className="flex gap-2">
-            <button
+            <Button
               onClick={handleCreate}
               disabled={!oidcGroup.trim() || !roleId || createMutation.isPending}
-              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              isLoading={createMutation.isPending}
+              variant="primary"
+              size="sm"
               data-testid="submit-mapping"
             >
-              {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}
               Create
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={() => setShowForm(false)}
-              className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+              variant="ghost"
+              size="sm"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </m.div>
       )}
@@ -627,15 +627,15 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
                     {mapping.spaceKey ?? '(global)'}
                   </td>
                   <td className="px-4 py-2.5">
-                    <button
+                    <IconButton
                       onClick={() => deleteMutation.mutate(mapping.id)}
                       disabled={disabled || deleteMutation.isPending}
-                      className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                      variant="destructive-ghost"
+                      size="sm"
+                      icon={<Trash2 size={13} />}
                       aria-label={`Delete mapping for ${mapping.oidcGroup}`}
                       data-testid={`delete-mapping-${mapping.id}`}
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    />
                   </td>
                 </m.tr>
               ))}

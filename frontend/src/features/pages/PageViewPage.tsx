@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, X, Save, ThumbsUp, ThumbsDown, AlertTriangle, RefreshCw } from 'lucide-react';
+import { FileText, X, Save, ThumbsUp, ThumbsDown, AlertTriangle, RefreshCw, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   usePage,
@@ -42,6 +42,7 @@ import { TagPopover } from '../../shared/components/TagPopover';
 import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
+import { Button, IconButton } from '../../shared/components/Button';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
 
@@ -699,14 +700,15 @@ export function PageViewPage() {
             ? pageError.message
             : 'The request did not complete. This page is still there — try again.'}
         </p>
-        <button
+        <Button
           onClick={() => refetchPage()}
           disabled={isRefetchingPage}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
+          isLoading={isRefetchingPage}
+          variant="secondary"
+          leftIcon={!isRefetchingPage ? <RefreshCw size={14} aria-hidden="true" /> : undefined}
         >
-          <RefreshCw size={14} className={cn(isRefetchingPage && 'animate-spin')} aria-hidden="true" />
           {isRefetchingPage ? 'Retrying' : 'Try again'}
-        </button>
+        </Button>
       </div>
     );
   }
@@ -719,12 +721,12 @@ export function PageViewPage() {
         <p className="max-w-md text-sm text-muted-foreground">
           The selected page is unavailable or no longer accessible in the synced space tree.
         </p>
-        <button
+        <Button
           onClick={() => navigate('/')}
-          className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          variant="secondary"
         >
           Return to pages
-        </button>
+        </Button>
       </div>
     );
   }
@@ -741,30 +743,29 @@ export function PageViewPage() {
   );
   const sessionActions = (
     <>
-      <button
-        type="button"
+      <IconButton
         onClick={handleCancelEditing}
         title="Cancel editing (Esc)"
-        aria-label="Cancel"
+        label="Cancel"
+        variant="destructive-ghost"
+        size="icon-sm"
         className="nm-icon-button nm-action-destructive shrink-0"
-        data-testid="cancel-edit-btn"
-      >
-        <X size={15} aria-hidden="true" />
-      </button>
-      <button
+        testid="cancel-edit-btn"
+        icon={<X size={15} aria-hidden="true" />}
+      />
+      <Button
         onClick={handleSave}
         disabled={updateMutation.isPending}
+        isLoading={updateMutation.isPending}
         title="Save changes (Ctrl+S)"
+        variant="primary"
+        size="sm"
+        leftIcon={!updateMutation.isPending ? <Save size={15} aria-hidden="true" /> : undefined}
         className="nm-button-primary shrink-0"
         data-testid="save-page-btn"
       >
-        {updateMutation.isPending ? (
-          <span className="animate-spin text-xs" aria-hidden="true">…</span>
-        ) : (
-          <Save size={15} aria-hidden="true" />
-        )}
         {updateMutation.isPending ? 'Saving…' : 'Save'}
-      </button>
+      </Button>
     </>
   );
 
@@ -838,10 +839,11 @@ export function PageViewPage() {
                     <button
                       type="button"
                       onClick={handleStartEditing}
-                      className="nm-button-ghost h-8 shrink-0 px-2.5 text-xs"
+                      className="nm-button-ghost inline-flex h-8 shrink-0 items-center gap-1.5 px-2.5 text-xs"
                       data-testid="edit-page-btn"
                     >
-                      Edit
+                      <Pencil size={13} aria-hidden />
+                      <span>Edit</span>
                       <ShortcutHint shortcutId="toggle-edit" />
                     </button>
                   </div>
@@ -921,14 +923,13 @@ export function PageViewPage() {
             <div className="flex flex-col items-center gap-4 py-12 text-center">
               <FileText size={48} className="text-muted-foreground/30" />
               <p className="text-muted-foreground">This page has no content yet.</p>
-              <button
-                type="button"
+              <Button
                 onClick={handleStartEditing}
-                className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                variant="primary"
                 data-testid="add-content-btn"
               >
                 Add content
-              </button>
+              </Button>
             </div>
           </div>
         ) : (

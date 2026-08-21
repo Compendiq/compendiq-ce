@@ -7,6 +7,7 @@ import { PanelHeader } from '../settings/PanelHeader';
 import type { LicenseInfoResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 
 function useLicenseStatus() {
   return useQuery<LicenseInfoResponse>({
@@ -282,33 +283,27 @@ export function LicenseStatusCard() {
             Paste the full license key including the signature after the dot. Stored securely in the backend database.
           </p>
           <div className="mt-3 flex items-center gap-2">
-            <button
+            <Button
               onClick={handleSave}
               disabled={!keyInput.trim() || saveMutation.isPending || clearMutation.isPending}
-              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              isLoading={saveMutation.isPending}
+              variant="primary"
+              leftIcon={!saveMutation.isPending ? <Save size={14} /> : undefined}
               data-testid="license-key-save-btn"
             >
-              {saveMutation.isPending ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Save size={14} />
-              )}
               Save Key
-            </button>
+            </Button>
             {hasStoredKey && (
-              <button
+              <Button
                 onClick={() => clearMutation.mutate()}
                 disabled={saveMutation.isPending || clearMutation.isPending}
-                className="flex items-center gap-2 rounded-lg border border-border bg-transparent px-4 py-2 text-sm text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                isLoading={clearMutation.isPending}
+                variant="destructive-ghost"
+                leftIcon={!clearMutation.isPending ? <Trash2 size={14} /> : undefined}
                 data-testid="license-key-clear-btn"
               >
-                {clearMutation.isPending ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Trash2 size={14} />
-                )}
                 Clear
-              </button>
+              </Button>
             )}
           </div>
         </div>

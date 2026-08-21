@@ -21,6 +21,7 @@ import { toast } from 'sonner';
 import { Check, Loader2, X } from 'lucide-react';
 import { DiffView } from '../../shared/components/article/DiffView';
 import { fetchJson } from '../../shared/lib/fetch-json';
+import { Button } from '../../shared/components/Button';
 import type { SyncConflict } from './SyncConflictsPage';
 
 interface ResolveBody {
@@ -102,36 +103,36 @@ export function SyncConflictResolveDialog({ conflict, onClose, onResolved }: Pro
             />
           </div>
 
-          <div className="flex items-center justify-end gap-2 border-t border-border p-4">
-            <button
-              type="button"
+          {/* Footer actions */}
+          <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
+            <Button
               onClick={onClose}
               disabled={isPending}
-              className="rounded-md border border-border px-4 py-2 text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
+              variant="ghost"
               data-testid="sync-conflict-resolve-cancel-btn"
             >
               Cancel
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
               onClick={() => resolveMutation.mutate({ resolution: 'local' })}
               disabled={isPending}
-              className="flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+              isLoading={isPending}
+              variant="secondary"
+              leftIcon={!isPending ? <Check size={14} /> : undefined}
               data-testid="sync-conflict-resolve-keep-local-btn"
             >
-              {isPending ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
               Keep local
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
               onClick={() => resolveMutation.mutate({ resolution: 'remote' })}
               disabled={isPending}
-              className="inline-flex items-center gap-1.5 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              isLoading={isPending}
+              variant="primary"
+              leftIcon={!isPending ? <Check size={14} /> : undefined}
               data-testid="sync-conflict-resolve-take-remote-btn"
             >
-              {isPending ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
               Take Confluence
-            </button>
+            </Button>
           </div>
         </Dialog.Content>
       </Dialog.Portal>

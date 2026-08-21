@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { cn } from '../../../shared/lib/cn';
+import { Button, IconButton } from '../../../shared/components/Button';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
 import { buildDocumentReferenceText } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
@@ -310,18 +311,16 @@ function AskModeInputContent() {
           testIdPrefix="ask-image"
         />
         {mcpEnabled && (
-          <button
+          <IconButton
+            variant={showUrlInput || externalUrls.length > 0 ? 'secondary' : 'ghost'}
+            size="icon-sm"
             onClick={() => setShowUrlInput(!showUrlInput)}
             title="Attach external documentation URL"
-            className={`shrink-0 self-end rounded-md p-1.5 transition-colors ${
-              showUrlInput || externalUrls.length > 0
-                ? 'bg-primary/15 text-primary-ink'
-                : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
-            }`}
-            data-testid="attach-url-button"
-          >
-            <Link2 size={16} />
-          </button>
+            label="Attach external documentation URL"
+            className={cn('shrink-0 self-end h-8 w-8', (showUrlInput || externalUrls.length > 0) && 'bg-primary/15 text-primary')}
+            testid="attach-url-button"
+            icon={<Link2 size={16} />}
+          />
         )}
         <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
         <textarea
@@ -341,16 +340,17 @@ function AskModeInputContent() {
           className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
           data-testid="ask-input"
         />
-        <button
+        <Button
+          type="button"
+          variant="primary"
+          size="sm"
           onClick={handleSubmit}
           disabled={isStreaming || isBusy || !input.trim() || !model}
+          isLoading={isStreaming}
           aria-label={isStreaming ? 'Sending...' : 'Send message'}
-          // self-end keeps Send on the last line of a grown prompt instead of
-          // floating it in the middle of the text block.
-          className="shrink-0 self-end flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
-        >
-          {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-        </button>
+          className="shrink-0 self-end h-8 px-3"
+          leftIcon={<Send size={14} />}
+        />
       </div>
     </div>
   );

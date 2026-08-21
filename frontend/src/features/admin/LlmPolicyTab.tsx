@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 
@@ -195,15 +196,16 @@ export function LlmPolicyTab() {
 
       {/* Save button */}
       <div className="flex items-center justify-end border-t border-border pt-4">
-        <button
+        <Button
           onClick={handleSave}
           disabled={saveMutation.isPending}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={saveMutation.isPending}
+          variant="primary"
+          leftIcon={!saveMutation.isPending ? <Save size={15} /> : undefined}
           data-testid="llm-policy-save-btn"
         >
-          {saveMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
           Save Policy
-        </button>
+        </Button>
       </div>
     </div>
   );

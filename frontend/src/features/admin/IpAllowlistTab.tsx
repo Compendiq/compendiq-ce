@@ -21,6 +21,7 @@ import type {
 } from '@compendiq/contracts';
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -464,20 +465,16 @@ export function IpAllowlistTab() {
               }
             }}
           />
-          <button
-            type="button"
+          <Button
             onClick={handleTest}
             disabled={testMutation.isPending || !testIp.trim()}
-            className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-3 py-2 text-sm hover:bg-foreground/10 disabled:opacity-50"
+            isLoading={testMutation.isPending}
+            variant="secondary"
+            leftIcon={!testMutation.isPending ? <TestTube2 size={14} /> : undefined}
             data-testid="ip-allowlist-test-btn"
           >
-            {testMutation.isPending ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <TestTube2 size={14} />
-            )}
             Test
-          </button>
+          </Button>
         </div>
         {testInvalidIp && (
           <div className="text-xs text-destructive" data-testid="ip-allowlist-test-invalid">
@@ -530,22 +527,18 @@ export function IpAllowlistTab() {
         <div className="text-xs text-muted-foreground">
           {dirty ? 'You have unsaved changes.' : 'No unsaved changes.'}
         </div>
-        <button
-          type="button"
+        <Button
           onClick={handleSave}
           disabled={!saveEnabled || saveMutation.isPending}
+          isLoading={saveMutation.isPending}
+          variant="primary"
+          leftIcon={!saveMutation.isPending ? <Save size={15} /> : undefined}
           title={saveDisabledReason || undefined}
           aria-label="Save IP allowlist configuration"
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="ip-allowlist-save-btn"
         >
-          {saveMutation.isPending ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Save size={14} />
-          )}
           Save
-        </button>
+        </Button>
       </div>
 
       {putError?.kind === 'other' && (

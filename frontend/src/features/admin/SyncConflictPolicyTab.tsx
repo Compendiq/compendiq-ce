@@ -34,6 +34,7 @@ import {
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 
 export type SyncConflictPolicy =
   | 'confluence-wins'
@@ -275,20 +276,16 @@ function SyncConflictPolicyTabInner() {
         <div className="text-xs text-muted-foreground">
           {dirty ? 'You have unsaved changes.' : 'No unsaved changes.'}
         </div>
-        <button
-          type="button"
+        <Button
           onClick={handleSave}
           disabled={!dirty || saveMutation.isPending || is404}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={saveMutation.isPending}
+          variant="primary"
+          leftIcon={!saveMutation.isPending ? <Save size={15} /> : undefined}
           data-testid="sync-conflict-policy-save-btn"
         >
-          {saveMutation.isPending ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Save size={14} />
-          )}
           Save policy
-        </button>
+        </Button>
       </div>
     </m.div>
   );

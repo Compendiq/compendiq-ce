@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, X } from 'lucide-react';
 import { cn } from '../../lib/cn';
+import { Button } from '../Button';
 
 interface CommentFormProps {
   /** Called with the comment body text when the user submits */
@@ -55,25 +56,27 @@ export function CommentForm({
       />
       <div className="flex items-center justify-end gap-2">
         {onCancel && (
-          <button
-            type="button"
+          <Button
             onClick={onCancel}
-            className="flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-foreground/5 transition-colors"
+            variant="ghost"
+            size="sm"
+            leftIcon={<X size={14} />}
             data-testid="comment-cancel"
           >
-            <X size={14} />
             Cancel
-          </button>
+          </Button>
         )}
-        <button
+        <Button
           type="submit"
           disabled={!body.trim() || isSubmitting}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={isSubmitting}
+          variant="primary"
+          size="sm"
+          leftIcon={!isSubmitting ? <Send size={14} /> : undefined}
           data-testid="comment-submit"
         >
-          <Send size={14} />
           {isSubmitting ? 'Posting...' : 'Post'}
-        </button>
+        </Button>
       </div>
     </form>
   );

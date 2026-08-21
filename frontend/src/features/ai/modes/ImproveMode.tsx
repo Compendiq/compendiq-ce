@@ -10,6 +10,7 @@ import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUp
 import { ImageAttachZone } from '../../../shared/components/upload/ImageAttachZone';
 import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { toast } from 'sonner';
+import { Button } from '../../../shared/components/Button';
 import { AssistantActionSelect } from '../AssistantActionSelect';
 import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
@@ -287,10 +288,13 @@ function ImproveModeInputContent() {
           // narrow viewport.
           className="min-w-0 grow basis-40 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
         />
-        <button
+        <Button
           type="button"
+          variant="primary"
+          size="sm"
           onClick={() => void handleImprove()}
           disabled={isStreaming || !page || isPageLoading || !model || attachments.isBusy}
+          isLoading={isStreaming || isPageLoading}
           aria-label={isStreaming
             ? 'Processing improvement'
             : isPageLoading
@@ -298,14 +302,14 @@ function ImproveModeInputContent() {
               : !model
                 ? 'Loading models...'
                 : `Improve Page with ${improvementType}`}
-          className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          className="shrink-0 self-end h-8 px-2.5"
+          leftIcon={<Send size={14} />}
           data-testid="improve-send"
         >
-          {isStreaming || isPageLoading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
           <span className="sr-only">
             {isPageLoading ? 'Loading page...' : !model ? 'Loading models...' : 'Improve Page'}
           </span>
-        </button>
+        </Button>
       </div>
       {mcpEnabled && (
         <label className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="improve-search-web-toggle">

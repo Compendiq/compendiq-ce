@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { RefreshCw, Database, Gauge, Trash2, X, Loader2 } from 'lucide-react';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
+import { Button } from '../../shared/components/Button';
 import { useBulkPageAction, type BulkAction } from '../../shared/hooks/use-bulk-page-actions';
 
 interface BulkActionBarProps {
@@ -60,51 +61,59 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
         </span>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
+          <Button
             type="button"
             onClick={() => run('embed')}
             disabled={bulk.isPending}
-            className="nm-button-ghost h-8 gap-1.5 px-2.5 text-sm disabled:opacity-50"
+            variant="ghost"
+            size="sm"
+            className="nm-button-ghost"
+            leftIcon={<Database size={14} aria-hidden="true" />}
             data-testid="bulk-embed-btn"
           >
-            <Database size={14} aria-hidden="true" />
             Re-embed
-          </button>
+          </Button>
 
           {confluenceCount > 0 && (
-            <button
+            <Button
               type="button"
               onClick={() => run('sync')}
               disabled={bulk.isPending}
-              className="nm-button-ghost h-8 gap-1.5 px-2.5 text-sm disabled:opacity-50"
+              variant="ghost"
+              size="sm"
+              className="nm-button-ghost"
+              leftIcon={<RefreshCw size={14} aria-hidden="true" />}
               data-testid="bulk-sync-btn"
             >
-              <RefreshCw size={14} aria-hidden="true" />
               Re-sync {confluenceCount < count && `(${confluenceCount})`}
-            </button>
+            </Button>
           )}
 
-          <button
+          <Button
             type="button"
             onClick={() => run('quality')}
             disabled={bulk.isPending}
-            className="nm-button-ghost h-8 gap-1.5 px-2.5 text-sm disabled:opacity-50"
+            variant="ghost"
+            size="sm"
+            className="nm-button-ghost"
+            leftIcon={<Gauge size={14} aria-hidden="true" />}
             data-testid="bulk-quality-btn"
           >
-            <Gauge size={14} aria-hidden="true" />
             Re-analyze quality
-          </button>
+          </Button>
 
-          <button
+          <Button
             type="button"
             onClick={() => setPendingDelete(true)}
             disabled={bulk.isPending}
-            className="nm-action-destructive inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm"
+            variant="destructive-ghost"
+            size="sm"
+            className="nm-action-destructive"
+            leftIcon={<Trash2 size={14} aria-hidden="true" />}
             data-testid="bulk-delete-btn"
           >
-            <Trash2 size={14} aria-hidden="true" />
             Move to trash
-          </button>
+          </Button>
         </div>
 
         {bulk.isPending && (
@@ -114,15 +123,17 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
           </span>
         )}
 
-        <button
+        <Button
           type="button"
           onClick={onClear}
-          className="nm-button-ghost ml-auto h-8 gap-1.5 px-2.5 text-sm"
+          variant="ghost"
+          size="sm"
+          className="nm-button-ghost ml-auto"
+          leftIcon={<X size={14} aria-hidden="true" />}
           data-testid="bulk-clear-btn"
         >
-          <X size={14} aria-hidden="true" />
           Clear selection
-        </button>
+        </Button>
       </div>
 
       {/* Matches the single-page delete dialog's wording: name the action, the

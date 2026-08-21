@@ -611,10 +611,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 :root {
   --app-inset: 0px;
   --app-header-height: 2.75rem;
-  /* Pages / AI / Graph chassis column: 10px wider than the header band (54px
-     at the compact 44px header), giving the labelled destinations 3px of
-     breathing room outside their 40px controls after the rail's padding. */
-  --app-nav-rail-width: calc(var(--app-header-height) + 10px);
+  /* Pages / AI / Graph chassis column: 20px wider than the header band (64px
+     at the compact 44px header), giving the labelled destinations breathing
+     room outside their controls after the rail's padding. */
+  --app-nav-rail-width: calc(var(--app-header-height) + 20px);
   --app-shell-radius: 0px;
   --app-shell-border-width: 0px;
   --app-rail-gap: 0px;
@@ -742,9 +742,6 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   border: 1px solid var(--color-border);
 }
 
-/* A selected destination is a quiet steel field, not an inverted slab.
-   The 1px edge remains visible in forced-colors mode, while the icon and
-   label retain a non-color cue through weight and position. */
 /* A selected destination is a quiet neutral fill with full-strength ink — the
    workspace convention, and the one that survives a long sidebar. The retired
    system tinted the fill AND the label with the accent, which made ten list
@@ -753,10 +750,9 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    survives forced-colors mode — and it was `--color-border`, the quiet
    separator hairline, not `--color-border-interactive` (the ≥3:1 token this
    file elsewhere reserves for anything operable). A selected row in a nav
-   list IS an operable, currently-focused destination in every surface this
-   utility reaches (both page trees, the settings sidebar, the article
-   inspector's Outline/Details lists, the collapsed rail's active pill), so it
-   was failing 1.4.11 everywhere it appeared, not just here. */
+   list IS an operable, currently-focused destination in every tree/list surface
+   this utility reaches (both page trees, the settings sidebar, the article
+   inspector's Outline/Details lists), so it was failing 1.4.11 everywhere it appeared. */
 @utility nav-selection {
   color: var(--color-foreground);
   font-weight: 500;
@@ -1113,11 +1109,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      action next to it. */
   padding: 0.375rem 0.75rem;
   border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-interactive);
-  /* Secondary actions stay part of the surrounding toolbar until hover.
-     Their real border preserves the operable boundary and forced-colors
-     behavior; removing the permanent fill keeps a row of actions from
-     reading as a row of miniature cards. */
+  border: 1px solid transparent;
   background: transparent;
   color: var(--color-foreground);
   font-size: 0.8125rem;

@@ -4,6 +4,7 @@ import { Pencil, Trash2, Plus, GripVertical } from 'lucide-react';
 import { DrawioEditor } from '../diagrams/DrawioEditor';
 import { useAuthenticatedSrc } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
+import { Button, IconButton } from '../Button';
 import type { NodeViewProps } from '@tiptap/react';
 
 /**
@@ -113,25 +114,28 @@ export function DrawioDiagramNodeView({ node, updateAttributes, deleteNode, edit
         {/* Hover overlay with edit/delete buttons */}
         {isEditable && hasImage && (
           <div className="drawio-nodeview__overlay">
-            <button
+            <Button
               type="button"
+              variant="primary"
+              size="sm"
               className="drawio-nodeview__btn drawio-nodeview__btn--edit"
               onClick={handleEdit}
               title="Edit diagram"
+              leftIcon={<Pencil size={14} />}
               data-testid="drawio-edit-btn"
             >
-              <Pencil size={14} />
               <span>Edit</span>
-            </button>
-            <button
-              type="button"
+            </Button>
+            <IconButton
+              variant="destructive-ghost"
+              size="icon-sm"
               className="drawio-nodeview__btn drawio-nodeview__btn--delete"
               onClick={handleDelete}
               title="Delete diagram"
-              data-testid="drawio-delete-btn"
-            >
-              <Trash2 size={14} />
-            </button>
+              label="Delete diagram"
+              testid="drawio-delete-btn"
+              icon={<Trash2 size={14} />}
+            />
           </div>
         )}
 

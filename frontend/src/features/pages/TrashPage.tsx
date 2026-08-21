@@ -4,6 +4,7 @@ import { ArrowLeft, RotateCcw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTrash, useRestorePage } from '../../shared/hooks/use-standalone';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
+import { Button, IconButton } from '../../shared/components/Button';
 
 export function TrashPage() {
   const navigate = useNavigate();
@@ -29,9 +30,7 @@ export function TrashPage() {
   return (
     <div className="space-y-6">
       <HeaderHost fallbackClassName="flex items-center gap-3">
-        <button onClick={() => navigate('/')} aria-label="Back to Pages" className="nm-icon-button">
-          <ArrowLeft size={18} />
-        </button>
+        <IconButton onClick={() => navigate('/')} label="Back to Pages" icon={<ArrowLeft size={18} />} />
         <h1 className="text-[15px] font-semibold sm:text-lg">Trash</h1>
       </HeaderHost>
       <p className="text-sm text-muted-foreground">
@@ -74,14 +73,17 @@ export function TrashPage() {
                   </div>
                 </div>
                 <div className="flex shrink-0 gap-2">
-                  <button
+                  <Button
                     onClick={() => handleRestore(item.id)}
                     disabled={restoreMutation.isPending}
-                    className="flex items-center gap-1.5 rounded-lg bg-success/10 px-3 py-1.5 text-sm text-success transition-colors hover:bg-success/20 disabled:opacity-50"
+                    isLoading={restoreMutation.isPending}
+                    variant="secondary"
+                    size="sm"
+                    leftIcon={!restoreMutation.isPending ? <RotateCcw size={14} /> : undefined}
                     data-testid={`restore-btn-${item.id}`}
                   >
-                    <RotateCcw size={14} /> Restore
-                  </button>
+                    Restore
+                  </Button>
                 </div>
               </div>
             </m.div>
