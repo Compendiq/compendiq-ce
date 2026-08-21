@@ -943,6 +943,17 @@ export function PagesPage() {
     } else if (e.key === ' ' || e.key === 'Spacebar') {
       e.preventDefault();
       toggleSelect(id, e.shiftKey);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setFocusedSearchRowIndex(0);
+      const firstEl = document.querySelector<HTMLButtonElement>('[data-search-row-index="0"] button[type="button"]');
+      firstEl?.focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      const lastIndex = total - 1;
+      setFocusedSearchRowIndex(lastIndex);
+      const lastEl = document.querySelector<HTMLButtonElement>(`[data-search-row-index="${lastIndex}"] button[type="button"]`);
+      lastEl?.focus();
     }
   }, [currentAddressableItems, selectedIds, toggleSelect]);
 

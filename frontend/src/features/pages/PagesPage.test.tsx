@@ -2926,5 +2926,20 @@ describe('PagesPage filter persistence (#1124)', () => {
       fireEvent.keyDown(searchInput, { key: 'Enter' });
       expect(document.activeElement).toBe(firstRowBtn);
     });
+
+    it('supports Home and End keys in browse rows', async () => {
+      mockFetchWithPages(makeManyPages(4));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const firstRowBtn = screen.getByTestId('page-row-button-page-1');
+      const lastRowBtn = screen.getByTestId('page-row-button-page-4');
+
+      fireEvent.keyDown(firstRowBtn, { key: 'End' });
+      expect(lastRowBtn).toHaveAttribute('tabIndex', '0');
+
+      fireEvent.keyDown(lastRowBtn, { key: 'Home' });
+      expect(firstRowBtn).toHaveAttribute('tabIndex', '0');
+    });
   });
 });
