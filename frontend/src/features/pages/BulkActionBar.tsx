@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { m } from 'framer-motion';
 import { RefreshCw, Database, Gauge, Trash2, X, Loader2 } from 'lucide-react';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button } from '../../shared/components/Button';
@@ -21,6 +22,7 @@ interface BulkActionBarProps {
  * Appears once at least one page is selected. Four bulk endpoints existed on
  * the backend with no way to reach them from the UI; this is that way.
  *
+ * Floating bottom dock keeps actions accessible wherever the user scrolls.
  * Re-sync is hidden rather than disabled when nothing selected is
  * Confluence-sourced: a permanently greyed control on a local-only knowledge
  * base is noise, not information.
@@ -48,19 +50,24 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
   return (
     <>
       {liveRegion}
-      <div
+      <m.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.15, ease: 'easeOut' }}
         role="region"
         aria-label={`Actions for ${count} selected ${noun}`}
-        className="flex flex-wrap items-center gap-2 py-1"
+        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 nm-card-elevated flex flex-wrap items-center gap-2.5 rounded-xl px-4 py-2 shadow-lg max-w-[calc(100vw-2rem)]"
         data-testid="bulk-action-bar"
       >
         {/* Visible copy of the count. Not itself the live region — announcing
             is `liveRegion`'s job, and marking both would say it twice. */}
-        <span className="text-sm font-medium" data-testid="bulk-selection-count">
+        <span className="text-sm font-medium shrink-0" data-testid="bulk-selection-count">
           {count} {noun} selected
         </span>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <span aria-hidden="true" className="h-4 w-px bg-border shrink-0" />
+
+        <div className="flex flex-wrap items-center gap-1.5">
           <Button
             type="button"
             onClick={() => run('embed')}
@@ -134,7 +141,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
         >
           Clear selection
         </Button>
-      </div>
+      </m.div>
 
       {/* Matches the single-page delete dialog's wording: name the action, the
           reversibility window, and the terminal consequence. */}

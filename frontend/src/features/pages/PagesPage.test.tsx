@@ -297,7 +297,7 @@ describe('PagesPage', () => {
     expect(screen.getByLabelText(FIND_LABEL)).toBeInTheDocument();
     expect(screen.getByTestId('advanced-filters-toggle')).toBeInTheDocument();
     expect(screen.getByTestId('library-filter-panel')).not.toHaveClass('bg-background', 'border');
-    expect(screen.getByTestId('page-search-field')).toHaveClass('mx-auto', 'w-full', 'max-w-5xl');
+    expect(screen.getByTestId('page-search-field')).toHaveClass('w-full', 'library-search-surface');
   });
 
   it('frames browse results as one table-like work surface', async () => {
@@ -554,9 +554,7 @@ describe('PagesPage', () => {
 
     const surface = screen.getByTestId('page-search-field');
     expect(surface).toHaveClass(
-      'mx-auto',
       'w-full',
-      'max-w-5xl',
       'library-search-surface',
       'rounded-xl',
       'flex-col',
@@ -2866,6 +2864,32 @@ describe('PagesPage filter persistence (#1124)', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(300); });
 
       expect(probe()).not.toContain('search=');
+    });
+  });
+
+  describe('Keyboard roving navigation and floating bulk dock', () => {
+    it('supports arrow navigation and space selection across virtualized page rows', async () => {
+      mockFetchWithPages(makeManyPages(3));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const firstRowBtn = screen.getByTestId('page-row-button-page-1');
+      const secondRowBtn = screen.getByTestId('page-row-button-page-2');
+
+      // Initial roving tabindex: row 0 has tabIndex=0, row 1 has tabIndex=-1
+      expect(firstRowBtn).toHaveAttribute('tabIndex', '0');
+      expect(secondRowBtn).toHaveAttribute('tabIndex', '-1');
+
+      // ArrowDown moves roving tabIndex to row 1
+      fireEvent.keyDown(firstRowBtn, { key: 'ArrowDown' });
+      expect(secondRowBtn).toHaveAttribute('tabIndex', '0');
+
+      // Space on row button toggles selection
+      fireEvent.keyDown(secondRowBtn, { key: ' ' });
+      const bulkBar = await screen.findByTestId('bulk-action-bar');
+      expect(bulkBar).toBeInTheDocument();
+      expect(bulkBar).toHaveClass('fixed', 'bottom-6', 'nm-card-elevated');
+      expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('1 page selected');
     });
   });
 });

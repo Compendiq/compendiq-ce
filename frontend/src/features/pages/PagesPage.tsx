@@ -122,12 +122,16 @@ interface PageListItemProps {
   onNavigate: (id: string) => void;
   selected?: boolean;
   onToggleSelect?: (id: string, shiftKey: boolean) => void;
+  tabIndex?: number;
+  onKeyDown?: (e: React.KeyboardEvent<HTMLButtonElement>) => void;
+  onFocus?: () => void;
 }
 
 const PageListItem = memo(function PageListItem({
   pageItem, index: _index, onNavigate, selected = false, onToggleSelect,
   showSource = false, showVisibility = false, showQuality = false,
   showIdleEmbedding = false, selectionArmed = false, spaceName = null,
+  tabIndex = 0, onKeyDown, onFocus,
 }: PageListItemProps) {
   return (
     <m.div
@@ -154,6 +158,7 @@ const PageListItem = memo(function PageListItem({
           <input
             type="checkbox"
             checked={selected}
+            tabIndex={-1}
             // Shift-click extends from the last toggled row, the convention in
             // every file list users already know.
             onClick={(e) => onToggleSelect(pageItem.id, e.shiftKey)}
@@ -172,14 +177,19 @@ const PageListItem = memo(function PageListItem({
           />
         )}
         <button
+          type="button"
           onClick={() => onNavigate(pageItem.id)}
+          tabIndex={tabIndex}
+          onKeyDown={onKeyDown}
+          onFocus={onFocus}
+          data-testid={`page-row-button-${pageItem.id}`}
           // Below `sm` the button may wrap, and `basis-auto` on the title
           // block makes the wrap content-driven: `flex-1`'s basis of 0 never
           // triggers a line break, so with `auto` a block whose content fits
           // keeps today's single line, and only an overflowing one drops the
           // pipeline badge below the block instead of compressing it. At
           // `sm+` the max-sm classes are inert and the layout is untouched.
-          className="flex min-w-0 flex-1 items-center gap-4 max-sm:flex-wrap max-sm:gap-y-1"
+          className="nm-focus-ring flex min-w-0 flex-1 items-center gap-4 text-left max-sm:flex-wrap max-sm:gap-y-1 rounded-sm"
         >
           <div className="min-w-0 flex-1 text-left max-sm:basis-auto">
             {/* Title line. Every badge beside the title is `shrink-0`, so the
@@ -333,6 +343,9 @@ const PageListItem = memo(function PageListItem({
   if (prev.showIdleEmbedding !== next.showIdleEmbedding) return false;
   if (prev.selectionArmed !== next.selectionArmed) return false;
   if (prev.spaceName !== next.spaceName) return false;
+  if (prev.tabIndex !== next.tabIndex) return false;
+  if (prev.onKeyDown !== next.onKeyDown) return false;
+  if (prev.onFocus !== next.onFocus) return false;
   return true;
 });
 
@@ -723,10 +736,15 @@ export function PagesPage() {
   // `?? []` fallback would otherwise mint a new array every render and break
   // the memoisation of every selection callback that depends on it.
   const pageItems = useMemo(() => pagesData?.items ?? [], [pagesData?.items]);
-  const showSourceBadges = useMemo(
-    () => new Set(pageItems.map((p) => p.source)).size > 1,
-    [pageItems],
-  );
+  const showSourceBadges = useMemo(() => {
+    // If the library contains mixed sources across spaces/corpus (e.g. Confluence spaces exist and there are standalone pages,
+    // or the current page slice has mixed sources), keep source badges visible to ensure stable row layout across pagination.
+    const pageSources = new Set(pageItems.map((p) => p.source));
+    if (pageSources.size > 1) return true;
+    const hasConfluence = (spaces ?? []).some((s) => s.key && s.key !== '__local__') || pageSources.has('confluence');
+    const hasStandalone = (spaces ?? []).some((s) => s.key === '__local__') || pageSources.has('standalone');
+    return hasConfluence && hasStandalone;
+  }, [pageItems, spaces]);
   const showVisibilityBadges = useMemo(() => {
     const vis = new Set(
       pageItems.filter((p) => p.source === 'standalone').map((p) => p.visibility ?? 'private'),
@@ -836,6 +854,71 @@ export function PagesPage() {
     useFlushSync: false, // Required for React 19
   });
 
+  const [focusedRowIndex, setFocusedRowIndex] = useState<number>(0);
+
+  const handleRowKeyDown = useCallback((index: number, id: string, e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIndex = Math.min(pageItems.length - 1, index + 1);
+      setFocusedRowIndex(nextIndex);
+      virtualizer.scrollToIndex(nextIndex);
+      requestAnimationFrame(() => {
+        const nextEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${nextIndex}"] button[type="button"]`);
+        nextEl?.focus();
+      });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIndex = Math.max(0, index - 1);
+      setFocusedRowIndex(prevIndex);
+      virtualizer.scrollToIndex(prevIndex);
+      requestAnimationFrame(() => {
+        const prevEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${prevIndex}"] button[type="button"]`);
+        prevEl?.focus();
+      });
+    } else if (e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      toggleSelect(id, e.shiftKey);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setFocusedRowIndex(0);
+      virtualizer.scrollToIndex(0);
+      requestAnimationFrame(() => {
+        const firstEl = listContainerRef.current?.querySelector<HTMLButtonElement>('[data-row-index="0"] button[type="button"]');
+        firstEl?.focus();
+      });
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      const lastIndex = pageItems.length - 1;
+      setFocusedRowIndex(lastIndex);
+      virtualizer.scrollToIndex(lastIndex);
+      requestAnimationFrame(() => {
+        const lastEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${lastIndex}"] button[type="button"]`);
+        lastEl?.focus();
+      });
+    }
+  }, [pageItems.length, toggleSelect, virtualizer]);
+
+  const [focusedSearchRowIndex, setFocusedSearchRowIndex] = useState<number>(0);
+
+  const handleSearchRowKeyDown = useCallback((index: number, id: string, total: number, e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIndex = Math.min(total - 1, index + 1);
+      setFocusedSearchRowIndex(nextIndex);
+      const nextEl = document.querySelector<HTMLButtonElement>(`[data-search-row-index="${nextIndex}"] button[type="button"]`);
+      nextEl?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIndex = Math.max(0, index - 1);
+      setFocusedSearchRowIndex(prevIndex);
+      const prevEl = document.querySelector<HTMLButtonElement>(`[data-search-row-index="${prevIndex}"] button[type="button"]`);
+      prevEl?.focus();
+    } else if (e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      toggleSelect(id, e.shiftKey);
+    }
+  }, [toggleSelect]);
+
   return (
     // max-w-[1100px], matching the app's 1200px document-column convention:
     // uncapped, a short title's flex-1 block stretched to fill whatever the
@@ -888,7 +971,7 @@ export function PagesPage() {
             leads; the supporting controls stay inside the same surface and
             wrap beneath it on narrow screens without changing DOM order. */}
         <div
-          className="library-search-surface mx-auto flex w-full max-w-5xl flex-col gap-2 rounded-xl p-2.5 sm:flex-row sm:items-center sm:gap-1 sm:p-2"
+          className="library-search-surface flex w-full flex-col gap-2 rounded-xl p-2.5 sm:flex-row sm:items-center sm:gap-1 sm:p-2"
           data-testid="page-search-field"
           role="search"
           aria-label="Library pages"
@@ -1438,9 +1521,9 @@ export function PagesPage() {
                     )}
                   </div>
 
-                  {/* Select-all + bulk actions when selection is armed */}
+                  {/* Select-all when selection is armed */}
                   {selectionArmed && (
-                    <div className="space-y-3 border-b border-border px-3 py-2.5">
+                    <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm text-muted-foreground">
                       <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
                         <input
                           type="checkbox"
@@ -1455,14 +1538,19 @@ export function PagesPage() {
                         />
                         Select all on this page
                       </label>
-
-                      <BulkActionBar
-                        selectedIds={visibleSelectedIds}
-                        confluenceCount={selectedConfluenceCount}
-                        onClear={clearSelection}
-                      />
+                      {visibleSelectedIds.length > 0 && (
+                        <span className="text-xs font-medium text-muted-foreground">
+                          {visibleSelectedIds.length} {visibleSelectedIds.length === 1 ? 'page' : 'pages'} selected
+                        </span>
+                      )}
                     </div>
                   )}
+
+                  <BulkActionBar
+                    selectedIds={visibleSelectedIds}
+                    confluenceCount={selectedConfluenceCount}
+                    onClear={clearSelection}
+                  />
 
                   <div>
                     {displayItems.map((item, i) => {
@@ -1474,6 +1562,7 @@ export function PagesPage() {
                           initial={{ opacity: 0 }}
                           animate={{ opacity: 1 }}
                           transition={{ duration: 0.15, delay: i * 0.02 }}
+                          data-search-row-index={i}
                         >
                           <div
                             className={cn(
@@ -1485,6 +1574,7 @@ export function PagesPage() {
                             <input
                               type="checkbox"
                               checked={isSelected}
+                              tabIndex={-1}
                               onClick={(e) => toggleSelect(itemId, e.shiftKey)}
                               onChange={() => {}}
                               aria-label={`Select ${item.title}`}
@@ -1497,7 +1587,10 @@ export function PagesPage() {
                             <button
                               type="button"
                               onClick={() => navigate(`/pages/${item.id}`)}
-                              className="flex min-w-0 flex-1 items-center gap-3 text-left max-sm:flex-wrap max-sm:gap-y-1"
+                              tabIndex={focusedSearchRowIndex === i ? 0 : -1}
+                              onFocus={() => setFocusedSearchRowIndex(i)}
+                              onKeyDown={(e) => handleSearchRowKeyDown(i, itemId, displayItems.length, e)}
+                              className="nm-focus-ring flex min-w-0 flex-1 items-center gap-3 text-left max-sm:flex-wrap max-sm:gap-y-1 rounded-sm"
                             >
                               <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
                                 <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
@@ -1655,40 +1748,43 @@ export function PagesPage() {
                 />
               </div>
             </div>
-            {/* Select-all + bulk actions. The four /pages/bulk/* endpoints
-                shipped with no UI, so re-embedding a large space meant one
-                row at a time. */}
+            {/* Select-all when selection is armed */}
             {selectionArmed && (
-            <div className="space-y-3 border-b border-border px-3 py-2.5">
-              <label
-                className={cn(
-                  'flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground',
-                  !selectionArmed && 'sr-only',
+              <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm text-muted-foreground">
+                <label
+                  className={cn(
+                    'flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground',
+                    !selectionArmed && 'sr-only',
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    ref={(el) => {
+                      // Partial selection is a third state; without it the box
+                      // reads "nothing selected" while rows plainly are.
+                      if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
+                    }}
+                    onChange={toggleSelectAll}
+                    aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
+                    className="size-4 cursor-pointer accent-[var(--color-action)]"
+                    data-testid="select-all-pages"
+                  />
+                  Select all on this page
+                </label>
+                {visibleSelectedIds.length > 0 && (
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {visibleSelectedIds.length} {visibleSelectedIds.length === 1 ? 'page' : 'pages'} selected
+                  </span>
                 )}
-              >
-                <input
-                  type="checkbox"
-                  checked={allVisibleSelected}
-                  ref={(el) => {
-                    // Partial selection is a third state; without it the box
-                    // reads "nothing selected" while rows plainly are.
-                    if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
-                  }}
-                  onChange={toggleSelectAll}
-                  aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
-                  className="size-4 cursor-pointer accent-[var(--color-action)]"
-                  data-testid="select-all-pages"
-                />
-                Select all on this page
-              </label>
-
-              <BulkActionBar
-                selectedIds={visibleSelectedIds}
-                confluenceCount={selectedConfluenceCount}
-                onClear={clearSelection}
-              />
-            </div>
+              </div>
             )}
+
+            <BulkActionBar
+              selectedIds={visibleSelectedIds}
+              confluenceCount={selectedConfluenceCount}
+              onClear={clearSelection}
+            />
 
             <div
               ref={listContainerRef}
@@ -1702,6 +1798,7 @@ export function PagesPage() {
                   <div
                     key={pageItem.id}
                     data-index={virtualRow.index}
+                    data-row-index={virtualRow.index}
                     ref={virtualizer.measureElement}
                     style={{
                       position: 'absolute',
@@ -1724,6 +1821,9 @@ export function PagesPage() {
                         showIdleEmbedding={showIdleEmbedding}
                         selectionArmed={selectionArmed}
                         spaceName={pageItem.spaceKey ? spaceNameByKey.get(pageItem.spaceKey) ?? null : null}
+                        tabIndex={focusedRowIndex === virtualRow.index ? 0 : -1}
+                        onFocus={() => setFocusedRowIndex(virtualRow.index)}
+                        onKeyDown={(e) => handleRowKeyDown(virtualRow.index, pageItem.id, e)}
                       />
                     </div>
                   </div>

@@ -104,7 +104,7 @@ export function PinnedArticlesSection() {
             transition={{ delay: entranceDelay(staggerPosition(i, isExpanded)) }}
           >
             <div
-              className="group flex w-full items-center gap-2 rounded-lg border border-border/70 bg-card px-2.5 py-2 text-left transition-colors hover:border-border hover:bg-accent focus-within:border-border focus-within:bg-accent"
+              className="group flex min-h-[56px] w-full items-center gap-2 rounded-lg border border-border/70 bg-card px-2.5 py-2 text-left transition-colors hover:border-border hover:bg-accent focus-within:border-border focus-within:bg-accent"
               data-testid={`pinned-card-${item.id}`}
             >
               <Link
