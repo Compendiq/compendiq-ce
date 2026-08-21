@@ -13,7 +13,6 @@ export interface ShortcutDefinition {
   /**
    * Multi-key sequence, e.g. `'g p'`. When set, the shortcut fires only
    * after the full sequence is typed within the timeout window.
-   * Sequences count as single-key shortcuts for WCAG toggle purposes.
    */
   sequence?: string;
   /** Description shown in the shortcuts modal. */
@@ -46,12 +45,6 @@ function isEditableTarget(event: KeyboardEvent): boolean {
 
 interface KeyboardShortcutOptions {
   /**
-   * When false, shortcuts that use a single key (no Ctrl/Cmd/Alt modifier)
-   * are suppressed. Modifier shortcuts always fire regardless.
-   * Defaults to `true` (WCAG 2.1.4 — Character Key Shortcuts).
-   */
-  singleKeyEnabled?: boolean;
-  /**
    * Called when the pending sequence prefix changes.
    * Receives the current prefix key (e.g. `'g'`) or `null` when cleared.
    */
@@ -69,8 +62,6 @@ interface KeyboardShortcutOptions {
  *   ESC does not also trigger the page-level ESC shortcut. Modifier shortcuts
  *   are exempt, on the same reasoning as the editable-element rule above.
  * - Supports both `Ctrl` (Windows/Linux) and `Cmd` (Mac) via the `mod` flag.
- * - When `singleKeyEnabled` is false, single-key shortcuts are suppressed
- *   while modifier shortcuts continue to work (WCAG 2.1.4 compliance).
  */
 export function useKeyboardShortcuts(
   shortcuts: ShortcutDefinition[],
@@ -100,7 +91,6 @@ export function useKeyboardShortcuts(
 
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
     const mac = isMac();
-    const singleKeyEnabled = optionsRef.current?.singleKeyEnabled ?? true;
     const currentShortcuts = shortcutsRef.current;
 
     // ---- Sequence handling (no-modifier, non-editable only) ----
@@ -132,8 +122,6 @@ export function useKeyboardShortcuts(
         clearPendingPrefix();
 
         if (match) {
-          // Sequences respect the singleKeyEnabled toggle
-          if (!singleKeyEnabled) return;
           event.preventDefault();
           match.action();
           return;
@@ -145,7 +133,7 @@ export function useKeyboardShortcuts(
       const isPrefix = currentShortcuts.some(
         (s) => s.sequence && s.sequence.startsWith(key + ' '),
       );
-      if (isPrefix && singleKeyEnabled) {
+      if (isPrefix) {
         // Start a new sequence; suppress any single-key shortcut for this key
         pendingPrefixRef.current = key;
         optionsRef.current?.onSequenceChange?.(key);
@@ -179,25 +167,22 @@ export function useKeyboardShortcuts(
 
       // A shortcut with no modifier is a bare character key, and yields to
       // anything closer to the keystroke. Modifier chords (Ctrl+S, Alt+I) are
-      // app-level and deliberately punch through all three gates below — that
+      // app-level and deliberately punch through both gates below — that
       // is why Ctrl+S still saves while you are typing in the editor.
       //
       // `shiftRequired` counts as a modifier here, which is worth naming
       // because WCAG 2.1.4 would not agree: Shift+/ produces `?`, one
       // character, and the success criterion is about single *characters*, not
       // about how many physical keys are held. This classification is
-      // pre-existing — the `singleKeyEnabled` gate below has always used it —
+      // pre-existing — the single-key gate below has always used it —
       // and it is left alone rather than corrected here so that this change
       // stays about `defaultPrevented`. Nothing currently rides on it either:
       // the app's only `shift: true` shortcut is `Alt+Shift+D`, which requires
       // Alt as well and so is a genuine chord however Shift is counted. A
       // Shift-ONLY shortcut — `?` for help being the obvious candidate — would
-      // be the first to bypass all three gates, and should flip this line to
+      // be the first to bypass both gates, and should flip this line to
       // treat Shift as a bare key rather than be added as-is.
       const singleKey = !modRequired && !altRequired && !shiftRequired;
-
-      // WCAG 2.1.4: suppress single-key shortcuts when the toggle is off
-      if (singleKey && !singleKeyEnabled) continue;
 
       // Suppress non-modifier shortcuts when inside editable elements
       if (singleKey && isEditableTarget(event)) continue;

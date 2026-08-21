@@ -33,16 +33,6 @@ vi.mock('../../../stores/keyboard-shortcuts-store', () => ({
     }),
 }));
 
-const mockSetSingleKeyShortcutsEnabled = vi.fn();
-let mockSingleKeyShortcutsEnabled = true;
-vi.mock('../../../stores/ui-store', () => ({
-  useUiStore: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      singleKeyShortcutsEnabled: mockSingleKeyShortcutsEnabled,
-      setSingleKeyShortcutsEnabled: mockSetSingleKeyShortcutsEnabled,
-    }),
-}));
-
 vi.mock('../../lib/api', () => ({
   logoutApi: (...args: unknown[]) => mockLogoutApi(...args),
 }));
@@ -60,8 +50,6 @@ describe('UserMenu', () => {
     mockLogoutApi.mockClear();
     mockNavigate.mockClear();
     mockOpenShortcuts.mockClear();
-    mockSetSingleKeyShortcutsEnabled.mockClear();
-    mockSingleKeyShortcutsEnabled = true;
     // Default to a non-admin signed-in user; admin tests opt in.
     mockUser = { username: 'testuser' };
   });
@@ -146,23 +134,6 @@ describe('UserMenu', () => {
     });
   });
 
-  it('shows single-key shortcuts toggle in dropdown', async () => {
-    renderUserMenu();
-    const trigger = screen.getByRole('button');
-    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
-    await vi.waitFor(() => {
-      expect(screen.getByText('Single-key shortcuts')).toBeInTheDocument();
-    });
-  });
-
-  it('renders single-key toggle as a switch element', async () => {
-    renderUserMenu();
-    const trigger = screen.getByRole('button');
-    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
-    await vi.waitFor(() => {
-      expect(screen.getByRole('switch', { name: /single-key shortcuts/i })).toBeInTheDocument();
-    });
-  });
 
   it('asks before signing out, and only then calls logoutApi', async () => {
     renderUserMenu();

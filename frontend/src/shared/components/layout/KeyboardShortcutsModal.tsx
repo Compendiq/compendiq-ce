@@ -1,8 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import * as Switch from '@radix-ui/react-switch';
 import { Keyboard, X } from 'lucide-react';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
-import { useUiStore } from '../../../stores/ui-store';
 import { getShortcutsByCategory, getCategoryLabel, formatKeysForPlatform, TIPTAP_SHORTCUTS } from '../../lib/shortcut-registry';
 import { isMac } from '../../lib/platform';
 
@@ -40,8 +38,6 @@ function ShortcutKeysDisplay({ keys }: { keys: string }) {
 export function KeyboardShortcutsModal() {
   const isOpen = useKeyboardShortcutsStore((s) => s.isOpen);
   const close = useKeyboardShortcutsStore((s) => s.close);
-  const singleKeyEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
-  const setSingleKeyEnabled = useUiStore((s) => s.setSingleKeyShortcutsEnabled);
   const categories = getShortcutsByCategory();
 
   return (
@@ -112,26 +108,7 @@ export function KeyboardShortcutsModal() {
           </div>
 
           {/* Footer */}
-          <div className="border-t border-border px-5 py-3 space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <label htmlFor="single-key-toggle" className="text-sm font-medium text-foreground cursor-pointer">
-                  Single-key shortcuts
-                </label>
-                <p className="text-[11px] text-muted-foreground">
-                  Enable shortcuts like <Kbd>,</Kbd> <Kbd>.</Kbd> <Kbd>\</Kbd> and <Kbd>?</Kbd> that use a single key without Ctrl/Alt
-                </p>
-              </div>
-              <Switch.Root
-                id="single-key-toggle"
-                checked={singleKeyEnabled}
-                onCheckedChange={setSingleKeyEnabled}
-                aria-label="Single-key shortcuts"
-                className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 transition-colors data-[state=checked]:bg-action outline-none"
-              >
-                <Switch.Thumb className="block h-4 w-4 translate-x-0.5 rounded-full bg-white transition-transform data-[state=checked]:translate-x-4" />
-              </Switch.Root>
-            </div>
+          <div className="border-t border-border px-5 py-3">
             <p className="text-[11px] text-muted-foreground">
               Shortcuts are disabled when typing in an input, textarea, or the page editor.
             </p>

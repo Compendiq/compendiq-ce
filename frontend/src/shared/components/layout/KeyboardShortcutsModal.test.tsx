@@ -2,12 +2,10 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
-import { useUiStore } from '../../../stores/ui-store';
 
 describe('KeyboardShortcutsModal', () => {
   beforeEach(() => {
     useKeyboardShortcutsStore.setState({ isOpen: false });
-    useUiStore.setState({ singleKeyShortcutsEnabled: true });
   });
 
   it('does not render content when closed', () => {
@@ -75,36 +73,6 @@ describe('KeyboardShortcutsModal', () => {
     expect(screen.getByRole('heading', { name: /Keyboard Shortcuts/ })).toBeInTheDocument();
   });
 
-  it('renders the single-key shortcuts toggle switch', () => {
-    useKeyboardShortcutsStore.setState({ isOpen: true });
-    render(<KeyboardShortcutsModal />);
-
-    const toggle = screen.getByRole('switch', { name: /single-key shortcuts/i });
-    expect(toggle).toBeInTheDocument();
-    // Default is enabled
-    expect(toggle).toHaveAttribute('data-state', 'checked');
-  });
-
-  it('toggles singleKeyShortcutsEnabled in ui-store when switch is clicked', () => {
-    useKeyboardShortcutsStore.setState({ isOpen: true });
-    render(<KeyboardShortcutsModal />);
-
-    const toggle = screen.getByRole('switch', { name: /single-key shortcuts/i });
-    fireEvent.click(toggle);
-    expect(useUiStore.getState().singleKeyShortcutsEnabled).toBe(false);
-
-    fireEvent.click(toggle);
-    expect(useUiStore.getState().singleKeyShortcutsEnabled).toBe(true);
-  });
-
-  it('shows description text for the toggle', () => {
-    useKeyboardShortcutsStore.setState({ isOpen: true });
-    render(<KeyboardShortcutsModal />);
-
-    expect(
-      screen.getByText(/single key without Ctrl\/Alt/i),
-    ).toBeInTheDocument();
-  });
 
   it('renders the TipTap formatting shortcuts section', () => {
     useKeyboardShortcutsStore.setState({ isOpen: true });

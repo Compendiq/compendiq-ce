@@ -97,7 +97,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const toggleArticleSidebar = useUiStore((s) => s.toggleArticleSidebar);
   const setArticleSidebarCollapsed = useUiStore((s) => s.setArticleSidebarCollapsed);
   const setArticleSidebarLaptopExpanded = useUiStore((s) => s.setArticleSidebarLaptopExpanded);
-  const singleKeyShortcutsEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
   const dockOpen = useAiDockStore((s) => s.open);
   const closeDock = useAiDockStore((s) => s.closeDock);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -311,7 +310,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
   useKeyboardShortcuts(
     shortcutsModalOpen ? [] : shortcuts,
-    { singleKeyEnabled: singleKeyShortcutsEnabled, onSequenceChange: setPendingSequence },
+    { onSequenceChange: setPendingSequence },
   );
 
   // Close mobile overlays on navigation

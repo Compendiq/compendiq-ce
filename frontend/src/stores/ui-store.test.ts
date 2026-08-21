@@ -13,24 +13,8 @@ describe('ui-store', () => {
       articleSidebarCollapsed: false,
       articleSidebarLaptopExpanded: false,
       articleSidebarWidth: 360,
-      singleKeyShortcutsEnabled: true,
       vimModeEnabled: false,
     });
-  });
-
-  it('has singleKeyShortcutsEnabled defaulting to true', () => {
-    expect(useUiStore.getState().singleKeyShortcutsEnabled).toBe(true);
-  });
-
-  it('sets singleKeyShortcutsEnabled to false', () => {
-    useUiStore.getState().setSingleKeyShortcutsEnabled(false);
-    expect(useUiStore.getState().singleKeyShortcutsEnabled).toBe(false);
-  });
-
-  it('sets singleKeyShortcutsEnabled back to true', () => {
-    useUiStore.getState().setSingleKeyShortcutsEnabled(false);
-    useUiStore.getState().setSingleKeyShortcutsEnabled(true);
-    expect(useUiStore.getState().singleKeyShortcutsEnabled).toBe(true);
   });
 
   // Vim mode moved here from a permanent editor-toolbar slot: a personal
