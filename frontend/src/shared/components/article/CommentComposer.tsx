@@ -95,7 +95,7 @@ export function CommentComposer({
 
       {/* Actions */}
       <div className="flex items-center justify-between pt-1">
-        <span className="text-[10px] text-muted-foreground">
+        <span className="text-[11px] text-muted-foreground">
           Esc to cancel · ⌘+Enter to save
         </span>
         <div className="flex items-center gap-1.5">

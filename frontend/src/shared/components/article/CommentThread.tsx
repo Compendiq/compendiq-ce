@@ -78,7 +78,7 @@ export function CommentThread({
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       className={cn(
-        'rounded-lg border border-border bg-foreground/[0.02] p-3 transition-shadow',
+        'rounded-lg border border-border bg-foreground/[0.02] p-3 transition-colors',
         isResolved && 'opacity-60',
         isSelected && 'ring-2 ring-primary bg-primary/[0.04]',
       )}

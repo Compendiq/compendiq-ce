@@ -2849,7 +2849,7 @@ span[data-comment-id][data-comment-resolved="true"] {
   }
   100% {
     background-color: rgba(134, 174, 200, 0.22);
-    box-shadow: none;
+    box-shadow: 0 0 0 0px rgba(134, 174, 200, 0);
   }
 }
 
