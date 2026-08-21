@@ -119,8 +119,6 @@ interface PageListItemProps {
   showQuality?: boolean;
   /** When false, hide idle "Not indexed" so an unindexed corpus is not a wall of chips. */
   showIdleEmbedding?: boolean;
-  /** True once any row is selected — row checkboxes stay visible for the rest of the pass. */
-  selectionArmed?: boolean;
   /** Space display name when known; the key is the fallback. */
   spaceName?: string | null;
   pageItem: {
@@ -159,7 +157,7 @@ interface PageListItemProps {
 const PageListItem = memo(function PageListItem({
   pageItem, index: _index, onNavigate, selected = false, onToggleSelect,
   showSource = false, showVisibility = false, showQuality = false,
-  showIdleEmbedding = false, selectionArmed = false, spaceName = null,
+  showIdleEmbedding = false, spaceName = null,
   tabIndex = 0, onKeyDown, onFocus,
 }: PageListItemProps) {
   return (
@@ -173,12 +171,10 @@ const PageListItem = memo(function PageListItem({
           // Same row as the page tree and the pinned strip: no card fill, no
           // hairline around every item. A stacked `bg-card` + `border-border`
           // list is forty tiles; the rail is a scan of titles. Selected is
-          // the pressed recipe (`bg-accent`), not an extra border — that
-          // competed with hover and failed forced-colors without the
-          // transparent 1px that becomes `--color-border-interactive`.
+          // tinted with a subtle Steel accent, while hover stays neutral.
           'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors max-sm:items-start',
           selected
-            ? 'bg-accent'
+            ? 'bg-[color-mix(in_oklab,var(--color-primary)_12%,transparent)] hover:bg-[color-mix(in_oklab,var(--color-primary)_18%,transparent)]'
             : 'hover:bg-accent',
         )}
         data-testid={`article-hover-${pageItem.id}`}
@@ -194,13 +190,13 @@ const PageListItem = memo(function PageListItem({
             onChange={() => { /* click handler owns this; keeps React controlled */ }}
             aria-label={`Select ${pageItem.title}`}
             // The 2px nudge centres the 16px box on the title's ~20px line
-            // when the row top-aligns below `sm`. On pointer devices the box
-            // stays in the tree (keyboard, tests) but recedes until hover,
-            // focus, or an active selection — so the resting scan is titles.
-            // Touch has no hover, so the box stays visible below `sm`.
+            // when the row top-aligns below `sm`. Checkbox is subtly visible at
+            // rest, highlighting on hover/focus, and fully solid when selected.
             className={cn(
-              'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5',
-              !selected && !selectionArmed && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
+              'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5 transition-opacity',
+              selected
+                ? 'opacity-100'
+                : 'opacity-40 hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
             )}
             data-testid={`page-select-${pageItem.id}`}
           />
@@ -381,7 +377,6 @@ const PageListItem = memo(function PageListItem({
   if (prev.showVisibility !== next.showVisibility) return false;
   if (prev.showQuality !== next.showQuality) return false;
   if (prev.showIdleEmbedding !== next.showIdleEmbedding) return false;
-  if (prev.selectionArmed !== next.selectionArmed) return false;
   if (prev.spaceName !== next.spaceName) return false;
   if (prev.tabIndex !== next.tabIndex) return false;
   if (prev.onKeyDown !== next.onKeyDown) return false;
@@ -449,7 +444,6 @@ export function PagesPage() {
   // Bulk selection. Held as a Set of page ids so toggling stays O(1) and the
   // memoised PageListItem only re-renders for rows whose own state changed.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
-  const [selectionMode, setSelectionMode] = useState(false);
   const lastToggledId = useRef<string | null>(null);
 
   // Debounce the search term before it reaches the keyword /pages query.
@@ -792,7 +786,6 @@ export function PagesPage() {
   }, [pageItems]);
   const showQualityBadges = Boolean(qualityFilter);
   const showIdleEmbedding = embeddingStatus === 'pending';
-  const selectionArmed = selectionMode || selectedIds.size > 0;
   const spaceNameByKey = useMemo(() => {
     const map = new Map<string, string>();
     for (const s of spaces ?? []) {
@@ -857,7 +850,6 @@ export function PagesPage() {
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
-    setSelectionMode(false);
     lastToggledId.current = null;
   }, []);
 
@@ -1650,44 +1642,36 @@ export function PagesPage() {
               />
             ) : (
               <>
-                <div data-testid="library-search-results-panel" className="overflow-hidden rounded-lg border border-border bg-background">
-                  <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground" data-testid="search-results-context" aria-live="polite">
-                    <span data-testid="search-results-count">
-                      {searchResults.total} {searchResults.total === 1 ? 'result' : 'results'}
-                      <span className="ml-1.5 text-xs text-muted-foreground/70">({SEARCH_MODE_LABELS[searchMode]})</span>
-                    </span>
-                    {selectedSpace && <><span aria-hidden="true"> · </span><span>{selectedSpace.name}</span></>}
-                    {!selectionArmed && (
-                      <button type="button" onClick={() => setSelectionMode(true)} className="nm-button-ghost h-8 px-2.5 text-xs" data-testid="enter-selection-mode-search">
-                        Select pages
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Select-all when selection is armed */}
-                  {selectionArmed && (
-                    <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm text-muted-foreground">
-                      <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-                        <input
-                          type="checkbox"
-                          checked={allVisibleSelected}
-                          ref={(el) => {
-                            if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
-                          }}
-                          onChange={toggleSelectAll}
-                          aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
-                          className="size-4 cursor-pointer accent-[var(--color-action)]"
-                          data-testid="select-all-search-pages"
-                        />
-                        Select all on this page
-                      </label>
-                      {visibleSelectedIds.length > 0 && (
-                        <span className="text-xs font-medium text-muted-foreground">
-                          {visibleSelectedIds.length} {visibleSelectedIds.length === 1 ? 'page' : 'pages'} selected
-                        </span>
+                <div data-testid="library-search-results-panel" className="overflow-hidden rounded-lg border border-border bg-card">
+                  <div className="panel-toolbar flex flex-wrap items-center gap-3 border-b border-border px-3 py-2 text-xs text-muted-foreground" data-testid="search-results-context" aria-live="polite">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
+                        }}
+                        onChange={toggleSelectAll}
+                        aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
+                        className="size-4 shrink-0 cursor-pointer accent-[var(--color-action)]"
+                        data-testid="select-all-search-pages"
+                      />
+                      <span className="font-medium text-foreground" data-testid="search-results-count">
+                        {visibleSelectedIds.length > 0 ? (
+                          `${visibleSelectedIds.length} of ${currentIds.length} selected`
+                        ) : (
+                          `${searchResults.total} ${searchResults.total === 1 ? 'result' : 'results'}`
+                        )}
+                        <span className="ml-1.5 font-normal text-muted-foreground/70">({SEARCH_MODE_LABELS[searchMode]})</span>
+                      </span>
+                      {selectedSpace && (
+                        <>
+                          <span aria-hidden="true" className="text-muted-foreground/60">·</span>
+                          <span className="truncate">{selectedSpace.name}</span>
+                        </>
                       )}
                     </div>
-                  )}
+                  </div>
 
                   <BulkActionBar
                     selectedIds={visibleSelectedIds}
@@ -1711,7 +1695,9 @@ export function PagesPage() {
                             <div
                               className={cn(
                                 'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 max-sm:items-start',
-                                isSelected ? 'bg-accent' : 'hover:bg-accent',
+                                isSelected
+                                  ? 'bg-[color-mix(in_oklab,var(--color-primary)_12%,transparent)] hover:bg-[color-mix(in_oklab,var(--color-primary)_18%,transparent)]'
+                                  : 'hover:bg-accent',
                               )}
                               data-testid={`article-hover-${item.id}`}
                             >
@@ -1723,8 +1709,10 @@ export function PagesPage() {
                                 onChange={() => {}}
                                 aria-label={`Select ${item.title}`}
                                 className={cn(
-                                  'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5',
-                                  !isSelected && !selectionArmed && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
+                                  'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5 transition-opacity',
+                                  isSelected
+                                    ? 'opacity-100'
+                                    : 'opacity-40 hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
                                 )}
                                 data-testid={`page-select-${item.id}`}
                               />
@@ -1871,15 +1859,37 @@ export function PagesPage() {
             />
           ) : (
             <>
-              <div data-testid="library-results-panel" className="overflow-hidden rounded-lg border border-border bg-background">
-                <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
-                  <span>{pagesData.total} {pagesData.total === 1 ? 'page' : 'pages'}</span>
-                  {selectedSpace && <><span aria-hidden="true"> · </span><span>{selectedSpace.name}</span></>}
-                  {!selectionArmed && (
-                    <button type="button" onClick={() => setSelectionMode(true)} className="nm-button-ghost h-8 px-2.5 text-xs" data-testid="enter-selection-mode">
-                      Select pages
-                    </button>
-                  )}
+              <div data-testid="library-results-panel" className="overflow-hidden rounded-lg border border-border bg-card">
+                <div className="panel-toolbar flex flex-wrap items-center gap-3 border-b border-border px-3 py-2 text-xs text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      ref={(el) => {
+                        // Partial selection is a third state; without it the box
+                        // reads "nothing selected" while rows plainly are.
+                        if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
+                      }}
+                      onChange={toggleSelectAll}
+                      aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
+                      className="size-4 shrink-0 cursor-pointer accent-[var(--color-action)]"
+                      data-testid="select-all-pages"
+                    />
+                    <span className="font-medium text-foreground" data-testid="browse-results-count">
+                      {visibleSelectedIds.length > 0 ? (
+                        `${visibleSelectedIds.length} of ${currentIds.length} selected`
+                      ) : (
+                        `${pagesData.total} ${pagesData.total === 1 ? 'page' : 'pages'}`
+                      )}
+                    </span>
+                    {selectedSpace && (
+                      <>
+                        <span aria-hidden="true" className="text-muted-foreground/60">·</span>
+                        <span className="truncate">{selectedSpace.name}</span>
+                      </>
+                    )}
+                  </div>
+
                   <div className="ml-auto flex items-center gap-1.5 text-xs">
                     <span className="text-muted-foreground">Sort</span>
                     <LibrarySortFilter
@@ -1889,37 +1899,6 @@ export function PagesPage() {
                     />
                   </div>
                 </div>
-                {/* Select-all when selection is armed */}
-                {selectionArmed && (
-                  <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm text-muted-foreground">
-                    <label
-                      className={cn(
-                        'flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground',
-                        !selectionArmed && 'sr-only',
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={allVisibleSelected}
-                        ref={(el) => {
-                          // Partial selection is a third state; without it the box
-                          // reads "nothing selected" while rows plainly are.
-                          if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
-                        }}
-                        onChange={toggleSelectAll}
-                        aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
-                        className="size-4 cursor-pointer accent-[var(--color-action)]"
-                        data-testid="select-all-pages"
-                      />
-                      Select all on this page
-                    </label>
-                    {visibleSelectedIds.length > 0 && (
-                      <span className="text-xs font-medium text-muted-foreground">
-                        {visibleSelectedIds.length} {visibleSelectedIds.length === 1 ? 'page' : 'pages'} selected
-                      </span>
-                    )}
-                  </div>
-                )}
 
                 <BulkActionBar
                   selectedIds={visibleSelectedIds}
@@ -1968,7 +1947,6 @@ export function PagesPage() {
                             showVisibility={showVisibilityBadges}
                             showQuality={showQualityBadges}
                             showIdleEmbedding={showIdleEmbedding}
-                            selectionArmed={selectionArmed}
                             spaceName={pageItem.spaceKey ? spaceNameByKey.get(pageItem.spaceKey) ?? null : null}
                             tabIndex={focusedRowIndex === virtualRow.index ? 0 : -1}
                             onFocus={() => setFocusedRowIndex(virtualRow.index)}

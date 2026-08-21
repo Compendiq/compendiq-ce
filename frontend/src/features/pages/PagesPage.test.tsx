@@ -308,7 +308,7 @@ describe('PagesPage', () => {
       'overflow-hidden',
       'rounded-lg',
       'border',
-      'bg-background',
+      'bg-card',
     );
   });
 
@@ -907,7 +907,7 @@ describe('PagesPage', () => {
       ]);
 
       expect(await screen.findByText('Search Hit A', undefined, { timeout: 2000 })).toBeInTheDocument();
-      expect(screen.getByTestId('enter-selection-mode-search')).toBeInTheDocument();
+      expect(screen.getByTestId('select-all-search-pages')).toBeInTheDocument();
 
       // Click row selection checkbox
       const checkboxA = screen.getByTestId('page-select-101');
@@ -2286,22 +2286,17 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
-      expect(screen.queryByTestId('select-all-pages')).not.toBeInTheDocument();
+      expect(screen.getByTestId('select-all-pages')).toBeInTheDocument();
       expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
     });
 
-    it('reveals an intentional selection mode before any row is checked', async () => {
+    it('provides a permanent master checkbox in the header', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
-      expect(screen.getByTestId('enter-selection-mode')).toBeInTheDocument();
-      expect(screen.queryByTestId('select-all-pages')).not.toBeInTheDocument();
-
-      fireEvent.click(screen.getByTestId('enter-selection-mode'));
-
-      await waitFor(() => {
-        expect(screen.getByTestId('select-all-pages')).toBeInTheDocument();
-      });
+      const selectAll = screen.getByTestId('select-all-pages');
+      expect(selectAll).toBeInTheDocument();
+      expect(selectAll).not.toBeChecked();
     });
 
     it('reveals the action bar when a row is checked', async () => {
@@ -2349,7 +2344,6 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
-      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       fireEvent.click(screen.getByTestId('select-all-pages'));
 
       await waitFor(() => {
@@ -2361,7 +2355,6 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
-      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       const selectAll = screen.getByTestId('select-all-pages');
       fireEvent.click(selectAll);
       expect(await screen.findByTestId('bulk-action-bar')).toBeInTheDocument();
@@ -2376,7 +2369,6 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Test Page');
 
-      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       const selectAll = screen.getByTestId('select-all-pages') as HTMLInputElement;
       expect(selectAll.indeterminate).toBe(false);
 
@@ -2478,7 +2470,6 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await screen.findByText('Synced Page');
 
-      fireEvent.click(screen.getByTestId('enter-selection-mode'));
       fireEvent.click(screen.getByTestId('select-all-pages'));
       fireEvent.click(await screen.findByTestId('bulk-embed-btn'));
 
