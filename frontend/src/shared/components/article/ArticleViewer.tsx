@@ -40,6 +40,7 @@ import {
 } from './article-extensions';
 import { InlineLucideIcon } from './inline-lucide-icon';
 import { MermaidBlock } from './MermaidBlockExtension';
+import { CommentPopover } from './CommentPopover';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
@@ -94,7 +95,7 @@ export function ArticleViewer({
   content,
   onImageClick,
   confluenceUrl,
-  pageId: _pageId,
+  pageId,
   confluencePageId,
   onHeadingsReady,
   onRequestSync: _onRequestSync,
@@ -548,6 +549,7 @@ export function ArticleViewer({
           className,
         )}
       />
+      {editor && <CommentPopover editor={editor} pageId={pageId} />}
     </div>
   );
 }

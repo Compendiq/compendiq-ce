@@ -67,6 +67,18 @@ describe('CommentMark TipTap extension', () => {
     expect(editor.getHTML()).not.toContain('comment-resolved');
   });
 
+  it('unsets comment mark by commentId across matching nodes', () => {
+    editor.commands.setTextSelection({ from: 5, to: 10 });
+    editor.commands.setComment({ commentId: 'c-202' });
+    expect(editor.getHTML()).toContain('data-comment-id="c-202"');
+
+    // Move cursor somewhere else
+    editor.commands.setTextSelection(1);
+    editor.commands.unsetCommentMark({ commentId: 'c-202' });
+
+    expect(editor.getHTML()).not.toContain('data-comment-id="c-202"');
+  });
+
   it('is not inclusive so typing at the edge does not extend the comment mark', () => {
     editor.commands.setTextSelection({ from: 11, to: 16 }); // "brown"
     editor.commands.setComment({ commentId: 'c-303' });
@@ -104,7 +116,7 @@ describe('CommentMark TipTap extension', () => {
 
     expect(eventSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        detail: { commentId: 'thread-99' },
+        detail: expect.objectContaining({ commentId: 'thread-99' }),
       }),
     );
     expect(onCommentClick).toHaveBeenCalledWith('thread-99', clickEvent);

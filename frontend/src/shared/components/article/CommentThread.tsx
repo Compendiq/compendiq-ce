@@ -39,7 +39,8 @@ interface CommentThreadProps {
   isSelected?: boolean;
 }
 
-function formatRelativeTime(dateStr: string): string {
+// eslint-disable-next-line react-refresh/only-export-components
+export function formatRelativeTime(dateStr: string): string {
   const date = new Date(dateStr);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();

@@ -31,6 +31,10 @@ declare module '@tiptap/core' {
        * Update resolved state for all comment marks matching commentId in the document.
        */
       resolveCommentMark: (options: { commentId: string | number; resolved: boolean }) => ReturnType;
+      /**
+       * Remove comment mark matching commentId across the document.
+       */
+      unsetCommentMark: (options: { commentId: string | number }) => ReturnType;
     };
   }
 }
@@ -144,6 +148,24 @@ export const CommentMark = Mark.create<CommentExtensionOptions>({
           });
           return found;
         },
+      unsetCommentMark:
+        ({ commentId }) =>
+        ({ tr, state, dispatch }) => {
+          const targetId = String(commentId);
+          let found = false;
+          state.doc.descendants((node, pos) => {
+            if (!node.isText) return;
+            node.marks.forEach((mark) => {
+              if (mark.type.name === 'comment' && String(mark.attrs.commentId) === targetId) {
+                found = true;
+                if (dispatch) {
+                  tr.removeMark(pos, pos + node.nodeSize, mark.type);
+                }
+              }
+            });
+          });
+          return found;
+        },
     };
   },
 
@@ -162,11 +184,23 @@ export const CommentMark = Mark.create<CommentExtensionOptions>({
               if (onCommentClick) {
                 onCommentClick(commentId, event);
               }
-              // Dispatch global custom event for bidirectional sidebar navigation
+              // Dispatch global custom event for popover and sidebar
               if (typeof window !== 'undefined') {
+                const rect = commentEl.getBoundingClientRect();
                 window.dispatchEvent(
                   new CustomEvent('compendiq:comment-select', {
-                    detail: { commentId },
+                    detail: {
+                      commentId,
+                      targetElement: commentEl,
+                      rect: {
+                        top: rect.top,
+                        left: rect.left,
+                        bottom: rect.bottom,
+                        right: rect.right,
+                        width: rect.width,
+                        height: rect.height,
+                      },
+                    },
                   }),
                 );
               }

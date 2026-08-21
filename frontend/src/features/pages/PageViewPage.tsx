@@ -991,13 +991,13 @@ export function PageViewPage() {
 
             {/* Feedback widget — hidden on the author's own standalone pages */}
             {!isOwnStandalonePage && <FeedbackWidget pageId={id} />}
+          </div>
+        )}
 
-            {/* Inline comments & discussions floating sidebar */}
-            {id && (
-              <div className="fixed bottom-6 right-6 z-40">
-                <CommentsSidebar pageId={id} />
-              </div>
-            )}
+        {/* Inline comments & discussions floating sidebar */}
+        {id && (
+          <div className="fixed bottom-6 right-6 z-40">
+            <CommentsSidebar pageId={id} />
           </div>
         )}
       </div>
