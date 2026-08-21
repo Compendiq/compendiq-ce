@@ -1176,10 +1176,23 @@ export function SidebarTreeView({
         </section>
       )}
 
-      {/* Section label only — no extra hairline. The space-selector row
+      {/* Section label with New Page action — no extra hairline. The space-selector row
           already draws the 1px rule that meets the article toolbar. */}
-      <div className="flex h-7 shrink-0 items-center px-3">
+      <div className="flex h-7 shrink-0 items-center justify-between px-3">
         <span className={SECTION_LABEL}>Pages</span>
+        <button
+          type="button"
+          onClick={() => {
+            navigate('/pages/new');
+            onNavigate?.();
+          }}
+          className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="New Page"
+          title="New Page (Alt+N)"
+          data-testid="sidebar-new-page-btn"
+        >
+          <Plus size={13} aria-hidden="true" />
+        </button>
       </div>
 
       {/* A refresh failed but the cached tree is still usable. Say so without

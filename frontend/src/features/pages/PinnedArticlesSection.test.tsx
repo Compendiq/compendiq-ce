@@ -111,7 +111,7 @@ describe('PinnedArticlesSection', () => {
     expect(screen.queryByText('This is a getting started guide for new developers.')).not.toBeInTheDocument();
   });
 
-  it('frames pins as a quick-return strip and includes each pin’s update date', async () => {
+  it('does not render the quick-return label and includes each pin’s update date', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(mockPinnedResponse), {
         headers: { 'Content-Type': 'application/json' },
@@ -121,7 +121,7 @@ describe('PinnedArticlesSection', () => {
     render(<PinnedArticlesSection />, { wrapper: createWrapper() });
     await screen.findByTestId('pinned-articles-section');
 
-    expect(screen.getByText('Quick return')).toBeInTheDocument();
+    expect(screen.queryByText('Quick return')).not.toBeInTheDocument();
     expect(screen.getAllByText(/Updated/)).toHaveLength(2);
   });
 
@@ -141,7 +141,7 @@ describe('PinnedArticlesSection', () => {
     expect(titleElement.className).not.toContain('line-clamp-2');
   });
 
-  it('renders pinned pages as compact saved-item rows inside the strip', async () => {
+  it('renders pinned pages as distinct clickable cards with palette background inside the strip', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(mockPinnedResponse), {
         headers: { 'Content-Type': 'application/json' },
@@ -155,12 +155,12 @@ describe('PinnedArticlesSection', () => {
     const row = screen.getByTestId('pinned-card-page-1');
     expect(row.tagName).toBe('DIV');
     expect(row.querySelector('a')).toHaveAttribute('href', '/pages/page-1');
-    expect(row.className).toContain('rounded-md');
+    expect(row.className).toContain('rounded-lg');
     expect(row.className).not.toContain('rounded-xl');
     expect(row.className).not.toContain('h-full');
+    expect(row.className).toContain('bg-card');
+    expect(row.className).toContain('border-border');
     expect(row.className).toContain('hover:bg-accent');
-    expect(row.className).not.toContain('bg-card');
-    expect(row.className).not.toContain('border-border');
     const grid = document.getElementById('pinned-pages-grid')?.className ?? '';
     expect(grid).toContain('grid');
     expect(grid).toContain('xl:grid-cols-4');

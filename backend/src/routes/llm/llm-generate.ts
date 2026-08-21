@@ -83,12 +83,14 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
 
       // Use template-specific prompt or generate_from_document (via
       // resolveSystemPrompt for guardrails)
-      const promptKey = template ? `generate_${template}` : 'generate_from_document';
+      const templateKey = template && template !== 'custom' ? `generate_${template}` : undefined;
+      const promptKey = templateKey ?? 'generate_from_document';
       systemPrompt = await resolveSystemPrompt(userId, promptKey as SystemPromptKey);
 
       userContent = `## Source Document\n${documentForLlm}\n\n## Instructions\n${sanitized}`;
     } else {
-      const promptKey = template ? `generate_${template}` : 'generate';
+      const templateKey = template && template !== 'custom' ? `generate_${template}` : undefined;
+      const promptKey = templateKey ?? 'generate';
       systemPrompt = await resolveSystemPrompt(userId, promptKey as SystemPromptKey);
     }
 

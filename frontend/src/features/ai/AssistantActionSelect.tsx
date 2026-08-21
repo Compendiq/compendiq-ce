@@ -1,14 +1,18 @@
 /* eslint-disable react-refresh/only-export-components */
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
+  BookOpen,
   Check,
   ChevronDown,
+  ClipboardList,
+  FileCode2,
   FilePlus2,
   GitBranch,
   ListPlus,
   ListTree,
   MessageSquare,
   ScanText,
+  ShieldAlert,
   SpellCheck2,
   Wrench,
   type LucideIcon,
@@ -19,9 +23,11 @@ import {
   IMPROVEMENT_TYPES,
   type ImprovementType,
 } from './improvement-types';
+import { CREATE_SKILLS, type CreateSkillId } from './create-skills';
 import { cn } from '../../shared/lib/cn';
 
-export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate';
+export type CreateSkillAction = 'create-spec' | 'create-guide' | 'create-notes' | 'create-postmortem' | 'create-custom';
+export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate' | CreateSkillAction;
 
 interface ActionDefinition {
   id: AssistantAction;
@@ -38,6 +44,14 @@ const IMPROVEMENT_ICONS: Record<ImprovementType, LucideIcon> = {
   completeness: ListPlus,
 };
 
+const CREATE_SKILL_ICONS: Record<CreateSkillId, LucideIcon> = {
+  spec: FileCode2,
+  guide: BookOpen,
+  notes: ClipboardList,
+  postmortem: ShieldAlert,
+  custom: FilePlus2,
+};
+
 const CHAT_ACTION: ActionDefinition = {
   id: 'ask',
   label: 'Q&A',
@@ -50,6 +64,13 @@ const IMPROVEMENT_ACTIONS: ActionDefinition[] = IMPROVEMENT_TYPES.map((type) => 
   label: type.charAt(0).toUpperCase() + type.slice(1),
   description: IMPROVEMENT_DESCRIPTIONS[type],
   Icon: IMPROVEMENT_ICONS[type],
+}));
+
+const CREATE_SKILL_ACTIONS: ActionDefinition[] = CREATE_SKILLS.map((skill) => ({
+  id: `create-${skill.id}` as CreateSkillAction,
+  label: skill.shortName,
+  description: skill.description,
+  Icon: CREATE_SKILL_ICONS[skill.id],
 }));
 
 const DIAGRAM_ACTION: ActionDefinition = {
@@ -66,18 +87,38 @@ const GENERATE_ACTION: ActionDefinition = {
   Icon: FilePlus2,
 };
 
-export function resolveAssistantAction(mode: Mode, improvementType: ImprovementType): AssistantAction {
-  return mode === 'improve' ? improvementType : mode;
+export function resolveAssistantAction(
+  mode: Mode,
+  improvementType: ImprovementType,
+  createSkill?: CreateSkillId,
+): AssistantAction {
+  if (mode === 'improve') return improvementType;
+  if (mode === 'generate') {
+    return createSkill ? (`create-${createSkill}` as CreateSkillAction) : 'generate';
+  }
+  return mode;
 }
 
 export function applyAssistantAction(
   action: AssistantAction,
   setMode: (mode: Mode) => void,
   setImprovementType: (type: ImprovementType) => void,
+  setCreateSkill?: (skill: CreateSkillId) => void,
 ) {
   if (IMPROVEMENT_TYPES.includes(action as ImprovementType)) {
     setImprovementType(action as ImprovementType);
     setMode('improve');
+    return;
+  }
+  if (action.startsWith('create-')) {
+    const skillId = action.replace('create-', '') as CreateSkillId;
+    setCreateSkill?.(skillId);
+    setMode('generate');
+    return;
+  }
+  if (action === 'generate') {
+    setCreateSkill?.('custom');
+    setMode('generate');
     return;
   }
   setMode(action as Mode);
@@ -118,15 +159,20 @@ export function AssistantActionSelect({
   disabled?: boolean;
   className?: string;
 }) {
-  const { mode, setMode, improvementType, setImprovementType } = useAiContext();
-  const selected = resolveAssistantAction(mode, improvementType);
-  const available = includeGenerate || selected !== 'generate' ? selected : 'ask';
-  const definitions = [CHAT_ACTION, ...IMPROVEMENT_ACTIONS, DIAGRAM_ACTION, ...(includeGenerate ? [GENERATE_ACTION] : [])];
-  const current = definitions.find((action) => action.id === available) ?? CHAT_ACTION;
+  const { mode, setMode, improvementType, setImprovementType, createSkill, setCreateSkill } = useAiContext();
+  const selected = resolveAssistantAction(mode, improvementType, createSkill);
+  const definitions = [
+    CHAT_ACTION,
+    ...IMPROVEMENT_ACTIONS,
+    ...CREATE_SKILL_ACTIONS,
+    DIAGRAM_ACTION,
+    ...(includeGenerate ? [GENERATE_ACTION] : []),
+  ];
+  const current = definitions.find((action) => action.id === selected) ?? CHAT_ACTION;
   const { Icon } = current;
 
   const selectAction = (action: AssistantAction) => {
-    applyAssistantAction(action, setMode, setImprovementType);
+    applyAssistantAction(action, setMode, setImprovementType, setCreateSkill);
   };
 
   return (
@@ -159,23 +205,26 @@ export function AssistantActionSelect({
           <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
             Assistant chat
           </DropdownMenu.Label>
-          <ActionItem action={CHAT_ACTION} selected={available === 'ask'} onSelect={selectAction} />
+          <ActionItem action={CHAT_ACTION} selected={selected === 'ask'} onSelect={selectAction} />
 
           <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
           <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
             Rewrite skills
           </DropdownMenu.Label>
           {IMPROVEMENT_ACTIONS.map((action) => (
-            <ActionItem key={action.id} action={action} selected={available === action.id} onSelect={selectAction} />
+            <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
           ))}
 
           <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
           <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
-            Create
+            Create skills
           </DropdownMenu.Label>
-          <ActionItem action={DIAGRAM_ACTION} selected={available === 'diagram'} onSelect={selectAction} />
+          {CREATE_SKILL_ACTIONS.map((action) => (
+            <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
+          ))}
+          <ActionItem action={DIAGRAM_ACTION} selected={selected === 'diagram'} onSelect={selectAction} />
           {includeGenerate && (
-            <ActionItem action={GENERATE_ACTION} selected={available === 'generate'} onSelect={selectAction} />
+            <ActionItem action={GENERATE_ACTION} selected={selected === 'generate'} onSelect={selectAction} />
           )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>

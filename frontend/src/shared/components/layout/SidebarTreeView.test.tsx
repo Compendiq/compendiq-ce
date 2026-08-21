@@ -609,6 +609,16 @@ describe('SidebarTreeView', () => {
     expect(handle).toHaveAttribute('tabindex', '0');
   });
 
+  it('renders New Page button in sidebar section header and navigates to /pages/new', () => {
+    mockNavigate.mockClear();
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const newPageBtn = screen.getByTestId('sidebar-new-page-btn');
+    expect(newPageBtn).toBeInTheDocument();
+    expect(newPageBtn).toHaveAccessibleName('New Page');
+    fireEvent.click(newPageBtn);
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/new');
+  });
+
   it('applies persisted width from store', () => {
     useUiStore.setState({ treeSidebarWidth: 320 });
     render(<SidebarTreeView />, { wrapper: createWrapper() });

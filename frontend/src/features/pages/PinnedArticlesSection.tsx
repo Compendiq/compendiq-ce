@@ -91,11 +91,10 @@ export function PinnedArticlesSection() {
           {total}
         </span>
         <span className="sr-only">{total} pinned</span>
-        <span className="hidden text-xs text-muted-foreground sm:inline">Quick return</span>
       </div>
       <div
         id="pinned-pages-grid"
-        className="grid grid-cols-1 gap-x-1 sm:grid-cols-2 xl:grid-cols-4"
+        className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4"
       >
         {visiblePins.map((item, i) => (
           <m.div
@@ -105,7 +104,7 @@ export function PinnedArticlesSection() {
             transition={{ delay: entranceDelay(staggerPosition(i, isExpanded)) }}
           >
             <div
-              className="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent focus-within:bg-accent"
+              className="group flex w-full items-center gap-2 rounded-lg border border-border/70 bg-card px-2.5 py-2 text-left transition-colors hover:border-border hover:bg-accent focus-within:border-border focus-within:bg-accent"
               data-testid={`pinned-card-${item.id}`}
             >
               <Link

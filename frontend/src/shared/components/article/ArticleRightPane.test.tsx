@@ -1408,5 +1408,40 @@ describe('ArticleRightPane', () => {
       expect(container.querySelector('#page-context-panel-assistant')).not.toBeNull();
       expect(container.querySelector('#page-context-panel-assistant')?.classList.contains('hidden')).toBe(true);
     });
+
+    it('renders and supports tab switching on /pages/new create route', () => {
+      useArticleViewStore.setState({
+        headings: [],
+      });
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const router = createMemoryRouter(
+        [{ path: '/pages/new', element: <ArticleRightPane /> }],
+        { initialEntries: ['/pages/new'] },
+      );
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <LazyMotion features={domAnimation}>
+            <RouterProvider router={router} />
+          </LazyMotion>
+        </QueryClientProvider>,
+      );
+
+      // On /pages/new with no headings, defaults to Assistant tab
+      expect(screen.getByRole('tab', { name: 'Assistant' })).toHaveAttribute('aria-selected', 'true');
+
+      // Click Details tab
+      fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
+      expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByText('New page draft')).toBeInTheDocument();
+
+      // Click Outline tab
+      fireEvent.click(screen.getByRole('tab', { name: /Outline/ }));
+      expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByText('No outline yet')).toBeInTheDocument();
+    });
   });
 });
+

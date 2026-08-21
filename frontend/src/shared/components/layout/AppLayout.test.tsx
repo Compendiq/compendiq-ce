@@ -460,15 +460,16 @@ describe('AppLayout', () => {
     expect(screen.queryByRole('button', { name: 'Layout presets' })).not.toBeInTheDocument();
   });
 
-  it('does not treat the create form as an existing article', () => {
+  it('treats the create form as an article route with side panel', () => {
     render(
       <AppLayout>
         <div>new page</div>
       </AppLayout>,
       { wrapper: createWrapper('/pages/new') },
     );
-    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
+
 
   it('does not force-collapse the tree when the inspector is open at laptop widths', () => {
     window.innerWidth = 900;

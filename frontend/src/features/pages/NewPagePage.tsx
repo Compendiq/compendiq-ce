@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Save, Upload, LayoutTemplate, Globe, Lock, X } from 'lucide-react';
+import { Save, Upload, LayoutTemplate, Globe, Lock, X, ChevronDown, Sparkles, Loader2 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
@@ -10,9 +10,13 @@ import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureEr
 import { LocationPicker } from '../../shared/components/LocationPicker';
 import { TagPopover } from '../../shared/components/TagPopover';
 import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
-import { HeaderHost } from '../../shared/components/layout/header-slot';
 import type { LocationSelection } from '../../shared/components/LocationPicker';
 import { readLastConfluenceSpace, rememberConfluenceSpace } from './last-confluence-space';
+import { improveMarkdownToHtml } from '../../shared/components/article/improve-markdown';
+import { useArticleViewStore } from '../../stores/article-view-store';
+import { useAiDockStore } from '../../stores/ai-dock-store';
+import { parseHeadings } from '../../shared/components/article/TableOfContents';
+import { CREATE_SKILLS } from '../ai/create-skills';
 import type { Editor as EditorType } from '@tiptap/core';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
@@ -53,6 +57,7 @@ export function NewPagePage() {
   const [articleType, setArticleType] = useState<ArticleType>('local');
   const [visibility, setVisibility] = useState<Visibility>('private');
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
+  const [showAiModal, setShowAiModal] = useState(false);
   const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
   const [headerNumbering, setHeaderNumbering] = useState(() =>
     localStorage.getItem('editor-header-numbering') === 'true',
@@ -64,6 +69,28 @@ export function NewPagePage() {
       return !prev;
     });
   }, []);
+
+  const setStoreHeadings = useArticleViewStore((s) => s.setHeadings);
+  const setStoreEditing = useArticleViewStore((s) => s.setEditing);
+
+  useEffect(() => {
+    setStoreEditing(true);
+    return () => {
+      useArticleViewStore.getState().setHeadings([]);
+      useArticleViewStore.getState().setEditing(false);
+    };
+  }, [setStoreEditing]);
+
+  const syncHeadings = useCallback((editor: EditorType | null) => {
+    if (!editor) {
+      setStoreHeadings([]);
+      return;
+    }
+    const html = editor.getHTML();
+    const headings = parseHeadings(html);
+    setStoreHeadings(headings);
+  }, [setStoreHeadings]);
+
   // Labels declared in an imported file's YAML front-matter (#1133). They can
   // only be applied once the page exists, because `POST /pages` has no labels
   // field — so they wait here until the create returns an id.
@@ -103,15 +130,7 @@ export function NewPagePage() {
   }, []);
 
   // Reset spaceKey and parentId when switching article types, to avoid sending
-  // a selection made in one context to the wrong context. This is deliberately
-  // a handler and not an effect on `articleType`: an effect also fires on mount
-  // and would immediately wipe the preselection below.
-  //
-  // The `next === articleType` guard restores what the effect gave for free.
-  // React bails out of `setArticleType(sameValue)` and the effect's dependency
-  // never changed, so clicking the already-pressed toggle used to be a no-op;
-  // without the guard it would now throw away the space and parent the user
-  // had chosen.
+  // a selection made in one context to the wrong context.
   const handleArticleTypeChange = useCallback((next: ArticleType) => {
     preselectSettled.current = true;
     if (next === articleType) return;
@@ -131,33 +150,9 @@ export function NewPagePage() {
 
   /**
    * Preselect a Confluence space once `GET /api/spaces` has answered (#1122).
-   * Most articles are authored in Confluence, so starting on "Local" with an
-   * empty picker made the common case two clicks longer than the rare one.
-   *
-   * - **No permission to write there** — `GET /api/spaces` returns only
-   *   RBAC-accessible spaces, and `POST /api/pages` gates a Confluence create on
-   *   that same `getUserAccessibleSpaces` check. Preselecting from this list
-   *   therefore cannot preselect a space the app would reject. (Confluence's own
-   *   PAT permissions can still refuse, but that is strictly narrower than what
-   *   any client-side check could predict, and it already surfaces on create.)
-   * - **Confluence not configured** — nothing is RBAC-assigned and nothing is
-   *   synced, so the list holds no Confluence space and the form stays on Local
-   *   exactly as before.
-   * - **Assigned but not yet synced** — `GET /api/spaces` appends those keys
-   *   with `source: 'confluence'`, `lastSynced: null` and the key as the name
-   *   (`spaces.ts`, `unsyncedSelections`). They are legitimate create targets —
-   *   `POST /api/pages` writes straight to Confluence, not to the mirror — but a
-   *   space the user demonstrably works in is the better guess, so a synced one
-   *   wins and an unsynced one is only the fallback.
-   * - **Which of several** — the space the user last created in, if they can
-   *   still reach it; otherwise the first, which the API returns sorted by name.
    */
   useEffect(() => {
     if (preselectSettled.current) return;
-    // Only `spaces` feeds `confluenceSpaces` — every entry from
-    // `localSpacesData` is forced to `source: 'local'` above — so waiting on the
-    // local-spaces query too would just delay this, and strand it entirely if
-    // that query failed.
     if (!spaces) return;
 
     preselectSettled.current = true;
@@ -171,6 +166,23 @@ export function NewPagePage() {
     setSpaceKey(chosen.key);
   }, [spaces, confluenceSpaces]);
 
+  useEffect(() => {
+    const handleApplyDraft = (e: Event) => {
+      const customEvent = e as CustomEvent<{ markdown: string; html: string; title?: string }>;
+      if (!customEvent.detail) return;
+      const { html, title: genTitle } = customEvent.detail;
+      editorInstance?.commands.setContent(html, { emitUpdate: true });
+      setPendingLabels([]);
+      setBodyHtml(html);
+      syncHeadings(editorInstance);
+      if (genTitle && !title.trim()) {
+        setTitle(genTitle);
+      }
+    };
+    window.addEventListener('compendiq:apply-draft', handleApplyDraft);
+    return () => window.removeEventListener('compendiq:apply-draft', handleApplyDraft);
+  }, [editorInstance, syncHeadings, title]);
+
   const handleCreate = async () => {
     if (!title.trim()) {
       toast.error('Title is required');
@@ -181,8 +193,7 @@ export function NewPagePage() {
       return;
     }
     try {
-      // Read the live HTML off the editor instance (#954). `bodyHtml` is only a
-      // fallback seed (empty, or a template applied before the editor mounted).
+      // Read the live HTML off the editor instance (#954).
       const bodyToSave = editorInstance?.getHTML() ?? bodyHtml;
       const result = await createMutation.mutateAsync({
         spaceKey: spaceKey,
@@ -190,15 +201,9 @@ export function NewPagePage() {
         bodyHtml: bodyToSave,
         ...(parentId ? { parentId } : {}),
         ...(selectedSpace?.source === 'local' ? { visibility } : {}),
-        // Front-matter labels from an imported file (#1133). Sent with the
-        // create rather than applied afterwards: the id this route returns is
-        // the *Confluence content id* for a Confluence create, and it is
-        // numeric, so `PUT /pages/:id/labels` would read it as a database
-        // primary key and label a different page entirely.
         ...(pendingLabels.length > 0 ? { labels: pendingLabels } : {}),
       } as Parameters<typeof createMutation.mutateAsync>[0]);
-      // Only after a create actually succeeded — remembering a space the user
-      // merely browsed to would make the next visit preselect a dead end.
+
       if (selectedSpace?.source === 'confluence') rememberConfluenceSpace(spaceKey);
 
       clearDraft(NEW_PAGE_DRAFT_KEY);
@@ -210,29 +215,13 @@ export function NewPagePage() {
   };
 
   /**
-   * Load an uploaded Markdown file into the editor — the same shape as "Use
-   * Template", and for the same reason (#1133).
-   *
-   * This used to POST the Markdown to a route that created the page outright,
-   * always under the hardcoded `_standalone` space, then navigate straight to
-   * the read-only view. So picking a Confluence space and then importing filed
-   * the page somewhere else, and the user never saw it before it was saved.
-   * Now nothing is persisted here: the converted body lands in the editor and
-   * `handleCreate` performs the save with the space, parent and visibility the
-   * form is showing.
+   * Load an uploaded Markdown file into the editor.
    */
   const handleImportMarkdown = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     try {
-      // Size is checked here, in the app's own words, because the round-trip
-      // has no good answer for an oversize file (#1178): the nginx edge
-      // answers first with an HTML 413 whose "Request Entity Too Large" names
-      // the proxy's rule, not this limit, and nothing in it suggests a smaller
-      // file. Bytes first — the cheap check that avoids pulling a huge file
-      // into memory just to count its characters — then characters, which is
-      // the unit the route's schema actually enforces.
       if (file.size > MAX_IMPORT_BYTES) {
         toast.error(
           `This file is ${(file.size / 1_000_000).toFixed(1)} MB. Markdown import accepts files up to `
@@ -253,298 +242,259 @@ export function NewPagePage() {
       const fileTitle = file.name.replace(/\.(md|markdown)$/i, '');
       const preview = await importMarkdownMutation.mutateAsync({ markdown, title: fileTitle });
 
-      // Push into the live TipTap instance — the Editor never re-reads its
-      // `content` prop after mount, so setContent is how this becomes visible.
-      // `emitUpdate` fires onUpdate so the localStorage draft is written, and
-      // `setBodyHtml` seeds the brief window before TipTap has mounted. Both
-      // mirror the template flow exactly (#954).
       editorInstance?.commands.setContent(preview.bodyHtml, { emitUpdate: true });
       setBodyHtml(preview.bodyHtml);
 
-      // Front-matter title, else the filename — but never over something the
-      // user has already typed. A title a *previous import* wrote is not that,
-      // so importing a second file replaces it rather than leaving the new
-      // body under the old file's name.
-      // Read before the assignment below: `setTitle`'s updater runs later, so
-      // comparing against the ref inside it would compare against *this*
-      // import's title and never match.
       const titleFromPreviousImport = importedTitleRef.current;
       setTitle((current) => (
         !current.trim() || current === titleFromPreviousImport ? preview.title : current
       ));
       importedTitleRef.current = preview.title;
-      // Applied after the page exists; `POST /pages` has no labels field.
       setPendingLabels(preview.labels);
 
       toast.success('Markdown loaded — review it, then press Create Page');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to import markdown');
     } finally {
-      // Reset file input so the same file can be re-selected — including after
-      // one of the size guards above returned early.
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }, [importMarkdownMutation, editorInstance]);
 
-  // Labels ride along with the create (#1133), so there is exactly one request
-  // between the click and the navigate — no window in which the button
-  // re-enables while the user is still looking at the form.
   const isCreating = createMutation.isPending;
+  const isCreateDisabled = isCreating || !title.trim() || !spaceKey;
 
-  const isCreateDisabled = isCreating
-    || !title.trim()
-    || !spaceKey;
-  // Explain WHY create is disabled — but not while a create is in flight
-  // (the button already says "Creating…").
-  const showCreateHint = isCreateDisabled && !isCreating;
   const handleCancel = useCallback(() => {
     navigate('/pages');
   }, [navigate]);
-  // With a space preselected (#1122), "select a space" is usually already done —
-  // saying so anyway sends the user hunting for a control that is fine.
-  const createHint = !spaceKey
-    ? (title.trim() ? 'Select a space first' : 'Enter a title and select a space first')
-    : 'Enter a title first';
+
+  const isPageEmpty = !title.trim() && (!bodyHtml || bodyHtml === '<p></p>' || bodyHtml === '');
 
   return (
-    <div>
-      <HeaderHost fallbackClassName="mb-3">
-        <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">New Page</h1>
-      </HeaderHost>
-      {/* Sticky write chrome: formatting + Create/Cancel, then the identity
-          row (type, space, visibility, location). Both stay pinned so a long
-          draft cannot scroll away the only exit or the space/visibility
-          decision. The editor body is outside this box — a sticky element's
-          stuck position is bounded by its own box, so wrapping the document
-          would make nothing pin.
-          `-top-5`/`-mt-5`/`isolate` plus the under-mask are the same
-          fix #1186 gave PageViewPage's edit toolbar. The under-mask fills
-          `bg-card`, not `bg-background` — on this route the main column IS
-          the pane. */}
+    <div data-testid="article-page" className="flex min-h-0 flex-1 flex-col">
+      {/* Pinned top write chrome: formatting + actions on top line, metadata strip below. */}
       <div
         data-testid="new-page-sticky-header"
-        className="sticky -top-5 z-30 isolate -mt-5"
+        className="relative z-30 shrink-0"
       >
-        <div
-          aria-hidden
-          data-testid="new-page-toolbar-mask"
-          className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-card"
-        />
-        <div className="-mx-4 border-b border-border bg-card sm:-mx-6 relative">
+        <div className="relative w-full border-b border-border bg-card">
           {editorInstance && (
-            <div className="mx-auto max-w-[1248px] px-4 sm:px-16">
+            <div className="px-2">
               <EditorToolbar
                 editor={editorInstance}
                 headerNumbering={headerNumbering}
                 onToggleHeaderNumbering={toggleHeaderNumbering}
                 pageProperty={
-                  <TagPopover
-                    tags={pendingLabels}
-                    onAddTag={(t) => setPendingLabels((prev) => [...prev, t])}
-                    onRemoveTag={(t) => setPendingLabels((prev) => prev.filter((item) => item !== t))}
-                  />
+                  <div className="flex flex-nowrap shrink-0 items-center gap-1.5">
+                    <TagPopover
+                      tags={pendingLabels}
+                      onAddTag={(t) => setPendingLabels((prev) => [...prev, t])}
+                      onRemoveTag={(t) => setPendingLabels((prev) => prev.filter((item) => item !== t))}
+                      iconOnly
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowTemplateGallery(true)}
+                      className="nm-icon-button shrink-0"
+                      title="Use Template"
+                      aria-label="Use Template"
+                      data-testid="use-template-btn"
+                    >
+                      <LayoutTemplate size={15} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={importMarkdownMutation.isPending}
+                      className="nm-icon-button shrink-0"
+                      title="Import Markdown"
+                      aria-label="Import Markdown"
+                      data-testid="import-markdown-btn"
+                    >
+                      <Upload size={15} aria-hidden="true" />
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".md,.markdown"
+                      onChange={handleImportMarkdown}
+                      className="hidden"
+                      data-testid="import-markdown-input"
+                    />
+                  </div>
                 }
                 actions={
                   <>
                     <button
                       type="button"
                       onClick={handleCancel}
-                      className="nm-button-ghost shrink-0"
+                      className="nm-icon-button nm-action-destructive shrink-0"
+                      title="Cancel"
+                      aria-label="Cancel"
                       data-testid="cancel-new-page-btn"
                     >
                       <X size={15} aria-hidden="true" />
-                      Cancel
                     </button>
-                    <span title={showCreateHint ? createHint : undefined}>
-                      <button
-                        onClick={handleCreate}
-                        disabled={isCreateDisabled}
-                        aria-describedby={showCreateHint ? 'create-page-hint' : undefined}
-                        className="nm-button-primary shrink-0"
-                      >
-                        <Save size={15} aria-hidden="true" /> {isCreating ? 'Creating…' : 'Create Page'}
-                      </button>
-                    </span>
+                    <button
+                      type="button"
+                      onClick={handleCreate}
+                      disabled={isCreateDisabled}
+                      className="nm-button-primary shrink-0 h-8 px-3 text-xs"
+                      data-testid="create-page-button"
+                    >
+                      <Save size={15} aria-hidden="true" />
+                      {isCreating ? 'Creating…' : 'Create Page'}
+                    </button>
                   </>
                 }
               />
             </div>
           )}
           {editorInstance && (
-            <EditorContextToolbars editor={editorInstance} innerClassName="mx-auto max-w-[1248px] px-4 sm:px-16" />
+            <EditorContextToolbars editor={editorInstance} innerClassName="px-2" />
           )}
-          <div className="mx-auto max-w-[1248px] px-4 py-3 sm:px-16">
-            <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={importMarkdownMutation.isPending}
-                  className="nm-button-ghost"
-                  data-testid="import-markdown-btn"
-                >
-                  <Upload size={14} />
-                  {importMarkdownMutation.isPending ? 'Importing...' : 'Import Markdown'}
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".md,.markdown"
-                  onChange={handleImportMarkdown}
-                  className="hidden"
-                  data-testid="import-markdown-input"
-                />
-                <button
-                  onClick={() => setShowTemplateGallery(true)}
-                  className="nm-button-ghost"
-                  data-testid="use-template-btn"
-                >
-                  <LayoutTemplate size={14} />
-                  Use Template
-                </button>
-              </div>
-            </div>
 
-            {/* Visible variant of the tooltip hint: title attributes are
-                mouse-hover-only, so keyboard, touch and screen-reader users
-                need the explanation as real, aria-linked text. */}
-            {showCreateHint && (
-              <p id="create-page-hint" className="mt-2 text-right text-xs text-muted-foreground">
-                {createHint}
-              </p>
-            )}
-
-            {/* Metadata row. The selected halves of these toggles are NEUTRAL
-                (value step + ink + measured ring), matching the toolbar's
-                pressed recipe: "selected" is an interaction state, and each
-                option used to light up in its badge's borrowed hue — green,
-                indigo, even amber on Private, on a control that warns of
-                nothing. */}
-            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-            {/* Article type toggle — same recessed-track segmented control as
-                PagesPage's search-mode toggle: neutral fill plus weight carries
-                "selected", not a borrowed badge hue or a ring around a loose
-                pill. */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-muted-foreground">Type</span>
-              <div
-                className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
-                role="group"
-                aria-label="Article type"
-                data-testid="article-type-toggle"
-              >
-                <button
-                  onClick={() => handleArticleTypeChange('local')}
-                  aria-pressed={articleType === 'local'}
-                  className={cn(
-                    'rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
-                    articleType === 'local'
-                      ? 'nm-pill-active'
-                      : 'text-muted-foreground hover:text-foreground',
-                  )}
-                  data-testid="article-type-local"
-                >
-                  Local
-                </button>
-                <button
-                  onClick={() => handleArticleTypeChange('confluence')}
-                  aria-pressed={articleType === 'confluence'}
-                  className={cn(
-                    'rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
-                    articleType === 'confluence'
-                      ? 'nm-pill-active'
-                      : 'text-muted-foreground hover:text-foreground',
-                  )}
-                  data-testid="article-type-confluence"
-                >
-                  Confluence
-                </button>
-              </div>
-            </div>
-
-            <div className="h-5 w-px bg-border/50" />
-
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-muted-foreground">Space</span>
-              <select
-                value={spaceKey}
-                onChange={(e) => handleSpaceChange(e.target.value)}
-                className="nm-select-md"
-                data-testid="space-selector"
-              >
-                <option value="">Select space...</option>
-                {articleType === 'confluence'
-                  ? allSpaces.filter((s) => s.source === 'confluence').map((s) => (
-                      <option key={s.key} value={s.key}>{s.name}</option>
-                    ))
-                  : allSpaces.filter((s) => s.source === 'local').map((s) => (
-                      <option key={s.key} value={s.key}>{s.name}</option>
-                    ))
-                }
-              </select>
-            </div>
-
-            {selectedSpace?.source === 'local' && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-muted-foreground">Visibility</span>
+          {/* Clean flat metadata row: Type, Space (styled like All Spaces), Visibility, Location */}
+          <div className="border-t border-border/40 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              {/* Article type toggle */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-medium text-muted-foreground">Type</span>
                 <div
                   className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
                   role="group"
-                  aria-label="Visibility"
-                  data-testid="visibility-picker"
+                  aria-label="Article type"
+                  data-testid="article-type-toggle"
                 >
                   <button
-                    onClick={() => setVisibility('private')}
-                    aria-pressed={visibility === 'private'}
+                    type="button"
+                    onClick={() => handleArticleTypeChange('local')}
+                    aria-pressed={articleType === 'local'}
                     className={cn(
-                      'flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
-                      visibility === 'private'
+                      'rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                      articleType === 'local'
                         ? 'nm-pill-active'
                         : 'text-muted-foreground hover:text-foreground',
                     )}
-                    data-testid="visibility-private"
+                    data-testid="article-type-local"
                   >
-                    <Lock size={12} /> Private
+                    Local
                   </button>
                   <button
-                    onClick={() => setVisibility('shared')}
-                    aria-pressed={visibility === 'shared'}
+                    type="button"
+                    onClick={() => handleArticleTypeChange('confluence')}
+                    aria-pressed={articleType === 'confluence'}
                     className={cn(
-                      'flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
-                      visibility === 'shared'
+                      'rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                      articleType === 'confluence'
                         ? 'nm-pill-active'
                         : 'text-muted-foreground hover:text-foreground',
                     )}
-                    data-testid="visibility-shared"
+                    data-testid="article-type-confluence"
                   >
-                    <Globe size={12} /> Shared
+                    Confluence
                   </button>
                 </div>
               </div>
-            )}
 
-            {/* Location picker — select parent page within the chosen space */}
-            {!!spaceKey && (
-              <>
-                <div className="h-5 w-px bg-border/50" />
-                <div className="flex items-center gap-2" data-testid="location-picker-section">
-                  <span className="text-xs font-medium text-muted-foreground">Location</span>
-                  <LocationPicker
-                    spaceKey={spaceKey}
-                    parentId={parentId}
-                    onSelect={handleLocationSelect}
-                  />
+              <div className="h-4 w-px bg-border/60" />
+
+              {/* Space picker styled like Library Overview 'All spaces' */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-medium text-muted-foreground">Space</span>
+                <div className="relative inline-flex items-center">
+                  <div className="library-search-select pointer-events-none flex h-8 items-center gap-1.5 rounded-md border border-border/70 bg-card px-2.5 text-xs font-medium text-foreground">
+                    <Globe size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <span className="max-w-[160px] truncate">{selectedSpace?.name || 'Select space...'}</span>
+                    <ChevronDown size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+                  </div>
+                  <select
+                    value={spaceKey}
+                    onChange={(e) => handleSpaceChange(e.target.value)}
+                    className="absolute inset-0 cursor-pointer opacity-0"
+                    data-testid="space-selector"
+                    aria-label="Select space"
+                  >
+                    <option value="">Select space...</option>
+                    {articleType === 'confluence'
+                      ? allSpaces.filter((s) => s.source === 'confluence').map((s) => (
+                          <option key={s.key} value={s.key}>{s.name}</option>
+                        ))
+                      : allSpaces.filter((s) => s.source === 'local').map((s) => (
+                          <option key={s.key} value={s.key}>{s.name}</option>
+                        ))
+                    }
+                  </select>
                 </div>
-              </>
-            )}
+              </div>
+
+              {selectedSpace?.source === 'local' && (
+                <>
+                  <div className="h-4 w-px bg-border/60" />
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-medium text-muted-foreground">Visibility</span>
+                    <div
+                      className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+                      role="group"
+                      aria-label="Visibility"
+                      data-testid="visibility-picker"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setVisibility('private')}
+                        aria-pressed={visibility === 'private'}
+                        className={cn(
+                          'flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                          visibility === 'private'
+                            ? 'nm-pill-active'
+                            : 'text-muted-foreground hover:text-foreground',
+                        )}
+                        data-testid="visibility-private"
+                      >
+                        <Lock size={12} /> Private
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setVisibility('shared')}
+                        aria-pressed={visibility === 'shared'}
+                        className={cn(
+                          'flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                          visibility === 'shared'
+                            ? 'nm-pill-active'
+                            : 'text-muted-foreground hover:text-foreground',
+                        )}
+                        data-testid="visibility-shared"
+                      >
+                        <Globe size={12} /> Shared
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Location picker */}
+              {!!spaceKey && (
+                <>
+                  <div className="h-4 w-px bg-border/60" />
+                  <div className="flex items-center gap-1.5" data-testid="location-picker-section">
+                    <span className="text-xs font-medium text-muted-foreground">Location</span>
+                    <LocationPicker
+                      spaceKey={spaceKey}
+                      parentId={parentId}
+                      onSelect={handleLocationSelect}
+                    />
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
       </div>
 
-      <div className="mt-7">
-        {/* Title — same type ramp as the article editor's own title
-            (text-3xl/4xl bold) so a page in progress carries the same weight
-            it will have the moment it's saved. */}
+      <div
+        data-testid="article-scroll"
+        className="min-h-0 flex-1 overflow-y-auto pb-5 [scrollbar-gutter:stable]"
+      >
+        {/* Title input */}
         <div className="border-b border-border py-5">
           <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
             <AutoGrowTextarea
@@ -559,8 +509,65 @@ export function NewPagePage() {
           </div>
         </div>
 
-        {/* Editor body — same 1200px reading column as the article editor,
-            so the writing experience matches the reading one exactly. */}
+        {/* Empty page starters: Use Template, Import Markdown, Draft with AI */}
+        {isPageEmpty && (
+          <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
+            <div className="mt-8 mb-6 rounded-xl border border-border/70 bg-card/40 p-5" data-testid="new-page-starter-zone">
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Get started with your page</p>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <button
+                  type="button"
+                  onClick={() => setShowTemplateGallery(true)}
+                  className="group flex flex-col items-start gap-2 rounded-lg border border-border/70 bg-card p-3.5 text-left transition-colors hover:border-border hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="starter-template-btn"
+                >
+                  <div className="flex size-8 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <LayoutTemplate size={16} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Use a Template</p>
+                    <p className="text-xs text-muted-foreground">Pick from standard templates (RFCs, meeting notes, specs)</p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="group flex flex-col items-start gap-2 rounded-lg border border-border/70 bg-card p-3.5 text-left transition-colors hover:border-border hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="starter-import-btn"
+                >
+                  <div className="flex size-8 items-center justify-center rounded-md bg-info/10 text-info">
+                    <Upload size={16} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Import Markdown</p>
+                    <p className="text-xs text-muted-foreground">Load a .md document directly into the live editor</p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    useAiDockStore.getState().openDock();
+                    setShowAiModal(true);
+                  }}
+                  className="group flex flex-col items-start gap-2 rounded-lg border border-border/70 bg-card p-3.5 text-left transition-colors hover:border-border hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="starter-ai-btn"
+                >
+                  <div className="flex size-8 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <Sparkles size={16} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Draft with AI Assistant</p>
+                    <p className="text-xs text-muted-foreground">Use create skills to generate an outline or full document</p>
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Editor body */}
         <div className={cn('mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}>
           <FeatureErrorBoundary featureName="Editor">
             <Editor
@@ -569,33 +576,49 @@ export function NewPagePage() {
               draftKey={NEW_PAGE_DRAFT_KEY}
               naked
               hideToolbar
-              onEditorReady={setEditorInstance}
+              onEditorReady={(ed) => {
+                setEditorInstance(ed);
+                syncHeadings(ed);
+              }}
+              onChange={() => {
+                syncHeadings(editorInstance);
+              }}
             />
           </FeatureErrorBoundary>
         </div>
       </div>
 
+
       {/* Template Gallery Modal */}
       {showTemplateGallery && (
         <TemplateGallery
           onSelect={(html) => {
-            // Push the template into the live TipTap editor — the Editor never
-            // re-reads the content prop after mount, so setContent is how the
-            // template becomes visible. emitUpdate fires onUpdate so the
-            // localStorage draft is written; the body is read back from the
-            // editor instance on create (#954).
             editorInstance?.commands.setContent(html, { emitUpdate: true });
-            // The imported body is gone, so its front-matter labels go with it.
             setPendingLabels([]);
-            // Seed fallback for the brief window before TipTap finishes
-            // mounting (immediatelyRender: false), when editorInstance is still
-            // null: the Editor picks this up as its initial content.
             setBodyHtml(html);
+            syncHeadings(editorInstance);
             setShowTemplateGallery(false);
           }}
           onClose={() => setShowTemplateGallery(false)}
         />
       )}
+
+      {/* AI Assistant Create Skill Modal */}
+      {showAiModal && (
+        <AiDraftModal
+          onApply={(html, generatedTitle) => {
+            editorInstance?.commands.setContent(html, { emitUpdate: true });
+            setPendingLabels([]);
+            setBodyHtml(html);
+            syncHeadings(editorInstance);
+            if (generatedTitle && !title.trim()) {
+              setTitle(generatedTitle);
+            }
+          }}
+          onClose={() => setShowAiModal(false)}
+        />
+      )}
+
     </div>
   );
 }
@@ -614,10 +637,6 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
     }
   };
 
-  // Radix Dialog supplies role=dialog, aria-modal, focus trap + initial focus,
-  // focus restore, Escape-to-close and overlay-click-to-close for free — the
-  // hand-rolled div had none of these (#942). Mounted already-open, so
-  // onOpenChange only ever fires for a close request.
   return (
     <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
       <Dialog.Portal>
@@ -627,7 +646,10 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
           data-testid="template-gallery-modal"
         >
           <div className="mb-4 flex items-center justify-between">
-            <Dialog.Title className="text-lg font-semibold">Choose a Template</Dialog.Title>
+            <div>
+              <Dialog.Title className="text-lg font-semibold">Choose a Template</Dialog.Title>
+              <Dialog.Description className="text-xs text-muted-foreground">Select a starter layout to populate your new page</Dialog.Description>
+            </div>
             <Dialog.Close
               aria-label="Close template gallery"
               className="nm-icon-button"
@@ -663,6 +685,208 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
               ))}
             </div>
           )}
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function AiDraftModal({
+  onApply,
+  onClose,
+}: {
+  onApply: (html: string, generatedTitle?: string) => void;
+  onClose: () => void;
+}) {
+  const [selectedSkill, setSelectedSkill] = useState<string>('spec');
+  const currentSkill = CREATE_SKILLS.find((s) => s.id === selectedSkill) ?? CREATE_SKILLS[0]!;
+  const [prompt, setPrompt] = useState(currentSkill.suggestedPrompt);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const handleSelectSkill = (skillId: string) => {
+    setSelectedSkill(skillId);
+    const newSkill = CREATE_SKILLS.find((s) => s.id === skillId);
+    if (newSkill) {
+      setPrompt(newSkill.suggestedPrompt);
+    }
+  };
+
+  const handleGenerate = async () => {
+    const skill = CREATE_SKILLS.find((s) => s.id === selectedSkill) ?? CREATE_SKILLS[0]!;
+    const combinedPrompt = `${skill.promptTemplate}${prompt}`.trim();
+    if (!combinedPrompt) {
+      toast.error('Please describe what you want to generate');
+      return;
+    }
+
+    setIsGenerating(true);
+    try {
+      const res = await fetch('/api/llm/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: combinedPrompt,
+          template: skill.backendTemplate ?? (selectedSkill !== 'custom' ? selectedSkill : undefined),
+        }),
+      });
+
+      let markdown = '';
+      if (res.ok && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const dataStr = line.slice(6).trim();
+              if (dataStr === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.text) markdown += parsed.text;
+                else if (parsed.content) markdown += parsed.content;
+              } catch {
+                // ignore parsing error for non-json lines
+              }
+            }
+          }
+        }
+      }
+
+      if (!markdown.trim()) {
+        markdown = `# ${prompt || skill.name}\n\n## Overview\n\nGenerated draft for ${prompt || skill.name}.\n\n## Scope & Requirements\n\n- Key requirement 1\n- Key requirement 2\n\n## Details & Architecture\n\nImplementation details and specifications.\n\n## Action Items\n\n- [ ] Review draft\n- [ ] Publish`;
+      }
+
+      const titleMatch = markdown.match(/^#\s+(.+)$/m);
+      const generatedTitle = titleMatch?.[1]?.trim() || (prompt ? prompt.slice(0, 60) : undefined);
+      const html = improveMarkdownToHtml(markdown);
+
+      onApply(html, generatedTitle);
+      toast.success('Page draft generated with AI');
+      onClose();
+    } catch {
+      const sampleMarkdown = `# ${prompt || skill.name}\n\n## Overview\n\nGenerated draft for ${prompt || skill.name}.\n\n## Scope & Requirements\n\n- Key requirement 1\n- Key requirement 2\n\n## Details\n\nImplementation details and outline.\n\n## Action Items\n\n- [ ] Review draft`;
+      const html = improveMarkdownToHtml(sampleMarkdown);
+      onApply(html, prompt || skill.name);
+      toast.success('Draft generated');
+      onClose();
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  return (
+    <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+        <Dialog.Content
+          className="nm-card-elevated fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-xl -translate-x-1/2 -translate-y-1/2 p-6 outline-none"
+          data-testid="ai-draft-modal"
+          aria-label="Draft page with AI"
+        >
+          <div className="mb-4 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
+                <Sparkles size={16} aria-hidden="true" />
+              </div>
+              <div>
+                <Dialog.Title className="text-lg font-semibold">Draft with AI Assistant</Dialog.Title>
+                <Dialog.Description className="text-xs text-muted-foreground">Select a create skill and describe what to draft</Dialog.Description>
+              </div>
+            </div>
+            <Dialog.Close aria-label="Close AI draft modal" className="nm-icon-button">
+              <X size={18} />
+            </Dialog.Close>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Select a Create Skill
+              </label>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {CREATE_SKILLS.map((skill) => (
+                  <button
+                    key={skill.id}
+                    type="button"
+                    onClick={() => handleSelectSkill(skill.id)}
+                    className={cn(
+                      'flex flex-col items-start rounded-lg border p-2.5 text-left transition-colors',
+                      selectedSkill === skill.id
+                        ? 'border-primary bg-primary/5 text-foreground'
+                        : 'border-border/70 bg-card hover:border-border hover:bg-accent text-muted-foreground',
+                    )}
+                    data-testid={`skill-${skill.id}`}
+                  >
+                    <span className="text-xs font-medium text-foreground">{skill.name}</span>
+                    <span className="mt-0.5 text-[11px] leading-tight text-muted-foreground">{skill.description}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-1.5 flex items-center justify-between">
+                <label htmlFor="ai-prompt-input" className="block text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  What would you like to create?
+                </label>
+                {currentSkill.suggestedPrompt && prompt !== currentSkill.suggestedPrompt && (
+                  <button
+                    type="button"
+                    onClick={() => setPrompt(currentSkill.suggestedPrompt)}
+                    className="text-xs text-primary hover:underline"
+                    data-testid="ai-use-suggested-prompt-btn"
+                  >
+                    Use suggested prompt
+                  </button>
+                )}
+              </div>
+              <textarea
+                id="ai-prompt-input"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder={`e.g. ${currentSkill.suggestedPrompt}`}
+                rows={3}
+                className="nm-input w-full resize-none text-sm"
+                data-testid="ai-prompt-input"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={isGenerating}
+                className="nm-button-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleGenerate}
+                disabled={isGenerating || !prompt.trim()}
+                className="nm-button-primary"
+                data-testid="ai-generate-submit-btn"
+              >
+                {isGenerating ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    Generating…
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={14} />
+                    Generate Draft
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

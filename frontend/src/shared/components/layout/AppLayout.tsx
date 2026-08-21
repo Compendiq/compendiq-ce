@@ -27,7 +27,7 @@ import { type LayoutPreset } from './LayoutPresetMenu';
 import { ArticleLayoutControlsProvider } from './article-layout-controls';
 import { useIsInspectorWideLayout, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
-import { isExistingArticlePath } from '../../lib/article-route';
+import { isArticlePath } from '../../lib/article-route';
 
 const overlayFocusableSelector =
   'a[href], button:not([disabled]), textarea:not([disabled]), ' +
@@ -114,7 +114,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const mobileSidebarRef = useRef<HTMLDivElement>(null);
   const mobileContextRef = useRef<HTMLDivElement>(null);
   const previousLayoutPathRef = useRef(location.pathname);
-  const isArticleRoute = isExistingArticlePath(location.pathname);
+  const isArticleRoute = isArticlePath(location.pathname);
   const isMobileLayout = useIsMobileLayout();
   const inspectorWide = useIsInspectorWideLayout();
   const articleSidebarLaptopExpanded = useUiStore((s) => s.articleSidebarLaptopExpanded);
