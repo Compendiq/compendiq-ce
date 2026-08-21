@@ -51,6 +51,7 @@ import {
   LAYOUT_PRESETS,
   ExtendedTable,
   BlockShortcutsExtension,
+  CommentMark,
 } from './article-extensions';
 import { InlineLucideIcon } from './inline-lucide-icon';
 import type { Editor as EditorType } from '@tiptap/react';
@@ -746,6 +747,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TextStyle,
       Color,
       Highlight.configure({ multicolor: true }),
+      CommentMark,
       ExtendedTable.configure({ resizable: true }),
       TableRow,
       TableCell,
@@ -910,7 +912,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         </div>
       )}
       {editable && editor && <SearchAndReplace editor={editor} />}
-      {editable && editor && <EditorBubbleMenu editor={editor} />}
+      {editable && editor && <EditorBubbleMenu editor={editor} pageId={pageId} />}
       {/* #49 drag handle, #1179 its block context menu. The handle and its
           menu live together in EditorBlockMenu: they share the hovered-node
           tracking, the handle lock and the target marker. */}

@@ -2788,6 +2788,75 @@ pre:focus-within .code-copy-btn,
   outline: none;
 }
 
+/* Inline Notes & Comments Highlights (#1408) */
+.comment-mark,
+mark[data-comment-id],
+span[data-comment-id] {
+  background-color: rgba(134, 174, 200, 0.22);
+  border-bottom: 2px solid rgba(134, 174, 200, 0.8);
+  border-radius: 2px;
+  padding: 0.05em 0.15em;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  color: inherit;
+}
+
+[data-theme-type="light"] .comment-mark,
+[data-theme-type="light"] mark[data-comment-id],
+[data-theme-type="light"] span[data-comment-id] {
+  background-color: rgba(63, 98, 124, 0.16);
+  border-bottom: 2px solid rgba(63, 98, 124, 0.7);
+}
+
+.comment-mark:hover,
+mark[data-comment-id]:hover,
+span[data-comment-id]:hover {
+  background-color: rgba(134, 174, 200, 0.38);
+  border-bottom-color: #86aec8;
+}
+
+[data-theme-type="light"] .comment-mark:hover,
+[data-theme-type="light"] mark[data-comment-id]:hover,
+[data-theme-type="light"] span[data-comment-id]:hover {
+  background-color: rgba(63, 98, 124, 0.26);
+  border-bottom-color: #3f627c;
+}
+
+/* Resolved comments: subtle dashed indicator */
+.comment-mark.comment-resolved,
+mark[data-comment-id][data-comment-resolved="true"],
+span[data-comment-id][data-comment-resolved="true"] {
+  background-color: transparent;
+  border-bottom: 1.5px dashed rgba(134, 174, 200, 0.4);
+  opacity: 0.75;
+}
+
+[data-theme-type="light"] .comment-mark.comment-resolved,
+[data-theme-type="light"] mark[data-comment-id][data-comment-resolved="true"],
+[data-theme-type="light"] span[data-comment-id][data-comment-resolved="true"] {
+  border-bottom: 1.5px dashed rgba(63, 98, 124, 0.35);
+  opacity: 0.75;
+}
+
+@keyframes commentPulse {
+  0% {
+    background-color: rgba(134, 174, 200, 0.6);
+    box-shadow: 0 0 0 3px rgba(134, 174, 200, 0.4);
+  }
+  50% {
+    background-color: rgba(134, 174, 200, 0.8);
+    box-shadow: 0 0 0 6px rgba(134, 174, 200, 0.2);
+  }
+  100% {
+    background-color: rgba(134, 174, 200, 0.22);
+    box-shadow: 0 0 0 0px rgba(134, 174, 200, 0);
+  }
+}
+
+.comment-flash {
+  animation: commentPulse 1.2s ease-out;
+}
+
 /*
  * Drag-handle gutter. The grip is `left-start` of a rect inset 12px from the
  * block, so it lives in the article padding — outside `.tiptap`. Moving left

@@ -14,6 +14,7 @@ export * from './schemas/license.js';
 export * from './schemas/ip-allowlist.js';
 export * from './schemas/webhooks.js';
 export * from './schemas/bulk-user-ops.js';
+export * from './schemas/comments.js';
 export * from './schemas/ai-review.js';
 export * from './schemas/pii-policy.js';
 export * from './schemas/compliance-reports.js';

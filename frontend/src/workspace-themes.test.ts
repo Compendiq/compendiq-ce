@@ -538,7 +538,7 @@ describe('Flat depth model', () => {
       const selector = m[1]!.trim().split('\n').pop()!.trim();
       for (const decl of m[2]!.match(/box-shadow:\s*([^;]+);/g) ?? []) {
         examined++;
-        const value = decl.replace(/box-shadow:\s*/, '').trim();
+        const value = decl.replace(/box-shadow:\s*/, '').replace(/;\s*$/, '').trim();
         // Allowed: `none`, focus rings (0 0 0 Npx), and the one overlay token.
         if (/^none$/.test(value)) continue;
         if (/^0 0 0 \d+px/.test(value)) continue;
