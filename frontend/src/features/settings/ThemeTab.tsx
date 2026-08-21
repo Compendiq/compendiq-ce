@@ -1,5 +1,13 @@
 import * as Switch from '@radix-ui/react-switch';
-import { useThemeStore, THEMES, THEME_CATEGORIES, type ThemeId } from '../../stores/theme-store';
+import {
+  useThemeStore,
+  THEMES,
+  THEME_CATEGORIES,
+  FONT_FAMILY_OPTIONS,
+  FONT_SCOPES,
+  type ThemeId,
+  type FontScope,
+} from '../../stores/theme-store';
 import { useUiStore } from '../../stores/ui-store';
 import { Check } from 'lucide-react';
 import { PanelHeader } from './PanelHeader';
@@ -21,6 +29,12 @@ interface ThemeTabProps {
 export function ThemeTab({ onSave }: ThemeTabProps) {
   const currentTheme = useThemeStore((s) => s.theme);
   const setTheme = useThemeStore((s) => s.setTheme);
+  const fontFamily = useThemeStore((s) => s.fontFamily);
+  const fontScope = useThemeStore((s) => s.fontScope);
+  const dyslexiaSpacing = useThemeStore((s) => s.dyslexiaSpacing);
+  const setFontFamily = useThemeStore((s) => s.setFontFamily);
+  const setFontScope = useThemeStore((s) => s.setFontScope);
+  const setDyslexiaSpacing = useThemeStore((s) => s.setDyslexiaSpacing);
   const vimModeEnabled = useUiStore((s) => s.vimModeEnabled);
   const setVimModeEnabled = useUiStore((s) => s.setVimModeEnabled);
 
@@ -147,6 +161,108 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
           </section>
         );
       })}
+
+      <section data-testid="typography-section">
+        <div className="mb-4">
+          <h3 className="text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+            Typography &amp; accessibility
+          </h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Choose a reading voice. Typography preferences are saved on this browser.
+          </p>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          {FONT_FAMILY_OPTIONS.map((option) => {
+            const isActive = fontFamily === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setFontFamily(option.id)}
+                data-testid={`font-${option.id}`}
+                aria-pressed={isActive}
+                className={cn(
+                  'rounded-xl border px-4 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  isActive
+                    ? 'border-[var(--color-primary)] bg-[var(--color-primary)]/8 ring-2 ring-[var(--color-primary)]/25'
+                    : 'border-border hover:border-border-interactive',
+                )}
+              >
+                <span className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium">{option.label}</span>
+                  {isActive && <Check size={15} className="text-[var(--color-primary)]" aria-hidden="true" />}
+                </span>
+                <span
+                  className="mt-2 block text-base leading-6 text-foreground"
+                  style={{ fontFamily: option.cssFamily }}
+                >
+                  Aa Gg 0 O 1 l I
+                </span>
+                <span className="mt-1 block text-xs text-muted-foreground">{option.description}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <fieldset className="mt-6">
+          <legend className="mb-2 text-sm font-medium">Apply font to</legend>
+          <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Font scope">
+            {FONT_SCOPES.map((scope) => {
+              const isActive = fontScope === scope;
+              const label: Record<FontScope, string> = {
+                application: 'Entire application',
+                'reading-pane': 'Document reading pane only',
+              };
+              const description: Record<FontScope, string> = {
+                application: 'Navigation, controls, and documents',
+                'reading-pane': 'Keep the compact UI in Inter',
+              };
+              return (
+                <button
+                  key={scope}
+                  type="button"
+                  role="radio"
+                  aria-checked={isActive}
+                  onClick={() => setFontScope(scope)}
+                  data-testid={`font-scope-${scope}`}
+                  className={cn(
+                    'rounded-lg border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    isActive
+                      ? 'border-[var(--color-primary)] bg-[var(--color-primary)]/8'
+                      : 'border-border hover:border-border-interactive',
+                  )}
+                >
+                  <span className="block text-sm font-medium">{label[scope]}</span>
+                  <span className="mt-0.5 block text-xs text-muted-foreground">{description[scope]}</span>
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
+
+        <div className="mt-6 flex items-center justify-between gap-3 rounded-xl border border-border px-4 py-3">
+          <div className="min-w-0">
+            <label htmlFor="dyslexia-spacing-toggle" className="cursor-pointer text-sm font-medium">
+              Enhanced reading spacing
+            </label>
+            <p id="dyslexia-spacing-help" className="mt-0.5 text-xs text-muted-foreground">
+              Adds relaxed leading, letter spacing, and word spacing for easier reading.
+            </p>
+          </div>
+          <Switch.Root
+            id="dyslexia-spacing-toggle"
+            checked={dyslexiaSpacing}
+            onCheckedChange={setDyslexiaSpacing}
+            aria-describedby="dyslexia-spacing-help"
+            aria-label="Enhanced reading spacing"
+            data-testid="dyslexia-spacing-toggle"
+            className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 transition-colors data-[state=checked]:bg-action outline-none"
+          >
+            <Switch.Thumb className="block h-4 w-4 translate-x-0.5 rounded-full bg-white transition-transform data-[state=checked]:translate-x-4" />
+          </Switch.Root>
+        </div>
+      </section>
 
       {/* A personal editing preference, not a per-document action — it used
           to hold a permanent slot in the editor toolbar at the same visual
