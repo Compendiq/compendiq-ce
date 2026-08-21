@@ -1560,4 +1560,7 @@ export function captionSelectedImage(editor: Editor) {
     .run();
 }
 
+export { CommentMark } from './comment-extension';
+
+
 

@@ -25,6 +25,7 @@ import {
   ConfluenceJiraIssue,
   ConfluenceStatus,
   ConfluenceUserMention,
+  CommentMark,
 } from './article-extensions';
 import { IMPROVE_DECORATION_CLASS } from './improve-decoration';
 import {
@@ -75,6 +76,7 @@ function Harness({
       ConfluenceStatus,
       ConfluenceUserMention,
       ConfluenceJiraIssue,
+      CommentMark,
     ],
     content,
     immediatelyRender: false,
@@ -1041,4 +1043,64 @@ describe('EditorBubbleMenu — update loop prevention (#cpu)', () => {
     expect(updateCount).toBe(0);
   });
 });
+
+describe('BubbleMenuContent — inline notes & comments (#1408)', () => {
+  it('renders the Note action button in the bubble menu', async () => {
+    await mountEditor('<p>Selectable text snippet</p>');
+    expect(screen.getByTestId('bubble-comment-trigger')).toBeInTheDocument();
+  });
+
+  it('expands the CommentComposer when Note button is clicked on a selection', async () => {
+    const editor = await mountEditor('<p>Selectable text snippet</p>');
+    act(() => {
+      editor.commands.setTextSelection({ from: 1, to: 11 }); // "Selectable"
+    });
+
+    fireEvent.click(screen.getByTestId('bubble-comment-trigger'));
+
+    expect(screen.getByTestId('inline-comment-composer')).toBeInTheDocument();
+    expect(screen.getByTestId('comment-composer-quote')).toHaveTextContent('Selectable');
+  });
+
+  it('expands CommentComposer on Cmd+Alt+M shortcut', async () => {
+    const editor = await mountEditor('<p>Important phrase to note</p>');
+    act(() => {
+      editor.commands.setTextSelection({ from: 1, to: 10 });
+    });
+
+    fireEvent.keyDown(document, { key: 'm', metaKey: true, altKey: true });
+
+    expect(screen.getByTestId('inline-comment-composer')).toBeInTheDocument();
+  });
+
+  it('expands CommentComposer on Cmd+Shift+C shortcut', async () => {
+    const editor = await mountEditor('<p>Important phrase to note</p>');
+    act(() => {
+      editor.commands.setTextSelection({ from: 1, to: 10 });
+    });
+
+    fireEvent.keyDown(document, { key: 'c', metaKey: true, shiftKey: true });
+
+    expect(screen.getByTestId('inline-comment-composer')).toBeInTheDocument();
+  });
+
+  it('submitting a note attaches the comment mark to the selection', async () => {
+    const editor = await mountEditor('<p>Important sentence for review</p>');
+    act(() => {
+      editor.commands.setTextSelection({ from: 1, to: 10 });
+    });
+
+    fireEvent.click(screen.getByTestId('bubble-comment-trigger'));
+    const input = screen.getByTestId('inline-comment-input');
+    fireEvent.change(input, { target: { value: 'Review this part' } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('inline-comment-submit'));
+    });
+
+    expect(editor.getHTML()).toContain('data-comment-id="local-');
+    expect(screen.queryByTestId('inline-comment-composer')).not.toBeInTheDocument();
+  });
+});
+
 

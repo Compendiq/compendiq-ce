@@ -36,6 +36,7 @@ import {
   TableIndex,
   UnknownMacro,
   ExtendedTable,
+  CommentMark,
 } from './article-extensions';
 import { InlineLucideIcon } from './inline-lucide-icon';
 import { MermaidBlock } from './MermaidBlockExtension';
@@ -45,7 +46,7 @@ import { useIsLightTheme } from '../../hooks/use-is-light-theme';
 import type { TocHeading } from './TableOfContents';
 import { handleTableCellTripleClick } from './table-cell-selection';
 
-// Configure DOMPurify to preserve Confluence-specific attributes
+// Configure DOMPurify to preserve Confluence-specific and comment attributes
 DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
   if (
     data.attrName === 'data-diagram-name' ||
@@ -57,7 +58,9 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
     data.attrName === 'data-layout-type' ||
     data.attrName === 'data-cell-width' ||
     data.attrName === 'data-border' ||
-    data.attrName === 'data-lucide'
+    data.attrName === 'data-lucide' ||
+    data.attrName === 'data-comment-id' ||
+    data.attrName === 'data-comment-resolved'
   ) {
     data.forceKeepAttr = true;
   }
@@ -110,7 +113,22 @@ export function ArticleViewer({
   const sanitizedContent = useMemo(
     () =>
       DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title', 'data-layout', 'data-layout-type', 'data-cell-width', 'data-border', 'data-lucide'],
+        ADD_ATTR: [
+          'data-diagram-name',
+          'data-drawio',
+          'data-confluence-link',
+          'data-type',
+          'data-checked',
+          'data-color',
+          'data-title',
+          'data-layout',
+          'data-layout-type',
+          'data-cell-width',
+          'data-border',
+          'data-lucide',
+          'data-comment-id',
+          'data-comment-resolved',
+        ],
       }),
     [content],
   );
@@ -132,6 +150,7 @@ export function ArticleViewer({
       TextStyle,
       Color,
       Highlight.configure({ multicolor: true }),
+      CommentMark,
       ExtendedTable.configure({ resizable: false }),
       TableRow,
       TableCell,

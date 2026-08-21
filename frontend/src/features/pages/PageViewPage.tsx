@@ -32,6 +32,7 @@ import { Editor, EditorToolbar, EditorContextToolbars, clearDraft, getDraft } fr
 import type { Editor as EditorType } from '@tiptap/core';
 import { drainPendingDrawioDiagrams } from '../../shared/components/article/drawio-save-drain';
 import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
+import { CommentsSidebar } from '../../shared/components/article/CommentsSidebar';
 import { DrawioEditor } from '../../shared/components/diagrams/DrawioEditor';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { ArticleSummary } from '../../shared/components/article/ArticleSummary';
@@ -990,6 +991,13 @@ export function PageViewPage() {
 
             {/* Feedback widget — hidden on the author's own standalone pages */}
             {!isOwnStandalonePage && <FeedbackWidget pageId={id} />}
+
+            {/* Inline comments & discussions floating sidebar */}
+            {id && (
+              <div className="fixed bottom-6 right-6 z-40">
+                <CommentsSidebar pageId={id} />
+              </div>
+            )}
           </div>
         )}
       </div>
