@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import * as Popover from '@radix-ui/react-popover';
+import { createPortal } from 'react-dom';
 import { useQuery, useMutation, useQueryClient, QueryClient } from '@tanstack/react-query';
 import {
   Check,
@@ -34,6 +34,8 @@ interface AnchorRect {
   left: number;
   width: number;
   height: number;
+  bottom: number;
+  right: number;
 }
 
 const fallbackQueryClient = new QueryClient({
@@ -131,6 +133,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
   const [replyText, setReplyText] = useState('');
   const [showRepliesList, setShowRepliesList] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
 
   let queryClient: QueryClient | undefined;
   try {
@@ -152,6 +155,51 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
     return { activeComment: comment, replies: commentReplies };
   }, [activeCommentId, comments]);
 
+  const openForElement = useCallback((targetId: string, element: HTMLElement | null, fallbackRect?: Partial<AnchorRect>) => {
+    let rect: AnchorRect | null = null;
+    if (element) {
+      const domRect = element.getBoundingClientRect();
+      rect = {
+        top: domRect.top,
+        left: domRect.left,
+        bottom: domRect.bottom,
+        right: domRect.right,
+        width: domRect.width,
+        height: domRect.height,
+      };
+    } else if (fallbackRect && fallbackRect.top != null && fallbackRect.left != null) {
+      rect = {
+        top: fallbackRect.top,
+        left: fallbackRect.left,
+        bottom: fallbackRect.bottom ?? (fallbackRect.top + (fallbackRect.height ?? 20)),
+        right: fallbackRect.right ?? (fallbackRect.left + (fallbackRect.width ?? 50)),
+        width: fallbackRect.width ?? 50,
+        height: fallbackRect.height ?? 20,
+      };
+    } else if (typeof document !== 'undefined') {
+      const el = document.querySelector(`[data-comment-id="${targetId}"]`) as HTMLElement | null;
+      if (el) {
+        const domRect = el.getBoundingClientRect();
+        rect = {
+          top: domRect.top,
+          left: domRect.left,
+          bottom: domRect.bottom,
+          right: domRect.right,
+          width: domRect.width,
+          height: domRect.height,
+        };
+      }
+    }
+
+    if (rect) {
+      setAnchorRect(rect);
+    }
+    setActiveCommentId(targetId);
+    setShowReplyForm(false);
+    setReplyText('');
+    setOpen(true);
+  }, []);
+
   // Listen to selection events dispatched by clicking marked text
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -160,45 +208,60 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
       const customEvent = e as CustomEvent<{
         commentId: string;
         targetElement?: HTMLElement | null;
-        rect?: AnchorRect;
+        rect?: Partial<AnchorRect>;
       }>;
       const targetId = customEvent.detail?.commentId;
       if (!targetId) return;
+      openForElement(targetId, customEvent.detail?.targetElement ?? null, customEvent.detail?.rect);
+    };
 
-      let rect = customEvent.detail?.rect;
-      if (!rect && customEvent.detail?.targetElement) {
-        const domRect = customEvent.detail.targetElement.getBoundingClientRect();
-        rect = {
-          top: domRect.top,
-          left: domRect.left,
-          width: domRect.width,
-          height: domRect.height,
-        };
-      } else if (!rect && typeof document !== 'undefined') {
-        const el = document.querySelector(`[data-comment-id="${targetId}"]`);
-        if (el) {
-          const domRect = el.getBoundingClientRect();
-          rect = {
-            top: domRect.top,
-            left: domRect.left,
-            width: domRect.width,
-            height: domRect.height,
-          };
-        }
+    // Native document click handler fallback to catch clicks on any [data-comment-id]
+    const handleDocumentClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      const commentEl = target?.closest('[data-comment-id]') as HTMLElement | null;
+      if (!commentEl) return;
+      const commentId = commentEl.getAttribute('data-comment-id');
+      if (commentId) {
+        openForElement(commentId, commentEl);
       }
-
-      if (rect) {
-        setAnchorRect(rect);
-      }
-      setActiveCommentId(targetId);
-      setShowReplyForm(false);
-      setReplyText('');
-      setOpen(true);
     };
 
     window.addEventListener('compendiq:comment-select', handleSelect);
-    return () => window.removeEventListener('compendiq:comment-select', handleSelect);
-  }, []);
+    document.addEventListener('click', handleDocumentClick, true);
+    return () => {
+      window.removeEventListener('compendiq:comment-select', handleSelect);
+      document.removeEventListener('click', handleDocumentClick, true);
+    };
+  }, [openForElement]);
+
+  // Click outside to dismiss popover
+  useEffect(() => {
+    if (!open) return;
+    const handleOutside = (e: MouseEvent | TouchEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (popoverRef.current && popoverRef.current.contains(target)) return;
+      if (target?.closest('[data-comment-id]')) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('touchstart', handleOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('touchstart', handleOutside);
+    };
+  }, [open]);
+
+  // Escape key to dismiss
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open]);
 
   const isResolved = Boolean(activeComment?.resolved ?? activeComment?.isResolved);
   const isDraftNote = Boolean(activeCommentId && (activeCommentId.startsWith('local-') || !pageId));
@@ -255,280 +318,266 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
     setOpen(false);
   }, [activeCommentId]);
 
-  if (!open || !anchorRect) return null;
+  if (!open || !anchorRect || typeof document === 'undefined') return null;
 
-  return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Anchor asChild>
-        <span
-          style={{
-            position: 'fixed',
-            top: anchorRect.top,
-            left: anchorRect.left,
-            width: anchorRect.width,
-            height: anchorRect.height,
-            pointerEvents: 'none',
-          }}
-          aria-hidden="true"
-          data-testid="comment-popover-anchor"
-        />
-      </Popover.Anchor>
+  // Viewport-bounded coordinate calculation
+  const popoverWidth = 336;
+  const maxLeft = typeof window !== 'undefined' ? window.innerWidth - popoverWidth - 16 : 400;
+  const left = Math.max(16, Math.min(maxLeft, anchorRect.left));
+  const top = anchorRect.bottom + 8;
 
-      <Popover.Portal>
-        <Popover.Content
-          side="bottom"
-          align="start"
-          sideOffset={8}
-          collisionPadding={12}
-          onOpenAutoFocus={(e) => {
-            // Do not steal focus immediately unless reply form is open
-            if (!showReplyForm) e.preventDefault();
-          }}
-          className={cn(
-            'z-50 w-84 max-w-[calc(100vw-24px)] rounded-lg border border-border bg-card p-3 text-card-foreground nm-card-elevated',
-            'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95 duration-100',
-            className,
+  const content = (
+    <div
+      ref={popoverRef}
+      role="dialog"
+      aria-label="Note details"
+      data-testid="comment-popover-content"
+      style={{
+        position: 'fixed',
+        top: `${Math.max(12, top)}px`,
+        left: `${left}px`,
+      }}
+      className={cn(
+        'z-50 w-84 max-w-[calc(100vw-24px)] rounded-lg border border-border bg-card p-3 text-card-foreground nm-card-elevated shadow-xl',
+        'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95 duration-100',
+        className,
+      )}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-action text-xs font-semibold text-action-foreground">
+            {author.charAt(0).toUpperCase()}
+          </div>
+          <span className="truncate text-xs font-semibold text-foreground">{author}</span>
+          {activeComment?.createdAt && (
+            <span className="shrink-0 text-[11px] text-muted-foreground">
+              {formatRelativeTime(activeComment.createdAt)}
+            </span>
           )}
-          data-testid="comment-popover-content"
-          aria-label="Note details"
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-action text-xs font-semibold text-action-foreground">
-                {author.charAt(0).toUpperCase()}
-              </div>
-              <span className="truncate text-xs font-semibold text-foreground">{author}</span>
-              {activeComment?.createdAt && (
-                <span className="shrink-0 text-[11px] text-muted-foreground">
-                  {formatRelativeTime(activeComment.createdAt)}
-                </span>
-              )}
-              {isResolved && (
-                <span
-                  data-testid="popover-resolved-badge"
-                  className="rounded-full bg-success/15 px-1.5 py-0.5 text-[11px] font-medium text-success"
-                >
-                  Resolved
-                </span>
-              )}
-              {isDraftNote && (
-                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-                  Draft
-                </span>
-              )}
-            </div>
+          {isResolved && (
+            <span
+              data-testid="popover-resolved-badge"
+              className="rounded-full bg-success/15 px-1.5 py-0.5 text-[11px] font-medium text-success"
+            >
+              Resolved
+            </span>
+          )}
+          {isDraftNote && (
+            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+              Draft
+            </span>
+          )}
+        </div>
 
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          aria-label="Close note popover"
+          data-testid="popover-close-btn"
+          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      {/* Loading state */}
+      {isLoading && !activeComment && !isDraftNote ? (
+        <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
+          <Loader2 size={14} className="animate-spin text-primary" />
+          <span>Loading note…</span>
+        </div>
+      ) : null}
+
+      {/* Quoted highlight snippet */}
+      {activeComment?.anchorData?.quote && (
+        <div
+          className="mt-2 flex items-start gap-1 rounded border-l-2 border-primary/70 bg-muted/40 px-2 py-1 text-xs italic text-muted-foreground"
+          data-testid="popover-comment-quote"
+        >
+          <Quote size={11} className="mt-0.5 shrink-0 opacity-70" />
+          <span className="line-clamp-2">&ldquo;{activeComment.anchorData.quote}&rdquo;</span>
+        </div>
+      )}
+
+      {/* Note content */}
+      <div className="py-2.5">
+        {activeComment ? (
+          <p
+            className="text-xs text-foreground/90 whitespace-pre-wrap leading-relaxed"
+            data-testid="popover-comment-body"
+          >
+            {activeComment.body}
+          </p>
+        ) : isDraftNote ? (
+          <p className="text-xs text-muted-foreground italic">
+            Local draft note. Will sync to the server when you save the page.
+          </p>
+        ) : (
+          !isLoading && (
+            <p className="text-xs text-muted-foreground italic">
+              Note details unavailable or removed.
+            </p>
+          )
+        )}
+      </div>
+
+      {/* Existing replies */}
+      {replies.length > 0 && (
+        <div className="space-y-2 border-t border-border/50 pt-2 mb-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-medium text-muted-foreground">
+              Replies ({replies.length})
+            </span>
             <button
               type="button"
-              onClick={() => setOpen(false)}
-              aria-label="Close note popover"
-              data-testid="popover-close-btn"
-              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              onClick={() => setShowRepliesList((v) => !v)}
+              className="text-[11px] text-primary hover:underline"
             >
-              <X size={14} />
+              {showRepliesList ? 'Hide' : 'Show'}
             </button>
           </div>
 
-          {/* Loading state */}
-          {isLoading && !activeComment && !isDraftNote ? (
-            <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
-              <Loader2 size={14} className="animate-spin text-primary" />
-              <span>Loading note…</span>
-            </div>
-          ) : null}
+          {showRepliesList &&
+            replies.map((reply) => {
+              const replyAuthor = reply.authorName ?? reply.username ?? 'Anonymous';
+              return (
+                <div
+                  key={reply.id}
+                  className="rounded bg-muted/30 p-2 text-xs"
+                  data-testid={`popover-reply-${reply.id}`}
+                >
+                  <div className="flex items-center justify-between gap-1 text-[11px] text-muted-foreground mb-1">
+                    <span className="font-medium text-foreground">{replyAuthor}</span>
+                    <span>{formatRelativeTime(reply.createdAt)}</span>
+                  </div>
+                  <p className="text-foreground/90 whitespace-pre-wrap">{reply.body}</p>
+                </div>
+              );
+            })}
+        </div>
+      )}
 
-          {/* Quoted highlight snippet */}
-          {activeComment?.anchorData?.quote && (
-            <div
-              className="mt-2 flex items-start gap-1 rounded border-l-2 border-primary/70 bg-muted/40 px-2 py-1 text-xs italic text-muted-foreground"
-              data-testid="popover-comment-quote"
+      {/* Inline reply form */}
+      {showReplyForm && (
+        <form onSubmit={handleReplySubmit} className="border-t border-border/50 pt-2 mb-2">
+          <textarea
+            ref={textareaRef}
+            value={replyText}
+            onChange={(e) => setReplyText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                void handleReplySubmit();
+              } else if (e.key === 'Escape') {
+                setShowReplyForm(false);
+              }
+              e.stopPropagation();
+            }}
+            placeholder="Write a reply… (Cmd+Enter to send)"
+            rows={2}
+            className="w-full rounded border border-border bg-background p-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            autoFocus
+            data-testid="popover-reply-input"
+          />
+          <div className="mt-1.5 flex justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={() => setShowReplyForm(false)}
+              className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
             >
-              <Quote size={11} className="mt-0.5 shrink-0 opacity-70" />
-              <span className="line-clamp-2">&ldquo;{activeComment.anchorData.quote}&rdquo;</span>
-            </div>
-          )}
-
-          {/* Note content */}
-          <div className="py-2.5">
-            {activeComment ? (
-              <p
-                className="text-xs text-foreground/90 whitespace-pre-wrap leading-relaxed"
-                data-testid="popover-comment-body"
-              >
-                {activeComment.body}
-              </p>
-            ) : isDraftNote ? (
-              <p className="text-xs text-muted-foreground italic">
-                Local draft note. Will sync to the server when you save the page.
-              </p>
-            ) : (
-              !isLoading && (
-                <p className="text-xs text-muted-foreground italic">
-                  Note details unavailable or removed.
-                </p>
-              )
-            )}
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!replyText.trim() || addReply.isPending}
+              className="rounded bg-action px-2.5 py-1 text-xs font-medium text-action-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
+              data-testid="popover-reply-submit-btn"
+            >
+              {addReply.isPending ? 'Sending…' : 'Reply'}
+            </button>
           </div>
+        </form>
+      )}
 
-          {/* Existing replies */}
-          {replies.length > 0 && (
-            <div className="space-y-2 border-t border-border/50 pt-2 mb-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-medium text-muted-foreground">
-                  Replies ({replies.length})
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setShowRepliesList((v) => !v)}
-                  className="text-[11px] text-primary hover:underline"
-                >
-                  {showRepliesList ? 'Hide' : 'Show'}
-                </button>
-              </div>
-
-              {showRepliesList &&
-                replies.map((reply) => {
-                  const replyAuthor = reply.authorName ?? reply.username ?? 'Anonymous';
-                  return (
-                    <div
-                      key={reply.id}
-                      className="rounded bg-muted/30 p-2 text-xs"
-                      data-testid={`popover-reply-${reply.id}`}
-                    >
-                      <div className="flex items-center justify-between gap-1 text-[11px] text-muted-foreground mb-1">
-                        <span className="font-medium text-foreground">{replyAuthor}</span>
-                        <span>{formatRelativeTime(reply.createdAt)}</span>
-                      </div>
-                      <p className="text-foreground/90 whitespace-pre-wrap">{reply.body}</p>
-                    </div>
-                  );
-                })}
-            </div>
+      {/* Action buttons footer */}
+      <div className="flex flex-wrap items-center justify-between gap-1 border-t border-border/60 pt-2 text-xs">
+        <div className="flex items-center gap-1">
+          {!showReplyForm && !isDraftNote && (
+            <button
+              type="button"
+              onClick={() => {
+                setShowReplyForm(true);
+                setTimeout(() => textareaRef.current?.focus(), 50);
+              }}
+              className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              data-testid="popover-reply-toggle-btn"
+            >
+              <CornerDownRight size={12} />
+              <span>Reply</span>
+            </button>
           )}
 
-          {/* Inline reply form */}
-          {showReplyForm && (
-            <form onSubmit={handleReplySubmit} className="border-t border-border/50 pt-2 mb-2">
-              <textarea
-                ref={textareaRef}
-                value={replyText}
-                onChange={(e) => setReplyText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                    e.preventDefault();
-                    void handleReplySubmit();
-                  } else if (e.key === 'Escape') {
-                    setShowReplyForm(false);
-                  }
-                  e.stopPropagation();
-                }}
-                placeholder="Write a reply… (Cmd+Enter to send)"
-                rows={2}
-                className="w-full rounded border border-border bg-background p-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                autoFocus
-                data-testid="popover-reply-input"
-              />
-              <div className="mt-1.5 flex justify-end gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setShowReplyForm(false)}
-                  className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={!replyText.trim() || addReply.isPending}
-                  className="rounded bg-action px-2.5 py-1 text-xs font-medium text-action-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
-                  data-testid="popover-reply-submit-btn"
-                >
-                  {addReply.isPending ? 'Sending…' : 'Reply'}
-                </button>
-              </div>
-            </form>
+          {activeComment && (
+            <button
+              type="button"
+              onClick={handleToggleResolve}
+              disabled={toggleResolve.isPending}
+              className={cn(
+                'flex items-center gap-1 rounded px-2 py-1 transition-colors',
+                isResolved
+                  ? 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  : 'text-success hover:bg-success/10',
+              )}
+              data-testid="popover-resolve-btn"
+            >
+              {isResolved ? (
+                <>
+                  <RotateCcw size={12} />
+                  <span>Unresolve</span>
+                </>
+              ) : (
+                <>
+                  <Check size={12} />
+                  <span>Resolve</span>
+                </>
+              )}
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1">
+          {/* In editor mode: Remove highlight / Unmark */}
+          {editor && (
+            <button
+              type="button"
+              onClick={handleRemoveHighlight}
+              className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+              title="Remove note highlight from document"
+              data-testid="popover-remove-highlight-btn"
+            >
+              <Trash2 size={12} />
+              <span>Remove mark</span>
+            </button>
           )}
 
-          {/* Action buttons footer */}
-          <div className="flex flex-wrap items-center justify-between gap-1 border-t border-border/60 pt-2 text-xs">
-            <div className="flex items-center gap-1">
-              {!showReplyForm && !isDraftNote && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowReplyForm(true);
-                    setTimeout(() => textareaRef.current?.focus(), 50);
-                  }}
-                  className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                  data-testid="popover-reply-toggle-btn"
-                >
-                  <CornerDownRight size={12} />
-                  <span>Reply</span>
-                </button>
-              )}
-
-              {activeComment && (
-                <button
-                  type="button"
-                  onClick={handleToggleResolve}
-                  disabled={toggleResolve.isPending}
-                  className={cn(
-                    'flex items-center gap-1 rounded px-2 py-1 transition-colors',
-                    isResolved
-                      ? 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                      : 'text-success hover:bg-success/10',
-                  )}
-                  data-testid="popover-resolve-btn"
-                >
-                  {isResolved ? (
-                    <>
-                      <RotateCcw size={12} />
-                      <span>Unresolve</span>
-                    </>
-                  ) : (
-                    <>
-                      <Check size={12} />
-                      <span>Resolve</span>
-                    </>
-                  )}
-                </button>
-              )}
-            </div>
-
-            <div className="flex items-center gap-1">
-              {/* In editor mode: Remove highlight / Unmark */}
-              {editor && (
-                <button
-                  type="button"
-                  onClick={handleRemoveHighlight}
-                  className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
-                  title="Remove note highlight from document"
-                  data-testid="popover-remove-highlight-btn"
-                >
-                  <Trash2 size={12} />
-                  <span>Remove mark</span>
-                </button>
-              )}
-
-              {/* View in full sidebar */}
-              {pageId && (
-                <button
-                  type="button"
-                  onClick={handleOpenInSidebar}
-                  className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                  title="Open full comments sidebar"
-                  data-testid="popover-open-sidebar-btn"
-                >
-                  <ExternalLink size={12} />
-                  <span>Sidebar</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          <Popover.Arrow className="fill-card" />
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+          {/* View in full sidebar */}
+          {pageId && (
+            <button
+              type="button"
+              onClick={handleOpenInSidebar}
+              className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              title="Open full comments sidebar"
+              data-testid="popover-open-sidebar-btn"
+            >
+              <ExternalLink size={12} />
+              <span>Sidebar</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
+
+  return createPortal(content, document.body);
 }
