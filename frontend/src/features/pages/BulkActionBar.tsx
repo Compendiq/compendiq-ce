@@ -131,7 +131,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
             aria-label="Re-embed selected pages"
           >
             <span>Re-embed</span>
-            <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground xl:inline-flex">E</kbd>
+            <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground xl:inline-flex">E</kbd>
           </Button>
 
           {confluenceCount > 0 && (
@@ -148,7 +148,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
               aria-label="Re-sync selected Confluence pages"
             >
               <span>Re-sync{confluenceCount < count ? ` (${confluenceCount})` : ''}</span>
-              <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground xl:inline-flex">S</kbd>
+              <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground xl:inline-flex">S</kbd>
             </Button>
           )}
 
@@ -165,7 +165,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
             aria-label="Re-analyze quality of selected pages"
           >
             <span><span className="hidden lg:inline">Re-analyze </span>Quality</span>
-            <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground xl:inline-flex">Q</kbd>
+            <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground xl:inline-flex">Q</kbd>
           </Button>
 
           <Button
@@ -181,7 +181,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
             aria-label="Move selected pages to trash"
           >
             <span><span className="hidden md:inline">Move to </span>Trash</span>
-            <kbd className="ml-1.5 hidden rounded border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive xl:inline-flex">Del</kbd>
+            <kbd className="ml-1.5 hidden rounded border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[11px] text-destructive xl:inline-flex">Del</kbd>
           </Button>
         </div>
 
@@ -204,7 +204,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
           aria-label="Clear selection"
         >
           <span>Clear<span className="hidden sm:inline"> selection</span></span>
-          <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground xl:inline-flex">Esc</kbd>
+          <kbd className="ml-1.5 hidden rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground xl:inline-flex">Esc</kbd>
         </Button>
       </m.div>
 
