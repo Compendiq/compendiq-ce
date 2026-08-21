@@ -861,6 +861,13 @@ export function PagesPage() {
       const nextIndex = Math.min(pageItems.length - 1, index + 1);
       setFocusedRowIndex(nextIndex);
       virtualizer.scrollToIndex(nextIndex);
+      if (e.shiftKey && nextIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const nextId = pageItems[nextIndex]?.id;
+        if (nextId) toggleSelect(nextId, true);
+      }
       requestAnimationFrame(() => {
         const nextEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${nextIndex}"] button[type="button"]`);
         nextEl?.focus();
@@ -870,6 +877,13 @@ export function PagesPage() {
       const prevIndex = Math.max(0, index - 1);
       setFocusedRowIndex(prevIndex);
       virtualizer.scrollToIndex(prevIndex);
+      if (e.shiftKey && prevIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const prevId = pageItems[prevIndex]?.id;
+        if (prevId) toggleSelect(prevId, true);
+      }
       requestAnimationFrame(() => {
         const prevEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${prevIndex}"] button[type="button"]`);
         prevEl?.focus();
@@ -895,7 +909,7 @@ export function PagesPage() {
         lastEl?.focus();
       });
     }
-  }, [pageItems.length, toggleSelect, virtualizer]);
+  }, [pageItems, selectedIds, toggleSelect, virtualizer]);
 
   const [focusedSearchRowIndex, setFocusedSearchRowIndex] = useState<number>(0);
 
@@ -904,19 +918,33 @@ export function PagesPage() {
       e.preventDefault();
       const nextIndex = Math.min(total - 1, index + 1);
       setFocusedSearchRowIndex(nextIndex);
+      if (e.shiftKey && nextIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const nextId = currentAddressableItems[nextIndex]?.id;
+        if (nextId) toggleSelect(nextId, true);
+      }
       const nextEl = document.querySelector<HTMLButtonElement>(`[data-search-row-index="${nextIndex}"] button[type="button"]`);
       nextEl?.focus();
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       const prevIndex = Math.max(0, index - 1);
       setFocusedSearchRowIndex(prevIndex);
+      if (e.shiftKey && prevIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const prevId = currentAddressableItems[prevIndex]?.id;
+        if (prevId) toggleSelect(prevId, true);
+      }
       const prevEl = document.querySelector<HTMLButtonElement>(`[data-search-row-index="${prevIndex}"] button[type="button"]`);
       prevEl?.focus();
     } else if (e.key === ' ' || e.key === 'Spacebar') {
       e.preventDefault();
       toggleSelect(id, e.shiftKey);
     }
-  }, [toggleSelect]);
+  }, [currentAddressableItems, selectedIds, toggleSelect]);
 
   return (
     // max-w-[1100px], matching the app's 1200px document-column convention:
@@ -1001,6 +1029,14 @@ export function PagesPage() {
                   e.stopPropagation();
                   setSearchInput('');
                   setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
+                } else if (e.key === 'Enter' || e.key === 'ArrowDown') {
+                  const firstRow = document.querySelector<HTMLButtonElement>(
+                    '[data-search-row-index="0"] button[type="button"], [data-row-index="0"] button[type="button"]',
+                  );
+                  if (firstRow) {
+                    e.preventDefault();
+                    firstRow.focus();
+                  }
                 }
               }}
               className="h-9 min-w-0 flex-1 border-0 bg-transparent px-0 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
@@ -1760,6 +1796,11 @@ export function PagesPage() {
                 activeFilterCount > 0
                   ? { label: 'Clear filters', onClick: clearAllFilters }
                   : (!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined)
+              }
+              secondaryAction={
+                activeFilterCount === 0 && !search
+                  ? { label: 'Create a Page', onClick: () => navigate('/pages/new') }
+                  : undefined
               }
             />
           ) : (

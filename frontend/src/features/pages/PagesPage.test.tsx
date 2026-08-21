@@ -691,6 +691,7 @@ describe('PagesPage', () => {
       mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(await screen.findByText('Go to Settings')).toBeInTheDocument();
+      expect(screen.getByText('Create a Page')).toBeInTheDocument();
     });
 
     it('shows "Try a different search term" when search is active', async () => {
@@ -2899,6 +2900,31 @@ describe('PagesPage filter persistence (#1124)', () => {
       expect(bulkBar).toBeInTheDocument();
       expect(bulkBar).toHaveClass('fixed', 'bottom-6', 'nm-card-elevated');
       expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('1 page selected');
+    });
+
+    it('supports contiguous range multi-selection with Shift+ArrowDown', async () => {
+      mockFetchWithPages(makeManyPages(4));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const firstRowBtn = screen.getByTestId('page-row-button-page-1');
+
+      // Shift+ArrowDown from row 0 to row 1 extends selection to both items
+      fireEvent.keyDown(firstRowBtn, { key: 'ArrowDown', shiftKey: true });
+      expect(await screen.findByTestId('bulk-action-bar')).toBeInTheDocument();
+      expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('2 pages selected');
+    });
+
+    it('hands off focus from search input to first result row on Enter', async () => {
+      mockFetchWithPages(makeManyPages(3));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const searchInput = screen.getByPlaceholderText(FIND_PLACEHOLDER);
+      const firstRowBtn = screen.getByTestId('page-row-button-page-1');
+
+      fireEvent.keyDown(searchInput, { key: 'Enter' });
+      expect(document.activeElement).toBe(firstRowBtn);
     });
   });
 });

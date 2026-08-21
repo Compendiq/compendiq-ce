@@ -45,6 +45,23 @@ describe('EmptyState', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
+  it('renders secondary action button when provided', () => {
+    const onAction = vi.fn();
+    const onSecondary = vi.fn();
+    render(
+      <EmptyState
+        icon={FolderOpen}
+        title="No items"
+        action={{ label: 'Primary', onClick: onAction }}
+        secondaryAction={{ label: 'Secondary', onClick: onSecondary }}
+      />,
+    );
+    const secondaryBtn = screen.getByText('Secondary');
+    expect(secondaryBtn).toBeInTheDocument();
+    fireEvent.click(secondaryBtn);
+    expect(onSecondary).toHaveBeenCalledOnce();
+  });
+
   it('applies custom className', () => {
     const { container } = render(
       <EmptyState icon={FolderOpen} title="No items" className="my-custom" />,
