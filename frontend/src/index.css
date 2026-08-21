@@ -1109,7 +1109,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      action next to it. */
   padding: 0.375rem 0.75rem;
   border-radius: var(--radius-md);
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-interactive);
+  /* Secondary actions stay part of the surrounding toolbar until hover.
+     Their real border preserves the operable boundary and forced-colors
+     behavior; removing the permanent fill keeps a row of actions from
+     reading as a row of miniature cards. */
   background: transparent;
   color: var(--color-foreground);
   font-size: 0.8125rem;

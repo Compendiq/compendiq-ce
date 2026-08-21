@@ -4,7 +4,7 @@ import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
   Shield, Users, FolderOpen, Plus, Trash2,
-  UserPlus, Loader2, Lock, ShieldCheck, Pencil,
+  UserPlus, Lock, ShieldCheck, Pencil,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';

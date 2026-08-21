@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useCallback } from 'react';
-import { Send, FileInput, Loader2 } from 'lucide-react';
+import { Send, FileInput } from 'lucide-react';
 import { useAiContext } from '../AiContext';
 import { AssistantActionSelect } from '../AssistantActionSelect';
 import { MermaidDiagram } from '../../../shared/components/diagrams/MermaidDiagram';

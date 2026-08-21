@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { RefreshCw, CheckSquare, Square, Loader2, Trash2 } from 'lucide-react';
+import { RefreshCw, CheckSquare, Square, Trash2 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';

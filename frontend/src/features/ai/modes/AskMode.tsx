@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Send, Loader2, Link2, X, Plus } from 'lucide-react';
+import { AlertTriangle, Send, Link2, X, Plus } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { AssistantActionSelect } from '../AssistantActionSelect';
 import { DeepSearchToggle } from '../DeepSearchToggle';

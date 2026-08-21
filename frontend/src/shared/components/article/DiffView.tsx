@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { m } from 'framer-motion';
-import { Check, X, Columns2, Rows3, Loader2 } from 'lucide-react';
+import { Check, X, Columns2, Rows3 } from 'lucide-react';
 import { diffWords } from 'diff';
 import { cn } from '../../lib/cn';
 import { Button } from '../Button';

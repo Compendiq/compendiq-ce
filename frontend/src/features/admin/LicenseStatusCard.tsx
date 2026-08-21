@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
-import { Crown, Users, Calendar, CheckCircle2, Lock, Sparkles, ChevronRight, KeyRound, Loader2, Save, Trash2, ArrowUpRight } from 'lucide-react';
+import { Crown, Users, Calendar, CheckCircle2, Lock, Sparkles, ChevronRight, KeyRound, Save, Trash2, ArrowUpRight } from 'lucide-react';
 import { PanelHeader } from '../settings/PanelHeader';
 import type { LicenseInfoResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';

@@ -10,7 +10,6 @@ import {
   ServerCog,
   Lock,
   TestTube2,
-  Loader2,
   CheckCircle2,
   XCircle,
   Save,

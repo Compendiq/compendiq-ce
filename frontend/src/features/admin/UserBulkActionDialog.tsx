@@ -28,7 +28,7 @@ import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import { toast } from 'sonner';
-import { AlertTriangle, Loader2, Users, X } from 'lucide-react';
+import { AlertTriangle, Users, X } from 'lucide-react';
 import type {
   BulkUserAction,
   BulkUserBulkActionRequest,

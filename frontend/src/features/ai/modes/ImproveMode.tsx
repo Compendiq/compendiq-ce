@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useCallback, useState } from 'react';
-import { AlertTriangle, Send, Loader2, Globe } from 'lucide-react';
+import { AlertTriangle, Send, Globe } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useAiContext } from '../AiContext';
 import { DiffView } from '../../../shared/components/article/DiffView';

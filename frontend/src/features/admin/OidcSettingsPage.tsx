@@ -4,7 +4,7 @@ import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
   Shield, Globe, Key, Link2, Plus, Trash2,
-  Loader2, CheckCircle2, XCircle, TestTube2, AlertTriangle,
+  CheckCircle2, XCircle, TestTube2, AlertTriangle,
 } from 'lucide-react';
 import type { LicenseInfoResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';

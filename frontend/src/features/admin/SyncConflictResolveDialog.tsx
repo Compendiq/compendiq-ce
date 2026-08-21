@@ -18,7 +18,7 @@
 import { useMutation } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import { toast } from 'sonner';
-import { Check, Loader2, X } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 import { DiffView } from '../../shared/components/article/DiffView';
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { Button } from '../../shared/components/Button';
