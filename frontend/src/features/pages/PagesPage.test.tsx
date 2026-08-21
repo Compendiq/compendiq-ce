@@ -2942,7 +2942,7 @@ describe('PagesPage filter persistence (#1124)', () => {
       expect(firstRowBtn).toHaveAttribute('tabIndex', '0');
     });
 
-    it('exposes ARIA feed semantics with row count and row indices', async () => {
+    it('exposes ARIA feed semantics with row count, posinset, and setsize', async () => {
       mockFetchWithPages(makeManyPages(3));
       render(<PagesPage />, { wrapper: createWrapper() });
 
@@ -2953,6 +2953,34 @@ describe('PagesPage filter persistence (#1124)', () => {
       const firstRow = feed.querySelector('[data-row-index="0"]');
       expect(firstRow).toHaveAttribute('role', 'article');
       expect(firstRow).toHaveAttribute('aria-rowindex', '1');
+      expect(firstRow).toHaveAttribute('aria-posinset', '1');
+      expect(firstRow).toHaveAttribute('aria-setsize', '3');
+    });
+
+    it('binds min and max constraints across modified from/to date inputs', async () => {
+      mockFetchWithPages(makeManyPages(2));
+      renderAt('/?from=2026-08-01&to=2026-08-15');
+
+      const fromInput = await screen.findByTestId('filter-date-from');
+      const toInput = screen.getByTestId('filter-date-to');
+
+      expect(fromInput).toHaveAttribute('max', '2026-08-15');
+      expect(toInput).toHaveAttribute('min', '2026-08-01');
+    });
+
+    it('clamps out-of-bounds page parameter back to page 1 when totalPages shrinks', async () => {
+      mockFetchWithPages({
+        items: makeManyPages(2).items,
+        total: 2,
+        page: 1,
+        limit: 20,
+        totalPages: 1,
+      });
+      renderAt('/?page=5');
+
+      await waitFor(() => {
+        expect(probe()).not.toContain('page=5');
+      });
     });
   });
 });

@@ -323,19 +323,30 @@ const PageListItem = memo(function PageListItem({
     </m.div>
   );
 }, (prev, next) => {
-  // Only re-render if the page-item data changed
+  // Only re-render if the page-item data or relevant row props changed
   if (prev.pageItem.id !== next.pageItem.id) return false;
+  if (prev.pageItem.title !== next.pageItem.title) return false;
   if (prev.pageItem.version !== next.pageItem.version) return false;
+  if (prev.pageItem.icon !== next.pageItem.icon) return false;
+  if (prev.pageItem.author !== next.pageItem.author) return false;
+  if (prev.pageItem.lastModifiedAt !== next.pageItem.lastModifiedAt) return false;
+  if (prev.pageItem.source !== next.pageItem.source) return false;
+  if (prev.pageItem.visibility !== next.pageItem.visibility) return false;
+  if (prev.pageItem.spaceKey !== next.pageItem.spaceKey) return false;
   if (prev.pageItem.embeddingDirty !== next.pageItem.embeddingDirty) return false;
   if (prev.pageItem.qualityScore !== next.pageItem.qualityScore) return false;
   if (prev.pageItem.qualityStatus !== next.pageItem.qualityStatus) return false;
+  if (prev.pageItem.qualityError !== next.pageItem.qualityError) return false;
+  if (prev.pageItem.qualityAnalyzedAt !== next.pageItem.qualityAnalyzedAt) return false;
   if (prev.pageItem.summaryStatus !== next.pageItem.summaryStatus) return false;
+  if (prev.pageItem.labels !== next.pageItem.labels && prev.pageItem.labels.join(',') !== next.pageItem.labels.join(',')) return false;
   if (prev.index !== next.index) return false;
   // Selection is row-local render state, not page data. Omitting it here made
   // the checkbox permanently unclickable-looking: the Set updated and the
   // action bar counted correctly, but the row skipped its re-render, so React
   // restored the controlled input's DOM back to unchecked.
   if (prev.selected !== next.selected) return false;
+  if (prev.onNavigate !== next.onNavigate) return false;
   if (prev.onToggleSelect !== next.onToggleSelect) return false;
   if (prev.showSource !== next.showSource) return false;
   if (prev.showVisibility !== next.showVisibility) return false;
@@ -854,12 +865,33 @@ export function PagesPage() {
   });
 
   const [focusedRowIndex, setFocusedRowIndex] = useState<number>(0);
+  const pendingFocusIndexRef = useRef<number | null>(null);
+
+  // Clamp out-of-bounds page parameter back to 1 when a filter reduces totalPages
+  useEffect(() => {
+    if (pagesData && pagesData.totalPages > 0 && page > pagesData.totalPages) {
+      setFilters({ page: 1 });
+    }
+  }, [pagesData, page, setFilters]);
+
+  // Ensure focus is restored to the virtual row once it mounts after an async scroll jump
+  useEffect(() => {
+    if (pendingFocusIndexRef.current !== null) {
+      const idx = pendingFocusIndexRef.current;
+      const el = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${idx}"] button[type="button"]`);
+      if (el) {
+        el.focus();
+        pendingFocusIndexRef.current = null;
+      }
+    }
+  });
 
   const handleRowKeyDown = useCallback((index: number, id: string, e: React.KeyboardEvent<HTMLButtonElement>) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       const nextIndex = Math.min(pageItems.length - 1, index + 1);
       setFocusedRowIndex(nextIndex);
+      pendingFocusIndexRef.current = nextIndex;
       virtualizer.scrollToIndex(nextIndex);
       if (e.shiftKey && nextIndex !== index) {
         if (!selectedIds.has(id) && !lastToggledId.current) {
@@ -870,12 +902,16 @@ export function PagesPage() {
       }
       requestAnimationFrame(() => {
         const nextEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${nextIndex}"] button[type="button"]`);
-        nextEl?.focus();
+        if (nextEl) {
+          nextEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
       });
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       const prevIndex = Math.max(0, index - 1);
       setFocusedRowIndex(prevIndex);
+      pendingFocusIndexRef.current = prevIndex;
       virtualizer.scrollToIndex(prevIndex);
       if (e.shiftKey && prevIndex !== index) {
         if (!selectedIds.has(id) && !lastToggledId.current) {
@@ -886,7 +922,10 @@ export function PagesPage() {
       }
       requestAnimationFrame(() => {
         const prevEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${prevIndex}"] button[type="button"]`);
-        prevEl?.focus();
+        if (prevEl) {
+          prevEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
       });
     } else if (e.key === ' ' || e.key === 'Spacebar') {
       e.preventDefault();
@@ -894,19 +933,27 @@ export function PagesPage() {
     } else if (e.key === 'Home') {
       e.preventDefault();
       setFocusedRowIndex(0);
+      pendingFocusIndexRef.current = 0;
       virtualizer.scrollToIndex(0);
       requestAnimationFrame(() => {
         const firstEl = listContainerRef.current?.querySelector<HTMLButtonElement>('[data-row-index="0"] button[type="button"]');
-        firstEl?.focus();
+        if (firstEl) {
+          firstEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
       });
     } else if (e.key === 'End') {
       e.preventDefault();
       const lastIndex = pageItems.length - 1;
       setFocusedRowIndex(lastIndex);
+      pendingFocusIndexRef.current = lastIndex;
       virtualizer.scrollToIndex(lastIndex);
       requestAnimationFrame(() => {
         const lastEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${lastIndex}"] button[type="button"]`);
-        lastEl?.focus();
+        if (lastEl) {
+          lastEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
       });
     }
   }, [pageItems, selectedIds, toggleSelect, virtualizer]);
@@ -1381,11 +1428,11 @@ export function PagesPage() {
                     </div>
                     <div className="min-w-36">
                       <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified from</label>
-                      <input id="filter-date-from-input" type="date" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} className="nm-input h-8 text-xs w-full" data-testid="filter-date-from" aria-label="Modified from" />
+                      <input id="filter-date-from-input" type="date" value={dateFromInput} max={dateToInput || undefined} onChange={(e) => setDateFromInput(e.target.value)} className="nm-input h-8 text-xs w-full" data-testid="filter-date-from" aria-label="Modified from" />
                     </div>
                     <div className="min-w-36">
                       <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified to</label>
-                      <input id="filter-date-to-input" type="date" value={dateToInput} onChange={(e) => setDateToInput(e.target.value)} className="nm-input h-8 text-xs w-full" data-testid="filter-date-to" aria-label="Modified to" />
+                      <input id="filter-date-to-input" type="date" value={dateToInput} min={dateFromInput || undefined} onChange={(e) => setDateToInput(e.target.value)} className="nm-input h-8 text-xs w-full" data-testid="filter-date-to" aria-label="Modified to" />
                     </div>
                   </div>
                 </fieldset>
@@ -1632,59 +1679,60 @@ export function PagesPage() {
                     onClear={clearSelection}
                   />
 
-                  <div>
+                  <div role="list" aria-label="Search results">
                     {displayItems.map((item, i) => {
                       const itemId = String(item.id);
                       const isSelected = selectedIds.has(itemId);
                       return (
                         <m.div
                           key={item.id}
+                          role="listitem"
                           initial={{ opacity: 0 }}
                           animate={{ opacity: 1 }}
                           transition={{ duration: 0.15, delay: i * 0.02 }}
                           data-search-row-index={i}
                         >
-                          <div
-                            className={cn(
-                              'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 max-sm:items-start',
-                              isSelected ? 'bg-accent' : 'hover:bg-accent',
-                            )}
-                            data-testid={`article-hover-${item.id}`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              tabIndex={-1}
-                              onClick={(e) => toggleSelect(itemId, e.shiftKey)}
-                              onChange={() => {}}
-                              aria-label={`Select ${item.title}`}
+                            <div
                               className={cn(
-                                'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5',
-                                !isSelected && !selectionArmed && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
+                                'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 max-sm:items-start',
+                                isSelected ? 'bg-accent' : 'hover:bg-accent',
                               )}
-                              data-testid={`page-select-${item.id}`}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => navigate(`/pages/${item.id}`)}
-                              tabIndex={focusedSearchRowIndex === i ? 0 : -1}
-                              onFocus={() => setFocusedSearchRowIndex(i)}
-                              onKeyDown={(e) => handleSearchRowKeyDown(i, itemId, displayItems.length, e)}
-                              className="nm-focus-ring flex min-w-0 flex-1 items-center gap-3 text-left max-sm:flex-wrap max-sm:gap-y-1 rounded-sm"
+                              data-testid={`article-hover-${item.id}`}
                             >
-                              <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
-                                <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
-                                  {item.icon && <PageIcon icon={item.icon} pageId={itemId} size="row" />}
-                                  <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
-                                </p>
-                                {item.excerpt && (
-                                  <SanitizedHtml
-                                    html={item.excerpt}
-                                    allowedTags={['mark']}
-                                    allowedAttrs={[]}
-                                    className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-action/15 [&_mark]:font-medium [&_mark]:text-foreground"
-                                  />
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                tabIndex={-1}
+                                onClick={(e) => toggleSelect(itemId, e.shiftKey)}
+                                onChange={() => {}}
+                                aria-label={`Select ${item.title}`}
+                                className={cn(
+                                  'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5',
+                                  !isSelected && !selectionArmed && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
                                 )}
+                                data-testid={`page-select-${item.id}`}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/pages/${item.id}`)}
+                                tabIndex={focusedSearchRowIndex === i ? 0 : -1}
+                                onFocus={() => setFocusedSearchRowIndex(i)}
+                                onKeyDown={(e) => handleSearchRowKeyDown(i, itemId, displayItems.length, e)}
+                                className="nm-focus-ring flex min-w-0 flex-1 items-center gap-3 text-left max-sm:flex-wrap max-sm:gap-y-1 rounded-sm"
+                              >
+                                <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
+                                  <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
+                                    {item.icon && <PageIcon icon={item.icon} pageId={itemId} size="row" />}
+                                    <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
+                                  </p>
+                                  {item.excerpt && (
+                                    <SanitizedHtml
+                                      html={item.excerpt}
+                                      allowedTags={['mark']}
+                                      allowedAttrs={[]}
+                                      className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-action/15 [&_mark]:font-medium [&_mark]:text-foreground"
+                                    />
+                                  )}
                                 {item.spaceKey && (
                                   <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                                     {item.spaceKey !== '__local__' ? (
@@ -1771,27 +1819,18 @@ export function PagesPage() {
               <div className="flex-1">
                 <p className="font-medium text-destructive">Couldn't load pages</p>
                 <p className="mt-1 text-muted-foreground">{pagesError.message}</p>
+                <button
+                  onClick={() => refetchPages()}
+                  disabled={isFetchingPages}
+                  className="nm-focus-ring flex items-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid="pages-error-retry"
+                >
+                  {isFetchingPages && <Loader2 size={12} className="animate-spin" />}
+                  {isFetchingPages ? 'Retrying…' : 'Retry'}
+                </button>
               </div>
-              <button
-                onClick={() => refetchPages()}
-                disabled={isFetchingPages}
-                className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
-                data-testid="pages-error-retry"
-              >
-                {isFetchingPages && <Loader2 size={12} className="animate-spin" />}
-                {isFetchingPages ? 'Retrying…' : 'Retry'}
-              </button>
             </div>
           ) : !pagesData?.items.length ? (
-            // Filters first, search second, corpus-emptiness last (harden
-            // pass, 2026-08-17): an empty result set with active filters was
-            // reported as "Sync your Confluence spaces to see pages here",
-            // sending the user to Settings for a problem their own filters
-            // caused, with no mention of the filters and no way to clear
-            // them from this screen. `activeFilterCount` already reflects
-            // exactly what's filtering this list (Space included, since it
-            // now participates in `activeFilters` above) — a real empty
-            // corpus is the one case where it, and `search`, are both empty.
             <EmptyState
               icon={FolderOpen}
               className="border-0 bg-transparent"
@@ -1816,112 +1855,115 @@ export function PagesPage() {
             />
           ) : (
             <>
-            <div data-testid="library-results-panel" className="overflow-hidden rounded-lg border border-border bg-background">
-            <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
-              <span>{pagesData.total} {pagesData.total === 1 ? 'page' : 'pages'}</span>
-              {selectedSpace && <><span aria-hidden="true"> · </span><span>{selectedSpace.name}</span></>}
-              {!selectionArmed && (
-                <button type="button" onClick={() => setSelectionMode(true)} className="nm-button-ghost h-8 px-2.5 text-xs" data-testid="enter-selection-mode">
-                  Select pages
-                </button>
-              )}
-              <div className="ml-auto flex items-center gap-1.5 text-xs">
-                <span className="text-muted-foreground">Sort</span>
-                <LibrarySortFilter
-                  value={sort}
-                  onChange={(newSort) => setFilters({ sort: newSort, page: 1 })}
-                  hasSearchQuery={hasActiveQuery}
-                />
-              </div>
-            </div>
-            {/* Select-all when selection is armed */}
-            {selectionArmed && (
-              <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm text-muted-foreground">
-                <label
-                  className={cn(
-                    'flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground',
-                    !selectionArmed && 'sr-only',
+              <div data-testid="library-results-panel" className="overflow-hidden rounded-lg border border-border bg-background">
+                <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
+                  <span>{pagesData.total} {pagesData.total === 1 ? 'page' : 'pages'}</span>
+                  {selectedSpace && <><span aria-hidden="true"> · </span><span>{selectedSpace.name}</span></>}
+                  {!selectionArmed && (
+                    <button type="button" onClick={() => setSelectionMode(true)} className="nm-button-ghost h-8 px-2.5 text-xs" data-testid="enter-selection-mode">
+                      Select pages
+                    </button>
                   )}
-                >
-                  <input
-                    type="checkbox"
-                    checked={allVisibleSelected}
-                    ref={(el) => {
-                      // Partial selection is a third state; without it the box
-                      // reads "nothing selected" while rows plainly are.
-                      if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
-                    }}
-                    onChange={toggleSelectAll}
-                    aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
-                    className="size-4 cursor-pointer accent-[var(--color-action)]"
-                    data-testid="select-all-pages"
-                  />
-                  Select all on this page
-                </label>
-                {visibleSelectedIds.length > 0 && (
-                  <span className="text-xs font-medium text-muted-foreground">
-                    {visibleSelectedIds.length} {visibleSelectedIds.length === 1 ? 'page' : 'pages'} selected
-                  </span>
-                )}
-              </div>
-            )}
-
-            <BulkActionBar
-              selectedIds={visibleSelectedIds}
-              confluenceCount={selectedConfluenceCount}
-              onClear={clearSelection}
-            />
-
-            <div
-              ref={listContainerRef}
-              data-testid="virtual-list-container"
-              role="feed"
-              aria-label="Pages list"
-              aria-rowcount={pagesData.total}
-              style={{ position: 'relative', height: virtualizer.getTotalSize() }}
-            >
-              {virtualizer.getVirtualItems().map((virtualRow) => {
-                const pageItem = pageItems[virtualRow.index];
-                if (!pageItem) return null;
-                return (
-                  <div
-                    key={pageItem.id}
-                    data-index={virtualRow.index}
-                    data-row-index={virtualRow.index}
-                    role="article"
-                    aria-rowindex={virtualRow.index + 1}
-                    ref={virtualizer.measureElement}
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '100%',
-                      transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
-                    }}
-                  >
-                    <div>
-                      <PageListItem
-                        pageItem={pageItem}
-                        index={virtualRow.index}
-                        onNavigate={navigateToPage}
-                        selected={selectedIds.has(pageItem.id)}
-                        onToggleSelect={toggleSelect}
-                        showSource={showSourceBadges}
-                        showVisibility={showVisibilityBadges}
-                        showQuality={showQualityBadges}
-                        showIdleEmbedding={showIdleEmbedding}
-                        selectionArmed={selectionArmed}
-                        spaceName={pageItem.spaceKey ? spaceNameByKey.get(pageItem.spaceKey) ?? null : null}
-                        tabIndex={focusedRowIndex === virtualRow.index ? 0 : -1}
-                        onFocus={() => setFocusedRowIndex(virtualRow.index)}
-                        onKeyDown={(e) => handleRowKeyDown(virtualRow.index, pageItem.id, e)}
-                      />
-                    </div>
+                  <div className="ml-auto flex items-center gap-1.5 text-xs">
+                    <span className="text-muted-foreground">Sort</span>
+                    <LibrarySortFilter
+                      value={sort}
+                      onChange={(newSort) => setFilters({ sort: newSort, page: 1 })}
+                      hasSearchQuery={hasActiveQuery}
+                    />
                   </div>
-                );
-              })}
-            </div>
-            </div>
+                </div>
+                {/* Select-all when selection is armed */}
+                {selectionArmed && (
+                  <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm text-muted-foreground">
+                    <label
+                      className={cn(
+                        'flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground',
+                        !selectionArmed && 'sr-only',
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        ref={(el) => {
+                          // Partial selection is a third state; without it the box
+                          // reads "nothing selected" while rows plainly are.
+                          if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
+                        }}
+                        onChange={toggleSelectAll}
+                        aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
+                        className="size-4 cursor-pointer accent-[var(--color-action)]"
+                        data-testid="select-all-pages"
+                      />
+                      Select all on this page
+                    </label>
+                    {visibleSelectedIds.length > 0 && (
+                      <span className="text-xs font-medium text-muted-foreground">
+                        {visibleSelectedIds.length} {visibleSelectedIds.length === 1 ? 'page' : 'pages'} selected
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <BulkActionBar
+                  selectedIds={visibleSelectedIds}
+                  confluenceCount={selectedConfluenceCount}
+                  onClear={clearSelection}
+                />
+
+                <div
+                  ref={listContainerRef}
+                  data-testid="virtual-list-container"
+                  role="feed"
+                  aria-label="Pages list"
+                  aria-rowcount={pagesData.total}
+                  aria-busy={isLoading}
+                  style={{ position: 'relative', height: virtualizer.getTotalSize() }}
+                >
+                  {virtualizer.getVirtualItems().map((virtualRow) => {
+                    const pageItem = pageItems[virtualRow.index];
+                    if (!pageItem) return null;
+                    return (
+                      <div
+                        key={pageItem.id}
+                        data-index={virtualRow.index}
+                        data-row-index={virtualRow.index}
+                        role="article"
+                        aria-rowindex={virtualRow.index + 1}
+                        aria-posinset={virtualRow.index + 1}
+                        aria-setsize={pagesData.total}
+                        ref={virtualizer.measureElement}
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
+                        }}
+                      >
+                        <div>
+                          <PageListItem
+                            pageItem={pageItem}
+                            index={virtualRow.index}
+                            onNavigate={navigateToPage}
+                            selected={selectedIds.has(pageItem.id)}
+                            onToggleSelect={toggleSelect}
+                            showSource={showSourceBadges}
+                            showVisibility={showVisibilityBadges}
+                            showQuality={showQualityBadges}
+                            showIdleEmbedding={showIdleEmbedding}
+                            selectionArmed={selectionArmed}
+                            spaceName={pageItem.spaceKey ? spaceNameByKey.get(pageItem.spaceKey) ?? null : null}
+                            tabIndex={focusedRowIndex === virtualRow.index ? 0 : -1}
+                            onFocus={() => setFocusedRowIndex(virtualRow.index)}
+                            onKeyDown={(e) => handleRowKeyDown(virtualRow.index, pageItem.id, e)}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </>
           )}
 
