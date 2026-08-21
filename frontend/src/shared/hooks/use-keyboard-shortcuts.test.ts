@@ -293,55 +293,6 @@ describe('useKeyboardShortcuts', () => {
     document.body.removeChild(input);
   });
 
-  it('does not fire single-key shortcut when singleKeyEnabled is false', () => {
-    const shortcuts: ShortcutDefinition[] = [
-      { key: ',', keys: [','], description: 'Toggle left', category: 'panels', action: actionFn },
-    ];
-
-    renderHook(() => useKeyboardShortcuts(shortcuts, { singleKeyEnabled: false }));
-    fireKey(',');
-    expect(actionFn).not.toHaveBeenCalled();
-  });
-
-  it('still fires modifier shortcuts when singleKeyEnabled is false', () => {
-    const shortcuts: ShortcutDefinition[] = [
-      { key: 'Ctrl+K', keys: ['k'], mod: true, description: 'Search', category: 'navigation', action: actionFn },
-    ];
-
-    renderHook(() => useKeyboardShortcuts(shortcuts, { singleKeyEnabled: false }));
-    fireKey('k', { ctrlKey: true });
-    expect(actionFn).toHaveBeenCalledTimes(1);
-  });
-
-  it('still fires alt shortcuts when singleKeyEnabled is false', () => {
-    const shortcuts: ShortcutDefinition[] = [
-      { key: 'Alt+N', keys: ['n'], alt: true, description: 'New page', category: 'navigation', action: actionFn },
-    ];
-
-    renderHook(() => useKeyboardShortcuts(shortcuts, { singleKeyEnabled: false }));
-    fireKey('n', { altKey: true });
-    expect(actionFn).toHaveBeenCalledTimes(1);
-  });
-
-  it('fires single-key shortcut when singleKeyEnabled is true (explicit)', () => {
-    const shortcuts: ShortcutDefinition[] = [
-      { key: ',', keys: [','], description: 'Toggle left', category: 'panels', action: actionFn },
-    ];
-
-    renderHook(() => useKeyboardShortcuts(shortcuts, { singleKeyEnabled: true }));
-    fireKey(',');
-    expect(actionFn).toHaveBeenCalledTimes(1);
-  });
-
-  it('fires single-key shortcut when singleKeyEnabled is not provided (defaults to true)', () => {
-    const shortcuts: ShortcutDefinition[] = [
-      { key: ',', keys: [','], description: 'Toggle left', category: 'panels', action: actionFn },
-    ];
-
-    renderHook(() => useKeyboardShortcuts(shortcuts));
-    fireKey(',');
-    expect(actionFn).toHaveBeenCalledTimes(1);
-  });
 
   it('does not fire when an empty shortcuts array is passed', () => {
     renderHook(() => useKeyboardShortcuts([]));
@@ -444,17 +395,6 @@ describe('useKeyboardShortcuts', () => {
     document.body.removeChild(input);
   });
 
-  it('respects singleKeyEnabled toggle for sequences', () => {
-    const shortcuts: ShortcutDefinition[] = [
-      { key: 'g p', keys: [], sequence: 'g p', description: 'Go to Pages', category: 'navigation', action: actionFn },
-    ];
-
-    renderHook(() => useKeyboardShortcuts(shortcuts, { singleKeyEnabled: false }));
-
-    fireKey('g');
-    fireKey('p');
-    expect(actionFn).not.toHaveBeenCalled();
-  });
 
   it('calls onSequenceChange callback', () => {
     const onSequenceChange = vi.fn();

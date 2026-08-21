@@ -19,8 +19,6 @@ interface UiState {
    */
   articleSidebarLaptopExpanded: boolean;
   articleSidebarWidth: number;
-  /** When false, single-key shortcuts (no Ctrl/Alt) are suppressed (WCAG 2.1.4). */
-  singleKeyShortcutsEnabled: boolean;
   /** A personal editing preference, not a per-document action — belongs in
    *  Settings, not on a permanent slot in the editor toolbar (see
    *  ThemeTab.tsx's "Editor" section). */
@@ -35,7 +33,6 @@ interface UiState {
   setArticleSidebarCollapsed: (collapsed: boolean) => void;
   setArticleSidebarLaptopExpanded: (expanded: boolean) => void;
   setArticleSidebarWidth: (width: number) => void;
-  setSingleKeyShortcutsEnabled: (enabled: boolean) => void;
   setVimModeEnabled: (enabled: boolean) => void;
 }
 
@@ -61,7 +58,6 @@ export const useUiStore = create<UiState>()(
       // of article at a 1440px viewport (still comfortably above the 640px
       // measure) while giving generated prose room to read as prose.
       articleSidebarWidth: 360,
-      singleKeyShortcutsEnabled: true,
       // Carries over anyone's existing preference from the old standalone
       // localStorage key the toolbar toggle used to write directly. Safe as a
       // one-time plain read (not a full migrateStorageKey, which expects a
@@ -80,7 +76,6 @@ export const useUiStore = create<UiState>()(
       setArticleSidebarCollapsed: (collapsed) => set({ articleSidebarCollapsed: collapsed }),
       setArticleSidebarLaptopExpanded: (expanded) => set({ articleSidebarLaptopExpanded: expanded }),
       setArticleSidebarWidth: (width) => set({ articleSidebarWidth: Math.max(200, Math.min(1200, width)) }),
-      setSingleKeyShortcutsEnabled: (enabled) => set({ singleKeyShortcutsEnabled: enabled }),
       setVimModeEnabled: (enabled) => set({ vimModeEnabled: enabled }),
     }),
     { name: 'compendiq-ui' },
