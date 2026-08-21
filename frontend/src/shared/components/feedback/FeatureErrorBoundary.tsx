@@ -8,6 +8,8 @@ interface FeatureErrorBoundaryProps {
   featureName: string;
   /** Optional callback invoked when the user clicks "Try Again". */
   onReset?: () => void;
+  /** Optional custom fallback UI to render instead of the default error card */
+  fallback?: ReactNode;
 }
 
 interface FeatureErrorBoundaryState {
@@ -52,6 +54,9 @@ export class FeatureErrorBoundary extends Component<
 
   render() {
     if (this.state.hasError) {
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
       return (
         <div
           className="rounded-lg border border-border bg-card p-6 text-center"
