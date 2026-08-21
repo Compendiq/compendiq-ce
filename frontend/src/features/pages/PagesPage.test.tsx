@@ -1571,6 +1571,15 @@ describe('PagesPage', () => {
       });
     }
 
+    it('surfaces inline search mode toggle directly in the search bar on wide screens', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const barToggle = screen.getByTestId('search-bar-mode-toggle');
+      expect(barToggle).toBeInTheDocument();
+      expect(screen.getByTestId('search-bar-mode-hybrid')).toHaveAttribute('aria-pressed', 'true');
+      fireEvent.click(screen.getByTestId('search-bar-mode-keyword'));
+      expect(screen.getByTestId('search-bar-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
+    });
+
     it('declares the retrieval-mode choice in the advanced filters panel', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));

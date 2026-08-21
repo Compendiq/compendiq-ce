@@ -8,19 +8,15 @@
 
 /**
  * How many pins the section shows before it asks to be expanded.
- *
- * There is no cap on pinning any more — the server accepts as many as the user
- * wants. This strip sits after Find and before the page list, so an ungoverned
- * grid at 30+ pins pushes the actual work below the fold. Four is one row at
- * the widest breakpoint, which keeps pins a jump-back-in strip, not a second list.
- *
- * Deliberately a constant rather than a per-breakpoint count: a responsive count
- * would need a JS width query, and those exist only where the *tree* changes
- * (`useIsDockWideLayout`, `useIsMobileLayout`, `useIsInspectorWideLayout`) —
- * every other responsive decision stays a Tailwind class. It would also make
- * the toggle's "N more" label wrong at some widths.
+ * Four is one row at the widest breakpoint.
  */
 export const COLLAPSED_PIN_COUNT = 4;
+
+/**
+ * Maximum pins shown when expanded (bounded to 2 rows at the widest breakpoint).
+ * Prevents ungoverned vertical growth from displacing the search bar.
+ */
+export const MAX_EXPANDED_PIN_COUNT = 8;
 
 /**
  * Entrance delay for the card at `index`, in seconds.

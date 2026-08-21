@@ -1,9 +1,8 @@
 import { useMemo } from 'react';
 import { m } from 'framer-motion';
-import { FileText, Clock, RefreshCw } from 'lucide-react';
+import { FileText, Clock } from 'lucide-react';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
 import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
-import { Button } from '../../shared/components/Button';
 
 interface KPICardsProps {
   embeddingStatus?: {
@@ -15,9 +14,6 @@ interface KPICardsProps {
   };
   spacesCount: number;
   lastSynced?: string;
-  /** Triggers a sync from inside the Last Sync card. Omitted → no CTA. */
-  onSync?: () => void;
-  isSyncing?: boolean;
 }
 
 const stagger = {
@@ -102,9 +98,9 @@ function EmbeddingCoverageRing({ percent, isProcessing }: EmbeddingCoverageRingP
 /**
  * Corpus status strip for the Pages body — not the 48px header.
  *
- * Three facts: total pages, embedded count / coverage, and last sync with a quick-sync CTA.
+ * Three facts: total pages, embedded count / coverage, and last sync timestamp.
  */
-export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isSyncing }: KPICardsProps) {
+export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsProps) {
   const totalPages = embeddingStatus?.totalPages ?? 0;
   const embeddedPages = embeddingStatus?.embeddedPages ?? 0;
   const coveragePercent = totalPages > 0
@@ -155,7 +151,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
 
       <span aria-hidden className="hidden h-3.5 w-px bg-border sm:block" />
 
-      {/* Last sync and sync action */}
+      {/* Last sync timestamp */}
       <m.div
         variants={fadeUp}
         className="flex items-center gap-1.5 text-xs sm:text-[13px] shrink-0"
@@ -174,21 +170,6 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
                 ? 'Not recorded'
                 : 'Nothing mirrored yet'}
         </span>
-        {onSync && spacesCount > 0 && (
-          <Button
-            type="button"
-            onClick={onSync}
-            disabled={isSyncing}
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-xs gap-1 shrink-0 ml-0.5"
-            data-testid="kpi-sync-btn"
-            title={isSyncing ? 'Syncing...' : 'Sync knowledge base'}
-            leftIcon={<RefreshCw size={12} className={isSyncing ? 'animate-spin' : undefined} />}
-          >
-            <span>{isSyncing ? 'Syncing...' : 'Sync'}</span>
-          </Button>
-        )}
       </m.div>
     </m.div>
   );

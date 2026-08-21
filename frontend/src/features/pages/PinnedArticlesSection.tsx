@@ -4,7 +4,7 @@ import { m } from 'framer-motion';
 import { Pin, PinOff, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { usePinPage, usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
-import { COLLAPSED_PIN_COUNT, entranceDelay, staggerPosition } from './pinned-articles-layout';
+import { COLLAPSED_PIN_COUNT, MAX_EXPANDED_PIN_COUNT, entranceDelay, staggerPosition } from './pinned-articles-layout';
 import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 import { cn } from '../../shared/lib/cn';
 
@@ -30,12 +30,15 @@ export function PinnedArticlesSection() {
   if (total === 0) {
     return null;
   }
-  const overflow = total - COLLAPSED_PIN_COUNT;
+  const maxVisible = Math.min(total, MAX_EXPANDED_PIN_COUNT);
+  const overflow = maxVisible - COLLAPSED_PIN_COUNT;
   // Derived, not the raw flag: unpinning back below the cut-off unmounts the
   // toggle, and a latched `expanded` would then silently re-expand the section
   // the moment the count rose again, with nothing on screen having asked for it.
   const isExpanded = expanded && overflow > 0;
-  const visiblePins = isExpanded ? pinnedData.items : pinnedData.items.slice(0, COLLAPSED_PIN_COUNT);
+  const visiblePins = isExpanded
+    ? pinnedData.items.slice(0, MAX_EXPANDED_PIN_COUNT)
+    : pinnedData.items.slice(0, COLLAPSED_PIN_COUNT);
 
   const handleUnpin = (pageId: string, title: string) => {
     // The card carrying the focused button is about to unmount, which drops
@@ -104,7 +107,7 @@ export function PinnedArticlesSection() {
             transition={{ delay: entranceDelay(staggerPosition(i, isExpanded)) }}
           >
             <div
-              className="group flex min-h-[56px] w-full items-center gap-2 rounded-lg border border-border/70 bg-card px-2.5 py-2 text-left transition-colors hover:border-border hover:bg-accent focus-within:border-border focus-within:bg-accent"
+              className="group flex min-h-[48px] w-full items-center gap-2 rounded-lg border border-border/70 bg-card px-2.5 py-1.5 text-left transition-colors hover:border-border hover:bg-accent focus-within:border-border focus-within:bg-accent"
               data-testid={`pinned-card-${item.id}`}
             >
               <Link

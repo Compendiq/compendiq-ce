@@ -7,7 +7,7 @@ import { Search, FileText, Plus, ChevronLeft, ChevronRight, ChevronDown, FolderO
 import { toast } from 'sonner';
 import { PageSourceEnum, type PageSource, type PageIcon as PageIconValue } from '@compendiq/contracts';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
-import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
+import { useSpaces, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useSearch } from '../../shared/hooks/use-search';
 import { EmptyState } from '../../shared/components/feedback/EmptyState';
@@ -561,7 +561,6 @@ export function PagesPage() {
         : (searchResults.isLoadingImmediate && hasActiveQuery ? 'Searching' : ''));
   const searchResultsBusy = searchProgressLabel.length > 0;
 
-  const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
   const { data: embeddingStatusData } = useEmbeddingStatus();
   const queryClient = useQueryClient();
@@ -936,8 +935,6 @@ export function PagesPage() {
               embeddingStatus={embeddingStatusData}
               spacesCount={spaces?.length ?? 0}
               lastSynced={syncStatus?.lastSynced}
-              onSync={() => syncMutation.mutate()}
-              isSyncing={syncStatus?.status === 'syncing'}
             />
             <button
               type="button"
@@ -1047,6 +1044,42 @@ export function PagesPage() {
           <span className="hidden h-5 w-px shrink-0 bg-border sm:block" aria-hidden="true" />
 
           <div className="flex w-full items-center gap-1.5 sm:w-auto sm:shrink-0">
+            {/* Inline search strategy switcher on medium+ screens */}
+            <div
+              className="hidden md:inline-flex items-center gap-0.5 rounded-md bg-muted/60 p-0.5 shrink-0"
+              data-testid="search-bar-mode-toggle"
+              role="group"
+              aria-label="Search mode"
+            >
+              {([
+                'hybrid',
+                'keyword',
+                ...((searchMode === 'semantic'
+                  || embeddingStatusData == null
+                  || embeddingStatusData.embeddedPages > 0
+                  || embeddingStatusData.totalEmbeddings > 0)
+                  ? (['semantic'] as const)
+                  : []),
+              ] as const).map((m) => (
+                <button
+                  type="button"
+                  key={m}
+                  data-testid={`search-bar-mode-${m}`}
+                  onClick={() => setFilters({ mode: m, page: 1 })}
+                  aria-pressed={searchMode === m}
+                  title={SEARCH_MODE_DESCRIPTIONS[m]}
+                  className={cn(
+                    'nm-focus-ring rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                    searchMode === m
+                      ? 'bg-action text-action-foreground font-semibold shadow-xs'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                  )}
+                >
+                  {SEARCH_MODE_LABELS[m]}
+                </button>
+              ))}
+            </div>
+
             <LibrarySpaceFilter
               spaces={spaces}
               selectedKey={spaceKey}
@@ -1602,7 +1635,7 @@ export function PagesPage() {
                                     html={item.excerpt}
                                     allowedTags={['mark']}
                                     allowedAttrs={[]}
-                                    className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-foreground/10 [&_mark]:font-medium [&_mark]:text-foreground"
+                                    className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-action/15 [&_mark]:font-medium [&_mark]:text-foreground"
                                   />
                                 )}
                                 {item.spaceKey && (
@@ -1632,7 +1665,7 @@ export function PagesPage() {
                               {item.similarity !== null && item.similarity > 0 && (
                                 <span
                                   title="Semantic similarity to your query"
-                                  className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground border border-border/40"
+                                  className="shrink-0 rounded bg-muted/80 px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground border border-border/50"
                                 >
                                   {(item.similarity * 100).toFixed(0)}%
                                 </span>
