@@ -24,17 +24,19 @@ const source = readFileSync(
   'utf-8',
 );
 
-/** The JSX for the Edit trigger, from its testid back to the opening tag. */
+/** The JSX for the Edit trigger, from its opening tag to its closing tag. */
 function editButton(): string {
   const anchor = source.indexOf('data-testid="edit-page-btn"');
   expect(anchor, 'Edit button not found by testid').toBeGreaterThan(-1);
-  const open = source.lastIndexOf('<button', anchor);
-  return source.slice(open, source.indexOf('</button>', anchor));
+  const open = source.lastIndexOf('<Button', anchor);
+  const close = source.indexOf('</Button>', anchor);
+  return source.slice(open, close + '</Button>'.length);
 }
 
 describe('the Edit affordance', () => {
-  it('is a real button, not ghost text at the weight of the secondaries', () => {
-    expect(editButton()).toMatch(/nm-button-ghost/);
+  it('is a flat ghost button, not an outlined box or ghost text at the weight of the secondaries', () => {
+    expect(editButton()).toMatch(/variant="ghost"/);
+    expect(editButton()).not.toMatch(/nm-button-ghost/);
   });
 
   it('never shrinks or wraps away from the end of the row', () => {
@@ -42,7 +44,6 @@ describe('the Edit affordance', () => {
   });
 
   it('uses the same 32px box as the format-toolbar controls', () => {
-    expect(editButton()).toMatch(/nm-button-ghost/);
     expect(editButton()).toMatch(/\bh-8\b/);
     expect(editButton()).toMatch(/px-2\.5/);
     expect(editButton()).toMatch(/text-xs/);

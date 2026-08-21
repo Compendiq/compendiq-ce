@@ -3,6 +3,7 @@ import { m } from 'framer-motion';
 import { FileText, Clock, RefreshCw } from 'lucide-react';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
 import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
+import { Button } from '../../shared/components/Button';
 
 interface KPICardsProps {
   embeddingStatus?: {
@@ -174,17 +175,19 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
                 : 'Nothing mirrored yet'}
         </span>
         {onSync && spacesCount > 0 && (
-          <button
+          <Button
             type="button"
             onClick={onSync}
             disabled={isSyncing}
-            className="nm-button-ghost h-7 px-2 text-xs gap-1 shrink-0 ml-0.5 disabled:opacity-50"
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs gap-1 shrink-0 ml-0.5"
             data-testid="kpi-sync-btn"
             title={isSyncing ? 'Syncing...' : 'Sync knowledge base'}
+            leftIcon={<RefreshCw size={12} className={isSyncing ? 'animate-spin' : undefined} />}
           >
-            <RefreshCw size={12} className={isSyncing ? 'animate-spin' : undefined} />
             <span>{isSyncing ? 'Syncing...' : 'Sync'}</span>
-          </button>
+          </Button>
         )}
       </m.div>
     </m.div>

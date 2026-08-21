@@ -73,6 +73,8 @@ describe('KPICards', () => {
 
     const btn = screen.getByTestId('kpi-sync-btn');
     expect(screen.getByTestId('kpi-last-sync')).toContainElement(btn);
+    expect(btn.className).not.toContain('nm-button-ghost');
+    expect(btn.className).toContain('border-transparent');
     fireEvent.click(btn);
     expect(onSync).toHaveBeenCalledOnce();
   });

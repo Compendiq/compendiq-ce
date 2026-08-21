@@ -836,16 +836,18 @@ export function PageViewPage() {
                   )}
                   <div className="ml-auto flex shrink-0 items-center gap-1.5">
                     <PresenceAvatarStack viewers={presenceViewers} />
-                    <button
+                    <Button
                       type="button"
                       onClick={handleStartEditing}
-                      className="nm-button-ghost inline-flex h-8 shrink-0 items-center gap-1.5 px-2.5 text-xs"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 shrink-0 gap-1.5 px-2.5 text-xs text-foreground"
                       data-testid="edit-page-btn"
+                      leftIcon={<Pencil size={13} aria-hidden />}
+                      rightIcon={<ShortcutHint shortcutId="toggle-edit" />}
                     >
-                      <Pencil size={13} aria-hidden />
                       <span>Edit</span>
-                      <ShortcutHint shortcutId="toggle-edit" />
-                    </button>
+                    </Button>
                   </div>
                 </>
               )}
