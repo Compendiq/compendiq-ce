@@ -1417,7 +1417,7 @@ describe('PagesPage', () => {
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
 
-      expect(screen.getAllByText(/apply while browsing and will pause when Hybrid search starts/i)).toHaveLength(2);
+      expect(screen.getByText(/apply while browsing and will pause when Hybrid search starts/i)).toBeInTheDocument();
       expect(screen.getByTestId('advanced-filters-toggle')).toHaveAccessibleName('Filters, 1 Keyword-only');
       expect(screen.queryByTestId('search-mode-filter-warning')).not.toBeInTheDocument();
       fireEvent.click(screen.getByTestId('search-mode-keyword'));
@@ -1563,8 +1563,10 @@ describe('PagesPage', () => {
 
   // --- Performance: memoized page list items (#521) ---
 
-  // --- Search mode toggle visual differentiation (#506) ---
-
+  // --- Search mode toggle (#506) ---
+  //
+  // Three search modes: Keyword (Postgres FTS), Semantic (pgvector cosine),
+  // and Hybrid (RRF fusion). Toggle appears directly on the search bar.
   describe('search mode toggle (#506)', () => {
     function typeSearch() {
       fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
@@ -1572,26 +1574,24 @@ describe('PagesPage', () => {
       });
     }
 
-    it('surfaces inline search mode toggle directly in the search bar on wide screens', () => {
+    it('surfaces inline search mode toggle directly in the search bar', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      const barToggle = screen.getByTestId('search-bar-mode-toggle');
+      const barToggle = screen.getByTestId('search-mode-toggle');
       expect(barToggle).toBeInTheDocument();
-      expect(screen.getByTestId('search-bar-mode-hybrid')).toHaveAttribute('aria-pressed', 'true');
-      fireEvent.click(screen.getByTestId('search-bar-mode-keyword'));
-      expect(screen.getByTestId('search-bar-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByTestId('search-mode-hybrid')).toHaveAttribute('aria-pressed', 'true');
+      fireEvent.click(screen.getByTestId('search-mode-keyword'));
+      expect(screen.getByTestId('search-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
     });
 
-    it('declares the retrieval-mode choice in the advanced filters panel', () => {
+    it('does not duplicate the search strategy in the advanced filters panel', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      expect(screen.getByRole('group', { name: 'Search strategy' })).toBeInTheDocument();
-      expect(screen.getByTestId('advanced-filters-panel')).toContainElement(screen.getByTestId('search-mode-toggle'));
-      expect(screen.getByText('Search strategy')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-strategy-fieldset')).not.toBeInTheDocument();
+      expect(screen.getByTestId('advanced-filters-panel')).not.toContainElement(screen.getByTestId('search-mode-toggle'));
     });
 
     it('renders Hybrid and Keyword, with Semantic only when an index exists', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       typeSearch();
       expect(screen.getByTestId('search-mode-keyword')).toHaveTextContent('Keyword');
       expect(screen.getByTestId('search-mode-hybrid')).toHaveTextContent('Hybrid');
@@ -1600,7 +1600,6 @@ describe('PagesPage', () => {
 
     it('defaults to Hybrid as active', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       typeSearch();
       const hybrid = screen.getByTestId('search-mode-hybrid');
       expect(hybrid).toHaveAttribute('aria-pressed', 'true');
@@ -1609,7 +1608,6 @@ describe('PagesPage', () => {
 
     it('marks inactive buttons with aria-pressed=false', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       typeSearch();
       const semantic = screen.getByTestId('search-mode-semantic');
       const keyword = screen.getByTestId('search-mode-keyword');
@@ -1619,7 +1617,6 @@ describe('PagesPage', () => {
 
     it('switches active mode on click', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       typeSearch();
       const semantic = screen.getByTestId('search-mode-semantic');
       fireEvent.click(semantic);
@@ -1636,7 +1633,6 @@ describe('PagesPage', () => {
     // neither of which this system has outside overlays and focus.
     it('distinguishes the active segment from the inactive ones', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       typeSearch();
       const active = screen.getByTestId('search-mode-hybrid');
       const inactive = screen.getByTestId('search-mode-keyword');

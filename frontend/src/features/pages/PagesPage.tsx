@@ -5,7 +5,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, ChevronLeft, ChevronRight, ChevronDown, FolderOpen, Filter, X, List, Loader2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
-import { PageSourceEnum, type PageSource, type PageIcon as PageIconValue } from '@compendiq/contracts';
+import { type PageSource, type PageIcon as PageIconValue } from '@compendiq/contracts';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
 import { useSpaces, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
@@ -19,6 +19,7 @@ import { bulkWireId } from '../../shared/hooks/use-bulk-page-actions';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { LibrarySpaceFilter } from './LibrarySpaceFilter';
 import { LibrarySortFilter } from './LibrarySortFilter';
+import { LibraryFilterDropdown, type FilterDropdownOption } from './LibraryFilterDropdown';
 import {
   readFilterState,
   applyFilterPatch,
@@ -67,6 +68,34 @@ const QUALITY_LABELS: Record<string, string> = {
   'needs-work': 'Needs Work (50-69)',
   poor: 'Poor (0-49)',
 };
+
+const SOURCE_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'All sources' },
+  { value: 'confluence', label: 'Confluence' },
+  { value: 'standalone', label: 'Local' },
+];
+
+const FRESHNESS_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'Any' },
+  { value: 'fresh', label: 'Fresh (<7 days)' },
+  { value: 'recent', label: 'Recent (7-30 days)' },
+  { value: 'aging', label: 'Aging (30-90 days)' },
+  { value: 'stale', label: 'Stale (>90 days)' },
+];
+
+const QUALITY_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'Any' },
+  { value: 'excellent', label: 'Excellent (90-100)' },
+  { value: 'good', label: 'Good (70-89)' },
+  { value: 'needs-work', label: 'Needs Work (50-69)' },
+  { value: 'poor', label: 'Poor (0-49)' },
+];
+
+const EMBEDDING_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'Any' },
+  { value: 'pending', label: 'Needs Embedding' },
+  { value: 'done', label: 'Embedded' },
+];
 
 /**
  * "A, B" for up to 3 labels; "A, B, C, and N more" beyond that. Shared by the
@@ -502,6 +531,16 @@ export function PagesPage() {
   const { data: spaces } = useSpaces();
   const { data: filterOptions } = usePageFilterOptions();
 
+  const authorOptions = useMemo<FilterDropdownOption[]>(() => [
+    { value: '', label: 'All authors' },
+    ...(filterOptions?.authors ?? []).map((a) => ({ value: a, label: a })),
+  ], [filterOptions?.authors]);
+
+  const labelOptions = useMemo<FilterDropdownOption[]>(() => [
+    { value: '', label: 'All labels' },
+    ...(filterOptions?.labels ?? []).map((l) => ({ value: l, label: l })),
+  ], [filterOptions?.labels]);
+
   // Determine if we should show the space home page content
   const selectedSpace = useMemo(
     () => (spaceKey ? spaces?.find((s) => s.key === spaceKey) : undefined),
@@ -673,16 +712,6 @@ export function PagesPage() {
   const useKeywordWithFilters = useCallback(() => {
     setFilters({ mode: 'keyword', page: 1 });
   }, [setFilters]);
-
-  const modeHint = useMemo(() => {
-    if (searchMode === 'keyword') return SEARCH_MODE_DESCRIPTIONS.keyword;
-    if (advancedFilterCount > 0) {
-      const noun = advancedFilterCount === 1 ? 'filter' : 'filters';
-      if (hasActiveQuery) return `${advancedFilterCount} advanced ${noun} paused. Switch to Keyword to apply them.`;
-      return `${advancedFilterCount} advanced ${noun} apply while browsing and will pause when ${SEARCH_MODE_LABELS[searchMode]} search starts.`;
-    }
-    return SEARCH_MODE_DESCRIPTIONS[searchMode];
-  }, [advancedFilterCount, hasActiveQuery, searchMode]);
 
   const filterStatus = advancedFilterCount === 0
     ? ''
@@ -1138,12 +1167,12 @@ export function PagesPage() {
           <span className="hidden h-5 w-px shrink-0 bg-border sm:block" aria-hidden="true" />
 
           <div className="flex w-full items-center gap-1.5 sm:w-auto sm:shrink-0">
-            {/* Inline search strategy switcher on medium+ screens */}
+            {/* Inline search strategy switcher */}
             <div
-              className="hidden md:inline-flex items-center gap-0.5 rounded-md bg-muted/60 p-0.5 shrink-0"
-              data-testid="search-bar-mode-toggle"
+              className="library-search-modes inline-flex items-center gap-0.5 rounded-md p-0.5 shrink-0"
+              data-testid="search-mode-toggle"
               role="group"
-              aria-label="Search mode"
+              aria-label="Search strategy"
             >
               {([
                 'hybrid',
@@ -1158,14 +1187,14 @@ export function PagesPage() {
                 <button
                   type="button"
                   key={m}
-                  data-testid={`search-bar-mode-${m}`}
+                  data-testid={`search-mode-${m}`}
                   onClick={() => setFilters({ mode: m, page: 1 })}
                   aria-pressed={searchMode === m}
                   title={SEARCH_MODE_DESCRIPTIONS[m]}
                   className={cn(
-                    'nm-focus-ring rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                    'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2.5 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:flex-none sm:px-2.5 sm:py-1 sm:text-xs',
                     searchMode === m
-                      ? 'bg-action text-action-foreground font-semibold shadow-xs'
+                      ? 'library-search-mode-active font-semibold shadow-xs'
                       : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                   )}
                 >
@@ -1189,7 +1218,7 @@ export function PagesPage() {
               onClick={() => setShowAdvancedFilters((v) => !v)}
               className={cn(
                 'library-search-select flex h-11 shrink-0 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground sm:h-8 sm:px-2.5 sm:text-xs',
-                (showAdvancedFilters || advancedFilterCount > 0 || searchMode !== 'hybrid') && 'bg-accent text-foreground',
+                (showAdvancedFilters || advancedFilterCount > 0) && 'bg-accent text-foreground',
                 hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && 'text-warning',
               )}
               data-testid="advanced-filters-toggle"
@@ -1200,11 +1229,6 @@ export function PagesPage() {
             >
               <Filter size={14} aria-hidden="true" />
               <span>Filters</span>
-              {searchMode !== 'hybrid' && (
-                <span className="rounded bg-accent/80 px-1.5 py-0.5 text-xs font-semibold text-action tabular-nums" aria-hidden="true">
-                  {SEARCH_MODE_LABELS[searchMode]}
-                </span>
-              )}
               {filterStatus && (
                 <span className="rounded bg-foreground/10 px-1.5 py-0.5 text-xs font-semibold tabular-nums" aria-hidden="true">
                   {filterStatus}
@@ -1257,10 +1281,10 @@ export function PagesPage() {
         {showAdvancedFilters && (
           <div
             id="advanced-filters-panel"
-            className="rounded-lg bg-card p-3"
+            className="rounded-xl border border-border bg-card p-4 sm:p-5"
             data-testid="advanced-filters-panel"
           >
-            <div className="mb-3 flex min-h-8 flex-wrap items-center justify-between gap-2">
+            <div className="mb-4 flex min-h-8 flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
               <div>
                 <h3 className="text-sm font-semibold text-foreground">Refine results</h3>
                 <p className="text-xs text-muted-foreground">
@@ -1272,14 +1296,14 @@ export function PagesPage() {
                 </p>
               </div>
               {advancedFilterCount > 0 && (
-                <button type="button" onClick={clearIgnoredFilters} className="nm-button-ghost h-7 px-2 text-xs">
+                <button type="button" onClick={clearIgnoredFilters} className="nm-button-ghost h-7 px-2.5 text-xs">
                   Clear filters
                 </button>
               )}
             </div>
 
             {!hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && (
-              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-muted/50 px-2.5 py-2 text-xs text-muted-foreground" data-testid="filters-keyword-preview-note">
+              <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground" data-testid="filters-keyword-preview-note">
                 <span>These filters apply while browsing and will pause when {SEARCH_MODE_LABELS[searchMode]} search starts.</span>
                 <button type="button" onClick={useKeywordWithFilters} className="nm-button-ghost h-7 px-2 text-xs">
                   Keep them active with Keyword
@@ -1287,156 +1311,148 @@ export function PagesPage() {
               </div>
             )}
 
+            {/* 2-row spacious filter grid with generous horizontal padding & space */}
             <div className="space-y-4">
-              {/* Search strategy section */}
-              <div className="space-y-2" data-testid="search-strategy-fieldset">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                  Search strategy
-                </span>
-                <div className="flex flex-wrap items-center gap-3">
-                  <div
-                    className="library-search-modes inline-flex w-full min-w-0 items-center gap-0.5 rounded-md p-0.5 sm:w-auto"
-                    data-testid="search-mode-toggle"
-                    role="group"
-                    aria-label="Search strategy"
-                    aria-describedby="find-mode-hint"
-                  >
-                    {([
-                      'hybrid',
-                      'keyword',
-                      ...((searchMode === 'semantic'
-                        || embeddingStatusData == null
-                        || embeddingStatusData.embeddedPages > 0
-                        || embeddingStatusData.totalEmbeddings > 0)
-                        ? (['semantic'] as const)
-                        : []),
-                    ] as const).map((m) => (
-                      <button
-                        type="button"
-                        key={m}
-                        data-testid={`search-mode-${m}`}
-                        onClick={() => setFilters({ mode: m, page: 1 })}
-                        aria-pressed={searchMode === m}
-                        className={cn(
-                          'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2.5 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:flex-none sm:px-3 sm:py-1.5 sm:text-xs',
-                          searchMode === m
-                            ? 'library-search-mode-active'
-                            : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-                        )}
-                      >
-                        {SEARCH_MODE_LABELS[m]}
-                      </button>
-                    ))}
+              <fieldset className="space-y-2">
+                <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  Content
+                </legend>
+                <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-3">
+                  {/* Row 1: Source, Author, Label */}
+                  <div className="min-w-0">
+                    <label htmlFor="filter-source-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Source
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-source-select"
+                      label="Source"
+                      ariaLabel="Filter by source"
+                      value={sourceFilter}
+                      options={SOURCE_OPTIONS}
+                      onChange={(val) => setFilters({ source: val as PageSource | '', page: 1 })}
+                      placeholder="All sources"
+                      testId="filter-source"
+                    />
                   </div>
-                  <p id="find-mode-hint" className="text-xs text-muted-foreground">
-                    {modeHint}
-                  </p>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-author-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Author
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-author-select"
+                      label="Author"
+                      value={author}
+                      options={authorOptions}
+                      onChange={(val) => setFilters({ author: val, page: 1 })}
+                      placeholder="All authors"
+                      testId="filter-author"
+                      searchable
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-labels-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Label
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-labels-select"
+                      label="Label"
+                      value={labels}
+                      options={labelOptions}
+                      onChange={(val) => setFilters({ labels: val, page: 1 })}
+                      placeholder="All labels"
+                      testId="filter-labels"
+                      searchable
+                    />
+                  </div>
                 </div>
-              </div>
+              </fieldset>
 
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,5fr)]">
-                <fieldset className="space-y-2">
-                  <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Content</legend>
-                  <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
-                    <div className="min-w-32">
-                      <label htmlFor="filter-source-select" className="mb-1 block text-xs text-muted-foreground">Source</label>
-                      <select
-                        id="filter-source-select"
-                        value={sourceFilter}
-                        onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
-                        className="nm-select-md w-full"
-                        data-testid="filter-source"
-                        aria-label="Filter by source"
-                      >
-                        <option value="">All sources</option>
-                        {PageSourceEnum.options.map((source) => (
-                          <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="min-w-40">
-                      <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
-                      <select
-                        id="filter-author-select"
-                        value={author}
-                        onChange={(e) => setFilters({ author: e.target.value, page: 1 })}
-                        className="nm-select-md w-full"
-                        data-testid="filter-author"
-                      >
-                        <option value="">All authors</option>
-                        {filterOptions?.authors.map((a) => (
-                          <option key={a} value={a}>{a}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="min-w-40">
-                      <label htmlFor="filter-labels-select" className="mb-1 block text-xs text-muted-foreground">Label</label>
-                      <select
-                        id="filter-labels-select"
-                        value={labels}
-                        onChange={(e) => setFilters({ labels: e.target.value, page: 1 })}
-                        className="nm-select-md w-full"
-                        data-testid="filter-labels"
-                      >
-                        <option value="">All labels</option>
-                        {filterOptions?.labels.map((label) => (
-                          <option key={label} value={label}>{label}</option>
-                        ))}
-                      </select>
-                    </div>
+              <fieldset className="space-y-2">
+                <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  Status &amp; date
+                </legend>
+                <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-5">
+                  {/* Row 2: Freshness, Quality, Embedding, From, To */}
+                  <div className="min-w-0">
+                    <label htmlFor="filter-freshness-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Freshness
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-freshness-select"
+                      label="Freshness"
+                      value={freshness}
+                      options={FRESHNESS_OPTIONS}
+                      onChange={(val) => setFilters({ freshness: val, page: 1 })}
+                      placeholder="Any"
+                      testId="filter-freshness"
+                    />
                   </div>
-                </fieldset>
 
-                <fieldset className="space-y-2">
-                  <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Status &amp; date</legend>
-                  <div className="grid grid-cols-2 items-end gap-2 sm:grid-cols-3 xl:grid-cols-5">
-                    <div className="min-w-32">
-                      <label htmlFor="filter-freshness-select" className="mb-1 block text-xs text-muted-foreground">Freshness</label>
-                      <select
-                        id="filter-freshness-select"
-                        value={freshness}
-                        onChange={(e) => setFilters({ freshness: e.target.value, page: 1 })}
-                        className="nm-select-md w-full"
-                        data-testid="filter-freshness"
-                      >
-                        <option value="">Any</option>
-                        <option value="fresh">Fresh (&lt;7 days)</option>
-                        <option value="recent">Recent (7-30 days)</option>
-                        <option value="aging">Aging (30-90 days)</option>
-                        <option value="stale">Stale (&gt;90 days)</option>
-                      </select>
-                    </div>
-                    <div className="min-w-36">
-                      <label htmlFor="filter-quality-select" className="mb-1 block text-xs text-muted-foreground">Quality</label>
-                      <select id="filter-quality-select" value={qualityFilter} onChange={(e) => setFilters({ quality: e.target.value, page: 1 })} className="nm-select-md w-full" data-testid="filter-quality">
-                        <option value="">Any</option><option value="excellent">Excellent (90-100)</option><option value="good">Good (70-89)</option><option value="needs-work">Needs Work (50-69)</option><option value="poor">Poor (0-49)</option>
-                      </select>
-                    </div>
-                    <div className="min-w-36">
-                      <label htmlFor="filter-embedding-select" className="mb-1 block text-xs text-muted-foreground">Embedding</label>
-                      <select
-                        id="filter-embedding-select"
-                        value={embeddingStatus}
-                        onChange={(e) => setFilters({ embedding: e.target.value, page: 1 })}
-                        className="nm-select-md w-full"
-                        data-testid="filter-embedding"
-                      >
-                        <option value="">Any</option>
-                        <option value="pending">Needs Embedding</option>
-                        <option value="done">Embedded</option>
-                      </select>
-                    </div>
-                    <div className="min-w-36">
-                      <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified from</label>
-                      <input id="filter-date-from-input" type="date" value={dateFromInput} max={dateToInput || undefined} onChange={(e) => setDateFromInput(e.target.value)} className="nm-input h-8 text-xs w-full" data-testid="filter-date-from" aria-label="Modified from" />
-                    </div>
-                    <div className="min-w-36">
-                      <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified to</label>
-                      <input id="filter-date-to-input" type="date" value={dateToInput} min={dateFromInput || undefined} onChange={(e) => setDateToInput(e.target.value)} className="nm-input h-8 text-xs w-full" data-testid="filter-date-to" aria-label="Modified to" />
-                    </div>
+                  <div className="min-w-0">
+                    <label htmlFor="filter-quality-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Quality
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-quality-select"
+                      label="Quality"
+                      value={qualityFilter}
+                      options={QUALITY_OPTIONS}
+                      onChange={(val) => setFilters({ quality: val, page: 1 })}
+                      placeholder="Any"
+                      testId="filter-quality"
+                    />
                   </div>
-                </fieldset>
-              </div>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-embedding-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Embedding
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-embedding-select"
+                      label="Embedding"
+                      value={embeddingStatus}
+                      options={EMBEDDING_OPTIONS}
+                      onChange={(val) => setFilters({ embedding: val, page: 1 })}
+                      placeholder="Any"
+                      testId="filter-embedding"
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-date-from-input" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Modified from
+                    </label>
+                    <input
+                      id="filter-date-from-input"
+                      type="date"
+                      value={dateFromInput}
+                      max={dateToInput || undefined}
+                      onChange={(e) => setDateFromInput(e.target.value)}
+                      className="nm-input h-9 w-full px-3 py-1.5 text-xs"
+                      data-testid="filter-date-from"
+                      aria-label="Modified from"
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-date-to-input" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Modified to
+                    </label>
+                    <input
+                      id="filter-date-to-input"
+                      type="date"
+                      value={dateToInput}
+                      min={dateFromInput || undefined}
+                      onChange={(e) => setDateToInput(e.target.value)}
+                      className="nm-input h-9 w-full px-3 py-1.5 text-xs"
+                      data-testid="filter-date-to"
+                      aria-label="Modified to"
+                    />
+                  </div>
+                </div>
+              </fieldset>
             </div>
           </div>
         )}
