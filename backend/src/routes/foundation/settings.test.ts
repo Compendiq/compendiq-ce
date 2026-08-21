@@ -679,7 +679,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     const response = await app.inject({
       method: 'PUT',
       url: '/api/settings',
-      payload: { customPrompts: { improve_clarity: 'Be clear!' } },
+      payload: { customPrompts: { improve_clarity: 'Be clear!', generate_spec: 'Draft architecture RFC', generate_guide: 'Draft howto guide' } },
     });
 
     expect(response.statusCode).toBe(200);
@@ -688,7 +688,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
       (call) => typeof call[0] === 'string' && (call[0] as string).includes('custom_prompts'),
     );
     expect(updateCalls).toHaveLength(1);
-    expect(updateCalls[0][1]).toContain(JSON.stringify({ improve_clarity: 'Be clear!' }));
+    expect(updateCalls[0][1]).toContain(JSON.stringify({ improve_clarity: 'Be clear!', generate_spec: 'Draft architecture RFC', generate_guide: 'Draft howto guide' }));
   });
 
   it('PUT /settings clears the stored PAT when confluencePat is null (#924)', async () => {

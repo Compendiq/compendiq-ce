@@ -68,48 +68,6 @@ function scrollPaddingTopSteps(): number {
   return Number(match[1]);
 }
 
-const EDIT_TOOLBAR_WRAPPER = 'className="sticky -top-5 z-30 isolate -mt-5"';
-
-/**
- * The classes on a sticky toolbar's under-mask.
- *
- * Located by marker, and tied to the toolbar it belongs to: the reach asserted
- * below is the only place the exact height is pinned, so silently reading some
- * *other* element would leave the real mask free to drift back to a plain box.
- * Every way of not finding the right element throws by name instead. Shared by
- * PageViewPage's edit toolbar and NewPagePage's sticky toolbar — both use the
- * identical wrapper/under-mask recipe, so one locator serves both sources.
- */
-function stickyToolbarMaskClasses(source: string, sourceName: string, maskTestId: string): string {
-  const wrapperAt = source.indexOf(EDIT_TOOLBAR_WRAPPER);
-  if (wrapperAt < 0) {
-    throw new Error(`No sticky toolbar wrapper (${EDIT_TOOLBAR_WRAPPER}) in ${sourceName}`);
-  }
-
-  const maskMarker = `data-testid="${maskTestId}"`;
-  const markers = source.split(maskMarker).length - 1;
-  if (markers !== 1) {
-    throw new Error(`Expected exactly one ${maskMarker} in ${sourceName}, found ${markers}`);
-  }
-
-  const maskAt = source.indexOf(maskMarker);
-  if (maskAt < wrapperAt) {
-    throw new Error('The toolbar mask no longer sits inside the sticky toolbar wrapper');
-  }
-
-  // Nothing may come between the wrapper and its mask but the wrapper's own
-  // comment: a second sticky surface opening in that gap would mean the
-  // marker now labels a mask belonging to something else.
-  const between = source.slice(wrapperAt + EDIT_TOOLBAR_WRAPPER.length, maskAt);
-  if (/className="[^"]*\bsticky\b/.test(between)) {
-    throw new Error('Another sticky surface opens between the toolbar and its mask');
-  }
-
-  const classes = source.slice(maskAt).match(/^[^>]*?className="([^"]+)"/);
-  if (!classes) throw new Error('The toolbar mask carries no className');
-  return classes[1]!;
-}
-
 describe('nothing shows in the scroll container padding (#1186, #1218)', () => {
   it('article routes do not inset the scroll container, so the toolbar can meet the pane edge', () => {
     expect(appLayoutSource).toMatch(/isArticleRoute\s*\n\s*\? 'overflow-hidden'/);
@@ -127,20 +85,11 @@ describe('nothing shows in the scroll container padding (#1186, #1218)', () => {
     expect(pageViewSource).not.toContain('edit-toolbar-mask');
     expect(pageViewSource).not.toContain('sticky -top-5');
     expect(pageViewSource).toContain('data-testid="article-scroll"');
+    expect(newPageSource).not.toContain('new-page-toolbar-mask');
+    expect(newPageSource).not.toContain('sticky -top-5');
+    expect(newPageSource).toContain('data-testid="article-scroll"');
   });
 
-  it("the New Page sticky toolbar's under-mask reaches exactly that far above the toolbar", () => {
-    const classes = stickyToolbarMaskClasses(newPageSource, 'NewPagePage.tsx', 'new-page-toolbar-mask');
-    expect(classes, `not an under-mask: ${classes}`).toContain('z-[-1]');
-    // The mask must paint the document pane's own colour, not the app
-    // chrome's — that distinction is the entire fix this file documents.
-    expect(classes, `mask paints chrome colour, not the pane: ${classes}`).toContain('bg-card');
-    expect(classes, `mask paints the chassis colour over the document: ${classes}`).not.toMatch(/\bbg-background\b/);
-
-    const reach = classes.match(/(?:^|\s)-top-(\d+)(?:\s|$)/);
-    expect(reach, `mask does not reach above its box: ${classes}`).not.toBeNull();
-    expect(Number(reach![1])).toBe(scrollPaddingTopSteps());
-  });
 
   it('/ai takes the other strategy, and something enforces it', () => {
     // Strategy (b) has no mask to measure: the evidence that /ai stays out of

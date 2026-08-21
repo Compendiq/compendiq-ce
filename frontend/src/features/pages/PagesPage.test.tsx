@@ -2544,7 +2544,7 @@ describe('PagesPage filter persistence (#1124)', () => {
       expect(screen.getByTestId('space-filter-control')).toHaveAccessibleName('Filter by space, current: Development'),
     );
     expect((screen.getByTestId('filter-source') as HTMLSelectElement).value).toBe('standalone');
-    expect((screen.getByLabelText('Sort pages') as HTMLSelectElement).value).toBe('title');
+    expect(screen.getByTestId('sort-filter-control')).toHaveTextContent('Title');
     expect((screen.getByTestId('filter-author') as HTMLSelectElement).value).toBe('Alice');
     expect((screen.getByTestId('filter-labels') as HTMLSelectElement).value).toBe('howto');
     expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('stale');
@@ -2649,7 +2649,8 @@ describe('PagesPage filter persistence (#1124)', () => {
 
     fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
     await waitFor(() => expect(router.state.location.search).toContain('source=standalone'));
-    fireEvent.change(screen.getByLabelText('Sort pages'), { target: { value: 'title' } });
+    fireEvent.click(screen.getByTestId('sort-filter-control'));
+    fireEvent.click(screen.getByRole('option', { name: 'Title' }));
     await waitFor(() => expect(router.state.location.search).toContain('sort=title'));
 
     // Two filter changes, still one entry deep: one Back leaves the overview.

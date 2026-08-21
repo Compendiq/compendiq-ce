@@ -609,6 +609,16 @@ describe('SidebarTreeView', () => {
     expect(handle).toHaveAttribute('tabindex', '0');
   });
 
+  it('renders New Page button in sidebar section header and navigates to /pages/new', () => {
+    mockNavigate.mockClear();
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const newPageBtn = screen.getByTestId('sidebar-new-page-btn');
+    expect(newPageBtn).toBeInTheDocument();
+    expect(newPageBtn).toHaveAccessibleName('New Page');
+    fireEvent.click(newPageBtn);
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/new');
+  });
+
   it('applies persisted width from store', () => {
     useUiStore.setState({ treeSidebarWidth: 320 });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
@@ -664,12 +674,12 @@ describe('SidebarTreeView', () => {
     expect(useUiStore.getState().treeSidebarWidth).toBe(320);
 
     fireEvent.doubleClick(handle);
-    // Resets to the default width, which is 280 — see ui-store for why it is
+    // Resets to the default width, which is 282 — see ui-store for why it is
     // no longer 256. Home does the same thing from the keyboard.
-    expect(useUiStore.getState().treeSidebarWidth).toBe(280);
+    expect(useUiStore.getState().treeSidebarWidth).toBe(282);
 
     fireEvent.keyDown(handle, { key: 'Home' });
-    expect(useUiStore.getState().treeSidebarWidth).toBe(280);
+    expect(useUiStore.getState().treeSidebarWidth).toBe(282);
   });
 
   it('does not render resize handle when collapsed', () => {
@@ -1361,7 +1371,7 @@ describe('SidebarTreeNode memoization', () => {
       mockPinnedData = { items: [], total: 0 };
       mockCreatePageMutateAsync.mockClear();
       resetQueryState();
-      useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined, treeSidebarWidth: 280 });
+      useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined, treeSidebarWidth: 282 });
     });
 
   it('reports a failed load as a failure, not as an empty knowledge base', () => {

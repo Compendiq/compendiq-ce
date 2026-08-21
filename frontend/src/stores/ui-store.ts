@@ -51,7 +51,7 @@ export const useUiStore = create<UiState>()(
       // hidden text. The row gutter was rebuilt to reclaim ~35px of that (see
       // SidebarTreeNode); this carries the remaining 24. Both halves are needed:
       // widening alone just moves the panel's cost onto the article.
-      treeSidebarWidth: 280,
+      treeSidebarWidth: 282,
       articleSidebarCollapsed: false,
       articleSidebarLaptopExpanded: false,
       // 360, not 280: at the old default the Assistant tab's prose column

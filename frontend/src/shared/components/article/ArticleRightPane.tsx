@@ -272,10 +272,12 @@ export function ArticleRightPane({
   // Extract page ID from pathname instead of useParams, because this component
   // is rendered in AppLayout (outer Route) where descendant route params like
   // :id from /pages/:id are not available via useParams.
+  const isNewPage = location.pathname === '/pages/new';
   const id = useMemo(() => {
+    if (isNewPage) return undefined;
     const match = location.pathname.match(/^\/pages\/([^/]+)$/);
     return match?.[1];
-  }, [location.pathname]);
+  }, [location.pathname, isNewPage]);
 
   const userCollapsed = useUiStore((s) => s.articleSidebarCollapsed);
   const toggleSidebar = useUiStore((s) => s.toggleArticleSidebar);
@@ -384,9 +386,9 @@ export function ArticleRightPane({
   const [isResizing, setIsResizing] = useState(false);
   const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
   const [activeInspectorView, setActiveInspectorView] = useState<InspectorView>(() =>
-    headings.length > 0 ? 'outline' : 'details',
+    isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : headings.length > 0 ? 'outline' : 'details',
   );
-  const [assistantMounted, setAssistantMounted] = useState(() => activeInspectorView === 'assistant');
+  const [assistantMounted, setAssistantMounted] = useState(() => activeInspectorView === 'assistant' || isNewPage);
 
   useEffect(() => {
     if (activeInspectorView === 'assistant') {
@@ -395,7 +397,7 @@ export function ArticleRightPane({
   }, [activeInspectorView]);
 
   const inspectorViewTouchedRef = useRef(false);
-  const previousInspectorPageIdRef = useRef(id);
+  const previousInspectorPageIdRef = useRef(isNewPage ? 'new' : id);
   // Collapsing this pane keeps Outline as a first-class rail control. The
   // flyout is what makes the map usable at 40px (#1126).
   const [outlineFlyoutOpen, setOutlineFlyoutOpen] = useState(false);
@@ -418,19 +420,21 @@ export function ArticleRightPane({
   // opens on details instead of presenting a dead-end. Do not steal the view
   // back if the user already chose a tab while headings were still loading.
   useEffect(() => {
-    if (previousInspectorPageIdRef.current !== id) {
-      previousInspectorPageIdRef.current = id;
+    const currentKey = isNewPage ? 'new' : id;
+    if (previousInspectorPageIdRef.current !== currentKey) {
+      previousInspectorPageIdRef.current = currentKey;
       inspectorViewTouchedRef.current = false;
       // `headings` still belongs to the previous page during this render.
       // Start from Details until the destination publishes its own structure.
-      setActiveInspectorView('details');
-      setAssistantMounted(false);
+      // On new page, default to Assistant.
+      setActiveInspectorView(isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : 'details');
+      setAssistantMounted(isNewPage || activeInspectorView === 'assistant');
       return;
     }
     if (!inspectorViewTouchedRef.current) {
-      setActiveInspectorView(headings.length > 0 ? 'outline' : 'details');
+      setActiveInspectorView(isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : (headings.length > 0 ? 'outline' : 'details'));
     }
-  }, [headings.length, id]);
+  }, [headings.length, id, isNewPage, activeInspectorView]);
 
   // Layout presets are explicit user commands, so they take precedence over
   // the content-derived default and mark the view as intentionally chosen.
@@ -815,7 +819,7 @@ export function ArticleRightPane({
     });
   }, [id, reembedMutation]);
 
-  if (!id) return null;
+  if (!id && !isNewPage) return null;
 
   // Below the wide breakpoint a 40px rail plus a ~420px dock starves the
   // article, so the rail steps aside entirely and the assistant owns the right
@@ -1492,7 +1496,14 @@ export function ArticleRightPane({
         aria-labelledby="page-context-tab-details"
         className="min-h-0 flex-1 overflow-y-auto scroll-mask"
       >
-      {page && (
+      {isNewPage ? (
+        <div className="px-3 py-4">
+          <div className="text-[11px] font-semibold text-muted-foreground">New page draft</div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Configure space, title, and content, then click Create Page to publish.
+          </p>
+        </div>
+      ) : page ? (
         <div className="px-3 py-4">
           <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
           <dl className="mt-2 divide-y divide-border/45 text-xs">
@@ -1627,7 +1638,8 @@ export function ArticleRightPane({
             </div>
           )}
         </div>
-      )}
+      ) : null}
+
 
       {page && id && aiAutoTagAvailable && editing && (
         <div className="border-t border-border px-2 pb-3 pt-4" data-testid="article-actions-edit">

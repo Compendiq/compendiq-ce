@@ -611,10 +611,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 :root {
   --app-inset: 0px;
   --app-header-height: 2.75rem;
-  /* Pages / AI / Graph chassis column: 8px wider than the header band (52px
-     at the compact 44px header), giving the labelled destinations 2px of
+  /* Pages / AI / Graph chassis column: 10px wider than the header band (54px
+     at the compact 44px header), giving the labelled destinations 3px of
      breathing room outside their 40px controls after the rail's padding. */
-  --app-nav-rail-width: calc(var(--app-header-height) + 8px);
+  --app-nav-rail-width: calc(var(--app-header-height) + 10px);
   --app-shell-radius: 0px;
   --app-shell-border-width: 0px;
   --app-rail-gap: 0px;
@@ -720,12 +720,6 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    backgrounds. The workspace clips the pane to the shared outer radius. */
 @utility app-content-pane {
   background: var(--color-card);
-}
-
-@media (min-width: 768px) {
-  .app-content-pane {
-    border-left: 1px solid var(--color-border);
-  }
 }
 
 /* Panel composition primitives. Sidebars share the same chassis, but their

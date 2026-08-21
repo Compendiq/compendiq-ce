@@ -7,6 +7,7 @@ import { apiFetch, ApiError } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
 import { DEFAULT_IMPROVEMENT_TYPE, type ImprovementType } from './improvement-types';
+import { type CreateSkillId } from './create-skills';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { useStreamingContent } from '../../shared/hooks/use-streaming-content';
 import { type Source } from './SourceCitations';
@@ -188,6 +189,12 @@ interface AiContextValue {
   diffBaseVersion: number | null;
   setDiffBaseVersion: (v: number | null) => void;
 
+  // Create skill / generate state
+  createSkill: CreateSkillId;
+  setCreateSkill: (v: CreateSkillId) => void;
+  generatedDraft: string;
+  setGeneratedDraft: (v: string) => void;
+
   // Diagram mode state
   diagramType: string;
   setDiagramType: (v: string) => void;
@@ -280,6 +287,7 @@ interface AiThread {
    * re-run and silently overwriting someone else's edit.
    */
   diffBaseVersion: number | null;
+  generatedDraft: string;
 }
 
 const EMPTY_THREAD: AiThread = {
@@ -292,6 +300,7 @@ const EMPTY_THREAD: AiThread = {
   layoutTokensLost: undefined,
   diagramCode: '',
   diffBaseVersion: null,
+  generatedDraft: '',
 };
 
 /**
@@ -395,7 +404,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const {
     messages, conversationId, input, showDiffView,
     improvedContent, originalMarkdown, layoutTokensLost, diagramCode, diffBaseVersion,
+    generatedDraft,
   } = threads.get(threadKey) ?? EMPTY_THREAD;
+  const [createSkill, setCreateSkill] = useState<CreateSkillId>('spec');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [thinkingElapsed, setThinkingElapsed] = useState(false);
@@ -458,6 +469,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
   );
   const setDiffBaseVersion = useCallback(
     (v: number | null) => updateThread(threadKey, () => ({ diffBaseVersion: v })),
+    [threadKey, updateThread],
+  );
+  const setGeneratedDraft = useCallback(
+    (v: string) => updateThread(threadKey, () => ({ generatedDraft: v })),
     [threadKey, updateThread],
   );
 
@@ -1002,6 +1017,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setLayoutTokensLost,
     diffBaseVersion,
     setDiffBaseVersion,
+    createSkill,
+    setCreateSkill,
+    generatedDraft,
+    setGeneratedDraft,
     diagramType,
     setDiagramType,
     diagramCode,

@@ -130,9 +130,9 @@ describe('Inset shell utilities', () => {
     expect(appLayout).not.toMatch(/md:w-auto/);
   });
 
-  it('the chassis destination column is 8px wider than the header is tall', () => {
+  it('the chassis destination column is 10px wider than the header is tall', () => {
     const nav = read('shared/components/layout/MainNavStrip.tsx');
-    expect(css).toMatch(/--app-nav-rail-width:\s*calc\(var\(--app-header-height\) \+ 8px\)/);
+    expect(css).toMatch(/--app-nav-rail-width:\s*calc\(var\(--app-header-height\) \+ 10px\)/);
     expect(nav).toContain('w-[var(--app-nav-rail-width)]');
   });
 

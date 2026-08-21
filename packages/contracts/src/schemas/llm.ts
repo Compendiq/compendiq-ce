@@ -63,7 +63,17 @@ export const ImproveRequestSchema = z.object({
 
 export const GenerateRequestSchema = z.object({
   prompt: z.string().min(1),
-  template: z.enum(['runbook', 'howto', 'architecture', 'troubleshooting']).optional(),
+  template: z.enum([
+    'runbook',
+    'howto',
+    'architecture',
+    'troubleshooting',
+    'spec',
+    'guide',
+    'notes',
+    'postmortem',
+    'custom',
+  ]).optional(),
   model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   spaceKey: z.string().optional(),
   parentId: z.string().optional(),
