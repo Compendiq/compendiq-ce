@@ -165,7 +165,7 @@ const PageListItem = memo(function PageListItem({
             // focus, or an active selection — so the resting scan is titles.
             // Touch has no hover, so the box stays visible below `sm`.
             className={cn(
-              'size-4 shrink-0 cursor-pointer accent-[var(--color-primary)] max-sm:mt-0.5',
+              'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5',
               !selected && !selectionArmed && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
             )}
             data-testid={`page-select-${pageItem.id}`}
@@ -743,19 +743,40 @@ export function PagesPage() {
     }
     return map;
   }, [spaces]);
-  const scrollMargin = listContainerRef.current?.offsetTop ?? 0;
+  const displaySearchItems = useMemo(
+    () => searchResults.enhancedResults ?? searchResults.immediateResults,
+    [searchResults.enhancedResults, searchResults.immediateResults],
+  );
+
+  const currentAddressableItems = useMemo(() => {
+    if (useSemanticSearch) {
+      return displaySearchItems.map((p) => ({
+        id: String(p.id),
+        confluenceId: p.confluenceId,
+        source: p.spaceKey === '__local__' ? 'standalone' : 'confluence',
+      }));
+    }
+    return pageItems.map((p) => ({
+      id: p.id,
+      confluenceId: p.confluenceId,
+      source: p.source,
+    }));
+  }, [useSemanticSearch, displaySearchItems, pageItems]);
+
+  const currentIds = useMemo(
+    () => (useSemanticSearch ? displaySearchItems.map((p) => String(p.id)) : pageItems.map((p) => p.id)),
+    [useSemanticSearch, displaySearchItems, pageItems],
+  );
 
   const toggleSelect = useCallback((id: string, shiftKey: boolean) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       const anchor = lastToggledId.current;
+      const ids = currentIds;
 
       // Shift-click selects the contiguous run between the anchor and this
-      // row, matching the file-list convention. Falls back to a plain toggle
-      // when either end is no longer in the current result set (filters or
-      // pagination changed underneath the selection).
+      // row, matching the file-list convention.
       if (shiftKey && anchor && anchor !== id) {
-        const ids = pageItems.map((p) => p.id);
         const from = ids.indexOf(anchor);
         const to = ids.indexOf(id);
         if (from !== -1 && to !== -1) {
@@ -775,7 +796,7 @@ export function PagesPage() {
       lastToggledId.current = id;
       return next;
     });
-  }, [pageItems]);
+  }, [currentIds]);
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
@@ -785,30 +806,26 @@ export function PagesPage() {
 
   // Drop ids that fell out of the result set, so the action bar never reports
   // a count that includes rows the user can no longer see.
-  //
-  // Mapped through `bulkWireId`: selection is keyed by row id (the PK, which is
-  // what the checkboxes and the memo comparator use), but the bulk routes
-  // address synced pages by `confluence_id`. Sending the PK still resolved the
-  // row, so the action ran — the server just couldn't match the id back and
-  // counted every synced page as not-found.
   const visibleSelectedIds = useMemo(
-    () => pageItems.filter((p) => selectedIds.has(p.id)).map(bulkWireId),
-    [pageItems, selectedIds],
+    () => currentAddressableItems.filter((p) => selectedIds.has(p.id)).map(bulkWireId),
+    [currentAddressableItems, selectedIds],
   );
   const selectedConfluenceCount = useMemo(
-    () => pageItems.filter((p) => selectedIds.has(p.id) && p.source === 'confluence').length,
-    [pageItems, selectedIds],
+    () => currentAddressableItems.filter((p) => selectedIds.has(p.id) && p.source === 'confluence').length,
+    [currentAddressableItems, selectedIds],
   );
-  const allVisibleSelected = pageItems.length > 0 && visibleSelectedIds.length === pageItems.length;
+  const allVisibleSelected = currentIds.length > 0 && visibleSelectedIds.length === currentIds.length;
 
   const toggleSelectAll = useCallback(() => {
     setSelectedIds((prev) => {
-      const allSelected = pageItems.length > 0 && pageItems.every((p) => prev.has(p.id));
+      const allSelected = currentIds.length > 0 && currentIds.every((id) => prev.has(id));
       if (allSelected) return new Set();
-      return new Set(pageItems.map((p) => p.id));
+      return new Set(currentIds);
     });
     lastToggledId.current = null;
-  }, [pageItems]);
+  }, [currentIds]);
+
+  const scrollMargin = listContainerRef.current?.offsetTop ?? 0;
 
   const virtualizer = useVirtualizer({
     count: pageItems.length,
@@ -829,9 +846,16 @@ export function PagesPage() {
     // page, so the cap should keep content flush-left, not float it.
     <div className="max-w-[1180px] space-y-5">
       <HeaderHost fallbackClassName="mb-1">
-        <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
           <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">{LIBRARY_HEADING}</h1>
-          <div className="flex shrink-0 items-center">
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+            <KPICards
+              embeddingStatus={embeddingStatusData}
+              spacesCount={spaces?.length ?? 0}
+              lastSynced={syncStatus?.lastSynced}
+              onSync={() => syncMutation.mutate()}
+              isSyncing={syncStatus?.status === 'syncing'}
+            />
             <button
               type="button"
               onClick={() => navigate('/pages/new')}
@@ -939,87 +963,52 @@ export function PagesPage() {
 
           <span className="hidden h-5 w-px shrink-0 bg-border sm:block" aria-hidden="true" />
 
-          <div className="grid w-full gap-1.5 sm:flex sm:w-auto sm:shrink-0 sm:items-center sm:gap-1">
-            <div
-              className="library-search-modes flex w-full min-w-0 items-center gap-0.5 rounded-md p-0.5 sm:w-auto"
-              data-testid="search-mode-toggle"
-              role="group"
-              aria-label="Search strategy"
-              aria-describedby="find-mode-hint"
-            >
-              {([
-                'hybrid',
-                'keyword',
-                ...((searchMode === 'semantic'
-                  || embeddingStatusData == null
-                  || embeddingStatusData.embeddedPages > 0
-                  || embeddingStatusData.totalEmbeddings > 0)
-                  ? (['semantic'] as const)
-                  : []),
-              ] as const).map((m) => (
-                <button
-                  type="button"
-                  key={m}
-                  data-testid={`search-mode-${m}`}
-                  onClick={() => setFilters({ mode: m, page: 1 })}
-                  aria-pressed={searchMode === m}
-                  className={cn(
-                    'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:flex-none sm:px-2.5 sm:text-xs',
-                    searchMode === m
-                      ? 'library-search-mode-active'
-                      : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-                  )}
-                >
-                  {SEARCH_MODE_LABELS[m]}
-                </button>
-              ))}
-            </div>
-            <div className="flex w-full items-center gap-1 sm:w-auto">
-              <LibrarySpaceFilter
-                spaces={spaces}
-                selectedKey={spaceKey}
-                selectedName={selectedSpace?.name}
-                onSelect={(value) => {
-                  setFilters({ space: value, page: 1 });
-                  setForcePageList(false);
-                }}
-              />
+          <div className="flex w-full items-center gap-1.5 sm:w-auto sm:shrink-0">
+            <LibrarySpaceFilter
+              spaces={spaces}
+              selectedKey={spaceKey}
+              selectedName={selectedSpace?.name}
+              onSelect={(value) => {
+                setFilters({ space: value, page: 1 });
+                setForcePageList(false);
+              }}
+            />
 
-              <button
-                type="button"
-                onClick={() => setShowAdvancedFilters((v) => !v)}
-                className={cn(
-                  'library-search-select flex h-11 shrink-0 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground sm:h-8 sm:px-2 sm:text-xs',
-                  (showAdvancedFilters || advancedFilterCount > 0) && 'bg-accent text-foreground',
-                  hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && 'text-warning',
-                )}
-                data-testid="advanced-filters-toggle"
-                aria-label={filterStatus ? `Filters, ${filterStatus}` : 'Filters'}
-                title={filterStatus ? `Filters (${filterStatus})` : 'Filters'}
-                aria-expanded={showAdvancedFilters}
-                aria-controls="advanced-filters-panel"
-              >
-                <Filter size={15} aria-hidden="true" />
-                <span>Filters</span>
-                {filterStatus && (
-                  <span className="rounded bg-foreground/10 px-1.5 py-0.5 text-xs font-semibold tabular-nums" aria-hidden="true">
-                    {filterStatus}
-                  </span>
-                )}
-                <ChevronDown
-                  size={12}
-                  className={cn('ml-auto shrink-0 transition-transform', showAdvancedFilters && 'rotate-180')}
-                  data-testid="advanced-filters-chevron"
-                  aria-hidden="true"
-                />
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setShowAdvancedFilters((v) => !v)}
+              className={cn(
+                'library-search-select flex h-11 shrink-0 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground sm:h-8 sm:px-2.5 sm:text-xs',
+                (showAdvancedFilters || advancedFilterCount > 0 || searchMode !== 'hybrid') && 'bg-accent text-foreground',
+                hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && 'text-warning',
+              )}
+              data-testid="advanced-filters-toggle"
+              aria-label={filterStatus ? `Filters, ${filterStatus}` : 'Filters'}
+              title={filterStatus ? `Filters (${filterStatus})` : 'Filters'}
+              aria-expanded={showAdvancedFilters}
+              aria-controls="advanced-filters-panel"
+            >
+              <Filter size={14} aria-hidden="true" />
+              <span>Filters</span>
+              {searchMode !== 'hybrid' && (
+                <span className="rounded bg-accent/80 px-1.5 py-0.5 text-xs font-semibold text-action tabular-nums" aria-hidden="true">
+                  {SEARCH_MODE_LABELS[searchMode]}
+                </span>
+              )}
+              {filterStatus && (
+                <span className="rounded bg-foreground/10 px-1.5 py-0.5 text-xs font-semibold tabular-nums" aria-hidden="true">
+                  {filterStatus}
+                </span>
+              )}
+              <ChevronDown
+                size={12}
+                className={cn('ml-auto shrink-0 transition-transform', showAdvancedFilters && 'rotate-180')}
+                data-testid="advanced-filters-chevron"
+                aria-hidden="true"
+              />
+            </button>
           </div>
         </div>
-
-        <p id="find-mode-hint" className="mx-auto max-w-5xl px-1 text-xs text-muted-foreground">
-          {modeHint}
-        </p>
 
         {/* sr-only live-region announcer for the #945 honesty notice below.
             Always mounted (only its text content changes) rather than
@@ -1088,124 +1077,157 @@ export function PagesPage() {
               </div>
             )}
 
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,5fr)]">
-              <fieldset className="space-y-2">
-                <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Content</legend>
-                <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
-                  <div className="min-w-32">
-                    <label htmlFor="filter-source-select" className="mb-1 block text-xs text-muted-foreground">Source</label>
-                    <select
-                      id="filter-source-select"
-                      value={sourceFilter}
-                      onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
-                      className="nm-select-md w-full"
-                      data-testid="filter-source"
-                      aria-label="Filter by source"
-                    >
-                      <option value="">All sources</option>
-                      {PageSourceEnum.options.map((source) => (
-                        <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
-                      ))}
-                    </select>
+            <div className="space-y-4">
+              {/* Search strategy section */}
+              <div className="space-y-2" data-testid="search-strategy-fieldset">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  Search strategy
+                </span>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div
+                    className="library-search-modes inline-flex w-full min-w-0 items-center gap-0.5 rounded-md p-0.5 sm:w-auto"
+                    data-testid="search-mode-toggle"
+                    role="group"
+                    aria-label="Search strategy"
+                    aria-describedby="find-mode-hint"
+                  >
+                    {([
+                      'hybrid',
+                      'keyword',
+                      ...((searchMode === 'semantic'
+                        || embeddingStatusData == null
+                        || embeddingStatusData.embeddedPages > 0
+                        || embeddingStatusData.totalEmbeddings > 0)
+                        ? (['semantic'] as const)
+                        : []),
+                    ] as const).map((m) => (
+                      <button
+                        type="button"
+                        key={m}
+                        data-testid={`search-mode-${m}`}
+                        onClick={() => setFilters({ mode: m, page: 1 })}
+                        aria-pressed={searchMode === m}
+                        className={cn(
+                          'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2.5 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:flex-none sm:px-3 sm:py-1.5 sm:text-xs',
+                          searchMode === m
+                            ? 'library-search-mode-active'
+                            : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                        )}
+                      >
+                        {SEARCH_MODE_LABELS[m]}
+                      </button>
+                    ))}
                   </div>
-                  <div className="min-w-40">
-                    <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
-                    <select
-                      id="filter-author-select"
-                      value={author}
-                      onChange={(e) => setFilters({ author: e.target.value, page: 1 })}
-                      className="nm-select-md w-full"
-                      data-testid="filter-author"
-                    >
-                      <option value="">All authors</option>
-                      {filterOptions?.authors.map((a) => (
-                        <option key={a} value={a}>{a}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="min-w-40">
-                    <label htmlFor="filter-labels-select" className="mb-1 block text-xs text-muted-foreground">Label</label>
-                    <select
-                      id="filter-labels-select"
-                      value={labels}
-                      onChange={(e) => setFilters({ labels: e.target.value, page: 1 })}
-                      className="nm-select-md w-full"
-                      data-testid="filter-labels"
-                    >
-                      <option value="">All labels</option>
-                      {filterOptions?.labels.map((label) => (
-                        <option key={label} value={label}>{label}</option>
-                      ))}
-                    </select>
-                  </div>
+                  <p id="find-mode-hint" className="text-xs text-muted-foreground">
+                    {modeHint}
+                  </p>
                 </div>
-              </fieldset>
-
-              <fieldset className="space-y-2">
-                <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Status &amp; date</legend>
-                <div className="grid grid-cols-2 items-end gap-2 sm:grid-cols-3 xl:grid-cols-5">
-                  <div className="min-w-32">
-                    <label htmlFor="filter-freshness-select" className="mb-1 block text-xs text-muted-foreground">Freshness</label>
-                    <select
-                      id="filter-freshness-select"
-                      value={freshness}
-                      onChange={(e) => setFilters({ freshness: e.target.value, page: 1 })}
-                      className="nm-select-md w-full"
-                      data-testid="filter-freshness"
-                    >
-                      <option value="">Any</option>
-                      <option value="fresh">Fresh (&lt;7 days)</option>
-                      <option value="recent">Recent (7-30 days)</option>
-                      <option value="aging">Aging (30-90 days)</option>
-                      <option value="stale">Stale (&gt;90 days)</option>
-                    </select>
-                  </div>
-                  <div className="min-w-36">
-                    <label htmlFor="filter-quality-select" className="mb-1 block text-xs text-muted-foreground">Quality</label>
-                    <select id="filter-quality-select" value={qualityFilter} onChange={(e) => setFilters({ quality: e.target.value, page: 1 })} className="nm-select-md w-full" data-testid="filter-quality">
-                      <option value="">Any</option><option value="excellent">Excellent (90-100)</option><option value="good">Good (70-89)</option><option value="needs-work">Needs Work (50-69)</option><option value="poor">Poor (0-49)</option>
-                    </select>
-                  </div>
-                  <div className="min-w-36">
-                    <label htmlFor="filter-embedding-select" className="mb-1 block text-xs text-muted-foreground">Embedding</label>
-                    <select
-                      id="filter-embedding-select"
-                      value={embeddingStatus}
-                      onChange={(e) => setFilters({ embedding: e.target.value, page: 1 })}
-                      className="nm-select-md w-full"
-                      data-testid="filter-embedding"
-                    >
-                      <option value="">Any</option>
-                      <option value="pending">Needs Embedding</option>
-                      <option value="done">Embedded</option>
-                    </select>
-                  </div>
-                  <div className="min-w-36">
-                    <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified from</label>
-                    <input id="filter-date-from-input" type="date" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} className="nm-select-md w-full !bg-none" data-testid="filter-date-from" />
-                  </div>
-                  <div className="min-w-36">
-                    <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified to</label>
-                    <input id="filter-date-to-input" type="date" value={dateToInput} onChange={(e) => setDateToInput(e.target.value)} className="nm-select-md w-full !bg-none" data-testid="filter-date-to" />
-                  </div>
-                </div>
-              </fieldset>
-            </div>
-
-            <details className="mt-3 border-t border-border pt-3">
-              <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
-                Index health and sync
-              </summary>
-              <div className="mt-3">
-                <KPICards
-                  embeddingStatus={embeddingStatusData}
-                  spacesCount={spaces?.length ?? 0}
-                  lastSynced={syncStatus?.lastSynced}
-                  onSync={() => syncMutation.mutate()}
-                  isSyncing={syncStatus?.status === 'syncing'}
-                />
               </div>
-            </details>
+
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,5fr)]">
+                <fieldset className="space-y-2">
+                  <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Content</legend>
+                  <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+                    <div className="min-w-32">
+                      <label htmlFor="filter-source-select" className="mb-1 block text-xs text-muted-foreground">Source</label>
+                      <select
+                        id="filter-source-select"
+                        value={sourceFilter}
+                        onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
+                        className="nm-select-md w-full"
+                        data-testid="filter-source"
+                        aria-label="Filter by source"
+                      >
+                        <option value="">All sources</option>
+                        {PageSourceEnum.options.map((source) => (
+                          <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="min-w-40">
+                      <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
+                      <select
+                        id="filter-author-select"
+                        value={author}
+                        onChange={(e) => setFilters({ author: e.target.value, page: 1 })}
+                        className="nm-select-md w-full"
+                        data-testid="filter-author"
+                      >
+                        <option value="">All authors</option>
+                        {filterOptions?.authors.map((a) => (
+                          <option key={a} value={a}>{a}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="min-w-40">
+                      <label htmlFor="filter-labels-select" className="mb-1 block text-xs text-muted-foreground">Label</label>
+                      <select
+                        id="filter-labels-select"
+                        value={labels}
+                        onChange={(e) => setFilters({ labels: e.target.value, page: 1 })}
+                        className="nm-select-md w-full"
+                        data-testid="filter-labels"
+                      >
+                        <option value="">All labels</option>
+                        {filterOptions?.labels.map((label) => (
+                          <option key={label} value={label}>{label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </fieldset>
+
+                <fieldset className="space-y-2">
+                  <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Status &amp; date</legend>
+                  <div className="grid grid-cols-2 items-end gap-2 sm:grid-cols-3 xl:grid-cols-5">
+                    <div className="min-w-32">
+                      <label htmlFor="filter-freshness-select" className="mb-1 block text-xs text-muted-foreground">Freshness</label>
+                      <select
+                        id="filter-freshness-select"
+                        value={freshness}
+                        onChange={(e) => setFilters({ freshness: e.target.value, page: 1 })}
+                        className="nm-select-md w-full"
+                        data-testid="filter-freshness"
+                      >
+                        <option value="">Any</option>
+                        <option value="fresh">Fresh (&lt;7 days)</option>
+                        <option value="recent">Recent (7-30 days)</option>
+                        <option value="aging">Aging (30-90 days)</option>
+                        <option value="stale">Stale (&gt;90 days)</option>
+                      </select>
+                    </div>
+                    <div className="min-w-36">
+                      <label htmlFor="filter-quality-select" className="mb-1 block text-xs text-muted-foreground">Quality</label>
+                      <select id="filter-quality-select" value={qualityFilter} onChange={(e) => setFilters({ quality: e.target.value, page: 1 })} className="nm-select-md w-full" data-testid="filter-quality">
+                        <option value="">Any</option><option value="excellent">Excellent (90-100)</option><option value="good">Good (70-89)</option><option value="needs-work">Needs Work (50-69)</option><option value="poor">Poor (0-49)</option>
+                      </select>
+                    </div>
+                    <div className="min-w-36">
+                      <label htmlFor="filter-embedding-select" className="mb-1 block text-xs text-muted-foreground">Embedding</label>
+                      <select
+                        id="filter-embedding-select"
+                        value={embeddingStatus}
+                        onChange={(e) => setFilters({ embedding: e.target.value, page: 1 })}
+                        className="nm-select-md w-full"
+                        data-testid="filter-embedding"
+                      >
+                        <option value="">Any</option>
+                        <option value="pending">Needs Embedding</option>
+                        <option value="done">Embedded</option>
+                      </select>
+                    </div>
+                    <div className="min-w-36">
+                      <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified from</label>
+                      <input id="filter-date-from-input" type="date" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} className="nm-input h-8 text-xs w-full" data-testid="filter-date-from" aria-label="Modified from" />
+                    </div>
+                    <div className="min-w-36">
+                      <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified to</label>
+                      <input id="filter-date-to-input" type="date" value={dateToInput} onChange={(e) => setDateToInput(e.target.value)} className="nm-input h-8 text-xs w-full" data-testid="filter-date-to" aria-label="Modified to" />
+                    </div>
+                  </div>
+                </fieldset>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1402,93 +1424,132 @@ export function PagesPage() {
               />
             ) : (
               <>
-                <p className="text-sm font-medium text-foreground" data-testid="search-results-count">
-                  {searchResults.total} {searchResults.total === 1 ? 'result' : 'results'}
-                  <span className="ml-2 text-xs text-muted-foreground/60">({SEARCH_MODE_LABELS[searchMode]})</span>
-                </p>
-                <div className="overflow-hidden rounded-lg border border-border bg-background">
-                  {displayItems.map((item, i) => (
-                    <m.div
-                      key={item.id}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ duration: 0.15, delay: i * 0.02 }}
-                    >
-                      <button
-                        onClick={() => navigate(`/pages/${item.id}`)}
-                        className="nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 hover:bg-accent max-sm:items-start max-sm:flex-wrap max-sm:gap-y-1"
-                        data-testid={`article-hover-${item.id}`}
-                      >
-                        <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
-                          <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
-                            {item.icon && <PageIcon icon={item.icon} pageId={item.id} size="row" />}
-                            <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
-                          </p>
-                          {/* `contain:inline-size` zeroes the excerpt's
-                              contribution to the block's intrinsic width.
-                              Without it the excerpt's unwrapped length — not
-                              the title's — decides the block's content size,
-                              and a two-line excerpt is nearly always wider
-                              than a phone row, so the chip would drop on
-                              virtually every row: forced in practice, not
-                              content-driven. Contained, the nowrap title alone
-                              drives the wrap. The excerpt's own rendering is
-                              unchanged — it still fills the block's final
-                              width and clamps at two lines. */}
-                          {/* item.excerpt is a full-text-search snippet carrying
-                              <mark> highlight tags on its keyword leg (the
-                              semantic leg's snippets carry none). Rendering it
-                              as plain React text escaped the tags into literal
-                              "<mark>…</mark>" on screen for the ~250ms-1.5s
-                              every semantic/hybrid search spends showing
-                              phase-1 keyword results — on 80-90% of rows, every
-                              time. SanitizedHtml with an explicit `mark`-only
-                              allowlist renders the highlighting the backend
-                              already computed instead of leaking its markup
-                              (polish pass, 2026-08-17). */}
-                          {item.excerpt && (
-                            <SanitizedHtml
-                              html={item.excerpt}
-                              allowedTags={['mark']}
-                              allowedAttrs={[]}
-                              className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-foreground/10 [&_mark]:font-medium [&_mark]:text-foreground"
+                <div data-testid="library-search-results-panel" className="overflow-hidden rounded-lg border border-border bg-background">
+                  <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground" data-testid="search-results-context" aria-live="polite">
+                    <span data-testid="search-results-count">
+                      {searchResults.total} {searchResults.total === 1 ? 'result' : 'results'}
+                      <span className="ml-1.5 text-xs text-muted-foreground/70">({SEARCH_MODE_LABELS[searchMode]})</span>
+                    </span>
+                    {selectedSpace && <><span aria-hidden="true"> · </span><span>{selectedSpace.name}</span></>}
+                    {!selectionArmed && (
+                      <button type="button" onClick={() => setSelectionMode(true)} className="nm-button-ghost h-8 px-2.5 text-xs" data-testid="enter-selection-mode-search">
+                        Select pages
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Select-all + bulk actions when selection is armed */}
+                  {selectionArmed && (
+                    <div className="space-y-3 border-b border-border px-3 py-2.5">
+                      <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          checked={allVisibleSelected}
+                          ref={(el) => {
+                            if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
+                          }}
+                          onChange={toggleSelectAll}
+                          aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
+                          className="size-4 cursor-pointer accent-[var(--color-action)]"
+                          data-testid="select-all-search-pages"
+                        />
+                        Select all on this page
+                      </label>
+
+                      <BulkActionBar
+                        selectedIds={visibleSelectedIds}
+                        confluenceCount={selectedConfluenceCount}
+                        onClear={clearSelection}
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    {displayItems.map((item, i) => {
+                      const itemId = String(item.id);
+                      const isSelected = selectedIds.has(itemId);
+                      return (
+                        <m.div
+                          key={item.id}
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          transition={{ duration: 0.15, delay: i * 0.02 }}
+                        >
+                          <div
+                            className={cn(
+                              'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 max-sm:items-start',
+                              isSelected ? 'bg-accent' : 'hover:bg-accent',
+                            )}
+                            data-testid={`article-hover-${item.id}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onClick={(e) => toggleSelect(itemId, e.shiftKey)}
+                              onChange={() => {}}
+                              aria-label={`Select ${item.title}`}
+                              className={cn(
+                                'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5',
+                                !isSelected && !selectionArmed && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
+                              )}
+                              data-testid={`page-select-${item.id}`}
                             />
-                          )}
-                          {item.spaceKey && (
-                            <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                              {item.spaceKey !== '__local__' ? (
+                            <button
+                              type="button"
+                              onClick={() => navigate(`/pages/${item.id}`)}
+                              className="flex min-w-0 flex-1 items-center gap-3 text-left max-sm:flex-wrap max-sm:gap-y-1"
+                            >
+                              <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
+                                <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
+                                  {item.icon && <PageIcon icon={item.icon} pageId={itemId} size="row" />}
+                                  <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
+                                </p>
+                                {item.excerpt && (
+                                  <SanitizedHtml
+                                    html={item.excerpt}
+                                    allowedTags={['mark']}
+                                    allowedAttrs={[]}
+                                    className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-foreground/10 [&_mark]:font-medium [&_mark]:text-foreground"
+                                  />
+                                )}
+                                {item.spaceKey && (
+                                  <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                                    {item.spaceKey !== '__local__' ? (
+                                      <span
+                                        className={cn('shrink-0', neutralChipClass)}
+                                        data-testid="badge-confluence"
+                                        data-source-badge={item.id}
+                                      >
+                                        {spaceNameByKey.get(item.spaceKey) ?? item.spaceKey}
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className={cn('shrink-0', neutralChipClass)}
+                                        data-testid="badge-local"
+                                        data-source-badge={item.id}
+                                      >
+                                        Local
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Similarity only — renderable cosine distance percentage */}
+                              {item.similarity !== null && item.similarity > 0 && (
                                 <span
-                                  className={cn('shrink-0', neutralChipClass)}
-                                  data-testid="badge-confluence"
-                                  data-source-badge={item.id}
+                                  title="Semantic similarity to your query"
+                                  className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground border border-border/40"
                                 >
-                                  {item.spaceKey}
-                                </span>
-                              ) : (
-                                <span
-                                  className={cn('shrink-0', neutralChipClass)}
-                                  data-testid="badge-local"
-                                  data-source-badge={item.id}
-                                >
-                                  Local
+                                  {(item.similarity * 100).toFixed(0)}%
                                 </span>
                               )}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Similarity only — renderable cosine distance percentage */}
-                        {item.similarity !== null && item.similarity > 0 && (
-                          <span
-                            title="Semantic similarity to your query"
-                            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground border border-border/40"
-                          >
-                            {(item.similarity * 100).toFixed(0)}%
-                          </span>
-                        )}
-                      </button>
-                    </m.div>
-                  ))}
+                            </button>
+                          </div>
+                        </m.div>
+                      );
+                    })}
+                  </div>
                 </div>
               </>
             );

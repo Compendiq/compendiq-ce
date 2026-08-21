@@ -58,8 +58,6 @@ import { useSettings } from '../../hooks/use-settings';
 import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { LayoutPresetMenu } from '../layout/LayoutPresetMenu';
-import { useArticleLayoutControls } from '../layout/article-layout-controls';
 import type { TocHeading } from './TableOfContents';
 
 // ---------- Outline tree helpers ----------
@@ -287,15 +285,14 @@ export function ArticleRightPane({
   const width = useUiStore((s) => s.articleSidebarWidth);
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
   const reduceEffects = useReducedMotion();
-  const layoutControls = useArticleLayoutControls();
 
   // `collapsed` is the user's preference and nothing else now.
   //
   // #1126 ORed `dockOpen` in, because the assistant was a third column and this
   // pane had to fall back to its 40px rail to make room. The assistant is a tab
   // *inside* this pane now, so there is nothing to make room for — and leaving
-  // the OR in place was actively harmful. `openDock()` is still raised by Alt+I
-  // and the AI preset; `AppLayout` consumes it above `md` and re-expresses it as
+  // the OR in place was actively harmful. `openDock()` is still raised by Alt+I;
+  // `AppLayout` consumes it above `md` and re-expresses it as
   // a tab request, but effects run after commit, so `open` is true for a frame
   // and this pane starts collapsing.
   //
@@ -312,7 +309,7 @@ export function ArticleRightPane({
   const inspectorWide = useIsInspectorWideLayout();
   const isSheet = presentation === 'sheet';
   // Below xl the inspector starts as the 40px rail so the article keeps
-  // the workspace. Expand (and Alt+I / layout presets) sets laptopExpanded.
+  // the workspace. Expand (and Alt+I) sets laptopExpanded.
   const collapsed = isSheet ? false : inspectorWide ? userCollapsed : !laptopExpanded;
   const handleExpandSidebar = useCallback(() => {
     if (!inspectorWide) setLaptopExpanded(true);
@@ -437,7 +434,7 @@ export function ArticleRightPane({
     }
   }, [headings.length, id, isNewPage, activeInspectorView]);
 
-  // Layout presets are explicit user commands, so they take precedence over
+  // Explicit inspector view requests take precedence over
   // the content-derived default and mark the view as intentionally chosen.
   useEffect(() => {
     if (!inspectorViewRequest) return;
@@ -1448,13 +1445,6 @@ export function ArticleRightPane({
         </button>
         </div>
 
-        {layoutControls && !isSheet && (
-          <LayoutPresetMenu
-            compact
-            activePreset={layoutControls.activePreset}
-            onSelect={layoutControls.applyPreset}
-          />
-        )}
         <button
           onClick={isSheet ? onRequestClose : handleCollapseSidebar}
           className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

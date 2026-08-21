@@ -23,8 +23,6 @@ import { Logo } from '../Logo';
 import { HeaderSessionCluster } from './HeaderSessionCluster';
 import { MainNavChassisRail } from './MainNavStrip';
 import { PageTransition } from './PageTransition';
-import { type LayoutPreset } from './LayoutPresetMenu';
-import { ArticleLayoutControlsProvider } from './article-layout-controls';
 import { useIsInspectorWideLayout, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
 import { isArticlePath } from '../../lib/article-route';
@@ -97,23 +95,17 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const setPendingSequence = useKeyboardShortcutsStore((s) => s.setPendingSequence);
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const toggleArticleSidebar = useUiStore((s) => s.toggleArticleSidebar);
-  const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
-  const articleSidebarCollapsed = useUiStore((s) => s.articleSidebarCollapsed);
-  const setTreeSidebarCollapsed = useUiStore((s) => s.setTreeSidebarCollapsed);
   const setArticleSidebarCollapsed = useUiStore((s) => s.setArticleSidebarCollapsed);
   const setArticleSidebarLaptopExpanded = useUiStore((s) => s.setArticleSidebarLaptopExpanded);
   const singleKeyShortcutsEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
   const dockOpen = useAiDockStore((s) => s.open);
-  const openDock = useAiDockStore((s) => s.openDock);
   const closeDock = useAiDockStore((s) => s.closeDock);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileContextOpen, setMobileContextOpen] = useState(false);
-  const [activeLayoutPreset, setActiveLayoutPreset] = useState<LayoutPreset | null>(null);
   const [inspectorViewRequest, setInspectorViewRequest] = useState<InspectorViewRequest | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const mobileSidebarRef = useRef<HTMLDivElement>(null);
   const mobileContextRef = useRef<HTMLDivElement>(null);
-  const previousLayoutPathRef = useRef(location.pathname);
   const isArticleRoute = isArticlePath(location.pathname);
   const isMobileLayout = useIsMobileLayout();
   const inspectorWide = useIsInspectorWideLayout();
@@ -142,56 +134,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
     }));
   }, []);
 
-  const applyLayoutPreset = useCallback((preset: LayoutPreset) => {
-    setActiveLayoutPreset(preset);
-
-    if (preset === 'reading') {
-      setTreeSidebarCollapsed(true);
-      setArticleSidebarCollapsed(false);
-      setArticleSidebarLaptopExpanded(true);
-      closeDock();
-      requestInspectorView('outline');
-      return;
-    }
-
-    if (preset === 'editing') {
-      setTreeSidebarCollapsed(false);
-      setArticleSidebarCollapsed(false);
-      setArticleSidebarLaptopExpanded(true);
-      closeDock();
-      requestInspectorView('details');
-      return;
-    }
-
-    if (preset === 'focus') {
-      setTreeSidebarCollapsed(true);
-      setArticleSidebarCollapsed(true);
-      setArticleSidebarLaptopExpanded(false);
-      closeDock();
-      return;
-    }
-
-    // The AI preset. `setArticleSidebarCollapsed(true)` here was correct when
-    // the assistant was its own column and the inspector had to step aside for
-    // it; now the assistant IS a tab in that inspector, so collapsing it hid
-    // the very thing the preset asks for. The effect below turns `openDock()`
-    // into the tab selection on every layout that has an inspector.
-    setTreeSidebarCollapsed(false);
-    setArticleSidebarCollapsed(false);
-    setArticleSidebarLaptopExpanded(true);
-    openDock();
-  }, [
-    closeDock,
-    openDock,
-    requestInspectorView,
-    setArticleSidebarCollapsed,
-    setArticleSidebarLaptopExpanded,
-    setTreeSidebarCollapsed,
-  ]);
-
-  // "Show me the assistant" is raised as `openDock()` from Alt+I, the AI
-  // layout preset, and the inspector rail. On an article route it is always
-  // consumed here and re-expressed as: show the inspector, select Assistant.
+  // "Show me the assistant" is raised as `openDock()` from Alt+I and the
+  // inspector rail. On an article route it is always consumed here and
+  // re-expressed as: show the inspector, select Assistant.
   // Below `md` that is the page-inspector sheet (Outline / Details / Assistant
   // together). At `md` and up it is the detached context rail.
   //
@@ -221,28 +166,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
     setArticleSidebarCollapsed,
     setArticleSidebarLaptopExpanded,
   ]);
-
-  // A manual panel change means the last command is no longer an exact preset.
-  useEffect(() => {
-    if (!activeLayoutPreset) return;
-    const matches = {
-      reading: treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
-      editing: !treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
-      focus: treeSidebarCollapsed && articleSidebarCollapsed && !dockOpen,
-      // Research asks for the assistant tab. The dock-open effect below
-      // immediately turns `openDock()` into an expanded inspector, so the
-      // live match is tree + inspector, same as editing. The request is what
-      // distinguishes them; a later manual panel change still clears.
-      research: !treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
-    }[activeLayoutPreset];
-    if (!matches) setActiveLayoutPreset(null);
-  }, [activeLayoutPreset, articleSidebarCollapsed, dockOpen, treeSidebarCollapsed]);
-
-  useEffect(() => {
-    if (previousLayoutPathRef.current === location.pathname) return;
-    previousLayoutPathRef.current = location.pathname;
-    setActiveLayoutPreset(null);
-  }, [location.pathname]);
 
   // `.` means "the page inspector". Below `md` that is the inspector sheet;
   // at `md` and up it is the detached rail. A leftover dock flag is closed
@@ -427,11 +350,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
     // the page that started it. It is inert until an AI surface mounts and
     // registers as a consumer — see `retainAi` in AiContext.
     <AiProvider>
-    <ArticleLayoutControlsProvider
-      value={isArticleRoute
-        ? { activePreset: activeLayoutPreset, applyPreset: applyLayoutPreset }
-        : null}
-    >
     {/* Chassis is the viewport ground. The rounded shell sits inset on the
         end and bottom on desktop; the destination rail is flush to the start
         edge. Edge-to-edge below `md`. Do not swap `app-chassis` for a `bg-*`
@@ -721,7 +639,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
         )}
       </AnimatePresence>
     </div>
-    </ArticleLayoutControlsProvider>
     </AiProvider>
   );
 }

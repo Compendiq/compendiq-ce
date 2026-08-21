@@ -55,11 +55,11 @@ describe('the Edit affordance', () => {
     expect(editButton()).toMatch(/shortcutId="toggle-edit"/);
   });
 
-  it('hosts layout presets on the inspector, not the article header strip', () => {
+  it('does not render layout preset menus in the article header or inspector', () => {
     expect(source).not.toContain('LayoutPresetMenu');
     expect(source).not.toContain('useArticleLayoutControls');
-    expect(inspectorSource).toContain('LayoutPresetMenu');
-    expect(inspectorSource).toContain('useArticleLayoutControls');
+    expect(inspectorSource).not.toContain('LayoutPresetMenu');
+    expect(inspectorSource).not.toContain('useArticleLayoutControls');
   });
 
   // The accent belongs to actions, and the only filled Steel on this route is

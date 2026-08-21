@@ -328,6 +328,7 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
     fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
       target: { value: 'postgres' },
     });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     fireEvent.click(screen.getByTestId('search-mode-semantic'));
     // useSearch debounces 300ms before fetching.
     return await screen.findByText(searchTitle, undefined, { timeout: 2000 });

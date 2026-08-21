@@ -114,7 +114,7 @@ flowchart LR
   nobody asked for. It defaults to Outline, or Details when the page has no
   headings.
 - **"Show me the assistant" is consumed by `AppLayout`.** `openDock()` is still
-  what Alt+I, the AI layout preset and the inspector's rail button raise. On an
+  what Alt+I and the inspector's rail button raise. On an
   article route at every width an effect turns it into
   `requestInspectorView('assistant')` plus an expand (desktop) or the inspector
   sheet (below `md`), and lowers the flag in the same tick — `open` is a

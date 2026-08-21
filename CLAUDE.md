@@ -19,6 +19,7 @@ Source-of-truth docs:
 4. **Ask when ambiguous** — don't guess at intent.
 5. **Follow the ADRs.** Don't deviate without discussion.
 6. **Diagrams are source-of-truth.** When a code change affects system structure (compose, domains, ESLint boundaries, table/FK migrations, auth/sync/RAG/license flows, content pipeline), update the matching `docs/architecture/*.md` in the same PR. If unsure which diagram applies, flag it in the PR description.
+7. **Documentation research via Ref MCP.** When researching external library documentation, APIs, framework behavior, or technical specifications, use the `ref` MCP tools (`ref_search_documentation`, `ref_read_url`) whenever the tool is available.
 
 ## Build
 

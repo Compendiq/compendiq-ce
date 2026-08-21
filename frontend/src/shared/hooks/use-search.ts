@@ -3,8 +3,9 @@ import { useQuery } from '@tanstack/react-query';
 import type { PageIcon } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
 
-interface SearchResultItem {
+export interface SearchResultItem {
   id: string | number;
+  confluenceId?: string | null;
   title: string;
   spaceKey: string | null;
   icon?: PageIcon | null;
@@ -33,6 +34,7 @@ interface SearchResultItem {
 interface SearchApiResponse {
   items: Array<{
     id: string | number;
+    confluenceId?: string | null;
     title: string;
     spaceKey: string | null;
     snippet?: string;
@@ -60,6 +62,7 @@ interface SearchApiResponse {
 function mapItems(response: SearchApiResponse): SearchResultItem[] {
   return response.items.map((item) => ({
     id: item.id,
+    confluenceId: item.confluenceId,
     title: item.title,
     spaceKey: item.spaceKey,
     excerpt: item.snippet ?? '',
