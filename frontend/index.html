@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="graphite" data-theme-type="dark" class="dark">
+<html lang="en" data-theme="graphite" data-theme-type="dark" data-font="inter" data-font-scope="application" data-dyslexia-spacing="false" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -47,6 +47,11 @@
       // src/stores/theme-store.ts, which does the same remap for the store.
       (function() {
         var DARK = 'graphite', LIGHT = 'paper';
+        var DEFAULT_FONT = 'inter', DEFAULT_SCOPE = 'application';
+        var FONTS = {
+          'inter': 1, 'opendyslexic-alta': 1, 'atkinson': 1, 'system': 1, 'serif': 1
+        };
+        var SCOPES = { 'application': 1, 'reading-pane': 1 };
         // Superseded palette IDs, mapped onto the light/dark side they were on
         // so an upgrading user paints the right BRIGHTNESS at first frame.
         var RETIRED_LIGHT = {
@@ -61,6 +66,17 @@
           document.documentElement.classList.toggle('dark', !isLight);
         }
 
+        function applyTypography(state) {
+          var font = state && FONTS[state.fontFamily] ? state.fontFamily : DEFAULT_FONT;
+          var scope = state && SCOPES[state.fontScope] ? state.fontScope : DEFAULT_SCOPE;
+          document.documentElement.setAttribute('data-font', font);
+          document.documentElement.setAttribute('data-font-scope', scope);
+          document.documentElement.setAttribute(
+            'data-dyslexia-spacing',
+            state && state.dyslexiaSpacing === true ? 'true' : 'false'
+          );
+        }
+
         function systemTheme() {
           try {
             return window.matchMedia('(prefers-color-scheme: light)').matches ? LIGHT : DARK;
@@ -72,6 +88,7 @@
                   || localStorage.getItem('atlasmind-theme')
                   || localStorage.getItem('kb-theme');
           var state = raw ? (JSON.parse(raw) || {}).state : null;
+          applyTypography(state);
 
           // Current shape: { preference: 'system' | 'dark' | 'light' }.
           var preference = state && state.preference;
