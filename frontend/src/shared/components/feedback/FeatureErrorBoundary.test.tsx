@@ -173,4 +173,19 @@ describe('FeatureErrorBoundary', () => {
     expect(screen.getByTestId('sibling')).toBeInTheDocument();
     expect(screen.getByText('I am still here')).toBeInTheDocument();
   });
+
+  it('renders custom fallback when provided and a child throws', () => {
+    render(
+      <FeatureErrorBoundary
+        featureName="Version Preview"
+        fallback={<div data-testid="custom-fallback">Custom raw text fallback</div>}
+      >
+        <ThrowingChild />
+      </FeatureErrorBoundary>,
+    );
+
+    expect(screen.getByTestId('custom-fallback')).toBeInTheDocument();
+    expect(screen.getByText('Custom raw text fallback')).toBeInTheDocument();
+    expect(screen.queryByTestId('feature-error-fallback')).not.toBeInTheDocument();
+  });
 });
