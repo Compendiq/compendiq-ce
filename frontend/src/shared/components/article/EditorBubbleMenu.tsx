@@ -17,6 +17,8 @@ import { CommentComposer } from './CommentComposer';
 import { buildInstruction, type QuickAction } from './improve-actions';
 import { containsStructuredInline } from './block-menu-nodes';
 import { hasBlockMenuTarget } from './block-menu-decoration';
+import { isMac } from '../../lib/platform';
+import { setDraftNote } from './draft-notes-store';
 import {
   createImproveDecorationPlugin,
   improveDecorationKey,
@@ -179,6 +181,7 @@ export function BubbleMenuContent({
   const [commentOpen, setCommentOpen] = useState(false);
   const [commentQuote, setCommentQuote] = useState('');
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
+  const commentDraftRef = useRef<string>('');
   // Range captured the moment "Improve" or "Comment" is clicked, so actions act on
   // the original selection even after focus moves or the selection collapses.
   const rangeRef = useRef<{ from: number; to: number } | null>(null);
@@ -430,8 +433,19 @@ export function BubbleMenuContent({
             void queryClient.invalidateQueries({ queryKey: ['comments', pageId] });
           }
         } else {
-          // Fallback for unsaved drafts: generate local ID
+          // Fallback for unsaved drafts: generate local ID and persist note draft
           const localId = `local-${Date.now()}`;
+          setDraftNote(localId, {
+            id: localId,
+            body,
+            createdAt: new Date().toISOString(),
+            anchorData: {
+              quote: selectedQuote,
+              text: selectedQuote,
+              from: range.from,
+              to: range.to,
+            },
+          });
           editor
             .chain()
             .focus()
@@ -440,6 +454,7 @@ export function BubbleMenuContent({
             .run();
           toast.success('Note attached');
         }
+        commentDraftRef.current = '';
         closeComment();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Failed to add note');
@@ -452,6 +467,7 @@ export function BubbleMenuContent({
 
   const showImprove = aiOpen || !dropsMacros;
   const isExpanded = aiOpen || commentOpen;
+  const mac = isMac();
 
   return (
     <div
@@ -468,8 +484,8 @@ export function BubbleMenuContent({
           type="button"
           onMouseDown={(e) => e.preventDefault()} // keep editor selection on click
           onClick={() => (commentOpen ? closeComment() : openComment())}
-          title="Add note / comment (Cmd+Option+M)"
-          aria-label="Add note or comment"
+          title={mac ? 'Add note (Cmd+Option+M)' : 'Add note (Ctrl+Alt+M)'}
+          aria-label="Add note"
           aria-expanded={commentOpen}
           aria-controls={commentOpen ? commentPanelId : undefined}
           data-testid="bubble-comment-trigger"
@@ -520,10 +536,17 @@ export function BubbleMenuContent({
         <CommentComposer
           id={commentPanelId}
           quote={commentQuote}
+          initialValue={commentDraftRef.current}
+          onDraftChange={(val) => {
+            commentDraftRef.current = val;
+          }}
           onSubmit={handleCreateComment}
           onClose={closeComment}
           isSubmitting={isSubmittingComment}
-          className="w-80"
+          className={cn(
+            'w-full max-w-[calc(100vw-24px)]',
+            improvePanelPosition === 'above' ? 'border-b border-border' : 'border-t border-border',
+          )}
         />
       )}
 
@@ -538,7 +561,7 @@ export function BubbleMenuContent({
           onInsertBelow={insertBelow}
           onClose={closeAi}
           replaceBlocked={dropsMacros ? MACRO_REPLACE_BLOCKED : null}
-          className="w-80"
+          className="w-full max-w-[calc(100vw-24px)]"
         />
       )}
     </div>

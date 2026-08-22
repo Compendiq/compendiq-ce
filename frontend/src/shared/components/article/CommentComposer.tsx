@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { MessageSquarePlus, X, Send, Loader2 } from 'lucide-react';
+import { useLayoutEffect, useRef, useState, useCallback } from 'react';
+import { MessageSquarePlus, Send, Loader2 } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { Button } from '../Button';
+import { isMac } from '../../lib/platform';
 
 export interface CommentComposerProps {
   id?: string;
   quote?: string;
+  initialValue?: string;
+  onDraftChange?: (body: string) => void;
   onSubmit: (body: string) => void | Promise<void>;
   onClose: () => void;
   isSubmitting?: boolean;
@@ -15,20 +18,24 @@ export interface CommentComposerProps {
 export function CommentComposer({
   id,
   quote,
+  initialValue = '',
+  onDraftChange,
   onSubmit,
   onClose,
   isSubmitting = false,
   className,
 }: CommentComposerProps) {
-  const [body, setBody] = useState('');
+  const [body, setBody] = useState(initialValue);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const mac = isMac();
 
-  useEffect(() => {
-    // Focus textarea on mount
-    const timer = setTimeout(() => {
-      textareaRef.current?.focus();
-    }, 50);
-    return () => clearTimeout(timer);
+  const handleBodyChange = (newBody: string) => {
+    setBody(newBody);
+    onDraftChange?.(newBody);
+  };
+
+  useLayoutEffect(() => {
+    textareaRef.current?.focus();
   }, []);
 
   const handleSubmit = useCallback(() => {
@@ -47,63 +54,65 @@ export function CommentComposer({
     }
   };
 
+  const quoteId = id ? `${id}-quote` : 'comment-composer-quote';
+  const hintId = id ? `${id}-hint` : 'comment-composer-hint';
+
   return (
     <div
       id={id}
+      role="group"
+      aria-label="Add note"
+      aria-busy={isSubmitting}
       data-testid="inline-comment-composer"
-      className={cn('flex flex-col gap-2 p-3 text-card-foreground', className)}
+      className={cn('flex flex-col gap-2.5 p-3 text-card-foreground', className)}
     >
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
           <MessageSquarePlus size={14} className="text-primary" />
-          <span>Add Note / Comment</span>
+          <span>Add Note</span>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close composer"
-          className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <X size={14} />
-        </button>
       </div>
 
       {/* Quoted selection snippet */}
       {quote && (
-        <div
+        <blockquote
+          id={quoteId}
           data-testid="comment-composer-quote"
-          className="rounded border-l-2 border-primary/70 bg-muted/40 px-2 py-1 text-[11px] italic text-muted-foreground line-clamp-2"
+          className="rounded border-l-2 border-primary/70 bg-muted/40 px-2.5 py-1 text-[11px] italic text-muted-foreground line-clamp-2"
           title={quote}
         >
           &ldquo;{quote}&rdquo;
-        </div>
+        </blockquote>
       )}
 
       {/* Input */}
       <textarea
         ref={textareaRef}
+        autoFocus
         value={body}
-        onChange={(e) => setBody(e.target.value)}
+        onChange={(e) => handleBodyChange(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="Add an editorial note or comment… (Cmd+Enter to send)"
+        placeholder="Type an editorial note…"
         rows={3}
         disabled={isSubmitting}
+        aria-label="Note content"
+        aria-describedby={cn(quote ? quoteId : undefined, hintId)}
         data-testid="inline-comment-input"
-        className="w-full resize-none rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
+        className="w-full resize-none rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
       />
 
       {/* Actions */}
-      <div className="flex items-center justify-between pt-1">
-        <span className="text-[11px] text-muted-foreground">
-          Esc to cancel · ⌘+Enter to save
+      <div className="flex items-center justify-between pt-0.5">
+        <span id={hintId} className="text-[11px] font-mono text-muted-foreground/80">
+          Esc · {mac ? '⌘↵' : 'Ctrl+↵'}
         </span>
         <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={onClose}
             disabled={isSubmitting}
-            className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50"
           >
             Cancel
           </button>

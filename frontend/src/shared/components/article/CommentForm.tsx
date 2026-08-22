@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { Button } from '../Button';
 
 interface CommentFormProps {
   /** Called with the comment body text when the user submits */
-  onSubmit: (body: string) => void;
+  onSubmit: (body: string) => void | Promise<void>;
   /** If true, shows a cancel button (used for inline reply forms) */
   onCancel?: () => void;
   /** Placeholder text for the textarea */
@@ -34,12 +34,34 @@ export function CommentForm({
     }
   }, [autoFocus]);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = body.trim();
-    if (!trimmed) return;
-    onSubmit(trimmed);
-    setBody('');
+  const handleSubmit = useCallback(
+    async (e?: React.FormEvent) => {
+      e?.preventDefault();
+      const trimmed = body.trim();
+      if (!trimmed || isSubmitting) return;
+
+      try {
+        const result = onSubmit(trimmed);
+        if (result instanceof Promise) {
+          await result;
+        }
+        setBody('');
+      } catch {
+        // Keep body in state so user doesn't lose their input on failure
+      }
+    },
+    [body, isSubmitting, onSubmit],
+  );
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void handleSubmit();
+    } else if (e.key === 'Escape' && onCancel) {
+      e.preventDefault();
+      e.stopPropagation();
+      onCancel();
+    }
   };
 
   return (
@@ -48,15 +70,18 @@ export function CommentForm({
         ref={textareaRef}
         value={body}
         onChange={(e) => setBody(e.target.value)}
+        onKeyDown={handleKeyDown}
         placeholder={placeholder}
+        aria-label={placeholder}
         rows={3}
         disabled={isSubmitting}
-        className="w-full resize-none rounded-lg border border-border bg-foreground/5 px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary disabled:opacity-50"
+        className="w-full resize-none rounded-lg border border-border-interactive bg-background px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground transition-colors focus:ring-1 focus:ring-primary focus:border-primary disabled:opacity-50"
         data-testid="comment-textarea"
       />
       <div className="flex items-center justify-end gap-2">
         {onCancel && (
           <Button
+            type="button"
             onClick={onCancel}
             variant="ghost"
             size="sm"

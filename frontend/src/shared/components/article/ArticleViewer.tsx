@@ -6,7 +6,6 @@ import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
-import { Highlight } from '@tiptap/extension-highlight';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import { common, createLowlight } from 'lowlight';
@@ -37,9 +36,11 @@ import {
   UnknownMacro,
   ExtendedTable,
   CommentMark,
+  SafeHighlight,
 } from './article-extensions';
 import { InlineLucideIcon } from './inline-lucide-icon';
 import { MermaidBlock } from './MermaidBlockExtension';
+import { CommentPopover } from './CommentPopover';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
@@ -94,7 +95,7 @@ export function ArticleViewer({
   content,
   onImageClick,
   confluenceUrl,
-  pageId: _pageId,
+  pageId,
   confluencePageId,
   onHeadingsReady,
   onRequestSync: _onRequestSync,
@@ -149,8 +150,8 @@ export function ArticleViewer({
       }),
       TextStyle,
       Color,
-      Highlight.configure({ multicolor: true }),
       CommentMark,
+      SafeHighlight.configure({ multicolor: true }),
       ExtendedTable.configure({ resizable: false }),
       TableRow,
       TableCell,
@@ -548,6 +549,7 @@ export function ArticleViewer({
           className,
         )}
       />
+      {editor && <CommentPopover editor={editor} pageId={pageId} />}
     </div>
   );
 }

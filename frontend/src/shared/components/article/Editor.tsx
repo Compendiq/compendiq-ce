@@ -7,7 +7,6 @@ import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
 import TextAlign from '@tiptap/extension-text-align';
-import { Highlight } from '@tiptap/extension-highlight';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import { lowlight } from '../../lib/lowlight';
@@ -52,12 +51,14 @@ import {
   ExtendedTable,
   BlockShortcutsExtension,
   CommentMark,
+  SafeHighlight,
 } from './article-extensions';
 import { InlineLucideIcon } from './inline-lucide-icon';
 import type { Editor as EditorType } from '@tiptap/react';
 import { VimExtension, type VimState } from './vim-extension';
 import { VimModeIndicator } from './VimModeIndicator';
 import { EditorBubbleMenu } from './EditorBubbleMenu';
+import { CommentPopover } from './CommentPopover';
 import { EditorBlockHandle } from './EditorBlockMenu';
 import { SlashCommandExtension } from './slash-command-extension';
 import { EditorSlashMenu } from './EditorSlashMenu';
@@ -746,8 +747,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       }),
       TextStyle,
       Color,
-      Highlight.configure({ multicolor: true }),
       CommentMark,
+      SafeHighlight.configure({ multicolor: true }),
       ExtendedTable.configure({ resizable: true }),
       TableRow,
       TableCell,
@@ -913,6 +914,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       )}
       {editable && editor && <SearchAndReplace editor={editor} />}
       {editable && editor && <EditorBubbleMenu editor={editor} pageId={pageId} />}
+      {editor && <CommentPopover editor={editor} pageId={pageId} />}
       {/* #49 drag handle, #1179 its block context menu. The handle and its
           menu live together in EditorBlockMenu: they share the hovered-node
           tracking, the handle lock and the target marker. */}

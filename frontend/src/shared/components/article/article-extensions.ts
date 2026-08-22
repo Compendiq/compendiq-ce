@@ -1,5 +1,6 @@
 import { Extension, Node, mergeAttributes, type Editor } from '@tiptap/core';
 import { Table } from '@tiptap/extension-table';
+import { Highlight } from '@tiptap/extension-highlight';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
@@ -1559,6 +1560,26 @@ export function captionSelectedImage(editor: Editor) {
     })
     .run();
 }
+
+/**
+ * Highlight extension that ignores elements with data-comment-id
+ * so it never conflicts with or overwrites inline CommentMark notes.
+ */
+export const SafeHighlight = Highlight.extend({
+  parseHTML() {
+    return [
+      {
+        tag: 'mark',
+        getAttrs: (node) => {
+          if (typeof node !== 'string' && (node as HTMLElement).hasAttribute('data-comment-id')) {
+            return false;
+          }
+          return {};
+        },
+      },
+    ];
+  },
+});
 
 export { CommentMark } from './comment-extension';
 

@@ -22,7 +22,7 @@ function useComments(pageId: string) {
   return useQuery<Comment[]>({
     queryKey: ['comments', pageId],
     queryFn: async () => {
-      const res = await apiFetch<Comment[] | RawCommentsResponse>(`/pages/${pageId}/comments`);
+      const res = await apiFetch<Comment[] | RawCommentsResponse>(`/pages/${pageId}/comments?includeResolved=true`);
       if (Array.isArray(res)) return res;
       if (res && Array.isArray(res.comments)) return res.comments;
       return [];
@@ -125,7 +125,6 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
       const targetId = customEvent.detail?.commentId;
       if (!targetId) return;
 
-      setIsOpen(true);
       setSelectedCommentId(targetId);
 
       // Check if target comment is in resolved list, if so auto-expand resolved
@@ -134,15 +133,38 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
         setShowResolved(true);
       }
 
-      setTimeout(() => {
-        const card = document.querySelector(`[data-testid="comment-thread-${targetId}"]`);
-        card?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }, 100);
+      if (isOpen) {
+        setTimeout(() => {
+          const card = document.querySelector(`[data-testid="comment-thread-${targetId}"]`);
+          card?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 100);
+      }
+    };
+
+    const handleOpenSidebar = (e: Event) => {
+      const customEvent = e as CustomEvent<{ commentId?: string }>;
+      setIsOpen(true);
+      const targetId = customEvent.detail?.commentId;
+      if (targetId) {
+        setSelectedCommentId(targetId);
+        const isResolvedComment = resolvedThreads.some((t) => t.id === targetId);
+        if (isResolvedComment) {
+          setShowResolved(true);
+        }
+        setTimeout(() => {
+          const card = document.querySelector(`[data-testid="comment-thread-${targetId}"]`);
+          card?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 100);
+      }
     };
 
     window.addEventListener('compendiq:comment-select', handleCommentSelect);
-    return () => window.removeEventListener('compendiq:comment-select', handleCommentSelect);
-  }, [resolvedThreads]);
+    window.addEventListener('compendiq:comment-open-sidebar', handleOpenSidebar);
+    return () => {
+      window.removeEventListener('compendiq:comment-select', handleCommentSelect);
+      window.removeEventListener('compendiq:comment-open-sidebar', handleOpenSidebar);
+    };
+  }, [resolvedThreads, isOpen]);
 
   const handleNewComment = useCallback(
     (body: string) => {

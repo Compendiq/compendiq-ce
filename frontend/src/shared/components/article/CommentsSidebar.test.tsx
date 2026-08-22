@@ -11,6 +11,7 @@ vi.mock('framer-motion', () => ({
     aside: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => <aside {...props}>{children}</aside>,
   },
   AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  useReducedMotion: () => false,
 }));
 
 const mockComments: Comment[] = [
