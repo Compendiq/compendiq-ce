@@ -329,7 +329,8 @@ rebuild in §8.
 
 One more remover exists since #1349, and it cannot collide with the rule
 above: the **attachment orphan sweep** (Settings → Knowledge → Spaces & Sync →
-Attachment Storage; docs/ADMIN-GUIDE.md "Attachment Storage & Orphan Sweep")
+Sync schedule, the Attachment storage card; docs/ADMIN-GUIDE.md "Attachment
+Storage & Orphan Sweep")
 deletes the `page_image_embeddings` rows of files it removes from disk — a
 safety net, since a file it removes is by definition referenced by no body
 anywhere, while a `missing` row's file IS still referenced and therefore sits

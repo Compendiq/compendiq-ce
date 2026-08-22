@@ -262,6 +262,31 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(strip.textContent).not.toMatch(/no files were deleted/i);
   });
 
+  // Review r2: `fs.rm({recursive:true})` can unlink files inside a directory
+  // and then throw, and totals are incremented only AFTER the rm returns — so
+  // a failed live run with zero-valued recorded totals cannot honestly claim
+  // "No files were deleted."; it claims what the record supports instead.
+  it('a failed live run with a started delete phase but zero recorded totals claims only what the record supports', async () => {
+    mockApi({
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          dryRun: false,
+          status: 'failed',
+          note: 'sweep failed — see the server logs',
+          stores: null,
+          deleted: { directories: 0, files: 0, bytes: 0, imageEmbeddingRows: 0, pagesMarkedDirty: 0 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const strip = await screen.findByTestId('attachment-sweep-last-run-problem');
+    expect(strip.textContent).toMatch(/no deletions were recorded/i);
+    expect(strip.textContent).not.toMatch(/no files were deleted/i);
+  });
+
   it('a failed live run whose delete phase never started keeps the honest "no files" claim', async () => {
     mockApi({
       sweep: {
@@ -288,6 +313,55 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     await screen.findByTestId('attachment-sweep-last-run');
     expect(screen.queryByTestId('attachment-sweep-last-run-problem')).not.toBeInTheDocument();
+  });
+
+  // Review r2: Tailwind preflight forces `svg { display: block }`, so a bare
+  // lucide icon inside a button with no flex layout stacks on its own line
+  // above the label. `nm-action-destructive` supplies colour only — this
+  // callsite must supply the box (the ProviderListSection precedent), or the
+  // two buttons in the row render with different layouts. jsdom cannot see
+  // the layout, so the classes themselves are pinned.
+  it('the Delete orphans button carries the flex layout, gap and radius its treatment needs', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-counters');
+    const del = screen.getByTestId('attachment-sweep-delete');
+    expect(del.className).toContain('nm-action-destructive');
+    for (const cls of ['inline-flex', 'items-center', 'gap-1.5', 'rounded-md']) {
+      expect(del.className.split(/\s+/), `Delete orphans must carry ${cls}`).toContain(cls);
+    }
+  });
+
+  // Review r2: `unreadableDirectories` is recorded per store precisely so an
+  // unjudged directory is REPORTED instead — a partial walk must not show the
+  // same clean figures as a complete one. Muted, not amber: a fact about the
+  // last run that qualifies the figures, not a state needing attention.
+  it('renders a muted line when directories could not be read, and nothing when all were', async () => {
+    mockApi({
+      stats: {
+        ...STATS,
+        stores: {
+          confluence: { ...STORE_STATS, unreadableDirectories: 2 },
+          local: { ...STORE_STATS, unreadableDirectories: 1 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const note = await screen.findByTestId('attachment-storage-unreadable');
+    expect(note.textContent).toMatch(/3 directories could not be read/i);
+    expect(note.textContent).toMatch(/not judged/i);
+    expect(note.className).toContain('text-muted-foreground');
+    expect(note.className).not.toContain('text-warning');
+  });
+
+  it('no unreadable-directories line when every directory was read', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-counters');
+    expect(screen.queryByTestId('attachment-storage-unreadable')).not.toBeInTheDocument();
   });
 
   it('disables both actions while a sweep is running', async () => {

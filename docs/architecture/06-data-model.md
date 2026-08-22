@@ -500,7 +500,7 @@ together, which matters most for #1114's query-side prefix.
   directory can evict a live Confluence page's whole cache. Everything else is
   the admin-triggered, dry-run-first orphan sweep
   (`domains/confluence/services/attachment-sweep-service.ts`, surfaced on
-  Settings → Knowledge → Spaces & Sync): the two stores are walked separately
+  Settings → Knowledge → Spaces & Sync → Sync schedule): the two stores are walked separately
   (the reserved `local/` entry matches the Confluence tree's key pattern, so a
   naive walk lists the whole local store as one orphan), a directory is
   orphaned only when NO page row — trashed included — claims its key, and a

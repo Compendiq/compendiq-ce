@@ -203,6 +203,22 @@ export function AttachmentStorageCard() {
         </dl>
       ) : null}
 
+      {/*
+        Review r2: an unjudged directory is REPORTED instead of judged
+        (decision (e)) — without this line a partial walk shows the same
+        clean figures as a complete one. Muted, not amber: a fact about the
+        last run that qualifies the figures above, not a state.
+      */}
+      {stores &&
+        stores.confluence.unreadableDirectories + stores.local.unreadableDirectories > 0 && (
+          <p className="text-muted-foreground text-xs" data-testid="attachment-storage-unreadable">
+            {stores.confluence.unreadableDirectories + stores.local.unreadableDirectories === 1
+              ? '1 directory could not be read and was not judged'
+              : `${stores.confluence.unreadableDirectories + stores.local.unreadableDirectories} directories could not be read and were not judged`}{' '}
+            — the figures above cover only what the walk could see.
+          </p>
+        )}
+
       {!isPending && !statsError && (stats.data?.missingLocalFiles ?? 0) > 0 && (
         <p className="text-muted-foreground text-xs" data-testid="attachment-storage-missing-rows">
           {stats.data!.missingLocalFiles} local attachment record
@@ -247,10 +263,13 @@ export function AttachmentStorageCard() {
       {/*
         "No files were deleted." is a claim, so it is made only where it is
         true by construction: a refusal runs before the delete phase, a dry
-        run never deletes, and a failed live run whose partial totals are
-        empty (or whose delete phase never started — `deleted: null`) removed
-        nothing. A failed live run that DID delete before aborting says so
-        with the recorded counts instead (review r1).
+        run never deletes, and `deleted: null` means the delete phase never
+        started (the invariant runAttachmentSweep keeps). A failed live run
+        that DID record deletions says so with the counts (review r1). A
+        failed live run whose delete phase STARTED but recorded zero is the
+        one case the record cannot vouch for — a recursive rm can unlink
+        files and then throw, before any total is incremented — so it claims
+        only "no deletions were recorded" (review r2).
       */}
       {lastRun && lastRun.status !== 'completed' && (
         <p
@@ -265,7 +284,9 @@ export function AttachmentStorageCard() {
             {lastRun.note ? `: ${lastRun.note}` : ''}.{' '}
             {lastRun.deleted && lastRun.deleted.files + lastRun.deleted.directories > 0
               ? `The run stopped partway: ${lastRun.deleted.files} file${lastRun.deleted.files === 1 ? '' : 's'} and ${lastRun.deleted.directories} director${lastRun.deleted.directories === 1 ? 'y' : 'ies'} (${formatBytes(lastRun.deleted.bytes)}) had already been removed — press Dry run to refresh the figures.`
-              : 'No files were deleted.'}
+              : lastRun.deleted
+                ? 'No deletions were recorded.'
+                : 'No files were deleted.'}
           </span>
         </p>
       )}
@@ -285,7 +306,11 @@ export function AttachmentStorageCard() {
         <button
           type="button"
           data-testid="attachment-sweep-delete"
-          className="nm-action-destructive px-2.5 py-1 text-xs"
+          // nm-action-destructive supplies colour only; the box is this
+          // callsite's job (review r2) — without inline-flex, preflight's
+          // `svg { display: block }` stacks the icon on its own line, and the
+          // hover fill needs the radius (the ProviderListSection precedent).
+          className="nm-action-destructive inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs"
           disabled={actionsDisabled}
           onClick={() => setConfirmDeleteOpen(true)}
           aria-describedby="attachment-sweep-note"

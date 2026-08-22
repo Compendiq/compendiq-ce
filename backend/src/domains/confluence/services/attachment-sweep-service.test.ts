@@ -70,6 +70,32 @@ describe('collectAttachmentUrlReferences (#1349 keep-set feeder)', () => {
     expect(sets.confluence.has('100%.png')).toBe(true);
   });
 
+  it('keeps the full decoded name for every character encodeURIComponent leaves literal (review r2)', () => {
+    // Every URL writer in the product goes through encodeURIComponent, which
+    // leaves ! ' ( ) * ~ (and - _ .) UNENCODED — so these characters appear
+    // literally in the URL. A filename class that terminates at any of them
+    // records a truncated prefix, the on-disk file misses the keep-set, and
+    // a live sweep deletes a referenced file. The apostrophe was the one the
+    // original class excluded.
+    for (const name of ["John's notes.png", 'shot!.png', 'fig (1).png', 'star*max.png', 'wave~2.png']) {
+      const sets = emptySets();
+      collectAttachmentUrlReferences(
+        `<img src="/api/attachments/90001/${encodeURIComponent(name)}">`,
+        sets,
+      );
+      expect(sets.confluence.has(name), `keep-set must hold ${JSON.stringify(name)}`).toBe(true);
+    }
+  });
+
+  it('a single-quoted attribute spelling still lands the trimmed name (over-keeping is safe)', () => {
+    // With ' inside the filename class, a single-quoted attribute drags the
+    // closing quote into the match; the punctuation trim adds the clean
+    // variant, and keeping the quoted spelling as well only over-keeps.
+    const sets = emptySets();
+    collectAttachmentUrlReferences("<img src='/api/attachments/90001/plain.png'>", sets);
+    expect(sets.confluence.has('plain.png')).toBe(true);
+  });
+
   it('never emits a name that is not a plain basename', () => {
     const sets = emptySets();
     collectAttachmentUrlReferences('<img src="/api/attachments/1/..%2Fescape.png">', sets);

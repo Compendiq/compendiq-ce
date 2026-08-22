@@ -151,8 +151,17 @@ export interface AttachmentKeepSets {
  * really can be named with literal `%` sequences, and the collector cannot
  * know which. Names that are not plain basenames are dropped — no store can
  * hold them (`validateFilename` refuses them at write time).
+ *
+ * The filename class deliberately ADMITS the apostrophe (review r2): every
+ * URL writer in the product goes through `encodeURIComponent`, which leaves
+ * `' ! ( ) * ~` literal, so `'` really occurs mid-name in the URLs bodies
+ * carry — excluding it truncated `John's%20notes.png` to `John`, the on-disk
+ * file missed the keep-set, and a live run deleted a referenced file. The
+ * single-quoted-attribute spelling this admits (`src='…/a.png'`) drags the
+ * closing quote into the match; the punctuation trim below adds the clean
+ * variant, and keeping the quoted spelling too only over-keeps.
  */
-const ATTACHMENT_URL_RE = /\/api\/(local-attachments|attachments)\/[A-Za-z0-9_-]+\/([^"'<>\s?#\\]+)/g;
+const ATTACHMENT_URL_RE = /\/api\/(local-attachments|attachments)\/[A-Za-z0-9_-]+\/([^"<>\s?#\\]+)/g;
 
 export function collectAttachmentUrlReferences(
   text: string | null | undefined,
@@ -169,9 +178,10 @@ export function collectAttachmentUrlReferences(
       // A lone `%` throws; the raw name is then what is on disk.
     }
     // Also keep punctuation-trimmed variants: a plain-text spelling can drag a
-    // trailing bracket or period into the match. More names kept = safer.
+    // trailing bracket or period into the match, and a single-quoted attribute
+    // its closing quote. More names kept = safer.
     for (const name of [...names]) {
-      const trimmed = name.replace(/[)\]},.;:!]+$/, '');
+      const trimmed = name.replace(/['")\]},.;:!]+$/, '');
       if (trimmed) names.add(trimmed);
     }
     for (const name of names) {

@@ -146,10 +146,17 @@ async function seedCorpus(): Promise<SeededCorpus> {
              '<p><img src="/api/attachments/90001/pending-kept.png"></p>', 'pending', gen_random_uuid())`,
     [confPageId],
   );
+  // The apostrophe reference is deliberate (review r2): encodeURIComponent
+  // leaves ' literal, the template body is this file's ONLY reference (no
+  // body_storage feeder), and the original URL-regex class terminated at ' —
+  // so the keep-set held the truncated "John" and a live run deleted the file.
   await query(
     `INSERT INTO templates (title, body_json, body_html, created_by)
-     VALUES ('T', '{}', '<p><img src="/api/attachments/90001/template-kept.png"></p>', $1)`,
-    [userId],
+     VALUES ('T', '{}', $1, $2)`,
+    [
+      `<p><img src="/api/attachments/90001/template-kept.png"><img src="/api/attachments/90001/John's%20notes.png"></p>`,
+      userId,
+    ],
   );
   await query(
     `INSERT INTO comments (page_id, user_id, body, body_html)
@@ -206,6 +213,7 @@ async function seedCorpus(): Promise<SeededCorpus> {
   await writeAged('90001', 'pending-kept.png');
   await writeAged('90001', 'pending-storage-kept.png');
   await writeAged('90001', 'template-kept.png');
+  await writeAged('90001', "John's notes.png");
   await writeAged('90001', 'comment-kept.png');
   await writeAged('90001', 'orphan.png');
   await writeAged('90001', 'external-aaaabbbbcccc.png');
@@ -269,8 +277,8 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       for (const name of [
         'keep.png', 'Screen shot.png', 'anchor-kept.png', 'storage-kept.png',
         'draft-kept.png', 'version-kept.png', 'pending-kept.png',
-        'pending-storage-kept.png', 'template-kept.png', 'comment-kept.png',
-        'pasted.png', 'trash-kept.png',
+        'pending-storage-kept.png', 'template-kept.png', "John's notes.png",
+        'comment-kept.png', 'pasted.png', 'trash-kept.png',
       ]) {
         expect(keep.confluence.has(name), `confluence keep-set should hold ${name}`).toBe(true);
       }
@@ -343,9 +351,9 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       const run = await runAttachmentSweep({ dryRun: true });
 
       const conf = run!.stores!.confluence;
-      // 90001: 14 plain files (dot-file excluded) + pasted.png + trash-kept.png
-      // + 55555/old.png + 66666/new.png = 18.
-      expect(conf.files).toBe(18);
+      // 90001: 15 plain files (dot-file excluded) + pasted.png + trash-kept.png
+      // + 55555/old.png + 66666/new.png = 19.
+      expect(conf.files).toBe(19);
       expect(conf.directories).toBe(5);
       expect(conf.bytes).toBeGreaterThan(0);
       expect(conf.orphanDirectories).toBe(1);
@@ -362,7 +370,7 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
 
       const stats = await readAttachmentStorageStatsRecord();
       expect(stats).not.toBeNull();
-      expect(stats!.stores.confluence.files).toBe(18);
+      expect(stats!.stores.confluence.files).toBe(19);
       expect(stats!.missingLocalFiles).toBe(1);
     });
 
@@ -500,6 +508,7 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
         path.join(tempBase, '90001', 'pending-kept.png'),
         path.join(tempBase, '90001', 'pending-storage-kept.png'),
         path.join(tempBase, '90001', 'template-kept.png'),
+        path.join(tempBase, '90001', "John's notes.png"),
         path.join(tempBase, '90001', 'comment-kept.png'),
         path.join(tempBase, '90001', 'manual.pdf'),
         path.join(tempBase, '90001', '.DS_Store'),

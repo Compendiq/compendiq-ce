@@ -1143,8 +1143,9 @@ rows in `local_attachments`). Sync and page deletes clean their own pages;
 everything else is covered by the observability card and the sweep shipped in
 #1349.
 
-**Where:** Settings → Knowledge → Spaces & Sync → **Attachment Storage**
-(admin only). The card shows per-store bytes / file / directory counts and the
+**Where:** Settings → Knowledge → Spaces & Sync → **Sync schedule**, in the
+**Attachment storage** card (admin only; the wrapper opens on its Spaces tab,
+so the sub-tab hop is part of the path). The card shows per-store bytes / file / directory counts and the
 last sweep summary, read from a persisted record — the figures are as fresh as
 the last run, and **Dry run** is how you refresh them.
 
