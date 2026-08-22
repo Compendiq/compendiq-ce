@@ -26,11 +26,17 @@
  * `SET LOCAL` still runs first inside the transaction.
  *
  * **The floor is a setting, not an environment variable (#1285).** It used to
- * be `process.env.RAG_EF_SEARCH`, read once at module load: it could not
- * change without a restart, ADR-021 forbids new env-driven retrieval config,
- * and it was invisible on the panel that owns `rag_fetch_width` — the knob it
- * is genuinely coupled to, since a fetch wider than the floor silently
- * plateaus. `getRagEfSearch` owns the whole cascade (row → the deprecated
+ * be `process.env.RAG_EF_SEARCH`, read once at module load: a deployment's
+ * recall floor that could not change without a restart, ADR-021 forbids new
+ * env-driven retrieval config, and it was invisible on the panel that owns
+ * every other retrieval number. It is NOT true that a fetch wider than the
+ * floor plateaus (review r1): rule (2) below gives every probe `2 x` its own
+ * raw fetch, and both legs cap that raw fetch at 500, so the returned depth
+ * covers the SQL LIMIT at every reachable width — the floor binds only probes
+ * narrower than half of it, and widening the fetch makes it matter less. The
+ * only reachable plateau is the 1000 ceiling against a raw fetch above 500,
+ * which is a property of pgvector rather than of this setting.
+ * `getRagEfSearch` owns the whole cascade (row → the deprecated
  * `RAG_EF_SEARCH` bootstrap → 100), its 60-second cache and its soft-fail, so
  * these four probes pay no per-query round-trip and a failed read degrades the
  * tuning rather than the search.

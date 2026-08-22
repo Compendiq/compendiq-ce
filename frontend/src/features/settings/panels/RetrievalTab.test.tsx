@@ -1892,6 +1892,89 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     await waitFor(() => expect(puts).toHaveLength(1));
     expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
   });
+
+  /**
+   * #1285 review r1 — the panel's focus-handoff rule covers all THREE of its
+   * self-unmounting remedies, and only the `RAG_EF_SEARCH` pin was pinned by a
+   * test. Verified as a gap by mutation: disabling the whole branch in
+   * `keepMutation.onSuccess` left the 102-case suite green, so CLAUDE.md
+   * stated as a contract something nothing could falsify.
+   *
+   * Two cells, because the branch has two sides and both are load-bearing:
+   * the notice-clearing outcomes must move focus, and the outcomes that leave
+   * the notice standing must NOT — yanking the caret off a button the
+   * operator still needs to press again is its own 2.4.3 failure.
+   */
+  it('hands focus to the threshold field when Keep clears the strip (WCAG 2.4.3)', async () => {
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+      putResult: recorded('Qwen3-Embedding-4B'),
+      // The server the remedy depends on: recording the pair makes the next
+      // GET report it fresh, which is what unmounts the strip.
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({ similarity: freshSimilarity });
+      },
+    });
+    renderTab();
+    await ready();
+
+    const keep = within(await screen.findByTestId(stripId)).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-keep',
+    );
+    keep.focus();
+    expect(document.activeElement).toBe(keep);
+
+    fireEvent.click(keep);
+
+    await waitFor(() => expect(screen.queryByTestId(stripId)).not.toBeInTheDocument());
+    expect(
+      document.activeElement,
+      'Keep unmounts itself with the strip — land on the knob it was about, never on <body>',
+    ).toBe(input('ragConfidenceThreshold'));
+  });
+
+  it('leaves focus on Record when the server abstains and the note stays', async () => {
+    // The other side of the same condition. `unresolved` is not reliably
+    // transient (an undecryptable provider key, an EE policy naming a deleted
+    // provider), so the note — and its button — deliberately survive the
+    // press. Moving focus away from a control the operator has to press again
+    // is not a handoff, it is a second displacement.
+    toastError.mockClear();
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+      putResult: () => ({
+        ragConfidenceCalibrationWrite: {
+          similarity: { outcome: 'unresolved', model: null },
+          rerank: null,
+        },
+      }),
+    });
+    renderTab();
+    await ready();
+
+    const keep = within(await screen.findByTestId(stripId)).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-keep',
+    );
+    keep.focus();
+
+    fireEvent.click(keep);
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(await screen.findByTestId(stripId)).toBeInTheDocument();
+    expect(
+      document.activeElement,
+      'the strip is still standing, so the caret stays on the control that is still the remedy',
+    ).toBe(screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-keep'));
+  });
 });
 
 describe('RetrievalTab — image retrieval (#1115 P3)', () => {

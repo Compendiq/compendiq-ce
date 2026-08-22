@@ -1804,12 +1804,18 @@ test pins that.
   vector leg, the image leg, `computePageRelationships` and the duplicate
   detector). Since **#1285** the floor is `admin_settings.rag_ef_search`
   (default 100, range 1–1000, 60-second cached reader), edited in
-  Settings → AI Models → Retrieval beside Fetch width — the two are coupled,
-  since an HNSW scan returns at most `ef_search` rows whatever the `LIMIT`
-  says, so a width raised past the floor plateaus silently. It was
-  `RAG_EF_SEARCH`, read at module load, which is exactly how an admin could
-  widen the fetch in the panel and have the recall they expected bounded by a
-  variable they never set; that variable is now a bootstrap fallback consulted
+  Settings → AI Models → Retrieval beside Fetch width. It sits there as
+  CONTEXT for the width, not as a knob to move with it: the `2 ×` headroom
+  above means a probe's depth already covers its own raw fetch at every
+  reachable width (both legs cap the raw fetch at 500, so `2 × raw` stays
+  inside the 1000 ceiling), and the floor therefore binds only the probes
+  narrower than half of it — widening the fetch makes this number matter
+  *less*. The one plateau that does exist is pgvector's own 1000 ceiling
+  against a raw fetch above 500, which is unreachable at today's 200 stage
+  limit and independent of this setting. It was `RAG_EF_SEARCH`, read at module
+  load, so the deployment's recall floor could not be changed without a restart
+  and was invisible on the panel that owns every other retrieval number; that
+  variable is now a bootstrap fallback consulted
   only while no row exists, and reported as deprecated at startup — with the
   panel offering a one-key `Keep <value>` write on exactly the instances where
   the variable is still what produced the number (`ragEfSearchFromEnv` on the

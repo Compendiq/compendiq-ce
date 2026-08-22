@@ -667,10 +667,12 @@ export function invalidateRagAnswerMaxImagesCache(): void {
  * (`domains/llm/services/hnsw-ef-search.ts`) raises it to `2 x` a probe's raw
  * row count when that is larger, clamped at 1000.
  *
- * It moved here from `process.env.RAG_EF_SEARCH` because it is genuinely
- * coupled to `rag_fetch_width`, which IS a panel knob: an admin who widened
- * the fetch had the recall they expected silently bounded by a variable they
- * never set, and read at module load it could not change without a restart.
+ * It moved here from `process.env.RAG_EF_SEARCH` because a deployment's recall
+ * floor belongs beside the retrieval knobs it is read with, not in a shell the
+ * panel cannot see: read at module load it could not change without a restart.
+ * It is **not** bounded-fetch coupling — `efSearchFor`'s `2 x` headroom covers
+ * every probe's own LIMIT at every reachable width, so a wider fetch outgrows
+ * this floor rather than being capped by it (review r1).
  * ADR-021 forbids new env-driven retrieval config, so the variable survives
  * only as a **bootstrap fallback** (below) and is reported at startup by
  * {@link warnIfRagEfSearchEnvSet}.

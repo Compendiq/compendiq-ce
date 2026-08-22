@@ -72,12 +72,14 @@ interface RetrievalValues {
   ftsLanguage: FtsLanguage;
   ragFetchWidth: number;
   /**
-   * #1285 — the HNSW `ef_search` FLOOR. It sits beside the fetch width because
-   * the two are coupled: an HNSW scan returns at most `ef_search` rows
-   * whatever the LIMIT says, so a width raised past the floor plateaus
-   * silently. It used to be `RAG_EF_SEARCH`, read at module load, which is
-   * exactly how an admin could raise the width in this panel and have the
-   * recall they expected bounded by a variable they never set.
+   * #1285 — the HNSW `ef_search` FLOOR. It sits beside the fetch width as
+   * CONTEXT for it, not as a knob to move with it (review r1): `efSearchFor`
+   * already raises each probe to `2 ×` its own raw fetch, and both legs cap
+   * that raw fetch at 500, so `2 × raw` covers the LIMIT at every reachable
+   * width and this floor binds only the probes narrower than half of it —
+   * widening the fetch makes this number matter *less*. It used to be
+   * `RAG_EF_SEARCH`, read at module load: a recall floor that could not change
+   * without a restart, on no panel at all.
    */
   ragEfSearch: number;
   ragRerankCandidates: number;
@@ -933,12 +935,16 @@ export function RetrievalTab() {
         </NumberRow>
 
         {/*
-          #1285 — directly under Fetch width, because that is the coupling this
-          control exists to make visible: an HNSW scan returns at most
-          `ef_search` rows whatever the SQL LIMIT says, so a width raised past
-          the floor plateaus without saying so. It was `RAG_EF_SEARCH` until
-          this release — env-only, read at module load, and absent from the
-          panel that owns every knob around it.
+          #1285 — directly under Fetch width, because this is the number that
+          bounds the same index scan and an operator reasoning about the width
+          needs it in view. NOT because the two must be raised together: the
+          help copy below is the accurate statement of the relationship, and it
+          runs the other way — each probe already walks at twice the rows it
+          fetches, so a wider fetch outgrows this floor rather than being
+          bounded by it (review r1 measured every reachable pair and found no
+          case where the depth falls below the LIMIT). It was `RAG_EF_SEARCH`
+          until this release — env-only, read at module load, and absent from
+          the panel that owns every knob around it.
         */}
         {/*
           Muted, never amber (ADR-010): the environment variable being in force

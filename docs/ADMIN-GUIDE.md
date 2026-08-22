@@ -422,13 +422,16 @@ Settings → AI Models, not with this number.
 
 **Index search depth (`rag_ef_search`) is a FLOOR, and one worth leaving
 alone.** It is pgvector's `hnsw.ef_search`: how many candidates the HNSW graph
-walk visits before returning. An index scan returns at most that many rows
-whatever the SQL `LIMIT` says, which is why it belongs beside Fetch width — a
-width raised past the floor plateaus silently. Every probe runs at this value
-or at twice the rows it asks for, whichever is larger, capped at pgvector's own
-limit of 1000, and all four kNN probes in the product (retrieval's vector leg,
-the image leg, page relationships and duplicate detection) read the same
-number. Raising it is **not measured to buy recall**: on the 2,560-dimension
+walk visits before returning. Every probe runs at this value or at twice the
+rows it asks for, whichever is larger, capped at pgvector's own limit of 1000,
+and all four kNN probes in the product (retrieval's vector leg, the image leg,
+page relationships and duplicate detection) read the same number. That second
+half is why it sits beside Fetch width **as context, not as a companion knob**:
+each probe already raises its own depth to twice the rows it fetches, so this
+floor only ever binds the probes that are narrower than half of it, and
+**widening the fetch makes this setting matter less, not more** — do not raise
+it because you raised the width, which costs scan time (below) and buys
+nothing. Raising it is **not measured to buy recall**: on the 2,560-dimension
 `halfvec` corpus the search is effectively exact from 40, recall@10 was 0.9995
 at 100 and unchanged to 1000. What does move with it is **scan time** — 0.39 ms
 per probe at 100 against 1.74 ms at 1000 on that corpus — and nothing else:
