@@ -46,6 +46,7 @@ import {
   RAG_ANSWER_MAX_IMAGES_DEFAULT,
   RAG_IMAGES_PER_PAGE_MAX_DEFAULT,
   getRagEfSearch,
+  resolveRagEfSearch,
   invalidateRagEfSearchCache,
   warnIfRagEfSearchEnvSet,
   RAG_EF_SEARCH_DEFAULT,
@@ -649,6 +650,48 @@ describe('rag_ef_search (#1285)', () => {
     }
   });
 
+  it('never reinstates RAG_EF_SEARCH when the row read THREW', async () => {
+    // Review r1. A failed read is not evidence that no row exists, and the
+    // difference matters on exactly the instance the deprecation story is
+    // written for: one that saved the panel and still carries a stale
+    // variable. Falling through to the env there would put a value four
+    // documents call retired back in force — and cache it for a full TTL.
+    process.env.RAG_EF_SEARCH = '900';
+    mockQuery.mockRejectedValue(new Error('connection reset'));
+    expect(await getRagEfSearch()).toBe(RAG_EF_SEARCH_DEFAULT);
+
+    // …and the bootstrap is still reached when the read SUCCEEDS and the row
+    // is genuinely absent, which is the case it exists for.
+    invalidateRagEfSearchCache();
+    mockQuery.mockReset();
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await getRagEfSearch()).toBe(900);
+  });
+
+  it('reports where the floor came from, for the panel that has to offer a remedy', async () => {
+    // Review r1 — the panel's Save is a pure value diff, so on an instance
+    // running on the env var the number on screen already equals the server's
+    // and nothing can be saved. It needs the SOURCE, not just the value.
+    mockQuery.mockResolvedValue({ rows: [{ setting_value: '250' }] });
+    expect(await resolveRagEfSearch()).toEqual({ value: 250, source: 'row' });
+
+    invalidateRagEfSearchCache();
+    process.env.RAG_EF_SEARCH = '250';
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await resolveRagEfSearch()).toEqual({ value: 250, source: 'env' });
+
+    invalidateRagEfSearchCache();
+    delete process.env.RAG_EF_SEARCH;
+    expect(await resolveRagEfSearch()).toEqual({ value: 100, source: 'default' });
+
+    // A failed read is 'default', never 'env': the panel must not offer to pin
+    // a value the server did not resolve from the variable.
+    invalidateRagEfSearchCache();
+    process.env.RAG_EF_SEARCH = '250';
+    mockQuery.mockRejectedValue(new Error('down'));
+    expect(await resolveRagEfSearch()).toEqual({ value: 100, source: 'default' });
+  });
+
   it('is cached, so four kNN callsites cost no round-trip inside the TTL', async () => {
     mockQuery.mockResolvedValue({ rows: [{ setting_value: '200' }] });
     expect(await getRagEfSearch()).toBe(200);
@@ -689,6 +732,26 @@ describe('warnIfRagEfSearchEnvSet (#1285)', () => {
     expect(message).toContain('RAG_EF_SEARCH is deprecated');
     expect(message).toContain('rag_ef_search');
     expect(message).toContain('Settings → AI Models → Retrieval');
+  });
+
+  it('says the value is IGNORED when it is outside pgvector’s bound', async () => {
+    // Review r1 — the reader silently drops a value the old module-load
+    // reader accepted (it validated 1..10000 against pgvector's 1..1000), so
+    // an instance running `RAG_EF_SEARCH=2000` drops from a 1000 floor to 100
+    // on upgrade. "It is used" is the one thing that must not be said there.
+    process.env.RAG_EF_SEARCH = '2000';
+    warnIfRagEfSearchEnvSet();
+    const [, message] = vi.mocked(logger.warn).mock.calls[0] as [unknown, string];
+    expect(message).toContain('2000');
+    expect(message).toContain('is ignored');
+    expect(message).toContain('100');
+    expect(message).not.toContain('it is used only while');
+    // …and it is still resolved that way, which is what the notice claims.
+    invalidateRagEfSearchCache();
+    mockQuery.mockReset();
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await getRagEfSearch()).toBe(RAG_EF_SEARCH_DEFAULT);
+    invalidateRagEfSearchCache();
   });
 
   /**

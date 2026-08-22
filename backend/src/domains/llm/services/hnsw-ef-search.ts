@@ -15,6 +15,16 @@
  * pooled connection). `clampEfSearch` is the pure arithmetic behind it,
  * exported for tests and for a caller that already holds a floor.
  *
+ * **Resolve it BEFORE checking a client out, not between `BEGIN` and the
+ * `SET LOCAL`** (review r1). On a cache miss this issues a `SELECT` on the
+ * MAIN pool; awaited inside an open transaction, a probe holding a main-pool
+ * client is asking that same pool for a second connection while it holds one,
+ * so under saturation it waits out `connectionTimeoutMillis` (5s), soft-fails
+ * to the default floor, caches THAT for a TTL — and holds its own client for
+ * the whole stall, feeding the saturation that caused it. The value is not
+ * transaction-scoped, so hoisting the await changes nothing else: the
+ * `SET LOCAL` still runs first inside the transaction.
+ *
  * **The floor is a setting, not an environment variable (#1285).** It used to
  * be `process.env.RAG_EF_SEARCH`, read once at module load: it could not
  * change without a restart, ADR-021 forbids new env-driven retrieval config,
@@ -55,7 +65,9 @@ export function clampEfSearch(k: number, floor: number): number {
 
 /**
  * The callsite form: resolve the configured floor and apply
- * {@link clampEfSearch}. Await it inside the probe's own transaction.
+ * {@link clampEfSearch}. Await it **before** the probe checks its client out
+ * (see the nested-acquire note at the top of this module), then interpolate
+ * the result into a `SET LOCAL` inside the transaction.
  */
 export async function efSearchFor(k: number): Promise<number> {
   return clampEfSearch(k, await getRagEfSearch());

@@ -678,8 +678,11 @@ export function invalidateRagAnswerMaxImagesCache(): void {
  * Raising it is very unlikely to buy recall. Measured on #1114's
  * `halfvec(2560)` corpus the index is effectively exact from 40: recall@10 is
  * 0.9995 at this default and unchanged all the way to the 1000 ceiling. The
- * cost that DOES move with the setting is index footprint and scan time — see
- * the ef_search paragraph in CLAUDE.md and `docs/runbooks/shadow-reembed.md`.
+ * cost that DOES move with the setting is SCAN TIME — 0.39 ms per probe at
+ * 100 against 1.74 ms at 1000 on that corpus. Not footprint: `ef_search` is a
+ * query-time GUC, and the 18.6 MiB of HNSW that paragraph in CLAUDE.md tells
+ * you to watch is a build property of `m` / `ef_construction`, identical at
+ * every value of this setting. See `docs/runbooks/shadow-reembed.md`.
  */
 export const RAG_EF_SEARCH_DEFAULT = 100;
 /** pgvector's own lower bound on `hnsw.ef_search`. */
@@ -688,8 +691,26 @@ export const RAG_EF_SEARCH_MIN = 1;
 export const RAG_EF_SEARCH_MAX = 1000;
 
 const RAG_EF_SEARCH_TTL_MS = 60_000;
-let ragEfSearchCache: { value: number; expiresAt: number } | null = null;
+
+/**
+ * Where the resolved floor came from. The panel needs this and not only the
+ * number: on an instance still running on `RAG_EF_SEARCH` the value the panel
+ * shows already equals what the server resolved, so Save — a pure value diff —
+ * has nothing to send and the row can never be written from the control that
+ * tells the operator to write it (review r1).
+ */
+export type RagEfSearchSource = 'row' | 'env' | 'default';
+
+let ragEfSearchCache: { value: number; source: RagEfSearchSource; expiresAt: number } | null = null;
 let ragEfSearchEnvBootstrapLogged = false;
+
+/** `RAG_EF_SEARCH` parsed and range-checked, or `null` if it is unusable. */
+function parseRagEfSearchEnv(raw: string): number | null {
+  if (!/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  if (n < RAG_EF_SEARCH_MIN || n > RAG_EF_SEARCH_MAX) return null;
+  return n;
+}
 
 /**
  * The deprecated `RAG_EF_SEARCH` env var, validated the same way a row is, or
@@ -702,10 +723,8 @@ let ragEfSearchEnvBootstrapLogged = false;
  * notice says.
  */
 function ragEfSearchEnvBootstrap(): number | null {
-  const raw = (process.env.RAG_EF_SEARCH ?? '').trim();
-  if (!/^\d+$/.test(raw)) return null;
-  const n = Number(raw);
-  if (n < RAG_EF_SEARCH_MIN || n > RAG_EF_SEARCH_MAX) return null;
+  const n = parseRagEfSearchEnv((process.env.RAG_EF_SEARCH ?? '').trim());
+  if (n === null) return null;
   if (!ragEfSearchEnvBootstrapLogged) {
     ragEfSearchEnvBootstrapLogged = true;
     logger.info(
@@ -728,13 +747,22 @@ function ragEfSearchEnvBootstrap(): number | null {
  *
  * Soft-fails to the fallback: like `getRagFetchWidth`, this read failing must
  * degrade the tuning and never the search.
+ *
+ * **A read that THREW is not evidence that no row exists** (review r1). The
+ * first cut left `fromRow` false in the catch, so a transient failure — pool
+ * pressure, a statement timeout — put a stale `RAG_EF_SEARCH` back in force
+ * for a full TTL on an instance that had saved the panel, which is the exact
+ * opposite of what the startup notice, `.env.example`, ADMIN-GUIDE and the
+ * panel's own line all promise. The bootstrap is consulted only when the read
+ * SUCCEEDED and returned nothing; a failure falls to the constant default.
  */
-export async function getRagEfSearch(): Promise<number> {
+export async function resolveRagEfSearch(): Promise<{ value: number; source: RagEfSearchSource }> {
   if (ragEfSearchCache && Date.now() < ragEfSearchCache.expiresAt) {
-    return ragEfSearchCache.value;
+    return { value: ragEfSearchCache.value, source: ragEfSearchCache.source };
   }
   let resolved = RAG_EF_SEARCH_DEFAULT;
-  let fromRow = false;
+  let source: RagEfSearchSource = 'default';
+  let readFailed = false;
   try {
     const r = await query<{ setting_value: string }>(
       `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_ef_search'`,
@@ -744,16 +772,28 @@ export async function getRagEfSearch(): Promise<number> {
       const n = Number(raw);
       if (n >= RAG_EF_SEARCH_MIN) {
         resolved = Math.min(n, RAG_EF_SEARCH_MAX);
-        fromRow = true;
+        source = 'row';
       }
     }
   } catch (err) {
+    readFailed = true;
     logger.warn({ err }, 'Failed to resolve rag_ef_search — using the configured fallback');
   }
-  if (!fromRow) resolved = ragEfSearchEnvBootstrap() ?? RAG_EF_SEARCH_DEFAULT;
+  if (source !== 'row' && !readFailed) {
+    const fromEnv = ragEfSearchEnvBootstrap();
+    if (fromEnv !== null) {
+      resolved = fromEnv;
+      source = 'env';
+    }
+  }
 
-  ragEfSearchCache = { value: resolved, expiresAt: Date.now() + RAG_EF_SEARCH_TTL_MS };
-  return resolved;
+  ragEfSearchCache = { value: resolved, source, expiresAt: Date.now() + RAG_EF_SEARCH_TTL_MS };
+  return { value: resolved, source };
+}
+
+/** The floor itself — what every kNN probe calls. */
+export async function getRagEfSearch(): Promise<number> {
+  return (await resolveRagEfSearch()).value;
 }
 
 export function invalidateRagEfSearchCache(): void {
@@ -770,11 +810,26 @@ export function invalidateRagEfSearchCache(): void {
  * on every instance that has not saved the Retrieval panel — and the message
  * has to say so, or an operator reads "deprecated" as "already inert" and
  * removes a value that was live.
+ *
+ * It **re-validates the value** (review r1) rather than gating on truthiness
+ * alone. `RAG_EF_SEARCH=2000` was legal under the module-load reader this
+ * knob replaced (it validated 1..10000), and is not under pgvector's own
+ * [1, 1000] bound: such an instance drops from a 1000 floor to 100 on
+ * upgrade. Saying "it is used" there would name the one case where it is not.
  */
 export function warnIfRagEfSearchEnvSet(): void {
-  if (!process.env.RAG_EF_SEARCH) return;
+  const present = process.env.RAG_EF_SEARCH;
+  if (!present) return;
+  const parsed = parseRagEfSearchEnv(present.trim());
+  if (parsed === null) {
+    logger.warn(
+      { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search', value: present },
+      `RAG_EF_SEARCH=${present} is not a whole number inside pgvector's [${RAG_EF_SEARCH_MIN}, ${RAG_EF_SEARCH_MAX}] and is ignored — the floor falls back to ${RAG_EF_SEARCH_DEFAULT}; set it on Settings → AI Models → Retrieval`,
+    );
+    return;
+  }
   logger.warn(
-    { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search' },
+    { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search', value: parsed },
     'RAG_EF_SEARCH is deprecated — it is used only while no `rag_ef_search` row exists; set it on Settings → AI Models → Retrieval',
   );
 }

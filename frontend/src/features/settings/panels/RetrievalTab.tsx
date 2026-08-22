@@ -143,6 +143,9 @@ interface BenchmarkRun {
   error: string | null;
 }
 
+/** #1285 — the env-provenance note's sentence, named so its button can describe itself with it. */
+const EF_SEARCH_ENV_NOTE_ID = 'retrieval-ef-search-env-sentence';
+
 const DEFAULTS: RetrievalValues = {
   ftsLanguage: 'simple',
   ragFetchWidth: 10,
@@ -201,7 +204,13 @@ const FIELDS: Record<NumericKey, NumericField> = {
     // such value — so the floor is 1 and the reader reads a `'0'` row as unset.
     min: 1,
     max: 1000,
-    step: 10,
+    // 1, not 10 (review r1). For `type=number` the step BASE is `min`, so
+    // `min: 1` with `step: 10` makes the legal set 1, 11, 21 … — the field's
+    // own default of 100, its max of 1,000 and every value the help text and
+    // the admin guide name are `stepMismatch`, the control renders `:invalid`
+    // at rest, and the spinner walks 101 / 111. `min` is pgvector's floor and
+    // cannot move to a multiple of 10, so the step is the half that gives.
+    step: 1,
   },
   ragRerankCandidates: {
     key: 'ragRerankCandidates',
@@ -340,7 +349,18 @@ export function RetrievalTab() {
     isError: settingsError,
     error: settingsErrorObj,
     refetch: refetchSettings,
-  } = useQuery<Partial<RetrievalValues> & { ragConfidenceCalibration?: RagConfidenceCalibration }>({
+  } = useQuery<
+    Partial<RetrievalValues> & {
+      ragConfidenceCalibration?: RagConfidenceCalibration;
+      /**
+       * #1285 review r1 — read-only provenance for the floor. `true` means the
+       * number beside it came from the deprecated `RAG_EF_SEARCH` variable
+       * rather than from a saved row, which is the one state where Save (a
+       * pure value diff) cannot write the row the note asks for.
+       */
+      ragEfSearchFromEnv?: boolean;
+    }
+  >({
     queryKey: ['admin-settings'],
     queryFn: () => apiFetch('/admin/settings'),
   });
@@ -510,6 +530,35 @@ export function RetrievalTab() {
   function handleKeepCalibration(key: CalibrationFieldKey) {
     keepMutation.mutate(key);
   }
+
+  /**
+   * #1285 review r1 — "set it here, not in the environment" needs a control
+   * that can perform it.
+   *
+   * On an instance still running on `RAG_EF_SEARCH`, GET resolves the
+   * variable's value, the field is seeded with it, `changed` is empty and Save
+   * is dead: the only knob whose note names a remedy the panel could not
+   * carry out. Reset-to-default writes 100, i.e. a DIFFERENT depth, and on an
+   * instance whose variable already reads 100 there is no reachable value at
+   * all. This is the #1114 `Keep <value>` shape, for the same reason and with
+   * the same discipline: `saved`, never the draft — the number to persist is
+   * the one the server resolved — and its own mutation, because Save's
+   * `onSuccess` releases `hydrated` and would revert every other unsaved edit
+   * on the panel for a request that submitted nothing the operator typed.
+   */
+  const pinEfSearchMutation = useMutation({
+    mutationFn: (value: number) =>
+      apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify({ ragEfSearch: value }) }),
+    onSuccess: async (_data, value) => {
+      // Invalidating is what clears the note: the refetch comes back with
+      // `ragEfSearchFromEnv: false` because the row now exists.
+      await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      toast.success(`Index search depth saved as ${value} — RAG_EF_SEARCH is no longer read`);
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to save the index search depth');
+    },
+  });
 
   function set<K extends keyof RetrievalValues>(key: K, value: RetrievalValues[K]) {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -853,6 +902,46 @@ export function RetrievalTab() {
           this release — env-only, read at module load, and absent from the
           panel that owns every knob around it.
         */}
+        {/*
+          Muted, never amber (ADR-010): the environment variable being in force
+          is a fact at rest, not an attention state. It renders only on the
+          instances it is true of — a standing line on every panel is how the
+          panel's own no-notice-at-rest rule gets hollowed out — and it carries
+          the write, because Save cannot (see `pinEfSearchMutation`).
+
+          It sits ABOVE the row and outside it, the #1114 placement: inside
+          `NumberRow`'s children it would be part of the input's
+          `aria-describedby` region, which would fold a BUTTON into the field's
+          own description.
+        */}
+        {settings?.ragEfSearchFromEnv === true && (
+          <div
+            className="flex flex-col items-start gap-2 text-xs text-muted-foreground"
+            data-testid="retrieval-ef-search-env-note"
+          >
+            <span id={EF_SEARCH_ENV_NOTE_ID}>
+              This depth is coming from the deprecated{' '}
+              <code className="font-mono">RAG_EF_SEARCH</code> environment variable, because the
+              setting below has never been saved. Save it once — at this value or another — and the
+              variable is never read again.
+            </span>
+            {/*
+              WCAG 2.5.3: the visible label is the accessible name, so no
+              `aria-label`; `aria-describedby` is what tells it apart from the
+              calibration panel's identically-shaped buttons.
+            */}
+            <button
+              type="button"
+              onClick={() => pinEfSearchMutation.mutate(saved.ragEfSearch)}
+              disabled={pinEfSearchMutation.isPending || mutation.isPending}
+              aria-describedby={EF_SEARCH_ENV_NOTE_ID}
+              className="nm-button-ghost shrink-0 text-xs"
+              data-testid="retrieval-ef-search-env-pin"
+            >
+              Keep {saved.ragEfSearch}
+            </button>
+          </div>
+        )}
         <NumberRow
           field={FIELDS.ragEfSearch}
           value={values.ragEfSearch}
@@ -865,22 +954,20 @@ export function RetrievalTab() {
             twice the rows it asks for, whichever is larger, capped at pgvector&apos;s limit of
             1,000.
           </p>
+          {/*
+            Scan time, and NOT index footprint (review r1): `ef_search` is a
+            query-time setting, and the 18.6 MiB of HNSW the re-embed runbook
+            tells you to watch is fixed by how the index was BUILT — identical
+            at every value of this control. Naming it here also inverted the
+            measurement it quotes, which says to leave this alone and watch
+            footprint instead.
+          */}
           <p>
             Raising it is not measured to buy recall. On a 2,560-dimension index the search is
             effectively exact from 40 — recall@10 was 0.9995 at the default 100 and unchanged all
-            the way to 1,000. The cost that does move with it is scan time and index footprint, so
-            watch those rather than expecting better answers.
-          </p>
-          {/*
-            Muted, never amber (ADR-010): this is a fact at rest on every
-            instance that has not saved this panel, not an attention state.
-            Unlike `FTS_LANGUAGE`, nothing seeds this row — so the variable is
-            still in force until the first save, and an operator has to be able
-            to learn that here rather than from a startup log line.
-          */}
-          <p data-testid="retrieval-ef-search-env-note" className="text-xs text-muted-foreground">
-            Set here, not in the environment. <code className="font-mono">RAG_EF_SEARCH</code> is
-            deprecated and is read only while this setting has never been saved.
+            the way to 1,000. What does rise with it is query time: 0.39 ms per probe at 100
+            against 1.74 ms at 1,000 on that corpus. So raising it costs latency and buys nothing
+            that was measured.
           </p>
         </NumberRow>
 

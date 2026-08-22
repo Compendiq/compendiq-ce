@@ -2145,7 +2145,34 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     expect(help!.textContent).toMatch(/1,?000/);
     // The measured no-gain, so nobody raises this hoping for recall.
     expect(help!.textContent).toMatch(/0\.9995/);
-    expect(help!.textContent).toMatch(/footprint/i);
+    // Review r1 — the cost named must be one this control can move.
+    // `hnsw.ef_search` is a QUERY-time setting; index footprint is fixed by
+    // how the index was built, so quoting it here both named a cost that does
+    // not exist and inverted the measurement, which says to leave this alone
+    // and watch footprint INSTEAD.
+    expect(help!.textContent).toMatch(/query time/i);
+    expect(help!.textContent).toMatch(/1\.74 ms/);
+    expect(help!.textContent).not.toMatch(/footprint/i);
+  });
+
+  it('pairs min with a step the field\u2019s own values satisfy', async () => {
+    // Review r1 — for `type=number` the step BASE is `min`, so `min: 1` with
+    // `step: 10` made 100 (this field's default), 1000 (its max) and every
+    // number the help text names a `stepMismatch`: the control renders
+    // `:invalid` at rest and the spinner walks 101 / 111.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+
+    const el = input('ragEfSearch');
+    expect(el.min).toBe('1');
+    expect(el.max).toBe('1000');
+    expect(el.validity.stepMismatch).toBe(false);
+    for (const v of ['250', '400', '1000']) {
+      type('ragEfSearch', v);
+      expect(input('ragEfSearch').validity.stepMismatch, v).toBe(false);
+    }
   });
 
   it('names the environment variable it supersedes, in muted copy and never amber', async () => {
@@ -2153,15 +2180,73 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     // panel is saved once. An operator upgrading has to be able to find that
     // out here rather than from a log line that has scrolled away — and it is
     // a fact at rest, not an attention state, so ADR-010 keeps it muted.
-    mockApi();
+    mockApi({ settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true } });
     renderTab();
     await ready();
-    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
 
     const note = screen.getByTestId('retrieval-ef-search-env-note');
     expect(note.textContent).toMatch(/RAG_EF_SEARCH/);
     expect(note.className).toContain('text-muted-foreground');
     expect(note.className).not.toMatch(/warning|amber|destructive/);
+  });
+
+  it('renders that note ONLY while the variable is what produced the value', async () => {
+    // Review r1 — it used to render on every instance, including the ones
+    // holding a saved row where the variable is already inert. A standing
+    // notice that is false for most readers is how the panel's
+    // no-notice-at-rest rule gets hollowed out.
+    mockApi({ settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: false } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    expect(screen.queryByTestId('retrieval-ef-search-env-note')).not.toBeInTheDocument();
+  });
+
+  it('offers a remedy the panel can perform: Save is dead, so the note carries the write', async () => {
+    // Review r1 — the dead end this fixes. GET resolves the env value, the
+    // field is seeded with it, `changed` is empty and Save is disabled: the
+    // note said "set it here" while nothing here could write the row. Reset
+    // to default writes 100, a DIFFERENT depth, and on an instance whose
+    // variable already reads 100 there was no reachable value at all.
+    const puts = mockApi({
+      settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    expect(
+      (screen.getByTestId('retrieval-save-btn') as HTMLButtonElement).disabled,
+      'Save is a pure value diff, so it cannot be the remedy here',
+    ).toBe(true);
+
+    // An unsaved edit elsewhere on the panel must survive it — this is its own
+    // mutation precisely so it does not release `hydrated` (#949, #1114).
+    type('ragFetchWidth', '30');
+
+    fireEvent.click(screen.getByTestId('retrieval-ef-search-env-pin'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    // Exactly the resolved number, exactly one key.
+    expect(puts[0]).toEqual({ ragEfSearch: 250 });
+    expect(input('ragFetchWidth').value).toBe('30');
+  });
+
+  it('describes that button with the sentence above it (WCAG 2.5.3 / 4.1.2)', async () => {
+    mockApi({ settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    const button = screen.getByTestId('retrieval-ef-search-env-pin');
+    // The visible label IS the name — no `aria-label` overriding it.
+    expect(button.getAttribute('aria-label')).toBeNull();
+    expect(button.textContent).toContain('250');
+    const describedBy = button.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)!.textContent).toMatch(/RAG_EF_SEARCH/);
   });
 
   it('states that fuzzy title matching is fixed, where the keyword index is configured', async () => {

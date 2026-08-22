@@ -95,6 +95,12 @@ export async function findDuplicates(
   // discard from the same budget — so these are candidates, not answers.
   const rawCandidateLimit = limit * 3;
 
+  // Resolved BEFORE the checkout, never between BEGIN and the SET LOCAL: on a
+  // cache miss `efSearchFor` reads `admin_settings` on this same pool, and a
+  // transaction that asks its own pool for a second connection while holding
+  // one stalls for `connectionTimeoutMillis` under load (review r1).
+  const efSearch = await efSearchFor(rawCandidateLimit);
+
   // Use a dedicated client for SET LOCAL
   const client = await getPool().connect();
   try {
@@ -108,7 +114,7 @@ export async function findDuplicates(
     // which the bare env var it replaced (validated to 10000) did not. Since
     // #1285 the floor itself comes from `admin_settings.rag_ef_search`, so this
     // probe follows the panel like the retrieval legs do.
-    await client.query(`SET LOCAL hnsw.ef_search = ${await efSearchFor(rawCandidateLimit)}`);
+    await client.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
 
     // Find nearest neighbors using pgvector kNN on the average embedding
     const result = await client.query<{

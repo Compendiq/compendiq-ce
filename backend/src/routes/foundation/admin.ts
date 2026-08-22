@@ -40,7 +40,7 @@ import {
   invalidateRagImageLegCache,
   getRagAnswerMaxImages,
   invalidateRagAnswerMaxImagesCache,
-  getRagEfSearch,
+  resolveRagEfSearch,
   invalidateRagEfSearchCache,
 } from '../../core/services/admin-settings-service.js';
 import {
@@ -367,7 +367,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragImageLegEnabled,
       ragAnswerMaxImages,
       imageEmbeddingTargetDimensions,
-      ragEfSearch,
+      efSearch,
     ] = await Promise.all([
       getEmbeddingDimensions(),
       getAiGuardrails(),
@@ -425,8 +425,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // with a deprecated env var behind it, and the reader owns the
       // row → `RAG_EF_SEARCH` → 100 cascade. Reading the row here would report
       // 100 on every instance still running on the variable, i.e. a panel that
-      // contradicts what the kNN probes are doing.
-      getRagEfSearch(),
+      // contradicts what the kNN probes are doing. It answers the SOURCE too
+      // (review r1): the panel's Save is a pure value diff, so on an instance
+      // still running on the variable the field already holds what the server
+      // resolved and nothing can be saved — the panel needs to know that to
+      // offer the one-key write that retires it.
+      resolveRagEfSearch(),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
@@ -541,8 +545,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // is still the live one. Provider id + model name only: this payload is
       // the settings document, not the provider document.
       ragConfidenceCalibration,
-      // #1285 — the HNSW `ef_search` floor, beside Fetch width on the panel.
-      ragEfSearch,
+      // #1285 — the HNSW `ef_search` floor, beside Fetch width on the panel,
+      // and whether the deprecated environment variable is what produced it.
+      // A failed read reports `false`: the panel must not offer to pin a
+      // number the server did not resolve from the variable.
+      ragEfSearch: efSearch.value,
+      ragEfSearchFromEnv: efSearch.source === 'env',
     };
   });
 

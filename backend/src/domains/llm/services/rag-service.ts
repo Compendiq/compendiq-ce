@@ -371,22 +371,27 @@ export async function vectorSearch(
       const started = performance.now();
       const spaceKey = opts?.spaceKey;
       const vecSpaces = await getUserAccessibleSpaces(userId);
+      // The RAW fetch is chunk-denominated (#1106): PAGE_FANOUT x the
+      // requested page count, capped so the ef arithmetic below stays
+      // inside pgvector's ceiling.
+      // Math.max(limit, …): above limit 500 the fan-out cap would make the
+      // raw fetch NARROWER than the requested page count, inverting the
+      // "pre-#1106 yield is the floor" guarantee (#1269 review m16 —
+      // unreachable at today's 200 stage-limit ceiling, but the JSDoc
+      // explicitly anticipates internal callers with a large topK; past
+      // 500 the ef headroom relaxes from 2x toward 1x under the 1000
+      // clamp, still covering the LIMIT).
+      const rawLimit = vectorRawLimit(limit);
+      // Resolved BEFORE the checkout (review r1): on a cache miss this reads
+      // `admin_settings` on the MAIN pool, and doing that while holding a
+      // vector-pool client would extend the hold on the scarcer pool
+      // (`PG_VECTOR_POOL_MAX`, default 5) by a foreign pool's latency.
+      const efSearch = await efSearchFor(rawLimit);
       // Use the dedicated vector pool so long-running similarity queries
       // do not starve the main pool used by CRUD routes.
       const client = await getVectorPool().connect();
       try {
         await client.query('BEGIN');
-        // The RAW fetch is chunk-denominated (#1106): PAGE_FANOUT x the
-        // requested page count, capped so the ef arithmetic below stays
-        // inside pgvector's ceiling.
-        // Math.max(limit, …): above limit 500 the fan-out cap would make the
-        // raw fetch NARROWER than the requested page count, inverting the
-        // "pre-#1106 yield is the floor" guarantee (#1269 review m16 —
-        // unreachable at today's 200 stage-limit ceiling, but the JSDoc
-        // explicitly anticipates internal callers with a large topK; past
-        // 500 the ef headroom relaxes from 2x toward 1x under the 1000
-        // clamp, still covering the LIMIT).
-        const rawLimit = vectorRawLimit(limit);
         // ef_search must cover the RAW LIMIT: HNSW returns at most
         // ef_search rows (verified against pgvector 0.8.5 — LIMIT 200 with
         // ef_search 100 yields 100 rows), so a fetch above the configured
@@ -397,7 +402,7 @@ export async function vectorSearch(
         // recall setting — the graph walk needs headroom beyond the return
         // size. Clamped to pgvector's [1, 1000] bound; the raw cap keeps
         // 2 x rawLimit <= 1000 at every reachable width.
-        await client.query(`SET LOCAL hnsw.ef_search = ${await efSearchFor(rawLimit)}`);
+        await client.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
 
         const result = await client.query<{
           page_id: number;

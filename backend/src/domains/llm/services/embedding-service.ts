@@ -1315,6 +1315,13 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
   const TOP_K = 5;
   const SIMILARITY_THRESHOLD = 0.4; // cosine similarity (1 - cosine_distance) — lowered from 0.7 to surface more connections in small corpora
 
+  // Resolved BEFORE the checkout, never between BEGIN and the SET LOCAL: on a
+  // cache miss `efSearchFor` reads `admin_settings` on this same pool, and a
+  // transaction that asks its own pool for a second connection while holding
+  // one stalls for `connectionTimeoutMillis` under load — here inside a
+  // 120s-`statement_timeout` transaction (review r1).
+  const efSearch = await efSearchFor(TOP_K);
+
   // Wrap all three queries in a single transaction so the graph is never
   // visible as empty during the window between DELETE and INSERT.
   const client = await getPool().connect();
@@ -1334,7 +1341,7 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
     // tuning scope); TOP_K sits far below the floor, so it resolves to the
     // configured `rag_ef_search` floor today (#1285) and keeps its 2x headroom
     // if TOP_K is ever raised.
-    await client.query(`SET LOCAL hnsw.ef_search = ${await efSearchFor(TOP_K)}`);
+    await client.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
 
     // Delete only affected relationships when changedPageIds provided, otherwise full recompute
     if (changedPageIds && changedPageIds.length > 0) {

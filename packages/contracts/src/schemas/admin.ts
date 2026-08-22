@@ -473,6 +473,19 @@ export const AdminSettingsSchema = z.object({
    */
   ragEfSearch: RagEfSearchSchema,
   /**
+   * #1285 (review r1) — whether that value came from the deprecated
+   * `RAG_EF_SEARCH` environment variable rather than from a `rag_ef_search`
+   * row. Read-only, and there is deliberately no write counterpart: it is a
+   * fact about where the server resolved the number, not a setting.
+   *
+   * The panel needs it because Save is a pure value diff. On an instance still
+   * running on the variable the field already shows what the server resolved,
+   * so nothing is ever "changed" and the row the panel tells the operator to
+   * write cannot be written from it — the same dead end #1114's calibration
+   * notice hit, fixed the same way, with a one-key mutation beside the note.
+   */
+  ragEfSearchFromEnv: z.boolean(),
+  /**
    * #1114 — read-only, and deliberately absent from the update schema below.
    * The server resolves the pair itself when it writes a threshold; a client
    * that could assert this could also assert "still calibrated" for a

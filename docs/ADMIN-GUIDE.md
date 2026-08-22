@@ -430,10 +430,19 @@ limit of 1000, and all four kNN probes in the product (retrieval's vector leg,
 the image leg, page relationships and duplicate detection) read the same
 number. Raising it is **not measured to buy recall**: on the 2,560-dimension
 `halfvec` corpus the search is effectively exact from 40, recall@10 was 0.9995
-at 100 and unchanged to 1000. What does move with it is scan time and index
-footprint. It was `RAG_EF_SEARCH` before #1285 — env-only, read once at
-startup — and that variable is now a bootstrap fallback consulted only while
-no `rag_ef_search` row exists.
+at 100 and unchanged to 1000. What does move with it is **scan time** — 0.39 ms
+per probe at 100 against 1.74 ms at 1000 on that corpus — and nothing else:
+`hnsw.ef_search` is a query-time setting, so the index footprint the re-embed
+runbook tells you to watch is fixed by how the index was built and is identical
+at every value here. It was `RAG_EF_SEARCH` before #1285 — env-only, read once
+at startup — and that variable is now a bootstrap fallback consulted only while
+no `rag_ef_search` row exists. On an instance that is still running on it the
+panel says so above the control and offers a **Keep <value>** button, because
+Save only sends values you changed and the number shown already matches what
+the server resolved — pressing it writes the row and the variable is never read
+again. A value outside pgvector's `[1, 1000]` is ignored rather than clamped
+(the pre-#1285 reader accepted up to 10000), and the startup log says so by
+name.
 
 **Fuzzy title matching is fixed at similarity 0.3 and is deliberately not a
 setting (#1285).** The typo-tolerant title lookup in search uses `pg_trgm`'s

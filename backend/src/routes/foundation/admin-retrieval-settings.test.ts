@@ -934,6 +934,32 @@ describe('PUT /api/admin/settings — the ef_search floor (#1285)', () => {
     expect(AdminSettingsSchema.parse(res.json()).ragEfSearch).toBe(300);
   });
 
+  it('says on the READ half whether the env var is what produced that number', async () => {
+    // Review r1 — the value alone leaves the panel unable to distinguish an
+    // instance running on `RAG_EF_SEARCH` from one holding an identical saved
+    // row, and Save (a pure value diff) can write neither. Without this flag
+    // the panel's own "set here, not in the environment" line names a remedy
+    // it cannot perform.
+    process.env.RAG_EF_SEARCH = '250';
+    const onEnv = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(AdminSettingsSchema.parse(onEnv.json()).ragEfSearchFromEnv).toBe(true);
+
+    await put({ ragEfSearch: 250 });
+    const onRow = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    const parsed = AdminSettingsSchema.parse(onRow.json());
+    // Same number, different provenance — which is the whole point.
+    expect(parsed.ragEfSearch).toBe(250);
+    expect(parsed.ragEfSearchFromEnv).toBe(false);
+  });
+
+  it('reports fromEnv false when nothing is set at all', async () => {
+    delete process.env.RAG_EF_SEARCH;
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    const parsed = AdminSettingsSchema.parse(res.json());
+    expect(parsed.ragEfSearch).toBe(RAG_EF_SEARCH_DEFAULT);
+    expect(parsed.ragEfSearchFromEnv).toBe(false);
+  });
+
   it('reports the deprecated env var only until a row exists (ADR-021)', async () => {
     // Fresh install, no row: the variable a running deployment set is still
     // honoured, and the panel shows THAT number rather than 100 — an operator

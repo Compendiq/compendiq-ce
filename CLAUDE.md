@@ -125,7 +125,13 @@ hint names the rebuild cost instead of promising a recall gain. `ef_search` at
 `halfvec(2560)` is **measured, not settled**: effectively exact from 40,
 recall@10 0.9995 at the default floor of 100 and unchanged to the 1000
 ceiling — leave it alone and watch **footprint** instead (18.6 MiB of HNSW for
-2,377 vectors, larger than heap and TOAST combined). **Since #1285 that floor
+2,377 vectors, larger than heap and TOAST combined). That footprint figure came
+from one cache-resident 2,377-chunk corpus with **build time unmeasured**, so it
+does not license extrapolating to production scale — and it is a property of how
+the index was BUILT (`m` / `ef_construction`), identical at every value of the
+floor below, which is why the panel's copy names scan time (0.39 ms per probe at
+100 against 1.74 ms at 1000) and never footprint as this control's cost.
+**Since #1285 that floor
 is a knob, not an environment variable**: `admin_settings.rag_ef_search`
 (default 100, range 1–1000 — pgvector's own bound), read through the same
 60-second cached reader as its Retrieval-panel siblings and written by
@@ -141,7 +147,19 @@ borrower of that pooled connection). `RAG_EF_SEARCH` survives as a bootstrap
 fallback in `getRagEfSearch`'s row → env → 100 cascade, and it is the LEGACY-LLM-VARS
 kind of deprecated rather than `FTS_LANGUAGE`'s: nothing seeds the row, so the
 variable is still live on every instance that has never saved the panel, which
-is exactly what the startup notice and the panel's own muted line say. **#1285's
+is exactly what the startup notice and the panel's own muted line say. Three
+rules that review r1 had to add and that a fifth probe or a later edit must
+keep: a row read that THREW never falls through to the variable (an unreadable
+row is not an absent one, and the fall-through silently reinstated a retired
+env value for a TTL); the floor is resolved **before** the probe checks its
+client out, never between `BEGIN` and the `SET LOCAL`, because on a cache miss
+it queries the MAIN pool and a transaction asking its own pool for a second
+connection stalls under saturation; and the panel's line about the variable
+renders only where `ragEfSearchFromEnv` says the variable really produced the
+number, carrying its own one-key `Keep <value>` write — Save is a pure value
+diff, so on exactly that instance the number on screen already matches the
+server's and the row the note asks for could not be written from the panel
+(the #1114 `Keep`/`Record` precedent, same reason, same discipline). **#1285's
 other value went the other way and must stay there**: `TRGM_SIMILARITY_THRESHOLD`
 in `routes/knowledge/search.ts` is FIXED at 0.3 because the fuzzy-title query is
 sargable only through pg_trgm's `%` operator, which compares against the
@@ -150,9 +168,7 @@ default or the retained `similarity() > $4` stops being exact, and making it a
 knob means moving the GUC too (a `SET LOCAL` per search, i.e. a checked-out
 client where a pooled `query()` does now). Documented as deliberately fixed in
 its JSDoc, in ADMIN-GUIDE's Retrieval section and on the panel's Keyword index
-group; don't "finish the job" by making it configurable. That was one
-cache-resident 2,377-chunk corpus with **build time unmeasured**, so it does not
-license extrapolating to production scale. **The proposed go/no-go, revert
+group; don't "finish the job" by making it configurable. **The proposed go/no-go, revert
 criteria and measured costs for the Qwen3 cutover live in
 `docs/runbooks/shadow-reembed.md`** — they are proposals until the owner agrees
 them, and they must be agreed before a re-embed starts. Both eval entrypoints
