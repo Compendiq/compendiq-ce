@@ -338,4 +338,45 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       expect(calls.some((c) => c.method === 'POST' && c.url.includes('/rollback'))).toBe(true);
     });
   });
+
+  // ── #1260 — the comparison section rides the lifecycle phases ──────────
+
+  it('ready: offers Compare on real queries beside the swap', async () => {
+    mockApi({
+      active: true,
+      migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
+    });
+    renderCard(null);
+    expect(await screen.findByTestId('shadow-compare-section')).toBeInTheDocument();
+    expect(screen.getByTestId('shadow-compare-start')).toBeEnabled();
+  });
+
+  it('backfilling: the compare control is ABSENT, with a muted sentence saying why (#1260)', async () => {
+    mockApi({
+      active: true,
+      migration: { phase: 'backfilling', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 10, stragglerPages: 30, indexed: true, indexReady: false, startedAt: '2026-08-06T10:00:00.000Z' },
+    });
+    renderCard(null);
+    await screen.findByText(/10\/40/);
+    // Absent, not disabled-with-no-reason: a dead button explains nothing.
+    expect(screen.queryByTestId('shadow-compare-section')).toBeNull();
+    expect(screen.queryByTestId('shadow-compare-start')).toBeNull();
+    const note = screen.getByTestId('shadow-compare-locked');
+    expect(note.textContent).toMatch(/backfill/i);
+    expect(note.textContent).toMatch(/compar/i);
+    // Muted, never amber — waiting is the normal state of a backfill.
+    expect(note.className).toMatch(/muted/);
+    expect(note.className).not.toMatch(/warning/);
+  });
+
+  it('swapped: the comparison window is over and the section is gone', async () => {
+    mockApi({
+      active: true,
+      migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
+    });
+    renderCard(null);
+    await screen.findByRole('button', { name: /roll back/i });
+    expect(screen.queryByTestId('shadow-compare-section')).toBeNull();
+    expect(screen.queryByTestId('shadow-compare-locked')).toBeNull();
+  });
 });

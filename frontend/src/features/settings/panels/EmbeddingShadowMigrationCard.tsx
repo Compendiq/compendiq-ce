@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../shared/lib/api';
+import { EmbeddingShadowCompareSection } from './EmbeddingShadowCompareSection';
 
 interface Pending {
   providerId: string;
@@ -273,6 +274,14 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
             Abort
           </button>
         </div>
+        {/* #1260 — absent, not disabled-with-no-reason: comparing against a
+            partially backfilled column measures the backfill, not the model,
+            so the control only exists once `ready` does. Muted, never amber —
+            waiting is the normal state of a backfill. */}
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="shadow-compare-locked">
+          Comparing the two models on real queries unlocks when the backfill completes — a
+          partially filled candidate column would measure the backfill, not the model.
+        </p>
       </div>
     );
   }
@@ -311,6 +320,9 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
             Abort
           </button>
         </div>
+        {/* #1260 — the one window a real-data A/B is possible: both models'
+            vectors exist on the same rows, and the backfill is complete. */}
+        <EmbeddingShadowCompareSection candidateModel={migration.model} />
       </div>
     );
   }

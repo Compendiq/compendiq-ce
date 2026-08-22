@@ -1155,6 +1155,9 @@ export function RetrievalTab() {
           This is a read-only paired measurement. It does not seed content, change retrieval settings,
           or add replayed questions to search analytics. Because production questions do not carry
           ground-truth labels, this reports result movement and latency rather than Recall or MRR.
+          It shares its single run slot with the shadow migration&rsquo;s &ldquo;Compare on real
+          queries&rdquo; on the LLM providers tab — while either runs, the other reports
+          &ldquo;already running&rdquo;.
         </p>
         <div className="flex flex-wrap items-end gap-3">
           <label className="space-y-1 text-xs text-muted-foreground">
