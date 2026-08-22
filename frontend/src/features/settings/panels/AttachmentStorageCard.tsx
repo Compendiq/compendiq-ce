@@ -39,7 +39,11 @@ import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
  *    be deleted and what never is — never a bare button.
  *
  * The GETs answer a persisted record and never walk the tree, so the figures
- * are as fresh as the last run; Dry run is the refresh. Both actions are
+ * are as fresh as the last COMPLETED walk — a refused or failed run leaves
+ * them standing (r1), which is why they carry their own `computedAt` date:
+ * after a refusal the amber strip below is NEWER than the counters above it,
+ * and figures with no date would borrow the strip's age. Dry run is the
+ * refresh. Both actions are
  * fire-and-forget 202s and the card polls `running` (read server-side from
  * the worker lock) at 5s — at, not under, the admin rate limit's comfort
  * zone — with ImageIndexCard's warm-up window, because the lock is taken
@@ -172,6 +176,7 @@ export function AttachmentStorageCard() {
           without touching any files.
         </p>
       ) : stores ? (
+        <>
         <dl
           className="text-muted-foreground grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2"
           data-testid="attachment-storage-counters"
@@ -201,6 +206,20 @@ export function AttachmentStorageCard() {
             )}
           </div>
         </dl>
+        {/*
+          The figures' own age (review r1): the backend keeps the last
+          COMPLETED walk's record through a refused/failed run, so after one
+          these counters can be days older than the amber strip below them —
+          `computedAt` is shipped for exactly this. Muted, not amber: a date
+          on a measurement, not a state.
+        */}
+        {stats.data?.computedAt && (
+          <p className="text-muted-foreground text-xs" data-testid="attachment-storage-measured-at">
+            Measured {formatRelativeTime(stats.data.computedAt)} — the figures update when a run
+            completes.
+          </p>
+        )}
+        </>
       ) : null}
 
       {/*

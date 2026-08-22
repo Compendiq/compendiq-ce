@@ -1147,7 +1147,9 @@ everything else is covered by the observability card and the sweep shipped in
 **Attachment storage** card (admin only; the wrapper opens on its Spaces tab,
 so the sub-tab hop is part of the path). The card shows per-store bytes / file / directory counts and the
 last sweep summary, read from a persisted record — the figures are as fresh as
-the last run, and **Dry run** is how you refresh them.
+the last **completed** walk (they carry a "Measured … ago" date; a refused or
+failed run leaves them standing rather than clobbering them with its own
+partial view), and **Dry run** is how you refresh them.
 
 **How to run a sweep:**
 

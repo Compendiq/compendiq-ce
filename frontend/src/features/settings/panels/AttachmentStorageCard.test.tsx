@@ -237,6 +237,54 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(strip.textContent).toMatch(/no files were deleted/i);
   });
 
+  // Review r1 minor: the backend keeps the last COMPLETED walk's figures
+  // through a refused/failed run, so after one the counters can be days older
+  // than the amber strip directly below them — the figures must carry their
+  // own date (`computedAt`, shipped for exactly this) or the operator judging
+  // whether to press Delete orphans cannot know how stale they are.
+  it('the figures carry their own measured date — a newer refused run cannot masquerade as their age', async () => {
+    const statsAt = new Date(Date.now() - 3 * 86_400_000).toISOString(); // 3 days ago
+    mockApi({
+      stats: { ...STATS, computedAt: statsAt },
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          at: new Date().toISOString(),
+          dryRun: false,
+          status: 'refused',
+          note: 'confluence store has zero files while the database references attachments — refusing to delete',
+          stores: null,
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-counters');
+    const measured = screen.getByTestId('attachment-storage-measured-at');
+    expect(measured.textContent).toMatch(/measured/i);
+    expect(measured.textContent).toMatch(/3d ago/);
+    // Both dates are on screen: the old figures' and the newer refusal's.
+    expect(screen.getByTestId('attachment-sweep-last-run-problem').textContent).toMatch(/just now/);
+  });
+
+  it('the measured date renders beside healthy figures too, and never without them', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+    await screen.findByTestId('attachment-storage-counters');
+    expect(screen.getByTestId('attachment-storage-measured-at').textContent).toMatch(/just now/);
+  });
+
+  it('no measured date in the no-run-yet state — there is nothing it would date', async () => {
+    mockApi({
+      stats: { computedAt: null, running: false, stores: null, missingLocalFiles: null },
+      sweep: { running: false, lastRun: null },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+    await screen.findByTestId('attachment-storage-empty');
+    expect(screen.queryByTestId('attachment-storage-measured-at')).not.toBeInTheDocument();
+  });
+
   // Review r1: a FAILED live run can abort mid-delete, and the backend now
   // records the partial totals — "No files were deleted." was a false claim
   // on a destructive operator surface.

@@ -429,6 +429,31 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
     // The two anomaly branches, each pinned ALONE (review r1: emptying both
     // stores let either branch's refusal satisfy the joint test, so disabling
     // one shipped green).
+    it("an anomaly refusal leaves the last completed walk's stats record standing (review r1)", async () => {
+      // The refusal exists BECAUSE the zero-file walk is suspected to be a
+      // mis-mounted ATTACHMENTS_DIR — persisting those figures would clobber
+      // the one reference record an operator diagnosing the mount would want,
+      // and the PR's stated invariant is that only a completed walk writes it.
+      await seedCorpus();
+      const dry = await runAttachmentSweep({ dryRun: true });
+      expect(dry!.status).toBe('completed');
+      const before = await readAttachmentStorageStatsRecord();
+      expect(before).not.toBeNull();
+      expect(before!.stores.confluence.files).toBeGreaterThan(0);
+
+      // Simulate the mis-mount: the tree exists but is empty.
+      await fs.rm(tempBase, { recursive: true, force: true });
+      await fs.mkdir(tempBase, { recursive: true });
+
+      const live = await runAttachmentSweep({ dryRun: false });
+      expect(live!.status).toBe('refused');
+      // The RUN record still reports the zero-file walk it refused over…
+      expect(live!.stores).not.toBeNull();
+      expect((await readAttachmentSweepLastRun())!.status).toBe('refused');
+      // …but the reference figures survive it untouched.
+      expect(await readAttachmentStorageStatsRecord()).toEqual(before);
+    });
+
     it('refuses on its confluence branch when only the Confluence tree is empty', async () => {
       const { localPageId } = await seedCorpus();
       for (const entry of await fs.readdir(tempBase)) {

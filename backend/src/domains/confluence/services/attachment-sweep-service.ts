@@ -175,8 +175,57 @@ export interface AttachmentKeepSets {
  * quote is chased by a slash (`src='…/a.png'/>`, review r3), the trim cannot
  * reach it — the apostrophe-truncated prefix in the loop below covers that
  * spelling instead.
+ *
+ * The filename half admits `#` ONLY as part of an `&#` pair (review r1): a
+ * bare `#` still terminates the match (that is the fragment rule the tests
+ * pin), but a numeric character reference (`&#38;` / `&#x26;`) is an entity
+ * spelling of the name, not a fragment, and excluding `#` outright cut the
+ * match at `a&` before the decoder below could ever see it.
  */
-const ATTACHMENT_URL_RE = /\/api\/(local-attachments|attachments)\/[A-Za-z0-9_-]+\/([^"<>\s?#\\]+)/g;
+const ATTACHMENT_URL_RE =
+  // `&#` sits FIRST in the alternation: the char class also matches `&`, and
+  // with it first the match just stops at `#` (success needs no backtracking)
+  // instead of consuming the pair.
+  /\/api\/(local-attachments|attachments)\/[A-Za-z0-9_-]+\/((?:&#|[^"<>\s?#\\])+)/g;
+
+/**
+ * One decode step over the HTML character references a body text can carry
+ * (review r1). `body_html` is HTML, so a DECODED attachment URL pasted as
+ * plain text is serialised with `&` as `&amp;` — the stored spelling names
+ * `a&amp;b.png` while the disk holds `a&b.png`, and product-written URLs
+ * never hit this (encodeURIComponent turns `&` into `%26`), so the entity
+ * spelling can be the ONLY reference anywhere. Named entities for the five
+ * HTML-escaped characters plus decimal/hex numeric references; anything
+ * unrecognised is left alone (over-keeping is the safe direction, and a
+ * malformed reference is then simply a literal part of the raw name).
+ */
+function decodeHtmlEntitiesOnce(name: string): string {
+  return name.replace(/&(?:amp|lt|gt|quot|apos|#\d{1,7}|#[xX][0-9a-fA-F]{1,6});/g, (entity) => {
+    switch (entity) {
+      case '&amp;':
+        return '&';
+      case '&lt;':
+        return '<';
+      case '&gt;':
+        return '>';
+      case '&quot;':
+        return '"';
+      case '&apos;':
+        return "'";
+      default: {
+        const code =
+          entity[2] === 'x' || entity[2] === 'X'
+            ? Number.parseInt(entity.slice(3, -1), 16)
+            : Number.parseInt(entity.slice(2, -1), 10);
+        try {
+          return String.fromCodePoint(code);
+        } catch {
+          return entity; // an invalid code point stays literal
+        }
+      }
+    }
+  });
+}
 
 export function collectAttachmentUrlReferences(
   text: string | null | undefined,
@@ -191,6 +240,25 @@ export function collectAttachmentUrlReferences(
       names.add(decodeURIComponent(raw));
     } catch {
       // A lone `%` throws; the raw name is then what is on disk.
+    }
+    // Entity-decoded variants (review r1), BEFORE the trims below so they see
+    // the decoded spellings too. Stepwise to a bounded fixpoint, keeping every
+    // intermediate (a double-escaped `&amp;amp;` names both regimes), each one
+    // percent-decoded as well — the two decodings compose in that order in
+    // the serializer (percent-encode first, then HTML-escape the attribute).
+    for (const name of [...names]) {
+      let current = name;
+      for (let step = 0; step < 3; step += 1) {
+        const decoded = decodeHtmlEntitiesOnce(current);
+        if (decoded === current) break;
+        names.add(decoded);
+        try {
+          names.add(decodeURIComponent(decoded));
+        } catch {
+          // Not percent-decodable — the entity-decoded spelling itself stays.
+        }
+        current = decoded;
+      }
     }
     // Also keep punctuation-trimmed variants: a plain-text spelling can drag a
     // trailing bracket or period into the match, and a single-quoted attribute
@@ -960,7 +1028,12 @@ export async function runAttachmentSweep(opts: {
     // errors (bookkeeping, not the work), so holding the lock through it
     // cannot wedge it; the release below still sits in a `finally`.
     await persistSetting(ATTACHMENT_SWEEP_LAST_RUN_KEY, run);
-    if (run.stores) {
+    // The stats record is the last COMPLETED walk only (review r1): the
+    // anomaly refusal carries `stores` too — a zero-file walk over a store
+    // the database still references — and persisting those figures would
+    // clobber the one reference record an operator diagnosing the suspected
+    // mis-mount needs. The refused run keeps its figures in the RUN record.
+    if (run.status === 'completed' && run.stores) {
       await persistSetting(ATTACHMENT_STORAGE_STATS_KEY, {
         at: run.at,
         stores: run.stores,

@@ -116,6 +116,45 @@ describe('collectAttachmentUrlReferences (#1349 keep-set feeder)', () => {
     expect(sets.confluence.has("John's notes.png")).toBe(true);
   });
 
+  it('adds the entity-decoded spelling — a decoded URL pasted as text is serialised with & as &amp; (review r1)', () => {
+    // body_html is HTML: pasting a DECODED attachment URL as plain text makes
+    // the serializer store `&` as `&amp;`, while the disk holds `a&b.png`.
+    // Product-written URLs are unaffected (encodeURIComponent turns & into
+    // %26), so this spelling can be the ONLY reference — under-keeping it
+    // deletes a referenced file.
+    const sets = emptySets();
+    collectAttachmentUrlReferences('see /api/attachments/123/a&amp;b.png here', sets);
+    expect(sets.confluence.has('a&b.png')).toBe(true);
+    expect(sets.confluence.has('a&amp;b.png')).toBe(true);
+  });
+
+  it('decodes numeric and hex entity spellings too — # is admitted only as part of an &# entity', () => {
+    const sets = emptySets();
+    collectAttachmentUrlReferences(
+      'see /api/attachments/1/a&#38;b.png and /api/local-attachments/2/c&#x26;d.png',
+      sets,
+    );
+    expect(sets.confluence.has('a&b.png')).toBe(true);
+    expect(sets.local.has('c&d.png')).toBe(true);
+    // The fragment rule is untouched: a bare # still terminates the match.
+    collectAttachmentUrlReferences('<img src="/api/attachments/1/plain.png#frag">', sets);
+    expect(sets.confluence.has('plain.png')).toBe(true);
+    expect(sets.confluence.has('plain.png#frag')).toBe(false);
+  });
+
+  it('a double-escaped ampersand decodes stepwise, keeping every intermediate spelling', () => {
+    const sets = emptySets();
+    collectAttachmentUrlReferences('see /api/attachments/1/a&amp;amp;b.png', sets);
+    expect(sets.confluence.has('a&amp;b.png')).toBe(true);
+    expect(sets.confluence.has('a&b.png')).toBe(true);
+  });
+
+  it('entity decoding composes with percent decoding and the apostrophe machinery', () => {
+    const sets = emptySets();
+    collectAttachmentUrlReferences('see /api/attachments/1/O&#39;Brien%20notes.png here', sets);
+    expect(sets.confluence.has("O'Brien notes.png")).toBe(true);
+  });
+
   it('never emits a name that is not a plain basename', () => {
     const sets = emptySets();
     collectAttachmentUrlReferences('<img src="/api/attachments/1/..%2Fescape.png">', sets);
