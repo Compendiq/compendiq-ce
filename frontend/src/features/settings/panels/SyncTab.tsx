@@ -8,6 +8,7 @@ import { useSync, useForceResyncAll } from '../../../shared/hooks/use-spaces';
 import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 import { ErrorState } from '../../../shared/components/feedback/ErrorState';
+import { AttachmentStorageCard } from './AttachmentStorageCard';
 
 interface QualityStatusResponse {
   totalPages: number;
@@ -333,6 +334,23 @@ export function SyncTab() {
           </div>
         )}
       </section>
+
+      {/* Attachment storage + orphan sweep (#1349) — admin-only, like the
+          rescan triggers: a KB-wide file deletion is an operator concern.
+          The routes behind the card are requireAdmin, so rendering it for a
+          non-admin would only paint two failing fetches. */}
+      {isAdmin && (
+        <section className="space-y-3" data-testid="attachment-storage-section">
+          <div>
+            <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Attachment Storage</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Disk usage of the two attachment stores, and a dry-run-first sweep for files nothing
+              references any more.
+            </p>
+          </div>
+          <AttachmentStorageCard />
+        </section>
+      )}
 
       {/* Quality Analysis Worker */}
       <section className="space-y-3" data-testid="quality-worker-section">
