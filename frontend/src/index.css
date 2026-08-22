@@ -1139,7 +1139,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      leaves the app's one destructive control unmarked. One edit in one place is
      what keeps "one treatment" true. */
   &:hover:not(:disabled),
-  &[data-highlighted] {
+  &[data-highlighted]:not(:disabled) {
     background-color: oklch(from var(--color-destructive) l c h / 0.1);
     color: var(--color-destructive);
   }

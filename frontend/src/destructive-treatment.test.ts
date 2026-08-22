@@ -65,14 +65,19 @@ describe('one destructive treatment', () => {
   // Radix highlights a menu item with `data-highlighted` on keyboard travel and
   // never with `:hover`. The conversation row menu (#1361) is this utility's
   // first use on a role="menuitem", so without the branch the one destructive
-  // control in the app renders unmarked for anyone arrowing onto it.
+  // control in the app renders unmarked for anyone arrowing onto it. The
+  // selector must win the cascade: `.nm-action-destructive[data-highlighted]`
+  // alone ties the variant utility at (0,2,0) and loses to source order, so
+  // the assertion pins the winning `:not(:disabled)` form, not just presence.
   it('covers the keyboard highlight, not only :hover', () => {
     const css = readFileSync(join(SRC, 'index.css'), 'utf-8');
     const start = css.indexOf('@utility nm-action-destructive');
     expect(start, 'utility not found — this guard is stale').toBeGreaterThan(-1);
     const block = css.slice(start, css.indexOf('@utility', start + 1));
     expect(block).toMatch(/&:hover:not\(:disabled\)/);
-    expect(block, 'Radix uses data-highlighted, not :hover').toMatch(/&\[data-highlighted\]/);
+    expect(block, 'Radix uses data-highlighted, not :hover — and it must outrank the variant utility').toMatch(
+      /&\[data-highlighted\]:not\(:disabled\)/,
+    );
   });
 
   it.each(UNIFIED)('%s uses it', (file) => {

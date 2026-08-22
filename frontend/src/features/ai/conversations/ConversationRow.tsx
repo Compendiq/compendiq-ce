@@ -65,6 +65,10 @@ export function ConversationRow({
 
   const commit = useCallback(async () => {
     if (cancelledRef.current) return;
+    // Enter awaits mutateAsync with the input still mounted; if focus moves
+    // during the request, the resulting blur would otherwise fire a second,
+    // unguarded commit() and double-PATCH.
+    if (rename.isPending) return;
     const next = draft.trim();
     // Empty or unchanged is a silent cancel — never a PATCH.
     if (!next || next === conversation.title) {

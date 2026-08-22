@@ -348,4 +348,43 @@ describe('ConversationRow', () => {
     fireEvent.click(link());
     expect(onNavigate).toHaveBeenCalledTimes(1);
   });
+
+  it('a blur while a rename PATCH is still pending does not send a second one', async () => {
+    let resolvePatch: (() => void) | undefined;
+    fetchSpy.mockImplementation(
+      (input, init) =>
+        new Promise((resolve) => {
+          const method = (init?.method ?? 'GET').toUpperCase();
+          if (method === 'PATCH') {
+            resolvePatch = () =>
+              resolve(
+                new Response(JSON.stringify({ ...CONVERSATION, title: 'In flight' }), {
+                  status: 200,
+                  headers: { 'content-type': 'application/json' },
+                }),
+              );
+            return;
+          }
+          resolve(new Response('Not found', { status: 404 }));
+        }),
+    );
+
+    renderRow();
+    const input = await startRename();
+    fireEvent.change(input, { target: { value: 'In flight' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    // Focus moves while the request is in flight — the blur this triggers must
+    // not issue a second PATCH.
+    fireEvent.blur(input);
+
+    resolvePatch?.();
+    await waitFor(() => expect(document.activeElement).toBe(link()));
+
+    const patches = fetchSpy.mock.calls.filter(
+      ([, init]) => (init?.method ?? '').toUpperCase() === 'PATCH',
+    );
+    expect(patches).toHaveLength(1);
+  });
 });
