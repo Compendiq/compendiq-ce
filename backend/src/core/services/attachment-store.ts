@@ -244,8 +244,13 @@ export function getMimeType(filename: string): string {
  * after the import graph is already resolved. The relocate helpers below run
  * rarely and must be testable, so they re-read the env each call. Same
  * rationale as `attachmentsBase()` in `core/services/local-attachment-service`.
+ *
+ * Exported since #1349: the orphan sweep walks the tree top-down and must
+ * anchor every judgement under the same root the removal helpers below
+ * resolve against — a walker deriving its own root is how a stat and the rm
+ * beside it start naming different files.
  */
-function attachmentsRootNow(): string {
+export function attachmentsRootNow(): string {
   return path.resolve(process.env.ATTACHMENTS_DIR ?? ATTACHMENTS_BASE);
 }
 
@@ -319,6 +324,42 @@ export async function readCachedAttachmentFile(
   } catch {
     return null;
   }
+}
+
+// ── Validated removal (#1349) ──────────────────────────────────────────────
+//
+// The ONLY sanctioned deleters in the Confluence-style tree outside
+// `domains/confluence`'s own page-scoped cleanup. Both resolve through the
+// same validated, containment-checked path helpers the readers use, so a key
+// or filename that came off `readdir` of a hostile disk (or a DB row edited
+// by hand) can never turn an `rm` loose outside the attachments root. They
+// THROW on a refused input rather than silently no-op, because a refused path
+// is a bug in the caller and not an absent file — the orphan sweep and the
+// standalone-delete cleanup both wrap them.
+
+/**
+ * Remove one attachment key's whole directory (recursive, idempotent).
+ * Throws on an invalid key or traversal; ENOENT is a no-op via `force`.
+ */
+export async function removeCachedAttachmentDirectory(pageId: string): Promise<void> {
+  await fs.rm(attachmentDirNow(pageId), { recursive: true, force: true });
+}
+
+/**
+ * Remove exactly one cached file under an attachment key.
+ *
+ * Stricter than the readers about the filename: `validateFilename` collapses
+ * `../b.png` to `b.png` via `basename`, which for a *read* returns the wrong
+ * bytes and for a *delete* would destroy a different file than the caller
+ * named. A deleter must never guess, so a filename that is not its own
+ * basename is refused outright. Throws on any refused input or traversal;
+ * ENOENT is a no-op via `force`.
+ */
+export async function removeCachedAttachmentFile(pageId: string, filename: string): Promise<void> {
+  if (typeof filename !== 'string' || path.basename(filename) !== filename) {
+    throw new Error('Invalid filename');
+  }
+  await fs.rm(cachedAttachmentPath(pageId, filename), { force: true });
 }
 
 // ── The one new API (#1115) ────────────────────────────────────────────────

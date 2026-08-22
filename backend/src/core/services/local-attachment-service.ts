@@ -371,4 +371,35 @@ export function localAttachmentsDir(pageId: number): string {
   return localPageDir(pageId);
 }
 
+/**
+ * The local store's root, `<ATTACHMENTS_DIR>/local` (#1349).
+ *
+ * Exported for the orphan sweep, which walks the two stores SEPARATELY: the
+ * `local/` entry sits INSIDE the Confluence-style tree's root and its name
+ * matches that tree's key pattern, so a walker that derived this path itself
+ * would sooner or later list the whole local store as one orphan directory.
+ */
+export function localAttachmentsRoot(): string {
+  return path.join(attachmentsBase(), LOCAL_SUBDIR);
+}
+
+/** The reserved entry name the Confluence-tree walk must skip (#1349). */
+export const LOCAL_STORE_DIRNAME = LOCAL_SUBDIR;
+
+/**
+ * Remove a page's whole local-store directory (#1349).
+ *
+ * For the standalone hard-delete/purge cleanup and the orphan sweep — the
+ * `local/<page_id>/` key is the numeric PK and belongs to exactly one page,
+ * so unlike the Confluence-style tree there is no shared-keyspace question.
+ * Throws on a non-integer id (a `NaN` would resolve to a literal `local/NaN`
+ * directory); ENOENT is a no-op via `force`.
+ */
+export async function removeLocalAttachmentDirectory(pageId: number): Promise<void> {
+  if (!Number.isInteger(pageId) || pageId <= 0) {
+    throw new LocalAttachmentError('INVALID_FILENAME', 'Invalid page id');
+  }
+  await fs.rm(localPageDir(pageId), { recursive: true, force: true });
+}
+
 export { MAX_LOCAL_ATTACHMENT_BYTES };

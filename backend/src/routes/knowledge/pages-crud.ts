@@ -20,6 +20,7 @@ import {
   type BulkSelection,
 } from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
+import { cleanupStandalonePageAttachmentDirs } from '../../core/services/standalone-attachment-cleanup.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
@@ -1591,6 +1592,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         // Hard delete
         await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, existingPage.id]);
         await query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
+        // #1349: attachment files live on the filesystem and cannot join the
+        // DB delete — best-effort, never throws (same contract as the
+        // Confluence branch's cleanPageAttachments below). Removes
+        // `local/<pk>/` unconditionally and `<pk>/` in the Confluence-style
+        // tree only when no Confluence page owns that key.
+        await cleanupStandalonePageAttachmentDirs(existingPage.id);
       } else {
         // Soft delete — move to trash
         await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [existingPage.id]);
