@@ -1035,7 +1035,7 @@ export function ArticleRightPane({
                 >
                   <MessageSquare size={16} />
                   {openNotesCount > 0 && (
-                    <span className="absolute top-0 right-0 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-action px-0.5 text-[10px] font-semibold text-action-foreground">
+                    <span className="absolute top-0 right-0 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-action px-0.5 text-[11px] font-semibold text-action-foreground">
                       {openNotesCount}
                     </span>
                   )}
