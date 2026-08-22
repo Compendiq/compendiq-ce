@@ -14,7 +14,9 @@
 
 - Branch `feature/1361-conversations-frontend` from `dev` after #1365 (already cut in the worktree `/Users/simon/Documents/localGIT/compendiq-ce-wt-1361-design`); PR targets `dev`; squash-merge; not stacked.
 - Tests required for every task (CLAUDE.md rule 1): Vitest + jsdom + `@testing-library/react`; mock at the network boundary (`fetch` / MSW), never internal components except where the existing test file already stubs a sibling (`SidebarTreeView.test.tsx:19-20` stubs `SidebarSessionChrome` — the pane's own test file does the same; `AppLayout.test.tsx` mocks `SidebarTreeView`, `ArticleRightPane`, `CommandPalette`, `ServiceStatus`, `ThemeToggle`, `use-media-query` and deliberately **not** `SettingsSidebar` — do the same for the pane so its "exactly one `/llm/conversations` request" test observes a real query).
-- Run from `frontend/`: `npx vitest run <file>`; `npx tsc --noEmit`; `npm run lint` (`eslint --max-warnings=0`). Contracts are consumed via built `dist/` — after any `packages/contracts/src` edit run `npm run build -w packages/contracts` from the repo root (this PR should not need one).
+- **Bootstrap (once per worktree, before Task 1):** this worktree may be fresh — `node_modules/` and `packages/contracts/dist/` are both gitignored, so a newly created worktree has neither and `npx vitest` / `npx tsc --noEmit` cannot resolve `@compendiq/contracts` until they exist. Run `npm install` from the repo root (workspaces share one lockfile) — or link the main checkout's `node_modules` per the documented worktree-link recipe — then `npm run build -w packages/contracts`. PR 1's `ConversationSummary` / `ConversationDetail` reach the frontend only through that build.
+- Run from `frontend/`: `npx vitest run <file>`; `npx tsc --noEmit`; `npm run lint` (`eslint --max-warnings=0`). Contracts are consumed via built `dist/` — after any `packages/contracts/src` edit run `npm run build -w packages/contracts` from the repo root (see Bootstrap above — this PR edits no contracts source, but it consumes PR 1's).
+- **Line numbers in `**Files:**` blocks are navigational hints** against the branch base and may drift by a few lines; the authoritative anchor is always the verbatim `old` code block. If an `old` block does not match the file byte-for-byte, STOP and re-read the surrounding task and the file — never fuzzy-apply an edit.
 - Guard suites that must stay green at the end of every task that touches their subject and at the end of the plan: `src/ui-text-legibility.test.ts` (12px uppercase floor, 11px body floor), `src/flat-components.test.ts`, `src/destructive-treatment.test.ts` (ratchet ≤ 21 hand-rolled destructive callsites — use `nm-action-destructive`, never `text-destructive` + `hover:bg-destructive/NN`), `src/focus-ring-contrast.test.ts`, `src/workspace-themes.test.ts`, `src/ai-scroll-chain.test.ts`, `src/toolbar-rule-alignment.test.ts`, `src/docs-image-retrieval-record.test.ts` (**no CLAUDE.md paragraph this PR adds may contain the string `#1115`** unless it opens with a declared prefix), `src/scroll-padding-mask.test.ts`.
 - ADR-010 v0.6: flat surfaces, one shadow (`nm-card-elevated` for the kebab menu only), teal only on actions, the neutral pressed recipe (`nav-selection font-medium`) for the active row, amber only for degraded (`role="status"` failed-with-cache strip), red only for failure (`role="alert"` block), no per-row icon, `SECTION_LABEL` (12px uppercase `tracking-[0.08em]`) for group headings.
 - Copy is exact where the spec quotes it: *Loading conversation…*, *Conversation not found*, *This conversation no longer exists — your next question starts a new one.*, *Older messages in this conversation are no longer sent to the model.*, *Your conversations will appear here. Only Q&A is saved.*, *No matching conversations*, *Couldn't load conversations*, *The request did not complete.*, *Showing the last loaded conversations*, *Delete conversation?*, *"<title>" will be permanently deleted. This can't be undone.*, *This page is no longer available to you*, "New chat", "Filter conversations", "Show more", "Loading…", "Try again", "Retry", "Rename", "Delete", `Actions for ${title}`, `Rename ${title}`, "Expand sidebar (,)", "Collapse sidebar (,)".
@@ -3310,17 +3312,17 @@ and collapse `touchThread`'s tail onto it (this is the one part of `touchThread`
 
 - [ ] **Step 4: Add `activeKeyRef`, `completeExchange` and `purgeConversation` to the provider**
 
-Import the route helpers at the top of `AiContext.tsx` (Task 1 created the module; Task 2 already imports `threadKeyFor`'s inputs from it, so add whichever names are missing to that line):
+Task 2 already imports `AI_HOME_PATH`, `isAiRoute` and `conversationIdFromPath` from
+`../../shared/lib/ai-routes`; the one name this task adds is `conversationPath` — amend that
+existing line (never add a second import of the module, which is a TS2300 duplicate under
+`--max-warnings=0`):
 
 ```ts
-// old
-import { type Source } from './SourceCitations';
-import { toast } from 'sonner';
+// old (as Task 2 leaves it)
+import { AI_HOME_PATH, isAiRoute, conversationIdFromPath } from '../../shared/lib/ai-routes';
 
 // new
-import { type Source } from './SourceCitations';
-import { AI_HOME_PATH, conversationIdFromPath, conversationPath } from '../../shared/lib/ai-routes';
-import { toast } from 'sonner';
+import { AI_HOME_PATH, isAiRoute, conversationIdFromPath, conversationPath } from '../../shared/lib/ai-routes';
 ```
 
 Insert the following immediately after the `startNewConversation` callback (Task 2 rewrote that callback; this block goes directly below it, where today's `loadConversation` / `deleteConversation` used to sit — Task 2 deleted both):
@@ -3859,7 +3861,7 @@ Implements the spec's *Thread keys* → **Filing and identity** (the hydration e
 - **The toast copy is exactly `Conversation not found`** (Global Constraints), and there is no toast on the network branch: the in-pane error with **Retry** is the whole treatment, and redirecting on a network blip would lose a URL the user typed.
 
 **Files:**
-- Modify: `frontend/src/features/ai/AiContext.tsx` (`AiContextValue` additions; the active-thread destructure `:394-397`; `StreamChunk`; `hydrateThread` + the hydration effect + `retryThreadLoad`; `completeExchange`'s argument object; `runStream`'s frame loop; the value object)
+- Modify: `frontend/src/features/ai/AiContext.tsx` (`AiContextValue` additions; the active-thread destructure (`activeThread`, introduced by Task 2); `StreamChunk`; `hydrateThread` + the hydration effect + `retryThreadLoad`; `completeExchange`'s argument object; `runStream`'s frame loop; the value object)
 - Test: `frontend/src/features/ai/AiContext.threads.test.tsx`
 
 **Interfaces:**
@@ -4175,21 +4177,24 @@ Expected: FAIL — `threadLoadState` is `undefined` so `expect(element).toHaveTe
   historyTruncated: boolean;
 ```
 
-The active-thread destructure (Task 2 replaced `?? EMPTY_THREAD` with `?? seedFor(threadKey)`):
+The active-thread destructure (Task 2 replaced the inline `?? EMPTY_THREAD` read with the
+memoised `activeThread` — do NOT reintroduce an inline `threads.get(...) ?? seedFor(...)`
+here, which would hand a fresh `messages: []` identity to the auto-scroll effect on every
+render of an unfiled thread, the exact thing Task 2's memoisation pins):
 
 ```ts
-// old
+// old (as Task 2 leaves it)
   const {
     messages, conversationId, input, showDiffView,
     improvedContent, originalMarkdown, layoutTokensLost, diagramCode, diffBaseVersion,
-  } = threads.get(threadKey) ?? seedFor(threadKey);
+  } = activeThread;
 
 // new
   const {
     messages, conversationId, input, showDiffView,
     improvedContent, originalMarkdown, layoutTokensLost, diagramCode, diffBaseVersion,
     loadState, loadError, historyTruncated,
-  } = threads.get(threadKey) ?? seedFor(threadKey);
+  } = activeThread;
 ```
 
 `StreamChunk` gains the flag, beside `refused`:
@@ -4512,10 +4517,10 @@ Implements the spec's *`activeThreadId`* section (the four switch-sensitive cons
 
 - [ ] **Step 1: Replace the `ConversationSwitcher` stub with the real switches, and write the failing reset cells**
 
-`frontend/src/features/ai/modes/AskMode.test.tsx` — the stub at `:782-791` no longer describes a switch: since #1361 a promotion writes the id onto the **same** thread, so `setConversationId` moves nothing and the old stub would go green against a composer that never cleared.
+`frontend/src/features/ai/modes/AskMode.test.tsx` — the stub at `:783-791` no longer describes a switch: since #1361 a promotion writes the id onto the **same** thread, so `setConversationId` moves nothing and the old stub would go green against a composer that never cleared.
 
 ```tsx
-// old (:782-791)
+// old (:783-791)
     /**
      * Stands in for the conversation sidebar, which lives in `AiAssistantPage`
      * and is not rendered here. What matters is the shape it produces: the
