@@ -105,9 +105,14 @@ function installEmbeddingMock(): void {
   );
 }
 
-const { createShadowCompareRun, getShadowCompareRun, runShadowCompare } = await import(
-  './shadow-compare-service.js'
-);
+const {
+  createShadowCompareRun,
+  getShadowCompareRun,
+  runShadowCompare,
+  recordShadowCompareJudgement,
+  getShadowCompareJudgements,
+  MIN_JUDGEMENTS_FOR_P,
+} = await import('./shadow-compare-service.js');
 const { startShadowMigration, runShadowBackfillJob, getShadowMigrationStatus } = await import(
   './shadow-migration-service.js'
 );
@@ -442,6 +447,17 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       expect((await getActiveProductionBenchmark())?.id).toBe(runId);
     });
 
+    it('a completed run frees the slot for the next one', async () => {
+      await seedReadyMigration();
+      await seedAnalytics([['how to configure sync', 1]]);
+      const first = await createShadowCompareRun(ADMIN, { kind: 'shadow-compare', days: 30, limit: 50, topK: 3 });
+      await runShadowCompare(first, ADMIN);
+      expect((await getShadowCompareRun(first))?.status).toBe('completed');
+      await expect(
+        createShadowCompareRun(ADMIN, { kind: 'shadow-compare', days: 30, limit: 50, topK: 3 }),
+      ).resolves.toBeTruthy();
+    });
+
     it('getShadowCompareRun answers null for a run of another kind', async () => {
       const foreign = await query<{ id: string }>(
         `INSERT INTO retrieval_benchmark_runs (requested_by, status, config)
@@ -450,6 +466,117 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
         [ADMIN],
       );
       expect(await getShadowCompareRun(foreign.rows[0]!.id)).toBeNull();
+    });
+  });
+
+  describe('judgements (Mode 2)', () => {
+    async function completedRun(): Promise<string> {
+      await seedReadyMigration();
+      await seedAnalytics([
+        ['how to configure sync', 3],
+        ['reset password', 2],
+        ['export pdf', 1],
+      ]);
+      const runId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      await runShadowCompare(runId, ADMIN);
+      expect((await getShadowCompareRun(runId))?.status).toBe('completed');
+      return runId;
+    }
+
+    it('records a judgement keyed to the run query, replaces on re-judge, and answers the verdict', async () => {
+      const runId = await completedRun();
+
+      const first = await recordShadowCompareJudgement(runId, 'query-1', 'candidate', ADMIN);
+      expect(first.judgements['query-1']).toBe('candidate');
+      expect(first.verdict.judgementCount).toBe(1);
+      expect(first.verdict.candidateBetter).toBe(1);
+      // Below the floor no p is quoted — a p-value over one judgement is noise
+      // wearing statistics.
+      expect(first.verdict.mcnemar?.pValue).toBeNull();
+      expect(first.verdict.minJudgementsForP).toBe(MIN_JUDGEMENTS_FOR_P);
+
+      // Re-judging replaces the row for this (query, model pair) — one vote
+      // per query, whatever run it was judged from.
+      const again = await recordShadowCompareJudgement(runId, 'query-1', 'live', ADMIN);
+      expect(again.verdict.judgementCount).toBe(1);
+      expect(again.verdict.liveBetter).toBe(1);
+      expect(again.verdict.candidateBetter).toBe(0);
+
+      const got = await getShadowCompareJudgements(runId);
+      expect(got.judgements).toEqual({ 'query-1': 'live' });
+    });
+
+    it('refuses a judgement on an unfinished run and on an unknown query id', async () => {
+      const queued = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      await expect(recordShadowCompareJudgement(queued, 'query-1', 'live', ADMIN)).rejects.toThrow(
+        /not completed/i,
+      );
+      // Free the slot, complete a run, then a bogus query id.
+      await query(`DELETE FROM retrieval_benchmark_runs`);
+      const runId = await completedRun();
+      await expect(recordShadowCompareJudgement(runId, 'query-99', 'live', ADMIN)).rejects.toThrow(
+        /unknown query/i,
+      );
+      await expect(recordShadowCompareJudgement('2c0c8a92-98a8-4f8c-a6a1-00000000dead', 'query-1', 'live', ADMIN)).rejects.toThrow(
+        /not found/i,
+      );
+    });
+
+    it(`quotes McNemar p, Recall and MRR once ${MIN_JUDGEMENTS_FOR_P} judgements exist for the model pair — the fixture accumulates across runs`, async () => {
+      const runId = await completedRun();
+      // Three real judgements from this run. Candidate's top page (Page B)
+      // is also in the live list, so under the judged-top-page metric these
+      // three are ties — the human preferred candidate, but both sides did
+      // retrieve the page.
+      for (const id of ['query-1', 'query-2', 'query-3']) {
+        await recordShadowCompareJudgement(runId, id, 'candidate', ADMIN);
+      }
+      // Seventeen accumulated judgements for the SAME model pair from earlier
+      // runs (inserted the way an earlier run would have): disjoint lists, so
+      // the candidate's judged-better top page is missing from the live side
+      // — seventeen clean candidate wins.
+      for (let i = 0; i < MIN_JUDGEMENTS_FOR_P - 3; i++) {
+        await query(
+          `INSERT INTO embedding_compare_judgements
+             (query_hash, query_text, live_provider_id, live_model, candidate_provider_id, candidate_model,
+              judged_side, live_page_ids, candidate_page_ids, judged_by)
+           VALUES ($1, $2, $3, $4, $5, $6, 'candidate', ARRAY[101,102], ARRAY[201,202], $7)`,
+          [
+            `synthetic-${i}`,
+            `earlier run query ${i}`,
+            liveProviderId,
+            LIVE_MODEL,
+            shadowProviderId,
+            SHADOW_MODEL,
+            ADMIN,
+          ],
+        );
+      }
+
+      const { verdict } = await getShadowCompareJudgements(runId);
+      expect(verdict.judgementCount).toBe(MIN_JUDGEMENTS_FOR_P);
+      expect(verdict.candidateBetter).toBe(MIN_JUDGEMENTS_FOR_P);
+      expect(verdict.mcnemar).not.toBeNull();
+      expect(verdict.mcnemar!.wins).toBe(17);
+      expect(verdict.mcnemar!.losses).toBe(0);
+      expect(verdict.mcnemar!.pValue).not.toBeNull();
+      expect(verdict.mcnemar!.pValue!).toBeLessThan(0.001);
+      expect(verdict.mcnemar!.direction).toBe('improvement');
+      // Recall over the judged-better side's top page: candidate contains its
+      // own pick every time (1.0); live only on the three tie queries.
+      expect(verdict.recall?.candidate).toBe(1);
+      expect(verdict.recall?.live).toBeCloseTo(3 / 20, 12);
+      expect(verdict.mrr?.candidate).toBeGreaterThan(0);
     });
   });
 });

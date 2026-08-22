@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ShadowCompareRequestSchema } from '@compendiq/contracts';
+import { ShadowCompareRequestSchema, ShadowCompareJudgementRequestSchema } from '@compendiq/contracts';
 import {
   startShadowMigration,
   getShadowMigrationStatus,
@@ -14,6 +14,8 @@ import {
   createShadowCompareRun,
   getShadowCompareRun,
   runShadowCompare,
+  recordShadowCompareJudgement,
+  getShadowCompareJudgements,
 } from '../../domains/llm/services/shadow-compare-service.js';
 import {
   getActiveProductionBenchmark,
@@ -258,6 +260,56 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
       const run = await getShadowCompareRun(id);
       if (!run) return reply.code(404).send({ error: 'not_found', message: 'Comparison run not found' });
       return run;
+    },
+  );
+
+  // The Mode 2 judgement refusals, app-authored in the service and mapped
+  // here — the same discipline as `mapError` above.
+  function mapJudgementError(err: unknown): { statusCode: number; message: string } | null {
+    const message = err instanceof Error ? err.message : '';
+    if (/Comparison run not found/i.test(message)) return { statusCode: 404, message };
+    if (/has not completed/i.test(message)) return { statusCode: 409, message };
+    if (/Unknown query id/i.test(message)) return { statusCode: 422, message };
+    return null;
+  }
+
+  // POST …/compare/:id/judgements — record which side answered one of the
+  // run's queries better. The client names only the run's queryId and a side;
+  // the query text, both models and both page lists come from the run's own
+  // persisted result, so a judgement can never claim pages the run did not
+  // show. Answers the refreshed judgement map + verdict, so the card can
+  // render the updated state from the response it already has.
+  fastify.post(
+    '/admin/embedding/shadow-migration/compare/:id/judgements',
+    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
+    async (request, reply) => {
+      const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+      const body = ShadowCompareJudgementRequestSchema.parse(request.body);
+      try {
+        return await recordShadowCompareJudgement(id, body.queryId, body.side, request.userId);
+      } catch (err) {
+        const mapped = mapJudgementError(err);
+        if (mapped) return reply.code(mapped.statusCode).send({ error: mapped.message, statusCode: mapped.statusCode });
+        throw err;
+      }
+    },
+  );
+
+  // GET …/compare/:id/judgements — the stored sides for this run's queries
+  // plus the verdict over every judgement recorded for the run's model pair
+  // (the fixture accumulates across runs).
+  fastify.get(
+    '/admin/embedding/shadow-migration/compare/:id/judgements',
+    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
+    async (request, reply) => {
+      const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+      try {
+        return await getShadowCompareJudgements(id);
+      } catch (err) {
+        const mapped = mapJudgementError(err);
+        if (mapped) return reply.code(mapped.statusCode).send({ error: mapped.message, statusCode: mapped.statusCode });
+        throw err;
+      }
     },
   );
 }

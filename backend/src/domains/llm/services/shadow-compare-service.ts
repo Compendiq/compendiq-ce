@@ -27,7 +27,8 @@
  * `admin_settings`. Queries and titles are real user data: admin-only routes,
  * page ids + titles only in the result (no chunk text), nothing logged raw.
  */
-import type { ShadowCompareRequest } from '@compendiq/contracts';
+import { createHash } from 'node:crypto';
+import type { ShadowCompareRequest, ShadowCompareJudgementSide } from '@compendiq/contracts';
 import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
@@ -52,6 +53,12 @@ import {
   getActiveProductionBenchmark,
   ProductionBenchmarkAlreadyRunningError,
 } from '../eval/production-benchmark.js';
+import {
+  meanReciprocalRank,
+  pairedSignificance,
+  recallAtK,
+  type QueryRun,
+} from '../eval/metrics.js';
 
 export type ShadowCompareStatus = 'queued' | 'running' | 'completed' | 'failed';
 
@@ -352,4 +359,209 @@ function publicErrorMessage(err: unknown): string {
   if (err instanceof ShadowCompareWindowError) return err.message;
   if (err instanceof Error && err.message === NO_QUERIES_MSG) return err.message;
   return 'The comparison could not complete. Check the provider and embedding configuration, then try again.';
+}
+
+// ── Mode 2 — side-by-side judgements ─────────────────────────────────────
+//
+// Where Mode 1 shows a disagreement, the admin can record which side
+// answered better. Judgements live in `embedding_compare_judgements` (099),
+// keyed by (normalised query hash, live model, candidate model) — NOT by
+// run — so the fixture accumulates across runs and even across migrations of
+// the same pair, and re-judging a query replaces its row instead of stacking
+// votes.
+
+/**
+ * No p-value is quoted below this many judgements for the pair. McNemar is
+ * exact at any N, but a p over a handful of clicks reads as a verdict the
+ * evidence cannot carry — the issue's own bar.
+ */
+export const MIN_JUDGEMENTS_FOR_P = 20;
+
+/**
+ * Depth for the judged-top-page containment score: the contract's topK
+ * ceiling, so it always covers the whole stored list.
+ */
+const JUDGEMENT_SCORE_DEPTH = 20;
+
+export interface JudgedVerdict {
+  /** Every judgement recorded for this model pair, all four sides. */
+  judgementCount: number;
+  liveBetter: number;
+  candidateBetter: number;
+  both: number;
+  neither: number;
+  /**
+   * Sign test over the scored judgements ('live'/'candidate' picks only —
+   * 'both' and 'neither' are declared ties). `pValue` is withheld (null,
+   * significant false, direction 'none') below MIN_JUDGEMENTS_FOR_P. Null
+   * when nothing has been scored at all.
+   */
+  mcnemar: {
+    wins: number;
+    losses: number;
+    pValue: number | null;
+    significant: boolean;
+    direction: 'improvement' | 'regression' | 'none';
+  } | null;
+  /** Recall/MRR per side, expected = the judged-better side's TOP page. */
+  recall: { live: number; candidate: number } | null;
+  mrr: { live: number; candidate: number } | null;
+  minJudgementsForP: number;
+}
+
+export interface ShadowCompareJudgementsView {
+  /** run queryId → recorded side, for the queries of THIS run. */
+  judgements: Record<string, ShadowCompareJudgementSide>;
+  /** Computed over every stored judgement for the run's model pair. */
+  verdict: JudgedVerdict;
+}
+
+/** The sampler's own dedup key: respellings converge on one judgement row. */
+function queryHash(text: string): string {
+  return createHash('sha256').update(text.trim().toLowerCase()).digest('hex');
+}
+
+export async function recordShadowCompareJudgement(
+  runId: string,
+  queryId: string,
+  side: ShadowCompareJudgementSide,
+  judgedBy: string,
+): Promise<ShadowCompareJudgementsView> {
+  const { run, report } = await completedCompareRun(runId);
+  const row = report.queries.find((item) => item.id === queryId);
+  if (!row) throw new Error('Unknown query id for this comparison run');
+  await query(
+    `INSERT INTO embedding_compare_judgements
+       (query_hash, query_text, live_provider_id, live_model, candidate_provider_id, candidate_model,
+        judged_side, live_page_ids, candidate_page_ids, judged_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (query_hash, live_model, candidate_model)
+     DO UPDATE SET judged_side = EXCLUDED.judged_side,
+                   live_page_ids = EXCLUDED.live_page_ids,
+                   candidate_page_ids = EXCLUDED.candidate_page_ids,
+                   judged_by = EXCLUDED.judged_by,
+                   created_at = NOW()`,
+    [
+      queryHash(row.query),
+      row.query,
+      report.live.providerId,
+      report.live.model,
+      report.candidate.providerId,
+      report.candidate.model,
+      side,
+      row.live.pageIds,
+      row.candidate.pageIds,
+      judgedBy,
+    ],
+  );
+  return judgementsForReport(run.id, report);
+}
+
+export async function getShadowCompareJudgements(runId: string): Promise<ShadowCompareJudgementsView> {
+  const { run, report } = await completedCompareRun(runId);
+  return judgementsForReport(run.id, report);
+}
+
+async function completedCompareRun(
+  runId: string,
+): Promise<{ run: ShadowCompareRun; report: ShadowCompareReport }> {
+  const run = await getShadowCompareRun(runId);
+  if (!run) throw new Error('Comparison run not found');
+  if (run.status !== 'completed' || !run.result) {
+    throw new Error('Comparison run has not completed — judgements attach to a finished run');
+  }
+  return { run, report: run.result };
+}
+
+interface JudgementRow {
+  query_hash: string;
+  judged_side: ShadowCompareJudgementSide;
+  live_page_ids: number[];
+  candidate_page_ids: number[];
+}
+
+async function judgementsForReport(
+  _runId: string,
+  report: ShadowCompareReport,
+): Promise<ShadowCompareJudgementsView> {
+  const stored = await query<JudgementRow>(
+    `SELECT query_hash, judged_side, live_page_ids, candidate_page_ids
+     FROM embedding_compare_judgements
+     WHERE live_model = $1 AND candidate_model = $2`,
+    [report.live.model, report.candidate.model],
+  );
+  const byHash = new Map(stored.rows.map((row) => [row.query_hash, row]));
+  const judgements: Record<string, ShadowCompareJudgementSide> = {};
+  for (const item of report.queries) {
+    const hit = byHash.get(queryHash(item.query));
+    if (hit) judgements[item.id] = hit.judged_side;
+  }
+  return { judgements, verdict: computeJudgedVerdict(stored.rows) };
+}
+
+/**
+ * The verdict, from `metrics.ts` and nothing else. Expected set per scored
+ * judgement = the judged-better side's TOP page: the winner contains its own
+ * pick by construction, so a discordant pair exists exactly when the losing
+ * side did not retrieve the page the human preferred — a conservative
+ * reading (a preference between two lists that both contain the page counts
+ * as a tie for McNemar, while MRR still sees the rank difference).
+ */
+function computeJudgedVerdict(rows: JudgementRow[]): JudgedVerdict {
+  let liveBetter = 0;
+  let candidateBetter = 0;
+  let both = 0;
+  let neither = 0;
+  const baseline: QueryRun[] = [];
+  const candidate: QueryRun[] = [];
+  for (const row of rows) {
+    if (row.judged_side === 'live') liveBetter++;
+    else if (row.judged_side === 'candidate') candidateBetter++;
+    else if (row.judged_side === 'both') both++;
+    else neither++;
+    if (row.judged_side !== 'live' && row.judged_side !== 'candidate') continue;
+    const expectedTop =
+      row.judged_side === 'live' ? row.live_page_ids[0] : row.candidate_page_ids[0];
+    // A side judged better while showing nothing carries no page evidence.
+    if (expectedTop === undefined) continue;
+    baseline.push({ queryId: row.query_hash, retrieved: row.live_page_ids, expected: [expectedTop] });
+    candidate.push({
+      queryId: row.query_hash,
+      retrieved: row.candidate_page_ids,
+      expected: [expectedTop],
+    });
+  }
+
+  const scored = baseline.length > 0;
+  const significance = scored
+    ? pairedSignificance(baseline, candidate, (run) => recallAtK([run], JUDGEMENT_SCORE_DEPTH))
+    : null;
+  const n = rows.length;
+  const quoteP = significance !== null && n >= MIN_JUDGEMENTS_FOR_P;
+  return {
+    judgementCount: n,
+    liveBetter,
+    candidateBetter,
+    both,
+    neither,
+    mcnemar: significance
+      ? {
+          wins: significance.wins,
+          losses: significance.losses,
+          pValue: quoteP ? significance.pValue : null,
+          significant: quoteP ? significance.significant : false,
+          direction: quoteP ? significance.direction : 'none',
+        }
+      : null,
+    recall: scored
+      ? {
+          live: recallAtK(baseline, JUDGEMENT_SCORE_DEPTH),
+          candidate: recallAtK(candidate, JUDGEMENT_SCORE_DEPTH),
+        }
+      : null,
+    mrr: scored
+      ? { live: meanReciprocalRank(baseline), candidate: meanReciprocalRank(candidate) }
+      : null,
+    minJudgementsForP: MIN_JUDGEMENTS_FOR_P,
+  };
 }

@@ -397,6 +397,65 @@ describe('#1116 shadow-migration routes', () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it('judgements: POST records a side for a run query and answers the recomputed verdict', async () => {
+    const view = {
+      judgements: { 'query-1': 'candidate' },
+      verdict: { judgementCount: 1, liveBetter: 0, candidateBetter: 1, both: 0, neither: 0, mcnemar: null, recall: null, mrr: null, minJudgementsForP: 20 },
+    };
+    compareSvc.judge.mockResolvedValue(view);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009/judgements',
+      payload: { queryId: 'query-1', side: 'candidate' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(view);
+    expect(compareSvc.judge).toHaveBeenCalledWith(
+      '2c0c8a92-98a8-4f8c-a6a1-000000000009',
+      'query-1',
+      'candidate',
+      'test-admin',
+    );
+  });
+
+  it('judgements: GET answers the stored sides and the verdict', async () => {
+    const view = { judgements: {}, verdict: { judgementCount: 0, liveBetter: 0, candidateBetter: 0, both: 0, neither: 0, mcnemar: null, recall: null, mrr: null, minJudgementsForP: 20 } };
+    compareSvc.judgements.mockResolvedValue(view);
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009/judgements',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(view);
+  });
+
+  it('judgements: the service refusals map onto 404/409/422, never masked 500s', async () => {
+    for (const [message, code] of [
+      ['Comparison run not found', 404],
+      ['Comparison run has not completed — judgements attach to a finished run', 409],
+      ['Unknown query id for this comparison run', 422],
+    ] as const) {
+      compareSvc.judge.mockRejectedValue(new Error(message));
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009/judgements',
+        payload: { queryId: 'query-1', side: 'live' },
+      });
+      expect(res.statusCode, message).toBe(code);
+      expect(res.json().error, message).toBe(message);
+    }
+  });
+
+  it('judgements: an unknown side is a 400, before the service is reached', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009/judgements',
+      payload: { queryId: 'query-1', side: 'draw' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(compareSvc.judge).not.toHaveBeenCalled();
+  });
+
   it('every route is admin-gated', async () => {
     isAdmin = false;
     for (const [method, url] of [
@@ -408,6 +467,8 @@ describe('#1116 shadow-migration routes', () => {
       ['POST', '/api/admin/embedding/shadow-migration/backfill'],
       ['POST', '/api/admin/embedding/shadow-migration/compare'],
       ['GET', '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009'],
+      ['POST', '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009/judgements'],
+      ['GET', '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009/judgements'],
     ] as const) {
       const res = await app.inject({
         method,
