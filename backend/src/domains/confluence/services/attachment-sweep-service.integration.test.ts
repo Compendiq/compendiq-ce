@@ -8,7 +8,7 @@
  * the grace window, `local_attachments` rows whose file is missing, and the
  * entire `local/` entry as seen from the Confluence-tree walk.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -400,6 +400,127 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       // The rows were counted as missing, not deleted.
       const rows = await query(`SELECT 1 FROM local_attachments WHERE page_id = $1`, [localPageId]);
       expect(rows.rows.length).toBe(2);
+    });
+  });
+
+  describe('live run', () => {
+    const VEC_2048 = '[' + new Array(2048).fill(0).join(',') + ']';
+
+    async function seedEmbeddingRow(pageId: number, source: string, key: string): Promise<void> {
+      await query(
+        `INSERT INTO page_image_embeddings (page_id, source, attachment_key, sha256, format, model, embedding)
+         VALUES ($1, $2, $3, 'sha', 'png', 'test-model', $4::vector)`,
+        [pageId, source, key, VEC_2048],
+      );
+    }
+
+    it('deletes exactly the orphans, prunes their index rows and marks owners dirty', async () => {
+      const { confPageId, localPageId } = await seedCorpus();
+      await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = ANY($1::int[])`, [
+        [confPageId, localPageId],
+      ]);
+      // A row for the orphan (the safety net under test) and one for a kept
+      // file (which must survive the prune).
+      await seedEmbeddingRow(confPageId, 'confluence', 'orphan.png');
+      await seedEmbeddingRow(confPageId, 'confluence', 'keep.png');
+      await seedEmbeddingRow(localPageId, 'local', 'untracked.png');
+
+      const run = await runAttachmentSweep({ dryRun: false });
+
+      expect(run!.status).toBe('completed');
+      expect(run!.dryRun).toBe(false);
+
+      // The orphans are gone…
+      for (const p of [
+        path.join(tempBase, '90001', 'orphan.png'),
+        path.join(tempBase, '90001', 'external-aaaabbbbcccc.png'),
+        path.join(tempBase, '55555'),
+        path.join(tempBase, 'local', String(localPageId), 'untracked.png'),
+        path.join(tempBase, 'local', '99999'),
+      ]) {
+        expect(await exists(p), `${p} must be deleted by a live run`).toBe(false);
+      }
+
+      // …and NOTHING else: every referenced file, the non-image cached
+      // attachment, the dot-file, the young grace-window directory and the
+      // tracked local file all survive.
+      for (const p of [
+        path.join(tempBase, '90001', 'keep.png'),
+        path.join(tempBase, '90001', 'Screen shot.png'),
+        path.join(tempBase, '90001', 'anchor-kept.png'),
+        path.join(tempBase, '90001', 'storage-kept.png'),
+        path.join(tempBase, '90001', 'draft-kept.png'),
+        path.join(tempBase, '90001', 'version-kept.png'),
+        path.join(tempBase, '90001', 'pending-kept.png'),
+        path.join(tempBase, '90001', 'pending-storage-kept.png'),
+        path.join(tempBase, '90001', 'template-kept.png'),
+        path.join(tempBase, '90001', 'comment-kept.png'),
+        path.join(tempBase, '90001', 'manual.pdf'),
+        path.join(tempBase, '90001', '.DS_Store'),
+        path.join(tempBase, '66666', 'new.png'),
+        path.join(tempBase, 'local', String(localPageId), 'tracked.png'),
+        path.join(tempBase, 'local', String(localPageId), 'local-keep.png'),
+      ]) {
+        expect(await exists(p), `${p} must survive a live run`).toBe(true);
+      }
+
+      // Deleted totals: 3 per-file orphans + 2 directory orphans of 1 file each.
+      expect(run!.deleted).toMatchObject({ directories: 2, files: 5 });
+      expect(run!.deleted!.bytes).toBeGreaterThan(0);
+
+      // Index rows for deleted files are pruned; rows for kept files stay.
+      const rows = await query<{ attachment_key: string }>(
+        `SELECT attachment_key FROM page_image_embeddings ORDER BY attachment_key`,
+      );
+      expect(rows.rows.map((r) => r.attachment_key)).toEqual(['keep.png']);
+      expect(run!.deleted!.imageEmbeddingRows).toBe(2);
+
+      // Owners of deleted files are re-queued for the image index.
+      const dirty = await query<{ id: number; image_embedding_dirty: boolean }>(
+        `SELECT id, image_embedding_dirty FROM pages WHERE id = ANY($1::int[]) ORDER BY id`,
+        [[confPageId, localPageId]],
+      );
+      expect(dirty.rows.every((r) => r.image_embedding_dirty)).toBe(true);
+      expect(run!.deleted!.pagesMarkedDirty).toBeGreaterThanOrEqual(2);
+
+      // The missing-file row is still counted, never deleted.
+      expect(run!.missingLocalFiles).toBe(1);
+      const missingRow = await query(`SELECT 1 FROM local_attachments WHERE filename = 'missing.png'`);
+      expect(missingRow.rows).toHaveLength(1);
+    });
+
+    it('emits a RETENTION_PRUNED audit event with the counts', async () => {
+      await seedCorpus();
+      const run = await runAttachmentSweep({ dryRun: false });
+      expect(run!.status).toBe('completed');
+
+      const audit = await query<{ metadata: { dry_run: boolean; files_pruned: number } }>(
+        `SELECT metadata FROM audit_log
+          WHERE action = 'RETENTION_PRUNED' AND resource_id = 'attachments_orphan_sweep'
+          ORDER BY created_at DESC LIMIT 1`,
+      );
+      expect(audit.rows).toHaveLength(1);
+      expect(audit.rows[0]!.metadata.dry_run).toBe(false);
+      expect(audit.rows[0]!.metadata.files_pruned).toBeGreaterThan(0);
+    });
+  });
+
+  describe('persisted reads', () => {
+    it('the stats/last-run readers never touch the filesystem — the card polls them', async () => {
+      await seedCorpus();
+      await runAttachmentSweep({ dryRun: true });
+
+      const readdirSpy = vi.spyOn(fs, 'readdir');
+      const statSpy = vi.spyOn(fs, 'stat');
+      try {
+        expect(await readAttachmentStorageStatsRecord()).not.toBeNull();
+        expect(await readAttachmentSweepLastRun()).not.toBeNull();
+        expect(readdirSpy).not.toHaveBeenCalled();
+        expect(statSpy).not.toHaveBeenCalled();
+      } finally {
+        readdirSpy.mockRestore();
+        statSpy.mockRestore();
+      }
     });
   });
 

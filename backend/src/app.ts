@@ -27,6 +27,7 @@ import { adminUsersRoutes } from './routes/foundation/admin-users.js';
 import { spacesRoutes } from './routes/confluence/spaces.js';
 import { syncRoutes } from './routes/confluence/sync.js';
 import { attachmentRoutes } from './routes/confluence/attachments.js';
+import { attachmentSweepRoutes } from './routes/confluence/attachments-sweep.js';
 // LLM routes
 import { llmImproveRoutes } from './routes/llm/llm-improve.js';
 import { llmGenerateRoutes } from './routes/llm/llm-generate.js';
@@ -456,6 +457,7 @@ export async function buildApp() {
   await app.register(spacesRoutes, { prefix: '/api' });
   await app.register(syncRoutes, { prefix: '/api' });
   await app.register(attachmentRoutes, { prefix: '/api' });
+  await app.register(attachmentSweepRoutes, { prefix: '/api' });
 
   // LLM routes
   await app.register(llmImproveRoutes, { prefix: '/api' });
