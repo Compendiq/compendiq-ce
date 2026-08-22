@@ -2196,6 +2196,35 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     expect(help!.textContent).not.toMatch(/footprint/i);
   });
 
+  it('wires the TOGGLE rows to their caveats too, not only the number rows', async () => {
+    // Review r1 (verification round) \u2014 the generalisation stopped at
+    // `NumberRow`, so inside ONE group a screen-reader user heard the caveat
+    // for `Images per page` and not the one for `Image leg` directly above it.
+    // The toggles carry the sharpest caveats on this panel: `Image leg`'s
+    // "one extra embedding call per question" is the cost sentence that
+    // control exists to disclose, and `MMR diversity narrow` names a measured
+    // NO-gain. Reachable by eye only, none of that is carried by the control.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+
+    const expected: ReadonlyArray<readonly [string, RegExp]> = [
+      ['rag-pin-identifiers', /pinned to the top/i],
+      ['rag-image-leg-enabled', /one extra embedding call/i],
+      ['rag-image-index-external', /external URL/i],
+      ['rag-mmr-enabled', /No Recall@1 gain measured/i],
+    ];
+    for (const [id, sentence] of expected) {
+      const box = screen.getByTestId(id);
+      const describedBy = box.getAttribute('aria-describedby');
+      expect(describedBy, `${id} must describe itself with its own help text`).toBeTruthy();
+      const help = document.getElementById(describedBy!);
+      expect(help, `${id}: #${describedBy} must exist`).toBeTruthy();
+      expect(help!.textContent).toMatch(sentence);
+    }
+  });
+
   it('keeps every described region prose \u2014 no control folded into a field\u2019s description', async () => {
     // Review r2 \u2014 the wiring above is on EVERY NumberRow, and three rows
     // carried interactive children: the rerank-stage link, the vision
@@ -2403,6 +2432,46 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     const describedBy = button.getAttribute('aria-describedby');
     expect(describedBy).toBeTruthy();
     expect(document.getElementById(describedBy!)!.textContent).toMatch(/RAG_EF_SEARCH/);
+  });
+
+  it('hands focus to the depth field rather than dropping it when the note clears (WCAG 2.4.3)', async () => {
+    // Review r1 (verification round) — every `Keep` / `Record` on this panel
+    // sits INSIDE the notice it satisfies, so a successful press removes the
+    // pressed element from the document and the browser drops focus to
+    // `<body>`: a keyboard or screen-reader operator loses their place
+    // fourteen controls down the panel and the next Tab restarts from the top
+    // of the page. Verified against the pre-fix source, where
+    // `document.activeElement` really did come back as `<body>`.
+    //
+    // The field is the landing spot because it is what the note was about —
+    // and its `aria-describedby` help ("this is a floor…") is then announced,
+    // which is the sentence an operator who has just taken ownership of the
+    // value needs.
+    mockApi({
+      settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true },
+      // The server the remedy depends on: once the row exists the next GET
+      // stops reporting the variable, which is what unmounts the note.
+      afterPut: (body, settings) => {
+        if ('ragEfSearch' in body) settings.ragEfSearchFromEnv = false;
+      },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    const button = screen.getByTestId('retrieval-ef-search-env-pin');
+    button.focus();
+    expect(document.activeElement).toBe(button);
+
+    fireEvent.click(button);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('retrieval-ef-search-env-note')).not.toBeInTheDocument(),
+    );
+    expect(
+      document.activeElement,
+      'the button unmounts itself — move focus to the knob it was about, never leave it on <body>',
+    ).toBe(input('ragEfSearch'));
   });
 
   it('states that fuzzy title matching is fixed, where the keyword index is configured', async () => {

@@ -126,6 +126,16 @@ describe('efSearchFor — the callsite form', () => {
  * fails on its own message rather than on an ordering assertion that cannot
  * explain itself.
  *
+ * Review r1 of the verification round closed the hole those two walks left
+ * BETWEEN them. Both compare sets of file PATHS, so a second, unresolved depth
+ * statement added inside an already-listed file satisfied every one of them:
+ * the GUC walk still matched the same file set, the `SET LOCAL` assertion still
+ * passed, and the ordering test iterates probes, of which the mutant added
+ * none. So the per-callsite check now counts the file's depth statements
+ * against the file's own probe count and insists each one interpolates
+ * (`hnsw.ef_search = ${…}`) rather than naming a literal — a per-LINE rule
+ * where the walks are per-FILE.
+ *
  * What it does NOT buy, so nobody reads more into a green run than is there:
  * the match is on the GUC name as written. A statement assembled from
  * fragments or built out of a constant, an `ALTER {SYSTEM,DATABASE,ROLE} …
@@ -264,8 +274,28 @@ describe('every kNN callsite resolves the floor before it checks a client out', 
     // the hazard CLAUDE.md, this module's JSDoc and 09-flow-rag-chat.md all
     // name, and the reason the walk above keys on the GUC rather than on the
     // statement. Asserted per LINE so the failure names the statement.
-    const lines = gucLines(readFileSync(new URL(relative, import.meta.url), 'utf8'));
+    const source = readFileSync(new URL(relative, import.meta.url), 'utf8');
+    const lines = gucLines(source);
     expect(lines.length, `${relative} must set hnsw.ef_search`).toBeGreaterThan(0);
+
+    // Review r1 (verification round) — both discovery walks above compare SETS
+    // OF FILE PATHS, so neither can see a SECOND depth statement added inside
+    // an ALREADY-LISTED file. That is not a hypothetical: `rag-service.ts` is
+    // the file #1260 is told to edit against this head, and a new kNN written
+    // there as `SET LOCAL hnsw.ef_search = 200` resolves nothing, is in a
+    // listed file (so the GUC walk still matches), spells SET LOCAL (so the
+    // assertion below still passes) and adds no probe (so the ordering test
+    // below never looks at it) — verified green at 587404a3 before this
+    // counting assertion existed. Counting the depth statements against the
+    // file's OWN probe count is what makes the per-file walks reach inside a
+    // file: one resolved floor per statement, or one of them came from
+    // somewhere the knob does not govern.
+    expect(
+      lines.length,
+      `${relative}: every line naming hnsw.ef_search must come from its own \`${PROBE}\` probe — ` +
+        `found ${lines.length} depth statement(s) against ${probeOffsets(source).length} probe(s), ` +
+        'so at least one takes its depth from something other than `admin_settings.rag_ef_search`',
+    ).toBe(probeOffsets(source).length);
 
     lines.forEach((line) => {
       expect(
@@ -274,6 +304,16 @@ describe('every kNN callsite resolves the floor before it checks a client out', 
           'session-level SET outlives COMMIT and leaks the depth to the next borrower of this ' +
           'pooled connection',
       ).toMatch(/\bset\s+local\s+hnsw\.ef_search\b/i);
+
+      // Counting alone is necessary but not sufficient: a file could carry two
+      // probes and two statements while one of them interpolates a literal.
+      // The depth is always written as a template substitution because
+      // pgvector's `ef_search` has no bind-parameter form.
+      expect(
+        line,
+        `${relative}: \`${line}\` must interpolate a resolved floor (\`\${…}\`), never a literal — ` +
+          'a hardcoded depth is exactly the env-era constant #1285 removed, one layer down',
+      ).toMatch(/hnsw\.ef_search\s*=\s*\$\{/);
     });
   });
 

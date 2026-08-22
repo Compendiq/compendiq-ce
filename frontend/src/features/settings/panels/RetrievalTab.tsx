@@ -146,6 +146,30 @@ interface BenchmarkRun {
 /** #1285 — the env-provenance note's sentence, named so its button can describe itself with it. */
 const EF_SEARCH_ENV_NOTE_ID = 'retrieval-ef-search-env-sentence';
 
+/**
+ * Hand focus to the knob a self-dismissing notice was about (WCAG 2.4.3).
+ *
+ * Every `Keep` / `Record` on this panel lives INSIDE the notice it satisfies,
+ * so pressing it removes the pressed element from the document. A browser drops
+ * focus to `<body>` when that happens: a keyboard or screen-reader operator
+ * loses their place mid-panel and the next Tab restarts from the top of the
+ * page — on a panel that is fourteen controls long, with no announcement of
+ * what just happened beyond a toast.
+ *
+ * Called BEFORE the invalidate that unmounts the notice, never after: at that
+ * point the field below is certainly mounted and the button certainly still
+ * is, so focus can only ever land on a live element. Doing it afterwards races
+ * React's re-render for a node that may already be gone.
+ *
+ * The knob itself is the landing spot rather than the surrounding section: it
+ * is what the notice was about, its `aria-describedby` help is then announced,
+ * and it is where an operator who has just been told the value is now theirs
+ * to set would want the caret.
+ */
+function focusKnobBeforeNoticeClears(fieldId: string): void {
+  document.getElementById(fieldId)?.focus();
+}
+
 const DEFAULTS: RetrievalValues = {
   ftsLanguage: 'simple',
   ragFetchWidth: 10,
@@ -482,6 +506,18 @@ export function RetrievalTab() {
       return { key, result };
     },
     onSuccess: async ({ key, result }) => {
+      // Read the server's verdict BEFORE the invalidate, because focus has to
+      // move before it: on the one outcome that clears the notice the button
+      // is about to be unmounted from under the operator's caret (WCAG 2.4.3,
+      // see `focusKnobBeforeNoticeClears`). On `unresolved` / `failed` the
+      // notice — and its button — deliberately stay, so focus stays too.
+      // `result` is in hand from the mutation itself; nothing below the await
+      // contributes to it, so this is a pure reordering of the same read.
+      const { basis, basisNoun } = CONFIDENCE_BASIS_COPY[key];
+      const write = result?.ragConfidenceCalibrationWrite?.[basis] ?? null;
+      if (write === null || write.outcome === 'recorded' || write.outcome === 'cleared') {
+        focusKnobBeforeNoticeClears(key);
+      }
       await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
       // Review r3 — the toast reports what the SERVER did, not that the
       // request returned 200. The route writes the threshold row and answers
@@ -493,8 +529,6 @@ export function RetrievalTab() {
       // back with nothing on screen explaining why. And `unresolved` is not
       // reliably transient: an undecryptable provider key after a rotation,
       // or an EE policy naming a deleted provider, throws on every attempt.
-      const { basis, basisNoun } = CONFIDENCE_BASIS_COPY[key];
-      const write = result?.ragConfidenceCalibrationWrite?.[basis] ?? null;
       if (!write) {
         // A server that reported nothing has told us nothing — claim only
         // what the status code supports. (Unreachable from the notices
@@ -550,6 +584,10 @@ export function RetrievalTab() {
     mutationFn: (value: number) =>
       apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify({ ragEfSearch: value }) }),
     onSuccess: async (_data, value) => {
+      // This press is the last thing this button ever does: the refetch below
+      // clears the note and takes the button with it. Move focus first
+      // (WCAG 2.4.3) — see `focusKnobBeforeNoticeClears`.
+      focusKnobBeforeNoticeClears(FIELDS.ragEfSearch.key);
       // Invalidating is what clears the note: the refetch comes back with
       // `ragEfSearchFromEnv: false` because the row now exists.
       await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
@@ -1786,8 +1824,9 @@ function NumberRow({
             // decision the number cannot: what the value bounds, and what it
             // does not buy. Printed near the input it was reachable by eye
             // only; wired here it reaches touch, keyboard and screen readers
-            // too (ADR-010's `DeepSearchToggle` precedent). Every row gets it,
-            // because every row's caveat was equally unreachable.
+            // too (ADR-010's `DeepSearchToggle` precedent). Every row on the
+            // panel gets it — `ToggleRow` included, since review r1 — because
+            // every row's caveat was equally unreachable.
             aria-describedby={children ? `${field.key}-help` : undefined}
             className="w-24 rounded-md border border-border-interactive bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-45"
             data-testid={`retrieval-${field.key}`}
@@ -1843,6 +1882,15 @@ function ToggleRow({
           type="checkbox"
           checked={checked}
           onChange={(e) => onChange(e.target.checked)}
+          // #1285, review r1 — the same wiring `NumberRow` gained, for the same
+          // reason. Leaving it on the number rows alone meant that inside ONE
+          // group a screen-reader user heard the caveat for `Images per page`
+          // and not the one for `Image leg` directly above it — and the toggles
+          // are where the sharpest caveats on this panel live ("It costs one
+          // extra embedding call per question", the identifier-pinning
+          // explanation, "No Recall@1 gain measured"). A caveat reachable by
+          // eye only is not a caveat the control carries.
+          aria-describedby={children ? `${id}-help` : undefined}
           className="h-4 w-4 rounded border-border accent-primary"
           data-testid={id}
         />
@@ -1851,7 +1899,16 @@ function ToggleRow({
         </label>
         {badge === 'Off' && <OffChip />}
       </div>
-      <div className="space-y-1.5 pl-6 text-xs text-muted-foreground">{children}</div>
+      {/*
+        Prose only, like `NumberRow`'s `children`: a description flattens to one
+        string, so an operable control or a wayfinding link belongs beside the
+        region, never inside it. `RetrievalTab.test.tsx`'s panel-wide
+        `describedRegionOffenders` sweep walks every `[aria-describedby]` and
+        fails if one appears here.
+      */}
+      <div id={`${id}-help`} className="space-y-1.5 pl-6 text-xs text-muted-foreground">
+        {children}
+      </div>
       {checked !== defaultChecked && (
         <button
           type="button"

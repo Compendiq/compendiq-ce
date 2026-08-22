@@ -172,6 +172,27 @@ export interface BenchmarkMetadata {
   llmConcurrency?: number;
   vectorPoolMax?: number;
   /**
+   * Search arms only — the HNSW scan depth the vector leg ran at, and where it
+   * came from.
+   *
+   * Before #1285 the floor was `process.env.RAG_EF_SEARCH`, read once at module
+   * load: visible in the shell that launched this script, constant for the life
+   * of the process, and defaulting to 100. It is now
+   * `admin_settings.rag_ef_search` in whatever database `POSTGRES_URL` points
+   * at, so two runs of this script labelled identically can measure different
+   * scan depths over the same corpus — and the panel's own copy puts that swing
+   * at 0.39 ms per probe at 100 against 1.74 ms at 1000, on exactly the
+   * quantity published here. `ragEfSearchSource` distinguishes a saved row from
+   * the deprecated variable and from the unconfigured default, because "100"
+   * arrived at three different ways is three different claims about the
+   * instance.
+   *
+   * This is the same rule `assertSeededFtsLanguage` serves and one read-only
+   * `SELECT`, so it keeps the script non-destructive.
+   */
+  ragEfSearch?: number;
+  ragEfSearchSource?: 'row' | 'env' | 'default';
+  /**
    * Always true when the embedding half ran, and stated rather than implied:
    * the embedding half POSTs directly, bypassing that same queue, so the two
    * halves of one row at concurrency 8 are NOT under the same in-flight load.
@@ -559,7 +580,12 @@ export function formatBenchmarkTable(report: BenchmarkReport): string {
     // ceilings below are what a rung above 4 is really measuring.
     lines.push(
       `search half: ${metadata.searchModel} @ ${metadata.searchBaseUrl} (resolved from the database)`
-      + ` · llm queue ${metadata.llmConcurrency ?? '?'} · vector pool ${metadata.vectorPoolMax ?? '?'}`,
+      + ` · llm queue ${metadata.llmConcurrency ?? '?'} · vector pool ${metadata.vectorPoolMax ?? '?'}`
+      // #1285 turned the scan depth from a process-env constant into a live
+      // row, so it belongs beside the other two ceilings rather than being
+      // assumed to be 100.
+      + ` · ef_search floor ${metadata.ragEfSearch ?? '?'}`
+      + ` (${metadata.ragEfSearchSource ?? 'unrecorded'})`,
     );
   }
   lines.push(
