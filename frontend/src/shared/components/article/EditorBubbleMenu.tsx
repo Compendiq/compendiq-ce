@@ -4,15 +4,21 @@ import { useEditorState } from '@tiptap/react';
 import { posToDOMRect } from '@tiptap/core';
 import { PluginKey } from '@tiptap/pm/state';
 import type { Editor as EditorType } from '@tiptap/react';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, MessageSquarePlus } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { useImproveStream } from './use-improve-stream';
 import { buildImproveHtml } from './improve-markdown';
 import { EditorFormatBar } from './EditorFormatBar';
 import { ImprovePanel, type ImprovePanelCopy } from './ImprovePanel';
+import { CommentComposer } from './CommentComposer';
 import { buildInstruction, type QuickAction } from './improve-actions';
 import { containsStructuredInline } from './block-menu-nodes';
 import { hasBlockMenuTarget } from './block-menu-decoration';
+import { isMac } from '../../lib/platform';
+import { setDraftNote } from './draft-notes-store';
 import {
   createImproveDecorationPlugin,
   improveDecorationKey,
@@ -163,22 +169,36 @@ export function BubbleMenuContent({
   editor,
   onAiOpenChange,
   improvePanelPosition = 'below',
+  pageId,
 }: {
   editor: EditorType;
   onAiOpenChange?: (open: boolean) => void;
   /** Which side of the toolbar the expanded Improve controls occupy. */
   improvePanelPosition?: 'above' | 'below';
+  pageId?: string;
 }) {
   const [aiOpen, setAiOpen] = useState(false);
-  // Range captured the moment "Improve" is clicked, so Replace/Insert act on
+  const [commentOpen, setCommentOpen] = useState(false);
+  const [commentQuote, setCommentQuote] = useState('');
+  const [isSubmittingComment, setIsSubmittingComment] = useState(false);
+  const commentDraftRef = useRef<string>('');
+  // Range captured the moment "Improve" or "Comment" is clicked, so actions act on
   // the original selection even after focus moves or the selection collapses.
   const rangeRef = useRef<{ from: number; to: number } | null>(null);
-  const stream = useImproveStream();
   const rootRef = useRef<HTMLDivElement>(null);
+  const stream = useImproveStream();
   const aiPanelId = useId();
+  const commentPanelId = useId();
+  let queryClient: ReturnType<typeof useQueryClient> | undefined;
+  try {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    queryClient = useQueryClient();
+  } catch {
+    queryClient = undefined;
+  }
 
   // #764 — register the non-destructive selection-decoration plugin for the
-  // life of the menu. It stays inert (empty DecorationSet) until `openAi`
+  // life of the menu. It stays inert (empty DecorationSet) until `openAi`/`openComment`
   // dispatches the captured range. TipTap guards `unregisterPlugin` against a
   // destroyed editor internally, but not `registerPlugin` — hence the check.
   useEffect(() => {
@@ -189,6 +209,13 @@ export function BubbleMenuContent({
 
   const setAi = useCallback((open: boolean) => {
     setAiOpen(open);
+    if (open) setCommentOpen(false);
+    onAiOpenChange?.(open);
+  }, [onAiOpenChange]);
+
+  const setComment = useCallback((open: boolean) => {
+    setCommentOpen(open);
+    if (open) setAiOpen(false);
     onAiOpenChange?.(open);
   }, [onAiOpenChange]);
 
@@ -211,31 +238,61 @@ export function BubbleMenuContent({
   const closeAi = useCallback(() => {
     stream.abort();
     stream.reset();
-    clearImproveDecoration(editor);
+    if (!commentOpen) {
+      clearImproveDecoration(editor);
+      rangeRef.current = null;
+    }
     setAi(false);
-    rangeRef.current = null;
     editor.commands?.focus?.();
-  }, [editor, stream, setAi]);
+  }, [editor, stream, setAi, commentOpen]);
 
-  // Cmd/Ctrl+J expands the AI section on the current selection (#708 optional
-  // keyboard trigger).
+  const openComment = useCallback(() => {
+    const { from, to } = editor.state.selection;
+    if (from === to) return;
+    rangeRef.current = { from, to };
+    const text = editor.state.doc.textBetween(from, to, ' ');
+    setCommentQuote(text);
+    setImproveDecoration(editor, { from, to });
+    if (aiOpen) {
+      stream.abort();
+      stream.reset();
+    }
+    setComment(true);
+  }, [editor, aiOpen, stream, setComment]);
+
+  const closeComment = useCallback(() => {
+    if (!aiOpen) {
+      clearImproveDecoration(editor);
+      rangeRef.current = null;
+    }
+    setComment(false);
+    editor.commands?.focus?.();
+  }, [editor, aiOpen, setComment]);
+
+  // Cmd/Ctrl+J expands AI; Cmd+Alt+M / Ctrl+Alt+M / Cmd+Shift+C expands Note/Comment
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
+      const isMod = e.metaKey || e.ctrlKey;
+      if (isMod && e.key.toLowerCase() === 'j') {
         if (!editor.isEditable || editor.state.selection.empty) return;
         e.preventDefault();
         openAi();
+      } else if (
+        (isMod && e.altKey && e.key.toLowerCase() === 'm') ||
+        (isMod && e.shiftKey && e.key.toLowerCase() === 'c')
+      ) {
+        if (!editor.isEditable || editor.state.selection.empty) return;
+        e.preventDefault();
+        openComment();
       }
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [editor, openAi]);
+  }, [editor, openAi, openComment]);
 
-  // #782 — dismissal was previously Radix Popover's job. Escape and
-  // outside-pointerdown collapse the AI section (abort + clear decoration);
-  // clicks inside the merged panel (toolbar row included) never dismiss.
+  // #782 — dismissal on Escape and outside-pointerdown
   useEffect(() => {
-    if (!aiOpen) return;
+    if (!aiOpen && !commentOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       // A layer stacked above us (modal, dropdown) already consumed this
@@ -250,11 +307,15 @@ export function BubbleMenuContent({
       );
       if (foreignLayer && !(root && root.contains(foreignLayer))) return;
       e.preventDefault();
-      closeAi();
+      if (aiOpen) closeAi();
+      if (commentOpen) closeComment();
     };
     const onPointerDown = (e: PointerEvent) => {
       const root = rootRef.current;
-      if (root && e.target instanceof Node && !root.contains(e.target)) closeAi();
+      if (root && e.target instanceof Node && !root.contains(e.target)) {
+        if (aiOpen) closeAi();
+        if (commentOpen) closeComment();
+      }
     };
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('pointerdown', onPointerDown);
@@ -262,27 +323,15 @@ export function BubbleMenuContent({
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('pointerdown', onPointerDown);
     };
-  }, [aiOpen, closeAi]);
+  }, [aiOpen, commentOpen, closeAi, closeComment]);
 
-  // #782 — the BubbleMenu plugin repositions on selection/doc changes, scroll
-  // and window resize, but it does NOT observe the floating element's own
-  // size. Expanding/collapsing the AI section and the preview growing while
-  // streaming change the panel height, so ask the plugin to re-run Floating UI
-  // (flip/shift re-pick the side with room) via its documented
-  // `updatePosition` transaction meta. Layout effect so the reposition happens
-  // in the same frame as the DOM growth (no flash over the selection).
+  // #782 — reposition on height change
   useLayoutEffect(() => {
     if (editor.isDestroyed) return;
     editor.view.dispatch(editor.state.tr.setMeta(editorBubbleMenuPluginKey, 'updatePosition'));
-  }, [editor, aiOpen, improvePanelPosition, stream.status]);
+  }, [editor, aiOpen, commentOpen, improvePanelPosition, stream.status]);
 
-  // The streamed preview grows on EVERY SSE chunk; dispatching a reposition
-  // transaction per chunk would run a full state apply + Floating UI
-  // computePosition each time. Coalesce via requestAnimationFrame — at most
-  // one dispatch per frame (re-scheduling within a frame keeps the same
-  // next-paint slot), cancelled on unmount. Open/close and status transitions
-  // above stay layout-effect-synchronous so expansion never flashes over the
-  // selection; only this high-frequency path is throttled.
+  // The streamed preview grows on EVERY SSE chunk
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       if (editor.isDestroyed) return;
@@ -291,19 +340,11 @@ export function BubbleMenuContent({
     return () => cancelAnimationFrame(frame);
   }, [editor, stream.output]);
 
-  // #764 — the decoration set is remapped through every transaction (see
-  // improve-decoration.ts), while `rangeRef` keeps the offsets captured when
-  // the AI section opened. Read the live range from the decoration so actions
-  // track the passage even if the document changed while the section was
-  // open; fall back to the captured range when no decoration exists.
+  // Read the live range from the decoration so actions track the passage
   const currentRange = useCallback((): { from: number; to: number } | null => {
     if (editor.isDestroyed) return null;
     const deco = improveDecorationKey.getState(editor.state)?.find()[0];
     if (deco) return { from: deco.from, to: deco.to };
-    // No decoration left: the passage was deleted while the section was open —
-    // #1179's block menu makes that a single click. The captured offsets now
-    // point into a shorter document, so clamp them and refuse rather than hand
-    // an out-of-range range to `insertContentAt`, which throws.
     const captured = rangeRef.current;
     if (!captured) return null;
     const max = editor.state.doc.content.size;
@@ -312,12 +353,6 @@ export function BubbleMenuContent({
     return from < to ? { from, to } : null;
   }, [editor]);
 
-  /**
-   * The range Improve is about: the decorated passage once the section is open,
-   * the live selection before that. Two phases, one predicate — so the trigger
-   * disappears as a drag crosses a macro, and the open section keeps watching
-   * the passage it captured rather than wherever the caret has since gone.
-   */
   const improveRange = useCallback((): { from: number; to: number } | null => {
     const captured = currentRange();
     if (captured) return captured;
@@ -326,9 +361,6 @@ export function BubbleMenuContent({
     return from < to ? { from, to } : null;
   }, [editor, currentRange]);
 
-  // Subscribe to the document so this re-evaluates on every selection change
-  // and every edit. `useEditorState` compares results, so a selection dragged
-  // through plain prose re-renders nothing.
   const dropsMacros = useEditorState({
     editor,
     selector: ({ editor: e }) => {
@@ -351,12 +383,6 @@ export function BubbleMenuContent({
   const replaceSelection = useCallback(() => {
     const range = currentRange();
     if (!range || !stream.output) return;
-    // Re-read from the DOCUMENT, not from `dropsMacros`. The render gate is a
-    // React value derived from editor state, so a transaction landing between
-    // the last paint and this click leaves it a frame stale — and one frame is
-    // all it takes to delete a mention. Unlike #1179's equivalent this is the
-    // primary guard for the mid-flight case, not a cross-file backstop, and the
-    // test suite drives that exact interleaving.
     if (containsStructuredInline(editor.state.doc, range.from, range.to)) return;
     const { inline } = buildImproveHtml(stream.output);
     editor.chain().focus().insertContentAt({ from: range.from, to: range.to }, inline).run();
@@ -367,22 +393,81 @@ export function BubbleMenuContent({
     const range = currentRange();
     if (!range || !stream.output) return;
     const { html } = buildImproveHtml(stream.output);
-    // Insert block HTML at the end of the selection so the original passage is
-    // preserved. Caveat: when the selection ends mid-block (e.g. mid-sentence),
-    // ProseMirror splits the containing block to place the new block-level
-    // node, so the remainder of the paragraph moves below the insertion. This
-    // matches Notion's "Insert below" (it always produces a new block) and is
-    // the expected outcome for a block-level insert; we keep it as-is rather
-    // than constraining selections to block boundaries.
     editor.chain().focus().insertContentAt(range.to, html).run();
     closeAi();
   }, [editor, stream.output, closeAi, currentRange]);
 
-  // While the section is open the trigger is also its collapse control, so it
-  // stays even if a macro arrives in the passage — hiding it there would strand
-  // an expanded panel with no way back and a dangling `aria-controls`. The
-  // mid-flight protection is `replaceBlocked` below, not the render gate.
+  const handleCreateComment = useCallback(
+    async (body: string) => {
+      const range = currentRange();
+      if (!range) return;
+      const selectedQuote = editor.state.doc.textBetween(range.from, range.to, ' ');
+      setIsSubmittingComment(true);
+      try {
+        if (pageId) {
+          const res = await apiFetch<{ id: number | string }>(
+            `/pages/${encodeURIComponent(pageId)}/comments`,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                body,
+                anchorType: 'selection',
+                anchorData: {
+                  quote: selectedQuote,
+                  text: selectedQuote,
+                  from: range.from,
+                  to: range.to,
+                },
+              }),
+            },
+          );
+          // Set comment mark on selected range
+          editor
+            .chain()
+            .focus()
+            .setTextSelection(range)
+            .setComment({ commentId: res.id })
+            .run();
+          toast.success('Note added');
+          if (queryClient) {
+            void queryClient.invalidateQueries({ queryKey: ['comments', pageId] });
+          }
+        } else {
+          // Fallback for unsaved drafts: generate local ID and persist note draft
+          const localId = `local-${Date.now()}`;
+          setDraftNote(localId, {
+            id: localId,
+            body,
+            createdAt: new Date().toISOString(),
+            anchorData: {
+              quote: selectedQuote,
+              text: selectedQuote,
+              from: range.from,
+              to: range.to,
+            },
+          });
+          editor
+            .chain()
+            .focus()
+            .setTextSelection(range)
+            .setComment({ commentId: localId })
+            .run();
+          toast.success('Note attached');
+        }
+        commentDraftRef.current = '';
+        closeComment();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to add note');
+      } finally {
+        setIsSubmittingComment(false);
+      }
+    },
+    [editor, currentRange, pageId, closeComment, queryClient],
+  );
+
   const showImprove = aiOpen || !dropsMacros;
+  const isExpanded = aiOpen || commentOpen;
+  const mac = isMac();
 
   return (
     <div
@@ -390,11 +475,31 @@ export function BubbleMenuContent({
       data-testid="editor-bubble-menu"
       className={cn(
         'flex nm-card-elevated',
-        aiOpen && improvePanelPosition === 'above' ? 'flex-col-reverse' : 'flex-col',
+        isExpanded && improvePanelPosition === 'above' ? 'flex-col-reverse' : 'flex-col',
         'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
       )}
     >
       <EditorFormatBar editor={editor} ariaLabel="Selection formatting">
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()} // keep editor selection on click
+          onClick={() => (commentOpen ? closeComment() : openComment())}
+          title={mac ? 'Add note (Cmd+Option+M)' : 'Add note (Ctrl+Alt+M)'}
+          aria-label="Add note"
+          aria-expanded={commentOpen}
+          aria-controls={commentOpen ? commentPanelId : undefined}
+          data-testid="bubble-comment-trigger"
+          className={cn(
+            'flex h-8 items-center gap-1 rounded px-2 text-sm font-medium transition-colors',
+            'text-foreground/80 hover:bg-muted hover:text-foreground',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+            commentOpen && 'bg-muted text-foreground',
+          )}
+        >
+          <MessageSquarePlus size={15} />
+          <span>Note</span>
+        </button>
+
         {showImprove && (
           <button
             type="button"
@@ -418,12 +523,7 @@ export function BubbleMenuContent({
         )}
       </EditorFormatBar>
 
-      {/* Deliberately not a live region. This appears and disappears as the
-          selection is dragged, so announcing it would chatter over every drag;
-          it is read when the user goes looking for the button that is missing.
-          Muted, not amber — amber is for a warning the user may act through
-          (#1179's mark warning), and this is a refusal. */}
-      {!aiOpen && dropsMacros && (
+      {!isExpanded && dropsMacros && (
         <p
           data-testid="bubble-menu-macro-notice"
           className="w-72 border-t border-border px-3 py-2 text-xs text-muted-foreground"
@@ -432,11 +532,24 @@ export function BubbleMenuContent({
         </p>
       )}
 
-      {/* #782 — the AI section expands the SAME container in place (below the
-          toolbar row) instead of opening a second portalled popover on the
-          other side of the selection. The container floats above the selection
-          (placement 'top' on the wrapper), so growing downward is re-anchored
-          by the updatePosition effect and never covers the decorated text. */}
+      {commentOpen && (
+        <CommentComposer
+          id={commentPanelId}
+          quote={commentQuote}
+          initialValue={commentDraftRef.current}
+          onDraftChange={(val) => {
+            commentDraftRef.current = val;
+          }}
+          onSubmit={handleCreateComment}
+          onClose={closeComment}
+          isSubmitting={isSubmittingComment}
+          className={cn(
+            'w-full max-w-[calc(100vw-24px)]',
+            improvePanelPosition === 'above' ? 'border-b border-border' : 'border-t border-border',
+          )}
+        />
+      )}
+
       {aiOpen && (
         <ImprovePanel
           id={aiPanelId}
@@ -448,28 +561,34 @@ export function BubbleMenuContent({
           onInsertBelow={insertBelow}
           onClose={closeAi}
           replaceBlocked={dropsMacros ? MACRO_REPLACE_BLOCKED : null}
-          className="w-80"
+          className="w-full max-w-[calc(100vw-24px)]"
         />
       )}
     </div>
   );
 }
 
-export function EditorBubbleMenu({ editor }: { editor: EditorType }) {
-  // Mirror the AI-section open state in a ref so the stable `shouldShow`
-  // closure passed to the BubbleMenu plugin keeps the menu mounted while the
-  // AI input has focus.
-  const aiOpenRef = useRef(false);
+export function EditorBubbleMenu({
+  editor,
+  pageId,
+}: {
+  editor: EditorType;
+  pageId?: string;
+}) {
+  // Mirror the AI/comment section open state in a ref so the stable `shouldShow`
+  // closure passed to the BubbleMenu plugin keeps the menu mounted while an
+  // expanded input has focus.
+  const panelOpenRef = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const [improvePanelPosition, setImprovePanelPosition] = useState<'above' | 'below'>('below');
 
   const shouldShow = useCallback(
-    ({ editor: e }: { editor: EditorType }) => selectionShouldShow(e, aiOpenRef.current),
+    ({ editor: e }: { editor: EditorType }) => selectionShouldShow(e, panelOpenRef.current),
     [],
   );
 
   const updateImprovePanelPosition = useCallback(() => {
-    if (!aiOpenRef.current || editor.isDestroyed || !menuRef.current) return;
+    if (!panelOpenRef.current || editor.isDestroyed || !menuRef.current) return;
     const { from, to } = editor.state.selection;
     const next = improvePanelPlacement(
       menuRef.current.getBoundingClientRect(),
@@ -478,8 +597,8 @@ export function EditorBubbleMenu({ editor }: { editor: EditorType }) {
     setImprovePanelPosition((current) => current === next ? current : next);
   }, [editor]);
 
-  const handleAiOpenChange = useCallback((open: boolean) => {
-    aiOpenRef.current = open;
+  const handlePanelOpenChange = useCallback((open: boolean) => {
+    panelOpenRef.current = open;
     // Every disclosure begins downward. If the preferred bottom placement is
     // unavailable, Floating UI's next update switches this to `above`.
     setImprovePanelPosition('below');
@@ -514,8 +633,9 @@ export function EditorBubbleMenu({ editor }: { editor: EditorType }) {
     >
       <BubbleMenuContent
         editor={editor}
-        onAiOpenChange={handleAiOpenChange}
+        onAiOpenChange={handlePanelOpenChange}
         improvePanelPosition={improvePanelPosition}
+        pageId={pageId}
       />
     </BubbleMenu>
   );

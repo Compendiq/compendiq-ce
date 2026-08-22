@@ -8,6 +8,7 @@ import {
 import { DragDropProvider, type DragEndEvent } from '@dnd-kit/react';
 import { useSortable, isSortable } from '@dnd-kit/react/sortable';
 import { cn } from '../../lib/cn';
+import { PageIcon } from '../page-icon/PageIcon';
 import type { TreeNode } from './sidebar-types';
 
 export interface DndLocalSpaceTreeProps {
@@ -143,17 +144,17 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
           // It had drifted on the one state that matters most. The active row
           // here was `nm-pill-active text-action font-medium scale-[1.01]`
           // against the plain tree's `nav-selection font-medium`: a different
-          // field, teal text where the other has none, and a `scale` — which
+          // field, accent text where the other has none, and a `scale` — which
           // ADR-010 retired outright ("no lift, no scale, no glass"; hover and
           // press are background and border changes). Selecting a page in a
-          // local space nudged the row 1% larger and lit it teal; selecting one
+          // local space nudged the row 1% larger and lit it with the accent; selecting one
           // in a Confluence space did neither. Same panel, same gesture.
           // pr-7 (28px), mirroring the left gutter exactly: a 24px control
           // plus the same 2px edge margin and 2px title gap the chevron gets
           // on the left. See the grip below for why it moved to this edge.
           'group relative flex items-center rounded-md h-7 pr-7 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'nav-selection font-medium'
+            ? 'nav-selection font-medium outline-none'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         // See SidebarTreeNode for why the gutter is built this way. The grip
@@ -238,7 +239,10 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
         {/* #767: pin the weight explicitly (conditional, never both classes)
             so titles can't inherit or synthesize a heavier weight while the
             variable font loads or the row sits on a composited layer. */}
-        <span className={cn('truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
+        {node.page.icon && (
+          <PageIcon icon={node.page.icon} pageId={node.page.id} size="row" className="mr-1.5" />
+        )}
+        <span className={cn('min-w-0 flex-1 truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
           {node.page.title}
         </span>
       </div>

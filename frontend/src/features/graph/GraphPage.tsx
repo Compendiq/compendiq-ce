@@ -10,7 +10,6 @@ import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { useEmbeddingStatus, isZeroEmbeddings } from '../../shared/hooks/use-pages';
 import { useAuthStore } from '../../stores/auth-store';
 import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters, type GraphMeta } from './graph-hooks';
-import { HeaderHost } from '../../shared/components/layout/header-slot';
 
 // ---------- Types ----------
 
@@ -150,7 +149,7 @@ function getCanvasColors(isLight: boolean): GraphCanvasColors {
         hoverStroke: 'rgba(23,24,26,0.8)',
       }
     : {
-        // Graphite --color-foreground #eceef2
+        // Graphite --color-foreground #e4e6e7
         label: 'rgba(236,238,242,0.85)',
         title: 'rgba(236,238,242,0.95)',
         badge: 'rgba(236,238,242,0.7)',
@@ -653,9 +652,7 @@ export function GraphPage() {
       {/* Header bar */}
       <div className="flex items-center justify-between">
         <div>
-          <HeaderHost fallbackClassName="">
-            <h1 className="text-[15px] font-semibold sm:text-lg">Knowledge Graph</h1>
-          </HeaderHost>
+          <h1 className="text-[15px] font-semibold sm:text-lg">Graph</h1>
           <p className="text-sm text-muted-foreground">
             {data.nodes.length} {viewMode === 'clustered' ? 'clusters' : 'pages'}, {data.edges.length} connections
             {focusPageId && ' (local view)'}

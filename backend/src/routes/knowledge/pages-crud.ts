@@ -23,8 +23,9 @@ import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
-import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { getUserAccessibleSpaces, isSystemAdmin } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
+import { toPageIcon } from '../../core/services/page-icon.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema } from '@compendiq/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
@@ -127,6 +128,33 @@ const ALLOWED_IMAGE_MIMES = new Set([
 const ImportImageSchema = z.object({
   url: z.string().url().max(2048),
 });
+
+type ImageUploadPage = {
+  id: number;
+  source: string;
+  confluence_id: string | null;
+  created_by_user_id: string | null;
+  space_key: string | null;
+  visibility: string | null;
+};
+
+/**
+ * Who may attach an image to a page. Matches PUT /pages/:id and
+ * pages-icon assertCanEdit, plus the system-admin bypass that
+ * userCanAccessPage already grants for read — otherwise an admin
+ * who can open the editor is refused at paste.
+ */
+async function userCanUploadPageImage(userId: string, page: ImageUploadPage): Promise<boolean> {
+  if (await isSystemAdmin(userId)) return true;
+  if (page.source === 'standalone') {
+    return page.created_by_user_id === userId || page.visibility === 'shared';
+  }
+  if (page.space_key) {
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    return accessibleSpaces.includes(page.space_key);
+  }
+  return false;
+}
 
 /** Magic-byte signatures for each allowed import MIME. The leading bytes must
  *  match the declared `Content-Type` from the upstream — otherwise a malicious
@@ -470,6 +498,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       summary_status: string;
       source: string;
       visibility: string;
+      icon_kind: string | null;
+      icon_value: string | null;
     };
 
     async function executeSearchQuery(wc: string, vals: unknown[], ob: string, obVals: unknown[] = []) {
@@ -496,7 +526,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
                cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
                cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
-               cp.summary_status, cp.source, cp.visibility
+               cp.summary_status, cp.source, cp.visibility,
+               cp.icon_kind, cp.icon_value
         FROM pages cp
         ${wc}
         ORDER BY ${ob}
@@ -562,6 +593,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         summaryStatus: row.summary_status,
         source: row.source,
         visibility: row.visibility,
+        icon: toPageIcon(row.icon_kind, row.icon_value),
       })),
       total,
       page,
@@ -619,6 +651,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       embedding_status: string;
       embedded_at: Date | null;
       embedding_error: string | null;
+      icon_kind: string | null;
+      icon_value: string | null;
     }>(
       // #959: order by sort_order first so a persisted drag-reorder (written by
       // PUT /pages/:id/reorder) survives the tree refetch instead of snapping
@@ -627,7 +661,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
               parent_page.id as parent_numeric_id, cp.sort_order,
               cp.labels, cp.last_modified_at,
-              cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
+              cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
+              cp.icon_kind, cp.icon_value
        FROM pages cp
        LEFT JOIN pages parent_page ON (
          parent_page.confluence_id = cp.parent_id
@@ -652,6 +687,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         embeddingStatus: row.embedding_status,
         embeddedAt: row.embedded_at,
         embeddingError: row.embedding_error,
+        icon: toPageIcon(row.icon_kind, row.icon_value),
       })),
       total: result.rows.length,
     };
@@ -787,6 +823,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       created_by_user_id: string | null;
       has_draft: boolean;
       draft_updated_at: Date | null;
+      verified_at: Date | null;
+      icon_kind: string | null;
+      icon_value: string | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
               cp.body_storage, cp.body_html, cp.body_text,
@@ -798,7 +837,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               EXISTS(SELECT 1 FROM pages c2 WHERE c2.parent_id = cp.confluence_id AND cp.confluence_id IS NOT NULL AND c2.deleted_at IS NULL) as has_children,
               cp.summary_html, cp.summary_status, cp.summary_generated_at, cp.summary_model, cp.summary_error,
               cp.source, cp.visibility, cp.created_by_user_id,
-              (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at
+              (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at,
+              cp.verified_at, cp.icon_kind, cp.icon_value
        FROM pages cp
        WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
          AND cp.deleted_at IS NULL`,
@@ -867,6 +907,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       createdByUserId: row.created_by_user_id,
       hasDraft: row.has_draft,
       draftUpdatedAt: row.draft_updated_at?.toISOString() ?? null,
+      verifiedAt: row.verified_at,
+      icon: toPageIcon(row.icon_kind, row.icon_value),
     };
   });
 
@@ -965,15 +1007,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       space_key: string | null;
       parent_id: string | null;
       depth: number;
+      icon_kind: string | null;
+      icon_value: string | null;
     };
 
     const treeResult = await query<FlatChildRow>(
       `WITH RECURSIVE tree AS (
-         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, 1 AS depth
+         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, 1 AS depth,
+                p.icon_kind, p.icon_value
          FROM pages p
          WHERE p.parent_id = $1 AND p.deleted_at IS NULL
          UNION ALL
-         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, t.depth + 1
+         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, t.depth + 1,
+                p.icon_kind, p.icon_value
          FROM pages p
          JOIN tree t ON p.parent_id = COALESCE(t.confluence_id, t.id::text)
          WHERE p.deleted_at IS NULL AND t.depth < $2
@@ -984,7 +1030,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     );
 
     // Assemble flat rows into nested tree structure
-    type ChildNode = { id: number; confluenceId: string | null; title: string; spaceKey: string | null; children?: ChildNode[] };
+    type ChildNode = {
+      id: number;
+      confluenceId: string | null;
+      title: string;
+      spaceKey: string | null;
+      icon: ReturnType<typeof toPageIcon>;
+      children?: ChildNode[];
+    };
     const nodeMap = new Map<string, ChildNode>();
     const roots: ChildNode[] = [];
 
@@ -994,6 +1047,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         confluenceId: row.confluence_id,
         title: row.title,
         spaceKey: row.space_key,
+        icon: toPageIcon(row.icon_kind, row.icon_value),
       };
       const nodeKey = row.confluence_id ?? String(row.id);
       nodeMap.set(nodeKey, node);
@@ -2716,11 +2770,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Verify the page exists and the user has access
     // Support both integer PK (standalone pages) and confluence_id (Confluence pages)
     const isNumericId = /^\d+$/.test(id);
-    const pageResult = await query<{
-      id: number; source: string; confluence_id: string | null;
-      created_by_user_id: string | null; space_key: string | null;
-    }>(
-      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key
+    const pageResult = await query<ImageUploadPage>(
+      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key, p.visibility
        FROM pages p
        WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
@@ -2737,30 +2788,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const page = pageResult.rows[0]!;
 
-    // Access control: standalone pages require ownership; Confluence pages require space access
-    if (page.source === 'standalone') {
-      if (page.created_by_user_id !== userId) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to upload images to this page',
-        });
-      }
-    } else if (page.space_key) {
-      const accessibleSpaces = await getUserAccessibleSpaces(userId);
-      if (!accessibleSpaces.includes(page.space_key)) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to upload images to this page',
-        });
-      }
-    } else {
-      // No space_key and not standalone — deny access
+    if (!(await userCanUploadPageImage(userId, page))) {
       return reply.status(403).send({
         statusCode: 403,
         error: 'Forbidden',
-        message: 'Access denied',
+        message: page.source === 'standalone' || page.space_key
+          ? 'Not authorized to upload images to this page'
+          : 'Access denied',
       });
     }
 
@@ -2834,11 +2868,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Verify the page exists and the user has access. Mirrors the inline
     // upload route's logic exactly so the two stay aligned.
     const isNumericId = /^\d+$/.test(id);
-    const pageResult = await query<{
-      id: number; source: string; confluence_id: string | null;
-      created_by_user_id: string | null; space_key: string | null;
-    }>(
-      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key
+    const pageResult = await query<ImageUploadPage>(
+      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key, p.visibility
        FROM pages p
        WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
@@ -2852,28 +2883,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       });
     }
     const page = pageResult.rows[0]!;
-    if (page.source === 'standalone') {
-      if (page.created_by_user_id !== userId) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to import images to this page',
-        });
-      }
-    } else if (page.space_key) {
-      const accessibleSpaces = await getUserAccessibleSpaces(userId);
-      if (!accessibleSpaces.includes(page.space_key)) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to import images to this page',
-        });
-      }
-    } else {
+    if (!(await userCanUploadPageImage(userId, page))) {
       return reply.status(403).send({
         statusCode: 403,
         error: 'Forbidden',
-        message: 'Access denied',
+        message: page.source === 'standalone' || page.space_key
+          ? 'Not authorized to import images to this page'
+          : 'Access denied',
       });
     }
 

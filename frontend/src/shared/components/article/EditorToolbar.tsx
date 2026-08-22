@@ -9,9 +9,8 @@ import {
   Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2, Workflow, Badge,
   ChevronsUpDown, Paperclip, ListTree, ImagePlus, Table2,
   Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb,
-  Baseline, Highlighter,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
-  Smile, MoreHorizontal,
+  Smile, Baseline,
 } from 'lucide-react';
 import {
   LAYOUT_PRESETS,
@@ -25,6 +24,9 @@ import { insertTableCaption } from './table-cell-selection';
 import { BlockTypeMenu } from './BlockTypeMenu';
 import { EmojiPicker, EmojiPickerContent } from './EmojiPicker';
 export { EmojiPicker };
+import { ColorPickerDropdown, ColorPanel } from './EditorColorPicker';
+import { uploadPastedImage } from './editor-image-upload';
+import { toast } from 'sonner';
 import { absorbPortalEscape } from '../../lib/absorb-portal-escape';
 import { cn } from '../../lib/cn';
 
@@ -37,11 +39,12 @@ import { cn } from '../../lib/cn';
  * List of Tables" perhaps twice a year. Two of those icons were even the same
  * glyph for different actions.
  *
- * It is now twelve, plus undo/redo. The frequent operations stay on the surface
- * — marks, lists, colours — and the long tail moves behind two menus that say
- * what they are in words. Nothing was removed: every action the flat row
- * offered is still here, and the two menus put a NAME beside each one, which
- * the icon wall never did.
+ * Frequent operations stay on the surface — marks, colour, lists — and the
+ * long tail moves behind two menus that say what they are in words. Colour
+ * sits immediately left of the bullet list. When the bar is too narrow,
+ * folded tools go into Insert — never a second "…" trigger. Nothing was
+ * removed: every action the flat row offered is still here, and the two
+ * menus put a NAME beside each one, which the icon wall never did.
  *
  * The block-type control is the one genuinely new affordance. The old row
  * showed heading state only as "which of these three icons is lit"; the trigger
@@ -107,32 +110,54 @@ const PANEL_TYPES = [
   { value: 'tip', label: 'Tip', Icon: Lightbulb, swatch: 'var(--color-success)' },
 ] as const;
 
-const PRESET_COLORS = [
-  { label: 'Red', value: '#ef4444' },
-  { label: 'Orange', value: '#f97316' },
-  { label: 'Yellow', value: '#eab308' },
-  { label: 'Green', value: '#22c55e' },
-  { label: 'Blue', value: '#3b82f6' },
-  { label: 'Purple', value: '#a855f7' },
-  { label: 'Pink', value: '#ec4899' },
-  { label: 'Grey', value: '#6b7280' },
-];
-
 /* ----------------------------------------------------------- insert menu -- */
 
 /**
  * Two of the insert actions need a value from the user before they can run: an
- * image needs a URL, a status label needs its text and colour.
+ * image needs a file, a status label needs its text and colour.
  *
  * They are Popovers opened FROM the menu rather than forms inside it, and that
  * is not a style choice. A Radix menu is `role="menu"`, whose typeahead
  * swallows printable keystrokes — the same trap documented for the editor block
  * menu, where a free-form Improve input inside a context menu could not be
- * typed into. Anything with a text field has to leave the menu.
+ * typed into. Image uses a file input, but it still lives in that popover so
+ * the menu never hosts an input.
  */
-type PendingPrompt = 'image' | 'status' | 'emoji' | null;
+type PendingPrompt = 'image' | 'status' | 'emoji' | 'color' | null;
 
-function InsertMenu({ editor }: { editor: EditorType }) {
+type FoldedControls = {
+  underline: boolean;
+  strike: boolean;
+  code: boolean;
+  orderedList: boolean;
+  taskList: boolean;
+  align: boolean;
+  color: boolean;
+  bulletList: boolean;
+};
+
+const NONE_FOLDED: FoldedControls = {
+  underline: false,
+  strike: false,
+  code: false,
+  orderedList: false,
+  taskList: false,
+  align: false,
+  color: false,
+  bulletList: false,
+};
+
+function InsertMenu({
+  editor,
+  folded = NONE_FOLDED,
+  pageId,
+  showLabel = true,
+}: {
+  editor: EditorType;
+  folded?: FoldedControls;
+  pageId?: string;
+  showLabel?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<PendingPrompt>(null);
   // Read during the menu's close-autofocus, which fires before the state commit
@@ -140,9 +165,33 @@ function InsertMenu({ editor }: { editor: EditorType }) {
   // same moment the popover autofocuses its input, and the input loses.
   const pendingRef = useRef<PendingPrompt>(null);
 
-  const [imageUrl, setImageUrl] = useState('');
+  const [imageBusy, setImageBusy] = useState(false);
   const [statusText, setStatusText] = useState('');
   const [statusColor, setStatusColor] = useState('blue');
+
+  const formatState = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      underline: e.isActive('underline'),
+      strike: e.isActive('strike'),
+      code: e.isActive('code'),
+      orderedList: e.isActive('orderedList'),
+      taskList: e.isActive('taskList'),
+      bulletList: e.isActive('bulletList'),
+      textColor: e.getAttributes('textStyle').color as string | undefined,
+      highlightColor: e.getAttributes('highlight').color as string | undefined,
+    }),
+  });
+
+  const hasFoldedFormat =
+    folded.underline ||
+    folded.strike ||
+    folded.code ||
+    folded.orderedList ||
+    folded.taskList ||
+    folded.align ||
+    folded.color ||
+    folded.bulletList;
 
   const requestPrompt = (kind: Exclude<PendingPrompt, null>) => {
     pendingRef.current = kind;
@@ -152,13 +201,20 @@ function InsertMenu({ editor }: { editor: EditorType }) {
   const closePrompt = () => {
     pendingRef.current = null;
     setPending(null);
-    setImageUrl('');
+    setImageBusy(false);
     setStatusText('');
     editor.commands?.focus?.();
   };
 
-  const insertImage = () => {
-    const url = imageUrl.trim();
+  const insertImageFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (!pageId) {
+      toast.error('Save the page first to paste images.');
+      return;
+    }
+    setImageBusy(true);
+    const url = await uploadPastedImage(file, pageId);
+    setImageBusy(false);
     if (!url) return;
     editor.chain().focus().setImage({ src: url }).run();
     closePrompt();
@@ -191,7 +247,7 @@ function InsertMenu({ editor }: { editor: EditorType }) {
                 className={menuTriggerClass(open)}
               >
                 <Plus size={15} className="shrink-0" />
-                Insert
+                {showLabel && 'Insert'}
                 <ChevronDown size={13} className="shrink-0 opacity-60" />
               </button>
             </DropdownMenu.Trigger>
@@ -206,6 +262,90 @@ function InsertMenu({ editor }: { editor: EditorType }) {
                   if (pendingRef.current) e.preventDefault();
                 }}
               >
+                {hasFoldedFormat && (
+                  <>
+                    <DropdownMenu.Label className={MENU_LABEL}>Format</DropdownMenu.Label>
+                    {folded.underline && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleUnderline().run()}
+                        className={cn(MENU_ITEM, formatState.underline && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <Underline size={15} className="shrink-0" />
+                        Underline
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.strike && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleStrike().run()}
+                        className={cn(MENU_ITEM, formatState.strike && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <Strikethrough size={15} className="shrink-0" />
+                        Strikethrough
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.code && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleCode().run()}
+                        className={cn(MENU_ITEM, formatState.code && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <Code size={15} className="shrink-0" />
+                        Inline Code
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.orderedList && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleOrderedList().run()}
+                        className={cn(MENU_ITEM, formatState.orderedList && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <ListOrdered size={15} className="shrink-0" />
+                        Ordered List
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.taskList && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleTaskList().run()}
+                        className={cn(MENU_ITEM, formatState.taskList && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <CheckSquare size={15} className="shrink-0" />
+                        Task List
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.color && (
+                      <DropdownMenu.Item
+                        onSelect={() => requestPrompt('color')}
+                        className={MENU_ITEM}
+                      >
+                        <Baseline size={15} className="shrink-0" />
+                        Color…
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.bulletList && (
+                      <DropdownMenu.Item
+                        onSelect={() => editor.chain().focus().toggleBulletList().run()}
+                        className={cn(MENU_ITEM, formatState.bulletList && 'bg-foreground/[0.06] font-medium text-foreground')}
+                      >
+                        <List size={15} className="shrink-0" />
+                        Bullet List
+                      </DropdownMenu.Item>
+                    )}
+                    {folded.align && (
+                      <DropdownMenu.Sub>
+                        <DropdownMenu.SubTrigger className={MENU_ITEM}>
+                          <AlignLeft size={15} className="shrink-0" />
+                          Alignment
+                          <ChevronDown size={13} className="ml-auto -rotate-90 opacity-60" />
+                        </DropdownMenu.SubTrigger>
+                        <DropdownMenu.Portal>
+                          <DropdownMenu.SubContent sideOffset={4} className={MENU_CONTENT}>
+                            <AlignmentItems editor={editor} />
+                          </DropdownMenu.SubContent>
+                        </DropdownMenu.Portal>
+                      </DropdownMenu.Sub>
+                    )}
+                    <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                  </>
+                )}
+
                 <DropdownMenu.Item
                   onSelect={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
                   className={MENU_ITEM}
@@ -214,11 +354,9 @@ function InsertMenu({ editor }: { editor: EditorType }) {
                   Table
                 </DropdownMenu.Item>
 
-                {/* Trailing ellipsis: the platform convention for "this opens a
-                    form", and here the honest signal that a URL is still owed. */}
                 <DropdownMenu.Item onSelect={() => requestPrompt('image')} className={MENU_ITEM}>
                   <ImageIcon size={15} className="shrink-0" />
-                  Image…
+                  Image
                 </DropdownMenu.Item>
 
                 <DropdownMenu.Item
@@ -268,7 +406,7 @@ function InsertMenu({ editor }: { editor: EditorType }) {
                   Divider
                 </DropdownMenu.Item>
 
-                <DropdownMenu.Item onSelect={() => insertExpandSection(editor, 'expand')} className={MENU_ITEM}>
+                <DropdownMenu.Item onSelect={() => insertExpandSection(editor)} className={MENU_ITEM}>
                   <ChevronsUpDown size={15} className="shrink-0" />
                   Expand section
                 </DropdownMenu.Item>
@@ -389,14 +527,18 @@ function InsertMenu({ editor }: { editor: EditorType }) {
           sideOffset={6}
           className={cn(
             'z-50 nm-card-elevated outline-none',
-            pending === 'emoji' ? 'w-80 p-2.5 rounded-lg border border-border' : 'w-64 p-3',
+            pending === 'emoji' ? 'w-80 p-2.5 rounded-lg border border-border'
+              : pending === 'color' ? 'w-auto p-2.5'
+                : 'w-64 p-3',
           )}
           aria-label={
             pending === 'image'
               ? 'Insert image'
               : pending === 'status'
                 ? 'Insert status label'
-                : 'Emoji Picker'
+                : pending === 'color'
+                  ? 'Color swatches'
+                  : 'Emoji Picker'
           }
           onOpenAutoFocus={(e) => {
             // Focus the field, not the panel. Radix's default lands on the
@@ -410,30 +552,27 @@ function InsertMenu({ editor }: { editor: EditorType }) {
         >
           {pending === 'image' && (
             <>
-              <label htmlFor="editor-insert-image-url" className="mb-1.5 block text-[12px] font-medium text-foreground">
-                Image URL
-              </label>
+              <p className="mb-1.5 text-[12px] font-medium text-foreground">Upload image</p>
               <input
-                id="editor-insert-image-url"
-                type="url"
-                value={imageUrl}
-                onChange={(e) => setImageUrl(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && insertImage()}
-                placeholder="https://example.com/diagram.png"
-                className="nm-input w-full text-[13px]"
+                id="editor-insert-image-file"
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                aria-label="Choose image file"
+                data-testid="editor-insert-image-file"
+                disabled={imageBusy}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  void insertImageFile(file);
+                  e.target.value = '';
+                }}
+                className="nm-input w-full text-[13px] file:mr-2 file:border-0 file:bg-transparent file:text-[13px] file:font-medium"
               />
-              <div className="mt-2.5 flex justify-end gap-2">
+              <p className="mt-2 text-[12px] text-muted-foreground">
+                PNG, JPEG, GIF, or WebP. Uploaded as an attachment on this page.
+              </p>
+              <div className="mt-2.5 flex justify-end">
                 <button type="button" onClick={closePrompt} aria-label="Cancel image" className="nm-button-ghost">
                   Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={insertImage}
-                  disabled={!imageUrl.trim()}
-                  aria-label="Insert image"
-                  className="nm-button-primary"
-                >
-                  Insert
                 </button>
               </div>
             </>
@@ -503,104 +642,66 @@ function InsertMenu({ editor }: { editor: EditorType }) {
           {pending === 'emoji' && (
             <EmojiPickerContent editor={editor} onClose={closePrompt} />
           )}
+
+          {pending === 'color' && (
+            <ColorPanel
+              textColor={formatState.textColor}
+              highlightColor={formatState.highlightColor}
+              onSelectText={(color) => editor.chain().focus().setColor(color).run()}
+              onResetText={() => editor.chain().focus().unsetColor().run()}
+              onSelectHighlight={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+              onResetHighlight={() => editor.chain().focus().unsetHighlight().run()}
+              onDone={closePrompt}
+            />
+          )}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
   );
 }
 
-/* --------------------------------------------------------------- colours -- */
-
-/**
- * #353: built on Radix Popover so keyboard / screen-reader users get proper
- * focus management (Escape to close, focus returns to trigger, click-outside
- * dismiss). The trigger is now 32px like every other control in the row rather
- * than the 36px it used to be — still clear of WCAG 2.5.5's 24×24 floor, and no
- * longer the two odd-sized boxes in the toolbar.
- *
- * The applied colour shows as a bar under the glyph rather than as a pressed
- * box: it has to say WHICH colour is applied, which a state fill cannot.
- */
-function ColorPickerDropdown({
-  onSelect,
-  onReset,
-  activeColor,
-  icon,
-  title,
-}: {
-  onSelect: (color: string) => void;
-  onReset: () => void;
-  activeColor: string | undefined;
-  icon: React.ReactNode;
-  title: string;
-}) {
-  const [open, setOpen] = useState(false);
+function AlignmentItems({ editor }: { editor: EditorType }) {
+  const alignState = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      alignLeft: e.isActive({ textAlign: 'left' }),
+      alignCenter: e.isActive({ textAlign: 'center' }),
+      alignRight: e.isActive({ textAlign: 'right' }),
+      alignJustify: e.isActive({ textAlign: 'justify' }),
+    }),
+  });
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>
-        <button
-          type="button"
-          {...{ [TOOLBAR_ITEM_ATTR]: '' }}
-          title={title}
-          aria-label={title}
-          aria-haspopup="dialog"
-          data-testid="color-picker-trigger"
-          className="nm-icon-button"
-        >
-          <span className="relative flex items-center justify-center">
-            {icon}
-            {activeColor && (
-              <span
-                aria-hidden
-                className="absolute -bottom-1.5 left-0 right-0 h-[3px] rounded-full"
-                style={{ backgroundColor: activeColor }}
-              />
-            )}
-          </span>
-        </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          align="start"
-          sideOffset={6}
-          aria-label={`${title} swatches`}
-          className="z-50 nm-card-elevated p-2.5 outline-none"
-        >
-          <div className="grid grid-cols-4 gap-1.5">
-            {PRESET_COLORS.map((c) => (
-              <button
-                key={c.value}
-                type="button"
-                title={c.label}
-                aria-label={c.label}
-                aria-pressed={activeColor === c.value}
-                data-testid="color-picker-swatch"
-                onClick={() => {
-                  onSelect(c.value);
-                  setOpen(false);
-                }}
-                className={cn(
-                  'h-7 w-7 rounded-md border outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring',
-                  activeColor === c.value ? 'border-foreground' : 'border-border',
-                )}
-                style={{ backgroundColor: c.value }}
-              />
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              onReset();
-              setOpen(false);
-            }}
-            className="mt-2 w-full rounded-md px-2 py-1 text-xs text-muted-foreground outline-2 outline-offset-2 outline-transparent transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-ring"
-          >
-            Reset
-          </button>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+    <>
+      <DropdownMenu.Item
+        onSelect={() => editor.chain().focus().setTextAlign('left').run()}
+        className={cn(MENU_ITEM, alignState.alignLeft && 'bg-foreground/[0.06] font-medium text-foreground')}
+      >
+        <AlignLeft size={15} className="shrink-0" />
+        Align Left
+      </DropdownMenu.Item>
+      <DropdownMenu.Item
+        onSelect={() => editor.chain().focus().setTextAlign('center').run()}
+        className={cn(MENU_ITEM, alignState.alignCenter && 'bg-foreground/[0.06] font-medium text-foreground')}
+      >
+        <AlignCenter size={15} className="shrink-0" />
+        Align Center
+      </DropdownMenu.Item>
+      <DropdownMenu.Item
+        onSelect={() => editor.chain().focus().setTextAlign('right').run()}
+        className={cn(MENU_ITEM, alignState.alignRight && 'bg-foreground/[0.06] font-medium text-foreground')}
+      >
+        <AlignRight size={15} className="shrink-0" />
+        Align Right
+      </DropdownMenu.Item>
+      <DropdownMenu.Item
+        onSelect={() => editor.chain().focus().setTextAlign('justify').run()}
+        className={cn(MENU_ITEM, alignState.alignJustify && 'bg-foreground/[0.06] font-medium text-foreground')}
+      >
+        <AlignJustify size={15} className="shrink-0" />
+        Justify
+      </DropdownMenu.Item>
+    </>
   );
 }
 
@@ -650,257 +751,7 @@ function AlignMenuDropdown({ editor }: { editor: EditorType }) {
 
       <DropdownMenu.Portal>
         <DropdownMenu.Content align="start" sideOffset={6} className={MENU_CONTENT}>
-          <DropdownMenu.Item
-            onSelect={() => editor.chain().focus().setTextAlign('left').run()}
-            className={cn(MENU_ITEM, activeState.alignLeft && 'bg-foreground/[0.06] font-medium text-foreground')}
-          >
-            <AlignLeft size={15} className="shrink-0" />
-            Align Left
-          </DropdownMenu.Item>
-          <DropdownMenu.Item
-            onSelect={() => editor.chain().focus().setTextAlign('center').run()}
-            className={cn(MENU_ITEM, activeState.alignCenter && 'bg-foreground/[0.06] font-medium text-foreground')}
-          >
-            <AlignCenter size={15} className="shrink-0" />
-            Align Center
-          </DropdownMenu.Item>
-          <DropdownMenu.Item
-            onSelect={() => editor.chain().focus().setTextAlign('right').run()}
-            className={cn(MENU_ITEM, activeState.alignRight && 'bg-foreground/[0.06] font-medium text-foreground')}
-          >
-            <AlignRight size={15} className="shrink-0" />
-            Align Right
-          </DropdownMenu.Item>
-          <DropdownMenu.Item
-            onSelect={() => editor.chain().focus().setTextAlign('justify').run()}
-            className={cn(MENU_ITEM, activeState.alignJustify && 'bg-foreground/[0.06] font-medium text-foreground')}
-          >
-            <AlignJustify size={15} className="shrink-0" />
-            Justify
-          </DropdownMenu.Item>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
-}
-
-/**
- * A colour picker rendered as `DropdownMenu.Sub` content, for use INSIDE
- * `MoreFormattingMenu`. Deliberately not `ColorPickerDropdown` (a separate
- * `Popover.Root`) nested inside another menu's content: two independent
- * Radix overlay roots nested that way is the classic trap where the outer
- * menu's outside-click detection treats the inner Popover's portalled
- * content as "outside" and closes prematurely. `DropdownMenu.Sub` is the
- * primitive built for nesting inside one root — the same pattern already
- * proven here by the Insert menu's Panel and Column-layout submenus.
- */
-function ColorSwatchSub({
-  icon,
-  label,
-  activeColor,
-  onSelect,
-  onReset,
-  onDone,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  activeColor: string | undefined;
-  onSelect: (color: string) => void;
-  onReset: () => void;
-  onDone: () => void;
-}) {
-  return (
-    <DropdownMenu.Sub>
-      <DropdownMenu.SubTrigger className={MENU_ITEM}>
-        {icon}
-        {label}
-        <ChevronDown size={13} className="ml-auto -rotate-90 opacity-60" />
-      </DropdownMenu.SubTrigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.SubContent sideOffset={4} className={cn(MENU_CONTENT, 'w-auto p-2.5')}>
-          <div className="grid grid-cols-4 gap-1.5">
-            {PRESET_COLORS.map((c) => (
-              <button
-                key={c.value}
-                type="button"
-                title={c.label}
-                aria-label={c.label}
-                aria-pressed={activeColor === c.value}
-                onClick={() => { onSelect(c.value); onDone(); }}
-                className={cn(
-                  'h-7 w-7 rounded-md border outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring',
-                  activeColor === c.value ? 'border-foreground' : 'border-border',
-                )}
-                style={{ backgroundColor: c.value }}
-              />
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => { onReset(); onDone(); }}
-            className="mt-2 w-full rounded-md px-2 py-1 text-xs text-muted-foreground outline-2 outline-offset-2 outline-transparent transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-ring"
-          >
-            Reset
-          </button>
-        </DropdownMenu.SubContent>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Sub>
-  );
-}
-
-/**
- * The overflow home for controls the responsive fold has no other place to
- * put. Quote/Code block/Divider and Emoji already live in the Insert menu
- * unconditionally, so hiding their toolbar buttons costs nothing — but
- * Strikethrough, Inline Code, Task List, Alignment, Text Color and Highlight
- * had NO other home: at the app's own default 1440px layout (both side
- * panels open, ~645px of toolbar width) all six vanished with no way to
- * reach them at all (#P2). This renders nothing when every one of them is
- * already visible as its own button.
- */
-function MoreFormattingMenu({
-  editor,
-  activeState,
-  showTaskList,
-  showCode,
-  showStrike,
-  showAlign,
-  showColors,
-}: {
-  editor: EditorType;
-  activeState: {
-    taskList: boolean;
-    code: boolean;
-    strike: boolean;
-    textColor: string | undefined;
-    highlightColor: string | undefined;
-  };
-  showTaskList: boolean;
-  showCode: boolean;
-  showStrike: boolean;
-  showAlign: boolean;
-  showColors: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const close = () => setOpen(false);
-
-  const alignState = useEditorState({
-    editor,
-    selector: ({ editor: e }) => ({
-      alignLeft: e.isActive({ textAlign: 'left' }),
-      alignCenter: e.isActive({ textAlign: 'center' }),
-      alignRight: e.isActive({ textAlign: 'right' }),
-      alignJustify: e.isActive({ textAlign: 'justify' }),
-    }),
-  });
-
-  return (
-    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
-      <DropdownMenu.Trigger asChild>
-        <button
-          type="button"
-          {...{ [TOOLBAR_ITEM_ATTR]: '' }}
-          data-testid="more-formatting-trigger"
-          title="More formatting"
-          aria-label="More formatting"
-          className={menuTriggerClass(open)}
-        >
-          <MoreHorizontal size={15} className="shrink-0" />
-        </button>
-      </DropdownMenu.Trigger>
-
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content align="start" sideOffset={6} className={MENU_CONTENT}>
-          {!showTaskList && (
-            <DropdownMenu.Item
-              onSelect={() => editor.chain().focus().toggleTaskList().run()}
-              className={cn(MENU_ITEM, activeState.taskList && 'bg-foreground/[0.06] font-medium text-foreground')}
-            >
-              <CheckSquare size={15} className="shrink-0" />
-              Task List
-            </DropdownMenu.Item>
-          )}
-          {!showCode && (
-            <DropdownMenu.Item
-              onSelect={() => editor.chain().focus().toggleCode().run()}
-              className={cn(MENU_ITEM, activeState.code && 'bg-foreground/[0.06] font-medium text-foreground')}
-            >
-              <Code size={15} className="shrink-0" />
-              Inline Code
-            </DropdownMenu.Item>
-          )}
-          {!showStrike && (
-            <DropdownMenu.Item
-              onSelect={() => editor.chain().focus().toggleStrike().run()}
-              className={cn(MENU_ITEM, activeState.strike && 'bg-foreground/[0.06] font-medium text-foreground')}
-            >
-              <Strikethrough size={15} className="shrink-0" />
-              Strikethrough
-            </DropdownMenu.Item>
-          )}
-
-          {!showAlign && (
-            <DropdownMenu.Sub>
-              <DropdownMenu.SubTrigger className={MENU_ITEM}>
-                <AlignLeft size={15} className="shrink-0" />
-                Alignment
-                <ChevronDown size={13} className="ml-auto -rotate-90 opacity-60" />
-              </DropdownMenu.SubTrigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.SubContent sideOffset={4} className={MENU_CONTENT}>
-                  <DropdownMenu.Item
-                    onSelect={() => editor.chain().focus().setTextAlign('left').run()}
-                    className={cn(MENU_ITEM, alignState.alignLeft && 'bg-foreground/[0.06] font-medium text-foreground')}
-                  >
-                    <AlignLeft size={15} className="shrink-0" />
-                    Align Left
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    onSelect={() => editor.chain().focus().setTextAlign('center').run()}
-                    className={cn(MENU_ITEM, alignState.alignCenter && 'bg-foreground/[0.06] font-medium text-foreground')}
-                  >
-                    <AlignCenter size={15} className="shrink-0" />
-                    Align Center
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    onSelect={() => editor.chain().focus().setTextAlign('right').run()}
-                    className={cn(MENU_ITEM, alignState.alignRight && 'bg-foreground/[0.06] font-medium text-foreground')}
-                  >
-                    <AlignRight size={15} className="shrink-0" />
-                    Align Right
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    onSelect={() => editor.chain().focus().setTextAlign('justify').run()}
-                    className={cn(MENU_ITEM, alignState.alignJustify && 'bg-foreground/[0.06] font-medium text-foreground')}
-                  >
-                    <AlignJustify size={15} className="shrink-0" />
-                    Justify
-                  </DropdownMenu.Item>
-                </DropdownMenu.SubContent>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Sub>
-          )}
-
-          {!showColors && (
-            <>
-              <ColorSwatchSub
-                icon={<Baseline size={15} className="shrink-0" />}
-                label="Text Color"
-                activeColor={activeState.textColor}
-                onSelect={(color) => editor.chain().focus().setColor(color).run()}
-                onReset={() => editor.chain().focus().unsetColor().run()}
-                onDone={close}
-              />
-              <ColorSwatchSub
-                icon={<Highlighter size={15} className="shrink-0" />}
-                label="Highlight"
-                activeColor={activeState.highlightColor}
-                onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
-                onReset={() => editor.chain().focus().unsetHighlight().run()}
-                onDone={close}
-              />
-            </>
-          )}
+          <AlignmentItems editor={editor} />
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
@@ -909,9 +760,8 @@ function MoreFormattingMenu({
 
 /* --------------------------------------------------------------- toolbar -- */
 
-function useToolbarContainerWidth(ref: React.RefObject<HTMLDivElement | null>) {
-  // Default to 1200 so tests (in jsdom) and initial SSR render include all controls.
-  const [width, setWidth] = useState<number>(1200);
+function useElementWidth(ref: React.RefObject<HTMLElement | null>, fallback: number) {
+  const [width, setWidth] = useState(fallback);
 
   useEffect(() => {
     const el = ref.current;
@@ -945,6 +795,7 @@ export function EditorToolbar({
   onToggleHeaderNumbering,
   pageProperty,
   actions,
+  pageId,
 }: {
   editor: EditorType;
   headerNumbering?: boolean;
@@ -952,30 +803,32 @@ export function EditorToolbar({
   /** Page-level property chip (tags). Not a session action. */
   pageProperty?: React.ReactNode;
   actions?: React.ReactNode;
+  /** Saved page id — image upload needs it. New Page leaves this unset. */
+  pageId?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const containerWidth = useToolbarContainerWidth(containerRef);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  // Default 1200 so tests / first paint include every control; folding then
+  // subtracts the measured Tags/Save cluster so those buttons stay fully on
+  // the right instead of being pushed past the pane edge.
+  const containerWidth = useElementWidth(containerRef, 1200);
+  const actionsWidth = useElementWidth(actionsRef, 0);
+  const toolsBudget = Math.max(0, containerWidth - actionsWidth);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const roving = useToolbarRovingFocus(rootRef);
 
-  // Responsive folding based on actual available toolbar container width:
-  // Thresholds start folding secondary tools early so Save/Cancel actions and tags
-  // on the right always remain fully visible and accessible across all container widths.
-  const showBlockActions = containerWidth >= 1060;
-  const showAlign = containerWidth >= 980;
-  const showColors = containerWidth >= 900;
-  const showTaskList = containerWidth >= 820;
-  const showCode = containerWidth >= 820;
-  const showStrike = containerWidth >= 760;
-  const showEmojiButton = containerWidth >= 700;
-  const showOrderedList = containerWidth >= 640;
-  const showUnderline = containerWidth >= 640;
-
-  // Strikethrough, Inline Code, Task List, Alignment, Text Color and
-  // Highlight have no other home when the fold hides them — unlike Quote/
-  // Code block/Divider/Emoji, which always live in the Insert menu too.
-  const showMoreFormatting = !(showTaskList && showCode && showStrike && showAlign && showColors);
+  const showBlockActions = toolsBudget >= 1060;
+  const showAlign = toolsBudget >= 980;
+  const showTaskList = toolsBudget >= 820;
+  const showCode = toolsBudget >= 820;
+  const showStrike = toolsBudget >= 760;
+  const showEmojiButton = toolsBudget >= 700;
+  const showOrderedList = toolsBudget >= 640;
+  const showUnderline = toolsBudget >= 640;
+  const showColor = toolsBudget >= 520;
+  const showBulletList = toolsBudget >= 460;
+  const showInsertLabel = toolsBudget >= 400;
 
   // Subscribe to editor state so the toggles re-render on selection and
   // formatting changes (#16).
@@ -999,28 +852,29 @@ export function EditorToolbar({
 
   return (
     // Single non-wrapping row: actions live on the right, formatting tools on
-    // the left. When the container is narrow, secondary controls gracefully fold
-    // into the Insert dropdown and BlockTypeMenu so the toolbar never generates
-    // horizontal scrollbars or expands the document width.
+    // the left. When the container is narrow, secondary controls fold into
+    // Insert so the toolbar never generates a second overflow trigger,
+    // horizontal scrollbars, or extra document width.
     <div
       ref={containerRef}
-      className="flex h-[calc(3rem-1px)] min-h-[calc(3rem-1px)] w-full flex-nowrap items-center justify-between gap-x-1 sm:gap-x-2 py-1 px-1"
+      className="flex h-[calc(3rem-1px)] min-h-[calc(3rem-1px)] min-w-0 w-full flex-nowrap items-center justify-between gap-x-1 overflow-hidden sm:gap-x-2 py-1 px-1"
     >
       <div
         ref={rootRef}
         role="toolbar"
         aria-label="Page editor toolbar"
-        // `min-w-0` lets the flex algorithm shrink this group below its
-        // content's natural width when the row is too narrow for the
-        // actions group beside it; without `overflow-x-auto` that shrunk
-        // box does not clip its own children — the default `overflow:
-        // visible` lets them keep painting at full size past the box's
-        // right edge, landing on top of Save/Cancel/Tags rather than
-        // simply overflowing off-screen (#P0 mobile edit toolbar).
-        className="flex min-w-0 flex-nowrap items-center gap-x-0.5 overflow-x-auto sm:gap-x-1"
+        // The marks cluster (`toolbar-scroll`) is the one allowed to
+        // shrink (`min-w-0` + `overflow-x-auto`). Insert sits outside
+        // that scroller as `shrink-0`, so folding tools into it stays
+        // reachable instead of sliding under Tags/Save.
+        className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-0.5 sm:gap-x-1"
         onKeyDown={roving.onKeyDown}
         onFocus={roving.onFocus}
       >
+        <div
+          data-testid="toolbar-scroll"
+          className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-0.5 overflow-x-auto sm:gap-x-1"
+        >
         <ToolbarGroup name="history">
           <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
             <Undo2 size={15} />
@@ -1069,9 +923,21 @@ export function EditorToolbar({
         <ToolbarSeparator />
 
         <ToolbarGroup name="lists">
-          <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
-            <List size={15} />
-          </ToolbarButton>
+          {showColor && (
+            <ColorPickerDropdown
+              textColor={activeState.textColor}
+              highlightColor={activeState.highlightColor}
+              onSelectText={(color) => editor.chain().focus().setColor(color).run()}
+              onResetText={() => editor.chain().focus().unsetColor().run()}
+              onSelectHighlight={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+              onResetHighlight={() => editor.chain().focus().unsetHighlight().run()}
+            />
+          )}
+          {showBulletList && (
+            <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
+              <List size={15} />
+            </ToolbarButton>
+          )}
           {showOrderedList && (
             <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={activeState.orderedList} title="Ordered List (Ctrl+Shift+7)">
               <ListOrdered size={15} />
@@ -1086,23 +952,6 @@ export function EditorToolbar({
             <AlignMenuDropdown editor={editor} />
           )}
         </ToolbarGroup>
-
-        {showMoreFormatting && (
-          <>
-            <ToolbarSeparator />
-            <ToolbarGroup name="more-formatting">
-              <MoreFormattingMenu
-                editor={editor}
-                activeState={activeState}
-                showTaskList={showTaskList}
-                showCode={showCode}
-                showStrike={showStrike}
-                showAlign={showAlign}
-                showColors={showColors}
-              />
-            </ToolbarGroup>
-          </>
-        )}
 
         {showBlockActions && (
           <>
@@ -1131,41 +980,38 @@ export function EditorToolbar({
             </ToolbarGroup>
           </>
         )}
-
-        {showColors && (
-          <>
-            <ToolbarSeparator />
-            <ToolbarGroup name="colors">
-              <ColorPickerDropdown
-                icon={<Baseline size={15} />}
-                title="Text Color"
-                activeColor={activeState.textColor}
-                onSelect={(color) => editor.chain().focus().setColor(color).run()}
-                onReset={() => editor.chain().focus().unsetColor().run()}
-              />
-              <ColorPickerDropdown
-                icon={<Highlighter size={15} />}
-                title="Highlight (Ctrl+Shift+H)"
-                activeColor={activeState.highlightColor}
-                onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
-                onReset={() => editor.chain().focus().unsetHighlight().run()}
-              />
-            </ToolbarGroup>
-          </>
-        )}
+        </div>
 
         <ToolbarSeparator />
 
-        <ToolbarGroup name="insert">
+        <ToolbarGroup name="insert" className="shrink-0">
           {showEmojiButton && (
             <EmojiPicker editor={editor} />
           )}
-          <InsertMenu editor={editor} />
+          <InsertMenu
+            editor={editor}
+            pageId={pageId}
+            showLabel={showInsertLabel}
+            folded={{
+              underline: !showUnderline,
+              strike: !showStrike,
+              code: !showCode,
+              orderedList: !showOrderedList,
+              taskList: !showTaskList,
+              align: !showAlign,
+              color: !showColor,
+              bulletList: !showBulletList,
+            }}
+          />
         </ToolbarGroup>
       </div>
 
       {(pageProperty || actions) && (
-        <div className="ml-auto flex flex-nowrap shrink-0 items-center gap-1.5 pl-2">
+        <div
+          ref={actionsRef}
+          data-testid="toolbar-session"
+          className="ml-auto flex flex-nowrap shrink-0 items-center gap-1.5 pl-2"
+        >
           {pageProperty && (
             <div role="group" aria-label="Page properties">
               {pageProperty}

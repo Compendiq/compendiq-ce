@@ -35,7 +35,7 @@ interface SourceThumbnailProps {
  * since retrieval simply shows as a page link.
  *
  * Neutral by ADR-010: an image source is a CATEGORY, not a state, so the frame
- * is `--color-border` and nothing here is teal or violet.
+ * is `--color-border` and nothing here is Steel or violet.
  */
 export function SourceThumbnail({ url, size, className }: SourceThumbnailProps) {
   const { blobSrc, error } = useAuthenticatedSrc(url);

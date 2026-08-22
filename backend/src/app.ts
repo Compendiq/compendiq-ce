@@ -48,6 +48,7 @@ import { extractDocumentRoutes } from './routes/llm/extract-document.js';
 import { prepareImageRoutes } from './routes/llm/prepare-image.js';
 // Knowledge routes
 import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
+import { pagesIconRoutes } from './routes/knowledge/pages-icon.js';
 import { pagesRelocateRoutes } from './routes/knowledge/pages-relocate.js';
 import { pagesPresenceRoutes } from './routes/knowledge/pages-presence.js';
 import { pagesBulkProgressRoutes } from './routes/knowledge/pages-bulk-progress.js';
@@ -478,6 +479,7 @@ export async function buildApp() {
 
   // Knowledge routes
   await app.register(pagesCrudRoutes, { prefix: '/api' });
+  await app.register(pagesIconRoutes, { prefix: '/api' });
   await app.register(pagesRelocateRoutes, { prefix: '/api' });
   await app.register(pagesPresenceRoutes, { prefix: '/api' });
   await app.register(pagesBulkProgressRoutes, { prefix: '/api' });

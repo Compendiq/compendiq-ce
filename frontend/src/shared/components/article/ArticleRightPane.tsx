@@ -1,31 +1,40 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
+  AlertCircle,
   ChevronRight,
   Cpu,
   ExternalLink,
   FileText,
   FolderOpen,
   Gauge,
+  Globe,
   ListTree,
+  Lock,
+  MessageSquare,
   MoreHorizontal,
   PanelRight,
   PanelRightClose,
   Pin,
   FileDown,
+  GitGraph,
   Loader2,
   RefreshCw,
   Sparkles,
   Trash2,
   History,
+  ShieldCheck,
 } from 'lucide-react';
 
 import { AutoTagger } from '../../../features/pages/AutoTagger';
+import { RelocateDialog } from '../../../features/pages/RelocateDialog';
 import { DockPanel } from '../../../features/ai/dock/DockPanel';
+import { NotesInspectorPanel, usePageNotes } from './NotesInspectorPanel';
 import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
+import { Button } from '../Button';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { getShortcutHint, formatKeysForPlatform } from '../../lib/shortcut-registry';
 import { isMac as detectMac } from '../../lib/platform';
@@ -33,7 +42,7 @@ import { toast } from 'sonner';
 import { useUiStore } from '../../../stores/ui-store';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
-import { useIsDockWideLayout } from '../../hooks/use-media-query';
+import { useIsDockWideLayout, useIsInspectorWideLayout } from '../../hooks/use-media-query';
 import {
   useDeletePage,
   usePage,
@@ -44,8 +53,9 @@ import {
   useResyncPage,
   useUnpinPage,
 } from '../../hooks/use-pages';
-import { useQuery } from '@tanstack/react-query';
-import { useExportPdf } from '../../hooks/use-standalone';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useExportPdf, useVerifyPage } from '../../hooks/use-standalone';
+import { usePermission } from '../../hooks/use-permission';
 import { useSettings } from '../../hooks/use-settings';
 import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
@@ -164,12 +174,12 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         aria-expanded={hasChildren ? isOpen : undefined}
         data-heading-id={heading.id}
         className={cn(
-          'group flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          'group relative flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
             ? 'nav-selection font-medium'
             : 'text-muted-foreground hover:bg-muted hover:text-foreground',
         )}
-        style={{ paddingLeft: `${level * 12 + 6}px` }}
+        style={{ paddingLeft: `${level * 12 + 28}px` }}
         onClick={() => onNavigate(heading.id)}
         onFocus={() => onFocus(heading.id)}
         onKeyDown={(e) => {
@@ -177,24 +187,24 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
           onKeyDown(e, heading.id);
         }}
       >
-        {hasChildren ? (
+        {hasChildren && (
           <button
             type="button"
             tabIndex={-1}
+            aria-hidden="true"
+            aria-label={isOpen ? 'Collapse section' : 'Expand section'}
             onClick={(e) => {
               e.stopPropagation();
               onToggleCollapsed(heading.id);
             }}
-            className="flex size-4 shrink-0 items-center justify-center rounded p-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label={isOpen ? 'Collapse section' : 'Expand section'}
+            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground"
+            style={{ left: `${level * 12 + 2}px` }}
           >
             <ChevronRight
-              size={13}
+              size={14}
               className={cn('transition-transform duration-150', isOpen && 'rotate-90')}
             />
           </button>
-        ) : (
-          <span className="size-4 shrink-0" />
         )}
         <span className="truncate" title={heading.text}>
           {heading.text}
@@ -235,10 +245,13 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
  * one interaction. The old arrangement asked the user to learn two different
  * things about the same right-hand edge.
  *
- * Below `md` the assistant is still `AiDockSheet` (a bottom sheet), because
- * this pane does not render at all there — see AppLayout.
+ * Below `md` AppLayout hosts this pane in a right-hand sheet so Outline,
+ * Details and Assistant stay one inspector, rather than leaving the first
+ * two unreachable while Assistant had its own bottom sheet.
  */
-export type InspectorView = 'assistant' | 'outline' | 'details';
+export type InspectorView = 'assistant' | 'outline' | 'notes' | 'details';
+
+export type InspectorPresentation = 'rail' | 'sheet';
 
 export interface InspectorViewRequest {
   view: InspectorView;
@@ -247,8 +260,12 @@ export interface InspectorViewRequest {
 
 export function ArticleRightPane({
   inspectorViewRequest,
+  presentation = 'rail',
+  onRequestClose,
 }: {
   inspectorViewRequest?: InspectorViewRequest | null;
+  presentation?: InspectorPresentation;
+  onRequestClose?: () => void;
 } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -256,13 +273,17 @@ export function ArticleRightPane({
   // Extract page ID from pathname instead of useParams, because this component
   // is rendered in AppLayout (outer Route) where descendant route params like
   // :id from /pages/:id are not available via useParams.
+  const isNewPage = location.pathname === '/pages/new';
   const id = useMemo(() => {
+    if (isNewPage) return undefined;
     const match = location.pathname.match(/^\/pages\/([^/]+)$/);
     return match?.[1];
-  }, [location.pathname]);
+  }, [location.pathname, isNewPage]);
 
   const userCollapsed = useUiStore((s) => s.articleSidebarCollapsed);
   const toggleSidebar = useUiStore((s) => s.toggleArticleSidebar);
+  const laptopExpanded = useUiStore((s) => s.articleSidebarLaptopExpanded);
+  const setLaptopExpanded = useUiStore((s) => s.setArticleSidebarLaptopExpanded);
   const width = useUiStore((s) => s.articleSidebarWidth);
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
   const reduceEffects = useReducedMotion();
@@ -272,8 +293,8 @@ export function ArticleRightPane({
   // #1126 ORed `dockOpen` in, because the assistant was a third column and this
   // pane had to fall back to its 40px rail to make room. The assistant is a tab
   // *inside* this pane now, so there is nothing to make room for — and leaving
-  // the OR in place was actively harmful. `openDock()` is still raised by Alt+I
-  // and the AI preset; `AppLayout` consumes it above `md` and re-expresses it as
+  // the OR in place was actively harmful. `openDock()` is still raised by Alt+I;
+  // `AppLayout` consumes it above `md` and re-expresses it as
   // a tab request, but effects run after commit, so `open` is true for a frame
   // and this pane starts collapsing.
   //
@@ -287,14 +308,24 @@ export function ArticleRightPane({
   // why the OR is not needed for that case either.
   const dockOpen = useAiDockStore((s) => s.open);
   const dockLayoutIsWide = useIsDockWideLayout();
-  const collapsed = userCollapsed;
+  const inspectorWide = useIsInspectorWideLayout();
+  const isSheet = presentation === 'sheet';
+  // Below xl the inspector starts as the 40px rail so the article keeps
+  // the workspace. Expand (and Alt+I) sets laptopExpanded.
+  const collapsed = isSheet ? false : inspectorWide ? userCollapsed : !laptopExpanded;
   const handleExpandSidebar = useCallback(() => {
-    toggleSidebar();
-  }, [toggleSidebar]);
+    if (!inspectorWide) setLaptopExpanded(true);
+    else if (userCollapsed) toggleSidebar();
+  }, [inspectorWide, setLaptopExpanded, toggleSidebar, userCollapsed]);
+  const handleCollapseSidebar = useCallback(() => {
+    if (!inspectorWide) setLaptopExpanded(false);
+    else if (!userCollapsed) toggleSidebar();
+  }, [inspectorWide, setLaptopExpanded, toggleSidebar, userCollapsed]);
 
   const headings = useArticleViewStore((s) => s.headings);
   const editing = useArticleViewStore((s) => s.editing);
 
+  const queryClient = useQueryClient();
   const { data: page } = usePage(id);
   const { data: pinnedData } = usePinnedPages();
   const { data: settings } = useSettings();
@@ -304,8 +335,16 @@ export function ArticleRightPane({
   const resyncMutation = useResyncPage();
   const reembedMutation = useReembedPage();
   const requalityMutation = useRequalityPage();
+  const { allowed: canRelocate } = usePermission('pages:relocate');
+  const verifyMutation = useVerifyPage();
+  const [relocateOpen, setRelocateOpen] = useState(false);
+  const [verifyStatusMsg, setVerifyStatusMsg] = useState<string | null>(null);
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
+  const verifiedAt = page?.verifiedAt ?? null;
+  const verifiedDateStr = verifiedAt
+    ? new Date(verifiedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    : null;
 
   // #718: gate the Auto-tag button on the NEW provider source, not the removed
   // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
@@ -347,9 +386,9 @@ export function ArticleRightPane({
   const [isResizing, setIsResizing] = useState(false);
   const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
   const [activeInspectorView, setActiveInspectorView] = useState<InspectorView>(() =>
-    headings.length > 0 ? 'outline' : 'details',
+    isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : headings.length > 0 ? 'outline' : 'details',
   );
-  const [assistantMounted, setAssistantMounted] = useState(() => activeInspectorView === 'assistant');
+  const [assistantMounted, setAssistantMounted] = useState(() => activeInspectorView === 'assistant' || isNewPage);
 
   useEffect(() => {
     if (activeInspectorView === 'assistant') {
@@ -358,7 +397,7 @@ export function ArticleRightPane({
   }, [activeInspectorView]);
 
   const inspectorViewTouchedRef = useRef(false);
-  const previousInspectorPageIdRef = useRef(id);
+  const previousInspectorPageIdRef = useRef(isNewPage ? 'new' : id);
   // Collapsing this pane keeps Outline as a first-class rail control. The
   // flyout is what makes the map usable at 40px (#1126).
   const [outlineFlyoutOpen, setOutlineFlyoutOpen] = useState(false);
@@ -381,21 +420,23 @@ export function ArticleRightPane({
   // opens on details instead of presenting a dead-end. Do not steal the view
   // back if the user already chose a tab while headings were still loading.
   useEffect(() => {
-    if (previousInspectorPageIdRef.current !== id) {
-      previousInspectorPageIdRef.current = id;
+    const currentKey = isNewPage ? 'new' : id;
+    if (previousInspectorPageIdRef.current !== currentKey) {
+      previousInspectorPageIdRef.current = currentKey;
       inspectorViewTouchedRef.current = false;
       // `headings` still belongs to the previous page during this render.
       // Start from Details until the destination publishes its own structure.
-      setActiveInspectorView('details');
-      setAssistantMounted(false);
+      // On new page, default to Assistant.
+      setActiveInspectorView(isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : 'details');
+      setAssistantMounted(isNewPage || activeInspectorView === 'assistant');
       return;
     }
     if (!inspectorViewTouchedRef.current) {
-      setActiveInspectorView(headings.length > 0 ? 'outline' : 'details');
+      setActiveInspectorView(isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : (headings.length > 0 ? 'outline' : 'details'));
     }
-  }, [headings.length, id]);
+  }, [headings.length, id, isNewPage, activeInspectorView]);
 
-  // Layout presets are explicit user commands, so they take precedence over
+  // Explicit inspector view requests take precedence over
   // the content-derived default and mark the view as intentionally chosen.
   useEffect(() => {
     if (!inspectorViewRequest) return;
@@ -403,25 +444,59 @@ export function ArticleRightPane({
     setActiveInspectorView(inspectorViewRequest.view);
   }, [inspectorViewRequest]);
 
-  // Global hotkeys for tab switching: Alt+O (Outline) and Alt+D (Details)
+  const { data: pageNotes } = usePageNotes(id);
+  const openNotesCount = useMemo(
+    () => pageNotes?.filter((n) => !n.parentId && !n.resolved && !n.isResolved).length ?? 0,
+    [pageNotes],
+  );
+
+  // Global hotkeys for tab switching: Alt+O (Outline), Alt+N (Notes) and Alt+D (Details)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const target = e.target as HTMLElement | null;
+        const isEditable =
+          target &&
+          (target.tagName === 'INPUT' ||
+            target.tagName === 'TEXTAREA' ||
+            target.isContentEditable ||
+            Boolean(target.closest?.('[contenteditable="true"]')));
+        if (isEditable) return;
+
         const key = e.key.toLowerCase();
         if (key === 'o') {
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
           setActiveInspectorView('outline');
+          handleExpandSidebar();
         } else if (key === 'd') {
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
           setActiveInspectorView('details');
+          handleExpandSidebar();
+        } else if (key === 'n') {
+          e.preventDefault();
+          inspectorViewTouchedRef.current = true;
+          setActiveInspectorView('notes');
+          handleExpandSidebar();
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [handleExpandSidebar]);
+
+  // Listen to open-sidebar requests from inline comment popovers
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleOpenNotes = () => {
+      inspectorViewTouchedRef.current = true;
+      setActiveInspectorView('notes');
+      handleExpandSidebar();
+    };
+    window.addEventListener('compendiq:comment-open-sidebar', handleOpenNotes);
+    return () => window.removeEventListener('compendiq:comment-open-sidebar', handleOpenNotes);
+  }, [handleExpandSidebar]);
 
   // Persist collapsed section IDs
   useEffect(() => {
@@ -526,7 +601,8 @@ export function ArticleRightPane({
 
     scrollRoot.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     setActiveId(headingId);
-  }, []);
+    onRequestClose?.();
+  }, [onRequestClose]);
 
   const expandedTreeRef = useRef<HTMLDivElement>(null);
   const flyoutTreeRef = useRef<HTMLDivElement>(null);
@@ -668,6 +744,22 @@ export function ArticleRightPane({
     });
   }, [id, isPinned, page, pinMutation, unpinMutation]);
 
+  const handleVerify = useCallback(async () => {
+    if (!id) return;
+    try {
+      await verifyMutation.mutateAsync({ pageId: Number(id) });
+      toast.success('Page verified — next review reminder rescheduled');
+      setVerifyStatusMsg('Page verified');
+      await queryClient.invalidateQueries({ queryKey: ['pages', id] });
+      setTimeout(() => setVerifyStatusMsg(null), 3000);
+    } catch (err) {
+      const msg = err instanceof Error && err.message ? err.message : 'Failed to verify page';
+      toast.error(msg);
+      setVerifyStatusMsg(msg);
+      setTimeout(() => setVerifyStatusMsg(null), 3000);
+    }
+  }, [id, queryClient, verifyMutation]);
+
   // Deleting soft-deletes into the 30-day trash, so the confirm copy must
   // not claim the action "cannot be undone". ConfirmDialog replaces the
   // native confirm() to match the neumorphic design system. Same flow
@@ -761,12 +853,12 @@ export function ArticleRightPane({
     });
   }, [id, reembedMutation]);
 
-  if (!id) return null;
+  if (!id && !isNewPage) return null;
 
   // Below the wide breakpoint a 40px rail plus a ~420px dock starves the
   // article, so the rail steps aside entirely and the assistant owns the right
   // side of the pane (#1126). Above it, both fit and both stay.
-  if (dockOpen && !dockLayoutIsWide) return null;
+  if (!isSheet && dockOpen && !dockLayoutIsWide) return null;
 
   // Shared between the collapsed-rail and expanded returns — Radix portals
   // the dialog to <body>, so its position in the tree only matters for state.
@@ -781,6 +873,15 @@ export function ArticleRightPane({
       onCancel={() => setConfirmTrashOpen(false)}
     />
   );
+  const relocateDialog = relocateOpen && id && page ? (
+    <RelocateDialog
+      open
+      pageId={id}
+      pageTitle={page.title}
+      source={page.source}
+      onClose={() => setRelocateOpen(false)}
+    />
+  ) : null;
 
   // Collapsed rail — reading gutter + one overflow. Expand, Outline,
   // Assistant and Pin stay first-class; everything that lives behind
@@ -791,6 +892,12 @@ export function ArticleRightPane({
       'rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
     const railMenuItem =
       'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
+    const inspectorViewLabel =
+      activeInspectorView === 'assistant'
+        ? 'Assistant'
+        : activeInspectorView === 'outline'
+          ? 'Outline'
+          : 'Details';
     const assistantHint = formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac());
     const pinHint = formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac());
     const closeOutlineUnlessMovingInside = (next: Node | null) => {
@@ -807,7 +914,7 @@ export function ArticleRightPane({
           panel closing underneath — WCAG 1.4.13's "hoverable" requirement. */}
       <div
         ref={railClusterRef}
-        className="relative flex shrink-0"
+        className="relative flex h-full shrink-0"
         onMouseLeave={() => {
           suppressFlyoutReopenRef.current = false;
           setOutlineFlyoutOpen(false);
@@ -838,7 +945,7 @@ export function ArticleRightPane({
           animate={{ width: 40, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="app-sidebar flex flex-col items-center border-l overflow-hidden"
+          className="app-context-rail flex h-full flex-col items-center overflow-hidden"
           aria-label="Page inspector"
           data-testid="article-right-pane-rail"
         >
@@ -867,10 +974,9 @@ export function ArticleRightPane({
             </span>
           </div>
 
-          {/* Outline flyout trigger. Hover OR focus opens it — a hover-only
-              reveal would put the outline out of reach of the keyboard
-              entirely (WCAG 2.4.7), and click toggles it for touch. Stays
-              mounted in edit mode: collapsing to write must not hide the map. */}
+          {/* Outline flyout = the Outline tab while collapsed. Hover OR focus
+              opens it (WCAG 2.4.7); click toggles for touch. Stays mounted
+              in edit mode: collapsing to write must not hide the map. */}
           {headings.length > 0 && (
             <>
               <div className="my-1 h-px w-6 bg-border" />
@@ -892,11 +998,14 @@ export function ArticleRightPane({
                     suppressFlyoutReopenRef.current = false;
                     setOutlineFlyoutOpen((v) => !v);
                   }}
-                  className={cn(railIconBtn, outlineFlyoutOpen && 'nm-pill-active text-action')}
-                  aria-label="Article outline"
+                  className={cn(
+                    railIconBtn,
+                    (outlineFlyoutOpen || activeInspectorView === 'outline') && 'nm-pill-active',
+                  )}
+                  aria-label="Outline"
                   aria-expanded={outlineFlyoutOpen}
                   aria-controls="article-outline-flyout"
-                  title={`Article outline — ${headings.length} section${headings.length === 1 ? '' : 's'}`}
+                  title={`Outline — ${headings.length} section${headings.length === 1 ? '' : 's'}. Same as the Outline tab.`}
                   data-testid="article-outline-rail-btn"
                 >
                   <ListTree size={16} />
@@ -905,7 +1014,43 @@ export function ArticleRightPane({
                   role="tooltip"
                   className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                 >
-                  Article outline · {headings.length}
+                  Outline · {headings.length} · same as the Outline tab
+                </span>
+              </div>
+            </>
+          )}
+
+          {id && (
+            <>
+              <div className="my-1 h-px w-6 bg-border" />
+              <div className="group relative flex w-full justify-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    inspectorViewTouchedRef.current = true;
+                    setActiveInspectorView('notes');
+                    handleExpandSidebar();
+                  }}
+                  className={cn(
+                    railIconBtn,
+                    activeInspectorView === 'notes' && 'nm-pill-active',
+                  )}
+                  aria-label={`Notes (${openNotesCount} open)`}
+                  title={`Notes — ${openNotesCount} open note${openNotesCount === 1 ? '' : 's'}. (Alt+N)`}
+                  data-testid="article-notes-rail-btn"
+                >
+                  <MessageSquare size={16} />
+                  {openNotesCount > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-action px-1 text-[11px] font-semibold text-action-foreground">
+                      {openNotesCount}
+                    </span>
+                  )}
+                </button>
+                <span
+                  role="tooltip"
+                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                >
+                  Notes · {openNotesCount} open · Alt+N
                 </span>
               </div>
             </>
@@ -913,70 +1058,55 @@ export function ArticleRightPane({
 
           <div className="my-1 h-px w-6 bg-border" />
           <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-0.5 overflow-y-auto p-1">
+            {headings.length === 0 && (
             <div className="group relative flex w-full justify-center">
               <button
-                // #1126: opens the assistant beside the document instead of
-                // navigating to /ai and losing sight of the page. This is also
-                // where the dock's focus restore lands when the trigger the
-                // user pressed was destroyed by opening the dock — this one
-                // survives every post-open state at >= 1100px.
-                // #1176: opening is all it does. It used to start a full-page
-                // rewrite on the same click, which is why it was called "AI
-                // Improve" and drew a wand.
-                // Expands the pane onto its Assistant tab. This used to call
-                // `openDock()`, which after the tab move opened a column that
-                // no longer renders — a live control that silently did
-                // nothing.
+                type="button"
                 onClick={() => {
                   inspectorViewTouchedRef.current = true;
-                  setActiveInspectorView('assistant');
+                  const next = activeInspectorView === 'assistant' ? 'assistant' : 'details';
+                  setActiveInspectorView(next);
                   handleExpandSidebar();
                 }}
-                className={railIconBtn}
-                aria-label="AI Assistant"
-                title={`AI Assistant (${assistantHint})`}
-                data-testid="article-assistant-rail-btn"
-                data-ai-assistant-trigger
+                className={cn(railIconBtn, 'nm-pill-active')}
+                aria-label={activeInspectorView === 'assistant' ? 'AI Assistant' : 'Page details'}
+                title={
+                  activeInspectorView === 'assistant'
+                    ? `AI Assistant (${assistantHint})`
+                    : 'Page details'
+                }
+                data-testid={
+                  activeInspectorView === 'assistant'
+                    ? 'article-assistant-rail-btn'
+                    : 'article-details-rail-btn'
+                }
+                data-ai-assistant-trigger={activeInspectorView === 'assistant' ? true : undefined}
               >
-                <Sparkles size={16} className="text-status-ai" />
+                {activeInspectorView === 'assistant' ? (
+                  <Sparkles size={16} className="text-status-ai" />
+                ) : (
+                  <FileText size={16} />
+                )}
               </button>
               <span
                 role="tooltip"
                 className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
               >
-                AI Assistant · {assistantHint}
+                {activeInspectorView === 'assistant'
+                  ? `AI Assistant · ${assistantHint}`
+                  : 'Page details'}
               </span>
             </div>
-
-            {page && (
-              <div className="group relative flex w-full justify-center">
-                <button
-                  onClick={handlePinToggle}
-                  className={cn(railIconBtn, isPinned && 'nm-pill-active text-action')}
-                  aria-label={isPinned ? 'Unpin page' : 'Pin page'}
-                  aria-pressed={isPinned}
-                  title={`${isPinned ? 'Unpin page' : 'Pin page'} (${pinHint})`}
-                >
-                  <Pin size={16} className={cn(isPinned && 'fill-current')} />
-                </button>
-                <span
-                  role="tooltip"
-                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-                >
-                  {isPinned ? 'Unpin page' : 'Pin page'} · {pinHint}
-                </span>
-              </div>
             )}
 
-            {/* Overflow mirrors expanded Details: Page actions, then
-                Maintenance & AI. Hidden while editing — those verbs are
-                not the writing task. Delete stays off this rail. */}
+            {/* Overflow: pin, other views, page actions, maintenance.
+                Hidden while editing. Delete stays off this rail. */}
             {!editing && page && (
               <div className="group relative flex w-full justify-center">
                 <button
                   ref={overflowTriggerRef}
                   type="button"
-                  className={cn(railIconBtn, railOverflowOpen && 'nm-pill-active text-action')}
+                  className={cn(railIconBtn, railOverflowOpen && 'nm-pill-active')}
                   aria-label="More page actions"
                   aria-expanded={railOverflowOpen}
                   aria-controls="article-rail-overflow"
@@ -1005,6 +1135,12 @@ export function ArticleRightPane({
                 </span>
               </div>
             )}
+            <span
+              data-testid="inspector-rail-current-view"
+              className="mt-auto px-0.5 pb-1 text-center text-[11px] font-medium leading-tight text-foreground"
+            >
+              {inspectorViewLabel}
+            </span>
           </div>
         </m.aside>
       </AnimatePresence>
@@ -1018,6 +1154,54 @@ export function ArticleRightPane({
           style={{ top: railOverflowTop }}
         >
                     <div className="px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
+                      Inspector
+                    </div>
+                    {activeInspectorView !== 'assistant' && (
+                      <button
+                        type="button"
+                        className={railMenuItem}
+                        aria-label="AI Assistant"
+                        data-testid="article-assistant-rail-btn"
+                        data-ai-assistant-trigger
+                        onClick={() => {
+                          inspectorViewTouchedRef.current = true;
+                          setActiveInspectorView('assistant');
+                          setRailOverflowOpen(false);
+                          handleExpandSidebar();
+                        }}
+                      >
+                        <Sparkles size={15} className="shrink-0 text-status-ai" />
+                        <span className="truncate">Assistant</span>
+                      </button>
+                    )}
+                    {activeInspectorView !== 'details' && (
+                      <button
+                        type="button"
+                        className={railMenuItem}
+                        aria-label="Page details"
+                        data-testid="article-details-rail-btn"
+                        onClick={() => {
+                          inspectorViewTouchedRef.current = true;
+                          setActiveInspectorView('details');
+                          setRailOverflowOpen(false);
+                          handleExpandSidebar();
+                        }}
+                      >
+                        <FileText size={15} className="shrink-0 opacity-70" />
+                        <span className="truncate">Details</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className={railMenuItem}
+                      aria-label={isPinned ? 'Unpin page' : 'Pin page'}
+                      aria-pressed={isPinned}
+                      onClick={handlePinToggle}
+                    >
+                      <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current')} />
+                      <span className="truncate">{isPinned ? 'Unpin page' : 'Pin page'} · {pinHint}</span>
+                    </button>
+                    <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
                       Page actions
                     </div>
                     {id && (
@@ -1158,6 +1342,9 @@ export function ArticleRightPane({
                   {headings.length} section{headings.length === 1 ? '' : 's'}
                 </span>
               </div>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Same as the Outline tab
+              </p>
               <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/8">
                 <div className="h-full rounded-full bg-action" style={{ width: `${readingProgress}%` }} />
               </div>
@@ -1166,7 +1353,7 @@ export function ArticleRightPane({
               ref={flyoutTreeRef}
               className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-1.5"
               role="tree"
-              aria-label="Article outline"
+              aria-label="Outline"
             >
               {tree.map((node) => (
                 <OutlineNodeItem
@@ -1188,6 +1375,7 @@ export function ArticleRightPane({
       </AnimatePresence>
       </div>
       {confirmTrashDialog}
+      {relocateDialog}
       </>
     );
   }
@@ -1197,12 +1385,14 @@ export function ArticleRightPane({
     <m.aside
       ref={sidebarRef}
       key="expanded-sidebar"
-      initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-      animate={{ width, opacity: 1 }}
-      transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
+      initial={reduceEffects ? false : isSheet ? { opacity: 0 } : { width: 0, opacity: 0 }}
+      animate={isSheet ? { opacity: 1 } : { width, opacity: 1 }}
+      transition={reduceEffects || isResizing || isSheet ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'app-sidebar relative flex flex-col border-l overflow-hidden',
+        'app-context-rail relative flex flex-col overflow-hidden',
         isResizing && 'select-none',
+        'h-full',
+        isSheet && 'w-full',
       )}
       data-testid="article-right-pane"
     >
@@ -1226,11 +1416,11 @@ export function ArticleRightPane({
             This was `rounded-xl` on `bg-foreground/[0.045]` with a 4px inset —
             a third distinct treatment for the same interaction. */}
         <div
-          className="grid min-w-0 flex-1 grid-cols-3 gap-0.5 rounded-md border border-border bg-muted p-0.5"
+          className="grid min-w-0 flex-1 grid-cols-4 gap-0.5 rounded-md border border-border bg-muted p-0.5"
           role="tablist"
           aria-label="Page context views"
           onKeyDown={(e) => {
-            const tabs: InspectorView[] = ['assistant', 'outline', 'details'];
+            const tabs: InspectorView[] = ['assistant', 'outline', 'notes', 'details'];
             const currentIndex = tabs.indexOf(activeInspectorView);
             if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
               e.preventDefault();
@@ -1262,7 +1452,7 @@ export function ArticleRightPane({
             setActiveInspectorView('assistant');
           }}
           className={cn(
-            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'flex h-7 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             activeInspectorView === 'assistant'
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',
@@ -1289,7 +1479,7 @@ export function ArticleRightPane({
             setActiveInspectorView('outline');
           }}
           className={cn(
-            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'flex h-7 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             activeInspectorView === 'outline'
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',
@@ -1305,6 +1495,32 @@ export function ArticleRightPane({
         <button
           type="button"
           role="tab"
+          id="page-context-tab-notes"
+          aria-controls="page-context-panel-notes"
+          aria-selected={activeInspectorView === 'notes'}
+          tabIndex={activeInspectorView === 'notes' ? 0 : -1}
+          title="Notes (Alt+N)"
+          onClick={() => {
+            inspectorViewTouchedRef.current = true;
+            setActiveInspectorView('notes');
+          }}
+          className={cn(
+            'flex h-7 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            activeInspectorView === 'notes'
+              ? 'panel-tab-active'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+          data-testid="page-context-tab-notes"
+        >
+          <MessageSquare size={13} />
+          Notes
+          {openNotesCount > 0 && (
+            <span className="tabular-nums text-[11px] opacity-65">{openNotesCount}</span>
+          )}
+        </button>
+        <button
+          type="button"
+          role="tab"
           id="page-context-tab-details"
           aria-controls="page-context-panel-details"
           aria-selected={activeInspectorView === 'details'}
@@ -1315,7 +1531,7 @@ export function ArticleRightPane({
             setActiveInspectorView('details');
           }}
           className={cn(
-            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'flex h-7 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             activeInspectorView === 'details'
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',
@@ -1328,10 +1544,10 @@ export function ArticleRightPane({
         </div>
 
         <button
-          onClick={toggleSidebar}
+          onClick={isSheet ? onRequestClose : handleCollapseSidebar}
           className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="Collapse page sidebar"
-          title="Collapse sidebar (.)"
+          aria-label={isSheet ? 'Close page inspector' : 'Collapse page sidebar'}
+          title={isSheet ? 'Close inspector' : 'Collapse sidebar (.)'}
         >
           <PanelRightClose size={14} />
         </button>
@@ -1362,6 +1578,17 @@ export function ArticleRightPane({
         </div>
       )}
 
+      {activeInspectorView === 'notes' && (
+        <div
+          id="page-context-panel-notes"
+          role="tabpanel"
+          aria-labelledby="page-context-tab-notes"
+          className="flex min-h-0 flex-1 flex-col overflow-hidden"
+        >
+          <NotesInspectorPanel pageId={id} />
+        </div>
+      )}
+
       {activeInspectorView === 'details' && (
       <div
         id="page-context-panel-details"
@@ -1369,13 +1596,153 @@ export function ArticleRightPane({
         aria-labelledby="page-context-tab-details"
         className="min-h-0 flex-1 overflow-y-auto scroll-mask"
       >
-      {/* AI-Tagging — available in BOTH read and edit mode (#354).
-          Authors want to apply labels while editing without leaving the
-          editor; readers want to discover labels for re-tagging. The other
-          actions (Improve, Export, Delete) stay read-mode-only because they
-          act on the saved page state. */}
+      {isNewPage ? (
+        <div className="px-3 py-4">
+          <div className="text-[11px] font-semibold text-muted-foreground">New page draft</div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Configure space, title, and content, then click Create Page to publish.
+          </p>
+        </div>
+      ) : page ? (
+        <div className="px-3 py-4">
+          <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
+          <dl className="mt-2 divide-y divide-border/45 text-xs">
+            <div className="flex items-center justify-between gap-3 py-2">
+              <dt className="text-muted-foreground">Space</dt>
+              <dd className="truncate font-medium text-foreground/85">{page.spaceKey}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3 py-2">
+              <dt className="text-muted-foreground">Source</dt>
+              <dd className="flex min-w-0 items-center gap-2 font-medium text-foreground/85">
+                <span className="truncate">{page.source === 'standalone' ? 'Local' : 'Confluence'}</span>
+                {canRelocate && !editing && (
+                  <button
+                    type="button"
+                    onClick={() => setRelocateOpen(true)}
+                    data-testid="relocate-btn"
+                    title={
+                      page.source === 'standalone'
+                        ? 'Publish this article into a Confluence space'
+                        : 'Pull this page out of Confluence into a local space'
+                    }
+                    className="shrink-0 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    {page.source === 'standalone' ? 'Move to Confluence' : 'Move to a local space'}
+                  </button>
+                )}
+              </dd>
+            </div>
+            {page.source === 'standalone' && (
+              <div className="flex items-center justify-between gap-3 py-2">
+                <dt className="text-muted-foreground">Visibility</dt>
+                <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                  {page.visibility === 'shared' ? (
+                    <><Globe size={13} className="text-muted-foreground" /> Shared</>
+                  ) : (
+                    <><Lock size={13} className="text-muted-foreground" /> Private</>
+                  )}
+                </dd>
+              </div>
+            )}
+            {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
+              <div className="flex items-center justify-between gap-3 py-2">
+                <dt className="text-muted-foreground">Draft</dt>
+                <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                  <AlertCircle size={13} className="text-muted-foreground" /> Unpublished draft
+                </dd>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-3 py-2">
+              <dt className="text-muted-foreground">Type</dt>
+              <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                {page.pageType === 'folder'
+                  ? <><FolderOpen size={13} className="text-muted-foreground" /> Folder</>
+                  : <><FileText size={13} className="text-muted-foreground" /> Article</>}
+              </dd>
+            </div>
+            {page.author && (
+              <div className="flex items-center justify-between gap-3 py-2">
+                <dt className="text-muted-foreground">Author</dt>
+                <dd className="truncate font-medium text-foreground/85">{page.author}</dd>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-3 py-2">
+              <dt className="text-muted-foreground">Version</dt>
+              <dd className="font-medium tabular-nums text-foreground/85">v{page.version}</dd>
+            </div>
+          </dl>
+
+          <div className="mt-4">
+            <div className="text-[11px] font-semibold text-muted-foreground">Document health</div>
+            <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-health-badges">
+              <span
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                data-testid="verification-chip"
+              >
+                <ShieldCheck size={11} aria-hidden="true" />
+                {verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}
+              </span>
+              <button
+                type="button"
+                onClick={() => { void handleVerify(); }}
+                disabled={verifyMutation.isPending}
+                data-testid="verify-btn"
+                aria-busy={verifyMutation.isPending}
+                className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+              >
+                {verifyMutation.isPending ? 'Recording…' : 'Record verification'}
+              </button>
+              {verifyStatusMsg && (
+                <span className="sr-only" role="status" aria-live="polite">
+                  {verifyStatusMsg}
+                </span>
+              )}
+              {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
+              <EmbeddingStatusBadge
+                embeddingStatus={page.embeddingStatus}
+                embeddingDirty={page.embeddingDirty}
+                embeddedAt={page.embeddedAt}
+                embeddingError={page.embeddingError}
+                onRetry={handleReembed}
+              />
+              {page.qualityScore !== undefined && page.qualityScore !== null && (
+                <QualityScoreBadge
+                  qualityScore={page.qualityScore}
+                  qualityStatus={page.qualityStatus ?? null}
+                  qualityCompleteness={page.qualityCompleteness}
+                  qualityClarity={page.qualityClarity}
+                  qualityStructure={page.qualityStructure}
+                  qualityAccuracy={page.qualityAccuracy}
+                  qualityReadability={page.qualityReadability}
+                  qualitySummary={page.qualitySummary}
+                  qualityAnalyzedAt={page.qualityAnalyzedAt}
+                  qualityError={page.qualityError}
+                />
+              )}
+            </div>
+          </div>
+
+          {page.labels.length > 0 && (
+            <div className="mt-4">
+              <div className="text-[11px] font-semibold text-muted-foreground">Labels</div>
+              <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-labels">
+                {page.labels.map((label) => (
+                  <span
+                    key={label}
+                    className="inline-flex items-center rounded-full border border-border bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+
       {page && id && aiAutoTagAvailable && editing && (
-        <div className="px-2 pb-3 pt-4" data-testid="article-actions-edit">
+        <div className="border-t border-border px-2 pb-3 pt-4" data-testid="article-actions-edit">
           <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
             Page actions
           </div>
@@ -1387,9 +1754,8 @@ export function ArticleRightPane({
         </div>
       )}
 
-      {/* Action buttons — primary collaboration and history actions top-level */}
       {!editing && page && (
-        <div className="space-y-0.5 px-2 pb-3 pt-4" data-testid="article-actions">
+        <div className="space-y-0.5 border-t border-border px-2 pb-3 pt-4" data-testid="article-actions">
           <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
             Page actions
           </div>
@@ -1429,32 +1795,6 @@ export function ArticleRightPane({
             <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
           </button>
 
-          {settings?.confluenceUrl && page.confluenceId && (
-            <a
-              href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
-              target="_blank"
-              rel="noreferrer"
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-            >
-              <ExternalLink size={15} className="shrink-0 opacity-70" />
-              <span className="truncate">Open in Confluence</span>
-            </a>
-          )}
-
-          <button
-            onClick={handleExportPdf}
-            disabled={exportPdf.isPending}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
-            title="Export as PDF"
-          >
-            {exportPdf.isPending ? (
-              <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-            ) : (
-              <FileDown size={15} className="shrink-0 opacity-70" />
-            )}
-            <span className="truncate">Export PDF</span>
-          </button>
-
           <details className="group mt-2 border-t border-border pt-2">
             <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <ChevronRight
@@ -1466,6 +1806,45 @@ export function ArticleRightPane({
               <span className="text-[11px] font-normal opacity-70">Maintenance &amp; AI</span>
             </summary>
             <div className="mt-1 space-y-0.5">
+              {id && (
+                <button
+                  type="button"
+                  onClick={() => navigate(`/graph?focus=${encodeURIComponent(id)}`)}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                  title="Show this page in the graph"
+                  data-testid="show-in-graph-btn"
+                >
+                  <GitGraph size={15} className="shrink-0 opacity-70" />
+                  <span className="truncate">Show in Graph</span>
+                </button>
+              )}
+
+              {settings?.confluenceUrl && page.confluenceId && (
+                <a
+                  href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                >
+                  <ExternalLink size={15} className="shrink-0 opacity-70" />
+                  <span className="truncate">Open in Confluence</span>
+                </a>
+              )}
+
+              <button
+                onClick={handleExportPdf}
+                disabled={exportPdf.isPending}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+                title="Export as PDF"
+              >
+                {exportPdf.isPending ? (
+                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                ) : (
+                  <FileDown size={15} className="shrink-0 opacity-70" />
+                )}
+                <span className="truncate">Export PDF</span>
+              </button>
+
               {id && aiAutoTagAvailable && (
                 <AutoTagger
                   pageId={id}
@@ -1476,51 +1855,63 @@ export function ArticleRightPane({
 
               {/* Re-sync from Confluence — only for Confluence-sourced articles.
                   Locally-authored pages have no upstream to pull from. */}
-              {page.confluenceId && (
-                <button
+              {page?.confluenceId && (
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={handleResync}
                   disabled={resyncMutation.isPending}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+                  className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
                   title="Re-sync from Confluence"
                   data-testid="article-resync-btn"
+                  leftIcon={
+                    <RefreshCw
+                      size={15}
+                      className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
+                    />
+                  }
                 >
-                  <RefreshCw
-                    size={15}
-                    className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
-                  />
                   <span className="truncate">Re-sync</span>
-                </button>
+                </Button>
               )}
 
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={handleReembed}
                 disabled={reembedMutation.isPending}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+                className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
                 title="Re-embed for search"
                 data-testid="article-reembed-btn"
+                leftIcon={
+                  reembedMutation.isPending ? (
+                    <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                  ) : (
+                    <Cpu size={15} className="shrink-0 opacity-70" />
+                  )
+                }
               >
-                {reembedMutation.isPending ? (
-                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-                ) : (
-                  <Cpu size={15} className="shrink-0 opacity-70" />
-                )}
                 <span className="truncate">Re-embed</span>
-              </button>
+              </Button>
 
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={handleRequality}
                 disabled={requalityMutation.isPending}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+                className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
                 title="Re-check quality"
                 data-testid="article-requality-btn"
+                leftIcon={
+                  requalityMutation.isPending ? (
+                    <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                  ) : (
+                    <Gauge size={15} className="shrink-0 opacity-70" />
+                  )
+                }
               >
-                {requalityMutation.isPending ? (
-                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-                ) : (
-                  <Gauge size={15} className="shrink-0 opacity-70" />
-                )}
                 <span className="truncate">Re-check Quality</span>
-              </button>
+              </Button>
             </div>
           </details>
 
@@ -1533,90 +1924,17 @@ export function ArticleRightPane({
               />
               Danger zone
             </summary>
-            <button
+            <Button
+              variant="destructive-ghost"
+              size="sm"
               onClick={handleDelete}
-              className="nm-action-destructive mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm"
-              title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
+              className="nm-action-destructive mt-0.5 w-full justify-start gap-2"
+              title={`Move to trash (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
+              leftIcon={<Trash2 size={15} className="shrink-0 opacity-70" />}
             >
-              <Trash2 size={15} className="shrink-0 opacity-70" />
-              <span className="truncate">Delete</span>
-            </button>
+              <span className="truncate">Move to trash</span>
+            </Button>
           </details>
-        </div>
-      )}
-
-      {/* Page facts are structured for scanning; rendered in both read and edit modes */}
-      {page && (
-        <div className="border-t border-border px-3 py-4">
-          <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
-          <dl className="mt-2 divide-y divide-border/45 text-xs">
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Space</dt>
-              <dd className="truncate font-medium text-foreground/85">{page.spaceKey}</dd>
-            </div>
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Type</dt>
-              <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
-                {page.hasChildren
-                  ? <><FolderOpen size={13} className="text-muted-foreground" /> Folder</>
-                  : <><FileText size={13} className="text-muted-foreground" /> Article</>}
-              </dd>
-            </div>
-            {page.author && (
-              <div className="flex items-center justify-between gap-3 py-2">
-                <dt className="text-muted-foreground">Author</dt>
-                <dd className="truncate font-medium text-foreground/85">{page.author}</dd>
-              </div>
-            )}
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Version</dt>
-              <dd className="font-medium tabular-nums text-foreground/85">v{page.version}</dd>
-            </div>
-          </dl>
-
-          <div className="mt-4">
-            <div className="text-[11px] font-semibold text-muted-foreground">Document health</div>
-            <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-health-badges">
-              {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
-              <EmbeddingStatusBadge
-                embeddingStatus={page.embeddingStatus}
-                embeddingDirty={page.embeddingDirty}
-                embeddedAt={page.embeddedAt}
-                embeddingError={page.embeddingError}
-                onRetry={handleReembed}
-              />
-              {page.qualityScore !== undefined && page.qualityScore !== null && (
-                <QualityScoreBadge
-                  qualityScore={page.qualityScore}
-                  qualityStatus={page.qualityStatus ?? null}
-                  qualityCompleteness={page.qualityCompleteness}
-                  qualityClarity={page.qualityClarity}
-                  qualityStructure={page.qualityStructure}
-                  qualityAccuracy={page.qualityAccuracy}
-                  qualityReadability={page.qualityReadability}
-                  qualitySummary={page.qualitySummary}
-                  qualityAnalyzedAt={page.qualityAnalyzedAt}
-                  qualityError={page.qualityError}
-                />
-              )}
-            </div>
-          </div>
-
-          {page.labels.length > 0 && (
-            <div className="mt-4">
-              <div className="text-[11px] font-semibold text-muted-foreground">Labels</div>
-              <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-labels">
-                {page.labels.map((label) => (
-                  <span
-                    key={label}
-                    className="nm-pill-active rounded-full px-2 py-0.5 text-[11px] text-muted-foreground"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
       </div>
@@ -1685,7 +2003,7 @@ export function ArticleRightPane({
       </div>
       )}
 
-      {/* Resize handle */}
+      {!isSheet && (
       <div
         role="separator"
         aria-label="Resize page sidebar"
@@ -1711,8 +2029,10 @@ export function ArticleRightPane({
           aria-hidden="true"
         />
       </div>
+      )}
     </m.aside>
     {confirmTrashDialog}
+    {relocateDialog}
     </>
   );
 }

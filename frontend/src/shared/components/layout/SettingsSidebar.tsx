@@ -6,7 +6,7 @@ import { useAuthStore } from '../../../stores/auth-store';
 import { useEnterprise } from '../../enterprise/use-enterprise';
 import { ShortcutHint } from '../ShortcutHint';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
-import { SidebarSessionChrome } from './SidebarSessionChrome';
+
 import {
   SETTINGS_NAV,
   canSeeItem,
@@ -28,7 +28,13 @@ import { cn } from '../../lib/cn';
 
 const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
 
-export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
+export function SettingsSidebar({
+  onNavigate,
+  embedMainNav = true,
+}: {
+  onNavigate?: () => void;
+  embedMainNav?: boolean;
+} = {}) {
   const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
@@ -59,11 +65,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
           <ShortcutHint shortcutId="toggle-sidebar" />
         </button>
 
-        <MainNavStripCollapsed onNavigate={onNavigate} />
-
-        <div className="mt-auto">
-          <SidebarSessionChrome compact />
-        </div>
+        {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
       </m.div>
     );
   }
@@ -79,15 +81,9 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
     >
       {/* Same 48px rule height as SidebarTreeView's — the two sidebars share
           MainNavStrip precisely so this row cannot drift between routes. */}
+      {embedMainNav ? (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
         <MainNavStripExpanded onNavigate={onNavigate} />
-        {/* No `ShortcutHint` here, unlike the collapsed rail's expand button
-            below. This row already carries the full Pages/AI/Graph strip, and
-            at 256px the chip pushed the button 8.8px past the sidebar's edge —
-            `overflow-hidden` on the aside then sliced the comma in half. The
-            other two collapse controls (the pages rail, the article inspector)
-            never had a chip either, so dropping it makes all three the same
-            control; the keystroke is still in the `title`. */}
         <button
           onClick={toggleTreeSidebar}
           className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
@@ -97,6 +93,18 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
           <PanelLeftClose size={14} />
         </button>
       </div>
+      ) : (
+      <div className="flex h-8 shrink-0 items-center justify-end px-2 pt-1.5">
+        <button
+          onClick={toggleTreeSidebar}
+          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar (,)"
+        >
+          <PanelLeftClose size={14} />
+        </button>
+      </div>
+      )}
 
       {/* No standalone "Settings" header here — the page H1 inside
           SettingsLayout already carries that title. Saves vertical space and
@@ -175,9 +183,6 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
         })}
       </nav>
 
-      <div className="panel-toolbar shrink-0 border-t px-2 py-1.5">
-        <SidebarSessionChrome />
-      </div>
     </m.aside>
   );
 }

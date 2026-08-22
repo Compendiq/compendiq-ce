@@ -16,6 +16,7 @@ import { useAuthStore } from '../../stores/auth-store';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
+import { Button } from '../../shared/components/Button';
 import { BulkUserImportModal } from './BulkUserImportModal';
 import { UserBulkActionDialog } from './UserBulkActionDialog';
 
@@ -176,32 +177,29 @@ export function UsersAdminPage() {
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           {bulkEnabled && someSelected && (
-            <button
-              type="button"
+            <Button
               onClick={() => setShowBulkAction(true)}
-              className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-foreground/5"
+              variant="secondary"
               data-testid="users-bulk-action-btn"
             >
               Bulk actions ({selectedUserIds.size})
-            </button>
+            </Button>
           )}
           {bulkEnabled && (
-            <button
-              type="button"
+            <Button
               onClick={() => setShowBulkImport(true)}
-              className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-foreground/5"
+              variant="secondary"
               data-testid="users-bulk-import-btn"
             >
               Bulk import
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
+          <Button
             onClick={() => setShowCreate(true)}
-            className="nm-button-primary"
+            variant="primary"
           >
             Create user
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -512,21 +510,21 @@ function UserCreateDialog({ onClose, onSubmit, isSubmitting }: UserCreateDialogP
           </fieldset>
         </div>
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
+          <Button
             onClick={onClose}
-            className="rounded-md border px-4 py-2 text-sm"
+            variant="secondary"
             disabled={isSubmitting}
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="submit"
-            className="rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            variant="primary"
+            isLoading={isSubmitting}
             disabled={isSubmitting}
           >
             {isSubmitting ? 'Creating…' : 'Create'}
-          </button>
+          </Button>
         </div>
       </form>
     </div>

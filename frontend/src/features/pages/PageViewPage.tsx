@@ -2,8 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, X, Save, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, AlertTriangle, RefreshCw, GitGraph, ListTree, MoreHorizontal, Pin, Trash2 } from 'lucide-react';
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import { FileText, X, Save, ThumbsUp, ThumbsDown, AlertTriangle, RefreshCw, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   usePage,
@@ -14,10 +13,13 @@ import {
   usePinPage,
   useUnpinPage,
   useDeletePage,
+  useUpdatePageIcon,
+  useUploadPageIcon,
 } from '../../shared/hooks/use-pages';
-import { useSubmitFeedback, useVerifyPage } from '../../shared/hooks/use-standalone';
-import { usePermission } from '../../shared/hooks/use-permission';
-import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
+import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
+import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
+import type { SettablePageIcon } from '@compendiq/contracts';
+import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { useArticleViewStore } from '../../stores/article-view-store';
@@ -25,7 +27,6 @@ import { useAiDockStore } from '../../stores/ai-dock-store';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
-import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
 import { Editor, EditorToolbar, EditorContextToolbars, clearDraft, getDraft } from '../../shared/components/article/Editor';
 import type { Editor as EditorType } from '@tiptap/core';
 import { drainPendingDrawioDiagrams } from '../../shared/components/article/drawio-save-drain';
@@ -37,83 +38,19 @@ import { hasSubstantialLede } from '../../shared/lib/article-lede';
 import type { TocHeading } from '../../shared/components/article/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagPopover } from '../../shared/components/TagPopover';
-import { HeaderHost } from '../../shared/components/layout/header-slot';
-import { LayoutPresetMenu } from '../../shared/components/layout/LayoutPresetMenu';
-import { useArticleLayoutControls } from '../../shared/components/layout/article-layout-controls';
-import { neutralChipClass } from '../../shared/components/badges/neutral-chip';
 import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
+import { Button, IconButton } from '../../shared/components/Button';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
-import { RelocateDialog } from './RelocateDialog';
-
-function ImageLightbox({
-  alt,
-  onClose,
-  src,
-}: {
-  alt: string;
-  onClose: () => void;
-  src: string;
-}) {
-  const { blobSrc, loading } = useAuthenticatedSrc(src);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [onClose]);
-
-  // Move focus into the dialog on open and restore it to the trigger on close,
-  // so keyboard/screen-reader users are not stranded behind the overlay (#942).
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    closeButtonRef.current?.focus();
-    return () => previouslyFocused?.focus?.();
-  }, []);
-
-  return (
-    <m.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Image preview: ${alt}`}
-    >
-      <button
-        ref={closeButtonRef}
-        onClick={onClose}
-        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
-        aria-label="Close preview"
-      >
-        <X size={18} />
-      </button>
-
-      {loading ? (
-        <div className="text-sm text-white/70">Loading image…</div>
-      ) : blobSrc ? (
-        <img
-          src={blobSrc}
-          alt={alt}
-          className="max-h-[90vh] max-w-[90vw] rounded-2xl object-contain"
-          onClick={(event) => event.stopPropagation()}
-        />
-      ) : (
-        <div className="text-sm text-white/70">Failed to load image.</div>
-      )}
-    </m.div>
-  );
-}
+import { ImageLightbox } from '../../shared/components/article/ImageLightbox';
 
 function scrollArticleToTop() {
-  const container = document.querySelector('[data-scroll-container]') as HTMLElement | null;
+  const container = (
+    document.querySelector('[data-testid="article-scroll"]')
+    ?? document.querySelector('[data-scroll-container]')
+  ) as HTMLElement | null;
   if (!container) return;
   container.scrollTop = 0;
   container.scrollTo?.({ top: 0, left: 0, behavior: 'auto' });
@@ -136,18 +73,14 @@ export function PageViewPage() {
   const { data: settings } = useSettings();
   const updateMutation = useUpdatePage();
   const labelsMutation = useUpdatePageLabels();
+  const iconMutation = useUpdatePageIcon();
+  const uploadIconMutation = useUploadPageIcon();
+  const [iconUploadError, setIconUploadError] = useState<string | null>(null);
   const { data: filterOptions } = usePageFilterOptions();
   const { data: pinnedData } = usePinnedPages();
   const pinMutation = usePinPage();
   const unpinMutation = useUnpinPage();
   const deleteMutation_page = useDeletePage();
-
-  // #1123. A dedicated global permission, seeded onto editor / space_admin by
-  // migration 086. The control is hidden rather than disabled when denied: CE
-  // ships no UI for granting permissions, so a denied user has no in-product
-  // path to earning it, and the preview endpoint is gated on the same
-  // permission — a rendered control would 403 the moment it was used.
-  const { allowed: canRelocate } = usePermission('pages:relocate');
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
 
@@ -202,9 +135,6 @@ export function PageViewPage() {
   // Draft awaiting a restore decision (ConfirmDialog replaces native confirm()).
   // While non-null, edit mode is deferred until the user picks a side.
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
-  // Relocate between a local space and Confluence (#1123).
-  const [relocateOpen, setRelocateOpen] = useState(false);
-  const layoutControls = useArticleLayoutControls();
 
   const [headerNumbering, setHeaderNumbering] = useState(() =>
     localStorage.getItem('editor-header-numbering') === 'true',
@@ -272,7 +202,6 @@ export function PageViewPage() {
       setEditorInstance(null);
       setConfirmDiscardOpen(false);
       setConfirmTrashOpen(false);
-      setRelocateOpen(false);
     }
   }, [id, setStoreHeadings]);
 
@@ -303,6 +232,45 @@ export function PageViewPage() {
   const handleCloseLightbox = useCallback(() => {
     setLightboxSrc(null);
   }, []);
+
+  const handleSelectIcon = useCallback(
+    (icon: SettablePageIcon) => {
+      if (!id) return;
+      setIconUploadError(null);
+      iconMutation.mutate({ id, icon });
+    },
+    [id, iconMutation],
+  );
+
+  const handleRemoveIcon = useCallback(() => {
+    if (!id) return;
+    setIconUploadError(null);
+    iconMutation.mutate({ id, icon: null });
+  }, [id, iconMutation]);
+
+  const handleUploadIcon = useCallback(
+    async (file: File) => {
+      if (!id) return;
+      setIconUploadError(null);
+      try {
+        const { blob } = await downscaleImage(file);
+        const dataUri = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(new Error("Couldn't read that image."));
+          reader.readAsDataURL(blob);
+        });
+        await uploadIconMutation.mutateAsync({ id, dataUri });
+      } catch (err) {
+        setIconUploadError(
+          err instanceof ImageDecodeError || err instanceof Error
+            ? err.message
+            : "Couldn't upload that image.",
+        );
+      }
+    },
+    [id, uploadIconMutation],
+  );
 
   const handleStartEditing = useCallback(() => {
     if (!page || !id) return;
@@ -668,14 +636,15 @@ export function PageViewPage() {
             ? pageError.message
             : 'The request did not complete. This page is still there — try again.'}
         </p>
-        <button
+        <Button
           onClick={() => refetchPage()}
           disabled={isRefetchingPage}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
+          isLoading={isRefetchingPage}
+          variant="secondary"
+          leftIcon={!isRefetchingPage ? <RefreshCw size={14} aria-hidden="true" /> : undefined}
         >
-          <RefreshCw size={14} className={cn(isRefetchingPage && 'animate-spin')} aria-hidden="true" />
           {isRefetchingPage ? 'Retrying' : 'Try again'}
-        </button>
+        </Button>
       </div>
     );
   }
@@ -688,50 +657,51 @@ export function PageViewPage() {
         <p className="max-w-md text-sm text-muted-foreground">
           The selected page is unavailable or no longer accessible in the synced space tree.
         </p>
-        <button
+        <Button
           onClick={() => navigate('/')}
-          className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          variant="secondary"
         >
           Return to pages
-        </button>
+        </Button>
       </div>
     );
   }
 
   const tagChip = (
     <TagPopover
-      tags={draftLabels}
+      tags={editing ? draftLabels : (page.labels ?? [])}
       onAddTag={handleAddTag}
       onRemoveTag={handleRemoveTag}
       suggestions={filterOptions?.labels}
       isLoading={labelsMutation.isPending}
+      iconOnly={editing}
     />
   );
   const sessionActions = (
     <>
-      <button
+      <IconButton
         onClick={handleCancelEditing}
         title="Cancel editing (Esc)"
-        className="nm-button-ghost shrink-0"
-        data-testid="cancel-edit-btn"
-      >
-        <X size={15} aria-hidden="true" />
-        Cancel
-      </button>
-      <button
+        label="Cancel"
+        variant="destructive-ghost"
+        size="icon-sm"
+        className="nm-icon-button nm-action-destructive shrink-0"
+        testid="cancel-edit-btn"
+        icon={<X size={15} aria-hidden="true" />}
+      />
+      <Button
         onClick={handleSave}
         disabled={updateMutation.isPending}
+        isLoading={updateMutation.isPending}
         title="Save changes (Ctrl+S)"
+        variant="primary"
+        size="sm"
+        leftIcon={!updateMutation.isPending ? <Save size={15} aria-hidden="true" /> : undefined}
         className="nm-button-primary shrink-0"
         data-testid="save-page-btn"
       >
-        {updateMutation.isPending ? (
-          <span className="animate-spin text-xs" aria-hidden="true">…</span>
-        ) : (
-          <Save size={15} aria-hidden="true" />
-        )}
         {updateMutation.isPending ? 'Saving…' : 'Save'}
-      </button>
+      </Button>
     </>
   );
 
@@ -744,252 +714,106 @@ export function PageViewPage() {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
       data-testid="article-page"
+      className="flex min-h-0 flex-1 flex-col"
     >
-      {/* Format tools + tags + Cancel/Save live in the article column as a
-          sticky strip, not in the 48px app header. The header is outside the
-          scroll container; this bar is inside it, so it needs the #1186
-          under-mask. Table / layout / section strips stay contextual below. */}
-      {editing && (
-        <div className="sticky -top-5 z-30 isolate -mt-5">
-          {/* Under-mask: behind the toolbar (z-[-1]), covering the toolbar's
-              box AND the strip of scroll-container padding above it.
-
-              A sticky box does NOT pin at the scrollport's top edge when the
-              scroll container has top padding: it is clamped to its
-              containing block, which begins *after* that padding. Measured in
-              Chromium, the stuck toolbar's top is AppLayout's scroll-container
-              content-box top — 20px (its pt-5) below the scrollport edge — so
-              article content scrolls up through that strip in full view before
-              the scrollport clips it (#1186). `-top-5` must therefore track
-              that `pt-5`; scroll-padding-mask.test.ts fails if they diverge.
-
-              Only the block-start edge overhangs. Block-start overflow is
-              clipped by the scrollport and adds no scrollable height, unlike
-              the block-end overhang that inflated /ai's page height (#769).
-              It is deliberately NOT pointer-events-none: the padding strip is
-              paint with nothing else in it, and a mask that opts out of
-              hit-testing there hands clicks to the editor content it just hid. */}
-          <div
-            aria-hidden
-            data-testid="edit-toolbar-mask"
-            className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-card"
-          />
-          <div className="-mx-4 border-b border-border bg-card sm:-mx-6 relative">
-            {editorInstance ? (
-              <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
-                <EditorToolbar
-                  editor={editorInstance}
-                  headerNumbering={headerNumbering}
-                  onToggleHeaderNumbering={toggleHeaderNumbering}
-                  pageProperty={tagChip}
-                  actions={sessionActions}
-                />
-              </div>
-            ) : (
-              <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1200px] items-center justify-end gap-1.5 px-5 sm:px-10">
-                {tagChip}
-                {sessionActions}
-              </div>
-            )}
-            {editorInstance && (
-              <EditorContextToolbars
+      {/* Pinned article chassis — same 48px bar in both modes, OUTSIDE the
+          article scroller so the strip meets the pane's right edge. Write
+          fills it with format tools + the tag chip + Cancel/Save. Read
+          keeps the bar: labels as pills on the left, Edit on the right.
+          Operate verbs stay in the inspector. */}
+      <div className="relative z-30 shrink-0">
+        <div className="relative w-full border-b border-border bg-card">
+          {editing && editorInstance ? (
+            <div className="px-2">
+              <EditorToolbar
                 editor={editorInstance}
-                innerClassName="mx-auto max-w-[1200px] px-5 sm:px-10"
+                headerNumbering={headerNumbering}
+                onToggleHeaderNumbering={toggleHeaderNumbering}
+                pageProperty={tagChip}
+                actions={sessionActions}
+                pageId={id}
               />
-            )}
-          </div>
-        </div>
-      )}
-      <div>
-        {!editing && (
-        <HeaderHost fallbackClassName="sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6">
-        {(portaled) => (
-        <div
-          className={cn(
-            'flex min-w-0 flex-1 items-center justify-between gap-3',
-            !portaled && 'mx-auto min-h-[calc(3rem-1px)] max-w-[1248px] flex-wrap gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16',
-          )}
-        >
-          <span className="flex min-w-0 items-center gap-2">
-            <span className="min-w-0 truncate text-[15px] font-semibold text-foreground sm:text-lg">
-              {page.title}
-            </span>
-            <span className="hidden min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60 sm:flex">
-            {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
-            {page.source === 'standalone' ? (
-              <span className={neutralChipClass} data-testid="badge-local">
-                Local
-              </span>
-            ) : (
-              <span className={neutralChipClass} data-testid="badge-confluence">
-                Confluence
-              </span>
-            )}
-            {page.source === 'standalone' && (
-              page.visibility === 'shared' ? (
-                <span className={neutralChipClass} data-testid="badge-shared">
-                  <Globe size={10} /> Shared
-                </span>
+            </div>
+          ) : (
+            <div
+              className={cn(
+                'flex min-h-[calc(3rem-1px)] w-full items-center gap-1.5 px-2',
+                editing && 'justify-end',
+              )}
+              {...(!editing
+                ? {
+                    'data-testid': 'article-read-toolbar',
+                    role: 'toolbar',
+                    'aria-label': 'Article actions',
+                  }
+                : {})}
+            >
+              {editing ? (
+                <>
+                  {tagChip}
+                  {sessionActions}
+                </>
               ) : (
-                <span className={neutralChipClass} data-testid="badge-private">
-                  <Lock size={10} /> Private
-                </span>
-              )
-            )}
-            {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
-              <span className={neutralChipClass} data-testid="badge-draft">
-                <AlertCircle size={10} /> Draft
-              </span>
-            )}
-            <QualityScoreBadge
-              qualityScore={page.qualityScore ?? null}
-              qualityStatus={page.qualityStatus ?? null}
-              qualityCompleteness={page.qualityCompleteness}
-              qualityClarity={page.qualityClarity}
-              qualityStructure={page.qualityStructure}
-              qualityAccuracy={page.qualityAccuracy}
-              qualityReadability={page.qualityReadability}
-              qualitySummary={page.qualitySummary}
-              qualityAnalyzedAt={page.qualityAnalyzedAt}
-              qualityError={page.qualityError}
-            />
-            </span>
-          </span>
-
-          <div className="flex items-center gap-1.5">
-            <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
-            {layoutControls && (
-              <LayoutPresetMenu
-                activePreset={layoutControls.activePreset}
-                onSelect={layoutControls.applyPreset}
-              />
-            )}
-                <div className="flex items-center gap-1.5">
-                  {canRelocate && (
-                    <button
-                      onClick={() => setRelocateOpen(true)}
-                      className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                      data-testid="relocate-btn"
-                      title={
-                        page.source === 'standalone'
-                          ? 'Publish this article into a Confluence space'
-                          : 'Pull this page out of Confluence into a local space'
-                      }
+                <>
+                  {(page.labels ?? []).length > 0 && (
+                    <div
+                      className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-hidden"
+                      data-testid="article-tags-readonly"
                     >
-                      {page.source === 'standalone' ? (
-                        <>
-                          <Upload size={12} className="mr-1 inline" />
-                          <span className="max-lg:hidden">Move to Confluence</span>
-                          <span className="lg:hidden">Move</span>
-                        </>
-                      ) : (
-                        <>
-                          <Download size={12} className="mr-1 inline" />
-                          <span className="max-lg:hidden">Move to local space</span>
-                          <span className="lg:hidden">Move</span>
-                        </>
-                      )}
-                    </button>
+                      {(page.labels ?? []).map((label) => (
+                        <span
+                          key={label}
+                          className="inline-flex h-8 shrink-0 items-center rounded-full border border-border bg-background/45 px-2.5 text-xs font-medium text-muted-foreground"
+                        >
+                          {label}
+                        </span>
+                      ))}
+                    </div>
                   )}
-                  <VerifyButton pageId={id} lastVerifiedAt={(page as unknown as Record<string, unknown>).lastVerifiedAt as string | null ?? null} />
-                  <DropdownMenu.Root>
-                    <DropdownMenu.Trigger asChild>
-                      <button
-                        type="button"
-                        className="rounded-md p-1.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        aria-label="More actions"
-                        title="More actions"
-                        data-testid="page-actions-overflow-btn"
-                      >
-                        <MoreHorizontal size={15} />
-                      </button>
-                    </DropdownMenu.Trigger>
-
-                    <DropdownMenu.Portal>
-                      <DropdownMenu.Content
-                        align="end"
-                        sideOffset={8}
-                        className="z-50 w-52 nm-card-elevated p-1.5"
-                      >
-                        {headings.length > 0 && (
-                          <div className="md:hidden">
-                            <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-[11px] font-semibold text-muted-foreground">
-                              Article outline
-                            </DropdownMenu.Label>
-                            {headings.map((heading) => (
-                              <DropdownMenu.Item
-                                key={heading.id}
-                                onSelect={() => {
-                                  const scrollRoot = document.querySelector('[data-scroll-container]') as HTMLElement | null;
-                                  const target = document.getElementById(heading.id);
-                                  if (!scrollRoot || !target) return;
-                                  const top =
-                                    scrollRoot.scrollTop +
-                                    target.getBoundingClientRect().top -
-                                    scrollRoot.getBoundingClientRect().top -
-                                    24;
-                                  scrollRoot.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
-                                }}
-                                className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
-                              >
-                                <ListTree size={14} className="shrink-0" />
-                                <span className="truncate">{heading.text}</span>
-                              </DropdownMenu.Item>
-                            ))}
-                            <DropdownMenu.Separator className="my-1 h-px bg-border" />
-                          </div>
-                        )}
-                        <DropdownMenu.Item
-                          onSelect={() => navigate(`/graph?focus=${encodeURIComponent(id ?? '')}`)}
-                          className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
-                        >
-                          <GitGraph size={14} />
-                          <span>Show in Graph</span>
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Item
-                          onSelect={handlePinToggle}
-                          className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
-                        >
-                          <Pin size={14} />
-                          <span>{isPinned ? 'Unpin Page' : 'Pin Page'}</span>
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Separator className="my-1 h-px bg-border" />
-                        <DropdownMenu.Item
-                          onSelect={handleDeletePage}
-                          className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-destructive outline-none transition-colors data-[highlighted]:bg-destructive/10"
-                        >
-                          <Trash2 size={14} />
-                          <span>Move to Trash</span>
-                        </DropdownMenu.Item>
-                      </DropdownMenu.Content>
-                    </DropdownMenu.Portal>
-                  </DropdownMenu.Root>
-                </div>
-
-                {/* Edit is the primary action on this route. Relocate / Verify
-                    / overflow stay muted text; Edit uses the real secondary
-                    button (bordered `nm-button-ghost` at control height) so it
-                    outranks them without spending the filled teal Save uses
-                    in write mode. `shrink-0` and outside the wrapping group,
-                    so the secondaries wrap among themselves and Edit stays
-                    pinned. */}
-                <button
-                  onClick={handleStartEditing}
-                  className="nm-button-ghost shrink-0 max-sm:min-h-11"
-                  data-testid="edit-page-btn"
-                >
-                  Edit
-                  <ShortcutHint shortcutId="toggle-edit" />
-                </button>
-          </div>
+                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                    <PresenceAvatarStack viewers={presenceViewers} />
+                    <Button
+                      type="button"
+                      onClick={handleStartEditing}
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 shrink-0 gap-1.5 px-2.5 text-xs text-foreground"
+                      data-testid="edit-page-btn"
+                      leftIcon={<Pencil size={13} aria-hidden />}
+                      rightIcon={<ShortcutHint shortcutId="toggle-edit" />}
+                    >
+                      <span>Edit</span>
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {editing && editorInstance && (
+            <EditorContextToolbars
+              editor={editorInstance}
+              innerClassName="px-2"
+            />
+          )}
         </div>
-        )}
-        </HeaderHost>
-        )}
-
+      </div>
+      <div
+        data-testid="article-scroll"
+        className="min-h-0 flex-1 overflow-y-auto pb-5 [scrollbar-gutter:stable]"
+      >
         {editing ? (
           <>
-            <div className="mx-auto max-w-[1200px] px-5 pt-4 sm:px-10">
+            <div className="group mx-auto flex max-w-[1200px] items-start gap-3 px-5 pt-4 sm:px-10">
+                <PageTitleIcon
+                  icon={page.icon}
+                  pageId={page.id}
+                  editable
+                  onSelect={handleSelectIcon}
+                  onUpload={handleUploadIcon}
+                  onRemove={handleRemoveIcon}
+                  uploading={uploadIconMutation.isPending}
+                  uploadError={iconUploadError}
+                />
                 {/* Same column and top inset as the read-mode <h1>. Type ramp
                     is copied verbatim so the title does not resize or re-wrap
                     when you toggle Edit. `p-0` kills the UA textarea padding
@@ -997,7 +821,7 @@ export function PageViewPage() {
                 <AutoGrowTextarea
                   value={editTitle}
                   onValueChange={setEditTitle}
-                  className="mb-4 p-0 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground placeholder:text-muted-foreground/40 sm:text-4xl"
+                  className="mb-4 min-w-0 flex-1 p-0 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground placeholder:text-muted-foreground/40 sm:text-4xl"
                   placeholder="Page title…"
                   aria-label="Page title"
                   data-testid="edit-title-input"
@@ -1016,47 +840,58 @@ export function PageViewPage() {
           /* Empty page — no content yet */
           <div
             ref={contentRef}
-            className="mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
+            className="group mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
             data-testid="article-content-shell"
           >
-            <h1 className="mb-6 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
-              {page.title}
-            </h1>
+            <div className="mb-6 flex items-start gap-3">
+              <PageTitleIcon
+                icon={page.icon}
+                pageId={page.id}
+                editable
+                onSelect={handleSelectIcon}
+                onUpload={handleUploadIcon}
+                onRemove={handleRemoveIcon}
+                uploading={uploadIconMutation.isPending}
+                uploadError={iconUploadError}
+              />
+              <h1 className="min-w-0 flex-1 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
+                {page.title}
+              </h1>
+            </div>
             <div className="flex flex-col items-center gap-4 py-12 text-center">
               <FileText size={48} className="text-muted-foreground/30" />
               <p className="text-muted-foreground">This page has no content yet.</p>
-              <button
+              <Button
                 onClick={handleStartEditing}
-                className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                variant="primary"
                 data-testid="add-content-btn"
               >
                 Add content
-              </button>
+              </Button>
             </div>
           </div>
         ) : (
           /* Reading view — constrained to 1200px reading column */
           <div
             ref={contentRef}
-            className="mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
+            className="group mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
             data-testid="article-content-shell"
           >
-            <h1 className="mb-4 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
-              {page.title}
-            </h1>
-
-            {page.labels.length > 0 && (
-              <div className="mb-10 flex flex-wrap items-center gap-2" data-testid="article-tags-readonly">
-                {page.labels.map((label) => (
-                  <span
-                    key={label}
-                    className="rounded-full border border-border bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            )}
+            <div className="mb-4 flex items-start gap-3">
+              <PageTitleIcon
+                icon={page.icon}
+                pageId={page.id}
+                editable
+                onSelect={handleSelectIcon}
+                onUpload={handleUploadIcon}
+                onRemove={handleRemoveIcon}
+                uploading={uploadIconMutation.isPending}
+                uploadError={iconUploadError}
+              />
+              <h1 className="min-w-0 flex-1 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
+                {page.title}
+              </h1>
+            </div>
 
             {page.summaryStatus && (
               <ArticleSummary
@@ -1111,19 +946,6 @@ export function PageViewPage() {
           onSave={handleDrawioSave}
           onClose={handleDrawioClose}
           drawioUrl={drawioSettings?.drawioEmbedUrl}
-        />
-      )}
-
-      {/* #1123. Mounted only while open so the preview query — which is a
-          live projection of page state, not a cacheable read — never runs in
-          the background behind a closed dialog. */}
-      {relocateOpen && id && (
-        <RelocateDialog
-          open
-          pageId={id}
-          pageTitle={page.title}
-          source={page.source}
-          onClose={() => setRelocateOpen(false)}
         />
       )}
 
@@ -1204,9 +1026,8 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
       {/* Neutral controls, deliberately. Yes/No is a survey answer, not a
           state readout — green/red here borrowed the connected/disconnected
           vocabulary for the least consequential control on the page (the
-          VerifyButton comment below makes the same argument, twenty lines
-          down). The glyphs differentiate; press feedback comes from the
-          shared quiet-button recipe. */}
+          measurement badges). The glyphs differentiate; press feedback comes
+          from the shared quiet-button recipe. */}
       <div className="flex gap-2">
         <button
           onClick={() => handleFeedback(true)}
@@ -1229,59 +1050,4 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
   );
 }
 
-function VerifyButton({ pageId, lastVerifiedAt }: { pageId: string | undefined; lastVerifiedAt?: string | null }) {
-  const verifyMutation = useVerifyPage();
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
-  const handleVerify = async () => {
-    if (!pageId) return;
-    try {
-      await verifyMutation.mutateAsync({ pageId: Number(pageId) });
-      toast.success('Page verified — next review reminder rescheduled');
-      setStatusMsg('Page verified');
-      setTimeout(() => setStatusMsg(null), 3000);
-    } catch (err) {
-      // #357: surface the server's specific message instead of a generic
-      // toast. ApiError.message already carries the backend reply.
-      const msg = err instanceof Error && err.message ? err.message : 'Failed to verify page';
-      toast.error(msg);
-      setStatusMsg(msg);
-      setTimeout(() => setStatusMsg(null), 3000);
-    }
-  };
-
-  const verifiedDateStr = lastVerifiedAt
-    ? new Date(lastVerifiedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-    : null;
-
-  return (
-    <>
-      <button
-        onClick={handleVerify}
-        disabled={verifyMutation.isPending}
-        title={
-          lastVerifiedAt
-            ? `Verified on ${new Date(lastVerifiedAt).toLocaleDateString()}. Click to re-verify.`
-            : 'Mark this page as up-to-date. Resets the next review reminder based on the configured review interval.'
-        }
-        aria-label="Mark page as verified"
-        aria-busy={verifyMutation.isPending}
-        className="flex items-center rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
-        data-testid="verify-btn"
-      >
-        <ShieldCheck size={12} className="mr-1 inline shrink-0 text-status-connected" />
-        <span className="max-sm:hidden">
-          {verifyMutation.isPending ? 'Verifying...' : verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Verify'}
-        </span>
-        <span className="sm:hidden">
-          {verifyMutation.isPending ? '...' : 'Verify'}
-        </span>
-      </button>
-      {statusMsg && (
-        <span className="sr-only" role="status" aria-live="polite">
-          {statusMsg}
-        </span>
-      )}
-    </>
-  );
-}

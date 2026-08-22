@@ -9,6 +9,7 @@ import {
 import { getSpaceIcon } from '../../shared/components/spaces/space-icons';
 import { SpaceIconPicker } from './SpaceIconPicker';
 import { toast } from 'sonner';
+import { Button } from '../../shared/components/Button';
 
 export function SpaceSettingsPage() {
   const navigate = useNavigate();
@@ -204,14 +205,15 @@ export function SpaceSettingsPage() {
 
           {/* Save button */}
           <div className="flex items-center justify-end pt-2">
-            <button
+            <Button
               type="submit"
               disabled={!name.trim() || updateSpace.isPending}
-              // The form's submit: filled, like every other page primary.
-              className="nm-button-primary disabled:cursor-not-allowed"
+              isLoading={updateSpace.isPending}
+              variant="primary"
+              size="sm"
             >
               {updateSpace.isPending ? 'Saving...' : 'Save Changes'}
-            </button>
+            </Button>
           </div>
         </form>
 
@@ -223,32 +225,37 @@ export function SpaceSettingsPage() {
           </p>
 
           {!showDeleteConfirm ? (
-            <button
+            <Button
               type="button"
               onClick={() => setShowDeleteConfirm(true)}
-              className="mt-3 flex items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
+              variant="destructive-ghost"
+              size="sm"
+              leftIcon={<Trash2 size={12} />}
+              className="mt-3"
             >
-              <Trash2 size={12} />
               Delete Space
-            </button>
+            </Button>
           ) : (
             <div className="mt-3 flex items-center gap-2">
-              <button
+              <Button
                 type="button"
                 onClick={handleDelete}
                 disabled={deleteSpace.isPending}
-                className="flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground hover:bg-destructive/90 transition-colors disabled:opacity-50"
+                isLoading={deleteSpace.isPending}
+                variant="destructive"
+                size="sm"
+                leftIcon={!deleteSpace.isPending ? <Trash2 size={12} /> : undefined}
               >
-                <Trash2 size={12} />
                 {deleteSpace.isPending ? 'Deleting...' : 'Confirm Delete'}
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 onClick={() => setShowDeleteConfirm(false)}
-                className="rounded-lg px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                variant="ghost"
+                size="sm"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           )}
         </div>

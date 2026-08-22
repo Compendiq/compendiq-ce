@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { LlmProvider, LlmProviderInput } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
+import { Button } from '../../../shared/components/Button';
 
 interface Props {
   mode: 'create' | 'edit';
@@ -93,8 +94,11 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
             className="nm-input w-full"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://api.openai.com/v1"
+            placeholder="http://host.docker.internal:1234/v1"
           />
+          <span className="mt-1 block text-[11px] text-muted-foreground">
+            For local servers (LM Studio, vLLM) in Docker, use <code className="text-foreground">http://host.docker.internal:1234/v1</code>.
+          </span>
         </label>
         <label className="block text-sm">
           API Key{' '}
@@ -144,16 +148,18 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
           />
         </label>
         <div className="flex justify-end gap-2">
-          <button className="nm-button-ghost" onClick={onClose}>
+          <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
-          </button>
-          <button
-            className="nm-button-primary"
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
             disabled={!canSave || saving}
+            isLoading={saving}
             onClick={save}
           >
             {saving ? 'Saving…' : 'Save'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

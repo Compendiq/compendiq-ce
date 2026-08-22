@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { LlmProvider } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
+import { Button } from '../../../shared/components/Button';
 import { ProviderEditModal } from './ProviderEditModal';
 
 /** Quiet inline action in a settings row — ordinary, reversible. */
@@ -60,9 +61,9 @@ export function ProviderListSection() {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">Providers</h3>
-        <button className="nm-button-primary" onClick={() => setAdding(true)}>
+        <Button variant="primary" size="sm" onClick={() => setAdding(true)}>
           + Add
-        </button>
+        </Button>
       </div>
       {isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
       <ul className="divide-border/40 divide-y">

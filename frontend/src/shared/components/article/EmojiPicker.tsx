@@ -14,7 +14,9 @@ import {
   Search,
   X,
   Sparkles,
+  Shapes,
 } from 'lucide-react';
+import { LucideIconGrid } from '../page-icon/LucideIconGrid';
 import {
   EMOJI_CATEGORIES,
   EMOJI_DATA,
@@ -50,14 +52,18 @@ const CATEGORY_ICONS: Record<
 
 export function EmojiPickerContent({
   editor,
+  onPick,
   onClose,
 }: {
-  editor: EditorType;
+  editor?: EditorType;
+  onPick?: (emoji: string) => void;
   onClose: () => void;
 }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<EmojiCategoryId | 'all'>('all');
   const [hoveredEmoji, setHoveredEmoji] = useState<EmojiItem | null>(null);
+  const [kind, setKind] = useState<'emoji' | 'icons'>('emoji');
+  const showLucide = Boolean(editor) && !onPick;
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -81,7 +87,8 @@ export function EmojiPickerContent({
   }, [searchQuery, selectedCategory]);
 
   const handleSelectEmoji = (emojiChar: string) => {
-    editor.chain().focus().insertContent(emojiChar).run();
+    if (onPick) onPick(emojiChar);
+    else editor?.chain().focus().insertContent(emojiChar).run();
     onClose();
   };
 
@@ -94,6 +101,48 @@ export function EmojiPickerContent({
 
   return (
     <>
+      {showLucide && (
+        <div className="mb-2 flex items-center gap-1" role="tablist" aria-label="Icon type">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={kind === 'icons'}
+            className={cn(
+              'nm-focus-ring flex h-7 items-center gap-1 rounded-md px-2 text-xs',
+              kind === 'icons' ? 'bg-foreground/10 text-foreground' : 'text-muted-foreground hover:bg-foreground/5',
+            )}
+            onClick={() => setKind('icons')}
+          >
+            <Shapes size={13} />
+            Icons
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={kind === 'emoji'}
+            className={cn(
+              'nm-focus-ring flex h-7 items-center gap-1 rounded-md px-2 text-xs',
+              kind === 'emoji' ? 'bg-foreground/10 text-foreground' : 'text-muted-foreground hover:bg-foreground/5',
+            )}
+            onClick={() => setKind('emoji')}
+          >
+            <Smile size={13} />
+            Emoji
+          </button>
+        </div>
+      )}
+
+      {showLucide && kind === 'icons' && editor && (
+        <LucideIconGrid
+          onPick={(value) => {
+            editor.chain().focus().insertContent({ type: 'inlineLucideIcon', attrs: { name: value } }).run();
+            onClose();
+          }}
+        />
+      )}
+
+      {(!showLucide || kind === 'emoji') && (
+      <>
       {/* Search bar */}
       <div className="relative mb-2 flex items-center">
         <Search
@@ -310,6 +359,8 @@ export function EmojiPickerContent({
           </span>
         )}
       </div>
+      </>
+      )}
     </>
   );
 }

@@ -27,7 +27,7 @@ import { cn } from '../../shared/lib/cn';
  * retrieval, measured it, and correctly declined to guess. Painting a correct
  * response red tells the user to retry something that is working.
  *
- * Violet marks "an AI does this" and teal marks "you can operate this";
+ * Violet marks "an AI does this" and Steel marks "you can operate this";
  * neither is a verdict channel. So the refusal takes the treatment ADR-010
  * already settled on for a MEASUREMENT rather than a state — the same
  * de-colouring argument as `QualityScoreBadge` and `ConfidenceBadge`: the

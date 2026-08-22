@@ -7,7 +7,6 @@ import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
 import TextAlign from '@tiptap/extension-text-align';
-import { Highlight } from '@tiptap/extension-highlight';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import { lowlight } from '../../lib/lowlight';
@@ -17,6 +16,7 @@ import { ArrowLeftFromLine, ArrowRightFromLine, Trash2, Columns3, Columns2, Squa
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { apiFetch } from '../../lib/api';
+import { MIME_TO_EXT, uploadPastedImage } from './editor-image-upload';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
 import { useUiStore } from '../../../stores/ui-store';
@@ -50,11 +50,15 @@ import {
   LAYOUT_PRESETS,
   ExtendedTable,
   BlockShortcutsExtension,
+  CommentMark,
+  SafeHighlight,
 } from './article-extensions';
+import { InlineLucideIcon } from './inline-lucide-icon';
 import type { Editor as EditorType } from '@tiptap/react';
 import { VimExtension, type VimState } from './vim-extension';
 import { VimModeIndicator } from './VimModeIndicator';
 import { EditorBubbleMenu } from './EditorBubbleMenu';
+import { CommentPopover } from './CommentPopover';
 import { EditorBlockHandle } from './EditorBlockMenu';
 import { SlashCommandExtension } from './slash-command-extension';
 import { EditorSlashMenu } from './EditorSlashMenu';
@@ -98,7 +102,7 @@ export function EditorContextToolbars({
     >
       <div
         className={cn(
-          'flex flex-wrap items-center gap-x-2 gap-y-1 bg-muted/20 px-2 py-1 text-xs text-card-foreground motion-safe:animate-in motion-safe:fade-in-50',
+          'flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1 text-xs text-card-foreground motion-safe:animate-in motion-safe:fade-in-50',
           innerClassName,
         )}
       >
@@ -445,51 +449,6 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
   );
 }
 
-/** Map MIME type to file extension for pasted images */
-const MIME_TO_EXT: Record<string, string> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-};
-
-/**
- * Upload a pasted/dropped image file to the server.
- * Returns the served URL on success, or null on failure (shows a toast).
- */
-async function uploadPastedImage(file: File, pageId: string): Promise<string | null> {
-  const ext = MIME_TO_EXT[file.type];
-  if (!ext) {
-    toast.error(`Unsupported image type: ${file.type}`);
-    return null;
-  }
-
-  const hex = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
-  const filename = `paste-${Date.now()}-${hex}.${ext}`;
-
-  const dataUri = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-
-  try {
-    const result = await apiFetch<{ url: string }>(
-      `/pages/${encodeURIComponent(pageId)}/images`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ dataUri, filename }),
-      },
-    );
-    return result.url;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to upload image';
-    toast.error(message);
-    return null;
-  }
-}
-
 /**
  * True when `src` points at one of our own backend attachment routes. We never
  * try to re-import these — they're already where we want them.
@@ -788,7 +747,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       }),
       TextStyle,
       Color,
-      Highlight.configure({ multicolor: true }),
+      CommentMark,
+      SafeHighlight.configure({ multicolor: true }),
       ExtendedTable.configure({ resizable: true }),
       TableRow,
       TableCell,
@@ -820,6 +780,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       FigureIndex,
       TableIndex,
       TitledCodeBlock.configure({ lowlight }),
+      InlineLucideIcon,
       ConfluenceImage.configure({ inline: false }),
       Placeholder.configure({
         placeholder: ({ node, editor }) => {
@@ -952,7 +913,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         </div>
       )}
       {editable && editor && <SearchAndReplace editor={editor} />}
-      {editable && editor && <EditorBubbleMenu editor={editor} />}
+      {editable && editor && <EditorBubbleMenu editor={editor} pageId={pageId} />}
+      {editor && <CommentPopover editor={editor} pageId={pageId} />}
       {/* #49 drag handle, #1179 its block context menu. The handle and its
           menu live together in EditorBlockMenu: they share the hovered-node
           tracking, the handle lock and the target marker. */}
@@ -969,7 +931,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           // (and its tables) past the title. Carded editors keep an inset
           // so prose does not touch the card edge.
           naked ? '[&_.tiptap]:px-0' : '[&_.tiptap]:px-10',
-          '[&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:p-2 [&_th]:border [&_th]:border-border [&_th]:bg-foreground/5 [&_th]:p-2',
+          '[&_table]:border-separate [&_table]:border-spacing-0 [&_td]:border [&_td]:border-border [&_td]:p-2 [&_th]:border [&_th]:border-border [&_th]:bg-foreground/5 [&_th]:p-2',
           '[&_pre]:rounded-md [&_pre]:bg-foreground/5 [&_pre:not([data-title])]:p-4 [&_pre[data-title]]:px-4 [&_pre[data-title]]:pb-4',
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
         )}

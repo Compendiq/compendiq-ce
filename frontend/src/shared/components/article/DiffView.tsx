@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
 import { m } from 'framer-motion';
-import { Check, X, Columns2, Rows3, Loader2 } from 'lucide-react';
+import { Check, X, Columns2, Rows3 } from 'lucide-react';
 import { diffWords } from 'diff';
 import { cn } from '../../lib/cn';
+import { Button } from '../Button';
 
 interface DiffViewProps {
   original: string;
@@ -160,25 +161,24 @@ export function DiffView({ original, improved, onAccept, onReject, isAccepting =
       {(onAccept || onReject) && (
         <div className="flex items-center justify-end gap-3 border-t border-border px-4 py-3">
           {onReject && (
-            <button
+            <Button
               onClick={onReject}
-              className="flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              variant="secondary"
+              leftIcon={<X size={14} />}
             >
-              <X size={14} /> Reject
-            </button>
+              Reject
+            </Button>
           )}
           {onAccept && (
-            <button
+            <Button
               onClick={onAccept}
               disabled={isAccepting}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              isLoading={isAccepting}
+              variant="primary"
+              leftIcon={!isAccepting ? <Check size={14} /> : undefined}
             >
-              {isAccepting ? (
-                <><Loader2 size={14} className="animate-spin" /> Applying…</>
-              ) : (
-                <><Check size={14} /> Accept</>
-              )}
-            </button>
+              {isAccepting ? 'Applying…' : 'Accept'}
+            </Button>
           )}
         </div>
       )}

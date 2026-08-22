@@ -190,10 +190,10 @@ describe('DndLocalSpaceTree', () => {
   // you change the selected space's source — so a user switching spaces must
   // not see the tree change shape. The active row is where they had drifted:
   // this one was `nm-pill-active text-action font-medium scale-[1.01]` against
-  // the other's `nav-selection font-medium`. Different field, teal text the
+  // the other's `nav-selection font-medium`. Different field, accent text the
   // other has none of, and a transform ADR-010 retired outright ("no lift, no
   // scale, no glass"). Selecting a page in a local space nudged the row 1%
-  // larger and lit it teal; selecting one in a Confluence space did neither.
+  // larger and lit it with the accent; selecting one in a Confluence space did neither.
   // ---------------------------------------------------------------------
 
   it('gives the active row the same treatment as the plain tree', () => {
@@ -202,6 +202,7 @@ describe('DndLocalSpaceTree', () => {
 
     expect(row.className).toContain('nav-selection');
     expect(row.className).toContain('font-medium');
+    expect(row.className).toContain('outline-none');
     // The three that made it a different control from its twin.
     expect(row.className).not.toContain('nm-pill-active');
     expect(row.className).not.toContain('text-action');

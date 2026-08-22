@@ -4,7 +4,7 @@ import type { SettingsResponse, CustomPrompts } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { PanelHeader } from '../PanelHeader';
 
-const PROMPT_TYPES = [
+const IMPROVE_PROMPT_TYPES = [
   {
     key: 'improve_grammar' as const,
     label: 'Grammar',
@@ -34,6 +34,39 @@ const PROMPT_TYPES = [
     label: 'Completeness',
     description: 'Fill gaps, add missing sections, and include examples.',
     placeholder: 'You are a technical writing assistant. Review the following article for completeness. Identify and fill in any missing sections, add examples where helpful, and ensure all topics are adequately covered. Return the improved text in Markdown format. Only output the improved text, no explanations.',
+  },
+];
+
+const CREATE_PROMPT_TYPES = [
+  {
+    key: 'generate_spec' as const,
+    label: 'Technical Spec / RFC',
+    description: 'System prompt used for drafting technical specifications, system architecture, and RFCs.',
+    placeholder: 'You are a software architect and technical lead. Generate a comprehensive technical specification and RFC with: Overview & Motivation, Architecture & System Design, API Contracts & Interfaces, Data Models & Storage, Rollout & Migration Plan, Security & Failure Modes, and Open Questions. Return in Markdown format.',
+  },
+  {
+    key: 'generate_guide' as const,
+    label: 'How-To Guide / Runbook',
+    description: 'System prompt used for creating step-by-step how-to procedures, guides, and runbooks.',
+    placeholder: 'You are a technical documentation writer. Generate a step-by-step how-to guide and runbook with: Overview, Prerequisites & Permissions, Step-by-Step Instructions with code/command examples, Verification & Testing, and Troubleshooting & Rollback. Return in Markdown format.',
+  },
+  {
+    key: 'generate_notes' as const,
+    label: 'Meeting Notes & Actions',
+    description: 'System prompt used for structuring meeting notes, key decisions, and action items table.',
+    placeholder: 'You are an executive assistant and technical scribe. Generate structured meeting notes with: Meeting Objective & Date/Attendees, Executive Summary, Key Decisions Made, Detailed Discussion Topics, and an Action Items Table with Owner and Due Date columns. Return in Markdown format.',
+  },
+  {
+    key: 'generate_postmortem' as const,
+    label: 'Incident Post-Mortem',
+    description: 'System prompt used for incident retrospectives, timeline analysis, root causes, and preventative measures.',
+    placeholder: 'You are a reliability engineer. Generate an incident post-mortem report with: Incident Summary & Severity, Impact & Duration, Timeline of Events (UTC), Root Cause Analysis (5 Whys), Resolution & Recovery, What Went Well / What Went Wrong, and Action Items with Preventative Measures. Return in Markdown format.',
+  },
+  {
+    key: 'generate' as const,
+    label: 'Custom Topic / General Draft',
+    description: 'System prompt used when generating general documentation or custom topic drafts from scratch.',
+    placeholder: 'You are a technical documentation writer. Generate a well-structured knowledge base article based on the user\'s request. Use clear headings, code examples where appropriate, and follow best practices for technical documentation. Return the article in Markdown format.',
   },
 ];
 
@@ -71,11 +104,7 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
         subtitle="Override the instructions Compendiq sends to the model for each task. Leave a field empty to use the built-in prompt."
       />
 
-      {/* Active AI Safety rules info banner. Body copy is FULL-STRENGTH
-          text-info, never text-info/NN: over the bg-info/10 panel tint, /80
-          measured 4.11:1 and /70 3.36:1 — under AA for 12px text. De-emphasis
-          comes from size and weight; the hue already separates the notice
-          from body prose. */}
+      {/* Active AI Safety rules info banner */}
       {aiSafety && (aiSafety.guardrails.noFabricationEnabled || aiSafety.outputRules.stripReferences) && (
         <div className="rounded-lg border border-info/30 bg-info/10 p-3 text-sm" data-testid="ai-safety-banner">
           <p className="font-medium text-info">Active AI Safety Rules</p>
@@ -97,33 +126,68 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
 
       <div>
         <p className="text-sm text-muted-foreground">
-          Customize the system prompts used by the AI Improver. Leave empty to use the built-in default.
+          Customize the system prompts used by the AI Improver and Create Skills. Leave empty to use the built-in default.
           The language preservation instruction is always appended automatically.
         </p>
       </div>
 
-      {PROMPT_TYPES.map((pt) => (
-        <div key={pt.key}>
-          <label className="mb-1 block text-sm font-medium">{pt.label}</label>
-          <p className="mb-1.5 text-xs text-muted-foreground">{pt.description}</p>
-          <textarea
-            value={prompts[pt.key] ?? ''}
-            onChange={(e) => handleChange(pt.key, e.target.value)}
-            placeholder={pt.placeholder}
-            rows={3}
-            className="nm-input w-full resize-y font-mono text-xs"
-            data-testid={`prompt-${pt.key}`}
-          />
-          {prompts[pt.key] && (
-            <button
-              onClick={() => handleChange(pt.key, '')}
-              className="mt-1 text-xs text-muted-foreground hover:text-destructive"
-            >
-              Reset to default
-            </button>
-          )}
-        </div>
-      ))}
+      <div className="space-y-4">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Improvement Prompts
+        </h3>
+        {IMPROVE_PROMPT_TYPES.map((pt) => (
+          <div key={pt.key}>
+            <label className="mb-1 block text-sm font-medium">{pt.label}</label>
+            <p className="mb-1.5 text-xs text-muted-foreground">{pt.description}</p>
+            <textarea
+              value={prompts[pt.key] ?? ''}
+              onChange={(e) => handleChange(pt.key, e.target.value)}
+              placeholder={pt.placeholder}
+              rows={3}
+              className="nm-input w-full resize-y font-mono text-xs"
+              data-testid={`prompt-${pt.key}`}
+            />
+            {prompts[pt.key] && (
+              <button
+                type="button"
+                onClick={() => handleChange(pt.key, '')}
+                className="mt-1 text-xs text-muted-foreground hover:text-destructive"
+              >
+                Reset to default
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-4 pt-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Create Skills Prompts
+        </h3>
+        {CREATE_PROMPT_TYPES.map((pt) => (
+          <div key={pt.key}>
+            <label className="mb-1 block text-sm font-medium">{pt.label}</label>
+            <p className="mb-1.5 text-xs text-muted-foreground">{pt.description}</p>
+            <textarea
+              value={prompts[pt.key] ?? ''}
+              onChange={(e) => handleChange(pt.key, e.target.value)}
+              placeholder={pt.placeholder}
+              rows={3}
+              className="nm-input w-full resize-y font-mono text-xs"
+              data-testid={`prompt-${pt.key}`}
+            />
+            {prompts[pt.key] && (
+              <button
+                type="button"
+                onClick={() => handleChange(pt.key, '')}
+                className="mt-1 text-xs text-muted-foreground hover:text-destructive"
+              >
+                Reset to default
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
 
       <div>
         <button

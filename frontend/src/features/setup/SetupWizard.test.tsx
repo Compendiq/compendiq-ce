@@ -328,14 +328,8 @@ describe('SetupWizard', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Configure LLM Provider')).toBeInTheDocument();
-    });
-
-    // The auto-detect should fire a call to /setup/llm-test
-    await waitFor(() => {
-      const llmCalls = fetchSpy.mock.calls.filter(
-        ([url]) => typeof url === 'string' && url.includes('/setup/llm-test'),
-      );
-      expect(llmCalls.length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByTestId('llm-base-url')).toBeInTheDocument();
+      expect(screen.getByTestId('test-llm-btn')).toBeInTheDocument();
     });
   });
 

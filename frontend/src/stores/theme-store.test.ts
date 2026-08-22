@@ -7,6 +7,14 @@ import {
   THEME_CATEGORIES,
   isLightTheme,
   applyThemeToDocument,
+  applyTypographyToDocument,
+  FONT_FAMILY_IDS,
+  FONT_FAMILY_OPTIONS,
+  FONT_SCOPES,
+  DEFAULT_FONT_FAMILY,
+  DEFAULT_FONT_SCOPE,
+  validateFontFamily,
+  validateFontScope,
   validateThemeId,
   DEFAULT_DARK_THEME,
   DEFAULT_LIGHT_THEME,
@@ -15,7 +23,14 @@ import {
 
 describe('theme-store', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'graphite' });
+    useThemeStore.setState({
+      theme: 'graphite',
+      preference: 'system',
+      fontFamily: DEFAULT_FONT_FAMILY,
+      fontScope: DEFAULT_FONT_SCOPE,
+      dyslexiaSpacing: false,
+    });
+    localStorage.removeItem('compendiq-theme');
   });
 
   it('has graphite as the default theme', () => {
@@ -25,6 +40,19 @@ describe('theme-store', () => {
   it('sets a new theme', () => {
     useThemeStore.getState().setTheme('paper');
     expect(useThemeStore.getState().theme).toBe('paper');
+  });
+
+  it('defines the supported typography options and scopes', () => {
+    expect(FONT_FAMILY_IDS).toEqual(['inter', 'opendyslexic-alta', 'atkinson', 'system', 'serif']);
+    expect(FONT_FAMILY_OPTIONS.map((option) => option.id)).toEqual([...FONT_FAMILY_IDS]);
+    expect(FONT_SCOPES).toEqual(['application', 'reading-pane']);
+  });
+
+  it('falls back to safe typography defaults for unknown persisted values', () => {
+    expect(validateFontFamily('not-a-font')).toBe(DEFAULT_FONT_FAMILY);
+    expect(validateFontScope('not-a-scope')).toBe(DEFAULT_FONT_SCOPE);
+    expect(validateFontFamily('atkinson')).toBe('atkinson');
+    expect(validateFontScope('reading-pane')).toBe('reading-pane');
   });
 
   it('defines exactly 2 themes (1 dark + 1 light)', () => {
@@ -144,6 +172,29 @@ describe('theme-store', () => {
     });
   });
 
+  describe('typography preferences apply to document', () => {
+    it('sets the root attributes used by CSS', () => {
+      applyTypographyToDocument('opendyslexic-alta', 'reading-pane', true);
+
+      expect(document.documentElement.dataset.font).toBe('opendyslexic-alta');
+      expect(document.documentElement.dataset.fontScope).toBe('reading-pane');
+      expect(document.documentElement.dataset.dyslexiaSpacing).toBe('true');
+    });
+
+    it('updates typography immediately when preferences change', () => {
+      useThemeStore.getState().setFontFamily('serif');
+      useThemeStore.getState().setFontScope('reading-pane');
+      useThemeStore.getState().setDyslexiaSpacing(true);
+
+      expect(useThemeStore.getState().fontFamily).toBe('serif');
+      expect(useThemeStore.getState().fontScope).toBe('reading-pane');
+      expect(useThemeStore.getState().dyslexiaSpacing).toBe(true);
+      expect(document.documentElement.dataset.font).toBe('serif');
+      expect(document.documentElement.dataset.fontScope).toBe('reading-pane');
+      expect(document.documentElement.dataset.dyslexiaSpacing).toBe('true');
+    });
+  });
+
   describe('validateThemeId (retirement)', () => {
     it('rejects retired theme IDs as invalid', () => {
       const validIds = [...THEME_IDS] as string[];
@@ -256,5 +307,31 @@ describe('theme preference survives a reload', () => {
     // A stored palette would win over the live OS reading on the next boot,
     // which is how "follow the OS" silently stops following.
     expect(JSON.parse(localStorage.getItem('compendiq-theme')!).state.theme).toBeUndefined();
+  });
+
+  it('rehydrates and persists typography preferences', async () => {
+    localStorage.setItem(
+      'compendiq-theme',
+      JSON.stringify({
+        state: { fontFamily: 'opendyslexic-alta', fontScope: 'reading-pane', dyslexiaSpacing: true },
+        version: 0,
+      }),
+    );
+
+    await useThemeStore.persist.rehydrate();
+
+    expect(useThemeStore.getState().fontFamily).toBe('opendyslexic-alta');
+    expect(useThemeStore.getState().fontScope).toBe('reading-pane');
+    expect(useThemeStore.getState().dyslexiaSpacing).toBe(true);
+    expect(document.documentElement.dataset.font).toBe('opendyslexic-alta');
+    expect(document.documentElement.dataset.fontScope).toBe('reading-pane');
+    expect(document.documentElement.dataset.dyslexiaSpacing).toBe('true');
+
+    const stored = JSON.parse(localStorage.getItem('compendiq-theme')!);
+    expect(stored.state).toMatchObject({
+      fontFamily: 'opendyslexic-alta',
+      fontScope: 'reading-pane',
+      dyslexiaSpacing: true,
+    });
   });
 });

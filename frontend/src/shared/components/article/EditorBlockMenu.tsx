@@ -23,6 +23,7 @@ import {
 } from './block-menu-nodes';
 import { blockMenuTargetKey, blockMenuTargetRange } from './block-menu-decoration';
 import { absorbBlockMenuEscape, useBlockMenuTarget } from './use-block-menu-target';
+import { dragHandleReferenceRect } from './drag-handle-anchor';
 import { TableContextToolbar } from './EditorTableControls';
 
 /**
@@ -400,11 +401,20 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
   const { target, setHovered, open: openTarget, close: closeMenu } = useBlockMenuTarget(editor);
   const open = target !== null;
 
+  const hoveredRef = useRef<{ node: PMNode; pos: number } | null>(null);
+
   const handleNodeChange = useCallback(
     ({ node, pos }: { node: PMNode | null; pos: number }) => {
-      setHovered(node && pos >= 0 ? { node, pos } : null);
+      const next = node && pos >= 0 ? { node, pos } : null;
+      hoveredRef.current = next;
+      setHovered(next);
     },
     [setHovered],
+  );
+
+  const getReferencedVirtualElement = useCallback(
+    () => dragHandleReferenceRect(editor, hoveredRef.current),
+    [editor],
   );
 
   const openMenu = useCallback((event: React.MouseEvent) => {
@@ -417,12 +427,13 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
       editor={editor}
       className="drag-handle"
       onNodeChange={handleNodeChange}
+      getReferencedVirtualElement={getReferencedVirtualElement}
       nested={NESTED_DRAG_OPTIONS}
     >
       <Popover.Root open={open} onOpenChange={(next) => { if (!next) closeMenu(); }}>
         <Popover.Anchor asChild>
           <span
-            className="flex h-full w-full items-center justify-center cursor-pointer relative before:absolute before:-inset-1.5 before:content-['']"
+            className="flex h-full w-full items-center justify-center cursor-pointer relative before:absolute before:-inset-y-2 before:-left-2 before:-right-3 before:content-['']"
             data-block-menu-open={open ? 'true' : undefined}
             data-testid="drag-handle-trigger"
             title="Drag to move · Click for block actions"

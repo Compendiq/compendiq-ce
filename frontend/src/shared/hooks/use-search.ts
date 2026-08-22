@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import type { PageIcon } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
 
-interface SearchResultItem {
+export interface SearchResultItem {
   id: string | number;
+  confluenceId?: string | null;
   title: string;
   spaceKey: string | null;
+  icon?: PageIcon | null;
   /** Short excerpt / snippet from the matching content */
   excerpt: string;
   /**
@@ -31,12 +34,14 @@ interface SearchResultItem {
 interface SearchApiResponse {
   items: Array<{
     id: string | number;
+    confluenceId?: string | null;
     title: string;
     spaceKey: string | null;
     snippet?: string;
     rank?: number;
     score?: number;
     similarity?: number | null;
+    icon?: PageIcon | null;
   }>;
   total: number;
   page: number;
@@ -57,6 +62,7 @@ interface SearchApiResponse {
 function mapItems(response: SearchApiResponse): SearchResultItem[] {
   return response.items.map((item) => ({
     id: item.id,
+    confluenceId: item.confluenceId,
     title: item.title,
     spaceKey: item.spaceKey,
     excerpt: item.snippet ?? '',
@@ -64,6 +70,7 @@ function mapItems(response: SearchApiResponse): SearchResultItem[] {
     // Absent (keyword mode never sends it) stays null rather than collapsing to
     // 0 — a page nobody measured must render no figure, not "0%".
     similarity: item.similarity ?? null,
+    icon: item.icon ?? null,
   }));
 }
 

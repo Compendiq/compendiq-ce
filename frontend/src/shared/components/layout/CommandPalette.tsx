@@ -9,11 +9,14 @@ import {
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
+import type { PageIcon as PageIconValue } from '@compendiq/contracts';
+import { PageIcon } from '../page-icon/PageIcon';
 
 interface SearchResult {
   id: string;
   title: string;
   spaceKey: string;
+  icon?: PageIconValue | null;
 }
 
 interface QuickAction {
@@ -275,12 +278,12 @@ export function CommandPalette() {
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder={isAiMode ? 'Ask AI anything...' : 'Jump to page or command...'}
+                  placeholder={isAiMode ? 'Ask AI anything...' : 'Find a page or command...'}
                   className={cn(
                     'flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground',
                     isAiMode && 'text-foreground placeholder:text-status-ai/50',
                   )}
-                  aria-label="Jump to page or command"
+                  aria-label="Find a page or command"
                   role="combobox"
                   aria-expanded={allItems.length > 0}
                   aria-controls="cmdk-listbox"
@@ -351,7 +354,11 @@ export function CommandPalette() {
                               : 'text-foreground hover:bg-foreground/5',
                           )}
                         >
-                          <FileText size={14} className="shrink-0" />
+                          {result.icon ? (
+                            <PageIcon icon={result.icon} pageId={result.id} size="row" />
+                          ) : (
+                            <FileText size={14} className="shrink-0" />
+                          )}
                           <span className="truncate">{result.title}</span>
                           <span className="ml-auto text-xs text-muted-foreground">{result.spaceKey}</span>
                         </button>

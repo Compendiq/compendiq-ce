@@ -4,7 +4,6 @@ import {
   ChevronRight,
   ChevronDown,
   FileText,
-  FilePlus,
   ChevronsUpDown,
   PanelLeft,
   PanelLeftClose,
@@ -12,6 +11,7 @@ import {
   Globe,
   Pin,
   Settings,
+  Trash2,
   AlertTriangle,
   RefreshCw,
 } from 'lucide-react';
@@ -19,13 +19,15 @@ import { ApiError } from '../../lib/api';
 import { getSpaceIcon } from '../spaces/space-icons';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
-import { SidebarSessionChrome } from './SidebarSessionChrome';
-import { usePageTree, useCreatePage, usePinnedPages } from '../../hooks/use-pages';
+
+import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
 import { useClickOutside } from '../../hooks/use-click-outside';
 import { useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
+import { Button, IconButton } from '../Button';
+import { PageIcon } from '../page-icon/PageIcon';
 import type { PageTreeItem } from '../../hooks/use-pages';
 import type { TreeNode } from './sidebar-types';
 import { useTreeRovingFocus } from './sidebar-tree-keyboard';
@@ -245,7 +247,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
           // resolve against the scroll container and land at the panel's edge.
           'group relative flex items-center rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'nav-selection font-medium'
+            ? 'nav-selection font-medium outline-none'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         // The horizontal budget is this panel's scarcest resource, and it used
@@ -327,6 +329,9 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         {/* #767: pin the weight explicitly (conditional, never both classes)
             so titles can't inherit or synthesize a heavier weight while the
             variable font loads or the row sits on a composited layer. */}
+        {node.page.icon && (
+          <PageIcon icon={node.page.icon} pageId={node.page.id} size="row" className="mr-1.5" />
+        )}
         <span className={cn('min-w-0 flex-1 truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
           {node.page.title}
         </span>
@@ -421,12 +426,16 @@ interface SidebarTreeViewProps {
   forceCollapsed?: boolean;
   /** Lets a user explicitly reopen a temporarily compacted rail. */
   onForceExpand?: () => void;
+  /** Pages / AI / Graph live on the chassis on desktop. The mobile drawer
+   *  and isolated tests pass true; AppLayout desktop passes false. */
+  embedMainNav?: boolean;
 }
 
 export function SidebarTreeView({
   onNavigate,
   forceCollapsed = false,
   onForceExpand,
+  embedMainNav = true,
 }: SidebarTreeViewProps = {}) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -519,9 +528,6 @@ export function SidebarTreeView({
   const spaceFilterRef = useRef<HTMLInputElement>(null);
   const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
-  const [newPageTitle, setNewPageTitle] = useState('');
-  const [showNewPageInput, setShowNewPageInput] = useState(false);
-  const newPageTitleRef = useRef<HTMLInputElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const treeScrollRef = useRef<HTMLDivElement>(null);
   // Snapshot the tree's scroll position the instant a node is pressed — before
@@ -548,46 +554,6 @@ export function SidebarTreeView({
     setSpaceFilter('');
   }, []);
   const spaceDropdownRef = useClickOutside<HTMLDivElement>(closeSpaceDropdown, spaceDropdownOpen);
-  const createPage = useCreatePage();
-
-  const handleCreatePage = useCallback(async () => {
-    const trimmed = newPageTitle.trim();
-    if (!trimmed) return;
-
-    const spaceKey = treeSidebarSpaceKey || '__local__';
-    try {
-      await createPage.mutateAsync({
-        spaceKey,
-        title: trimmed,
-        bodyHtml: '',
-        pageType: 'page',
-      });
-      setNewPageTitle('');
-      setShowNewPageInput(false);
-    } catch {
-      // Deliberately swallowed HERE and reported from `createPage.error`
-      // below. The comment this replaces said "error handled by mutation" and
-      // that was not true of anything: useCreatePage has no onError, so a
-      // failed create closed nothing, said nothing, and left the user staring
-      // at their own typed title wondering whether it had worked.
-      //
-      // The input stays open and the title stays in it, so retrying is one
-      // keystroke rather than a retype.
-    }
-  }, [newPageTitle, treeSidebarSpaceKey, createPage]);
-
-  // Clear a previous failure the moment the user edits the title or reopens
-  // the field, so a stale message can't sit under a fresh attempt.
-  const handleNewPageTitleChange = useCallback((value: string) => {
-    setNewPageTitle(value);
-    if (createPage.isError) createPage.reset();
-  }, [createPage]);
-
-  useEffect(() => {
-    if (showNewPageInput) {
-      newPageTitleRef.current?.focus();
-    }
-  }, [showNewPageInput]);
 
   // Opening the list puts the caret in the filter when there is one, so a
   // keyboard user can start narrowing immediately instead of tabbing past the
@@ -632,7 +598,7 @@ export function SidebarTreeView({
         setTreeSidebarWidth(treeSidebarWidth + 16);
       } else if (e.key === 'Home') {
         e.preventDefault();
-        setTreeSidebarWidth(280);
+        setTreeSidebarWidth(282);
       }
     },
     [treeSidebarWidth, setTreeSidebarWidth],
@@ -820,8 +786,7 @@ export function SidebarTreeView({
             <PanelLeft size={16} />
           </button>
 
-          {/* Nav icons */}
-          <MainNavStripCollapsed onNavigate={onNavigate} />
+          {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
           {/* Current scope. Collapsing used to drop every trace of it — not the
               space, not the open page, not the count — so the one question the
@@ -859,9 +824,22 @@ export function SidebarTreeView({
             </span>
           </div>
 
-          <div className="mt-auto">
-            <SidebarSessionChrome compact />
-          </div>
+          <IconButton
+            onClick={() => {
+              navigate('/trash');
+              onNavigate?.();
+            }}
+            className={cn(
+              'nm-icon-button mb-2 mt-auto shrink-0',
+              location.pathname === '/trash' && 'nav-selection',
+            )}
+            label="Trash"
+            aria-current={location.pathname === '/trash' ? 'page' : undefined}
+            title="Trash (G then T)"
+            testid="sidebar-trash-collapsed"
+            icon={<Trash2 size={15} aria-hidden="true" />}
+          />
+
         </m.aside>
       </AnimatePresence>
     );
@@ -891,11 +869,7 @@ export function SidebarTreeView({
         isResizing && 'select-none',
       )}
     >
-      {/* Global destinations remain visually separate from workspace content.
-          `h-12` rather than `py-2`: this rule, the article context strip's and
-          the inspector's header rule are one line running across the app, so
-          all three are pinned to the same 48px border-box height instead of
-          each being however tall its own content plus padding came out. */}
+      {embedMainNav && (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
           <MainNavStripExpanded onNavigate={onNavigate} />
           <button
@@ -907,46 +881,33 @@ export function SidebarTreeView({
             <PanelLeftClose size={14} />
           </button>
       </div>
+      )}
 
-      {/* Workspace context — the selector is the panel's orientation anchor.
-          It used to carry a "Workspace" caption and a `+` above it, together
-          costing 101px of panel height to introduce one control. Both are gone,
-          and neither is a loss. The caption named the section "Workspace" while
-          the control selects a SPACE — the noun the API, the dropdown's own
-          Confluence/Local headers and Confluence itself all use — so it was
-          teaching the wrong word; and the selector states its own scope on two
-          lines ("All Spaces" / "Every connected space"), which is what a
-          caption would have had to say. The `+` was a second entrance to
-          `/spaces/new` that the dropdown already offers by name at its foot,
-          where creating a space belongs: beside the list of the ones you have. */}
-      <div className="shrink-0 px-2 py-2">
-        <div ref={spaceDropdownRef} className="relative">
+      {/* Space selector + collapse share the 48px chrome line that the
+          article toolbar and inspector tab row also draw (`h-12` + `border-b`).
+          Scope lives on the chip; source/key stay in the title. New Space
+          stays at the foot of the dropdown. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+        <div ref={spaceDropdownRef} className="relative min-w-0 flex-1">
           <button
             // Routed through closeSpaceDropdown on the way shut so the filter
             // clears here too — wiring only useClickOutside to it left a
             // filtered list behind whenever you closed with the toggle.
             onClick={() => (spaceDropdownOpen ? closeSpaceDropdown() : setSpaceDropdownOpen(true))}
             data-testid="space-selector-toggle"
-            className="panel-context group flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:border-primary/55"
+            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg px-2 text-left transition-colors hover:bg-[var(--glass-pill-hover)]"
             aria-expanded={spaceDropdownOpen}
+            title={
+              selectedSpaceOption
+                ? `${selectedSpaceOption.source === 'local' ? 'Local' : 'Confluence'} · ${selectedSpaceOption.key}`
+                : 'Every connected space'
+            }
           >
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary-ink">
-              <SelectedSpaceGlyph size={14} />
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary-ink">
+              <SelectedSpaceGlyph size={13} />
             </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-medium text-foreground">
-                {selectedSpaceOption?.name ?? 'All Spaces'}
-              </span>
-              <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                {/* "Every connected space", not "Browse every connected
-                    workspace": the old string did not fit its own line at any
-                    sidebar width — the panel truncated its own copy — and it
-                    called a space a workspace, which is the mix-up the removed
-                    caption above was teaching. */}
-                {selectedSpaceOption
-                  ? `${selectedSpaceOption.source === 'local' ? 'Local' : 'Confluence'} · ${selectedSpaceOption.key}`
-                  : 'Every connected space'}
-              </span>
+            <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
+              {selectedSpaceOption?.name ?? 'All Spaces'}
             </span>
             <ChevronsUpDown size={13} className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
           </button>
@@ -1123,12 +1084,22 @@ export function SidebarTreeView({
             </div>
           )}
         </div>
+        {!embedMainNav && (
+          <button
+            onClick={toggleTreeSidebar}
+            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (,)"
+          >
+            <PanelLeftClose size={14} />
+          </button>
+        )}
       </div>
 
       {/* A compact navigation shortcut; the Pages dashboard remains the rich
           pinned overview with excerpts and management controls. */}
       {pinnedData && pinnedData.items.length > 0 && (
-        <section className="shrink-0 border-t border-border px-2 py-2" aria-labelledby="sidebar-pinned-heading">
+        <section className="shrink-0 px-2 py-2" aria-labelledby="sidebar-pinned-heading">
           <button
             type="button"
             onClick={() => setPinnedSectionCollapsed((value) => !value)}
@@ -1168,7 +1139,7 @@ export function SidebarTreeView({
                   className={cn(
                     'group flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     activePageId === item.id
-                      ? 'nav-selection font-medium'
+                      ? 'nav-selection font-medium outline-none'
                       : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
                   )}
                   data-testid={`sidebar-pinned-${item.id}`}
@@ -1204,122 +1175,24 @@ export function SidebarTreeView({
         </section>
       )}
 
-      {/* Page collection toolbar — actions are scoped to the tree below.
-
-          The action here said "Folder" and wore a FolderPlus, and it calls
-          createPage({ pageType: 'page' }).
-
-          `folder` is a REAL page type — PageTypeEnum is z.enum(['page',
-          'folder']) — and it is not cosmetic: embedding-service, quality-worker
-          and summary-worker all exclude `page_type = 'folder'`, so a folder is
-          precisely the thing that does NOT get indexed, scored or summarised.
-          A control labelled "Folder" that creates a `page` therefore promises a
-          container and hands back an indexed document, which then collects
-          embeddings, a quality score and a summary — everything a container
-          should not have.
-
-          This is labelled as what it does, which is the change that cannot be
-          wrong. Making it create an actual `pageType: 'folder'` instead is the
-          other way to close the gap, but that is a behaviour change with
-          pipeline consequences and it is the owner's call, not a copy fix. The
-          test below has pinned the mismatch by NAME ("creates new folder as
-          pageType 'page' (not 'folder')") since before this change — it was
-          documented rather than resolved. */}
-      <div className="flex h-9 shrink-0 items-center justify-between border-y border-border px-3">
+      {/* Section label with New Page action — no extra hairline. The space-selector row
+          already draws the 1px rule that meets the article toolbar. */}
+      <div className="flex h-7 shrink-0 items-center justify-between px-3">
         <span className={SECTION_LABEL}>Pages</span>
         <button
+          type="button"
           onClick={() => {
-            setShowNewPageInput((v) => !v);
-            setNewPageTitle('');
+            navigate('/pages/new');
+            onNavigate?.();
           }}
-          className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-          aria-expanded={showNewPageInput}
-          // Used to read "Create a page in this space" unconditionally — a lie
-          // in All Spaces scope, where `handleCreatePage` below falls back to
-          // the `__local__` sentinel and the backend stores the page with NO
-          // space at all (pages-crud.ts: spaceSource stays null for the
-          // sentinel, so the final spaceKey is null, not "this space" or even
-          // a nameable default). Naming the real target in both branches closes
-          // that gap without changing behavior.
-          title={
-            selectedSpaceOption
-              ? `Create a page in ${selectedSpaceOption.name}`
-              : 'Create an unfiled page — no space is selected'
-          }
+          className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="New Page"
+          title="New Page (Alt+N)"
+          data-testid="sidebar-new-page-btn"
         >
-          <FilePlus size={13} />
-          New page
+          <Plus size={13} aria-hidden="true" />
         </button>
       </div>
-
-      {/* Inline new-page input */}
-      {showNewPageInput && (
-        <div className="px-2 py-1.5" data-testid="new-page-input">
-          <div className="flex items-center gap-1.5">
-            <FilePlus size={14} className="shrink-0 text-action/70" aria-hidden="true" />
-            <input
-              ref={newPageTitleRef}
-              value={newPageTitle}
-              onChange={(e) => handleNewPageTitleChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleCreatePage();
-                if (e.key === 'Escape') {
-                  setShowNewPageInput(false);
-                  setNewPageTitle('');
-                  createPage.reset();
-                }
-              }}
-              // Placeholder is an example, not the label — the accessible name
-              // below is what names the field.
-              placeholder="Page title"
-              className={cn(
-                'flex-1 rounded-md bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 focus:ring-ring transition-colors',
-                createPage.isError ? 'ring-destructive' : 'ring-primary/30',
-              )}
-              aria-label="Title of the new page"
-              aria-invalid={createPage.isError || undefined}
-              aria-describedby={createPage.isError ? 'new-page-error' : undefined}
-            />
-            {/* "Create", not "Add": it names the action, and "Add" alongside a
-                title field reads as adding the title to something. The pending
-                label is a word rather than an ellipsis so a screen reader
-                announces a state instead of three dots. */}
-            <button
-              onClick={handleCreatePage}
-              disabled={!newPageTitle.trim() || createPage.isPending}
-              className="inline-flex items-center rounded-md border border-action bg-transparent px-2 py-1 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:opacity-40"
-            >
-              {createPage.isPending ? 'Creating' : 'Create'}
-            </button>
-          </div>
-          {/* Visible, not hover-only — a title tooltip alone is unreachable by
-              touch or keyboard, and this is exactly the case the toolbar
-              button's own title attribute above cannot cover for those users.
-              Only shown in All Spaces scope, where there's a real destination
-              mismatch to disclose; a page created against a selected space
-              needs no such notice. */}
-          {!treeSidebarSpaceKey && (
-            <p className="mt-1.5 pl-[22px] text-[11px] text-muted-foreground">
-              Creates an unfiled page — pick a space above to file it there instead.
-            </p>
-          )}
-          {/* Sits under the field it describes, wired by aria-describedby, and
-              in a live region so it is announced rather than only drawn. The
-              typed title is still in the input above it. */}
-          {createPage.isError && (
-            <p
-              id="new-page-error"
-              role="alert"
-              data-testid="new-page-error"
-              className="mt-1.5 break-words line-clamp-3 pl-[22px] text-[11px] text-destructive"
-            >
-              {createPage.error instanceof ApiError
-                ? createPage.error.message
-                : 'The page could not be created. Try again.'}
-            </p>
-          )}
-        </div>
-      )}
 
       {/* A refresh failed but the cached tree is still usable. Say so without
           taking it away — the pages below are real, just possibly behind. */}
@@ -1390,14 +1263,17 @@ export function SidebarTreeView({
                 ? treeError.message
                 : 'The request did not complete. Your pages are still there.'}
             </p>
-            <button
+            <Button
               onClick={() => refetchTree()}
               disabled={isFetchingTree}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:opacity-40"
+              isLoading={isFetchingTree}
+              variant="secondary"
+              size="sm"
+              leftIcon={!isFetchingTree ? <RefreshCw size={12} aria-hidden="true" /> : undefined}
+              className="mt-3"
             >
-              <RefreshCw size={12} className={cn(isFetchingTree && 'animate-spin')} aria-hidden="true" />
               {isFetchingTree ? 'Retrying' : 'Try again'}
-            </button>
+            </Button>
           </div>
         ) : tree.length === 0 ? (
           <div className="flex flex-col items-center px-3 py-8 text-center">
@@ -1411,13 +1287,15 @@ export function SidebarTreeView({
               {treeSidebarSpaceKey ? 'This space has no content.' : 'Sync a Confluence space to get started.'}
             </p>
             {!treeSidebarSpaceKey && (
-              <button
+              <Button
                 onClick={() => navigate('/settings')}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action hover:bg-action hover:text-action-foreground transition-colors"
+                variant="secondary"
+                size="sm"
+                leftIcon={<Plus size={12} />}
+                className="mt-3"
               >
-                <Plus size={12} />
                 Sync a Space
-              </button>
+              </Button>
             )}
           </div>
         ) : isLocalSpace ? (
@@ -1464,15 +1342,32 @@ export function SidebarTreeView({
         )}
       </div>
 
-      {/* Scope count + session chrome. Out of the scroller so account and
-          theme stay reachable under a long tree. */}
-      <div className="panel-toolbar flex shrink-0 items-center justify-between gap-2 border-t px-2 py-1.5">
-        <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+      {/* Scope count + low-frequency storage navigation. Out of the scroller
+          so both stay visible under a long tree. Trash belongs with the page
+          corpus, but not beside the Library's primary New Page action. */}
+      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t px-2 py-1.5">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
           {treeData
             ? `${treeData.total} ${treeData.total === 1 ? 'page' : 'pages'}${treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}`
             : ''}
         </span>
-        <SidebarSessionChrome />
+        <Button
+          onClick={() => {
+            navigate('/trash');
+            onNavigate?.();
+          }}
+          variant="ghost"
+          size="sm"
+          className={cn(
+            'h-7 shrink-0 px-2 text-xs text-muted-foreground',
+            location.pathname === '/trash' && 'nav-selection text-foreground',
+          )}
+          aria-current={location.pathname === '/trash' ? 'page' : undefined}
+          leftIcon={<Trash2 size={13} aria-hidden="true" />}
+          data-testid="sidebar-trash"
+        >
+          Trash
+        </Button>
       </div>
 
       {/* Resize handle */}
@@ -1488,7 +1383,7 @@ export function SidebarTreeView({
         aria-valuetext={`${treeSidebarWidth} pixels`}
         tabIndex={0}
         onMouseDown={handleResizeStart}
-        onDoubleClick={() => setTreeSidebarWidth(280)}
+        onDoubleClick={() => setTreeSidebarWidth(282)}
         onKeyDown={handleResizeKeyDown}
         className={cn(
           'group absolute bottom-0 right-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-end outline-none',

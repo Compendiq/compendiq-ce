@@ -1,7 +1,7 @@
 import { useState, useEffect, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { History, Eye, GitCompare, Sparkles, Loader2, X, RotateCcw, AlertTriangle, Info } from 'lucide-react';
+import { History, Eye, FileText, GitCompare, Sparkles, Loader2, X, RotateCcw, AlertTriangle, Info } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { toast } from 'sonner';
 import type {
@@ -9,10 +9,13 @@ import type {
   PageVersionDetail,
 } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
+import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
 import { DiffView } from '../../shared/components/article/DiffView';
+import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { useSettings } from '../../shared/hooks/use-settings';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 
 // Response/type shapes are the single source of truth in @compendiq/contracts
@@ -84,13 +87,15 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
+  const [previewMode, setPreviewMode] = useState<'formatted' | 'text'>('formatted');
   const [compareVersions, setCompareVersions] = useState<[number, number] | null>(null);
   const [showSemanticDiff, setShowSemanticDiff] = useState(false);
   // Version awaiting restore confirmation (ConfirmDialog replaces native confirm()).
   const [pendingRestore, setPendingRestore] = useState<number | null>(null);
 
+  const { data: settings } = useSettings();
   const { data: versionsData, isLoading, isError, error, refetch } = useVersionHistory(pageId, open);
-  const { data: selectedVersionData } = useVersionDetail(
+  const { data: selectedVersionData, isLoading: isVersionDetailLoading } = useVersionDetail(
     pageId,
     selectedVersion,
   );
@@ -157,6 +162,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
   useEffect(() => {
     if (!open) {
       setSelectedVersion(null);
+      setPreviewMode('formatted');
       setCompareVersions(null);
       setShowSemanticDiff(false);
       setPendingRestore(null);
@@ -192,7 +198,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-50 w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 nm-card-elevated overflow-hidden max-h-[85vh] flex flex-col"
+          className="fixed left-1/2 top-1/2 z-50 w-[96vw] sm:w-[92vw] max-w-5xl -translate-x-1/2 -translate-y-1/2 nm-card-elevated overflow-hidden max-h-[90vh] flex flex-col"
           aria-describedby={undefined}
         >
           {/* Header */}
@@ -278,7 +284,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                   <span>{backfillNotice}</span>
                 </div>
               )}
-              <div className="max-h-72 overflow-y-auto">
+              <div className={cn('overflow-y-auto', (selectedVersion !== null || compareVersions !== null || showSemanticDiff) ? 'max-h-48' : 'max-h-72')}>
                 {versions.map((version, i) => (
                   <div
                     key={`${version.versionNumber}-${version.isCurrent}`}
@@ -380,56 +386,119 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
 
             {/* Version preview */}
             <AnimatePresence>
-              {selectedVersionData && (
+              {selectedVersion !== null && (
                 <m.div
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
                   className="overflow-hidden border-t border-border"
                 >
-                  <div className="p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="text-xs font-medium text-muted-foreground">
-                        Version {selectedVersionData.versionNumber} Preview
-                        {selectedVersionData.author && (
-                          <span className="ml-1 font-normal">by {selectedVersionData.author}</span>
-                        )}
-                      </h4>
-                      <div className="flex items-center gap-1">
-                        {!selectedVersionData.isCurrent && (
+                  {isVersionDetailLoading || !selectedVersionData ? (
+                    <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+                      <Loader2 size={14} className="animate-spin" />
+                      <span className="text-sm">Loading version preview...</span>
+                    </div>
+                  ) : (
+                    <div className="p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-xs font-medium text-muted-foreground">
+                          Version {selectedVersionData.versionNumber} Preview
+                          {selectedVersionData.author && (
+                            <span className="ml-1 font-normal">by {selectedVersionData.author}</span>
+                          )}
+                        </h4>
+                        <div className="flex items-center gap-2">
+                          {/* View mode toggle */}
+                          <div className="flex rounded-md border border-border">
+                            <button
+                              type="button"
+                              onClick={() => setPreviewMode('formatted')}
+                              className={cn(
+                                'flex items-center gap-1 px-2 py-1 text-xs transition-colors',
+                                previewMode === 'formatted'
+                                  ? 'bg-action/15 text-action font-medium'
+                                  : 'text-muted-foreground hover:bg-foreground/5',
+                              )}
+                              title="Formatted view"
+                              aria-pressed={previewMode === 'formatted'}
+                            >
+                              <Eye size={12} /> Formatted
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setPreviewMode('text')}
+                              className={cn(
+                                'flex items-center gap-1 px-2 py-1 text-xs transition-colors',
+                                previewMode === 'text'
+                                  ? 'bg-action/15 text-action font-medium'
+                                  : 'text-muted-foreground hover:bg-foreground/5',
+                              )}
+                              title="Raw text view"
+                              aria-pressed={previewMode === 'text'}
+                            >
+                              <FileText size={12} /> Raw Text
+                            </button>
+                          </div>
+
+                          {!selectedVersionData.isCurrent && (
+                            <button
+                              onClick={() => handleRestore(selectedVersionData.versionNumber)}
+                              disabled={restoreMutation.isPending}
+                              className="flex items-center gap-1 rounded px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-40"
+                              title="Restore this version"
+                            >
+                              {restoreMutation.isPending ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : (
+                                <RotateCcw size={12} />
+                              )}
+                              Restore this version
+                            </button>
+                          )}
                           <button
-                            onClick={() => handleRestore(selectedVersionData.versionNumber)}
-                            disabled={restoreMutation.isPending}
-                            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-40"
-                            title="Restore this version"
+                            onClick={() => setSelectedVersion(null)}
+                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
+                            title="Close preview"
+                            aria-label="Close preview"
                           >
-                            {restoreMutation.isPending ? (
-                              <Loader2 size={12} className="animate-spin" />
-                            ) : (
-                              <RotateCcw size={12} />
-                            )}
-                            Restore this version
+                            <X size={12} />
                           </button>
-                        )}
-                        <button
-                          onClick={() => setSelectedVersion(null)}
-                          className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
-                        >
-                          <X size={12} />
-                        </button>
+                        </div>
                       </div>
+                      {selectedVersionData.message && (
+                        <p className="mb-2 text-xs italic text-muted-foreground">
+                          &ldquo;{selectedVersionData.message}&rdquo;
+                        </p>
+                      )}
+                      {previewMode === 'formatted' ? (
+                        <FeatureErrorBoundary
+                          featureName="Version Preview"
+                          fallback={
+                            <div className={cn('prose max-h-[50vh] overflow-y-auto p-4 text-xs', !isLight && 'prose-invert')}>
+                              <pre className="whitespace-pre-wrap text-muted-foreground">
+                                {selectedVersionData.bodyText ?? 'No content available'}
+                              </pre>
+                            </div>
+                          }
+                        >
+                          <div className="max-h-[55vh] overflow-y-auto px-5 py-4">
+                            <ArticleViewer
+                              content={selectedVersionData.bodyHtml || selectedVersionData.bodyText || ''}
+                              confluenceUrl={settings?.confluenceUrl}
+                              confluencePageId={selectedVersionData.confluenceId}
+                              pageId={pageId}
+                            />
+                          </div>
+                        </FeatureErrorBoundary>
+                      ) : (
+                        <div className={cn('prose max-h-[55vh] overflow-y-auto px-5 py-4 text-xs', !isLight && 'prose-invert')}>
+                          <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
+                            {selectedVersionData.bodyText ?? 'No content available'}
+                          </pre>
+                        </div>
+                      )}
                     </div>
-                    {selectedVersionData.message && (
-                      <p className="mb-2 text-xs italic text-muted-foreground">
-                        &ldquo;{selectedVersionData.message}&rdquo;
-                      </p>
-                    )}
-                    <div className={cn('prose max-h-48 overflow-y-auto text-xs', !isLight && 'prose-invert')}>
-                      <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
-                        {selectedVersionData.bodyText ?? 'No content available'}
-                      </pre>
-                    </div>
-                  </div>
+                  )}
                 </m.div>
               )}
             </AnimatePresence>
@@ -469,7 +538,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                     Failed to generate semantic diff.
                   </p>
                 ) : semanticDiffMutation.data ? (
-                  <div className={cn('prose max-h-48 overflow-y-auto text-sm', !isLight && 'prose-invert')}>
+                  <div className={cn('prose max-h-[50vh] overflow-y-auto text-sm', !isLight && 'prose-invert')}>
                     <pre className="whitespace-pre-wrap text-xs">{semanticDiffMutation.data.diff}</pre>
                   </div>
                 ) : null}

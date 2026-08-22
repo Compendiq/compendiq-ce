@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { Button } from '../Button';
 
 interface FeatureErrorBoundaryProps {
   children: ReactNode;
@@ -7,6 +8,8 @@ interface FeatureErrorBoundaryProps {
   featureName: string;
   /** Optional callback invoked when the user clicks "Try Again". */
   onReset?: () => void;
+  /** Optional custom fallback UI to render instead of the default error card */
+  fallback?: ReactNode;
 }
 
 interface FeatureErrorBoundaryState {
@@ -51,6 +54,9 @@ export class FeatureErrorBoundary extends Component<
 
   render() {
     if (this.state.hasError) {
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
       return (
         <div
           className="rounded-lg border border-border bg-card p-6 text-center"
@@ -73,13 +79,13 @@ export class FeatureErrorBoundary extends Component<
               {this.state.error.message}
             </pre>
           )}
-          <button
+          <Button
             onClick={this.handleReset}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            variant="secondary"
+            leftIcon={<RefreshCw size={14} />}
           >
-            <RefreshCw size={14} />
             Try Again
-          </button>
+          </Button>
         </div>
       );
     }

@@ -1,59 +1,56 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ThemeToggle } from './ThemeToggle';
 import { useThemeStore } from '../../../stores/theme-store';
 
 /**
- * The control cycles a three-way PREFERENCE (system → light → dark), not a
- * two-way palette toggle. The distinction is the point of these tests: with a
- * two-state toggle there is no way back to "follow my OS" once the user has
- * touched it, which would turn the shipped default into a one-way door on
- * first click.
+ * The control is a named three-way *preference* menu (System / Light / Dark),
+ * not a two-way palette toggle and not a cycle. `system` must stay reachable
+ * after the user has picked a palette, or the shipped default becomes a
+ * one-way door on first click.
  */
+async function openMenu() {
+  const trigger = screen.getByTestId('theme-toggle');
+  fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+  await vi.waitFor(() => {
+    expect(screen.getByTestId('theme-option-system')).toBeInTheDocument();
+  });
+}
+
 describe('ThemeToggle', () => {
   beforeEach(() => {
     useThemeStore.setState({ preference: 'system', theme: 'graphite' });
   });
 
-  it('renders a button with an accessible label', () => {
+  it('renders a button named for the current preference', () => {
     render(<ThemeToggle />);
-    const btn = screen.getByRole('button');
+    const btn = screen.getByRole('button', { name: 'Theme: System' });
     expect(btn).toBeInTheDocument();
-    expect(btn).toHaveAttribute('aria-label');
+    expect(btn).toHaveAttribute('data-testid', 'theme-toggle');
   });
 
-  it('cycles system → light → dark → system', () => {
+  it('offers System, Light, and Dark as named choices', async () => {
     render(<ThemeToggle />);
-    const btn = screen.getByRole('button');
+    await openMenu();
+    expect(screen.getByTestId('theme-option-system')).toHaveTextContent('System');
+    expect(screen.getByTestId('theme-option-light')).toHaveTextContent('Light');
+    expect(screen.getByTestId('theme-option-dark')).toHaveTextContent('Dark');
+  });
 
-    fireEvent.click(btn);
+  it('sets an explicit preference from the menu', async () => {
+    render(<ThemeToggle />);
+    await openMenu();
+    fireEvent.click(screen.getByTestId('theme-option-light'));
     expect(useThemeStore.getState().preference).toBe('light');
     expect(useThemeStore.getState().theme).toBe('paper');
-
-    fireEvent.click(btn);
-    expect(useThemeStore.getState().preference).toBe('dark');
-    expect(useThemeStore.getState().theme).toBe('graphite');
-
-    // The rung that a two-state toggle cannot reach.
-    fireEvent.click(btn);
-    expect(useThemeStore.getState().preference).toBe('system');
   });
 
-  // The icon and label report the PREFERENCE, so the control never claims the
-  // user chose dark when the OS did.
-  it('announces the current preference and the next one', () => {
-    render(<ThemeToggle />);
-    expect(screen.getByRole('button').getAttribute('aria-label')).toMatch(/match system/i);
-
-    fireEvent.click(screen.getByRole('button'));
-    expect(screen.getByRole('button').getAttribute('aria-label')).toMatch(/light/i);
-  });
-
-  it('resolves an explicit preference to its palette', () => {
+  it('can return to system after an explicit choice', async () => {
     useThemeStore.setState({ preference: 'dark', theme: 'graphite' });
     render(<ThemeToggle />);
-
-    fireEvent.click(screen.getByRole('button'));
+    expect(screen.getByRole('button', { name: 'Theme: Dark' })).toBeInTheDocument();
+    await openMenu();
+    fireEvent.click(screen.getByTestId('theme-option-system'));
     expect(useThemeStore.getState().preference).toBe('system');
   });
 });

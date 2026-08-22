@@ -55,15 +55,17 @@ describe('the 48px line across the top of every pane', () => {
       .split('\n')
       .filter((l) => l.includes('panel-toolbar') && l.includes('border-b'));
 
-    expect(rows.length, `${file}: no bordered panel-toolbar row found — this guard is stale`).toBe(
+    expect(rows.length, `${file}: no bordered panel-toolbar row found — this guard is stale`).toBeGreaterThanOrEqual(
       1,
     );
-    expect(
-      rows[0],
-      `${file}: the bordered panel-toolbar row lost its h-12. It draws part of the ` +
-        `single line across the top of the app; without a fixed height it collapses ` +
-        `to its content and its rule stops meeting the strips beside it.`,
-    ).toMatch(/\bh-12\b/);
+    for (const row of rows) {
+      expect(
+        row,
+        `${file}: a bordered panel-toolbar row lost its h-12. It draws part of the ` +
+          `single line across the top of the app; without a fixed height it collapses ` +
+          `to its content and its rule stops meeting the strips beside it: ${row}`,
+      ).toMatch(/\bh-12\b/);
+    }
   });
 
   it.each(PARENT_BORDERED)('%s subtracts the parent hairline (%s)', (file) => {

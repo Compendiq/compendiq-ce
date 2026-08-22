@@ -66,11 +66,11 @@ describe('EditorToolbar', () => {
     expect(properties).not.toContainElement(screen.getByRole('button', { name: 'Save' }));
   });
 
-  it('presents nineteen main controls plus utilities', () => {
+  it('presents eighteen main controls plus utilities', () => {
     render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
-    // 19 = (block type + quote + code block + divider) + 5 marks + 1 align dropdown + 3 lists + 2 colours + 1 emoji + Insert + undo + redo
-    expect(toolbar.querySelectorAll('button').length).toBe(19);
+    // 18 = (block type + quote + code block + divider) + 5 marks + 1 align dropdown + 3 lists + 1 colour + 1 emoji + Insert + undo + redo
+    expect(toolbar.querySelectorAll('button').length).toBe(18);
   });
 
   it('renders the groups in the restructured order', () => {
@@ -79,17 +79,26 @@ describe('EditorToolbar', () => {
       document.querySelectorAll<HTMLElement>('[data-testid^="toolbar-group-"]'),
     ).map((el) => el.dataset.testid);
 
-    // First choose the block, then shape text and lists. Alignment belongs with
-    // lists; block-level actions follow it as their own compact section.
+    // First choose the block, then shape text. Color sits with lists so it
+    // is immediately left of the bullet list; block-level actions follow.
     expect(groups).toEqual([
       'toolbar-group-history',
       'toolbar-group-block-type',
       'toolbar-group-inline',
       'toolbar-group-lists',
       'toolbar-group-block-actions',
-      'toolbar-group-colors',
       'toolbar-group-insert',
     ]);
+  });
+
+  it('sits the colour picker immediately left of the bullet list', () => {
+    render(<EditorToolbar editor={createMockEditor()} />);
+    const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
+    const buttons = Array.from(toolbar.querySelectorAll('button'));
+    const colorIdx = buttons.findIndex((b) => b.getAttribute('data-testid') === 'color-picker-trigger');
+    const bulletIdx = buttons.findIndex((b) => b.getAttribute('aria-label') === 'Bullet List (Ctrl+Shift+8)');
+    expect(colorIdx).toBeGreaterThan(-1);
+    expect(bulletIdx).toBe(colorIdx + 1);
   });
 
   it('gives every icon-only control a real aria-label, not just a tooltip', () => {
@@ -230,7 +239,7 @@ describe('EditorToolbar', () => {
 
     for (const label of [
       'Table',
-      'Image…',
+      'Image',
       'Diagram',
       'Mermaid diagram',
       'Status label…',
@@ -251,6 +260,9 @@ describe('EditorToolbar', () => {
 
     expect(screen.getByText('Panel')).toBeInTheDocument();
     expect(screen.getByText('Column layout')).toBeInTheDocument();
+
+    // Folded formatting stays out of Insert until the toolbar is actually narrow.
+    expect(screen.queryByRole('menuitem', { name: 'Strikethrough' })).toBeNull();
   });
 
   it('distinguishes "List of figures" from "Child pages"', () => {
@@ -264,45 +276,18 @@ describe('EditorToolbar', () => {
     expect(glyph(figures)).not.toBe(glyph(children));
   });
 
-  it('opens a popover — not an in-menu field — for the image URL', () => {
+  it('opens a popover — not an in-menu field — for the image file picker', () => {
     // A Radix menu is role="menu", whose typeahead swallows printable keys.
-    // Any text field has to leave the menu. Same trap as the block menu's
+    // Any input has to leave the menu. Same trap as the block menu's
     // free-form Improve input.
     render(<EditorToolbar editor={createMockEditor()} />);
     openInsertMenu();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Image…' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Image' }));
 
-    const field = screen.getByLabelText('Image URL');
+    const field = screen.getByLabelText('Choose image file');
     expect(field).toBeInTheDocument();
+    expect(field).toHaveAttribute('type', 'file');
     expect(field.closest('[role="menu"]')).toBeNull();
-  });
-
-  it('refuses to insert an image with no URL', () => {
-    render(<EditorToolbar editor={createMockEditor()} />);
-    openInsertMenu();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Image…' }));
-    expect(screen.getByRole('button', { name: 'Insert image' })).toBeDisabled();
-  });
-
-  it('inserts an image from the popover', () => {
-    const setImage = vi.fn(() => chain);
-    const chain: Record<string, unknown> = new Proxy({ setImage } as Record<string, unknown>, {
-      get(target, prop: string) {
-        if (prop === 'setImage') return target.setImage;
-        if (prop === 'run') return vi.fn();
-        return () => chain;
-      },
-    });
-    render(<EditorToolbar editor={createMockEditor({ chain: () => chain })} />);
-    openInsertMenu();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Image…' }));
-
-    fireEvent.change(screen.getByLabelText('Image URL'), {
-      target: { value: 'https://example.com/a.png' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Insert image' }));
-
-    expect(setImage).toHaveBeenCalledWith({ src: 'https://example.com/a.png' });
   });
 
   it('offers the status label its colour and its text outside the menu', () => {
@@ -408,26 +393,52 @@ describe('EditorToolbar', () => {
 
   // ---------- colours ----------
 
-  it('sizes both colour pickers like every other control', () => {
-    // They used to be the two 36px boxes in a row of 28px ones. `nm-icon-button`
-    // is the workspace's 32px control, so the row now has ONE height.
+  it('sizes the colour picker like every other control', () => {
     render(<EditorToolbar editor={createMockEditor()} />);
-    const triggers = screen.getAllByTestId('color-picker-trigger');
-    expect(triggers.length).toBe(2);
-    for (const t of triggers) expect(t.className).toContain('nm-icon-button');
+    const trigger = screen.getByTestId('color-picker-trigger');
+    expect(trigger.className).toContain('nm-icon-button');
   });
 
-  it('names both colour triggers and every swatch', () => {
+  it('opens one Color panel with text and highlight rows, including Brown and Teal', () => {
     render(<EditorToolbar editor={createMockEditor()} />);
-    const triggers = screen.getAllByTestId('color-picker-trigger');
-    expect(triggers[0]).toHaveAttribute('aria-label', 'Text Color');
-    expect(triggers[1]).toHaveAttribute('aria-label', 'Highlight (Ctrl+Shift+H)');
-    expect(triggers[0]?.querySelector('svg')).toHaveClass('lucide-baseline');
+    const trigger = screen.getByTestId('color-picker-trigger');
+    expect(trigger).toHaveAttribute('aria-label', 'Color');
+    expect(trigger.querySelector('svg')).toHaveClass('lucide-baseline');
 
-    fireEvent.click(triggers[0]!);
+    fireEvent.click(trigger);
+    expect(screen.getByRole('group', { name: 'Color' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Highlight' })).toBeInTheDocument();
+
     const swatches = screen.getAllByTestId('color-picker-swatch');
-    expect(swatches.length).toBeGreaterThanOrEqual(8);
+    // 10 hues × two roles. The original eight stay; Brown and Teal are the extras.
+    expect(swatches).toHaveLength(20);
+    expect(screen.getByLabelText('Brown text')).toBeInTheDocument();
+    expect(screen.getByLabelText('Teal highlight')).toBeInTheDocument();
     for (const sw of swatches) expect(sw.getAttribute('aria-label')).toBeTruthy();
+  });
+
+  it('applies text colour and highlight from the same panel', () => {
+    const setColor = vi.fn(() => chain);
+    const toggleHighlight = vi.fn(() => chain);
+    const chain: Record<string, unknown> = new Proxy(
+      { setColor, toggleHighlight } as Record<string, unknown>,
+      {
+        get(target, prop: string) {
+          if (prop === 'setColor') return target.setColor;
+          if (prop === 'toggleHighlight') return target.toggleHighlight;
+          if (prop === 'run') return vi.fn();
+          return () => chain;
+        },
+      },
+    );
+    render(<EditorToolbar editor={createMockEditor({ chain: () => chain })} />);
+    fireEvent.click(screen.getByTestId('color-picker-trigger'));
+    fireEvent.click(screen.getByLabelText('Red text'));
+    expect(setColor).toHaveBeenCalledWith('#ef4444');
+
+    fireEvent.click(screen.getByTestId('color-picker-trigger'));
+    fireEvent.click(screen.getByLabelText('Yellow highlight'));
+    expect(toggleHighlight).toHaveBeenCalledWith({ color: '#eab308' });
   });
 
   // ---------- utilities ----------
@@ -521,15 +532,45 @@ describe('EditorToolbar', () => {
       expect(screen.queryByRole('button', { name: 'Code Block' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Divider' })).not.toBeInTheDocument();
       expect(screen.queryByTestId('emoji-picker-trigger')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('more-formatting-trigger')).not.toBeInTheDocument();
 
-      // Trigger resize back to wide width (1200px)
+      openInsertMenu();
+      for (const label of ['Underline', 'Strikethrough', 'Inline Code', 'Ordered List', 'Task List', 'Alignment', 'Color…']) {
+        expect(screen.getByText(label)).toBeInTheDocument();
+      }
+      expect(screen.queryByTestId('color-picker-trigger')).not.toBeInTheDocument();
+    } finally {
+      window.ResizeObserver = originalRO;
+    }
+  });
+
+  it('restores folded items when the toolbar widens again', () => {
+    let resizeCallback: ((entries: Array<{ contentRect: { width: number } }>) => void) | null = null;
+    class MockResizeObserver {
+      constructor(cb: (entries: Array<{ contentRect: { width: number } }>) => void) {
+        resizeCallback = cb;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    const originalRO = window.ResizeObserver;
+    window.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+
+    try {
+      render(<EditorToolbar editor={createMockEditor()} />);
+      act(() => {
+        resizeCallback?.([{ contentRect: { width: 500 } }]);
+      });
+      expect(screen.queryByRole('button', { name: 'Underline (Ctrl+U)' })).not.toBeInTheDocument();
+
       act(() => {
         resizeCallback?.([{ contentRect: { width: 1200 } }]);
       });
-
       expect(screen.getByRole('button', { name: 'Underline (Ctrl+U)' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument();
       expect(screen.getByTestId('emoji-picker-trigger')).toBeInTheDocument();
+      expect(screen.getByTestId('color-picker-trigger')).toBeInTheDocument();
     } finally {
       window.ResizeObserver = originalRO;
     }
@@ -552,8 +593,16 @@ describe('EditorToolbar', () => {
       />,
     );
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
+    expect(toolbar.className).toContain('flex-1');
     expect(toolbar.className).toContain('min-w-0');
-    expect(toolbar.className).toContain('overflow-x-auto');
+    // The marks/lists cluster is the only box allowed to shrink (`min-w-0`).
+    // Insert stays `shrink-0` so it cannot slide under Tags/Save — folded
+    // tools live in Insert, so that trigger has to stay tappable.
+    const scroller = screen.getByTestId('toolbar-scroll');
+    expect(scroller.className).toContain('min-w-0');
+    expect(scroller.className).toContain('flex-1');
+    expect(scroller.className).toContain('overflow-x-auto');
+    expect(screen.getByTestId('toolbar-group-insert').className).toContain('shrink-0');
 
     // The actions group must stay `shrink-0` — if it started shrinking too,
     // scrolling the formatting group would no longer be sufficient to keep
@@ -562,11 +611,9 @@ describe('EditorToolbar', () => {
     expect(actionsGroup.className).toContain('shrink-0');
   });
 
-  // ---------- More formatting overflow (P2) ----------
-  // Strikethrough, Inline Code, Task List, Alignment, Text Color and
-  // Highlight used to fold into NOTHING when the responsive collapse hid
-  // them, despite the code's own comment claiming they "gracefully fold
-  // into the Insert dropdown" — only Quote/Code block/Divider actually did.
+  // ---------- Insert overflow ----------
+  // A second toolbar trigger ("More formatting") used to appear just to
+  // hold the folded marks. Insert already exists; folded tools go there.
 
   function resizeTo(width: number) {
     let resizeCallback: ((entries: Array<{ contentRect: { width: number } }>) => void) | null = null;
@@ -586,35 +633,41 @@ describe('EditorToolbar', () => {
     };
   }
 
-  it('has no More formatting trigger when every control already has its own button', () => {
-    render(<EditorToolbar editor={createMockEditor()} />);
-    expect(screen.queryByTestId('more-formatting-trigger')).not.toBeInTheDocument();
-  });
-
-  it('surfaces Task List, Inline Code, Strikethrough, Alignment and Colors behind More formatting once the toolbar narrows past their thresholds', () => {
-    const resize = resizeTo(650); // below all of 760/820/900/980 (not 1060 — Quote/Code block/Divider already live in Insert)
+  it('never adds a More formatting trigger, wide or narrow', () => {
+    const resize = resizeTo(650);
     try {
       render(<EditorToolbar editor={createMockEditor()} />);
+      expect(screen.queryByTestId('more-formatting-trigger')).not.toBeInTheDocument();
       resize.apply();
-
-      // The inline buttons are gone...
-      expect(screen.queryByRole('button', { name: 'Strikethrough (Ctrl+Shift+X)' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Inline Code (Ctrl+E)' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Task List' })).not.toBeInTheDocument();
-      expect(screen.queryByTestId('align-menu-trigger')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('color-picker-trigger')).not.toBeInTheDocument();
-
-      // ...but every one of them is reachable from More formatting.
-      open(screen.getByTestId('more-formatting-trigger'));
-      for (const label of ['Task List', 'Inline Code', 'Strikethrough', 'Alignment', 'Text Color', 'Highlight']) {
-        expect(screen.getByText(label)).toBeInTheDocument();
-      }
+      expect(screen.queryByTestId('more-formatting-trigger')).not.toBeInTheDocument();
     } finally {
       resize.restore();
     }
   });
 
-  it('runs the hidden Strikethrough toggle from the overflow menu and closes it', () => {
+  it('surfaces Task List, Inline Code, Strikethrough and Alignment in Insert once the toolbar narrows past their thresholds', () => {
+    const resize = resizeTo(650); // below 760/820/980 (not 1060 — Quote/Code block/Divider already live in Insert)
+    try {
+      render(<EditorToolbar editor={createMockEditor()} />);
+      resize.apply();
+
+      expect(screen.queryByRole('button', { name: 'Strikethrough (Ctrl+Shift+X)' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Inline Code (Ctrl+E)' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Task List' })).not.toBeInTheDocument();
+      expect(screen.queryByTestId('align-menu-trigger')).not.toBeInTheDocument();
+      expect(screen.getByTestId('color-picker-trigger')).toBeInTheDocument();
+
+      openInsertMenu();
+      for (const label of ['Task List', 'Inline Code', 'Strikethrough', 'Alignment']) {
+        expect(screen.getByText(label)).toBeInTheDocument();
+      }
+      expect(screen.queryByRole('menuitem', { name: 'Color…' })).toBeNull();
+    } finally {
+      resize.restore();
+    }
+  });
+
+  it('runs the hidden Strikethrough toggle from Insert', () => {
     const toggleStrike = vi.fn(() => chain);
     const chain: Record<string, unknown> = new Proxy({ toggleStrike } as Record<string, unknown>, {
       get(target, prop: string) {
@@ -628,7 +681,7 @@ describe('EditorToolbar', () => {
     try {
       render(<EditorToolbar editor={editor} />);
       resize.apply();
-      open(screen.getByTestId('more-formatting-trigger'));
+      openInsertMenu();
       fireEvent.click(screen.getByText('Strikethrough'));
       expect(toggleStrike).toHaveBeenCalledTimes(1);
     } finally {
@@ -636,7 +689,7 @@ describe('EditorToolbar', () => {
     }
   });
 
-  it('applies alignment from the overflow menu’s Alignment submenu', () => {
+  it('applies alignment from Insert’s Alignment submenu', () => {
     const setTextAlign = vi.fn(() => chain);
     const chain: Record<string, unknown> = new Proxy({ setTextAlign } as Record<string, unknown>, {
       get(target, prop: string) {
@@ -650,7 +703,7 @@ describe('EditorToolbar', () => {
     try {
       render(<EditorToolbar editor={editor} />);
       resize.apply();
-      open(screen.getByTestId('more-formatting-trigger'));
+      openInsertMenu();
       open(screen.getByText('Alignment'));
       fireEvent.click(screen.getByText('Align Center'));
       expect(setTextAlign).toHaveBeenCalledWith('center');
@@ -659,26 +712,75 @@ describe('EditorToolbar', () => {
     }
   });
 
-  it('applies a text color from the overflow menu’s Text Color submenu', () => {
-    const setColor = vi.fn(() => chain);
-    const chain: Record<string, unknown> = new Proxy({ setColor } as Record<string, unknown>, {
-      get(target, prop: string) {
-        if (prop === 'setColor') return target.setColor;
-        if (prop === 'run') return vi.fn();
-        return () => chain;
-      },
-    });
-    const editor = createMockEditor({ chain: () => chain });
-    const resize = resizeTo(650);
+  it('folds Color and Bullet List into Insert at tighter widths', () => {
+    const resize = resizeTo(400);
     try {
-      render(<EditorToolbar editor={editor} />);
+      render(<EditorToolbar editor={createMockEditor()} />);
       resize.apply();
-      open(screen.getByTestId('more-formatting-trigger'));
-      open(screen.getByText('Text Color'));
-      fireEvent.click(screen.getByLabelText('Red'));
-      expect(setColor).toHaveBeenCalledWith('#ef4444');
+
+      expect(screen.queryByTestId('color-picker-trigger')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Bullet List (Ctrl+Shift+8)' })).not.toBeInTheDocument();
+
+      openInsertMenu();
+      expect(screen.getByText('Color…')).toBeInTheDocument();
+      expect(screen.getByText('Bullet List')).toBeInTheDocument();
     } finally {
       resize.restore();
     }
   });
+
+  it('folds against the space left after Tags and Save, not the full pane', () => {
+    const observers: Array<{
+      cb: (entries: Array<{ contentRect: { width: number }; target: Element }>) => void;
+    }> = [];
+    class MockResizeObserver {
+      cb: (entries: Array<{ contentRect: { width: number }; target: Element }>) => void;
+      constructor(cb: (entries: Array<{ contentRect: { width: number }; target: Element }>) => void) {
+        this.cb = cb;
+        observers.push(this);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    const originalRO = window.ResizeObserver;
+    window.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+
+    try {
+      render(
+        <EditorToolbar
+          editor={createMockEditor()}
+          pageProperty={<button type="button">Add tags</button>}
+          actions={<button type="button">Save</button>}
+        />,
+      );
+      const session = screen.getByTestId('toolbar-session');
+      act(() => {
+        // 760px pane with a 220px Tags/Save cluster used to keep Underline
+        // on the bar (760 >= 640) and clip Save. Budget is 540.
+        observers[0]?.cb([{ contentRect: { width: 760 }, target: document.body }]);
+        observers[1]?.cb([{ contentRect: { width: 220 }, target: session }]);
+      });
+
+      expect(screen.queryByRole('button', { name: 'Underline (Ctrl+U)' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
+      expect(screen.getByTestId('toolbar-session').className).toContain('shrink-0');
+    } finally {
+      window.ResizeObserver = originalRO;
+    }
+  });
+
+  it('keeps the Insert trigger labelled by aria-label when the word is dropped', () => {
+    const resize = resizeTo(360);
+    try {
+      render(<EditorToolbar editor={createMockEditor()} />);
+      resize.apply();
+      const trigger = screen.getByTestId('insert-menu-trigger');
+      expect(trigger).toHaveAttribute('aria-label', 'Insert');
+      expect(trigger).not.toHaveTextContent('Insert');
+    } finally {
+      resize.restore();
+    }
+  });
+
 });

@@ -850,6 +850,18 @@ describe('content-converter', () => {
       expect(xhtml).toContain('>rich<');
     });
 
+    it('round-trips children macro columns display parameter', () => {
+      const storage =
+        '<ac:structured-macro ac:name="children"><ac:parameter ac:name="columns">2</ac:parameter></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('data-columns="2"');
+
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="children"');
+      expect(xhtml).toContain('ac:name="columns"');
+      expect(xhtml).toContain('>2<');
+    });
+
     it('round-trips ui-children macro preserving macro name', () => {
       const html = confluenceToHtml(UI_CHILDREN_MACRO_PAGE);
       expect(html).toContain('data-macro-name="ui-children"');

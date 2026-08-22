@@ -28,8 +28,8 @@ interface ShortcutRegistryEntry {
  */
 export const SHORTCUTS: ShortcutRegistryEntry[] = [
   // -- Navigation --
-  { id: 'search', keys: 'ctrl+k', label: 'Jump to page or command', category: 'navigation' },
-  { id: 'focus-page-search', keys: '/', label: 'Focus page search (on Pages)', category: 'navigation' },
+  { id: 'search', keys: 'ctrl+k', label: 'Find', category: 'navigation' },
+  { id: 'focus-page-search', keys: '/', label: 'Filter this list', category: 'navigation' },
   { id: 'ai-mode', keys: '/ai', label: 'AI mode (inside palette)', category: 'navigation' },
 
   { id: 'shortcuts-help', keys: '?', label: 'Keyboard Shortcuts', category: 'navigation' },
@@ -50,7 +50,7 @@ export const SHORTCUTS: ShortcutRegistryEntry[] = [
 
   // -- Panels --
   { id: 'toggle-sidebar', keys: ',', label: 'Toggle Left Sidebar', category: 'panels' },
-  { id: 'toggle-right-panel', keys: '.', label: 'Toggle Right Panel', category: 'panels' },
+  { id: 'toggle-right-panel', keys: '.', label: 'Toggle Page Inspector', category: 'panels' },
   { id: 'zen-mode', keys: '\\', label: 'Zen Mode', category: 'panels' },
   { id: 'close-modal', keys: 'esc', label: 'Close dialog / modal', category: 'panels' },
 

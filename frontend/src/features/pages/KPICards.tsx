@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { m } from 'framer-motion';
-import { FileText, Clock, RefreshCw } from 'lucide-react';
+import { FileText, Clock } from 'lucide-react';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
 import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
 
@@ -14,9 +14,6 @@ interface KPICardsProps {
   };
   spacesCount: number;
   lastSynced?: string;
-  /** Triggers a sync from inside the Last Sync card. Omitted → no CTA. */
-  onSync?: () => void;
-  isSyncing?: boolean;
 }
 
 const stagger = {
@@ -24,8 +21,8 @@ const stagger = {
 };
 
 const fadeUp = {
-  initial: { opacity: 0, y: 16 },
-  animate: { opacity: 1, y: 0 },
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
 };
 
 // ---------- Embedding Coverage Ring ----------
@@ -99,11 +96,11 @@ function EmbeddingCoverageRing({ percent, isProcessing }: EmbeddingCoverageRingP
 // ---------- KPICards ----------
 
 /**
- * Status strip aligned in the header row.
+ * Corpus status strip for the Pages body — not the 48px header.
  *
- * Displays three corpus facts: total pages, embedded count / coverage, and last sync time with quick-sync CTA.
+ * Three facts: total pages, embedded count / coverage, and last sync timestamp.
  */
-export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isSyncing }: KPICardsProps) {
+export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsProps) {
   const totalPages = embeddingStatus?.totalPages ?? 0;
   const embeddedPages = embeddingStatus?.embeddedPages ?? 0;
   const coveragePercent = totalPages > 0
@@ -125,8 +122,12 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
         <span className="font-semibold tabular-nums">
           {embeddingStatus ? <AnimatedCounter value={totalPages} /> : '--'}
         </span>
-        <span className="text-xs text-muted-foreground hidden lg:inline" data-testid="kpi-spaces-synced">
-          across {spacesCount} {spacesCount === 1 ? 'space' : 'spaces'}
+        <span className="text-xs text-muted-foreground hidden xl:inline" data-testid="kpi-spaces-synced">
+          {spacesCount > 0
+            ? `across ${spacesCount} ${spacesCount === 1 ? 'space' : 'spaces'}`
+            : totalPages > 0
+              ? 'in this library'
+              : 'No Confluence spaces'}
         </span>
       </m.div>
 
@@ -150,35 +151,25 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
 
       <span aria-hidden className="hidden h-3.5 w-px bg-border sm:block" />
 
-      {/* Last sync and sync action */}
+      {/* Last sync timestamp */}
       <m.div
         variants={fadeUp}
         className="flex items-center gap-1.5 text-xs sm:text-[13px] shrink-0"
         data-testid="kpi-last-sync"
       >
         <Clock size={14} className="shrink-0 text-muted-foreground" />
-        <span className="text-muted-foreground">Last Sync</span>
-        <span className="font-semibold">
-          {lastSynced ? formatRelativeTime(lastSynced) : 'Never'}
+        <span className="text-muted-foreground">
+          {spacesCount > 0 || lastSynced ? 'Last Sync' : 'Sync'}
         </span>
-        {!lastSynced && (
-          <span className="hidden truncate text-xs text-muted-foreground 2xl:inline">
-            Nothing mirrored yet.
-          </span>
-        )}
-        {onSync && (
-          <button
-            type="button"
-            onClick={onSync}
-            disabled={isSyncing}
-            className="nm-button-ghost h-7 px-2 text-xs gap-1 shrink-0 ml-0.5 disabled:opacity-50"
-            data-testid="kpi-sync-btn"
-            title={isSyncing ? 'Syncing...' : 'Sync knowledge base'}
-          >
-            <RefreshCw size={12} className={isSyncing ? 'animate-spin' : undefined} />
-            <span>{isSyncing ? 'Syncing...' : 'Sync'}</span>
-          </button>
-        )}
+        <span className="font-semibold">
+          {lastSynced
+            ? formatRelativeTime(lastSynced)
+            : spacesCount === 0 && totalPages > 0
+              ? 'Local pages only'
+              : totalPages > 0
+                ? 'Not recorded'
+                : 'Nothing mirrored yet'}
+        </span>
       </m.div>
     </m.div>
   );

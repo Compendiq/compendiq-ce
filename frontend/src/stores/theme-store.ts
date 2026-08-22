@@ -28,6 +28,62 @@ export type ThemePreference = (typeof THEME_PREFERENCES)[number];
 
 export const DEFAULT_THEME_PREFERENCE: ThemePreference = 'system';
 
+export const FONT_FAMILY_IDS = [
+  'inter',
+  'opendyslexic-alta',
+  'atkinson',
+  'system',
+  'serif',
+] as const;
+
+export type FontFamilyId = (typeof FONT_FAMILY_IDS)[number];
+
+export const FONT_SCOPES = ['application', 'reading-pane'] as const;
+export type FontScope = (typeof FONT_SCOPES)[number];
+
+export const DEFAULT_FONT_FAMILY: FontFamilyId = 'inter';
+export const DEFAULT_FONT_SCOPE: FontScope = 'application';
+
+export interface FontFamilyMeta {
+  id: FontFamilyId;
+  label: string;
+  description: string;
+  cssFamily: string;
+}
+
+export const FONT_FAMILY_OPTIONS: FontFamilyMeta[] = [
+  {
+    id: 'inter',
+    label: 'Inter',
+    description: 'Clean, neutral, and familiar',
+    cssFamily: "'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
+  },
+  {
+    id: 'opendyslexic-alta',
+    label: 'OpenDyslexic Alta',
+    description: 'Weighted baselines and open letterforms',
+    cssFamily: "'OpenDyslexic Alta', 'OpenDyslexic', sans-serif",
+  },
+  {
+    id: 'atkinson',
+    label: 'Atkinson Hyperlegible',
+    description: 'Distinct characters for low-vision reading',
+    cssFamily: "'Atkinson Hyperlegible', sans-serif",
+  },
+  {
+    id: 'system',
+    label: 'System UI',
+    description: 'Uses your operating system font',
+    cssFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+  },
+  {
+    id: 'serif',
+    label: 'Source Serif',
+    description: 'Warm, editorial long-form reading',
+    cssFamily: "'Source Serif 4', Georgia, Cambria, 'Times New Roman', serif",
+  },
+];
+
 interface ThemeMeta {
   id: ThemeId;
   label: string;
@@ -54,19 +110,19 @@ export const THEMES: ThemeMeta[] = [
   {
     id: 'graphite',
     label: 'Graphite',
-    description: 'Neutral graphite surfaces with one teal accent',
+    description: 'Neutral graphite surfaces with one Steel accent',
     category: 'dark',
     // Hex values must match the rendered surfaces in index.css — the picker
     // chip is the only way users see a surface before applying the theme, and
     // a test compares these against the tokens rather than trusting either.
-    preview: { bg: '#0d0e11', card: '#16181d', primary: '#4dd0e1', accent: '#eceef2' },
+    preview: { bg: '#0f0f10', card: '#161617', primary: '#86aec8', accent: '#e7e9eb' },
   },
   {
     id: 'paper',
     label: 'Paper',
-    description: 'Neutral paper surfaces with one teal accent',
+    description: 'Neutral paper surfaces with one Steel accent',
     category: 'light',
-    preview: { bg: '#fbfbfc', card: '#ffffff', primary: '#0e7490', accent: '#17181a' },
+    preview: { bg: '#f7f7f8', card: '#fafafb', primary: '#3f627c', accent: '#17181a' },
   },
 ];
 
@@ -80,9 +136,15 @@ interface ThemeState {
   preference: ThemePreference;
   /** The palette actually painted right now — always a real ThemeId. */
   theme: ThemeId;
+  fontFamily: FontFamilyId;
+  fontScope: FontScope;
+  dyslexiaSpacing: boolean;
   setPreference: (preference: ThemePreference) => void;
   /** Explicit palette pick; implies a non-system preference. */
   setTheme: (theme: ThemeId) => void;
+  setFontFamily: (fontFamily: FontFamilyId) => void;
+  setFontScope: (fontScope: FontScope) => void;
+  setDyslexiaSpacing: (enabled: boolean) => void;
 }
 
 const DARK_QUERY = '(prefers-color-scheme: dark)';
@@ -103,6 +165,18 @@ export function validateThemePreference(value: unknown): ThemePreference {
   return (THEME_PREFERENCES as readonly string[]).includes(value as string)
     ? (value as ThemePreference)
     : DEFAULT_THEME_PREFERENCE;
+}
+
+export function validateFontFamily(value: unknown): FontFamilyId {
+  return (FONT_FAMILY_IDS as readonly string[]).includes(value as string)
+    ? (value as FontFamilyId)
+    : DEFAULT_FONT_FAMILY;
+}
+
+export function validateFontScope(value: unknown): FontScope {
+  return (FONT_SCOPES as readonly string[]).includes(value as string)
+    ? (value as FontScope)
+    : DEFAULT_FONT_SCOPE;
 }
 
 /**
@@ -147,11 +221,30 @@ export function applyThemeToDocument(theme: ThemeId): void {
   root.classList.toggle('dark', !isLight);
 }
 
+/**
+ * Apply typography through root data attributes so CSS can scope a preference
+ * to the whole app or only the document reading surface without React
+ * re-rendering the article tree.
+ */
+export function applyTypographyToDocument(
+  fontFamily: FontFamilyId,
+  fontScope: FontScope,
+  dyslexiaSpacing: boolean,
+): void {
+  const root = document.documentElement;
+  root.setAttribute('data-font', fontFamily);
+  root.setAttribute('data-font-scope', fontScope);
+  root.setAttribute('data-dyslexia-spacing', String(dyslexiaSpacing));
+}
+
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
       preference: DEFAULT_THEME_PREFERENCE,
       theme: resolvePreference(DEFAULT_THEME_PREFERENCE),
+      fontFamily: DEFAULT_FONT_FAMILY,
+      fontScope: DEFAULT_FONT_SCOPE,
+      dyslexiaSpacing: false,
       setPreference: (preference: ThemePreference) => {
         const theme = resolvePreference(preference);
         applyThemeToDocument(theme);
@@ -161,20 +254,47 @@ export const useThemeStore = create<ThemeState>()(
         applyThemeToDocument(theme);
         set({ preference: isLightTheme(theme) ? 'light' : 'dark', theme });
       },
+      setFontFamily: (fontFamily: FontFamilyId) => {
+        const { fontScope, dyslexiaSpacing } = useThemeStore.getState();
+        applyTypographyToDocument(fontFamily, fontScope, dyslexiaSpacing);
+        set({ fontFamily });
+      },
+      setFontScope: (fontScope: FontScope) => {
+        const { fontFamily, dyslexiaSpacing } = useThemeStore.getState();
+        applyTypographyToDocument(fontFamily, fontScope, dyslexiaSpacing);
+        set({ fontScope });
+      },
+      setDyslexiaSpacing: (dyslexiaSpacing: boolean) => {
+        const { fontFamily, fontScope } = useThemeStore.getState();
+        applyTypographyToDocument(fontFamily, fontScope, dyslexiaSpacing);
+        set({ dyslexiaSpacing });
+      },
     }),
     {
       name: 'compendiq-theme',
       // `theme` is derived state and is deliberately NOT persisted: writing it
       // would let a stale resolved value win over the live OS reading on the
       // next boot, which is how "follow the OS" quietly stops following.
-      partialize: (state) => ({ preference: state.preference }),
+      partialize: (state) => ({
+        preference: state.preference,
+        fontFamily: state.fontFamily,
+        fontScope: state.fontScope,
+        dyslexiaSpacing: state.dyslexiaSpacing,
+      }),
       onRehydrateStorage: () => {
         return (state?: ThemeState) => {
           if (!state) return;
           const preference = validateThemePreference(state.preference);
+          const fontFamily = validateFontFamily(state.fontFamily);
+          const fontScope = validateFontScope(state.fontScope);
+          const dyslexiaSpacing = state.dyslexiaSpacing === true;
           state.preference = preference;
           state.theme = resolvePreference(preference);
+          state.fontFamily = fontFamily;
+          state.fontScope = fontScope;
+          state.dyslexiaSpacing = dyslexiaSpacing;
           applyThemeToDocument(state.theme);
+          applyTypographyToDocument(fontFamily, fontScope, dyslexiaSpacing);
         };
       },
     },

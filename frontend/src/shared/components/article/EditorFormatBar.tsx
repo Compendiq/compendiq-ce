@@ -2,11 +2,12 @@ import { useRef } from 'react';
 import { useEditorState } from '@tiptap/react';
 import type { Editor as EditorType } from '@tiptap/react';
 import {
-  Bold, Italic, Underline, Strikethrough, Code, Highlighter,
+  Bold, Italic, Underline, Strikethrough, Code,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { TOOLBAR_ITEM_ATTR, useToolbarRovingFocus } from './use-toolbar-roving-focus';
+import { ColorPickerDropdown } from './EditorColorPicker';
 
 /**
  * #708 / #1179 — the editor's inline-formatting toggles, shared by the
@@ -90,10 +91,6 @@ const MARKS: readonly MarkSpec[] = [
   {
     key: 'code', mark: 'code', title: 'Inline code (Ctrl+E)', Icon: Code,
     run: (e, r) => toggle(e, r, (c) => c.toggleCode()),
-  },
-  {
-    key: 'highlight', mark: 'highlight', title: 'Highlight (Ctrl+Shift+H)', Icon: Highlighter,
-    run: (e, r) => toggle(e, r, (c) => c.toggleHighlight()),
   },
 ];
 
@@ -180,7 +177,11 @@ export function EditorFormatBar({
         const active = getAlignActive(e, alignment, range, scoped);
         if (active) mask |= (1 << (i + 8));
       }
-      return mask;
+      return {
+        mask,
+        textColor: e.getAttributes('textStyle').color as string | undefined,
+        highlightColor: e.getAttributes('highlight').color as string | undefined,
+      };
     },
   });
 
@@ -202,12 +203,20 @@ export function EditorFormatBar({
               const range = getRange();
               if (range) run(editor, range);
             }}
-            active={Boolean(marksMask & (1 << i))}
+            active={Boolean((marksMask?.mask ?? 0) & (1 << i))}
             title={title}
           >
             <Icon size={15} />
           </MenuButton>
         ))}
+        <ColorPickerDropdown
+          textColor={marksMask?.textColor}
+          highlightColor={marksMask?.highlightColor}
+          onSelectText={(color) => toggle(editor, getRange ? getRange() : null, (c) => c.setColor(color))}
+          onResetText={() => toggle(editor, getRange ? getRange() : null, (c) => c.unsetColor())}
+          onSelectHighlight={(color) => toggle(editor, getRange ? getRange() : null, (c) => c.toggleHighlight({ color }))}
+          onResetHighlight={() => toggle(editor, getRange ? getRange() : null, (c) => c.unsetHighlight())}
+        />
       </div>
 
       <div role="separator" aria-orientation="vertical" className="mx-0.5 h-4 w-px bg-border/80" />
@@ -221,7 +230,7 @@ export function EditorFormatBar({
               if (scoped && !range) return;
               setAlign(editor, range, alignment);
             }}
-            active={Boolean(marksMask & (1 << (i + 8)))}
+            active={Boolean((marksMask?.mask ?? 0) & (1 << (i + 8)))}
             title={title}
           >
             <Icon size={15} />

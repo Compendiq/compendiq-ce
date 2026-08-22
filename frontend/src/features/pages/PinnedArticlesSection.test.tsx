@@ -4,6 +4,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { COLLAPSED_PIN_COUNT } from './pinned-articles-layout';
+import { toast } from 'sonner';
+
+vi.mock('sonner', () => ({
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
+}));
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -69,7 +74,7 @@ describe('PinnedArticlesSection', () => {
 
     const section = await screen.findByTestId('pinned-articles-section');
     expect(section).toBeInTheDocument();
-    expect(screen.getByText('Pinned Pages')).toBeInTheDocument();
+    expect(screen.getByText('Pinned pages')).toBeInTheDocument();
     expect(screen.getByText('Getting Started Guide')).toBeInTheDocument();
     expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
   });
@@ -81,19 +86,16 @@ describe('PinnedArticlesSection', () => {
       });
     });
 
-    const { container } = render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
 
-    // Wait for query to settle
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalled();
+      expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
     });
-
-    // Should render nothing
-    expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
-    expect(container.innerHTML).toBe('');
+    expect(screen.queryByTestId('pinned-empty-cue')).not.toBeInTheDocument();
+    expect(screen.queryByTestId(/^pinned-card-/)).not.toBeInTheDocument();
   });
 
-  it('shows space key and author on pinned cards without excerpt', async () => {
+  it('shows space key on pinned rows without excerpt or author', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(mockPinnedResponse), {
         headers: { 'Content-Type': 'application/json' },
@@ -105,8 +107,22 @@ describe('PinnedArticlesSection', () => {
     await screen.findByTestId('pinned-articles-section');
 
     expect(screen.getByText('DEV')).toBeInTheDocument();
-    expect(screen.getByText('Alice')).toBeInTheDocument();
+    expect(screen.queryByText('Alice')).not.toBeInTheDocument();
     expect(screen.queryByText('This is a getting started guide for new developers.')).not.toBeInTheDocument();
+  });
+
+  it('does not render the quick-return label and includes each pin’s update date', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify(mockPinnedResponse), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    await screen.findByTestId('pinned-articles-section');
+
+    expect(screen.queryByText('Quick return')).not.toBeInTheDocument();
+    expect(screen.getAllByText(/Updated/)).toHaveLength(2);
   });
 
   it('renders title with line-clamp-2 allowing multiline title up to 2 lines', async () => {
@@ -121,11 +137,11 @@ describe('PinnedArticlesSection', () => {
     await screen.findByTestId('pinned-articles-section');
 
     const titleElement = screen.getByText('Getting Started Guide');
-    expect(titleElement.className).toContain('line-clamp-2');
-    expect(titleElement.className).not.toContain('truncate');
+    expect(titleElement.className).toContain('truncate');
+    expect(titleElement.className).not.toContain('line-clamp-2');
   });
 
-  it('stretches every card to fill its grid row so uneven content does not leave ragged heights', async () => {
+  it('renders pinned pages as distinct clickable cards with palette background inside the strip', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(mockPinnedResponse), {
         headers: { 'Content-Type': 'application/json' },
@@ -136,12 +152,19 @@ describe('PinnedArticlesSection', () => {
 
     await screen.findByTestId('pinned-articles-section');
 
-    // jsdom performs no layout, so this is a proxy for the real assertion:
-    // grid items stretch to the row's height by default, and only a card
-    // that also claims h-full actually fills that height instead of sizing
-    // to its own (shorter) content and leaving empty space in its cell.
-    expect(screen.getByTestId('pinned-card-page-1').className).toContain('h-full');
-    expect(screen.getByTestId('pinned-card-page-2').className).toContain('h-full');
+    const row = screen.getByTestId('pinned-card-page-1');
+    expect(row.tagName).toBe('DIV');
+    expect(row.querySelector('a')).toHaveAttribute('href', '/pages/page-1');
+    expect(row.className).toContain('rounded-lg');
+    expect(row.className).not.toContain('rounded-xl');
+    expect(row.className).not.toContain('h-full');
+    expect(row.className).toContain('bg-card');
+    expect(row.className).toContain('border-border');
+    expect(row.className).toContain('hover:bg-accent');
+    const grid = document.getElementById('pinned-pages-grid')?.className ?? '';
+    expect(grid).toContain('grid');
+    expect(grid).toContain('xl:grid-cols-4');
+    expect(grid).toContain('sm:grid-cols-2');
   });
 
   it('shows unpin button on each card', async () => {
@@ -199,6 +222,28 @@ describe('PinnedArticlesSection', () => {
     });
   });
 
+  it('offers Undo after unpinning', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if ((init?.method ?? 'GET') === 'DELETE' && url.includes('/pages/page-1/pin')) {
+        return new Response(JSON.stringify({ message: 'Page unpinned', pageId: 'page-1' }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify(mockPinnedResponse), { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    fireEvent.click(await screen.findByTestId('unpin-btn-page-1'));
+
+    await waitFor(() => {
+      expect(toast.success).toHaveBeenCalledWith(
+        'Unpinned "Getting Started Guide"',
+        expect.objectContaining({ action: expect.objectContaining({ label: 'Undo' }) }),
+      );
+    });
+  });
+
   // ── Unbounded pins (#1130) ───────────────────────────────────────────────
   // The server-side cap is gone, so the section has to stay a dashboard strip
   // rather than a wall of cards. It collapses to COLLAPSED_PIN_COUNT and hands
@@ -244,7 +289,7 @@ describe('PinnedArticlesSection', () => {
     }
   });
 
-  it('expands to every pin when the toggle is used, and collapses again', async () => {
+  it('expands up to MAX_EXPANDED_PIN_COUNT pins when the toggle is used, and collapses again', async () => {
     mockPins(30);
 
     render(<PinnedArticlesSection />, { wrapper: createWrapper() });
@@ -252,21 +297,22 @@ describe('PinnedArticlesSection', () => {
 
     const toggle = screen.getByTestId('pinned-expand-toggle');
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    // The label names how many are hidden, so the count is never a guess.
-    expect(toggle).toHaveTextContent('22 more');
+    // The label names how many are revealed up to the 2-row ceiling (8 - 4 = 4)
+    expect(toggle).toHaveTextContent('4 more');
 
     fireEvent.click(toggle);
 
     await waitFor(() => {
-      expect(screen.getByTestId('pinned-card-pin-30')).toBeInTheDocument();
+      expect(screen.getByTestId('pinned-card-pin-8')).toBeInTheDocument();
     });
+    expect(screen.queryByTestId('pinned-card-pin-9')).not.toBeInTheDocument();
     expect(screen.getByTestId('pinned-expand-toggle')).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByTestId('pinned-expand-toggle')).toHaveTextContent('Show fewer');
 
     fireEvent.click(screen.getByTestId('pinned-expand-toggle'));
 
     await waitFor(() => {
-      expect(screen.queryByTestId('pinned-card-pin-30')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('pinned-card-pin-8')).not.toBeInTheDocument();
     });
   });
 
@@ -291,7 +337,7 @@ describe('PinnedArticlesSection', () => {
     expect(screen.getByTestId('pinned-count')).toHaveTextContent('30');
   });
 
-  it('renders every pin once expanded, however many there are', async () => {
+  it('bounds expansion to 2 rows (8 pins) to protect search placement above fold', async () => {
     mockPins(100);
 
     render(<PinnedArticlesSection />, { wrapper: createWrapper() });
@@ -299,9 +345,9 @@ describe('PinnedArticlesSection', () => {
     fireEvent.click(screen.getByTestId('pinned-expand-toggle'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('pinned-card-pin-100')).toBeInTheDocument();
+      expect(screen.getByTestId('pinned-card-pin-8')).toBeInTheDocument();
     });
-    expect(screen.getAllByTestId(/^pinned-card-pin-/)).toHaveLength(100);
+    expect(screen.getAllByTestId(/^pinned-card-pin-/)).toHaveLength(8);
   });
 
   // The boundary the toggle's render condition turns on. Tested at 8 (absent)
@@ -323,6 +369,14 @@ describe('PinnedArticlesSection', () => {
     });
   });
 
+  it('keeps the expand action visually attached without an extra divider', async () => {
+    mockPins(COLLAPSED_PIN_COUNT + 1);
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    const toggle = await screen.findByTestId('pinned-expand-toggle');
+    expect(toggle.parentElement).not.toHaveClass('border-t', 'border-border');
+  });
+
   it('states the count for a screen reader, not just as a bare number', async () => {
     mockPins(30);
 
@@ -342,7 +396,9 @@ describe('PinnedArticlesSection', () => {
     const section = await screen.findByTestId('pinned-articles-section');
     expect(section.tagName).toBe('SECTION');
     expect(section).toHaveAttribute('aria-labelledby', 'pinned-pages-heading');
-    expect(document.getElementById('pinned-pages-heading')).toHaveTextContent('Pinned Pages');
+    expect(document.getElementById('pinned-pages-heading')).toHaveTextContent('Pinned');
+    expect(section).toHaveClass('border-y', 'border-border', 'py-2');
+    expect(section).not.toHaveClass('rounded-lg', 'bg-background');
   });
 
   // Unpinning unmounts the card that owns the focused button. Without a
@@ -389,7 +445,7 @@ describe('PinnedArticlesSection', () => {
     render(<PinnedArticlesSection />, { wrapper });
     await screen.findByTestId('pinned-articles-section');
     fireEvent.click(screen.getByTestId('pinned-expand-toggle'));
-    await waitFor(() => expect(screen.getByTestId('pinned-card-pin-30')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('pinned-card-pin-8')).toBeInTheDocument());
 
     // The list drops below the cut-off; the toggle goes with it, and the
     // section must not remain latched open behind it.
@@ -402,99 +458,4 @@ describe('PinnedArticlesSection', () => {
     });
     expect(screen.getAllByTestId(/^pinned-card-pin-/)).toHaveLength(COLLAPSED_PIN_COUNT);
   });
-
-  it('states the total in the section heading', async () => {
-    mockPins(30);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-
-    expect(screen.getByTestId('pinned-count')).toHaveTextContent('30');
-  });
-
-  it('renders every pin once expanded, however many there are', async () => {
-    mockPins(100);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-    fireEvent.click(screen.getByTestId('pinned-expand-toggle'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('pinned-card-pin-100')).toBeInTheDocument();
-    });
-    expect(screen.getAllByTestId(/^pinned-card-pin-/)).toHaveLength(100);
-  });
-
-  // The boundary the toggle's render condition turns on. Tested at 8 (absent)
-  // and 30 (present) before, which leaves an off-by-one free to hide the ninth
-  // pin permanently.
-  it('shows the toggle at exactly one pin past the collapsed count', async () => {
-    mockPins(COLLAPSED_PIN_COUNT + 1);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-
-    const toggle = screen.getByTestId('pinned-expand-toggle');
-    expect(toggle).toHaveTextContent('1 more');
-    expect(screen.queryByTestId(`pinned-card-pin-${COLLAPSED_PIN_COUNT + 1}`)).not.toBeInTheDocument();
-
-    fireEvent.click(toggle);
-    await waitFor(() => {
-      expect(screen.getByTestId(`pinned-card-pin-${COLLAPSED_PIN_COUNT + 1}`)).toBeInTheDocument();
-    });
-  });
-
-  it('states the count for a screen reader, not just as a bare number', async () => {
-    mockPins(30);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-
-    // The visual badge is decorative; the sentence beside it is what is read.
-    expect(screen.getByTestId('pinned-count')).toHaveAttribute('aria-hidden', 'true');
-    expect(screen.getByText('30 pinned')).toBeInTheDocument();
-  });
-
-  it('names the section by its heading', async () => {
-    mockPins(2);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-
-    const section = await screen.findByTestId('pinned-articles-section');
-    expect(section.tagName).toBe('SECTION');
-    expect(section).toHaveAttribute('aria-labelledby', 'pinned-pages-heading');
-    expect(document.getElementById('pinned-pages-heading')).toHaveTextContent('Pinned Pages');
-  });
-
-  // Unpinning unmounts the card that owns the focused button. Without a
-  // handover, focus falls to <body> — which with the cap gone can be a very
-  // long way back up the document.
-  it('moves focus to the next unpin button after unpinning', async () => {
-    let items = 3;
-    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = typeof input === 'string' ? input : (input as Request).url;
-      if ((init?.method ?? 'GET') === 'DELETE' && url.includes('/pin')) {
-        items = 2;
-        return new Response(JSON.stringify({ message: 'Page unpinned' }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify(manyPinsResponse(items)), {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    });
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-
-    const first = screen.getByTestId('unpin-btn-pin-1');
-    first.focus();
-    fireEvent.click(first);
-
-    await waitFor(() => {
-      expect(document.activeElement).toBe(screen.getByTestId('unpin-btn-pin-2'));
-    });
-  });
-
-
 });

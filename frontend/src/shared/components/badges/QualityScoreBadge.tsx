@@ -28,9 +28,9 @@ interface ScoreConfig {
 /**
  * Quality is a *measurement*, not a pipeline state, and it is the only thing on
  * the Pages list that used to be painted in the status palette. A page scoring
- * 65 wore the same amber as a space mid-sync, and one scoring 74 the same teal
+ * 65 wore the same amber as a space mid-sync, and one scoring 74 the same Steel
  * as "embedding" — on the densest scanning surface in the app, in the two hues
- * the system reserves most tightly (amber = warning, teal = brand AND
+ * the system reserves most tightly (amber = warning, Steel = brand AND
  * interaction). So the split is now explicit:
  *
  *   - the pipeline STATES (analyzing / failed / skipped / not scored) keep

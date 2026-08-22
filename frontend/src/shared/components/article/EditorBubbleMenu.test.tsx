@@ -3,6 +3,8 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Highlight } from '@tiptap/extension-highlight';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { Color } from '@tiptap/extension-color';
 import type { Editor as EditorType } from '@tiptap/react';
 import { useEffect } from 'react';
 
@@ -23,6 +25,7 @@ import {
   ConfluenceJiraIssue,
   ConfluenceStatus,
   ConfluenceUserMention,
+  CommentMark,
 } from './article-extensions';
 import { IMPROVE_DECORATION_CLASS } from './improve-decoration';
 import {
@@ -63,6 +66,8 @@ function Harness({
   const editor = useEditor({
     extensions: [
       StarterKit,
+      TextStyle,
+      Color,
       Highlight.configure({ multicolor: true }),
       // The REAL inline Confluence atoms. The macro guard below is about these
       // exact node types — a hand-rolled stand-in would prove nothing about the
@@ -71,6 +76,7 @@ function Harness({
       ConfluenceStatus,
       ConfluenceUserMention,
       ConfluenceJiraIssue,
+      CommentMark,
     ],
     content,
     immediatelyRender: false,
@@ -208,6 +214,21 @@ describe('BubbleMenuContent — formatting commands', () => {
 
     fireEvent.click(screen.getByTitle('Bold (Ctrl+B)'));
     expect(editor.getHTML()).toContain('<strong>Hello</strong>');
+  });
+
+  it('exposes the same color picker as the toolbar', async () => {
+    await mountEditor('<p>Hello world</p>');
+    expect(screen.getByTestId('color-picker-trigger')).toBeInTheDocument();
+  });
+
+  it('keeps color when the selection is also bold', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+    fireEvent.click(screen.getByTitle('Bold (Ctrl+B)'));
+    fireEvent.click(screen.getByTestId('color-picker-trigger'));
+    fireEvent.click(screen.getByLabelText('Red text'));
+    expect(editor.getHTML()).toContain('rgb(239, 68, 68)');
+    expect(editor.getHTML()).toContain('<strong>');
   });
 
   it('toggles italic on the current selection', async () => {
@@ -1022,4 +1043,64 @@ describe('EditorBubbleMenu — update loop prevention (#cpu)', () => {
     expect(updateCount).toBe(0);
   });
 });
+
+describe('BubbleMenuContent — inline notes & comments (#1408)', () => {
+  it('renders the Note action button in the bubble menu', async () => {
+    await mountEditor('<p>Selectable text snippet</p>');
+    expect(screen.getByTestId('bubble-comment-trigger')).toBeInTheDocument();
+  });
+
+  it('expands the CommentComposer when Note button is clicked on a selection', async () => {
+    const editor = await mountEditor('<p>Selectable text snippet</p>');
+    act(() => {
+      editor.commands.setTextSelection({ from: 1, to: 11 }); // "Selectable"
+    });
+
+    fireEvent.click(screen.getByTestId('bubble-comment-trigger'));
+
+    expect(screen.getByTestId('inline-comment-composer')).toBeInTheDocument();
+    expect(screen.getByTestId('comment-composer-quote')).toHaveTextContent('Selectable');
+  });
+
+  it('expands CommentComposer on Cmd+Alt+M shortcut', async () => {
+    const editor = await mountEditor('<p>Important phrase to note</p>');
+    act(() => {
+      editor.commands.setTextSelection({ from: 1, to: 10 });
+    });
+
+    fireEvent.keyDown(document, { key: 'm', metaKey: true, altKey: true });
+
+    expect(screen.getByTestId('inline-comment-composer')).toBeInTheDocument();
+  });
+
+  it('expands CommentComposer on Cmd+Shift+C shortcut', async () => {
+    const editor = await mountEditor('<p>Important phrase to note</p>');
+    act(() => {
+      editor.commands.setTextSelection({ from: 1, to: 10 });
+    });
+
+    fireEvent.keyDown(document, { key: 'c', metaKey: true, shiftKey: true });
+
+    expect(screen.getByTestId('inline-comment-composer')).toBeInTheDocument();
+  });
+
+  it('submitting a note attaches the comment mark to the selection', async () => {
+    const editor = await mountEditor('<p>Important sentence for review</p>');
+    act(() => {
+      editor.commands.setTextSelection({ from: 1, to: 10 });
+    });
+
+    fireEvent.click(screen.getByTestId('bubble-comment-trigger'));
+    const input = screen.getByTestId('inline-comment-input');
+    fireEvent.change(input, { target: { value: 'Review this part' } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('inline-comment-submit'));
+    });
+
+    expect(editor.getHTML()).toContain('data-comment-id="local-');
+    expect(screen.queryByTestId('inline-comment-composer')).not.toBeInTheDocument();
+  });
+});
+
 

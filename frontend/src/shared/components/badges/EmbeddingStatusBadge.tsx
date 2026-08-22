@@ -67,7 +67,7 @@ function getStatusConfig(
         // every healthy page — a freshness readout, not an event. Painting it
         // the connected green put a permanent green pill on every Details tab
         // and diluted the one hue that means "a connection is up". The live
-        // states above/below keep their reserved hues (teal = embedding,
+        // states above/below keep their reserved hues (Steel = embedding,
         // red on failure).
         badgeClass: 'bg-muted text-muted-foreground',
         animate: false,

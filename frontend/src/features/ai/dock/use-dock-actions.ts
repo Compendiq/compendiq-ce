@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { ApiError } from '../../../shared/lib/api';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { chipUserMessage, type DockChipId } from './dock-chips';
+import { getCreateSkill, CREATE_SKILLS, type CreateSkillId } from '../create-skills';
 
 export interface DockActionOptions {
   /**
@@ -88,9 +89,9 @@ export function useDockActions({
 }: DockActionOptions = {}) {
   const {
     page, pageId, model, includeSubPages, thinkingMode, isStreaming, conversationId,
-    improvementType, diagramType, input, setInput, setMessages, runStream,
+    improvementType, diagramType, createSkill, input, setInput, setMessages, runStream,
     setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
-    setDiffBaseVersion, setDiagramCode,
+    setDiffBaseVersion, setDiagramCode, setGeneratedDraft,
   } = useAiContext();
 
   /** Shared preflight. Returns false (having explained why) when we cannot run. */
@@ -276,5 +277,63 @@ export function useDockActions({
     setDiffBaseVersion, setDiagramCode,
   ]);
 
-  return { ask, runChip, canRun };
+  const runCreateSkill = useCallback(async (skillId?: CreateSkillId) => {
+    if (!canRun()) return;
+    onDeepSearchConsumed?.();
+
+    const activeSkillId = skillId ?? createSkill;
+    const skill = getCreateSkill(activeSkillId) ?? CREATE_SKILLS[0]!;
+    const rawInstruction = input.trim();
+    const prompt = skill.promptTemplate ? `${skill.promptTemplate}${rawInstruction}` : rawInstruction;
+    if (!prompt) {
+      toast.error('Please describe what you want to create.');
+      return;
+    }
+
+    if (isBusy) {
+      toast.error('Still attaching — try again in a moment.');
+      return;
+    }
+
+    setInput('');
+    if (imageHandle) onImageConsumed?.();
+    setGeneratedDraft('');
+
+    const userMessage = rawInstruction
+      ? `${skill.shortName}: ${rawInstruction}`
+      : `Generate ${skill.name}`;
+    const thinking = thinkingMode ? { thinking: true } : {};
+
+    await runStream(
+      '/llm/generate',
+      {
+        prompt,
+        model,
+        ...(skill.backendTemplate && { template: skill.backendTemplate }),
+        ...(referenceText && { documentText: referenceText }),
+        ...(imageHandle && { imageHandle }),
+        ...thinking,
+      },
+      {
+        userMessage,
+        onError: (err) => {
+          if (!imageHandle) return false;
+          if (!(err instanceof ApiError) || err.statusCode !== 410) return false;
+          onImageExpired?.();
+          setInput(rawInstruction);
+          toast.error('The image expired — attach it again.');
+          return true;
+        },
+        onComplete: (accumulated) => {
+          setGeneratedDraft(accumulated);
+        },
+      },
+    );
+  }, [
+    canRun, onDeepSearchConsumed, createSkill, input, isBusy, setInput,
+    imageHandle, onImageConsumed, setGeneratedDraft, thinkingMode, runStream,
+    model, referenceText, onImageExpired,
+  ]);
+
+  return { ask, runChip, runCreateSkill, canRun };
 }

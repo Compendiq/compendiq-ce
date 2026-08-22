@@ -45,6 +45,14 @@ export interface PageStateInput {
   embeddingDirty?: boolean;
   summaryStatus?: SummaryStatus;
   qualityStatus?: QualityStatus | null;
+  /**
+   * When false, idle "Not indexed" resolves to null. Failures and in-flight
+   * work still render. The Library list turns this off at rest so an unindexed
+   * corpus is not a wall of identical chips, and turns it on when the list is
+   * filtered to Needs Embedding. Default true so other callers and the ladder
+   * tests keep the full signal.
+   */
+  showIdleEmbedding?: boolean;
 }
 
 export interface PageState {
@@ -57,6 +65,7 @@ export function resolvePageState({
   embeddingDirty,
   summaryStatus,
   qualityStatus,
+  showIdleEmbedding = true,
 }: PageStateInput): PageState | null {
   // Named per pipeline, not a bare "Failed": a page that was scored once and
   // then fails re-analysis keeps its last score, so QualityScoreBadge renders
@@ -86,7 +95,7 @@ export function resolvePageState({
     };
   }
 
-  if (embeddingDirty) {
+  if (embeddingDirty && showIdleEmbedding) {
     return {
       label: 'Not indexed',
       title: 'Not embedded yet — this page will not appear in semantic search',

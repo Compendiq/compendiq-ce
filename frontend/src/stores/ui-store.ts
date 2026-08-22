@@ -12,9 +12,13 @@ interface UiState {
   treeSidebarSpaceKey: string | undefined;
   treeSidebarWidth: number;
   articleSidebarCollapsed: boolean;
+  /**
+   * Below `xl` the inspector starts collapsed so the article keeps the
+   * workspace. Wide layouts still use `articleSidebarCollapsed`. This flag
+   * is the laptop expand (layout presets, Alt+I, the expand control).
+   */
+  articleSidebarLaptopExpanded: boolean;
   articleSidebarWidth: number;
-  /** When false, single-key shortcuts (no Ctrl/Alt) are suppressed (WCAG 2.1.4). */
-  singleKeyShortcutsEnabled: boolean;
   /** A personal editing preference, not a per-document action — belongs in
    *  Settings, not on a permanent slot in the editor toolbar (see
    *  ThemeTab.tsx's "Editor" section). */
@@ -27,8 +31,8 @@ interface UiState {
   setTreeSidebarWidth: (width: number) => void;
   toggleArticleSidebar: () => void;
   setArticleSidebarCollapsed: (collapsed: boolean) => void;
+  setArticleSidebarLaptopExpanded: (expanded: boolean) => void;
   setArticleSidebarWidth: (width: number) => void;
-  setSingleKeyShortcutsEnabled: (enabled: boolean) => void;
   setVimModeEnabled: (enabled: boolean) => void;
 }
 
@@ -44,8 +48,9 @@ export const useUiStore = create<UiState>()(
       // hidden text. The row gutter was rebuilt to reclaim ~35px of that (see
       // SidebarTreeNode); this carries the remaining 24. Both halves are needed:
       // widening alone just moves the panel's cost onto the article.
-      treeSidebarWidth: 280,
+      treeSidebarWidth: 282,
       articleSidebarCollapsed: false,
+      articleSidebarLaptopExpanded: false,
       // 360, not 280: at the old default the Assistant tab's prose column
       // measured ~233px after the pane's own chrome — a third of the app's
       // enforced 640px/~80-char article reading measure, for the one surface
@@ -53,7 +58,6 @@ export const useUiStore = create<UiState>()(
       // of article at a 1440px viewport (still comfortably above the 640px
       // measure) while giving generated prose room to read as prose.
       articleSidebarWidth: 360,
-      singleKeyShortcutsEnabled: true,
       // Carries over anyone's existing preference from the old standalone
       // localStorage key the toolbar toggle used to write directly. Safe as a
       // one-time plain read (not a full migrateStorageKey, which expects a
@@ -70,8 +74,8 @@ export const useUiStore = create<UiState>()(
       setTreeSidebarWidth: (width) => set({ treeSidebarWidth: Math.max(180, Math.min(600, width)) }),
       toggleArticleSidebar: () => set((s) => ({ articleSidebarCollapsed: !s.articleSidebarCollapsed })),
       setArticleSidebarCollapsed: (collapsed) => set({ articleSidebarCollapsed: collapsed }),
+      setArticleSidebarLaptopExpanded: (expanded) => set({ articleSidebarLaptopExpanded: expanded }),
       setArticleSidebarWidth: (width) => set({ articleSidebarWidth: Math.max(200, Math.min(1200, width)) }),
-      setSingleKeyShortcutsEnabled: (enabled) => set({ singleKeyShortcutsEnabled: enabled }),
       setVimModeEnabled: (enabled) => set({ vimModeEnabled: enabled }),
     }),
     { name: 'compendiq-ui' },

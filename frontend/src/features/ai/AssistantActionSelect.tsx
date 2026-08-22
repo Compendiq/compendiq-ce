@@ -1,14 +1,16 @@
 /* eslint-disable react-refresh/only-export-components */
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
+  BookOpen,
   Check,
-  ChevronDown,
+  ClipboardList,
+  FileCode2,
   FilePlus2,
   GitBranch,
   ListPlus,
   ListTree,
-  MessageSquare,
   ScanText,
+  ShieldAlert,
   SpellCheck2,
   Wrench,
   type LucideIcon,
@@ -19,15 +21,19 @@ import {
   IMPROVEMENT_TYPES,
   type ImprovementType,
 } from './improvement-types';
+import { CREATE_SKILLS, type CreateSkillId } from './create-skills';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
+import { SkillsIcon } from '../../shared/components/SkillsIcon';
 
-export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate';
+export type CreateSkillAction = 'create-spec' | 'create-guide' | 'create-notes' | 'create-postmortem' | 'create-custom';
+export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate' | CreateSkillAction;
 
 interface ActionDefinition {
   id: AssistantAction;
   label: string;
   description: string;
-  Icon: LucideIcon;
+  Icon: LucideIcon | typeof SkillsIcon;
 }
 
 const IMPROVEMENT_ICONS: Record<ImprovementType, LucideIcon> = {
@@ -38,11 +44,19 @@ const IMPROVEMENT_ICONS: Record<ImprovementType, LucideIcon> = {
   completeness: ListPlus,
 };
 
+const CREATE_SKILL_ICONS: Record<CreateSkillId, LucideIcon> = {
+  spec: FileCode2,
+  guide: BookOpen,
+  notes: ClipboardList,
+  postmortem: ShieldAlert,
+  custom: FilePlus2,
+};
+
 const CHAT_ACTION: ActionDefinition = {
   id: 'ask',
   label: 'Q&A',
   description: 'Ask your synced knowledge base',
-  Icon: MessageSquare,
+  Icon: SkillsIcon,
 };
 
 const IMPROVEMENT_ACTIONS: ActionDefinition[] = IMPROVEMENT_TYPES.map((type) => ({
@@ -50,6 +64,13 @@ const IMPROVEMENT_ACTIONS: ActionDefinition[] = IMPROVEMENT_TYPES.map((type) => 
   label: type.charAt(0).toUpperCase() + type.slice(1),
   description: IMPROVEMENT_DESCRIPTIONS[type],
   Icon: IMPROVEMENT_ICONS[type],
+}));
+
+const CREATE_SKILL_ACTIONS: ActionDefinition[] = CREATE_SKILLS.map((skill) => ({
+  id: `create-${skill.id}` as CreateSkillAction,
+  label: skill.shortName,
+  description: skill.description,
+  Icon: CREATE_SKILL_ICONS[skill.id],
 }));
 
 const DIAGRAM_ACTION: ActionDefinition = {
@@ -66,18 +87,38 @@ const GENERATE_ACTION: ActionDefinition = {
   Icon: FilePlus2,
 };
 
-export function resolveAssistantAction(mode: Mode, improvementType: ImprovementType): AssistantAction {
-  return mode === 'improve' ? improvementType : mode;
+export function resolveAssistantAction(
+  mode: Mode,
+  improvementType: ImprovementType,
+  createSkill?: CreateSkillId,
+): AssistantAction {
+  if (mode === 'improve') return improvementType;
+  if (mode === 'generate') {
+    return createSkill ? (`create-${createSkill}` as CreateSkillAction) : 'generate';
+  }
+  return mode;
 }
 
 export function applyAssistantAction(
   action: AssistantAction,
   setMode: (mode: Mode) => void,
   setImprovementType: (type: ImprovementType) => void,
+  setCreateSkill?: (skill: CreateSkillId) => void,
 ) {
   if (IMPROVEMENT_TYPES.includes(action as ImprovementType)) {
     setImprovementType(action as ImprovementType);
     setMode('improve');
+    return;
+  }
+  if (action.startsWith('create-')) {
+    const skillId = action.replace('create-', '') as CreateSkillId;
+    setCreateSkill?.(skillId);
+    setMode('generate');
+    return;
+  }
+  if (action === 'generate') {
+    setCreateSkill?.('custom');
+    setMode('generate');
     return;
   }
   setMode(action as Mode);
@@ -93,9 +134,9 @@ function ActionItem({ action, selected, onSelect }: {
     <DropdownMenu.Item
       onSelect={() => onSelect(action.id)}
       className={cn(
-        'flex cursor-default select-none items-start gap-2.5 rounded-md px-2.5 py-2 outline-none',
-        'data-[highlighted]:bg-foreground/[0.06] data-[highlighted]:text-foreground',
-        selected && 'bg-foreground/[0.06]',
+        'flex cursor-pointer select-none items-start gap-2.5 rounded-md px-2.5 py-2 outline-none text-foreground transition-colors',
+        'data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground',
+        selected && 'bg-accent/60 font-medium',
       )}
       data-testid={`assistant-action-${action.id}`}
     >
@@ -118,36 +159,40 @@ export function AssistantActionSelect({
   disabled?: boolean;
   className?: string;
 }) {
-  const { mode, setMode, improvementType, setImprovementType } = useAiContext();
-  const selected = resolveAssistantAction(mode, improvementType);
-  const available = includeGenerate || selected !== 'generate' ? selected : 'ask';
-  const definitions = [CHAT_ACTION, ...IMPROVEMENT_ACTIONS, DIAGRAM_ACTION, ...(includeGenerate ? [GENERATE_ACTION] : [])];
-  const current = definitions.find((action) => action.id === available) ?? CHAT_ACTION;
+  const { mode, setMode, improvementType, setImprovementType, createSkill, setCreateSkill } = useAiContext();
+  const selected = resolveAssistantAction(mode, improvementType, createSkill);
+  const definitions = [
+    CHAT_ACTION,
+    ...IMPROVEMENT_ACTIONS,
+    ...CREATE_SKILL_ACTIONS,
+    DIAGRAM_ACTION,
+    ...(includeGenerate ? [GENERATE_ACTION] : []),
+  ];
+  const current = definitions.find((action) => action.id === selected) ?? CHAT_ACTION;
   const { Icon } = current;
 
   const selectAction = (action: AssistantAction) => {
-    applyAssistantAction(action, setMode, setImprovementType);
+    applyAssistantAction(action, setMode, setImprovementType, setCreateSkill);
   };
 
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="icon"
           disabled={disabled}
           aria-label={`Selected action: ${current.label}`}
           title={`Selected action: ${current.label}`}
           className={cn(
-            'flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs font-medium text-foreground',
-            'transition-colors hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+            'h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground',
             className,
           )}
           data-testid="assistant-action-select"
         >
-          <Icon size={14} className="text-muted-foreground" aria-hidden />
-          <span>{current.label}</span>
-          <ChevronDown size={12} className="text-muted-foreground" aria-hidden />
-        </button>
+          <Icon size={16} aria-hidden />
+          <span className="sr-only">{current.label}</span>
+        </Button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
@@ -159,23 +204,26 @@ export function AssistantActionSelect({
           <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
             Assistant chat
           </DropdownMenu.Label>
-          <ActionItem action={CHAT_ACTION} selected={available === 'ask'} onSelect={selectAction} />
+          <ActionItem action={CHAT_ACTION} selected={selected === 'ask'} onSelect={selectAction} />
 
           <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
           <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
             Rewrite skills
           </DropdownMenu.Label>
           {IMPROVEMENT_ACTIONS.map((action) => (
-            <ActionItem key={action.id} action={action} selected={available === action.id} onSelect={selectAction} />
+            <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
           ))}
 
           <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
           <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
-            Create
+            Create skills
           </DropdownMenu.Label>
-          <ActionItem action={DIAGRAM_ACTION} selected={available === 'diagram'} onSelect={selectAction} />
+          {CREATE_SKILL_ACTIONS.map((action) => (
+            <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
+          ))}
+          <ActionItem action={DIAGRAM_ACTION} selected={selected === 'diagram'} onSelect={selectAction} />
           {includeGenerate && (
-            <ActionItem action={GENERATE_ACTION} selected={available === 'generate'} onSelect={selectAction} />
+            <ActionItem action={GENERATE_ACTION} selected={selected === 'generate'} onSelect={selectAction} />
           )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>

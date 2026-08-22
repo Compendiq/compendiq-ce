@@ -833,16 +833,83 @@ no shadow left to fall back on.
   gradient surface, or light-theme shell override — drift that looks like polish
   in review. `ui-text-legibility.test.ts` enforces an 11px floor.
 
+### v0.7 — Steel accent and five-step surface ladder (2026-08-20)
+
+**Owner decision.** After comparing four independently contrast-tuned accent
+pairs in a representative workspace mockup, the owner selected **Steel** and
+approved the following Graphite/Paper surface ladder. This amendment supersedes
+v0.6's teal values and its three-step palette; v0.6's flatness, typography,
+density, motion, border, shadow, semantic-colour, and theme-preference rules are
+unchanged.
+
+These are eight **semantic implementation roles**, not eight equally prominent
+colours and not user-selectable swatches. Only one theme is visible at a time;
+within it, five neutrals establish depth, two borders establish structure and
+operability, and one chromatic accent identifies action.
+
+| Role | Production token | Graphite | Paper | Use |
+|---|---|---:|---:|---|
+| Canvas | `--app-chassis` | `#09090A` | `#EEEFF0` | Outer app frame, top app header, and overscroll |
+| Chrome | `--app-header-bg` | `#0C0C0D` | `#F5F5F6` | Internal panel headers and toolbars |
+| Workspace | `--color-background` | `#0F0F10` | `#F7F7F8` | Navigation and AI/context rails |
+| Pane | `--color-card` | `#161617` | `#FAFAFB` | Eye-comfort document and route content |
+| Raised | `--color-card-elevated` | `#1B1B1D` | `#FFFFFF` | Popovers, dialogs, command palette, toasts |
+| Border | `--color-border` | `#2A2A2D` | `#DEDFE3` | Quiet pane separators and prose rules |
+| Interactive border | `--color-border-interactive` | `#71717A` | `#7D818B` | Input and operable-surface outlines |
+| Accent | `--color-primary` | `#86AEC8` | `#3F627C` | Brand, primary action, focus, links, selection, and provenance |
+
+The low-contrast neutral steps are intentional. Paper Workspace→Pane is
+1.03:1 and Graphite Workspace→Pane is 1.06:1; the 1px quiet hairline completes
+the boundary without turning every pane into a card. The panes deliberately
+avoid the luminance extremes: Graphite is lifted above near-black and Paper
+stops short of pure white, reducing glare during long reading and editing
+sessions. True white is reserved for transient Raised content in Paper.
+Operable edges do not use
+that hairline: `--color-border-interactive` measures at least 3.19:1 on every
+surface where it appears. Steel itself clears AA with headroom: Graphite
+`#86AEC8` is 7.67:1 on Pane, Paper `#3F627C` is 6.20:1 on Pane, and the paired
+fill inks clear 4.5:1.
+
+The top app header deliberately uses Canvas rather than Chrome. This makes the
+top edge continuous with the visible left, right, and bottom chassis gutters;
+Chrome remains an internal hierarchy cue for panel headers and toolbars.
+
+Supporting ink and semantic values remain role-bound rather than joining the
+eight-role surface set:
+
+| Role | Graphite | Paper |
+|---|---:|---:|
+| Foreground | `#E7E9EB` | `#17181A` |
+| Muted foreground | `#A0A4AA` | `#63666D` |
+| Connected / success | `#4ADE80` | `#16794A` |
+| Syncing / warning | `#FBBF24` | `#8A5A00` |
+| Disconnected / destructive | `#F87171` | `#C03434` |
+| AI | `#C084FC` | `#7041A8` |
+| Informational | `#8B93F8` | `#3F49B8` |
+
+Steel is still deliberately rare. It owns brand, interaction, focus,
+selection, provenance, and the active embedding pipeline state. Violet marks
+AI identity but an AI-labelled *control* remains Steel because it is operable;
+green, amber, and red remain success, warning, and failure. Measurements,
+categories, and resting capability badges stay neutral.
+
+The palette reaches every production representation of the identity: theme
+metadata/previews, browser and PWA chrome, the React logo, all static SVGs, and
+generated raster icons. `logo-color-parity.test.ts` ties the static mark to the
+Graphite Pane/Foreground/Accent tokens. `compendiq-landing` still carries the
+preceding teal pair, so cross-surface palette parity is reopened; the app is
+the source of truth for the outward port.
+
 **Accepted exception:** the 3px `border-left` on `.panel-*` in `.prose` /
 `.tiptap` is the rendering of a Confluence panel macro in *document body*
 content. Its left rule carries meaning from the source document, and "the source
 of record wins" outranks our surface conventions. The equivalent decoration on
 app chrome stays refused.
 
-**Cross-surface parity — closed, and the shape of the fix is the point.**
-`compendiq-landing` carries Graphite/Paper: same chassis, same teal, same Inter,
-`paper`/`graphite` theme IDs. The app is the source of truth and the port went
-outward.
+**Cross-surface parity — v0.6 state (closed then; reopened by v0.7 above).**
+At v0.6, `compendiq-landing` carried Graphite/Paper: same chassis, same teal,
+same Inter, `paper`/`graphite` theme IDs. The app was the source of truth and
+the port went outward.
 
 Parity is **brand-deep, not rule-deep**. v0.6's flat surfaces, its 10/8/6/4
 radii and its single shadow are answers to being a workspace that recedes behind
@@ -2712,7 +2779,8 @@ Phase-1 text embedder and the VL model embeds images only.
 #### B. Image axis
 
 2026-08-18, `--images`, the #1366 harness, dev `8b07d9e4`. 65 pages / 187
-images / 307 labels (249 de, 58 en; 22 image-negative); text side
+images / 307 labels (249 de, 58 en; 22 image-negative — the **pre-#1370**
+fixture; the shipped one is 309 / 24); text side
 Qwen3-Embedding-4B; `fts=german`; no rerank; leg on/off paired per query in one
 process; McNemar exact. Local shim — the D11 caveat applies.
 
@@ -2746,8 +2814,15 @@ numbers. The production run decides.**
 Full comment, with the raw reports:
 <https://github.com/Compendiq/compendiq-ce/issues/1115#issuecomment-5322826145>.
 
-**Debts these numbers leave open.** The English `image-negative` slice is four
-labels written by the merger rather than a blind labeller (**#1370**). And
+**Debts these numbers leave open.** The English `image-negative` slice these
+numbers were scored on was four labels written by the merger rather than a blind
+labeller; **#1370** has since replaced them with six blind-labelled ones
+(`img-07/08/09-*`), so the fixture is 309 labels with 24 negatives and **the
+table above was measured on the pre-#1370 fixture**. A run today therefore
+scores a different negative slice: say so beside
+`delta.perStyle['image-negative']`, and do not try to pair the two through
+`--baseline` — `pairedBootstrapCi` refuses run sets that are not the same
+queries, and no image-axis report is committed to pair against anyway. And
 `IMAGE_PAGE_FANOUT` (4), `minImageLegParticipation` and `rag_answer_max_images`
 are still **by-analogy** defaults: this corpus is too easy to retune them
 against, so they wait on the production run.

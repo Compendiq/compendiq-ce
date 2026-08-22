@@ -15,9 +15,12 @@ import { PROMPT_MAX_LENGTH } from '../modes/prompt-limits';
 import { DeepSearchToggle } from '../DeepSearchToggle';
 import { RefusalMark, RefusalSourcesLabel, REFUSAL_ANNOUNCEMENT } from '../refusal';
 import { DockDiffCard } from './DockDiffCard';
+import { DockDraftCard } from './DockDraftCard';
 import { useDockActions } from './use-dock-actions';
 import { AssistantActionSelect, resolveAssistantAction } from '../AssistantActionSelect';
+import { CREATE_SKILLS, getCreateSkill, type CreateSkillId } from '../create-skills';
 import { cn } from '../../../shared/lib/cn';
+import { Button } from '../../../shared/components/Button';
 
 // This filter helps native file pickers offer the full attachment surface. It
 // does not decide what is accepted: `useAttachments` routes and validates the
@@ -93,16 +96,11 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
-    chatVisionModel, mode, setMode, improvementType, abortRef,
+    chatVisionModel, mode, setMode, improvementType, createSkill, setCreateSkill, abortRef,
   } = useAiContext();
-  const selectedAction = resolveAssistantAction(mode === 'generate' ? 'ask' : mode, improvementType);
-
-  // Generate belongs only to `/ai`. If that selection survives navigation to
-  // an article, normalize the dock to knowledge chat before the composer can
-  // describe an action it cannot run.
-  useEffect(() => {
-    if (mode === 'generate') setMode('ask');
-  }, [mode, setMode]);
+  const selectedAction = resolveAssistantAction(mode, improvementType, createSkill);
+  const isCreateAction = selectedAction.startsWith('create-') || selectedAction === 'generate';
+  const currentSkill = isCreateAction && createSkill ? getCreateSkill(createSkill) : undefined;
 
   // Source material attached in the composer (#1131, #1154). Dock-local rather
   // than AiContext state: it is material for the *next* action, not part of the
@@ -143,7 +141,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   const [deepSearch, setDeepSearch] = useState(false);
   const clearDeepSearch = useCallback(() => setDeepSearch(false), []);
 
-  const { ask, runChip } = useDockActions({
+  const { ask, runChip, runCreateSkill } = useDockActions({
     referenceText: buildDocumentReferenceText(references),
     imageHandle: image?.handle,
     isBusy,
@@ -156,8 +154,15 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   const sendSelectedAction = useCallback(() => {
     if (selectedAction === 'ask') return ask();
     if (selectedAction === 'diagram') return runChip('diagram');
+    if (selectedAction.startsWith('create-')) {
+      const skillId = selectedAction.replace('create-', '') as CreateSkillId;
+      return runCreateSkill(skillId);
+    }
+    if (selectedAction === 'generate') {
+      return runCreateSkill('custom');
+    }
     return runChip('improve');
-  }, [selectedAction, ask, runChip]);
+  }, [selectedAction, ask, runChip, runCreateSkill]);
 
   // A document or image attached while reading one page is not background for
   // the next one. Threads are retained per page; an attachment silently
@@ -315,7 +320,18 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           the user is asking about out from under them. */}
       <div className="scroll-mask min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3" data-testid="ai-dock-thread">
         {messages.length === 0 && !isStreaming ? (
-          <DockEmptyState pageTitle={page?.title} />
+          <DockEmptyState
+            pageTitle={page?.title}
+            onSelectSkill={(skillId) => {
+              setMode('generate');
+              setCreateSkill(skillId);
+              const skill = getCreateSkill(skillId);
+              if (skill?.suggestedPrompt && !input.trim()) {
+                setInput(skill.suggestedPrompt);
+              }
+              composerRef.current?.focus();
+            }}
+          />
         ) : (
           <div className="space-y-4">
             {messages.map((msg, i) => (
@@ -332,8 +348,9 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             {/* Artifacts belong to the assistant's turn, so they line up with
                 its prose rather than the column edge: ml-7 is the avatar's
                 20px plus the 8px gap. */}
-            <div className="ml-7">
+            <div className="ml-7 space-y-2">
               <DockDiffCard onRerun={runChip} />
+              <DockDraftCard />
               <DiagramPreview />
             </div>
             <div ref={messagesEndRef} />
@@ -394,6 +411,23 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           />
         )}
 
+        {/* Suggested prompt chip when a create skill is active with empty input */}
+        {isCreateAction && currentSkill?.suggestedPrompt && !input.trim() && (
+          <button
+            type="button"
+            onClick={() => {
+              setInput(currentSkill.suggestedPrompt);
+              composerRef.current?.focus();
+            }}
+            className="mb-2 flex max-w-full items-center gap-1.5 truncate text-left text-xs text-muted-foreground hover:text-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            data-testid="dock-suggested-prompt-chip"
+            title="Click to fill with suggested prompt"
+          >
+            <Sparkles size={12} className="shrink-0 text-primary" aria-hidden />
+            <span className="truncate">Suggestion: <span className="italic">{currentSkill.suggestedPrompt}</span></span>
+          </button>
+        )}
+
         {/* flex-wrap so attached-source rows stack above the prompt inside the
             same box. One Attach control receives both documents and images;
             the shared router decides their path. An attachment belongs to what
@@ -444,7 +478,9 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
               ? (page ? 'Ask about this page…' : 'Ask your knowledge base…')
               : selectedAction === 'diagram'
                 ? 'Diagram instructions (optional)'
-                : `Additional ${selectedAction} instructions (optional)`}
+                : isCreateAction
+                  ? (currentSkill?.suggestedPrompt ? `e.g. ${currentSkill.suggestedPrompt}` : 'Describe what to create (e.g. topic, requirements)...')
+                  : `Additional ${selectedAction} instructions (optional)`}
             maxLength={PROMPT_MAX_LENGTH}
             rows={1}
             disabled={isStreaming}
@@ -457,39 +493,44 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
               ? 'Ask the assistant'
               : selectedAction === 'diagram'
                 ? 'Diagram instructions'
-                : `${selectedAction} rewrite instructions`}
+                : isCreateAction
+                  ? 'Create instructions'
+                  : `${selectedAction} rewrite instructions`}
             // The composer wrapper owns the inset surface, border and focus
             // ring; resize-none because the auto-grow hook owns the height.
             className="min-w-0 grow basis-40 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
             data-testid="ai-dock-input"
           />
           {isStreaming ? (
-            <button
+            <Button
               type="button"
+              variant="destructive-ghost"
+              size="sm"
               onClick={() => abortRef.current?.abort()}
               aria-label="Stop response"
               title="Stop response"
-              className="flex shrink-0 self-end items-center rounded-md border border-destructive/70 bg-destructive/10 px-2.5 py-1.5 text-sm font-medium text-destructive transition-all hover:bg-destructive/20 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="shrink-0 self-end h-8 px-2.5"
               data-testid="ai-dock-stop"
-            >
-              <Square size={13} className="fill-current" aria-hidden />
-            </button>
+              leftIcon={<Square size={13} className="fill-current" aria-hidden />}
+            />
           ) : (
-            <button
+            <Button
               type="button"
+              variant="primary"
+              size="sm"
               onClick={() => void sendSelectedAction()}
               disabled={
                 !model
                 || (selectedAction === 'ask' && !input.trim())
-                || (selectedAction !== 'ask' && !page)
+                || (isCreateAction && !input.trim())
+                || (!isCreateAction && selectedAction !== 'ask' && !page)
                 || (selectedAction !== 'diagram' && isBusy)
               }
               aria-label={`Send with ${selectedAction}`}
-              className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-all hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              className="shrink-0 self-end h-8 px-2.5"
               data-testid="ai-dock-send"
-            >
-              <Send size={14} aria-hidden />
-            </button>
+              leftIcon={<Send size={14} aria-hidden />}
+            />
           )}
         </div>
       </div>
@@ -501,7 +542,13 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
 // Empty state
 // ---------------------------------------------------------------------------
 
-function DockEmptyState({ pageTitle }: { pageTitle: string | undefined }) {
+function DockEmptyState({
+  pageTitle,
+  onSelectSkill,
+}: {
+  pageTitle: string | undefined;
+  onSelectSkill?: (skillId: CreateSkillId) => void;
+}) {
   return (
     <div className="flex h-full flex-col items-center justify-center px-2 text-center" role="region" aria-label="Assistant empty state" data-testid="ai-dock-empty">
       {/* A plain glyph, not a glowing disc. This was a 56px blurred halo behind
@@ -520,8 +567,34 @@ function DockEmptyState({ pageTitle }: { pageTitle: string | undefined }) {
       <p className="mt-1.5 max-w-[32ch] text-balance text-xs leading-relaxed text-muted-foreground">
         {pageTitle
           ? 'Ask about it, or pick an action.'
-          : 'The assistant works on the article you are reading.'}
+          : 'Draft a new page with a create skill, or ask a question.'}
       </p>
+      {!pageTitle && (
+        <div className="mt-4 flex w-full flex-col gap-1.5 text-left" data-testid="dock-empty-skills">
+          <span className="px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Create Skills
+          </span>
+          <div className="grid grid-cols-1 gap-1.5">
+            {CREATE_SKILLS.map((skill) => (
+              <button
+                key={skill.id}
+                type="button"
+                onClick={() => onSelectSkill?.(skill.id)}
+                className="flex items-center gap-2 rounded-md border border-border/70 bg-card p-2 text-left text-xs transition-colors hover:border-border hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                data-testid={`dock-empty-skill-${skill.id}`}
+              >
+                <span className="flex size-5 shrink-0 items-center justify-center rounded bg-primary/10 text-primary">
+                  <Sparkles size={11} aria-hidden />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <span className="block font-medium text-foreground">{skill.name}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{skill.description}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -10,7 +10,7 @@ import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import TextAlign from '@tiptap/extension-text-align';
 import { Highlight } from '@tiptap/extension-highlight';
 import { toast } from 'sonner';
-import { ConfluenceSection, ConfluenceColumn, Panel, ConfluenceStatus, ConfluenceUserMention, ExtendedTable } from './article-extensions';
+import { ConfluenceSection, ConfluenceColumn, Panel, ConfluenceStatus, ConfluenceUserMention, ExtendedTable, Details, DetailsSummary } from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
 
 // Mock the SSE transport so "Improve" never hits the network. Capturing the
@@ -123,6 +123,8 @@ function Harness({
       ConfluenceSection,
       ConfluenceColumn,
       Panel,
+      Details,
+      DetailsSummary,
     ],
     content,
     immediatelyRender: false,
@@ -559,6 +561,15 @@ describe('EditorBlockMenu — atomic and macro blocks', () => {
   it('offers Delete only on a list, which is not one of the four text types', async () => {
     await mountMenu('<ul><li><p>One</p></li></ul>');
     expect(screen.queryByTitle('Bold (Ctrl+B)')).toBeNull();
+    expect(screen.getByTestId('block-menu-delete')).toBeTruthy();
+  });
+
+  it('treats a Refined UI Expand as the same Expand module', async () => {
+    await mountMenu(
+      '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+    );
+    expect(screen.getByTestId('block-menu-label')).toHaveTextContent('Expand');
+    expect(screen.queryByTestId('block-menu-default-open')).toBeNull();
     expect(screen.getByTestId('block-menu-delete')).toBeTruthy();
   });
 });

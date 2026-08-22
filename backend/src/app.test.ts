@@ -71,6 +71,7 @@ vi.mock('./routes/llm/llm-models.js', () => ({ llmModelRoutes: noopRoute }));
 vi.mock('./routes/llm/llm-admin.js', () => ({ llmAdminRoutes: noopRoute }));
 vi.mock('./routes/llm/extract-document.js', () => ({ extractDocumentRoutes: noopRoute }));
 vi.mock('./routes/knowledge/pages-crud.js', () => ({ pagesCrudRoutes: noopRoute }));
+vi.mock('./routes/knowledge/pages-icon.js', () => ({ pagesIconRoutes: noopRoute }));
 vi.mock('./routes/knowledge/pages-versions.js', () => ({ pagesVersionRoutes: noopRoute }));
 vi.mock('./routes/knowledge/pages-tags.js', () => ({ pagesTagRoutes: noopRoute }));
 vi.mock('./routes/knowledge/pages-embeddings.js', () => ({ pagesEmbeddingRoutes: noopRoute }));

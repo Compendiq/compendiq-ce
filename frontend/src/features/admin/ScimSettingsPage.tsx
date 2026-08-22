@@ -3,10 +3,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
-  Plus, Trash2, Copy, CheckCircle2, AlertTriangle, Loader2, Shield,
+  Plus, Trash2, Copy, CheckCircle2, AlertTriangle, Shield,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { Button, IconButton } from '../../shared/components/Button';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -221,14 +222,14 @@ export function ScimSettingsPage() {
                 className="flex-1 rounded-md bg-foreground/5 px-3 py-2 font-mono text-sm outline-none"
                 data-testid="scim-token-value"
               />
-              <button
+              <Button
                 onClick={handleCopy}
-                className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-3 py-2 text-sm hover:bg-foreground/10"
+                variant="secondary"
+                leftIcon={<Copy size={14} />}
                 data-testid="scim-copy-token"
               >
-                <Copy size={14} />
                 Copy
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -243,29 +244,29 @@ export function ScimSettingsPage() {
               />
               I have copied this token
             </label>
-            <button
+            <Button
               onClick={handleDismiss}
               disabled={!copiedConfirmed}
-              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              variant="primary"
+              leftIcon={<CheckCircle2 size={14} />}
               data-testid="scim-dismiss-token"
             >
-              <CheckCircle2 size={14} />
               Dismiss
-            </button>
+            </Button>
           </div>
         </m.div>
       )}
 
       {/* Token creation */}
       {!showCreateForm ? (
-        <button
+        <Button
           onClick={() => setShowCreateForm(true)}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          variant="secondary"
+          leftIcon={<Plus size={15} />}
           data-testid="generate-token-btn"
         >
-          <Plus size={16} />
           Generate Token
-        </button>
+        </Button>
       ) : (
         <m.div
           initial={{ opacity: 0, y: -8 }}
@@ -304,25 +305,27 @@ export function ScimSettingsPage() {
             </div>
           </div>
           <div className="flex gap-2">
-            <button
+            <Button
               onClick={handleCreate}
               disabled={!tokenName.trim() || createMutation.isPending}
-              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              isLoading={createMutation.isPending}
+              variant="primary"
+              size="sm"
               data-testid="scim-create-submit"
             >
-              {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}
               Create
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={() => {
                 setShowCreateForm(false);
                 setTokenName('');
                 setExpiresInDays('');
               }}
-              className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+              variant="ghost"
+              size="sm"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </m.div>
       )}
@@ -372,15 +375,15 @@ export function ScimSettingsPage() {
                       {t.expiresAt ? formatDate(t.expiresAt) : 'Never'}
                     </td>
                     <td className="px-4 py-2.5">
-                      <button
+                      <IconButton
                         onClick={() => revokeMutation.mutate(t.id)}
                         disabled={revokeMutation.isPending}
-                        className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                        variant="destructive-ghost"
+                        size="sm"
+                        icon={<Trash2 size={13} />}
                         aria-label={`Revoke token ${t.name}`}
                         data-testid={`revoke-token-${t.id}`}
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                      />
                     </td>
                   </m.tr>
                 );

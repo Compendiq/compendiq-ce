@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
+import { Button } from '../../shared/components/Button';
 import { SyncConflictResolveDialog } from './SyncConflictResolveDialog';
 
 export interface SyncConflict {
@@ -181,15 +182,15 @@ function SyncConflictsPageInner() {
                   <span> · detected {new Date(c.detectedAt).toLocaleString()}</span>
                 </div>
               </div>
-              <button
-                type="button"
+              <Button
                 onClick={() => setSelected(c)}
-                className="inline-flex items-center gap-1.5 rounded-md border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                variant="secondary"
+                size="sm"
+                leftIcon={<GitMerge size={12} />}
                 data-testid={`sync-conflict-review-btn-${c.id}`}
               >
-                <GitMerge size={12} />
                 Review
-              </button>
+              </Button>
             </li>
           ))}
         </ul>

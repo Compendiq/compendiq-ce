@@ -1,5 +1,6 @@
 import { Extension, Node, mergeAttributes, type Editor } from '@tiptap/core';
 import { Table } from '@tiptap/extension-table';
+import { Highlight } from '@tiptap/extension-highlight';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
@@ -11,6 +12,7 @@ import { ChildrenMacroView } from './ChildrenMacroView';
 import { FigureIndexView } from './FigureIndexView';
 import { TableIndexView } from './TableIndexView';
 import { createTableSelectionPerimeterPlugin } from './table-cell-selection';
+import { CompendiqTableView } from './table-layout-view';
 import { blockLabel } from './block-menu-nodes';
 
 const SUMMARY_INTERACTIVE_DESCENDANT =
@@ -18,6 +20,10 @@ const SUMMARY_INTERACTIVE_DESCENDANT =
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
+    details: {
+      /** Persist UI Expand default-open (`open` on the node). Native expand ignores this. */
+      setDetailsOpen: (options: { pos: number; open: boolean }) => ReturnType;
+    };
     confluenceSection: {
       insertColumns: (options?: { cols?: number }) => ReturnType;
       addSectionColumnBefore: () => ReturnType;
@@ -46,16 +52,30 @@ export const LAYOUT_PRESETS = [
   { type: 'three_with_sidebars', label: 'Side panels', cols: 3, bars: [1, 2, 1] },
 ] as const;
 
+function applyExpandIdentity(el: HTMLElement, attrs: { macroName?: unknown; macroParams?: unknown }) {
+  if (typeof attrs.macroName === 'string' && attrs.macroName) {
+    el.setAttribute('data-macro-name', attrs.macroName);
+  } else {
+    el.removeAttribute('data-macro-name');
+  }
+  if (typeof attrs.macroParams === 'string' && attrs.macroParams) {
+    el.setAttribute('data-macro-params', attrs.macroParams);
+  } else {
+    el.removeAttribute('data-macro-params');
+  }
+  el.classList.add('cq-expand');
+}
+
 /**
  * Details node — renders <details> for collapsible sections.
  * Handles Confluence expand macros converted to <details>/<summary>.
  *
- * Two fixes for TipTap editor:
- * 1. In edit mode, force `open` attribute so the content area is always
- *    visible and the cursor can be placed inside.
- * 2. Handle <summary> activation explicitly because ProseMirror swallows the
- *    native toggle: edit mode updates the node attribute, while read mode
- *    changes only the rendered DOM.
+ * Stored `open` is UI Expand's default-open bit (#1129). Native expand must
+ * never write it. The NodeView keeps DOM `open` as a session preview: summary
+ * clicks toggle the element without a document transaction, and a stored-open
+ * change (block menu) is the only thing that resyncs the DOM from attrs.
+ * Edit mode used to force every section open, which hid the reader state and
+ * made a title click persist `expanded` on Refined.
  */
 export const Details = Node.create({
   name: 'details',
@@ -100,43 +120,58 @@ export const Details = Node.create({
     return ['details', mergeAttributes(HTMLAttributes), 0];
   },
 
+  addCommands() {
+    return {
+      setDetailsOpen:
+        ({ pos, open }) =>
+        ({ tr, state, dispatch }) => {
+          const node = state.doc.nodeAt(pos);
+          if (node?.type.name !== 'details') return false;
+          if (node.attrs.macroName !== 'ui-expand') return false;
+          if (dispatch) tr.setNodeMarkup(pos, undefined, { ...node.attrs, open });
+          return true;
+        },
+    };
+  },
+
+  addNodeView() {
+    return ({ node }) => {
+      const el = document.createElement('details');
+      applyExpandIdentity(el, node.attrs);
+      el.open = !!node.attrs.open;
+      let storedOpen = !!node.attrs.open;
+
+      return {
+        dom: el,
+        contentDOM: el,
+        update(updatedNode) {
+          if (updatedNode.type.name !== 'details') return false;
+          applyExpandIdentity(el, updatedNode.attrs);
+          const nextStored = !!updatedNode.attrs.open;
+          if (nextStored !== storedOpen) {
+            el.open = nextStored;
+            storedOpen = nextStored;
+          }
+          return true;
+        },
+        ignoreMutation: (mutation) =>
+          mutation.type === 'attributes' && mutation.attributeName === 'open',
+      };
+    };
+  },
+
   addProseMirrorPlugins() {
     return [
       new Plugin({
         key: new PluginKey('detailsToggle'),
         props: {
-          handleClickOn(view, pos, node, nodePos, event) {
-            // Read mode owns an ephemeral DOM-only toggle below. Updating the
-            // ProseMirror document there would turn a reader's local choice
-            // into content state, even though ArticleViewer is read-only.
-            if (!view.editable) return false;
-            // Check if the click target is a <summary> element
-            const target = event.target as HTMLElement;
-            if (target.tagName !== 'SUMMARY' && !target.closest('summary')) {
-              return false;
-            }
-            // Find the parent details node in the document
-            const resolved = view.state.doc.resolve(pos);
-            for (let d = resolved.depth; d >= 0; d--) {
-              const ancestor = resolved.node(d);
-              if (ancestor.type.name === 'details') {
-                const ancestorPos = resolved.before(d);
-                // Toggle the open attribute
-                const tr = view.state.tr.setNodeAttribute(ancestorPos, 'open', !ancestor.attrs.open);
-                view.dispatch(tr);
-                // Prevent the native toggle
-                event.preventDefault();
-                return true;
-              }
-            }
-            return false;
-          },
-          // In edit mode, force all <details> elements to be open in the DOM
-          // so users can always access the content area
+          // Toggle on `click`, not `handleClickOn`. ProseMirror fires
+          // handleClickOn from mouseup; the UA then runs the summary's
+          // default on click and toggles again — first click is a no-op,
+          // second is a double-click that skips handleClickOn and only
+          // the native open lands.
           handleDOMEvents: {
             click(view, event) {
-              if (view.editable) return false;
-
               const target = event.target;
               if (!(target instanceof HTMLElement)) return false;
               const summary = target.closest('summary');
@@ -148,38 +183,11 @@ export const Details = Node.create({
               if (interactiveDescendant && summary.contains(interactiveDescendant)) {
                 return false;
               }
-
-              // ProseMirror consumes the summary click before the browser's
-              // native <details> default action can run. In read mode the open
-              // state is presentation-only, so toggle the rendered element
-              // without dispatching a document transaction. Keyboard
-              // activation of <summary> also produces this click event.
               details.toggleAttribute('open', !details.hasAttribute('open'));
               event.preventDefault();
               return true;
             },
-            focus(view) {
-              if (!view.editable) return false;
-              const detailsEls = view.dom.querySelectorAll('details:not([open])');
-              detailsEls.forEach((el) => el.setAttribute('open', ''));
-              return false;
-            },
           },
-        },
-        view(editorView) {
-          // On init: force open in edit mode
-          function forceOpen() {
-            if (!editorView.editable) return;
-            const detailsEls = editorView.dom.querySelectorAll('details:not([open])');
-            detailsEls.forEach((el) => el.setAttribute('open', ''));
-          }
-          // Run after initial render
-          requestAnimationFrame(forceOpen);
-          return {
-            update() {
-              requestAnimationFrame(forceOpen);
-            },
-          };
         },
       }),
     ];
@@ -269,9 +277,11 @@ export const DetailsSummary = Node.create({
               // (htmlToConfluence trims, so such a section still writes back
               // untitled — the label is the only thing that differs.)
               if (node.content.size > 0) return false;
+              const label = expandPlaceholderLabel(parent?.attrs.macroName);
               decorations.push(
                 Decoration.node(pos, pos + node.nodeSize, {
-                  'data-expand-placeholder': expandPlaceholderLabel(parent?.attrs.macroName),
+                  'data-expand-placeholder': label,
+                  'aria-label': label,
                 }),
               );
               return false;
@@ -563,7 +573,7 @@ export const ConfluenceChildren = Node.create({
   atom: true,
 
   addAttributes() {
-    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns', 'macro-name'];
     const attrs: Record<string, { default: null; parseHTML: (el: HTMLElement) => string | null }> = {};
     for (const name of paramNames) {
       attrs[name] = {
@@ -580,7 +590,7 @@ export const ConfluenceChildren = Node.create({
 
   renderHTML({ node }) {
     const htmlAttrs: Record<string, string> = { class: 'confluence-children-macro' };
-    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns', 'macro-name'];
     for (const name of paramNames) {
       if (node.attrs[name] != null) htmlAttrs[`data-${name}`] = node.attrs[name];
     }
@@ -1375,6 +1385,15 @@ export const TableIndex = Node.create({
  * Supports `data-layout="default"` (prose width) and `data-layout="full-width"` (expand to page width).
  */
 export const ExtendedTable = Table.extend({
+  addOptions() {
+    // parent is always defined on Table.extend; optional-call spread would
+    // make required TableOptions fields (HTMLAttributes) optional and fail tsc.
+    return {
+      ...this.parent!(),
+      View: CompendiqTableView,
+    };
+  },
+
   addAttributes() {
     return {
       ...this.parent?.(),
@@ -1512,7 +1531,9 @@ export function insertPanel(editor: Editor, panelType: PanelType) {
 }
 
 /**
- * Inserts an expand section with an EMPTY summary and leaves the caret in it.
+ * Inserts the shared Expand module (empty title and body, caret in the title).
+ * Authoring always creates native `expand`. Synced `ui-expand` still loads as
+ * the same module and keeps its Confluence identity on save (#1211).
  */
 export function insertExpandSection(editor: Editor, macroName: 'expand' | 'ui-expand' = 'expand') {
   insertBlockWithCaret(editor, 'details', {
@@ -1520,7 +1541,7 @@ export function insertExpandSection(editor: Editor, macroName: 'expand' | 'ui-ex
     attrs: { macroName },
     content: [
       { type: 'detailsSummary' },
-      { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
+      { type: 'paragraph' },
     ],
   });
 }
@@ -1539,5 +1560,28 @@ export function captionSelectedImage(editor: Editor) {
     })
     .run();
 }
+
+/**
+ * Highlight extension that ignores elements with data-comment-id
+ * so it never conflicts with or overwrites inline CommentMark notes.
+ */
+export const SafeHighlight = Highlight.extend({
+  parseHTML() {
+    return [
+      {
+        tag: 'mark',
+        getAttrs: (node) => {
+          if (typeof node !== 'string' && (node as HTMLElement).hasAttribute('data-comment-id')) {
+            return false;
+          }
+          return {};
+        },
+      },
+    ];
+  },
+});
+
+export { CommentMark } from './comment-extension';
+
 
 

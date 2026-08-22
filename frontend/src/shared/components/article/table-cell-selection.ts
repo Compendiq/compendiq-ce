@@ -177,6 +177,9 @@ export function syncTableLayoutAttributes(editor: EditorType) {
     if (node.attrs['data-layout'] === 'full-width') {
       table.setAttribute('data-layout', 'full-width');
       wrapper?.setAttribute('data-layout', 'full-width');
+      table.style.width = '100%';
+      table.style.maxWidth = '100%';
+      table.style.minWidth = '';
     } else {
       table.removeAttribute('data-layout');
       wrapper?.removeAttribute('data-layout');

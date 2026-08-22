@@ -7,6 +7,7 @@ import { ArticleRightPane } from './ArticleRightPane';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useUiStore } from '../../../stores/ui-store';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
+import { toast } from 'sonner';
 
 const mockNavigate = vi.fn();
 const mockDeletePage = vi.fn();
@@ -28,11 +29,24 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
+const mockVerifyPage = vi.fn();
+let mockRelocateAllowed = true;
+
+vi.mock('sonner', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
+}));
+
 const mockPage = {
   id: 'page-1',
   confluenceId: '98765432',
   title: 'Engineering Handbook',
   spaceKey: 'ENG',
+  source: 'confluence' as const,
   bodyHtml: '<h1>Intro</h1>',
   bodyText: 'Body',
   version: 7,
@@ -56,6 +70,7 @@ const mockPage = {
   qualitySummary: 'Well-written article',
   qualityAnalyzedAt: '2026-03-01T12:00:00Z',
   qualityError: null,
+  verifiedAt: null as string | null,
 };
 
 let currentMockPage: typeof mockPage | (typeof mockPage & { confluenceId: null }) = mockPage;
@@ -78,14 +93,54 @@ vi.mock('../../hooks/use-settings', () => ({
 }));
 
 // Stub apiFetch so the usecase-default query resolves "configured" (Auto-tag visible).
+// RelocateDialog is rendered for real (the pane must hand it the page's own
+// `source`); an empty object is a truthy preview and then crashes on
+// `accessChange.from`.
 vi.mock('../../lib/api', () => ({
-  apiFetch: vi.fn(async (url: string) =>
-    url.includes('usecase-default') ? { provider: 'p1', model: 'bge-x' } : {},
-  ),
+  apiFetch: vi.fn(async (url: string) => {
+    if (url.includes('usecase-default')) return { provider: 'p1', model: 'bge-x' };
+    if (url.includes('/relocate/preview')) {
+      return {
+        pageId: 1,
+        title: 'Engineering Handbook',
+        source: 'standalone',
+        spaceKey: null,
+        confluenceId: null,
+        target: 'confluence',
+        childCount: 0,
+        subtreeEffect: null,
+        attachmentCount: 0,
+        localVersionCount: 0,
+        accessChange: {
+          from: 'Private article — only tester can read it',
+          to: 'Everyone with access to the chosen Confluence space',
+          gains: [],
+          loses: [],
+          truncated: false,
+        },
+        upstreamDeletion: null,
+      };
+    }
+    return {};
+  }),
+}));
+
+vi.mock('../../hooks/use-permission', () => ({
+  usePermission: (permission: string) => ({
+    allowed: permission === 'pages:relocate' ? mockRelocateAllowed : false,
+    loading: false,
+    error: null,
+  }),
+}));
+
+vi.mock('../../hooks/use-spaces', () => ({
+  useSpaces: () => ({ data: [{ key: 'DEV', name: 'Developer Docs', source: 'confluence' }] }),
 }));
 
 vi.mock('../../hooks/use-standalone', () => ({
   useExportPdf: () => ({ mutateAsync: mockExportPdfAsync, isPending: false }),
+  useVerifyPage: () => ({ mutateAsync: mockVerifyPage, isPending: false }),
+  useLocalSpaces: () => ({ data: [{ key: 'HOME', name: 'Home', source: 'local' }] }),
 }));
 
 vi.mock('../../../features/pages/AutoTagger', () => ({
@@ -161,18 +216,24 @@ describe('ArticleRightPane', () => {
     mockResyncPage.mockReset();
     mockReembedPage.mockReset();
     mockRequalityPage.mockReset();
+    mockVerifyPage.mockReset().mockResolvedValue(undefined);
+    mockRelocateAllowed = true;
     resyncIsPending = false;
     reembedIsPending = false;
     requalityIsPending = false;
     localStorage.clear();
-    useUiStore.setState({ articleSidebarCollapsed: false, articleSidebarWidth: 280 });
+    useUiStore.setState({
+      articleSidebarCollapsed: false,
+      articleSidebarLaptopExpanded: false,
+      articleSidebarWidth: 280,
+    });
     useArticleViewStore.setState({ headings: [], editing: false });
     // The dock forces this pane into its rail while open (#1126), so a test
     // that opens it would otherwise change what every later test renders.
     useAiDockStore.setState({ open: false });
     // jsdom's default. `useIsDockWideLayout` reads it via matchMedia, and the
     // pane steps aside entirely below 1100px while the dock is open.
-    window.innerWidth = 1024;
+    window.innerWidth = 1280;
   });
 
   afterEach(() => {
@@ -192,15 +253,15 @@ describe('ArticleRightPane', () => {
     expect(screen.getByLabelText('Collapse page sidebar')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('Pin')).toBeInTheDocument();
-    expect(screen.getByText('Open in Confluence')).toBeInTheDocument();
-    expect(screen.getByText('Delete')).toBeInTheDocument();
+    expect(screen.getByText('Page details')).toBeInTheDocument();
+    expect(screen.getByText('Move to trash')).toBeInTheDocument();
   });
 
-  it('keeps primary actions visible and tucks maintenance and deletion behind disclosures', () => {
+  it('keeps pin and history visible and tucks export, graph and deletion behind disclosures', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Export PDF').closest('details')).toBeNull();
     expect(screen.getByText('Pin').closest('details')).toBeNull();
+    expect(screen.getByText('Version history').closest('details')).toBeNull();
 
     const moreActions = screen.getByText('More actions').closest('details');
     const dangerZone = screen.getByText('Danger zone').closest('details');
@@ -209,8 +270,18 @@ describe('ArticleRightPane', () => {
 
     fireEvent.click(screen.getByText('More actions'));
     expect(moreActions).toHaveAttribute('open');
+    expect(screen.getByText('Export PDF').closest('details')).toBe(moreActions);
+    expect(screen.getByText('Open in Confluence').closest('details')).toBe(moreActions);
+    expect(screen.getByText('Show in Graph').closest('details')).toBe(moreActions);
     fireEvent.click(screen.getByText('Danger zone'));
     expect(dangerZone).toHaveAttribute('open');
+  });
+
+  it('lists page facts above page actions in Details', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    const facts = screen.getByText('Page details');
+    const actions = screen.getByText('Page actions');
+    expect(facts.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('opens on the outline when the page has document structure', () => {
@@ -226,6 +297,22 @@ describe('ArticleRightPane', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
     expect(screen.getByTestId('article-actions')).toBeInTheDocument();
+  });
+
+  it('gives outline expand a 24px out-of-flow hit target', () => {
+    useArticleViewStore.setState({
+      headings: [
+        { id: 'intro', text: 'Introduction', level: 1 },
+        { id: 'setup', text: 'Setup', level: 2 },
+      ],
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    const expand = screen.getByLabelText('Collapse section');
+    expect(expand).toHaveAttribute('aria-hidden', 'true');
+    expect(expand).toHaveAttribute('tabIndex', '-1');
+    expect(expand.className).toMatch(/\bsize-6\b/);
+    expect(expand.className).toMatch(/\babsolute\b/);
   });
 
   it('switches between Outline and Details tabs using Alt+O and Alt+D hotkeys', () => {
@@ -276,6 +363,33 @@ describe('ArticleRightPane', () => {
 
     fireEvent.click(screen.getByLabelText('Expand inspector'));
 
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+  });
+
+  it('starts collapsed below xl even when the wide-layout preference is expanded', () => {
+    window.innerWidth = 1024;
+    useUiStore.setState({
+      articleSidebarCollapsed: false,
+      articleSidebarLaptopExpanded: false,
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
+  });
+
+  it('expands on laptop via the laptop-expanded flag, not the wide persist', () => {
+    window.innerWidth = 1024;
+    useUiStore.setState({
+      articleSidebarCollapsed: true,
+      articleSidebarLaptopExpanded: false,
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('Expand inspector'));
+
+    expect(useUiStore.getState().articleSidebarLaptopExpanded).toBe(true);
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
 
@@ -425,6 +539,34 @@ describe('ArticleRightPane', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it('as a sheet stays expanded even when the dock flag is set', () => {
+    window.innerWidth = 500;
+    useAiDockStore.setState({ open: true });
+    useUiStore.setState({ articleSidebarCollapsed: true });
+
+    render(
+      <ArticleRightPane presentation="sheet" />,
+      { wrapper: createWrapper() },
+    );
+
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane-rail')).not.toBeInTheDocument();
+    expect(screen.queryByRole('separator', { name: 'Resize page sidebar' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Close page inspector')).toBeInTheDocument();
+  });
+
+  it('as a sheet closes via the header control instead of collapsing to a rail', () => {
+    const onRequestClose = vi.fn();
+    render(
+      <ArticleRightPane presentation="sheet" onRequestClose={onRequestClose} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByLabelText('Close page inspector'));
+    expect(onRequestClose).toHaveBeenCalledOnce();
+    expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+  });
+
   it('falls back to Details when navigating from a structured page to a heading-free page', async () => {
     useArticleViewStore.setState({
       headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
@@ -523,8 +665,8 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
-    expect(screen.getByTestId('article-assistant-rail-btn')).toBeInTheDocument();
     expect(screen.getByTestId('article-outline-rail-btn')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-assistant-rail-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('article-actions-rail')).not.toBeInTheDocument();
   });
 
@@ -541,12 +683,21 @@ describe('ArticleRightPane', () => {
       expect(rail).toHaveAttribute('aria-label', 'Page inspector');
     });
 
-    it('keeps Expand, Assistant and Pin first-class and parks maintenance behind More', () => {
+    it('names the selected inspector tab in the collapsed rail', () => {
+      renderRail();
+      expect(screen.getByTestId('inspector-rail-current-view')).toHaveTextContent('Details');
+      expect(screen.getByTestId('article-details-rail-btn')).toHaveAccessibleName('Page details');
+      expect(screen.getByTestId('article-details-rail-btn').className).toMatch(/nm-pill-active/);
+      expect(screen.getByTestId('article-details-rail-btn').className).not.toMatch(/text-action/);
+    });
+
+    it('keeps Expand and the current view first-class and parks pin and maintenance behind More', () => {
       renderRail();
 
       expect(screen.getByLabelText('Expand inspector')).toBeInTheDocument();
-      expect(screen.getByTestId('article-assistant-rail-btn')).toBeInTheDocument();
-      expect(screen.getByLabelText('Pin page')).toBeInTheDocument();
+      expect(screen.getByTestId('article-details-rail-btn')).toBeInTheDocument();
+      expect(screen.queryByTestId('article-assistant-rail-btn')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Pin page')).not.toBeInTheDocument();
 
       expect(screen.queryByTestId('article-requality-rail-btn')).not.toBeInTheDocument();
       expect(screen.queryByTestId('article-reembed-rail-btn')).not.toBeInTheDocument();
@@ -555,6 +706,8 @@ describe('ArticleRightPane', () => {
 
       fireEvent.click(screen.getByTestId('article-actions-rail'));
 
+      expect(screen.getByTestId('article-assistant-rail-btn')).toBeInTheDocument();
+      expect(screen.getByLabelText('Pin page')).toBeInTheDocument();
       expect(screen.getByTestId('article-requality-rail-btn')).toBeInTheDocument();
       expect(screen.getByTestId('article-reembed-rail-btn')).toBeInTheDocument();
       expect(screen.getByTestId('article-history-rail-btn')).toBeInTheDocument();
@@ -580,8 +733,9 @@ describe('ArticleRightPane', () => {
       expect(mockRequalityPage.mock.calls[0]![0]).toBe('page-1');
     });
 
-    it('expands onto the Assistant tab from the rail trigger', () => {
+    it('expands onto the Assistant tab from More', () => {
       renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
       fireEvent.click(screen.getByTestId('article-assistant-rail-btn'));
 
       expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
@@ -593,6 +747,7 @@ describe('ArticleRightPane', () => {
 
     it('marks Pin as pressed and keeps the shared focus ring', () => {
       renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
       const pin = screen.getByLabelText('Pin page');
       expect(pin).toHaveAttribute('aria-pressed', 'false');
       expect(pin.className).toMatch(/focus-visible:ring-2/);
@@ -600,6 +755,7 @@ describe('ArticleRightPane', () => {
 
     it('paints the rail Assistant mark violet', () => {
       renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
       const trigger = screen.getByTestId('article-assistant-rail-btn');
       const mark = trigger.querySelector('svg');
       expect(mark).not.toBeNull();
@@ -615,11 +771,11 @@ describe('ArticleRightPane', () => {
       renderRail();
 
       const outline = screen.getByTestId('article-outline-rail-btn');
-      const assistant = screen.getByTestId('article-assistant-rail-btn');
+      const expand = screen.getByLabelText('Expand inspector');
       fireEvent.focus(outline);
       expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
 
-      fireEvent.blur(outline, { relatedTarget: assistant });
+      fireEvent.blur(outline, { relatedTarget: expand });
 
       await waitFor(() => {
         expect(screen.queryByTestId('article-outline-flyout')).not.toBeInTheDocument();
@@ -732,13 +888,14 @@ describe('ArticleRightPane', () => {
       renderRail();
       const trigger = screen.getByTestId('article-outline-rail-btn');
 
-      expect(trigger).toHaveAttribute('aria-label', 'Article outline');
+      expect(trigger).toHaveAttribute('aria-label', 'Outline');
       expect(trigger).toHaveAttribute('aria-expanded', 'false');
       expect(trigger).toHaveAttribute('aria-controls', 'article-outline-flyout');
 
       fireEvent.click(trigger);
       expect(trigger).toHaveAttribute('aria-expanded', 'true');
       expect(screen.getByTestId('article-outline-flyout')).toHaveAttribute('id', 'article-outline-flyout');
+      expect(screen.getByTestId('article-outline-flyout')).toHaveTextContent('Same as the Outline tab');
     });
 
     it('navigates to a heading from inside the flyout', () => {
@@ -957,8 +1114,26 @@ describe('ArticleRightPane', () => {
     expect(screen.getByTestId('quality-score-badge')).toHaveTextContent('85');
   });
 
+  it('lists source and draft facts in Details, not as header chrome', () => {
+    currentMockPage = {
+      ...mockPage,
+      source: 'standalone',
+      visibility: 'private',
+      hasDraft: true,
+    } as typeof currentMockPage;
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('Source')).toBeInTheDocument();
+    expect(screen.getByText('Local')).toBeInTheDocument();
+    expect(screen.getByText('Visibility')).toBeInTheDocument();
+    expect(screen.getByText('Private')).toBeInTheDocument();
+    expect(screen.getByText('Unpublished draft')).toBeInTheDocument();
+  });
+
   it('uses confluenceId (not internal id) in the "Open in Confluence" link', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('More actions'));
 
     const link = screen.getByText('Open in Confluence').closest('a');
     expect(link).toBeInTheDocument();
@@ -997,7 +1172,7 @@ describe('ArticleRightPane', () => {
   it('Delete opens the move-to-trash dialog; confirming soft-deletes and navigates home', async () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByText('Delete'));
+    fireEvent.click(screen.getByText('Move to trash'));
 
     // Copy must reflect the 30-day soft-delete trash, not the old (false)
     // "cannot be undone" claim from native confirm().
@@ -1018,7 +1193,7 @@ describe('ArticleRightPane', () => {
   it('cancelling the move-to-trash dialog does not delete', async () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByText('Delete'));
+    fireEvent.click(screen.getByText('Move to trash'));
     await screen.findByTestId('confirm-dialog');
     fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
 
@@ -1054,7 +1229,7 @@ describe('ArticleRightPane', () => {
     // labelled by its visible text; `aria-label="Delete page"` belonged to the
     // rail icon alone, which is why the check above can look for it.)
     fireEvent.click(screen.getByText('Danger zone'));
-    fireEvent.click(screen.getByText('Delete'));
+    fireEvent.click(screen.getByText('Move to trash'));
 
     expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
@@ -1067,6 +1242,7 @@ describe('ArticleRightPane', () => {
   // --- PDF Export ---
   it('renders the Export PDF button', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('More actions'));
 
     expect(screen.getByText('Export PDF')).toBeInTheDocument();
   });
@@ -1080,6 +1256,7 @@ describe('ArticleRightPane', () => {
     globalThis.URL.revokeObjectURL = revokeObjectURLSpy;
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('More actions'));
     fireEvent.click(screen.getByText('Export PDF'));
 
     await waitFor(() => {
@@ -1088,6 +1265,103 @@ describe('ArticleRightPane', () => {
     await waitFor(() => {
       expect(createObjectURLSpy).toHaveBeenCalledWith(fakeBlob);
       expect(revokeObjectURLSpy).toHaveBeenCalledWith('blob:http://localhost/fake-url');
+    });
+  });
+
+  it('shows this page in the graph from Details', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('More actions'));
+
+    fireEvent.click(screen.getByTestId('show-in-graph-btn'));
+    expect(mockNavigate).toHaveBeenCalledWith('/graph?focus=page-1');
+  });
+
+  describe('relocate entry point (#1123)', () => {
+    it('offers "Move to Confluence" on a local article', () => {
+      currentMockPage = {
+        ...mockPage,
+        source: 'standalone',
+        spaceKey: 'HOME',
+        confluenceId: null,
+      };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to Confluence/i);
+    });
+
+    it('offers "Move to a local space" on a Confluence article', () => {
+      currentMockPage = { ...mockPage, source: 'confluence' };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to a local space/i);
+    });
+
+    // Hidden, not disabled: `pages:relocate` is seeded onto editor /
+    // space_admin by migration 086 and CE ships no UI for granting
+    // permissions, so a denied user has no in-product path to earning it.
+    it('renders no relocate control without the pages:relocate permission', () => {
+      mockRelocateAllowed = false;
+      currentMockPage = { ...mockPage, source: 'standalone' };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
+    });
+
+    it('opens the relocate dialog carrying the article’s own source', async () => {
+      currentMockPage = { ...mockPage, source: 'standalone', confluenceId: null };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('relocate-btn'));
+
+      await screen.findByRole('dialog');
+      await waitFor(() => {
+        expect(screen.getByRole('dialog')).toHaveTextContent(/move to confluence/i);
+      });
+
+      fireEvent.click(screen.getByTestId('relocate-cancel'));
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      });
+    });
+
+    it('hides the relocate control while the editor is open', () => {
+      currentMockPage = { ...mockPage, source: 'standalone' };
+      useArticleViewStore.setState({ editing: true });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('verification', () => {
+    it('shows Not verified until a stamp exists, then records one', async () => {
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('verification-chip')).toHaveTextContent('Not verified');
+      const verifyBtn = screen.getByTestId('verify-btn');
+      expect(verifyBtn).toHaveAttribute('aria-busy', 'false');
+      expect(verifyBtn).toHaveTextContent('Record verification');
+
+      fireEvent.click(verifyBtn);
+
+      await waitFor(() => {
+        expect(mockVerifyPage).toHaveBeenCalledWith({ pageId: NaN });
+      });
+      await waitFor(() => {
+        expect(toast.success).toHaveBeenCalledWith('Page verified — next review reminder rescheduled');
+      });
+    });
+
+    it('renders the last verification date on the chip', () => {
+      currentMockPage = { ...mockPage, verifiedAt: '2026-03-01T12:00:00Z' };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      const expected = new Date('2026-03-01T12:00:00Z').toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+      });
+      expect(screen.getByTestId('verification-chip')).toHaveTextContent(`Verified ${expected}`);
     });
   });
 
@@ -1134,5 +1408,40 @@ describe('ArticleRightPane', () => {
       expect(container.querySelector('#page-context-panel-assistant')).not.toBeNull();
       expect(container.querySelector('#page-context-panel-assistant')?.classList.contains('hidden')).toBe(true);
     });
+
+    it('renders and supports tab switching on /pages/new create route', () => {
+      useArticleViewStore.setState({
+        headings: [],
+      });
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const router = createMemoryRouter(
+        [{ path: '/pages/new', element: <ArticleRightPane /> }],
+        { initialEntries: ['/pages/new'] },
+      );
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <LazyMotion features={domAnimation}>
+            <RouterProvider router={router} />
+          </LazyMotion>
+        </QueryClientProvider>,
+      );
+
+      // On /pages/new with no headings, defaults to Assistant tab
+      expect(screen.getByRole('tab', { name: 'Assistant' })).toHaveAttribute('aria-selected', 'true');
+
+      // Click Details tab
+      fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
+      expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByText('New page draft')).toBeInTheDocument();
+
+      // Click Outline tab
+      fireEvent.click(screen.getByRole('tab', { name: /Outline/ }));
+      expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByText('No outline yet')).toBeInTheDocument();
+    });
   });
 });
+

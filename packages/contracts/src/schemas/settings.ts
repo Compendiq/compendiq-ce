@@ -7,6 +7,15 @@ export const CUSTOM_PROMPT_KEYS = [
   'improve_clarity',
   'improve_technical',
   'improve_completeness',
+  'generate',
+  'generate_spec',
+  'generate_guide',
+  'generate_notes',
+  'generate_postmortem',
+  'generate_architecture',
+  'generate_runbook',
+  'generate_howto',
+  'generate_troubleshooting',
 ] as const;
 export type CustomPromptKey = (typeof CUSTOM_PROMPT_KEYS)[number];
 

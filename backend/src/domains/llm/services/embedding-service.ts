@@ -446,9 +446,19 @@ export function chunkText(
           // discriminator rests on that break — the seam-contract test in
           // sibling-assembly.test.ts binds the two modules; change the joiner
           // and that test fails loudly instead of the trim silently dying.
-          const tail = currentChunk.slice(-overlapChars);
-          const firstBreak = tail.search(/\s/);
-          currentChunk = (firstBreak >= 0 ? tail.slice(firstBreak + 1) : tail) + '\n\n' + para;
+          // overlapChars <= 0 (an operator-legal setting, contracts min(0))
+          // must carry nothing forward — currentChunk.slice(-0) === slice(0)
+          // would otherwise hand the ENTIRE previous chunk to `tail` (#1271).
+          // For overlapChars > 0 the tail + '\n\n' + para joiner stays
+          // byte-identical to before (sibling-assembly's seam discriminator
+          // rests on it).
+          if (overlapChars > 0) {
+            const tail = currentChunk.slice(-overlapChars);
+            const firstBreak = tail.search(/\s/);
+            currentChunk = (firstBreak >= 0 ? tail.slice(firstBreak + 1) : tail) + '\n\n' + para;
+          } else {
+            currentChunk = para;
+          }
         } else {
           currentChunk = currentChunk ? currentChunk + '\n\n' + para : para;
         }

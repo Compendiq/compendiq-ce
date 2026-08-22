@@ -1,6 +1,6 @@
 {
   "corpusManifestSha": "1d305046bdd084e59e2bb0cbb3e7206d5e91ec74ac82658ee85e3d403b6323a2",
-  "labeledBy": "six independent claude-sonnet-5 labelers, one page slice each, blind to retrieval code; merged by claude-opus-5 (schema validation, dedupe, coverage) — 2026-08-17. Ids are img-<slice>-<n>: the slice is the labeling agent (00-05), renumbered from the fragments' inconsistent schemes without reordering, so every label traces back to the one agent that wrote it. Slice 06 is NOT one of them: the four English image-negative distractors added by the merger in review round 2, once the negative slice turned out to be 18/18 German, and kept under their own slice so they are never read as blind-labeller work.",
+  "labeledBy": "six independent claude-sonnet-5 labelers, one page slice each, blind to retrieval code; merged by claude-opus-5 (schema validation, dedupe, coverage) — 2026-08-17. Ids are img-<slice>-<n>: the slice is the labeling agent, renumbered from the fragments' inconsistent schemes without reordering, so every label traces back to the one agent that wrote it. Slices 00-05 are that first round. Slices 07-09 are three further independent claude-sonnet-5 labelers (#1370, 2026-08-18), each given a third of the corpus under the same blind protocol — corpus pages, manifest captions and image bytes only, never the retrieval code — and they wrote the English image-negative distractors; their numbering is their own candidate order, so a gap is a candidate the merger rejected. Slice 06 was the merger's own four English negatives from review round 2; #1370 removed them and those ids are never reused.",
   "notUsable": [],
   "labels": [
     {
@@ -3907,48 +3907,70 @@
       "rationale": "Slow start, congestion avoidance, fast retransmit and fast recovery are explained only in prose; the three vendored images cover the handshake, header layout and buffering, not congestion control."
     },
     {
-      "id": "img-06-001",
-      "query": "Who formalised the Scrum framework, and where does the name come from?",
+      "id": "img-07-003",
+      "query": "In what year did Rudolf Diesel receive the patent for his working process for combustion engines?",
       "lang": "en",
       "expectedFiles": [
-        "scrum.md"
+        "dieselmotor.md"
       ],
       "expectedImages": [],
       "style": "image-negative",
-      "rationale": "Sutherland and Schwaber formalising Scrum from 1993, and Nonaka and Takeuchi's rugby analogy behind the name, are attribution facts carried only in prose; the three images are an events overview, a process cycle and a sprint burndown chart, none naming a person or an origin. Note a duration question would NOT have been text-only here: the events overview prints the Daily Scrum's '15-minute event' on its face."
+      "rationale": "The text dates the patent grant to 23 February 1893. Image 1 is a generic colour-coded schematic of the four-stroke cycle in a cylinder with no date or year text. Image 2 is a cutaway photo of a modern common-rail diesel engine's combustion chamber with injectors and pistons, carrying no historical date. Image 3 is a bar chart of the percentage share of German car fleet by fuel type from 2004 to 2017, a much later and unrelated date range that does not print 1893."
     },
     {
-      "id": "img-06-002",
-      "query": "Who discovered the fuel cell principle, and in which year?",
+      "id": "img-07-004",
+      "query": "In which year did work begin on the C3 project that led to the development of Extreme Programming?",
       "lang": "en",
       "expectedFiles": [
-        "brennstoffzelle.md"
+        "extreme-programming.md"
       ],
       "expectedImages": [],
       "style": "image-negative",
-      "rationale": "Christian Friedrich Schönbein's 1838 discovery and William Grove's part in it are stated only in the history section; the three images are a photograph of a methanol demonstration cell and two operating-principle schematics labelled with reactants and electrodes — no person, no date, no company."
+      "rationale": "The text states work on the C3 project (from which XP emerged) began in 1995. Image 1 is a concentric-circle diagram of the XP lifecycle phases (Start, Development, Integration, Testing, Iteration) with no dates. Image 2 is a cost-over-time line chart comparing 'conventional assumption' versus Extreme Programming cost curves across project phases (requirements to production), with no year labels. Image 3 is a feedback-loop diagram showing planning cycles (Release Plan down to Code) with time-unit labels like months/weeks/days/hours, but no calendar year anywhere."
     },
     {
-      "id": "img-06-003",
-      "query": "Who received the 1962 Nobel Prize for the structure of DNA, and whose contribution went unmentioned?",
+      "id": "img-08-001",
+      "query": "What is the total weight, in tonnes, of the Golden Gate Bridge's entire structure?",
       "lang": "en",
       "expectedFiles": [
-        "desoxyribonukleinsaeure.md"
+        "golden-gate-bridge.md"
       ],
       "expectedImages": [],
       "style": "image-negative",
-      "rationale": "Watson, Crick and Wilkins receiving the prize, and Rosalind Franklin going unnamed by the committee, are narrative facts from the discovery section; the three images are a base-pairing structural formula, a right- vs left-handed helix pair and a replication-fork diagram, none of which depicts a person or a prize."
+      "rationale": "The text states the bridge's total structure weighs 887,000 tonnes. golden-gate-bridge__1.jpg is a colour side view of the bridge over the bay with no overlaid text or figures. golden-gate-bridge__2.jpg is a black-and-white photo looking up the cable saddle atop a pylon, showing structural hardware but no numbers or weight data. golden-gate-bridge__3.jpg shows traffic driving across the bridge deck toward the towers, again with no printed text or figures. None of the three prints or shows the 887,000-tonne total weight."
     },
     {
-      "id": "img-06-004",
-      "query": "In which year was the foundation stone of Cologne Cathedral laid, and when was the building finally completed?",
+      "id": "img-08-004",
+      "query": "In what year did development of the OSI reference model begin, according to the text?",
       "lang": "en",
       "expectedFiles": [
-        "koelner-dom.md"
+        "osi-modell.md"
       ],
       "expectedImages": [],
       "style": "image-negative",
-      "rationale": "1248 and 1880 are stated in the opening prose; the three vendored images are undated photographs — a lit night view from the Deutz bank, an aerial of the cathedral quarter from the north-east and the excavated baptistery — and none carries a construction date."
+      "rationale": "The text states the OSI model's development began in 1977 (distinct from its 1983/1984 standard-publication dates). osi-modell__1.png is an abstract diagram of layer instances and protocols for layers 3–5, showing only layer numbers and the words 'Instanz'/'Protokoll' — no years anywhere. osi-modell__2.png is the full seven-layer stack diagram naming and numbering all seven layers (Anwendungsschicht through Bitübertragungsschicht) with no date or year printed on it either. Neither image shows the 1977 development-start year."
+    },
+    {
+      "id": "img-09-001",
+      "query": "How much had construction of Neuschwanstein cost by the time King Ludwig II died?",
+      "lang": "en",
+      "expectedFiles": [
+        "schloss-neuschwanstein.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "The text states the construction cost reached 6,180,047 Mark by the king's death, against an original estimate of 3.2 million Mark. Image 1 (schloss-neuschwanstein__1.jpg) is an 1846 lithograph of the ruined medieval castle that predates Ludwig's building project entirely and shows no figures or text beyond its title caption. Image 2 (schloss-neuschwanstein__2.jpg) is a modern photograph of Schloss Pierrefonds in France, an unrelated building cited only as an architectural inspiration — it carries no numbers. Image 3 (schloss-neuschwanstein__3.jpg) is Christian Jank's 1869 design sketch of the planned castle, an artistic rendering with no monetary figures or overlaid text."
+    },
+    {
+      "id": "img-09-003",
+      "query": "In which year did Friedrich Miescher isolate the substance he named 'Nuclein' from cell nuclei?",
+      "lang": "en",
+      "expectedFiles": [
+        "zellkern.md"
+      ],
+      "expectedImages": [],
+      "style": "image-negative",
+      "rationale": "The research-history section states Miescher isolated 'Nuclein' from cell nuclei in 1874. Image 1 (zellkern__1.png) is a labeled diagram of a eukaryotic animal cell with numbered organelles (1-14) and no text, names, or dates. Image 2 (zellkern__2.png) is a labeled cross-section of the nuclear envelope with numeric labels (1, 1a, 1b, 2-6) and no accompanying text or dates. Image 3 (zellkern__3.png) is a diagram of nuclear bodies with a legend naming structures like Kernporenkomplex, Nukleolus, and Cajal-Körper, but it contains no historical names, discovery dates, or references to Miescher."
     }
   ]
 }

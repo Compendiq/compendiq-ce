@@ -93,7 +93,7 @@ describe('CommandPalette', () => {
     useCommandPaletteStore.getState().open();
     const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-    const input = screen.getByLabelText('Jump to page or command');
+    const input = screen.getByLabelText('Find a page or command');
     fireEvent.keyDown(input, { key: 'Escape' });
 
     expect(useCommandPaletteStore.getState().isOpen).toBe(false);
@@ -114,7 +114,7 @@ describe('CommandPalette', () => {
   it('has a search input', async () => {
     useCommandPaletteStore.getState().open();
     const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
-    expect(screen.getByLabelText('Jump to page or command')).toBeInTheDocument();
+    expect(screen.getByLabelText('Find a page or command')).toBeInTheDocument();
     unmount();
   });
 
@@ -123,7 +123,7 @@ describe('CommandPalette', () => {
     useCommandPaletteStore.getState().open();
     const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-    fireEvent.change(screen.getByLabelText('Jump to page or command'), {
+    fireEvent.change(screen.getByLabelText('Find a page or command'), {
       target: { value: 'on-call runbook' },
     });
 
@@ -146,7 +146,7 @@ describe('CommandPalette', () => {
     useCommandPaletteStore.getState().open();
     const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-    fireEvent.change(screen.getByLabelText('Jump to page or command'), {
+    fireEvent.change(screen.getByLabelText('Find a page or command'), {
       target: { value: 'on-call runbook' },
     });
 
@@ -172,7 +172,7 @@ describe('CommandPalette', () => {
     useCommandPaletteStore.getState().open();
     const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-    const input = screen.getByLabelText('Jump to page or command');
+    const input = screen.getByLabelText('Find a page or command');
     fireEvent.change(input, { target: { value: 'test' } });
 
     // Wait for debounce + fetch
@@ -198,7 +198,7 @@ describe('CommandPalette', () => {
     useCommandPaletteStore.getState().open();
     const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-    const input = screen.getByLabelText('Jump to page or command');
+    const input = screen.getByLabelText('Find a page or command');
     fireEvent.change(input, { target: { value: 'old' } });
 
     await waitFor(() => {
@@ -245,7 +245,7 @@ describe('CommandPalette', () => {
     useCommandPaletteStore.getState().open();
     const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-    const input = screen.getByLabelText('Jump to page or command');
+    const input = screen.getByLabelText('Find a page or command');
     fireEvent.change(input, { target: { value: 'nonexistent' } });
 
     await waitFor(
@@ -272,7 +272,7 @@ describe('CommandPalette', () => {
     useCommandPaletteStore.getState().open();
     const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-    const input = screen.getByLabelText('Jump to page or command');
+    const input = screen.getByLabelText('Find a page or command');
 
     // Arrow down should highlight next item
     fireEvent.keyDown(input, { key: 'ArrowDown' });
@@ -324,7 +324,7 @@ describe('CommandPalette', () => {
     useCommandPaletteStore.getState().open();
     const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-    const input = screen.getByLabelText('Jump to page or command');
+    const input = screen.getByLabelText('Find a page or command');
     fireEvent.change(input, { target: { value: 'test' } });
 
     const resultLabel = await screen.findByText('Test Page');
@@ -357,7 +357,7 @@ describe('CommandPalette', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
 
     // Focus moves into the palette while it is open.
-    const input = screen.getByLabelText('Jump to page or command');
+    const input = screen.getByLabelText('Find a page or command');
     input.focus();
     expect(document.activeElement).toBe(input);
 
@@ -406,7 +406,7 @@ describe('CommandPalette', () => {
       useCommandPaletteStore.getState().open();
       const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-      const input = screen.getByLabelText('Jump to page or command');
+      const input = screen.getByLabelText('Find a page or command');
       fireEvent.change(input, { target: { value: '/ai' } });
 
       // The AI mode section header should be present
@@ -418,7 +418,7 @@ describe('CommandPalette', () => {
       useCommandPaletteStore.getState().open();
       const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-      const input = screen.getByLabelText('Jump to page or command');
+      const input = screen.getByLabelText('Find a page or command');
       fireEvent.change(input, { target: { value: '/ai' } });
 
       expect(screen.getByText('Ask AI')).toBeInTheDocument();
@@ -429,7 +429,7 @@ describe('CommandPalette', () => {
       useCommandPaletteStore.getState().open();
       const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-      const input = screen.getByLabelText('Jump to page or command');
+      const input = screen.getByLabelText('Find a page or command');
       fireEvent.change(input, { target: { value: '/ai how to configure auth' } });
 
       expect(screen.getByText('Ask AI: how to configure auth')).toBeInTheDocument();
@@ -440,7 +440,7 @@ describe('CommandPalette', () => {
       useCommandPaletteStore.getState().open();
       const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-      const input = screen.getByLabelText('Jump to page or command');
+      const input = screen.getByLabelText('Find a page or command');
       fireEvent.change(input, { target: { value: '/ai test' } });
 
       expect(screen.queryByText('Quick Actions')).not.toBeInTheDocument();
@@ -452,7 +452,7 @@ describe('CommandPalette', () => {
       useCommandPaletteStore.getState().open();
       const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-      const input = screen.getByLabelText('Jump to page or command');
+      const input = screen.getByLabelText('Find a page or command');
       fireEvent.change(input, { target: { value: '/ai' } });
 
       // Press Enter to select
@@ -465,7 +465,7 @@ describe('CommandPalette', () => {
       useCommandPaletteStore.getState().open();
       const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-      const input = screen.getByLabelText('Jump to page or command');
+      const input = screen.getByLabelText('Find a page or command');
       fireEvent.change(input, { target: { value: '/ai how do I configure sync intervals' } });
 
       // Press Enter to select — the typed question must not be dropped.
@@ -480,7 +480,7 @@ describe('CommandPalette', () => {
       useCommandPaletteStore.getState().open();
       const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-      const input = screen.getByLabelText('Jump to page or command');
+      const input = screen.getByLabelText('Find a page or command');
       fireEvent.change(input, { target: { value: '/ai' } });
 
       expect(screen.queryByText('AI mode')).not.toBeInTheDocument();
@@ -491,7 +491,7 @@ describe('CommandPalette', () => {
       useCommandPaletteStore.getState().open();
       const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-      const input = screen.getByLabelText('Jump to page or command');
+      const input = screen.getByLabelText('Find a page or command');
       fireEvent.change(input, { target: { value: '/ai some query' } });
 
       // Wait a bit for any async operations
@@ -505,10 +505,10 @@ describe('CommandPalette', () => {
       useCommandPaletteStore.getState().open();
       const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
 
-      const input = screen.getByLabelText('Jump to page or command');
+      const input = screen.getByLabelText('Find a page or command');
 
       // Before AI mode
-      expect(input).toHaveAttribute('placeholder', 'Jump to page or command...');
+      expect(input).toHaveAttribute('placeholder', 'Find a page or command...');
 
       // Enter AI mode
       fireEvent.change(input, { target: { value: '/ai' } });

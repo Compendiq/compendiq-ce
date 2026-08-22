@@ -265,25 +265,13 @@ export const SLASH_COMMAND_ITEMS: readonly SlashCommandItem[] = [
   {
     id: 'expand',
     title: 'Expand section',
-    description: 'Collapsible toggle section (Confluence Expand)',
+    description: 'Hide a section until the reader opens it.',
     category: 'Layout & containers',
-    keywords: ['expand', 'details', 'collapse', 'accordion', 'hidden', 'toggle', 'dropdown'],
+    keywords: ['expand', 'details', 'collapse', 'hidden', 'toggle', 'ui-expand', 'refined', 'ui expand'],
     Icon: ChevronsUpDown,
     run: (editor, range) => {
       editor.chain().focus().deleteRange(range).run();
-      insertExpandSection(editor, 'expand');
-    },
-  },
-  {
-    id: 'ui-expand',
-    title: 'UI Expand section',
-    description: 'Refined UI collapsible expand container',
-    category: 'Layout & containers',
-    keywords: ['ui-expand', 'expand', 'refined', 'collapse', 'accordion', 'toggle'],
-    Icon: ChevronsUpDown,
-    run: (editor, range) => {
-      editor.chain().focus().deleteRange(range).run();
-      insertExpandSection(editor, 'ui-expand');
+      insertExpandSection(editor);
     },
   },
   {

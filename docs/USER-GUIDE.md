@@ -286,11 +286,11 @@ Press `?` or `Ctrl+/` to open the keyboard shortcuts modal. Key shortcuts:
 | Shortcut | Action |
 |----------|--------|
 | `,` | Toggle Left Sidebar |
-| `.` | Toggle Right Panel |
+| `.` | Toggle Page Inspector |
 | `\` | Zen Mode |
 | `Esc` | Close dialog / modal |
 
-Single-key shortcuts (`,`, `.`, `\`, `?`) can be toggled on/off in the shortcuts modal. They are automatically disabled when typing in inputs or the editor.
+Single-key shortcuts (`,`, `.`, `\`, `?`) are automatically disabled when typing in inputs or the editor.
 
 On macOS, `Ctrl` is replaced by `Cmd` and `Alt` by `Option`.
 

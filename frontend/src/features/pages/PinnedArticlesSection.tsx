@@ -1,37 +1,46 @@
 import { useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { m } from 'framer-motion';
-import { Pin, PinOff, Clock, User, ChevronDown, ChevronUp } from 'lucide-react';
+import { Pin, PinOff, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
-import { usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
-import { COLLAPSED_PIN_COUNT, entranceDelay, staggerPosition } from './pinned-articles-layout';
+import { usePinPage, usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
+import { COLLAPSED_PIN_COUNT, MAX_EXPANDED_PIN_COUNT, entranceDelay, staggerPosition } from './pinned-articles-layout';
+import { PageIcon } from '../../shared/components/page-icon/PageIcon';
+import { cn } from '../../shared/lib/cn';
 
 export function PinnedArticlesSection() {
-  const navigate = useNavigate();
   const { data: pinnedData } = usePinnedPages();
+  const pinMutation = usePinPage();
   const unpinMutation = useUnpinPage();
   // Ephemeral on purpose: the collapsed strip is the dashboard's default shape,
   // so every visit starts there and expanding is one keystroke away.
   const [expanded, setExpanded] = useState(false);
   const sectionRef = useRef<HTMLElement>(null);
 
-  // Intentionally return null while loading rather than showing a skeleton —
-  // collapsed the section is at most two rows, so any layout shift is minimal
-  // and a skeleton flash would be more distracting than the brief shift.
-  if (!pinnedData || pinnedData.items.length === 0) {
+  // Stay null while the first fetch is in flight so an empty cue does not
+  // flash over a list that is about to arrive.
+  if (!pinnedData) {
     return null;
   }
 
   const total = pinnedData.items.length;
-  const overflow = total - COLLAPSED_PIN_COUNT;
+  // An empty cue on every visit costs a band before the list and teaches
+  // nothing the Pin action on the article does not already say. Hide the
+  // section until there is something to jump back to.
+  if (total === 0) {
+    return null;
+  }
+  const maxVisible = Math.min(total, MAX_EXPANDED_PIN_COUNT);
+  const overflow = maxVisible - COLLAPSED_PIN_COUNT;
   // Derived, not the raw flag: unpinning back below the cut-off unmounts the
   // toggle, and a latched `expanded` would then silently re-expand the section
   // the moment the count rose again, with nothing on screen having asked for it.
   const isExpanded = expanded && overflow > 0;
-  const visiblePins = isExpanded ? pinnedData.items : pinnedData.items.slice(0, COLLAPSED_PIN_COUNT);
+  const visiblePins = isExpanded
+    ? pinnedData.items.slice(0, MAX_EXPANDED_PIN_COUNT)
+    : pinnedData.items.slice(0, COLLAPSED_PIN_COUNT);
 
-  const handleUnpin = (e: React.MouseEvent, pageId: string, title: string) => {
-    e.stopPropagation();
+  const handleUnpin = (pageId: string, title: string) => {
     // The card carrying the focused button is about to unmount, which drops
     // focus to <body> and sends a keyboard user back to the top of the
     // document. Cheap to survive at eight cards; with the cap gone (#1130) it
@@ -43,7 +52,14 @@ export function PinnedArticlesSection() {
 
     unpinMutation.mutate(pageId, {
       onSuccess: () => {
-        toast.success(`Unpinned "${title}"`);
+        toast.success(`Unpinned "${title}"`, {
+          action: {
+            label: 'Undo',
+            onClick: () => pinMutation.mutate(pageId, {
+              onError: (err) => toast.error(err instanceof Error ? err.message : 'Could not restore pin'),
+            }),
+          },
+        });
         // The successor may itself have unmounted by now (a refetch reordered
         // the list); falling back to the section keeps focus in place either way.
         if (successor?.isConnected) successor.focus();
@@ -61,15 +77,15 @@ export function PinnedArticlesSection() {
       tabIndex={-1}
       aria-labelledby="pinned-pages-heading"
       data-testid="pinned-articles-section"
+      className="border-y border-border py-2"
     >
-      <div className="mb-3 flex items-center gap-2">
-        <Pin size={16} className="text-action" aria-hidden="true" />
-        <h2 id="pinned-pages-heading" className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-          Pinned Pages
+      <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 px-1">
+        <span className="flex size-6 items-center justify-center text-muted-foreground">
+          <Pin size={14} aria-hidden="true" />
+        </span>
+        <h2 id="pinned-pages-heading" className="text-sm font-semibold text-foreground">
+          Pinned pages
         </h2>
-        {/* Tabular figures so the count doesn't jitter as pins come and go.
-            Full `text-muted-foreground`: at /70 this measured 3.4:1 on the card
-            surface, under the 4.5:1 floor for text this size. */}
         <span
           className="font-mono text-xs tabular-nums text-muted-foreground"
           data-testid="pinned-count"
@@ -77,89 +93,76 @@ export function PinnedArticlesSection() {
         >
           {total}
         </span>
-        {/* The badge alone reads as a naked number; give the count a sentence. */}
         <span className="sr-only">{total} pinned</span>
       </div>
       <div
         id="pinned-pages-grid"
-        className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+        className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4"
       >
         {visiblePins.map((item, i) => (
           <m.div
             key={item.id}
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
             transition={{ delay: entranceDelay(staggerPosition(i, isExpanded)) }}
           >
-            {/* The card was wrapped in a `TiltCard` carrying `card-stack`: a 3D
-                perspective rotation tracking the cursor, a drop-shadow that
-                slid with it, and two offset ghost layers faking a stack of
-                paper that rotated on hover. It is the same gesture the KPI
-                tiles lost — the clearest surviving artefact of the retired
-                neumorphic world, with no counterpart anywhere else in the app.
-                The card below already carries the whole treatment; the wrapper
-                was decoration on top of it. */}
             <div
-              role="button"
-              tabIndex={0}
-              onClick={() => navigate(`/pages/${item.id}`)}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/pages/${item.id}`); }}
-              className="group relative flex h-full w-full cursor-pointer flex-col gap-2 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/45"
+              className="group flex min-h-[48px] w-full items-center gap-2 rounded-lg border border-border/70 bg-card px-2.5 py-1.5 text-left transition-colors hover:border-border hover:bg-accent focus-within:border-border focus-within:bg-accent"
               data-testid={`pinned-card-${item.id}`}
             >
-              {/* Unpin button */}
+              <Link
+                to={`/pages/${item.id}`}
+                onKeyDown={(e) => {
+                  if (e.key === ' ') {
+                    e.preventDefault();
+                    e.currentTarget.click();
+                  }
+                }}
+                className="nm-focus-ring min-w-0 flex-1 text-foreground no-underline"
+              >
+                <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
+                  {item.icon && <PageIcon icon={item.icon} pageId={item.id} size="row" />}
+                  <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
+                </p>
+                {(item.spaceKey && item.spaceKey !== '__local__') || item.lastModifiedAt ? (
+                  <p className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                    {item.spaceKey && item.spaceKey !== '__local__' && <span>{item.spaceKey}</span>}
+                    {item.spaceKey && item.spaceKey !== '__local__' && item.lastModifiedAt && <span aria-hidden="true">·</span>}
+                    {item.lastModifiedAt && <span>Updated {new Date(item.lastModifiedAt).toLocaleDateString()}</span>}
+                  </p>
+                ) : null}
+              </Link>
               <button
-                onClick={(e) => handleUnpin(e, item.id, item.title)}
-                className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                type="button"
+                onClick={() => handleUnpin(item.id, item.title)}
+                className="nm-icon-button shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100"
                 aria-label={`Unpin ${item.title}`}
                 data-unpin={item.id}
                 data-testid={`unpin-btn-${item.id}`}
               >
                 <PinOff size={14} />
               </button>
-
-              {/* Title */}
-              <p className="line-clamp-2 pr-6 font-medium">{item.title}</p>
-
-              {/* Metadata row */}
-              <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
-                  {item.spaceKey}
-                </span>
-                {item.author && (
-                  <span className="flex items-center gap-1">
-                    <User size={10} /> {item.author}
-                  </span>
-                )}
-                {item.lastModifiedAt && (
-                  <span className="flex items-center gap-1">
-                    <Clock size={10} /> {new Date(item.lastModifiedAt).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
             </div>
           </m.div>
         ))}
       </div>
 
       {overflow > 0 && (
-        <div className="mt-3 flex justify-center">
+        <div className="mt-2 flex justify-end">
           <button
+            type="button"
             onClick={() => setExpanded((prev) => !prev)}
             aria-expanded={isExpanded}
             aria-controls="pinned-pages-grid"
-            className="nm-button-ghost text-sm"
+            className="library-search-select flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
             data-testid="pinned-expand-toggle"
           >
-            {isExpanded ? (
-              <>
-                <ChevronUp size={14} /> Show fewer
-              </>
-            ) : (
-              <>
-                <ChevronDown size={14} /> Show {overflow} more
-              </>
-            )}
+            <span>{isExpanded ? 'Show fewer' : `Show ${overflow} more`}</span>
+            <ChevronDown
+              size={12}
+              className={cn('shrink-0 transition-transform', isExpanded && 'rotate-180')}
+              aria-hidden="true"
+            />
           </button>
         </div>
       )}

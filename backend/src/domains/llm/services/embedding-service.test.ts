@@ -1655,19 +1655,79 @@ describe('chunkText', () => {
   });
 
   it('should respect custom chunkOverlap parameter (zero overlap)', () => {
-    // Two paragraphs, small chunk size, zero overlap
-    const paragraph1 = 'First paragraph content here. '.repeat(5);
-    const paragraph2 = 'Second paragraph content here. '.repeat(5);
+    // Two paragraphs with distinct, non-overlapping wording (no shared
+    // substrings), small chunk size, zero overlap.
+    const paragraph1 = 'alpha-word '.repeat(5) + 'ALPHATAIL';
+    const paragraph2 = 'beta-word '.repeat(5) + 'BETATAIL';
     const text = `${paragraph1}\n\n${paragraph2}`;
 
     // With zero overlap the chunks should be independent
     const chunks = chunkText(text, 'Title', 'DEV', 'page-1', 30, 0);
-    expect(chunks.length).toBeGreaterThanOrEqual(1);
-    // With zero overlap no chunk should start with words from previous chunk's tail
-    // (this is a structural check — all chunks should be non-empty)
+    expect(chunks.length).toBeGreaterThan(1);
     for (const chunk of chunks) {
       expect(chunk.text.length).toBeGreaterThan(0);
     }
+    // With zero overlap, no chunk should carry the trailing text of the
+    // previous chunk forward — a real duplication assertion, not merely
+    // non-empty chunks (#1271: the buggy slice(-0) === slice(0) carried the
+    // whole previous chunk forward).
+    expect(chunks[0]!.text).toContain('ALPHATAIL');
+    expect(chunks[0]!.text).not.toContain('BETATAIL');
+    expect(chunks[1]!.text).toContain('BETATAIL');
+    expect(chunks[1]!.text).not.toContain('ALPHATAIL');
+    expect(chunks[1]!.text).not.toContain('alpha-word');
+  });
+
+  it('#1271: chunkOverlap 0 must not carry the whole previous chunk (slice(-0) bug)', () => {
+    // A single oversized section (no headings, so splitMarkdownSections
+    // returns it as one section) made of several distinct paragraphs, each
+    // tagged with its own unique marker word and padded well past
+    // MIN_FLUSH_CHARS so every paragraph flushes as its own chunk boundary.
+    // chunkSize=100 tokens -> maxChars=300, so total text (~1100 chars) is
+    // well over chunkSize * CHARS_PER_TOKEN * 3 = 900 chars.
+    const markers = ['MARKERONE', 'MARKERTWO', 'MARKERTHREE', 'MARKERFOUR'];
+    // Marker sits at the END of each paragraph, matching where a tail-carry
+    // would pick it up — the bug carries the END of the previous chunk into
+    // the start of the next one.
+    const paragraphs = markers.map(
+      (marker) => `${'filler-word '.repeat(35)}${marker}`,
+    );
+    const text = paragraphs.join('\n\n');
+
+    const chunks = chunkText(text, 'Title', 'DEV', 'page-1', 100, 0);
+    expect(chunks.length).toBeGreaterThan(1);
+
+    // With overlap 0, no marker should leak into a chunk other than the one
+    // whose paragraph it belongs to — slice(-0) === slice(0) carries the
+    // ENTIRE previous chunk forward, which would make every marker after
+    // the first appear in two (or more) chunks.
+    for (const marker of markers) {
+      const chunksContainingMarker = chunks.filter((c) => c.text.includes(marker));
+      expect(chunksContainingMarker).toHaveLength(1);
+    }
+
+    // Concatenated chunk length should be close to the input length, not
+    // inflated by carried-forward duplication.
+    const totalChunkChars = chunks.reduce((sum, c) => sum + c.text.length, 0);
+    expect(totalChunkChars).toBeLessThan(text.length * 1.5);
+  });
+
+  it('#1271: overlap > 0 still carries a tail (contrast case)', () => {
+    const markers = ['MARKERONE', 'MARKERTWO', 'MARKERTHREE', 'MARKERFOUR'];
+    const paragraphs = markers.map(
+      (marker) => `${'filler-word '.repeat(35)}${marker}`,
+    );
+    const text = paragraphs.join('\n\n');
+
+    const chunks = chunkText(text, 'Title', 'DEV', 'page-1', 100, 20);
+    expect(chunks.length).toBeGreaterThan(1);
+
+    // With overlap > 0, at least one marker should appear in more than one
+    // chunk (the tail of one chunk carried into the start of the next).
+    const someMarkerDuplicated = markers.some(
+      (marker) => chunks.filter((c) => c.text.includes(marker)).length > 1,
+    );
+    expect(someMarkerDuplicated).toBe(true);
   });
 
   describe('splitByWords', () => {

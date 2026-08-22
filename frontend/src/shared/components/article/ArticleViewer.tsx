@@ -6,7 +6,6 @@ import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
-import { Highlight } from '@tiptap/extension-highlight';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import { common, createLowlight } from 'lowlight';
@@ -36,15 +35,19 @@ import {
   TableIndex,
   UnknownMacro,
   ExtendedTable,
+  CommentMark,
+  SafeHighlight,
 } from './article-extensions';
+import { InlineLucideIcon } from './inline-lucide-icon';
 import { MermaidBlock } from './MermaidBlockExtension';
+import { CommentPopover } from './CommentPopover';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
 import type { TocHeading } from './TableOfContents';
 import { handleTableCellTripleClick } from './table-cell-selection';
 
-// Configure DOMPurify to preserve Confluence-specific attributes
+// Configure DOMPurify to preserve Confluence-specific and comment attributes
 DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
   if (
     data.attrName === 'data-diagram-name' ||
@@ -55,7 +58,10 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
     data.attrName === 'data-layout' ||
     data.attrName === 'data-layout-type' ||
     data.attrName === 'data-cell-width' ||
-    data.attrName === 'data-border'
+    data.attrName === 'data-border' ||
+    data.attrName === 'data-lucide' ||
+    data.attrName === 'data-comment-id' ||
+    data.attrName === 'data-comment-resolved'
   ) {
     data.forceKeepAttr = true;
   }
@@ -89,7 +95,7 @@ export function ArticleViewer({
   content,
   onImageClick,
   confluenceUrl,
-  pageId: _pageId,
+  pageId,
   confluencePageId,
   onHeadingsReady,
   onRequestSync: _onRequestSync,
@@ -108,7 +114,22 @@ export function ArticleViewer({
   const sanitizedContent = useMemo(
     () =>
       DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title', 'data-layout', 'data-layout-type', 'data-cell-width', 'data-border'],
+        ADD_ATTR: [
+          'data-diagram-name',
+          'data-drawio',
+          'data-confluence-link',
+          'data-type',
+          'data-checked',
+          'data-color',
+          'data-title',
+          'data-layout',
+          'data-layout-type',
+          'data-cell-width',
+          'data-border',
+          'data-lucide',
+          'data-comment-id',
+          'data-comment-resolved',
+        ],
       }),
     [content],
   );
@@ -129,7 +150,8 @@ export function ArticleViewer({
       }),
       TextStyle,
       Color,
-      Highlight.configure({ multicolor: true }),
+      CommentMark,
+      SafeHighlight.configure({ multicolor: true }),
       ExtendedTable.configure({ resizable: false }),
       TableRow,
       TableCell,
@@ -150,6 +172,7 @@ export function ArticleViewer({
         },
       }).configure({ lowlight }),
       Image.configure({ inline: false }),
+      InlineLucideIcon,
       Details,
       DetailsSummary,
       Panel,
@@ -518,7 +541,7 @@ export function ArticleViewer({
           !isLight && 'prose-invert',
           '[&_.tiptap]:outline-none',
           // Table styles
-          '[&_table]:border-collapse [&_td]:border [&_td]:border-[var(--glass-border)] [&_td]:p-2',
+          '[&_table]:border-separate [&_table]:border-spacing-0 [&_td]:border [&_td]:border-[var(--glass-border)] [&_td]:p-2',
           '[&_th]:border [&_th]:border-[var(--glass-border)] [&_th]:bg-[oklch(from_var(--color-muted)_l_c_h_/_0.3)] [&_th]:p-2 [&_th]:font-semibold',
           // Task list styles
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
@@ -526,6 +549,7 @@ export function ArticleViewer({
           className,
         )}
       />
+      {editor && <CommentPopover editor={editor} pageId={pageId} />}
     </div>
   );
 }

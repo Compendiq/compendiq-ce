@@ -1,6 +1,14 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
-import { useMediaQuery, useIsDockWideLayout, useIsMobileLayout, DOCK_WIDE_QUERY, MD_QUERY } from './use-media-query';
+import {
+  useMediaQuery,
+  useIsDockWideLayout,
+  useIsMobileLayout,
+  useIsInspectorWideLayout,
+  DOCK_WIDE_QUERY,
+  MD_QUERY,
+  INSPECTOR_WIDE_QUERY,
+} from './use-media-query';
 
 function Probe({ query }: { query: string }) {
   return <span data-testid="result">{String(useMediaQuery(query))}</span>;
@@ -12,6 +20,10 @@ function DockProbe() {
 
 function MobileProbe() {
   return <span data-testid="result">{String(useIsMobileLayout())}</span>;
+}
+
+function InspectorWideProbe() {
+  return <span data-testid="result">{String(useIsInspectorWideLayout())}</span>;
 }
 
 describe('useMediaQuery', () => {
@@ -70,6 +82,28 @@ describe('useIsDockWideLayout', () => {
   it('is true once both fit', () => {
     window.innerWidth = 1440;
     render(<DockProbe />);
+    expect(screen.getByTestId('result')).toHaveTextContent('true');
+  });
+});
+
+describe('useIsInspectorWideLayout', () => {
+  afterEach(() => {
+    window.innerWidth = 1024;
+  });
+
+  it('is the xl rule the expanded inspector defaults on', () => {
+    expect(INSPECTOR_WIDE_QUERY).toBe('(min-width: 1280px)');
+  });
+
+  it('is false at laptop width so the inspector starts collapsed', () => {
+    window.innerWidth = 1024;
+    render(<InspectorWideProbe />);
+    expect(screen.getByTestId('result')).toHaveTextContent('false');
+  });
+
+  it('is true at 1280px', () => {
+    window.innerWidth = 1280;
+    render(<InspectorWideProbe />);
     expect(screen.getByTestId('result')).toHaveTextContent('true');
   });
 });

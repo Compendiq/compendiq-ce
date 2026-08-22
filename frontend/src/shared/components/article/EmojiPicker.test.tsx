@@ -57,6 +57,8 @@ describe('EmojiPicker', () => {
     expect(screen.getByTestId('popular-emoji-🎉')).toBeInTheDocument();
     expect(screen.getByTestId('popular-emoji-🔥')).toBeInTheDocument();
 
+    expect(screen.getByRole('tablist', { name: 'Icon type' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Icons' })).toBeInTheDocument();
     expect(screen.getByRole('tablist', { name: 'Emoji categories' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'All Categories' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Smileys & Emotion' })).toBeInTheDocument();
@@ -78,6 +80,13 @@ describe('EmojiPicker', () => {
     fireEvent.click(screen.getByTestId('popular-emoji-🔥'));
     expect(insertContent).toHaveBeenCalledWith('🔥');
     expect(screen.queryByRole('dialog', { name: 'Emoji Picker' })).not.toBeInTheDocument();
+  });
+
+  it('shows the page-icon Lucide grid from the Icons tab', () => {
+    render(<EmojiPicker editor={createMockEditor()} />);
+    openPicker();
+    fireEvent.click(screen.getByRole('tab', { name: 'Icons' }));
+    expect(screen.getByTestId('page-icon-lucide-grid')).toBeInTheDocument();
   });
 
   it('filters emojis when typing in search input', () => {

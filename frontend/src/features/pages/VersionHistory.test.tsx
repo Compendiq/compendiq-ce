@@ -6,6 +6,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { VersionHistory } from './VersionHistory';
 import { useAuthStore } from '../../stores/auth-store';
 
+vi.mock('../../shared/hooks/use-settings', () => ({
+  useSettings: () => ({
+    data: { confluenceUrl: 'https://confluence.example.com' },
+  }),
+}));
+
 function createWrapper(externalQueryClient?: QueryClient) {
   const queryClient = externalQueryClient ?? new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -675,5 +681,332 @@ describe('VersionHistory', () => {
       // v1 has editedAt:null, syncedAt:'2026-03-03T10:00:00Z' → shows "Synced ..."
       expect(screen.getByText(/Synced/)).toBeInTheDocument();
     });
+  });
+
+  it('applies enlarged modal styling classes (#1404)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.className).toContain('max-w-5xl');
+    expect(dialog.className).toContain('max-h-[90vh]');
+    expect(dialog.className).toContain('w-[96vw]');
+    expect(dialog.className).toContain('sm:w-[92vw]');
+  });
+
+  it('renders formatted rich document preview using ArticleViewer by default (#1404)', async () => {
+    const detailV2 = new Response(
+      JSON.stringify({
+        confluenceId: 'conf-123',
+        versionNumber: 2,
+        title: 'Page v2',
+        bodyHtml: '<h2>System Architecture</h2><p>Overview of the <strong>services</strong>.</p>',
+        bodyText: 'System Architecture\nOverview of the services.',
+        author: 'alice',
+        message: 'Updated architecture',
+        isCurrent: false,
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/versions/2')) return Promise.resolve(detailV2);
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+
+    // Click preview button on v2
+    const previewButtons = screen.getAllByTitle('Preview version');
+    fireEvent.click(previewButtons[1]!); // row for v2
+
+    await waitFor(() => {
+      expect(screen.getByText('Version 2 Preview')).toBeInTheDocument();
+      expect(screen.getByText('by alice')).toBeInTheDocument();
+      expect(screen.getByText('“Updated architecture”')).toBeInTheDocument();
+    });
+
+    // Formatted toggle button should be pressed by default
+    const formattedBtn = screen.getByRole('button', { name: /formatted/i });
+    expect(formattedBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(formattedBtn.className).toContain('text-action');
+
+    // Content rendered inside ArticleViewer (heading and bold text)
+    expect(await screen.findByRole('heading', { level: 2, name: /system architecture/i })).toBeInTheDocument();
+    expect(screen.getByText('services')).toBeInTheDocument();
+  });
+
+  it('toggles between Formatted view and Raw Text view (#1404)', async () => {
+    const detailV2 = new Response(
+      JSON.stringify({
+        confluenceId: 'conf-123',
+        versionNumber: 2,
+        title: 'Page v2',
+        bodyHtml: '<h3>Database Schema</h3><p>PostgreSQL 16 with pgvector.</p>',
+        bodyText: 'Database Schema\nPostgreSQL 16 with pgvector.',
+        author: 'alice',
+        isCurrent: false,
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/versions/2')) return Promise.resolve(detailV2);
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByTitle('Preview version')[1]!);
+    await screen.findByRole('heading', { level: 3, name: /database schema/i });
+
+    // Switch to Raw Text view
+    const rawTextBtn = screen.getByRole('button', { name: /raw text/i });
+    fireEvent.click(rawTextBtn);
+
+    expect(rawTextBtn).toHaveAttribute('aria-pressed', 'true');
+    const formattedBtn = screen.getByRole('button', { name: /formatted/i });
+    expect(formattedBtn).toHaveAttribute('aria-pressed', 'false');
+
+    // In Raw Text view, <pre> is rendered
+    expect(screen.getByText(/PostgreSQL 16 with pgvector/)).toBeInTheDocument();
+
+    // Switch back to Formatted view
+    fireEvent.click(formattedBtn);
+    expect(formattedBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByRole('heading', { level: 3, name: /database schema/i })).toBeInTheDocument();
+  });
+
+  it('falls back gracefully to plain text when bodyHtml is null (#1404)', async () => {
+    const detailV1 = new Response(
+      JSON.stringify({
+        confluenceId: null,
+        versionNumber: 1,
+        title: 'Page v1',
+        bodyHtml: null,
+        bodyText: 'Plain text historical body without HTML.',
+        isCurrent: false,
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/versions/1')) return Promise.resolve(detailV1);
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v1')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByTitle('Preview version')[2]!);
+
+    await waitFor(() => {
+      expect(screen.getByText('Version 1 Preview')).toBeInTheDocument();
+      expect(screen.getByText(/Plain text historical body without HTML\./)).toBeInTheDocument();
+    });
+  });
+
+  it('shows fallback message when both bodyHtml and bodyText are null (#1404)', async () => {
+    const detailV1 = new Response(
+      JSON.stringify({
+        confluenceId: null,
+        versionNumber: 1,
+        title: 'Page v1',
+        bodyHtml: null,
+        bodyText: null,
+        isCurrent: false,
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/versions/1')) return Promise.resolve(detailV1);
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v1')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByTitle('Preview version')[2]!);
+
+    // In raw mode or empty fallback
+    const rawBtn = await screen.findByRole('button', { name: /raw text/i });
+    fireEvent.click(rawBtn);
+    expect(screen.getByText('No content available')).toBeInTheDocument();
+  });
+
+  it('shows loading spinner while historical version detail is loading (#1404)', async () => {
+    let resolveDetail: (res: Response) => void;
+    const detailPromise = new Promise<Response>((resolve) => {
+      resolveDetail = resolve;
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/versions/2')) return detailPromise;
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByTitle('Preview version')[1]!);
+
+    // Spinner should appear while loading
+    expect(await screen.findByText('Loading version preview...')).toBeInTheDocument();
+
+    // Now resolve detail
+    act(() => {
+      resolveDetail!(
+        new Response(
+          JSON.stringify({
+            confluenceId: null,
+            versionNumber: 2,
+            title: 'Page v2',
+            bodyHtml: '<p>Loaded content</p>',
+            bodyText: 'Loaded content',
+            isCurrent: false,
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Loading version preview...')).not.toBeInTheDocument();
+      expect(screen.getByText('Version 2 Preview')).toBeInTheDocument();
+    });
+  });
+
+  it('allows restoring a version directly from the preview header (#1404)', async () => {
+    const detailV2 = new Response(
+      JSON.stringify({
+        confluenceId: null,
+        versionNumber: 2,
+        title: 'Page v2',
+        bodyHtml: '<p>V2 body</p>',
+        bodyText: 'V2 body',
+        isCurrent: false,
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/versions/2/restore')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 1,
+              title: 'Page v2',
+              version: 4,
+              restoredFrom: 2,
+              source: 'local',
+              pushedToConfluence: false,
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          ),
+        );
+      }
+      if (url.includes('/versions/2')) return Promise.resolve(detailV2);
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByTitle('Preview version')[1]!);
+    await screen.findByText('Version 2 Preview');
+
+    // Click "Restore this version" inside the preview header
+    const restoreInPreview = screen.getByText('Restore this version');
+    fireEvent.click(restoreInPreview);
+
+    // ConfirmDialog opens
+    expect(await screen.findByText('Restore v2?')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Version 2 Preview')).not.toBeInTheDocument();
+    });
+  });
+
+  it('compacts timeline list when a preview is active (#1404)', async () => {
+    const detailV2 = new Response(
+      JSON.stringify({
+        confluenceId: null,
+        versionNumber: 2,
+        title: 'Page v2',
+        bodyHtml: '<p>V2 body</p>',
+        bodyText: 'V2 body',
+        isCurrent: false,
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/versions/2')) return Promise.resolve(detailV2);
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+
+    expect(document.querySelector('.max-h-72')).toBeInTheDocument();
+
+    // Select version 2 to preview
+    fireEvent.click(screen.getAllByTitle('Preview version')[1]!);
+    await screen.findByText('Version 2 Preview');
+
+    // Timeline should now have max-h-48 class
+    expect(document.querySelector('.max-h-48')).toBeInTheDocument();
+    expect(document.querySelector('.max-h-72')).not.toBeInTheDocument();
   });
 });

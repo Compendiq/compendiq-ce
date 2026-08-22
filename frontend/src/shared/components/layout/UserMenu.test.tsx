@@ -33,16 +33,6 @@ vi.mock('../../../stores/keyboard-shortcuts-store', () => ({
     }),
 }));
 
-const mockSetSingleKeyShortcutsEnabled = vi.fn();
-let mockSingleKeyShortcutsEnabled = true;
-vi.mock('../../../stores/ui-store', () => ({
-  useUiStore: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      singleKeyShortcutsEnabled: mockSingleKeyShortcutsEnabled,
-      setSingleKeyShortcutsEnabled: mockSetSingleKeyShortcutsEnabled,
-    }),
-}));
-
 vi.mock('../../lib/api', () => ({
   logoutApi: (...args: unknown[]) => mockLogoutApi(...args),
 }));
@@ -60,8 +50,6 @@ describe('UserMenu', () => {
     mockLogoutApi.mockClear();
     mockNavigate.mockClear();
     mockOpenShortcuts.mockClear();
-    mockSetSingleKeyShortcutsEnabled.mockClear();
-    mockSingleKeyShortcutsEnabled = true;
     // Default to a non-admin signed-in user; admin tests opt in.
     mockUser = { username: 'testuser' };
   });
@@ -146,25 +134,8 @@ describe('UserMenu', () => {
     });
   });
 
-  it('shows single-key shortcuts toggle in dropdown', async () => {
-    renderUserMenu();
-    const trigger = screen.getByRole('button');
-    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
-    await vi.waitFor(() => {
-      expect(screen.getByText('Single-key shortcuts')).toBeInTheDocument();
-    });
-  });
 
-  it('renders single-key toggle as a switch element', async () => {
-    renderUserMenu();
-    const trigger = screen.getByRole('button');
-    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
-    await vi.waitFor(() => {
-      expect(screen.getByRole('switch', { name: /single-key shortcuts/i })).toBeInTheDocument();
-    });
-  });
-
-  it('calls logoutApi when Sign out is selected', async () => {
+  it('asks before signing out, and only then calls logoutApi', async () => {
     renderUserMenu();
     const trigger = screen.getByRole('button');
     fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
@@ -173,12 +144,29 @@ describe('UserMenu', () => {
       expect(trigger).toHaveAttribute('data-state', 'open');
     });
 
-    const signOut = screen.getByText('Sign out');
-    fireEvent.click(signOut);
+    fireEvent.click(screen.getByText('Sign out'));
+    expect(mockLogoutApi).not.toHaveBeenCalled();
+
+    const dialog = await screen.findByTestId('confirm-dialog');
+    expect(dialog).toHaveTextContent('Sign out?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
 
     await vi.waitFor(() => {
       expect(mockLogoutApi).toHaveBeenCalled();
     });
+  });
+
+  it('does not sign out when the confirm is cancelled', async () => {
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+    fireEvent.click(screen.getByText('Sign out'));
+    await screen.findByTestId('confirm-dialog');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    expect(mockLogoutApi).not.toHaveBeenCalled();
   });
 
   // /admin/analytics is mounted at App.tsx:165 but no UI links to it.
@@ -247,7 +235,7 @@ describe('UserMenu', () => {
     }
   });
 
-  // Identity, not an action: teal is reserved for actions. Neutral chip, never
+  // Identity, not an action: Steel is reserved for actions. Neutral chip, never
   // amber (AI) and never the filled accent.
   it('user avatar is a neutral chip, not an accent or amber mark', () => {
     mockUser = { username: 'simon', role: 'user' };

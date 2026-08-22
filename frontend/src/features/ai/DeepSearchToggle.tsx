@@ -37,7 +37,7 @@ import { cn } from '../../shared/lib/cn';
  *
  * ## Colour
  *
- * Teal when active, like `+ Sub-pages`: under ADR-010 the accent marks
+ * Steel when active, like `+ Sub-pages`: under ADR-010 the accent marks
  * "you can operate this". Violet is reserved for "an AI does this" and would
  * misdescribe what is a retrieval mode — the expansion call is incidental, the
  * user is choosing how the knowledge base is searched.
@@ -110,24 +110,14 @@ export function DeepSearchToggle({
     <div className={cn('flex items-center gap-1.5', className)}>
       <label
         className={cn(
-          // h-7 matches the chip rows either composer sits under. Border and
-          // background only — no lift, no scale (ADR-010 v0.6). The 1px border
-          // is `border-border-interactive` at rest, not the quiet separator
-          // hairline: this is an operable surface and owes WCAG 1.4.11 3:1.
-          //
-          // The checkbox is sr-only, so the ring has to be raised by the label
-          // — without this the keyboard focus indicator is on an invisible box.
-          // `focus-within` rather than `has-[:focus-visible]` because the
-          // control is only ever reached by keyboard or by clicking the label,
-          // and the label's own click does not focus it in every browser.
-          'flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
-          'focus-within:outline-none focus-within:ring-2 focus-within:ring-ring',
+          'flex h-7 items-center gap-1.5 rounded-[var(--radius-sm)] border border-transparent px-2 text-xs select-none transition-colors duration-100 ease-out',
+          'focus-within:outline-none focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1',
           checked
-            ? 'border-primary/45 bg-primary/12 text-primary-ink'
-            : 'border-border-interactive text-muted-foreground',
+            ? 'bg-primary/15 text-primary font-medium hover:bg-primary/20'
+            : 'bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground active:bg-secondary',
           disabled
-            ? 'cursor-not-allowed opacity-50'
-            : cn('cursor-pointer', !checked && 'hover:bg-foreground/5 hover:text-foreground'),
+            ? 'cursor-not-allowed opacity-45 pointer-events-none'
+            : 'cursor-pointer',
         )}
         title={DEEP_SEARCH_HINT}
       >
@@ -157,7 +147,7 @@ export function DeepSearchToggle({
                 disabled={disabled}
                 aria-label="Deep search details and caveats"
                 title="Deep search information"
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-transparent text-muted-foreground transition-colors duration-100 hover:border-border-interactive hover:bg-accent hover:text-foreground active:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-45 disabled:pointer-events-none"
                 data-testid={`${testId}-info-trigger`}
               >
                 <Info size={13} aria-hidden />

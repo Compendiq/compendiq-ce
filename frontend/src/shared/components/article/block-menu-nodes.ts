@@ -64,7 +64,7 @@ export function containsStructuredInline(doc: PMNode, from: number, to: number):
   let found = false;
   doc.nodesBetween(from, to, (node) => {
     if (found) return false;
-    if (node.isInline && !node.isText && node.type.name !== 'hardBreak') found = true;
+    if (node.isInline && !node.isText && node.type.name !== 'hardBreak' && node.type.name !== 'inlineLucideIcon') found = true;
     return !found;
   });
   return found;
@@ -134,11 +134,7 @@ export function blockLabel(node: PMNode): string {
     }
     return 'Panel';
   }
-  if (name === 'details') {
-    const macroName = node.attrs.macroName as string | undefined;
-    if (macroName === 'ui-expand') return 'UI Expand';
-    return 'Expand';
-  }
+  if (name === 'details') return 'Expand';
   // An unrecognised Confluence macro carries the real macro name — far more
   // useful than the generic "Macro" when deciding whether to delete it.
   if (name === 'unknownMacro') {

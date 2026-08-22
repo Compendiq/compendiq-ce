@@ -36,9 +36,9 @@ export function PresenceAvatarStack({
   const animation = reduce
     ? { initial: false, animate: {}, exit: {} }
     : {
-        initial: { opacity: 0, scale: 0.85 },
-        animate: { opacity: 1, scale: 1 },
-        exit: { opacity: 0, scale: 0.85 },
+        initial: { opacity: 0 },
+        animate: { opacity: 1 },
+        exit: { opacity: 0 },
       };
 
   return (

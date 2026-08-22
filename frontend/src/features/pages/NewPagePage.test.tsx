@@ -120,7 +120,12 @@ vi.mock('../../shared/components/article/Editor', async () => {
         />
       );
     },
-    EditorToolbar: ({ actions }: { actions?: React.ReactNode }) => <div data-testid="editor-toolbar-mock">{actions}</div>,
+    EditorToolbar: ({ pageProperty, actions }: { pageProperty?: React.ReactNode; actions?: React.ReactNode }) => (
+      <div data-testid="editor-toolbar-mock">
+        {pageProperty}
+        {actions}
+      </div>
+    ),
     EditorContextToolbars: () => null,
     TableContextToolbar: () => null,
     LayoutContextToolbar: () => null,
@@ -445,9 +450,8 @@ describe('NewPagePage', () => {
     });
   });
 
-  it('renders the New Page title and form fields', () => {
+  it('renders the page form fields and title placeholder', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    expect(screen.getByText('New Page')).toBeInTheDocument();
     expect(screen.getByTestId('title-input')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Untitled page')).toBeInTheDocument();
   });
@@ -795,74 +799,58 @@ describe('NewPagePage', () => {
     });
   });
 
-  it('explains the disabled Create Page button via a hover hint', async () => {
+  it('disables Create Page button when title is empty', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
     await waitFor(() => {
       expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
     });
     const createBtn = screen.getByText('Create Page').closest('button')!;
     expect(createBtn).toBeDisabled();
-    // nm-button-primary sets pointer-events:none on :disabled, which swallows
-    // a title tooltip placed on the button itself — the wrapping span carries it.
-    const hintCarrier = createBtn.closest('[title]');
-    expect(hintCarrier).not.toBeNull();
-    // A space is already selected (#1122), so naming it would send the user
-    // hunting for a control that is fine.
-    expect(hintCarrier).toHaveAttribute('title', 'Enter a title first');
   });
 
-  it('still names the space when there is none selected', async () => {
-    spacesState.confluence = [];
-    render(<NewPagePage />, { wrapper: createWrapper() });
-    await waitFor(() => {
-      expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'true');
-    });
-
-    const createBtn = screen.getByText('Create Page').closest('button')!;
-    expect(createBtn.closest('[title]')).toHaveAttribute('title', 'Enter a title and select a space first');
-
-    fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Titled' } });
-    expect(createBtn.closest('[title]')).toHaveAttribute('title', 'Select a space first');
-  });
-
-  it('drops the hover hint once the Create Page button is enabled', async () => {
+  it('enables Create Page button when title and space are present', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
     fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
     await selectLocalSpace('__local__');
     await waitFor(() => {
       expect(screen.getByText('Create Page').closest('button')).not.toBeDisabled();
     });
-    expect(screen.getByText('Create Page').closest('[title]')).toBeNull();
   });
 
-  it('shows the disabled-create hint as visible text wired via aria-describedby', async () => {
-    // A title tooltip is mouse-only — keyboard, touch and screen-reader users
-    // need the explanation too, so it must exist as real text in the DOM and
-    // be linked to the button for assistive tech.
+  it('renders starter action buttons when the page is empty', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    await waitFor(() => {
-      expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
-    });
-    const createBtn = screen.getByText('Create Page').closest('button')!;
-    expect(createBtn).toBeDisabled();
-
-    const hint = screen.getByText('Enter a title first', {
-      selector: '#create-page-hint',
-    });
-    expect(hint).toBeInTheDocument();
-    expect(createBtn).toHaveAttribute('aria-describedby', 'create-page-hint');
+    expect(screen.getByTestId('new-page-starter-zone')).toBeInTheDocument();
+    expect(screen.getByTestId('starter-template-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('starter-import-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('starter-ai-btn')).toBeInTheDocument();
   });
 
-  it('removes the visible hint once the Create Page button is enabled', async () => {
+  it('opens AI assistant create modal from starter button', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
-    await selectLocalSpace('__local__');
-    await waitFor(() => {
-      expect(screen.getByText('Create Page').closest('button')).not.toBeDisabled();
-    });
-    expect(document.querySelector('#create-page-hint')).toBeNull();
-    expect(screen.getByText('Create Page').closest('button')).not.toHaveAttribute('aria-describedby');
+    expect(screen.queryByTestId('new-page-ai-btn')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('starter-ai-btn'));
+    expect(await screen.findByTestId('ai-draft-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('skill-spec')).toBeInTheDocument();
+    expect(screen.getByTestId('skill-guide')).toBeInTheDocument();
+    expect(screen.getByTestId('skill-notes')).toBeInTheDocument();
+    expect(screen.getByTestId('skill-postmortem')).toBeInTheDocument();
   });
+
+  it('generates a draft using AI assistant create modal', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('starter-ai-btn'));
+    expect(await screen.findByTestId('ai-draft-modal')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('skill-spec'));
+    fireEvent.change(screen.getByTestId('ai-prompt-input'), { target: { value: 'Distributed Cache Service' } });
+    fireEvent.click(screen.getByTestId('ai-generate-submit-btn'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('ai-draft-modal')).not.toBeInTheDocument();
+      expect(mockSetContent).toHaveBeenCalled();
+    });
+  });
+
 
   it('submit uses the selected local spaceKey (not hardcoded __local__)', async () => {
     mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-page-id', title: 'My Notes Page', version: 1 });
@@ -1044,5 +1032,35 @@ describe('NewPagePage', () => {
     fireEvent.click(await screen.findByTestId('cancel-new-page-btn'));
     expect(mockNavigate).toHaveBeenCalledWith('/pages');
     expect(mockCreateMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('renders template and import actions as compact icon buttons beside tag popover', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    const templateBtn = await screen.findByTestId('use-template-btn');
+    const importBtn = await screen.findByTestId('import-markdown-btn');
+    const tagTrigger = await screen.findByTestId('tag-popover-trigger');
+
+    expect(templateBtn).toHaveClass('nm-icon-button');
+    expect(importBtn).toHaveClass('nm-icon-button');
+    expect(tagTrigger).toHaveClass('nm-icon-button');
+  });
+
+  it('applies draft content and title when compendiq:apply-draft event is dispatched', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+
+    window.dispatchEvent(
+      new CustomEvent('compendiq:apply-draft', {
+        detail: {
+          markdown: '# Architecture Spec\n\nContent here',
+          html: '<h1>Architecture Spec</h1><p>Content here</p>',
+          title: 'Architecture Spec',
+        },
+      }),
+    );
+
+    await waitFor(() => {
+      expect(mockSetContent).toHaveBeenCalledWith('<h1>Architecture Spec</h1><p>Content here</p>', { emitUpdate: true });
+      expect(screen.getByTestId('title-input')).toHaveValue('Architecture Spec');
+    });
   });
 });

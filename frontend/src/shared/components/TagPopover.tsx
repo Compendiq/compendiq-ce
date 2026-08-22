@@ -19,6 +19,11 @@ interface TagPopoverProps {
   isLoading?: boolean;
   /** Additional CSS classes for the trigger */
   className?: string;
+  /**
+   * Icon-only 32px trigger — the article write toolbar's compact form.
+   * The accessible name stays the count label; only the visible text is dropped.
+   */
+  iconOnly?: boolean;
 }
 
 /**
@@ -31,11 +36,9 @@ interface TagPopoverProps {
  * document gets 44px back at every width.
  *
  * The inspector's Details tab is the better *grouping* — tags belong with space,
- * parent and version — but `ArticleRightPane` is `hidden md:flex`, so that would
- * make tagging impossible while editing on a phone, and ADR-010 pins
- * `useIsDockWideLayout()` as the only JS width query in the app, so a second
- * mobile control is not available either. One control that works everywhere beat
- * a better grouping that needs two.
+ * parent and version — and below `md` that tab now lives in the page-inspector
+ * sheet. This chip stays anyway: it is the in-flow control while writing, and a
+ * sheet you have to open is the wrong place to reach for a label.
  *
  * The editor itself is untouched inside — same pills, same autocomplete, same
  * immediate `useUpdatePageLabels` write.
@@ -47,6 +50,7 @@ export function TagPopover({
   suggestions,
   isLoading = false,
   className,
+  iconOnly = false,
 }: TagPopoverProps) {
   const [open, setOpen] = useState(false);
   const editorRef = useRef<TagEditorHandle>(null);
@@ -68,10 +72,16 @@ export function TagPopover({
         type="button"
         data-testid="tag-popover-trigger"
         aria-label={label}
-        className={cn('nm-button-ghost h-8 shrink-0 px-2.5 text-xs', className)}
+        title={label}
+        className={cn(
+          iconOnly
+            ? 'nm-icon-button shrink-0'
+            : 'nm-button-ghost h-8 shrink-0 px-2.5 text-xs',
+          className,
+        )}
       >
         <Tag size={15} className="shrink-0" aria-hidden="true" />
-        {label}
+        {!iconOnly && label}
       </Popover.Trigger>
 
       <Popover.Portal>

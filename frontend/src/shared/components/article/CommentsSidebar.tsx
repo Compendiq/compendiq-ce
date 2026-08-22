@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m, AnimatePresence } from 'framer-motion';
 import { MessageSquare, X, Eye, EyeOff } from 'lucide-react';
@@ -13,10 +13,20 @@ interface CommentsSidebarProps {
   className?: string;
 }
 
+interface RawCommentsResponse {
+  comments?: Comment[];
+  total?: number;
+}
+
 function useComments(pageId: string) {
   return useQuery<Comment[]>({
     queryKey: ['comments', pageId],
-    queryFn: () => apiFetch(`/pages/${pageId}/comments`),
+    queryFn: async () => {
+      const res = await apiFetch<Comment[] | RawCommentsResponse>(`/pages/${pageId}/comments?includeResolved=true`);
+      if (Array.isArray(res)) return res;
+      if (res && Array.isArray(res.comments)) return res.comments;
+      return [];
+    },
     enabled: !!pageId,
   });
 }
@@ -30,7 +40,7 @@ function useAddComment(pageId: string) {
         body: JSON.stringify(data),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['comments', pageId] });
+      void queryClient.invalidateQueries({ queryKey: ['comments', pageId] });
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to post comment'),
   });
@@ -39,13 +49,22 @@ function useAddComment(pageId: string) {
 function useResolveComment(pageId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ commentId, resolved }: { commentId: string; resolved: boolean }) =>
-      apiFetch(`/pages/${pageId}/comments/${commentId}/resolve`, {
-        method: 'PUT',
-        body: JSON.stringify({ resolved }),
-      }),
+    mutationFn: async ({ commentId, resolved }: { commentId: string; resolved: boolean }) => {
+      const action = resolved ? 'resolve' : 'unresolve';
+      try {
+        return await apiFetch(`/comments/${commentId}/${action}`, {
+          method: 'POST',
+        });
+      } catch {
+        // Fallback for legacy route mocks
+        return await apiFetch(`/pages/${pageId}/comments/${commentId}/resolve`, {
+          method: 'PUT',
+          body: JSON.stringify({ resolved }),
+        });
+      }
+    },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['comments', pageId] });
+      void queryClient.invalidateQueries({ queryKey: ['comments', pageId] });
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to update comment'),
   });
@@ -54,6 +73,7 @@ function useResolveComment(pageId: string) {
 export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
+  const [selectedCommentId, setSelectedCommentId] = useState<string | null>(null);
 
   const { data: comments, isLoading } = useComments(pageId);
   const addComment = useAddComment(pageId);
@@ -73,7 +93,11 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
     }
     const threads = topLevel.map((tl) => ({
       ...tl,
-      replies: replyMap.get(tl.id) ?? [],
+      resolved: Boolean(tl.resolved ?? tl.isResolved),
+      replies: (replyMap.get(tl.id) ?? []).map((r) => ({
+        ...r,
+        resolved: Boolean(r.resolved ?? r.isResolved),
+      })),
     }));
     return {
       unresolvedThreads: threads.filter((t) => !t.resolved),
@@ -81,6 +105,66 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
       totalCount: topLevel.length,
     };
   }, [comments]);
+
+  // Jump from comment thread card to inline mark in article editor/viewer
+  const handleJumpToAnchor = useCallback((commentId: string) => {
+    if (typeof document === 'undefined') return;
+    const el = document.querySelector(`[data-comment-id="${commentId}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('comment-flash');
+      setTimeout(() => el.classList.remove('comment-flash'), 1500);
+    }
+  }, []);
+
+  // Listen to global selection clicks on inline marks in editor/viewer
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleCommentSelect = (e: Event) => {
+      const customEvent = e as CustomEvent<{ commentId: string }>;
+      const targetId = customEvent.detail?.commentId;
+      if (!targetId) return;
+
+      setSelectedCommentId(targetId);
+
+      // Check if target comment is in resolved list, if so auto-expand resolved
+      const isResolvedComment = resolvedThreads.some((t) => t.id === targetId);
+      if (isResolvedComment) {
+        setShowResolved(true);
+      }
+
+      if (isOpen) {
+        setTimeout(() => {
+          const card = document.querySelector(`[data-testid="comment-thread-${targetId}"]`);
+          card?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 100);
+      }
+    };
+
+    const handleOpenSidebar = (e: Event) => {
+      const customEvent = e as CustomEvent<{ commentId?: string }>;
+      setIsOpen(true);
+      const targetId = customEvent.detail?.commentId;
+      if (targetId) {
+        setSelectedCommentId(targetId);
+        const isResolvedComment = resolvedThreads.some((t) => t.id === targetId);
+        if (isResolvedComment) {
+          setShowResolved(true);
+        }
+        setTimeout(() => {
+          const card = document.querySelector(`[data-testid="comment-thread-${targetId}"]`);
+          card?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 100);
+      }
+    };
+
+    window.addEventListener('compendiq:comment-select', handleCommentSelect);
+    window.addEventListener('compendiq:comment-open-sidebar', handleOpenSidebar);
+    return () => {
+      window.removeEventListener('compendiq:comment-select', handleCommentSelect);
+      window.removeEventListener('compendiq:comment-open-sidebar', handleOpenSidebar);
+    };
+  }, [resolvedThreads, isOpen]);
 
   const handleNewComment = useCallback(
     (body: string) => {
@@ -117,10 +201,6 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
         onClick={() => setIsOpen((v) => !v)}
         className={cn(
           'nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm transition-colors',
-          // Mutually exclusive on purpose: `nm-pill-active` repaints the
-          // surface with its own accent tint, and `nm-card-hover` composes its
-          // tint on top of the *card* surface — layering both would drag the
-          // card gradient back over the active pill on hover.
           isOpen ? 'nm-pill-active text-action' : 'nm-card-hover',
         )}
         data-testid="comments-toggle"
@@ -148,7 +228,7 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
               className="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm lg:hidden"
             />
 
-            {/* Panel — Liquid Glass treatment */}
+            {/* Panel */}
             <m.aside
               initial={{ x: '100%', opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
@@ -196,7 +276,7 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
               {/* Divider */}
               <div className="mx-4 h-px bg-[var(--glass-sidebar-divider)]" />
 
-              {/* Comments list — with scroll mask */}
+              {/* Comments list */}
               <div className="flex-1 overflow-y-auto px-4 py-3 scroll-mask">
                 {isLoading ? (
                   <div className="space-y-3">
@@ -209,7 +289,7 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
                     <MessageSquare size={32} className="mb-3 text-muted-foreground" />
                     <p className="text-sm font-medium">No comments yet</p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Be the first to leave a comment
+                      Be the first to leave a comment or note
                     </p>
                   </div>
                 ) : (
@@ -222,7 +302,9 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
                         onReply={handleReply}
                         onResolve={handleResolve}
                         onUnresolve={handleUnresolve}
+                        onJumpToAnchor={handleJumpToAnchor}
                         isSubmittingReply={addComment.isPending}
+                        isSelected={selectedCommentId === thread.id}
                       />
                     ))}
 
@@ -253,7 +335,9 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
                                   onReply={handleReply}
                                   onResolve={handleResolve}
                                   onUnresolve={handleUnresolve}
+                                  onJumpToAnchor={handleJumpToAnchor}
                                   isSubmittingReply={addComment.isPending}
+                                  isSelected={selectedCommentId === thread.id}
                                 />
                               ))}
                             </m.div>

@@ -6,6 +6,7 @@ import StarterKit from '@tiptap/starter-kit';
 import { Image } from '@tiptap/extension-image';
 import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex, ExtendedTable, BlockShortcutsExtension } from './article-extensions';
+import { CompendiqTableView } from './table-layout-view';
 
 // Helper to extract parseHTML rules from a TipTap extension config
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -53,6 +54,15 @@ describe('article-extensions', () => {
       editor.destroy();
     });
 
+    it('paints the live toggle class without serializing it', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.view.dom.querySelector('details')).toHaveClass('cq-expand');
+      expect(editor.getHTML()).not.toContain('cq-expand');
+      editor.destroy();
+    });
+
     it('omits both attributes when absent (editor-created sections stay bare)', () => {
       const editor = createDetailsEditor('<details><summary>T</summary><p>B</p></details>');
       const output = editor.getHTML();
@@ -79,6 +89,40 @@ describe('article-extensions', () => {
       const editor = createDetailsEditor(
         '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
       );
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+      expect(editor.view.dom.querySelector('details')).not.toHaveAttribute('open');
+      editor.destroy();
+    });
+
+    it('does not persist a title click in edit mode', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+      );
+      const details = editor.view.dom.querySelector('details')!;
+      const summary = editor.view.dom.querySelector('summary')!;
+      expect(details).not.toHaveAttribute('open');
+      summary.click();
+      expect(details).toHaveAttribute('open');
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+      editor.destroy();
+    });
+
+    it('persists UI Expand default-open only through setDetailsOpen', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.commands.setDetailsOpen({ pos: 0, open: true })).toBe(true);
+      expect(editor.getHTML()).toMatch(/<details[^>]*\sopen\b/);
+      expect(editor.commands.setDetailsOpen({ pos: 0, open: false })).toBe(true);
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+      editor.destroy();
+    });
+
+    it('refuses setDetailsOpen on a native expand', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.commands.setDetailsOpen({ pos: 0, open: true })).toBe(false);
       expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
       editor.destroy();
     });
@@ -193,6 +237,15 @@ describe('article-extensions', () => {
       const editor = mount('<details data-macro-name="expand"><summary></summary><p>B</p></details>');
       expect(editor.getHTML()).not.toContain('data-expand-placeholder');
       expect(editor.getHTML()).not.toContain('Click here to expand');
+      editor.destroy();
+    });
+
+    it('names an empty summary for assistive tech without storing the name', () => {
+      const editor = mount('<details data-macro-name="expand"><summary></summary><p>B</p></details>');
+      expect(editor.view.dom.querySelector('summary')?.getAttribute('aria-label')).toBe(
+        'Click here to expand...',
+      );
+      expect(editor.getHTML()).not.toContain('aria-label');
       editor.destroy();
     });
 
@@ -401,7 +454,7 @@ describe('article-extensions', () => {
       const addAttributes = ConfluenceChildren.config.addAttributes;
       const attrs = addAttributes?.call({ name: 'confluenceChildren', options: {}, storage: {}, parent: undefined });
       expect(attrs).toBeDefined();
-      const expectedParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+      const expectedParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns', 'macro-name'];
       for (const param of expectedParams) {
         expect(attrs).toHaveProperty(param);
         expect(attrs[param].default).toBeNull();
@@ -422,6 +475,7 @@ describe('article-extensions', () => {
             'data-page': 'My Page',
             'data-style': 'h3',
             'data-excerpttype': 'rich',
+            'data-columns': '2',
             'data-macro-name': 'ui-children',
           };
           return map[name.toLowerCase()] ?? null;
@@ -435,6 +489,7 @@ describe('article-extensions', () => {
       expect(attrs.page.parseHTML(mockElement)).toBe('My Page');
       expect(attrs.style.parseHTML(mockElement)).toBe('h3');
       expect(attrs.excerptType.parseHTML(mockElement)).toBe('rich');
+      expect(attrs.columns.parseHTML(mockElement)).toBe('2');
       expect(attrs['macro-name'].parseHTML(mockElement)).toBe('ui-children');
     });
   });
@@ -453,6 +508,7 @@ describe('article-extensions', () => {
           page: null,
           style: null,
           excerptType: null,
+          columns: '2',
           'macro-name': 'ui-children',
         },
       };
@@ -467,6 +523,7 @@ describe('article-extensions', () => {
       expect(content).toBe('[Children pages listed here]');
       expect(attrs['data-sort']).toBe('title');
       expect(attrs['data-depth']).toBe('0');
+      expect(attrs['data-columns']).toBe('2');
       expect(attrs['data-macro-name']).toBe('ui-children');
       // Null attrs should not appear
       expect(attrs).not.toHaveProperty('data-reverse');
@@ -1162,6 +1219,13 @@ describe('Block in blocks: rich block nesting inside column containers', () => {
     expect(innerSection?.content?.length).toBe(2);
 
     editor.destroy();
+  });
+});
+
+describe('ExtendedTable options', () => {
+  it('keeps required TableOptions and uses CompendiqTableView', () => {
+    expect(ExtendedTable.options.HTMLAttributes).toEqual(expect.any(Object));
+    expect(ExtendedTable.options.View).toBe(CompendiqTableView);
   });
 });
 

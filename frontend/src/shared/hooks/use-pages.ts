@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { PageIcon, SettablePageIcon } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
 
 export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
@@ -39,6 +40,7 @@ interface PageSummary {
   summaryStatus?: SummaryStatus;
   source: 'confluence' | 'standalone';
   visibility: 'private' | 'shared';
+  icon?: PageIcon | null;
 }
 
 interface PageDetail extends PageSummary {
@@ -51,6 +53,8 @@ interface PageDetail extends PageSummary {
   summaryError: string | null;
   /** Creator's user id — set for standalone pages, null for Confluence-synced. */
   createdByUserId?: string | number | null;
+  /** Last human verification stamp (`pages.verified_at`). */
+  verifiedAt?: string | null;
 }
 
 interface PaginatedPages {
@@ -150,6 +154,7 @@ export interface PageTreeItem {
   labels: string[];
   lastModifiedAt: string | null;
   embeddingDirty: boolean;
+  icon?: PageIcon | null;
 }
 
 interface PageTreeResponse {
@@ -238,6 +243,64 @@ export function useUpdatePage() {
     onSettled: (_data, _err, variables) => {
       queryClient.invalidateQueries({ queryKey: ['pages', variables.id] });
       queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+    },
+  });
+}
+
+export function useUpdatePageIcon() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      icon,
+    }: {
+      id: string;
+      icon: SettablePageIcon | null;
+    }) =>
+      apiFetch<{ icon: PageIcon | null }>(`/pages/${id}/icon`, {
+        method: 'PATCH',
+        body: JSON.stringify({ icon }),
+      }),
+    onMutate: async ({ id, icon }) => {
+      await queryClient.cancelQueries({ queryKey: ['pages', id] });
+      const previous = queryClient.getQueryData<PageDetail>(['pages', id]);
+      queryClient.setQueryData<PageDetail>(['pages', id], (old) =>
+        old ? { ...old, icon } : old,
+      );
+      queryClient.setQueriesData<PageTreeResponse>({ queryKey: ['pages', 'tree'] }, (old) => {
+        if (!old?.items) return old;
+        return {
+          ...old,
+          items: old.items.map((item) => (item.id === id ? { ...item, icon } : item)),
+        };
+      });
+      return { previous };
+    },
+    onError: (_err, variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['pages', variables.id], context.previous);
+      }
+    },
+    onSettled: (_data, _err, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['pages', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+    },
+  });
+}
+
+export function useUploadPageIcon() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, dataUri }: { id: string; dataUri: string }) =>
+      apiFetch<{ icon: PageIcon | null }>(`/pages/${id}/icon-image`, {
+        method: 'POST',
+        body: JSON.stringify({ dataUri }),
+      }),
+    onSuccess: (data, variables) => {
+      queryClient.setQueryData<PageDetail>(['pages', variables.id], (old) =>
+        old ? { ...old, icon: data.icon } : old,
+      );
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
     },
   });
 }
@@ -344,6 +407,7 @@ export interface PinnedPage {
   excerpt: string;
   pinnedAt: string;
   pinOrder: number;
+  icon?: PageIcon | null;
 }
 
 interface PinnedPagesResponse {

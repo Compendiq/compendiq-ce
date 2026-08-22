@@ -28,7 +28,6 @@ vi.mock('sonner', () => ({
 }));
 
 import { Editor, clearDraft } from './Editor';
-import { insertExpandSection } from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
 import { TextSelection } from '@tiptap/pm/state';
 import { CellSelection, cellAround } from '@tiptap/pm/tables';
@@ -482,6 +481,7 @@ describe('Editor', () => {
       const html = editor.getHTML();
       expect(html).toContain('<summary></summary>');
       expect(html).not.toContain('Click to expand');
+      expect(html).not.toContain('Content here...');
     });
 
     it('places the caret inside the empty summary', async () => {
@@ -518,18 +518,11 @@ describe('Editor', () => {
       expect(editor.getHTML()).toContain('<summary>Outer</summary>');
     });
 
-    it('inserts a Refined UI Expand with its macro identity intact', async () => {
-      const editor = await renderEditorWithToolbar();
-
-      act(() => {
-        insertExpandSection(editor, 'ui-expand');
-      });
-
-      const html = editor.getHTML();
-      expect(html).toContain('data-macro-name="ui-expand"');
-      expect(html).toContain('<summary></summary>');
-      expect(html).not.toContain('Click here to expand');
-      expect(editor.state.selection.$from.parent.type.name).toBe('detailsSummary');
+    it('does not offer a second insert for Refined UI Expand', async () => {
+      await renderEditorWithToolbar();
+      openInsertMenu();
+      expect(screen.queryByRole('menuitem', { name: 'UI Expand' })).toBeNull();
+      expect(screen.getByRole('menuitem', { name: 'Expand section' })).toBeInTheDocument();
     });
   });
 

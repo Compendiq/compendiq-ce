@@ -22,9 +22,9 @@ flowchart TB
     subgraph features["features/ (domain UI)"]
         direction LR
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
-        fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123)"]
+        fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123) · VersionHistory (#1404)"]
         fSpaces["spaces/<br/>settings · new"]
-        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockPanel · AiDockSheet · DockDiffCard (#1126)<br/>tab inside ArticleRightPane, sheet over the article below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
+        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ DockPanel · DockDiffCard (#1126)<br/>tab inside ArticleRightPane; mobile inspector sheet below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
         fGraph["graph/"]
         fSettings["settings/<br/>LoginPage · user + admin"]
         fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)<br/>analytics/ (AnalyticsPage)"]
@@ -65,18 +65,42 @@ flowchart TB
     class stores,zAuth,zTheme,zUI,zAV,zDock,zCmd,zKb st
 ```
 
+## Authenticated inset shell
+
+`AppLayout` paints a viewport **chassis** (`--app-chassis`, inset on `md+`)
+around a rounded **app shell**. The top app header also paints the chassis, so
+the outer frame is continuous on all four sides; internal panel toolbars paint
+Chrome (`--app-header-bg`). The composition is:
+
+```mermaid
+flowchart TB
+    chassis["viewport chassis --app-chassis"]
+    shell["app shell --app-shell-*"]
+    header["top app header --app-chassis"]
+    workspace["primary workspace<br/>left nav + main"]
+    rail["context rail --app-rail-*<br/>Outline · Details · Assistant"]
+
+    chassis --> header
+    chassis --> shell
+    shell --> workspace
+    shell --> rail
+```
+
+Mobile (`<md`) is edge-to-edge: inset, shell radius and rail gap are 0.
+
 ## Article route panels (#1126)
 
-On `/pages/:id` the shell renders **two** siblings in one flex row, so each
-panel scrolls independently and the editor column shrinks around them rather
-than having anything float above it.
+On `/pages/:id` the shell renders the **workspace** (left nav + main) and a
+**detached context rail** as siblings in one flex row, so each region scrolls
+independently and the editor column shrinks around the rail rather than
+having anything float above it.
 
 ```mermaid
 flowchart LR
-    main["main<br/>[data-scroll-container]<br/>PageViewPage · TipTap"]
+    workspace["workspace<br/>SidebarTreeView | main<br/>[data-scroll-container]<br/>PageViewPage · TipTap"]
     rail["ArticleRightPane<br/>280px pane ⇄ 40px rail<br/>tabs: Assistant · Outline · Details<br/>outline flyout on hover/focus"]
 
-    main --- rail
+    workspace --- rail
 ```
 
 - **The assistant is a tab, not a third column.** #1126 shipped it as its own
@@ -84,36 +108,33 @@ flowchart LR
   rules across the window and squeezed the article — the thing the route exists
   for — between two slabs of chrome. It is now the first of three tabs inside
   the inspector, switching instantly like Outline and Details. One right-hand
-  edge, one interaction to learn. `AiDock` still exists but renders the mobile
-  sheet or nothing: `return mobile ? <AiDockSheet /> : null`.
+  edge, one interaction to learn.
 - The tab choice is **local `useState`** in `ArticleRightPane`, not a store: it
   is a per-visit view, and persisting it would open pages onto an AI panel
   nobody asked for. It defaults to Outline, or Details when the page has no
   headings.
 - **"Show me the assistant" is consumed by `AppLayout`.** `openDock()` is still
-  what Alt+I, the AI layout preset and the inspector's rail button raise. Below
-  `md` that opens the sheet. On an article route at `md` and up there is no
-  dock, so an effect turns it into `requestInspectorView('assistant')` plus an
-  expand, and lowers the flag in the same tick — `open` keeps meaning exactly
-  "the mobile sheet is up". Skipping that step is not a no-op: `ArticleRightPane`
-  ORs `open` into its own `collapsed`, so an unconsumed flag collapsed the
-  inspector to a rail at ≥1100px and made the right side vanish entirely
-  between 768 and 1099px, i.e. the keystroke destroyed the panel it was meant
-  to open. Guarded across all four widths in `AppLayout.test.tsx`.
-- `.` closes the sheet while it is open, so the key is never dead; at `md` and
-  up it plainly toggles the pane.
-- `useIsDockWideLayout` (`min-width: 1100px`) and `useIsMobileLayout` are the
-  app's only JS *width* queries — `use-can-hover` and three one-shot checks
-  read `matchMedia` for pointer and motion capability, but every other
-  responsive layout decision is a Tailwind class.
-- Below `md` (`useIsMobileLayout`) there is no right side to dock into, so
-  `AiDock` swaps containers: `AiDockSheet` renders the same `DockPanel` as a
-  drag-to-expand bottom sheet over the article, the way the left sidebar
-  already becomes a slide-over there. Two detents (52% / 92% of the viewport),
-  dragged with a hand-rolled Pointer Events handler because the app's
-  `LazyMotion features={domAnimation}` excludes framer's `drag` feature bundle.
-  Unlike the inspector tab, the sheet **is** modal — backdrop, `aria-modal`, Tab trap
-  — because it occludes the document rather than sitting beside it.
+  what Alt+I and the inspector's rail button raise. On an
+  article route at every width an effect turns it into
+  `requestInspectorView('assistant')` plus an expand (desktop) or the inspector
+  sheet (below `md`), and lowers the flag in the same tick — `open` is a
+  request, not a second layout state. Skipping that step is not a no-op: an
+  unconsumed flag used to collapse the inspector to a rail at ≥1100px and make
+  the right side vanish between 768 and 1099px. Guarded across those widths and
+  below `md` in `AppLayout.test.tsx`.
+- `.` toggles the inspector: the sheet below `md`, the detached rail at `md`
+  and up.
+- JS *width* queries exist only where the component tree changes:
+  `useIsMobileLayout` (`md`), `useIsDockWideLayout` (`1100px`, dock vs rail),
+  and `useIsInspectorWideLayout` (`xl`, expanded inspector vs 40px rail).
+  `use-can-hover` and three one-shot checks read `matchMedia` for pointer and
+  motion capability; every other responsive layout decision is a Tailwind class.
+- Below `md` there is no right side to dock into, so the same inspector
+  (`ArticleRightPane` with `presentation="sheet"`) is a right-hand slide-over
+  — Outline, Details and Assistant together, matching the left nav drawer.
+  Chassis **AI** is the full-page `/ai` chat (`aria-label="AI chat, full page"`);
+  the inspector tab is **Assistant**. The laptop-width force-collapse of the
+  page tree is gone: 768–1439 keeps the user's tree preference.
 - `Apply` on a proposed change goes through **`POST /llm/improvements/apply`**,
   not a client-side write into the editor. That route runs `protectMedia` /
   `restoreMedia` (#723) and the column-layout realignment that returns **422**
@@ -343,19 +364,22 @@ the backend side.
 ## Styling
 
 - **TailwindCSS 4** with CSS variables for theming. Two themes ship —
-  **Graphite** (dark, `#0d0e11`) and **Paper** (light, `#fbfbfc`) — a neutral
-  flat system carrying one teal accent (`#4dd0e1` / `#0e7490`) as the single
-  brand and interaction colour, amber reserved for warning/attention, and
-  violet for AI ornament (operable things stay teal). Surfaces are **flat
+  **Graphite** (dark, `#0F0F10` workspace / `#161617` pane / `#09090A` canvas) and **Paper**
+  (light, `#F7F7F8` workspace / `#FAFAFB` pane / `#EEEFF0` canvas) — a neutral flat system
+  carrying one Steel accent (`#86AEC8` / `#3F627C`) as the single brand and
+  interaction colour, amber reserved for warning/attention, and violet for AI
+  ornament (operable things stay Steel). Surfaces are **flat
   colours**: `--surface-backdrop`, `--surface-card` and
   `--surface-card-elevated` are plain values, so a `hover:bg-*` utility
   composes normally — the gradient-as-background-image trap of the previous
-  palette is designed out. See ADR-010 v0.6 for the decision, which supersedes
+  palette is designed out. See ADR-010 v0.7 for the current values and roles;
+  its structural rules continue v0.6, which superseded
   the neumorphic depth model of v0.4/v0.5 and the v0.3-era glassmorphic
   surfaces before it.
-- **Chrome is the ground, content is the pane.** Sidebar, header and toolbars
-  paint `--color-background`; the content pane sits one value step up. This is
-  why the document is the brightest thing on screen and navigation recedes.
+- **The frame, workspace, Chrome, and Pane each have one job.** Canvas paints
+  the outer frame and top app header, Workspace paints navigation, Chrome
+  paints internal panel toolbars, and the content pane sits one value step up.
+  This is why the document is the brightest thing on screen and navigation recedes.
   Both themes are the same token-driven ladder — there are deliberately **no**
   `[data-theme-type="light"]` shell overrides, and a test fails if one returns.
 - **Two border weights, split by role.** `--color-border` is the quiet
@@ -381,3 +405,11 @@ the backend side.
   all animations respect `prefers-reduced-motion`.
 - **Radix UI** primitives for all interactive elements (menus, dialogs,
   tooltips, dropdowns).
+
+## Version History (#1404)
+
+`VersionHistory` (`features/pages/`) opens an enlarged dialog (`w-[96vw] sm:w-[92vw] max-w-5xl max-h-[90vh]`) allowing users to inspect historical page revisions.
+- **Rich Document Preview**: Renders formatted HTML using `ArticleViewer` inside a `FeatureErrorBoundary` fallback wrapper, preserving headings, tables, panels, diagrams, and image attachments.
+- **View Mode Toggle**: Users can toggle between **Formatted View** (rich TipTap rendering) and **Raw Text View** (monospaced `<pre>` view).
+- **Graceful Fallback**: Automatically falls back to plain `bodyText` if `bodyHtml` is absent or fails to parse.
+- **Side-by-Side Diff**: `CompareView` / `DiffView` and AI semantic diff render with comfortable reading widths within the expanded modal window.

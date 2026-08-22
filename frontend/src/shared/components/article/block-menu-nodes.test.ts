@@ -121,10 +121,10 @@ describe('blockLabel', () => {
     expect(blockLabel(node('panel', { panelType: 'tip' }))).toBe('Tip panel');
   });
 
-  it('names details nodes as Expand or UI Expand based on macroName', () => {
+  it('names both Confluence expand macros as the same Expand module', () => {
     expect(blockLabel(node('details'))).toBe('Expand');
     expect(blockLabel(node('details', { macroName: 'expand' }))).toBe('Expand');
-    expect(blockLabel(node('details', { macroName: 'ui-expand' }))).toBe('UI Expand');
+    expect(blockLabel(node('details', { macroName: 'ui-expand' }))).toBe('Expand');
   });
 
   it('humanises a node type it has no entry for', () => {

@@ -3,11 +3,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe, AlertTriangle } from 'lucide-react';
+import { Search, FileText, Plus, ChevronLeft, ChevronRight, ChevronDown, FolderOpen, Filter, X, List, Loader2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
-import { PageSourceEnum, type PageSource } from '@compendiq/contracts';
+import { type PageSource, type PageIcon as PageIconValue } from '@compendiq/contracts';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
-import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
+import { useSpaces, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useSearch } from '../../shared/hooks/use-search';
 import { EmptyState } from '../../shared/components/feedback/EmptyState';
@@ -17,21 +17,27 @@ import { KPICards } from './KPICards';
 import { BulkActionBar } from './BulkActionBar';
 import { bulkWireId } from '../../shared/hooks/use-bulk-page-actions';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
+import { LibrarySpaceFilter } from './LibrarySpaceFilter';
+import { LibrarySortFilter } from './LibrarySortFilter';
+import { LibraryFilterDropdown, type FilterDropdownOption } from './LibraryFilterDropdown';
 import {
   readFilterState,
   applyFilterPatch,
   hasAdvancedFilters,
   shouldAdoptUrlSearch,
+  FILTER_DEFAULTS,
   type PageFilterState,
 } from './pages-filter-params';
 import { cn } from '../../shared/lib/cn';
 import { neutralChipClass } from '../../shared/components/badges/neutral-chip';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
+import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
+import { FIND_LABEL, FIND_PLACEHOLDER, LIBRARY_HEADING, SEARCH_MODE_DESCRIPTIONS, SEARCH_MODE_LABELS } from './pages-find';
 
 // User-facing labels for the wire values of PageSourceEnum. Shared between the
 // source-filter <option>s and the active-filter pill so they never diverge.
@@ -63,6 +69,34 @@ const QUALITY_LABELS: Record<string, string> = {
   poor: 'Poor (0-49)',
 };
 
+const SOURCE_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'All sources' },
+  { value: 'confluence', label: 'Confluence' },
+  { value: 'standalone', label: 'Local' },
+];
+
+const FRESHNESS_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'Any' },
+  { value: 'fresh', label: 'Fresh (<7 days)' },
+  { value: 'recent', label: 'Recent (7-30 days)' },
+  { value: 'aging', label: 'Aging (30-90 days)' },
+  { value: 'stale', label: 'Stale (>90 days)' },
+];
+
+const QUALITY_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'Any' },
+  { value: 'excellent', label: 'Excellent (90-100)' },
+  { value: 'good', label: 'Good (70-89)' },
+  { value: 'needs-work', label: 'Needs Work (50-69)' },
+  { value: 'poor', label: 'Poor (0-49)' },
+];
+
+const EMBEDDING_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'Any' },
+  { value: 'pending', label: 'Needs Embedding' },
+  { value: 'done', label: 'Embedded' },
+];
+
 /**
  * "A, B" for up to 3 labels; "A, B, C, and N more" beyond that. Shared by the
  * #945 semantic-search honesty notice and the filtered-to-zero empty state
@@ -80,6 +114,13 @@ function summarizeFilterLabels(labels: string[]): string {
 // ---------------------------------------------------------------------------
 
 interface PageListItemProps {
+  showSource?: boolean;
+  showVisibility?: boolean;
+  showQuality?: boolean;
+  /** When false, hide idle "Not indexed" so an unindexed corpus is not a wall of chips. */
+  showIdleEmbedding?: boolean;
+  /** Space display name when known; the key is the fallback. */
+  spaceName?: string | null;
   pageItem: {
     id: string;
     spaceKey: string | null;
@@ -102,39 +143,39 @@ interface PageListItemProps {
     summaryStatus?: SummaryStatus;
     source: 'confluence' | 'standalone';
     visibility?: string;
+    icon?: PageIconValue | null;
   };
   index: number;
   onNavigate: (id: string) => void;
   selected?: boolean;
   onToggleSelect?: (id: string, shiftKey: boolean) => void;
+  tabIndex?: number;
+  onKeyDown?: (e: React.KeyboardEvent<HTMLButtonElement>) => void;
+  onFocus?: () => void;
 }
 
 const PageListItem = memo(function PageListItem({
   pageItem, index: _index, onNavigate, selected = false, onToggleSelect,
+  showSource = false, showVisibility = false, showQuality = false,
+  showIdleEmbedding = false, spaceName = null,
+  tabIndex = 0, onKeyDown, onFocus,
 }: PageListItemProps) {
   return (
     <m.div
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
       transition={{ duration: 0.15 }}
     >
       <div
         className={cn(
-          // A list row, not a card: px-3 py-2 and a 6px corner. `p-4` plus a
-          // 12px radius is card geometry, and forty of them stacked reads as a
-          // gallery of tiles rather than a list you scan down.
-          //
-          // Hover tints the row instead of colouring its border. An accent
-          // border on hover competes with `selected`, which is the state that
-          // actually needs to be seen across a long list.
-          // `items-start` below sm: when the badge cluster wraps the row grows
-          // past one line, and a centred checkbox drifts down to the author/
-          // date line. Top-aligned (plus the input's own 2px nudge) it stays
-          // on the title line, which is the thing it selects.
-          'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors max-sm:items-start',
+          // Same row as the page tree and the pinned strip: no card fill, no
+          // hairline around every item. A stacked `bg-card` + `border-border`
+          // list is forty tiles; the rail is a scan of titles. Selected is
+          // tinted with a subtle Steel accent, while hover stays neutral.
+          'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors max-sm:items-start',
           selected
-            ? 'border-primary/50 bg-primary/[0.07]'
-            : 'border-border bg-card hover:bg-accent',
+            ? 'bg-[color-mix(in_oklab,var(--color-primary)_12%,transparent)] hover:bg-[color-mix(in_oklab,var(--color-primary)_18%,transparent)]'
+            : 'hover:bg-accent',
         )}
         data-testid={`article-hover-${pageItem.id}`}
       >
@@ -142,26 +183,38 @@ const PageListItem = memo(function PageListItem({
           <input
             type="checkbox"
             checked={selected}
+            tabIndex={-1}
             // Shift-click extends from the last toggled row, the convention in
             // every file list users already know.
             onClick={(e) => onToggleSelect(pageItem.id, e.shiftKey)}
             onChange={() => { /* click handler owns this; keeps React controlled */ }}
             aria-label={`Select ${pageItem.title}`}
             // The 2px nudge centres the 16px box on the title's ~20px line
-            // when the row top-aligns below `sm`.
-            className="size-4 shrink-0 cursor-pointer accent-[var(--color-primary)] max-sm:mt-0.5"
+            // when the row top-aligns below `sm`. Checkbox is subtly visible at
+            // rest, highlighting on hover/focus, and fully solid when selected.
+            className={cn(
+              'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5 transition-opacity',
+              selected
+                ? 'opacity-100'
+                : 'opacity-40 hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
+            )}
             data-testid={`page-select-${pageItem.id}`}
           />
         )}
         <button
+          type="button"
           onClick={() => onNavigate(pageItem.id)}
+          tabIndex={tabIndex}
+          onKeyDown={onKeyDown}
+          onFocus={onFocus}
+          data-testid={`page-row-button-${pageItem.id}`}
           // Below `sm` the button may wrap, and `basis-auto` on the title
           // block makes the wrap content-driven: `flex-1`'s basis of 0 never
           // triggers a line break, so with `auto` a block whose content fits
           // keeps today's single line, and only an overflowing one drops the
           // pipeline badge below the block instead of compressing it. At
           // `sm+` the max-sm classes are inert and the layout is untouched.
-          className="flex min-w-0 flex-1 items-center gap-4 max-sm:flex-wrap max-sm:gap-y-1"
+          className="nm-focus-ring flex min-w-0 flex-1 items-center gap-4 text-left max-sm:flex-wrap max-sm:gap-y-1 rounded-sm"
         >
           <div className="min-w-0 flex-1 text-left max-sm:basis-auto">
             {/* Title line. Every badge beside the title is `shrink-0`, so the
@@ -179,12 +232,15 @@ const PageListItem = memo(function PageListItem({
             <div className="flex items-center gap-2 max-sm:flex-wrap max-sm:gap-y-1">
               {/* 13px medium. At 16px the title read as a card heading, which
                   is what made forty rows look like forty cards. */}
-              <p className="truncate text-[13px] font-medium">{pageItem.title}</p>
+              <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
+                {pageItem.icon && <PageIcon icon={pageItem.icon} pageId={pageItem.id} size="row" />}
+                <span className="min-w-0 truncate" title={pageItem.title}>{pageItem.title}</span>
+              </p>
               {/* Source badge. Neutral, like Private below: a source is a
                   category, not a state, so it may not borrow the status
                   greens/indigos — the label is the differentiator. The recipe
                   and its measured rationale live in neutral-chip.ts. */}
-              {pageItem.source === 'standalone' ? (
+              {showSource && (pageItem.source === 'standalone' ? (
                 <span
                   className={cn('shrink-0', neutralChipClass)}
                   data-testid="badge-local"
@@ -200,9 +256,8 @@ const PageListItem = memo(function PageListItem({
                 >
                   Confluence
                 </span>
-              )}
-              {/* Visibility badge for standalone articles */}
-              {pageItem.source === 'standalone' && (
+              ))}
+              {showVisibility && pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
                   <span
                     className={cn('shrink-0', neutralChipClass)}
@@ -212,7 +267,6 @@ const PageListItem = memo(function PageListItem({
                     <Globe size={10} /> Shared
                   </span>
                 ) : (
-                  // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                   <span
                     className={cn('shrink-0', neutralChipClass)}
                     data-testid="badge-private"
@@ -224,36 +278,44 @@ const PageListItem = memo(function PageListItem({
               )}
             </div>
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              {pageItem.spaceKey !== '__local__' && <span>{pageItem.spaceKey}</span>}
+              {pageItem.spaceKey !== '__local__' && (
+                <span title={pageItem.spaceKey ?? undefined}>{spaceName || pageItem.spaceKey}</span>
+              )}
               {pageItem.author && <span>{pageItem.author}</span>}
               {pageItem.lastModifiedAt && (
                 <span>{new Date(pageItem.lastModifiedAt).toLocaleDateString()}</span>
               )}
             </div>
           </div>
-          {/* Trailing status cluster. `hidden sm:flex` because none of these
-              can shrink: at 390px they held their width, drove the title's
-              `min-w-0` block to zero, and rendered on top of the badges inside
-              it — the row showed five overlapping pills and no title.
+          {/* Labels before pipeline chips: identity, then category, then the
+              one state that discriminates. `hidden sm:flex` because none of
+              these can shrink: at 390px they held their width, drove the
+              title's `min-w-0` block to zero, and rendered on top of the
+              badges inside it — the row showed five overlapping pills and
+              no title.
 
               Hidden rather than dropped, so they stay in the DOM for tests and
               for assistive tech, and so the same row markup serves both widths.
               The facts are not lost on mobile: every one of them is on the page
               itself, which is one tap away. */}
-          {/* One pipeline badge, at every width, and it renders NOTHING when the
-              page is healthy or the job was deliberately skipped. This replaces
-              three near-duplicate pills ("Skipped / Skipped / Not Embedded");
-              the severity ladder and the reasoning live in PageStateBadge. */}
-          <PageStateBadge
-            embeddingDirty={pageItem.embeddingDirty}
-            summaryStatus={pageItem.summaryStatus}
-            qualityStatus={pageItem.qualityStatus}
-          />
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
+            {pageItem.labels.length > 0 && (
+              <div className="flex gap-1">
+                {pageItem.labels.slice(0, 3).map((label) => (
+                  <span
+                    key={label}
+                    className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                    data-testid="label-chip"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            )}
             {/* Only when a score EXISTS. A number about the content is not
                 pipeline state and an author acts on it differently — but
                 "Not Scored" IS pipeline state, and PageStateBadge owns that. */}
-            {pageItem.qualityScore !== null && pageItem.qualityScore !== undefined && (
+            {showQuality && pageItem.qualityScore !== null && pageItem.qualityScore !== undefined && (
               <QualityScoreBadge
                 qualityScore={pageItem.qualityScore}
                 qualityStatus={pageItem.qualityStatus}
@@ -271,39 +333,54 @@ const PageListItem = memo(function PageListItem({
                 which this row already prints as a date three lines above. Two
                 renderings of one field read as two facts. It stays on the page
                 detail and preview surfaces, where no raw date sits beside it. */}
-            {pageItem.labels.length > 0 && (
-              <div className="flex gap-1">
-                {pageItem.labels.slice(0, 3).map((label) => (
-                  <span
-                    key={label}
-                    className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
-                    data-testid="label-chip"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            )}
           </div>
+          {/* One pipeline badge, at every width, and it renders NOTHING when
+              the page is healthy, the job was skipped, or idle "Not indexed"
+              is suppressed on this list. Failures still show. */}
+          <PageStateBadge
+            embeddingDirty={pageItem.embeddingDirty}
+            summaryStatus={pageItem.summaryStatus}
+            qualityStatus={pageItem.qualityStatus}
+            showIdleEmbedding={showIdleEmbedding}
+          />
         </button>
       </div>
     </m.div>
   );
 }, (prev, next) => {
-  // Only re-render if the page-item data changed
+  // Only re-render if the page-item data or relevant row props changed
   if (prev.pageItem.id !== next.pageItem.id) return false;
+  if (prev.pageItem.title !== next.pageItem.title) return false;
   if (prev.pageItem.version !== next.pageItem.version) return false;
+  if (prev.pageItem.icon !== next.pageItem.icon) return false;
+  if (prev.pageItem.author !== next.pageItem.author) return false;
+  if (prev.pageItem.lastModifiedAt !== next.pageItem.lastModifiedAt) return false;
+  if (prev.pageItem.source !== next.pageItem.source) return false;
+  if (prev.pageItem.visibility !== next.pageItem.visibility) return false;
+  if (prev.pageItem.spaceKey !== next.pageItem.spaceKey) return false;
   if (prev.pageItem.embeddingDirty !== next.pageItem.embeddingDirty) return false;
   if (prev.pageItem.qualityScore !== next.pageItem.qualityScore) return false;
   if (prev.pageItem.qualityStatus !== next.pageItem.qualityStatus) return false;
+  if (prev.pageItem.qualityError !== next.pageItem.qualityError) return false;
+  if (prev.pageItem.qualityAnalyzedAt !== next.pageItem.qualityAnalyzedAt) return false;
   if (prev.pageItem.summaryStatus !== next.pageItem.summaryStatus) return false;
+  if (prev.pageItem.labels !== next.pageItem.labels && prev.pageItem.labels.join(',') !== next.pageItem.labels.join(',')) return false;
   if (prev.index !== next.index) return false;
   // Selection is row-local render state, not page data. Omitting it here made
   // the checkbox permanently unclickable-looking: the Set updated and the
   // action bar counted correctly, but the row skipped its re-render, so React
   // restored the controlled input's DOM back to unchecked.
   if (prev.selected !== next.selected) return false;
+  if (prev.onNavigate !== next.onNavigate) return false;
   if (prev.onToggleSelect !== next.onToggleSelect) return false;
+  if (prev.showSource !== next.showSource) return false;
+  if (prev.showVisibility !== next.showVisibility) return false;
+  if (prev.showQuality !== next.showQuality) return false;
+  if (prev.showIdleEmbedding !== next.showIdleEmbedding) return false;
+  if (prev.spaceName !== next.spaceName) return false;
+  if (prev.tabIndex !== next.tabIndex) return false;
+  if (prev.onKeyDown !== next.onKeyDown) return false;
+  if (prev.onFocus !== next.onFocus) return false;
   return true;
 });
 
@@ -358,6 +435,7 @@ export function PagesPage() {
   // from the URL so a deep link (or a back-navigation) starts in sync.
   const [searchInput, setSearchInput] = useState(filters.search);
   const search = searchInput;
+  const hasActiveQuery = search.trim().length > 0;
 
   // Open the advanced panel when the URL arrives carrying one of its filters —
   // otherwise the user lands on a short result set whose cause is hidden.
@@ -447,6 +525,16 @@ export function PagesPage() {
   const { data: spaces } = useSpaces();
   const { data: filterOptions } = usePageFilterOptions();
 
+  const authorOptions = useMemo<FilterDropdownOption[]>(() => [
+    { value: '', label: 'All authors' },
+    ...(filterOptions?.authors ?? []).map((a) => ({ value: a, label: a })),
+  ], [filterOptions?.authors]);
+
+  const labelOptions = useMemo<FilterDropdownOption[]>(() => [
+    { value: '', label: 'All labels' },
+    ...(filterOptions?.labels ?? []).map((l) => ({ value: l, label: l })),
+  ], [filterOptions?.labels]);
+
   // Determine if we should show the space home page content
   const selectedSpace = useMemo(
     () => (spaceKey ? spaces?.find((s) => s.key === spaceKey) : undefined),
@@ -471,7 +559,7 @@ export function PagesPage() {
   }, [qualityFilter]);
 
   // Semantic/hybrid search — only active when there's a search query AND mode is not 'keyword'
-  const useSemanticSearch = !!(search && searchMode !== 'keyword');
+  const useSemanticSearch = hasActiveQuery && searchMode !== 'keyword';
 
   // Keep the /pages query key atomic: `search` is debounced, so the `sort` that
   // feeds the key must track the DEBOUNCED term, not the raw one. Otherwise the
@@ -508,8 +596,15 @@ export function PagesPage() {
     spaceKey: spaceKey || undefined,
     page,
   });
+  const isKeywordUpdating = searchMode === 'keyword' && hasActiveQuery
+    && (searchInput !== debouncedSearch || isFetchingPages);
+  const searchProgressLabel = isKeywordUpdating
+    ? 'Updating'
+    : (searchResults.isLoadingEnhanced
+        ? 'Improving'
+        : (searchResults.isLoadingImmediate && hasActiveQuery ? 'Searching' : ''));
+  const searchResultsBusy = searchProgressLabel.length > 0;
 
-  const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
   const { data: embeddingStatusData } = useEmbeddingStatus();
   const queryClient = useQueryClient();
@@ -538,7 +633,7 @@ export function PagesPage() {
     {
       key: '/',
       keys: ['/'],
-      description: 'Focus page search',
+      description: 'Filter this list',
       category: 'navigation',
       action: focusSearchInput,
     },
@@ -596,6 +691,7 @@ export function PagesPage() {
     () => activeFilters.filter((f) => f.key !== 'space'),
     [activeFilters],
   );
+  const advancedFilterCount = ignoredFilters.length;
 
   // Single source of truth for the #945 honesty notice, read by both the
   // visible <p> and the sr-only live-region announcer below it — computed
@@ -603,8 +699,26 @@ export function PagesPage() {
   const filtersIgnoredMessage = useMemo(() => {
     if (!useSemanticSearch || ignoredFilters.length === 0) return '';
     const summary = summarizeFilterLabels(ignoredFilters.map((f) => f.label));
-    return `Semantic and hybrid search ignore your active filters — ${summary}. They apply to keyword search only.`;
-  }, [useSemanticSearch, ignoredFilters]);
+    const noun = ignoredFilters.length === 1 ? 'filter' : 'filters';
+    return `${SEARCH_MODE_LABELS[searchMode]} paused ${ignoredFilters.length} advanced ${noun} — ${summary}. Switch to Keyword to apply them.`;
+  }, [useSemanticSearch, ignoredFilters, searchMode]);
+
+  const useKeywordWithFilters = useCallback(() => {
+    setFilters({ mode: 'keyword', page: 1 });
+  }, [setFilters]);
+
+  const filterStatus = advancedFilterCount === 0
+    ? ''
+    : (searchMode === 'keyword'
+        ? `${advancedFilterCount} active`
+        : (hasActiveQuery ? `${advancedFilterCount} paused` : `${advancedFilterCount} Keyword-only`));
+
+  const clearIgnoredFilters = useCallback(() => {
+    setFilters({
+      author: '', labels: '', freshness: '', embedding: '', quality: '',
+      from: '', to: '', source: '', page: 1,
+    });
+  }, [setFilters]);
 
   // The pill keys are the URL param names, so a pill clears exactly the param
   // it renders — no second mapping table to drift out of sync.
@@ -655,19 +769,64 @@ export function PagesPage() {
   // `?? []` fallback would otherwise mint a new array every render and break
   // the memoisation of every selection callback that depends on it.
   const pageItems = useMemo(() => pagesData?.items ?? [], [pagesData?.items]);
-  const scrollMargin = listContainerRef.current?.offsetTop ?? 0;
+  const showSourceBadges = useMemo(() => {
+    // If the library contains mixed sources across spaces/corpus (e.g. Confluence spaces exist and there are standalone pages,
+    // or the current page slice has mixed sources), keep source badges visible to ensure stable row layout across pagination.
+    const pageSources = new Set(pageItems.map((p) => p.source));
+    if (pageSources.size > 1) return true;
+    const hasConfluence = (spaces ?? []).some((s) => s.key && s.key !== '__local__') || pageSources.has('confluence');
+    const hasStandalone = (spaces ?? []).some((s) => s.key === '__local__') || pageSources.has('standalone');
+    return hasConfluence && hasStandalone;
+  }, [pageItems, spaces]);
+  const showVisibilityBadges = useMemo(() => {
+    const vis = new Set(
+      pageItems.filter((p) => p.source === 'standalone').map((p) => p.visibility ?? 'private'),
+    );
+    return vis.size > 1;
+  }, [pageItems]);
+  const showQualityBadges = Boolean(qualityFilter);
+  const showIdleEmbedding = embeddingStatus === 'pending';
+  const spaceNameByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of spaces ?? []) {
+      if (s.key && s.name) map.set(s.key, s.name);
+    }
+    return map;
+  }, [spaces]);
+  const displaySearchItems = useMemo(
+    () => searchResults.enhancedResults ?? searchResults.immediateResults,
+    [searchResults.enhancedResults, searchResults.immediateResults],
+  );
+
+  const currentAddressableItems = useMemo(() => {
+    if (useSemanticSearch) {
+      return displaySearchItems.map((p) => ({
+        id: String(p.id),
+        confluenceId: p.confluenceId,
+        source: p.spaceKey === '__local__' ? 'standalone' : 'confluence',
+      }));
+    }
+    return pageItems.map((p) => ({
+      id: p.id,
+      confluenceId: p.confluenceId,
+      source: p.source,
+    }));
+  }, [useSemanticSearch, displaySearchItems, pageItems]);
+
+  const currentIds = useMemo(
+    () => (useSemanticSearch ? displaySearchItems.map((p) => String(p.id)) : pageItems.map((p) => p.id)),
+    [useSemanticSearch, displaySearchItems, pageItems],
+  );
 
   const toggleSelect = useCallback((id: string, shiftKey: boolean) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       const anchor = lastToggledId.current;
+      const ids = currentIds;
 
       // Shift-click selects the contiguous run between the anchor and this
-      // row, matching the file-list convention. Falls back to a plain toggle
-      // when either end is no longer in the current result set (filters or
-      // pagination changed underneath the selection).
+      // row, matching the file-list convention.
       if (shiftKey && anchor && anchor !== id) {
-        const ids = pageItems.map((p) => p.id);
         const from = ids.indexOf(anchor);
         const to = ids.indexOf(id);
         if (from !== -1 && to !== -1) {
@@ -687,7 +846,7 @@ export function PagesPage() {
       lastToggledId.current = id;
       return next;
     });
-  }, [pageItems]);
+  }, [currentIds]);
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
@@ -696,39 +855,175 @@ export function PagesPage() {
 
   // Drop ids that fell out of the result set, so the action bar never reports
   // a count that includes rows the user can no longer see.
-  //
-  // Mapped through `bulkWireId`: selection is keyed by row id (the PK, which is
-  // what the checkboxes and the memo comparator use), but the bulk routes
-  // address synced pages by `confluence_id`. Sending the PK still resolved the
-  // row, so the action ran — the server just couldn't match the id back and
-  // counted every synced page as not-found.
   const visibleSelectedIds = useMemo(
-    () => pageItems.filter((p) => selectedIds.has(p.id)).map(bulkWireId),
-    [pageItems, selectedIds],
+    () => currentAddressableItems.filter((p) => selectedIds.has(p.id)).map(bulkWireId),
+    [currentAddressableItems, selectedIds],
   );
   const selectedConfluenceCount = useMemo(
-    () => pageItems.filter((p) => selectedIds.has(p.id) && p.source === 'confluence').length,
-    [pageItems, selectedIds],
+    () => currentAddressableItems.filter((p) => selectedIds.has(p.id) && p.source === 'confluence').length,
+    [currentAddressableItems, selectedIds],
   );
-  const allVisibleSelected = pageItems.length > 0 && visibleSelectedIds.length === pageItems.length;
+  const allVisibleSelected = currentIds.length > 0 && visibleSelectedIds.length === currentIds.length;
 
   const toggleSelectAll = useCallback(() => {
     setSelectedIds((prev) => {
-      const allSelected = pageItems.length > 0 && pageItems.every((p) => prev.has(p.id));
+      const allSelected = currentIds.length > 0 && currentIds.every((id) => prev.has(id));
       if (allSelected) return new Set();
-      return new Set(pageItems.map((p) => p.id));
+      return new Set(currentIds);
     });
     lastToggledId.current = null;
-  }, [pageItems]);
+  }, [currentIds]);
+
+  const scrollMargin = listContainerRef.current?.offsetTop ?? 0;
 
   const virtualizer = useVirtualizer({
     count: pageItems.length,
     getScrollElement: () => scrollElement,
-    estimateSize: () => 80,
+    estimateSize: () => 52,
     overscan: 5,
     scrollMargin,
     useFlushSync: false, // Required for React 19
   });
+
+  const [focusedRowIndex, setFocusedRowIndex] = useState<number>(0);
+  const pendingFocusIndexRef = useRef<number | null>(null);
+
+  // Clamp out-of-bounds page parameter back to 1 when a filter reduces totalPages
+  useEffect(() => {
+    if (pagesData && pagesData.totalPages > 0 && page > pagesData.totalPages) {
+      setFilters({ page: 1 });
+    }
+  }, [pagesData, page, setFilters]);
+
+  // Ensure focus is restored to the virtual row once it mounts after an async scroll jump
+  useEffect(() => {
+    if (pendingFocusIndexRef.current !== null) {
+      const idx = pendingFocusIndexRef.current;
+      const el = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${idx}"] button[type="button"]`);
+      if (el) {
+        el.focus();
+        pendingFocusIndexRef.current = null;
+      }
+    }
+  });
+
+  const handleRowKeyDown = useCallback((index: number, id: string, e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIndex = Math.min(pageItems.length - 1, index + 1);
+      setFocusedRowIndex(nextIndex);
+      pendingFocusIndexRef.current = nextIndex;
+      virtualizer.scrollToIndex(nextIndex);
+      if (e.shiftKey && nextIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const nextId = pageItems[nextIndex]?.id;
+        if (nextId) toggleSelect(nextId, true);
+      }
+      requestAnimationFrame(() => {
+        const nextEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${nextIndex}"] button[type="button"]`);
+        if (nextEl) {
+          nextEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
+      });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIndex = Math.max(0, index - 1);
+      setFocusedRowIndex(prevIndex);
+      pendingFocusIndexRef.current = prevIndex;
+      virtualizer.scrollToIndex(prevIndex);
+      if (e.shiftKey && prevIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const prevId = pageItems[prevIndex]?.id;
+        if (prevId) toggleSelect(prevId, true);
+      }
+      requestAnimationFrame(() => {
+        const prevEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${prevIndex}"] button[type="button"]`);
+        if (prevEl) {
+          prevEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
+      });
+    } else if (e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      toggleSelect(id, e.shiftKey);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setFocusedRowIndex(0);
+      pendingFocusIndexRef.current = 0;
+      virtualizer.scrollToIndex(0);
+      requestAnimationFrame(() => {
+        const firstEl = listContainerRef.current?.querySelector<HTMLButtonElement>('[data-row-index="0"] button[type="button"]');
+        if (firstEl) {
+          firstEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
+      });
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      const lastIndex = pageItems.length - 1;
+      setFocusedRowIndex(lastIndex);
+      pendingFocusIndexRef.current = lastIndex;
+      virtualizer.scrollToIndex(lastIndex);
+      requestAnimationFrame(() => {
+        const lastEl = listContainerRef.current?.querySelector<HTMLButtonElement>(`[data-row-index="${lastIndex}"] button[type="button"]`);
+        if (lastEl) {
+          lastEl.focus();
+          pendingFocusIndexRef.current = null;
+        }
+      });
+    }
+  }, [pageItems, selectedIds, toggleSelect, virtualizer]);
+
+  const [focusedSearchRowIndex, setFocusedSearchRowIndex] = useState<number>(0);
+
+  const handleSearchRowKeyDown = useCallback((index: number, id: string, total: number, e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIndex = Math.min(total - 1, index + 1);
+      setFocusedSearchRowIndex(nextIndex);
+      if (e.shiftKey && nextIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const nextId = currentAddressableItems[nextIndex]?.id;
+        if (nextId) toggleSelect(nextId, true);
+      }
+      const nextEl = document.querySelector<HTMLButtonElement>(`[data-search-row-index="${nextIndex}"] button[type="button"]`);
+      nextEl?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIndex = Math.max(0, index - 1);
+      setFocusedSearchRowIndex(prevIndex);
+      if (e.shiftKey && prevIndex !== index) {
+        if (!selectedIds.has(id) && !lastToggledId.current) {
+          toggleSelect(id, false);
+        }
+        const prevId = currentAddressableItems[prevIndex]?.id;
+        if (prevId) toggleSelect(prevId, true);
+      }
+      const prevEl = document.querySelector<HTMLButtonElement>(`[data-search-row-index="${prevIndex}"] button[type="button"]`);
+      prevEl?.focus();
+    } else if (e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      toggleSelect(id, e.shiftKey);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setFocusedSearchRowIndex(0);
+      const firstEl = document.querySelector<HTMLButtonElement>('[data-search-row-index="0"] button[type="button"]');
+      firstEl?.focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      const lastIndex = total - 1;
+      setFocusedSearchRowIndex(lastIndex);
+      const lastEl = document.querySelector<HTMLButtonElement>(`[data-search-row-index="${lastIndex}"] button[type="button"]`);
+      lastEl?.focus();
+    }
+  }, [currentAddressableItems, selectedIds, toggleSelect]);
 
   return (
     // max-w-[1100px], matching the app's 1200px document-column convention:
@@ -738,41 +1033,20 @@ export function PagesPage() {
     // at wide viewports — the eye had nothing to bind them across. No
     // `mx-auto`: this is a workspace pane beside a sidebar, not a centered
     // page, so the cap should keep content flush-left, not float it.
-    <div className="max-w-[1100px] space-y-3">
-      <HeaderHost fallbackClassName="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 border-b border-border pb-2.5">
-        <h1 className="shrink-0 text-[15px] font-semibold sm:text-lg">Pages</h1>
-        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-2 sm:gap-x-4">
-          <section
-            data-header-kpis
-            aria-labelledby="kb-status-heading"
-            className="flex items-center"
-          >
-            <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
+    <div className="max-w-[1180px] space-y-5">
+      <HeaderHost fallbackClassName="mb-1">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+          <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">{LIBRARY_HEADING}</h1>
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4">
             <KPICards
               embeddingStatus={embeddingStatusData}
               spacesCount={spaces?.length ?? 0}
               lastSynced={syncStatus?.lastSynced}
-              onSync={() => syncMutation.mutate()}
-              isSyncing={syncStatus?.status === 'syncing'}
             />
-          </section>
-
-          <span aria-hidden className="hidden h-4 w-px bg-border lg:block" />
-
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
             <button
-              onClick={() => navigate('/trash')}
-              className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
-              data-testid="trash-link"
-              title="Trash"
-            >
-              <Trash2 size={15} />
-              <span className="hidden sm:inline">Trash</span>
-            </button>
-
-            <button
+              type="button"
               onClick={() => navigate('/pages/new')}
-              className="nm-button-ghost h-8 px-3 text-xs sm:text-sm"
+              className="nm-button-primary h-8 px-3 text-xs sm:text-sm"
               data-testid="new-page-button"
             >
               <Plus size={15} />
@@ -783,30 +1057,36 @@ export function PagesPage() {
         </div>
       </HeaderHost>
 
-      {/* Filters */}
-      {/* A control row, not a pane. This was a bordered `bg-card` box with
-          `p-4`, stacked directly under another bordered box (the status strip)
-          and above the list's own bordered rows — three nested container
-          levels before the first page. Controls do not need a container: they
-          are already legible as controls, and the box was spending ~90px of the
-          first viewport to say "these things belong together", which their
-          adjacency already said. */}
-      <section aria-labelledby="kb-filters-heading" className="space-y-3">
-        <h2 id="kb-filters-heading" className="sr-only">Search and filter pages</h2>
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Search */}
-          <div className="relative flex-1 min-w-48">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+      {/* Pins are the Library's quickest return path, so keep them in the
+          first viewport above discovery controls. Active queries still hide
+          the strip so search hands directly to its results. */}
+      {!hasActiveQuery && <PinnedArticlesSection />}
+
+      {/* Search leads discovery after the quick-return strip. The results pane
+          is the Library's one durable boundary; proximity groups the
+          supporting scope and mode controls. */}
+      <section
+        aria-labelledby="kb-filters-heading"
+        className="space-y-3"
+        data-testid="library-filter-panel"
+      >
+        <h2 id="kb-filters-heading" className="sr-only">Filter pages</h2>
+        {/* Query, retrieval mode and scope are one command surface. The query
+            leads; the supporting controls stay inside the same surface and
+            wrap beneath it on narrow screens without changing DOM order. */}
+        <div
+          className="library-search-surface flex w-full flex-col gap-2 rounded-xl p-2.5 sm:flex-row sm:items-center sm:gap-1 sm:p-2"
+          data-testid="page-search-field"
+          role="search"
+          aria-label="Library pages"
+        >
+          <div className="flex h-11 min-w-0 flex-1 items-center gap-2 px-2 sm:h-10">
+            <Search size={18} className="shrink-0 text-action" aria-hidden="true" />
             <input
               ref={searchInputRef as RefObject<HTMLInputElement>}
               type="text"
-              placeholder="Search pages..."
-              // The one control in this section with no aria-label — every
-              // sibling (space/source/sort selects, the mode toggle, every
-              // advanced field) already has one; this is the field the
-              // route's own `/` shortcut exists to focus (polish pass,
-              // 2026-08-17).
-              aria-label="Search pages"
+              placeholder={FIND_PLACEHOLDER}
+              aria-label={FIND_LABEL}
               value={search}
               onChange={(e) => {
                 const val = e.target.value;
@@ -823,156 +1103,137 @@ export function PagesPage() {
                 }
               }}
               onKeyDown={(e) => {
-                // The universal convention on search inputs, missing here —
-                // the only way out was the 18px clear `×`. Mirrors the clear
-                // button's own effect; consumed so a page-level Escape
-                // handler doesn't also fire on the same keystroke
-                // (polish pass, 2026-08-17).
                 if (e.key === 'Escape' && search) {
                   e.preventDefault();
                   e.stopPropagation();
                   setSearchInput('');
-                  setFilters({ search: '', page: 1, mode: 'keyword', ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
+                  setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
+                } else if (e.key === 'Enter' || e.key === 'ArrowDown') {
+                  const firstRow = document.querySelector<HTMLButtonElement>(
+                    '[data-search-row-index="0"] button[type="button"], [data-row-index="0"] button[type="button"]',
+                  );
+                  if (firstRow) {
+                    e.preventDefault();
+                    firstRow.focus();
+                  }
                 }
               }}
-              className="nm-input pl-10 pr-10"
+              className="h-9 min-w-0 flex-1 border-0 bg-transparent px-0 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
             />
+            {searchProgressLabel && (
+              <span
+                className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground"
+                role="status"
+                aria-live="polite"
+                data-testid="search-updating-status"
+              >
+                <Loader2
+                  size={13}
+                  className="animate-spin text-action"
+                  data-testid={searchResults.isLoadingEnhanced ? 'search-enhanced-loading' : undefined}
+                  aria-hidden="true"
+                />
+                <span className="hidden sm:inline">{searchProgressLabel}</span>
+              </span>
+            )}
             {search ? (
               <button
+                type="button"
                 onClick={() => {
                   setSearchInput('');
-                  setFilters({ search: '', page: 1, mode: 'keyword', ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
+                  setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                   searchInputRef.current?.focus();
                 }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
+                className="nm-icon-button shrink-0"
                 data-testid="search-clear"
                 aria-label="Clear search"
+                title="Clear search"
               >
-                <X size={14} />
+                <X size={15} aria-hidden="true" />
               </button>
             ) : (
-              // The `/` shortcut that focuses this field was completely
-              // undiscoverable — "New Page" carries a visible hint chip, this
-              // field (the only other shortcut on the route) carried nothing.
-              // Same slot the clear button uses once there's a query to clear,
-              // so the two never compete for space (polish pass, 2026-08-17).
-              <ShortcutHint
-                shortcutId="focus-page-search"
-                className="pointer-events-none absolute right-3 top-1/2 ml-0 -translate-y-1/2"
-              />
+              <ShortcutHint shortcutId="focus-page-search" className="pointer-events-none shrink-0" />
             )}
           </div>
 
-          {/* Search mode toggle — keyword / semantic / hybrid.
+          <span className="hidden h-5 w-px shrink-0 bg-border sm:block" aria-hidden="true" />
 
-              Hidden until there is a query (or a non-default mode from the
-              URL). Picking an IR algorithm is not a landing decision; the
-              list field is. A `?mode=hybrid` deep link still reveals it so
-              the restored state is visible. Neutral fill plus weight carries
-              "selected"; the accent stays spent on actions. */}
-          {(search || searchMode !== 'keyword') && (
-          <div
-            className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
-            data-testid="search-mode-toggle"
-            role="group"
-            aria-label="Search mode"
-          >
-              {(['keyword', 'semantic', 'hybrid'] as const).map((m) => (
+          <div className="flex w-full items-center gap-1.5 sm:w-auto sm:shrink-0">
+            {/* Inline search strategy switcher */}
+            <div
+              className="library-search-modes inline-flex items-center gap-0.5 rounded-md p-0.5 shrink-0"
+              data-testid="search-mode-toggle"
+              role="group"
+              aria-label="Search strategy"
+            >
+              {([
+                'hybrid',
+                'keyword',
+                ...((searchMode === 'semantic'
+                  || embeddingStatusData == null
+                  || embeddingStatusData.embeddedPages > 0
+                  || embeddingStatusData.totalEmbeddings > 0)
+                  ? (['semantic'] as const)
+                  : []),
+              ] as const).map((m) => (
                 <button
+                  type="button"
                   key={m}
                   data-testid={`search-mode-${m}`}
                   onClick={() => setFilters({ mode: m, page: 1 })}
                   aria-pressed={searchMode === m}
+                  title={SEARCH_MODE_DESCRIPTIONS[m]}
                   className={cn(
-                    'rounded-sm px-2.5 py-1 text-xs font-medium capitalize transition-colors',
-                    'nm-focus-ring',
+                    'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2.5 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:flex-none sm:px-2.5 sm:py-1 sm:text-xs',
                     searchMode === m
-                      ? 'nm-pill-active'
-                      // `nm-pill-active` carries its own 1px border; matching it here
-                      // with a same-width *transparent* border (rather than no border
-                      // at all) keeps every segment's box size identical, so selecting
-                      // a mode doesn't reflow the other two by the border's width (was
-                      // 24px inactive vs 26px active, shifting all three horizontally
-                      // on every click — polish pass, 2026-08-17).
-                      : 'border border-transparent text-muted-foreground hover:text-foreground',
+                      ? 'library-search-mode-active font-semibold shadow-xs'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                   )}
                 >
-                  {m}
+                  {SEARCH_MODE_LABELS[m]}
                 </button>
               ))}
-              {searchResults.isLoadingEnhanced && (
-                <Loader2 size={14} className="ml-1 animate-spin text-action" data-testid="search-enhanced-loading" />
-              )}
             </div>
-          )}
 
-          <select
-            value={spaceKey}
-            onChange={(e) => { setFilters({ space: e.target.value, page: 1 }); setForcePageList(false); }}
-            className="nm-select-md w-40 shrink-0"
-            aria-label="Filter by space"
-          >
-            <option value="">All Spaces</option>
-            {spaces?.map((s) => (
-              <option key={s.key} value={s.key}>{s.name}</option>
-            ))}
-          </select>
+            <LibrarySpaceFilter
+              spaces={spaces}
+              selectedKey={spaceKey}
+              selectedName={selectedSpace?.name}
+              onSelect={(value) => {
+                setFilters({ space: value, page: 1 });
+                setForcePageList(false);
+              }}
+            />
 
-          <select
-            value={sourceFilter}
-            onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
-            className="nm-select-md w-32 shrink-0"
-            data-testid="filter-source"
-            aria-label="Filter by source"
-          >
-            <option value="">All Sources</option>
-            {PageSourceEnum.options.map((source) => (
-              <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
-            ))}
-          </select>
-
-          {/* Divider between the filters (space/source) and Sort. It used to
-              sit between Sort and Filters instead, which visually grouped
-              Sort with the advanced-filters toggle rather than separating
-              it — Sort isn't a filter (polish pass, 2026-08-17). */}
-          <div className="hidden h-6 w-px bg-border/60 sm:block" aria-hidden="true" data-testid="source-sort-divider" />
-
-          <select
-            value={sort}
-            onChange={(e) => setFilters({ sort: e.target.value as typeof sort })}
-            className="nm-select-md w-40 shrink-0"
-            aria-label="Sort pages"
-          >
-            <option value="modified">Last Modified</option>
-            <option value="title">Title</option>
-            <option value="author">Author</option>
-            <option value="quality">Quality Score</option>
-            <option value="relevance">Relevance</option>
-          </select>
-
-          {/* Advanced filters toggle */}
-          <button
-            onClick={() => setShowAdvancedFilters((v) => !v)}
-            className={cn(
-              'flex items-center gap-1.5 rounded-md px-3 py-2 text-sm transition-colors',
-              'nm-focus-ring',
-              showAdvancedFilters || activeFilterCount > 0
-                ? 'bg-action/15 text-action'
-                : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
-            )}
-            data-testid="advanced-filters-toggle"
-            aria-expanded={showAdvancedFilters}
-            aria-controls="advanced-filters-panel"
-          >
-            <Filter size={14} />
-            Filters
-            {activeFilterCount > 0 && (
-              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-action text-[11px] font-bold text-action-foreground">
-                {activeFilterCount}
-              </span>
-            )}
-          </button>
-
+            <button
+              type="button"
+              onClick={() => setShowAdvancedFilters((v) => !v)}
+              className={cn(
+                'library-search-select flex h-11 shrink-0 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground sm:h-8 sm:px-2.5 sm:text-xs',
+                (showAdvancedFilters || advancedFilterCount > 0) && 'bg-accent text-foreground',
+                hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && 'text-warning',
+              )}
+              data-testid="advanced-filters-toggle"
+              aria-label={filterStatus ? `Filters, ${filterStatus}` : 'Filters'}
+              title={filterStatus ? `Filters (${filterStatus})` : 'Filters'}
+              aria-expanded={showAdvancedFilters}
+              aria-controls="advanced-filters-panel"
+            >
+              <Filter size={14} aria-hidden="true" />
+              <span>Filters</span>
+              {filterStatus && (
+                <span className="rounded bg-foreground/10 px-1.5 py-0.5 text-xs font-semibold tabular-nums" aria-hidden="true">
+                  {filterStatus}
+                </span>
+              )}
+              <ChevronDown
+                size={12}
+                className={cn('ml-auto shrink-0 transition-transform', showAdvancedFilters && 'rotate-180')}
+                data-testid="advanced-filters-chevron"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
         </div>
 
         {/* sr-only live-region announcer for the #945 honesty notice below.
@@ -988,154 +1249,203 @@ export function PagesPage() {
           {filtersIgnoredMessage}
         </span>
 
-        {/* Honest notice: every filter in `ignoredFilters` above is silently
-            ignored by semantic and hybrid search (#945's original scope was
-            "advanced filters"; the harden pass folded Space in too — #1351
-            later took it back out once the backend started honoring it — see
-            the comments on `activeFilters`/`ignoredFilters`). Placed here,
-            ahead of the advanced panel and the pill row, so it is the first
-            thing seen after switching mode rather than something a user has
-            to scroll past two other blocks to find. */}
+        {/* Hybrid and Semantic intentionally leave advanced filters paused.
+            Name the exact saved filters and provide the constrained path
+            without silently switching search strategy. */}
         {filtersIgnoredMessage && (
-          <p
-            id="filters-ignored-notice"
-            className="flex items-start gap-1.5 text-xs text-muted-foreground"
+          <div
+            id="filters-paused-notice"
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
             data-testid="filters-ignored-notice"
           >
-            <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+            <AlertTriangle size={12} className="shrink-0 text-warning" aria-hidden="true" />
             <span>{filtersIgnoredMessage}</span>
-          </p>
+            <button type="button" onClick={useKeywordWithFilters} className="nm-button-ghost h-7 px-2 text-xs" data-testid="use-keyword-with-filters">
+              Switch to Keyword
+            </button>
+            <button type="button" onClick={clearIgnoredFilters} className="nm-button-ghost h-7 px-2 text-xs" data-testid="clear-paused-filters">
+              Clear paused filters
+            </button>
+          </div>
         )}
 
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div id="advanced-filters-panel" className="grid grid-cols-2 items-end gap-3 border-t border-border pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
-            {/* Author filter */}
-            <div className="min-w-40">
-              <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
-              <select
-                id="filter-author-select"
-                value={author}
-                onChange={(e) => setFilters({ author: e.target.value, page: 1 })}
-                className="nm-select-md w-full"
-                data-testid="filter-author"
-              >
-                <option value="">All Authors</option>
-                {filterOptions?.authors.map((a) => (
-                  <option key={a} value={a}>{a}</option>
-                ))}
-              </select>
+          <div
+            id="advanced-filters-panel"
+            className="rounded-xl border border-border bg-card p-4 sm:p-5"
+            data-testid="advanced-filters-panel"
+          >
+            <div className="mb-4 flex min-h-8 flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Refine results</h3>
+                <p className="text-xs text-muted-foreground">
+                  {advancedFilterCount > 0
+                    ? (searchMode === 'keyword' || !hasActiveQuery
+                        ? `${advancedFilterCount} active`
+                        : `${advancedFilterCount} paused`)
+                    : 'Advanced filters apply to Keyword search'}
+                </p>
+              </div>
+              {advancedFilterCount > 0 && (
+                <button type="button" onClick={clearIgnoredFilters} className="nm-button-ghost h-7 px-2.5 text-xs">
+                  Clear filters
+                </button>
+              )}
             </div>
 
-            {/* Labels filter */}
-            <div className="min-w-40">
-              <label htmlFor="filter-labels-select" className="mb-1 block text-xs text-muted-foreground">Labels</label>
-              <select
-                id="filter-labels-select"
-                value={labels}
-                onChange={(e) => setFilters({ labels: e.target.value, page: 1 })}
-                className="nm-select-md w-full"
-                data-testid="filter-labels"
-              >
-                <option value="">All Labels</option>
-                {filterOptions?.labels.map((l) => (
-                  <option key={l} value={l}>{l}</option>
-                ))}
-              </select>
-            </div>
+            {!hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && (
+              <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground" data-testid="filters-keyword-preview-note">
+                <span>These filters apply while browsing and will pause when {SEARCH_MODE_LABELS[searchMode]} search starts.</span>
+                <button type="button" onClick={useKeywordWithFilters} className="nm-button-ghost h-7 px-2 text-xs">
+                  Keep them active with Keyword
+                </button>
+              </div>
+            )}
 
-            {/* Freshness filter */}
-            <div className="min-w-32">
-              <label htmlFor="filter-freshness-select" className="mb-1 block text-xs text-muted-foreground">Freshness</label>
-              <select
-                id="filter-freshness-select"
-                value={freshness}
-                onChange={(e) => setFilters({ freshness: e.target.value, page: 1 })}
-                className="nm-select-md w-full"
-                data-testid="filter-freshness"
-              >
-                <option value="">Any</option>
-                <option value="fresh">Fresh (&lt;7 days)</option>
-                <option value="recent">Recent (7-30 days)</option>
-                <option value="aging">Aging (30-90 days)</option>
-                <option value="stale">Stale (&gt;90 days)</option>
-              </select>
-            </div>
+            {/* 2-row spacious filter grid with generous horizontal padding & space */}
+            <div className="space-y-4">
+              <fieldset className="space-y-2">
+                <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  Content
+                </legend>
+                <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-3">
+                  {/* Row 1: Source, Author, Label */}
+                  <div className="min-w-0">
+                    <label htmlFor="filter-source-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Source
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-source-select"
+                      label="Source"
+                      ariaLabel="Filter by source"
+                      value={sourceFilter}
+                      options={SOURCE_OPTIONS}
+                      onChange={(val) => setFilters({ source: val as PageSource | '', page: 1 })}
+                      placeholder="All sources"
+                      testId="filter-source"
+                    />
+                  </div>
 
-            {/* Embedding status filter */}
-            <div className="min-w-36">
-              <label htmlFor="filter-embedding-select" className="mb-1 block text-xs text-muted-foreground">Embedding</label>
-              <select
-                id="filter-embedding-select"
-                value={embeddingStatus}
-                onChange={(e) => setFilters({ embedding: e.target.value, page: 1 })}
-                className="nm-select-md w-full"
-                data-testid="filter-embedding"
-              >
-                <option value="">Any</option>
-                <option value="pending">Needs Embedding</option>
-                <option value="done">Embedded</option>
-              </select>
-            </div>
+                  <div className="min-w-0">
+                    <label htmlFor="filter-author-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Author
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-author-select"
+                      label="Author"
+                      value={author}
+                      options={authorOptions}
+                      onChange={(val) => setFilters({ author: val, page: 1 })}
+                      placeholder="All authors"
+                      testId="filter-author"
+                      searchable
+                    />
+                  </div>
 
-            {/* Quality score filter */}
-            <div className="min-w-36">
-              <label htmlFor="filter-quality-select" className="mb-1 block text-xs text-muted-foreground">Quality</label>
-              <select
-                id="filter-quality-select"
-                value={qualityFilter}
-                onChange={(e) => setFilters({ quality: e.target.value, page: 1 })}
-                className="nm-select-md w-full"
-                data-testid="filter-quality"
-              >
-                <option value="">Any</option>
-                <option value="excellent">Excellent (90-100)</option>
-                <option value="good">Good (70-89)</option>
-                <option value="needs-work">Needs Work (50-69)</option>
-                <option value="poor">Poor (0-49)</option>
-              </select>
-            </div>
+                  <div className="min-w-0">
+                    <label htmlFor="filter-labels-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Label
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-labels-select"
+                      label="Label"
+                      value={labels}
+                      options={labelOptions}
+                      onChange={(val) => setFilters({ labels: val, page: 1 })}
+                      placeholder="All labels"
+                      testId="filter-labels"
+                      searchable
+                    />
+                  </div>
+                </div>
+              </fieldset>
 
-            {/* Date range */}
-            <div className="min-w-36">
-              <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified From</label>
-              <input
-                id="filter-date-from-input"
-                type="date"
-                value={dateFromInput}
-                onChange={(e) => setDateFromInput(e.target.value)}
-                // nm-select-md paints a dropdown chevron for the border/height/
-                // focus-ring recipe it's borrowed here for; a date input has its
-                // own native calendar-picker icon in that exact spot, and the
-                // two rendered side by side at 390px (polish pass, 2026-08-17).
-                // `!` forces this past nm-select-md's own background-image —
-                // same specificity, and cascade order between a hand-authored
-                // @utility and a built-in Tailwind utility isn't safe to assume.
-                className="nm-select-md w-full !bg-none"
-                data-testid="filter-date-from"
-              />
-            </div>
-            <div className="min-w-36">
-              <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified To</label>
-              <input
-                id="filter-date-to-input"
-                type="date"
-                value={dateToInput}
-                onChange={(e) => setDateToInput(e.target.value)}
-                className="nm-select-md w-full !bg-none"
-                data-testid="filter-date-to"
-              />
-            </div>
+              <fieldset className="space-y-2">
+                <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  Status &amp; date
+                </legend>
+                <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-5">
+                  {/* Row 2: Freshness, Quality, Embedding, From, To */}
+                  <div className="min-w-0">
+                    <label htmlFor="filter-freshness-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Freshness
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-freshness-select"
+                      label="Freshness"
+                      value={freshness}
+                      options={FRESHNESS_OPTIONS}
+                      onChange={(val) => setFilters({ freshness: val, page: 1 })}
+                      placeholder="Any"
+                      testId="filter-freshness"
+                    />
+                  </div>
 
-            {/* A "clear everything" control used to live here too — "Clear
-                filters" in filled destructive red — duplicating the pill
-                row's plain-text "Clear all" below under a different label
-                and opposite visual weight, for the identical
-                `clearAllFilters` call. Clearing filters destroys no data,
-                so the destructive-red treatment was also just wrong. The
-                pill row's "Clear all" is now the one control (polish pass,
-                2026-08-17); it sits beside the pills it clears, which the
-                panel does not. */}
+                  <div className="min-w-0">
+                    <label htmlFor="filter-quality-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Quality
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-quality-select"
+                      label="Quality"
+                      value={qualityFilter}
+                      options={QUALITY_OPTIONS}
+                      onChange={(val) => setFilters({ quality: val, page: 1 })}
+                      placeholder="Any"
+                      testId="filter-quality"
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-embedding-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Embedding
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-embedding-select"
+                      label="Embedding"
+                      value={embeddingStatus}
+                      options={EMBEDDING_OPTIONS}
+                      onChange={(val) => setFilters({ embedding: val, page: 1 })}
+                      placeholder="Any"
+                      testId="filter-embedding"
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-date-from-input" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Modified from
+                    </label>
+                    <input
+                      id="filter-date-from-input"
+                      type="date"
+                      value={dateFromInput}
+                      max={dateToInput || undefined}
+                      onChange={(e) => setDateFromInput(e.target.value)}
+                      className="nm-input h-9 w-full px-3 py-1.5 text-xs"
+                      data-testid="filter-date-from"
+                      aria-label="Modified from"
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label htmlFor="filter-date-to-input" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      Modified to
+                    </label>
+                    <input
+                      id="filter-date-to-input"
+                      type="date"
+                      value={dateToInput}
+                      min={dateFromInput || undefined}
+                      onChange={(e) => setDateToInput(e.target.value)}
+                      className="nm-input h-9 w-full px-3 py-1.5 text-xs"
+                      data-testid="filter-date-to"
+                      aria-label="Modified to"
+                    />
+                  </div>
+                </div>
+              </fieldset>
+            </div>
           </div>
         )}
 
@@ -1165,9 +1475,9 @@ export function PagesPage() {
                 <button
                   key={f.key}
                   onClick={() => clearFilter(f.key)}
-                  className="inline-flex items-center gap-1 rounded-full bg-action/10 px-2.5 py-0.5 text-xs font-medium text-action"
+                  className="nm-button-ghost h-7 gap-1 px-2 text-xs font-medium"
                   aria-label={`Remove ${f.label} filter`}
-                  aria-describedby={ignoredBySemanticSearch ? 'filters-ignored-notice' : undefined}
+                  aria-describedby={ignoredBySemanticSearch ? 'filters-paused-notice' : undefined}
                   data-testid={`filter-pill-${f.key}`}
                 >
                   {f.label}
@@ -1177,7 +1487,7 @@ export function PagesPage() {
             })}
             <button
               onClick={clearAllFilters}
-              className="rounded-sm text-xs text-muted-foreground hover:text-foreground nm-focus-ring"
+              className="nm-button-ghost h-7 px-2 text-xs"
               data-testid="clear-all-pill-filters"
             >
               Clear all
@@ -1186,12 +1496,16 @@ export function PagesPage() {
         )}
       </section>
 
+      {/* Browsing support stays out of the active-search path: once a query is
+          present, warnings and results follow the command surface directly. */}
+      {!hasActiveQuery && (
+        <>
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (
-        <div className="rounded-xl border border-border bg-card p-3">
+        <div className="space-y-2 py-1">
           <div className="flex items-center justify-between text-sm">
             <span>Syncing {syncStatus.progress.space}...</span>
-            <span>{syncStatus.progress.current}/{syncStatus.progress.total}</span>
+            <span className="tabular-nums text-muted-foreground">{syncStatus.progress.current}/{syncStatus.progress.total}</span>
           </div>
           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
             <div
@@ -1204,7 +1518,7 @@ export function PagesPage() {
 
       {/* Embedding progress */}
       {embeddingStatusData?.isProcessing && (
-        <div className="rounded-xl border border-border bg-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
+        <div className="flex items-center gap-3 py-1" data-testid="embedding-progress-banner">
           <Loader2 size={16} className="animate-spin text-action" />
           <span className="text-sm">
             Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
@@ -1223,8 +1537,8 @@ export function PagesPage() {
         </div>
       )}
 
-      {/* Pinned Pages — after Find, not before it. */}
-      <PinnedArticlesSection />
+        </>
+      )}
 
       {/* No-embeddings warning for semantic/hybrid search */}
       {search && searchMode !== 'keyword' && !searchResults.hasEmbeddings && (
@@ -1266,9 +1580,9 @@ export function PagesPage() {
       )}
 
       {/* Space home content (when enabled and a space is selected) */}
-      {showHomeContent && !forcePageList ? (
+      {showHomeContent && !forcePageList && !hasActiveQuery ? (
         homePageLoading ? (
-          <div className="rounded-xl border border-border bg-card h-96 animate-pulse" />
+          <div className="h-96 animate-pulse rounded-md bg-foreground/5" />
         ) : homePage ? (
           <m.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
             <div className="flex items-center justify-between">
@@ -1276,13 +1590,13 @@ export function PagesPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => navigate(`/pages/${homePage.id}`)}
-                  className="rounded-xl border border-border bg-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+                  className="nm-button-ghost h-8 gap-1.5 px-2.5 text-sm"
                 >
                   <FileText size={14} /> View Full Page
                 </button>
                 <button
                   onClick={() => setForcePageList(true)}
-                  className="rounded-xl border border-border bg-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+                  className="nm-button-ghost h-8 gap-1.5 px-2.5 text-sm"
                   data-testid="show-page-list"
                 >
                   <List size={14} /> Show All Pages
@@ -1290,7 +1604,7 @@ export function PagesPage() {
               </div>
             </div>
             <SanitizedHtml
-              className={`rounded-xl border border-border bg-card prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
+              className={`prose max-w-none py-2${isLight ? '' : ' prose-invert'}`}
               html={homeBodyHtml}
               additionalAllowedAttrs={['data-diagram-name', 'data-drawio', 'data-color', 'data-layout', 'data-layout-type', 'data-cell-width', 'data-border']}
             />
@@ -1299,14 +1613,14 @@ export function PagesPage() {
       ) : (
       <>
       {/* Page list — semantic/hybrid search results */}
-      <section aria-labelledby="kb-results-heading">
+      <section aria-labelledby="kb-results-heading" className="space-y-3" aria-busy={searchResultsBusy} data-testid="library-results-region">
       <h2 id="kb-results-heading" className="sr-only">Page results</h2>
       {useSemanticSearch ? (
         <>
           {searchResults.isLoadingImmediate && searchResults.immediateResults.length === 0 ? (
             <div className="space-y-2">
               {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="rounded-md border border-border bg-card h-14 animate-pulse" />
+                <div key={i} className="h-11 animate-pulse rounded-md bg-foreground/5" />
               ))}
             </div>
           ) : (() => {
@@ -1314,10 +1628,11 @@ export function PagesPage() {
             return displayItems.length === 0 ? (
               <EmptyState
                 icon={FolderOpen}
+                className="border-0 bg-transparent"
                 title={searchResults.hasEmbeddings ? 'No pages found' : 'No matching pages'}
                 description={
                   searchResults.hasEmbeddings
-                    ? 'Try a different search term or switch to keyword mode'
+                    ? 'Try a different search term or switch to Keyword'
                     // Zero embeddings: the banner above already says keyword
                     // fallback ran, so acknowledge both facts — the query
                     // matched nothing AND semantic search is unavailable
@@ -1327,90 +1642,139 @@ export function PagesPage() {
               />
             ) : (
               <>
-                <p className="text-sm text-muted-foreground" data-testid="search-results-count">
-                  {searchResults.total} {searchResults.total === 1 ? 'result' : 'results'}
-                  <span className="ml-2 text-xs capitalize text-muted-foreground/60">({searchMode})</span>
-                </p>
-                <div className="space-y-2">
-                  {displayItems.map((item, i) => (
-                    <m.div
-                      key={item.id}
-                      initial={{ opacity: 0, y: 4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.15, delay: i * 0.02 }}
-                    >
-                      <button
-                        onClick={() => navigate(`/pages/${item.id}`)}
-                        className="flex w-full items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-accent max-sm:items-start max-sm:flex-wrap max-sm:gap-y-1"
-                        data-testid={`article-hover-${item.id}`}
-                      >
-                        <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
-                          <p className="truncate text-[13px] font-medium text-foreground">{item.title}</p>
-                          {/* `contain:inline-size` zeroes the excerpt's
-                              contribution to the block's intrinsic width.
-                              Without it the excerpt's unwrapped length — not
-                              the title's — decides the block's content size,
-                              and a two-line excerpt is nearly always wider
-                              than a phone row, so the chip would drop on
-                              virtually every row: forced in practice, not
-                              content-driven. Contained, the nowrap title alone
-                              drives the wrap. The excerpt's own rendering is
-                              unchanged — it still fills the block's final
-                              width and clamps at two lines. */}
-                          {/* item.excerpt is a full-text-search snippet carrying
-                              <mark> highlight tags on its keyword leg (the
-                              semantic leg's snippets carry none). Rendering it
-                              as plain React text escaped the tags into literal
-                              "<mark>…</mark>" on screen for the ~250ms-1.5s
-                              every semantic/hybrid search spends showing
-                              phase-1 keyword results — on 80-90% of rows, every
-                              time. SanitizedHtml with an explicit `mark`-only
-                              allowlist renders the highlighting the backend
-                              already computed instead of leaking its markup
-                              (polish pass, 2026-08-17). */}
-                          {item.excerpt && (
-                            <SanitizedHtml
-                              html={item.excerpt}
-                              allowedTags={['mark']}
-                              allowedAttrs={[]}
-                              className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-foreground/10 [&_mark]:font-medium [&_mark]:text-foreground"
-                            />
-                          )}
-                          {item.spaceKey && (
-                            <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                              {item.spaceKey !== '__local__' ? (
+                <div data-testid="library-search-results-panel" className="overflow-hidden rounded-lg border border-border bg-card">
+                  <div className="panel-toolbar flex flex-wrap items-center gap-3 border-b border-border px-3 py-2 text-xs text-muted-foreground" data-testid="search-results-context" aria-live="polite">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
+                        }}
+                        onChange={toggleSelectAll}
+                        aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
+                        className="size-4 shrink-0 cursor-pointer accent-[var(--color-action)]"
+                        data-testid="select-all-search-pages"
+                      />
+                      <span className="font-medium text-foreground" data-testid="search-results-count">
+                        {visibleSelectedIds.length > 0 ? (
+                          `${visibleSelectedIds.length} of ${currentIds.length} selected`
+                        ) : (
+                          `${searchResults.total} ${searchResults.total === 1 ? 'result' : 'results'}`
+                        )}
+                        <span className="ml-1.5 font-normal text-muted-foreground/70">({SEARCH_MODE_LABELS[searchMode]})</span>
+                      </span>
+                      {selectedSpace && (
+                        <>
+                          <span aria-hidden="true" className="text-muted-foreground/60">·</span>
+                          <span className="truncate">{selectedSpace.name}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <BulkActionBar
+                    selectedIds={visibleSelectedIds}
+                    confluenceCount={selectedConfluenceCount}
+                    onClear={clearSelection}
+                  />
+
+                  <div role="list" aria-label="Search results">
+                    {displayItems.map((item, i) => {
+                      const itemId = String(item.id);
+                      const isSelected = selectedIds.has(itemId);
+                      return (
+                        <m.div
+                          key={item.id}
+                          role="listitem"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          transition={{ duration: 0.15, delay: i * 0.02 }}
+                          data-search-row-index={i}
+                        >
+                            <div
+                              className={cn(
+                                'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 max-sm:items-start',
+                                isSelected
+                                  ? 'bg-[color-mix(in_oklab,var(--color-primary)_12%,transparent)] hover:bg-[color-mix(in_oklab,var(--color-primary)_18%,transparent)]'
+                                  : 'hover:bg-accent',
+                              )}
+                              data-testid={`article-hover-${item.id}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                tabIndex={-1}
+                                onClick={(e) => toggleSelect(itemId, e.shiftKey)}
+                                onChange={() => {}}
+                                aria-label={`Select ${item.title}`}
+                                className={cn(
+                                  'size-4 shrink-0 cursor-pointer accent-[var(--color-action)] max-sm:mt-0.5 transition-opacity',
+                                  isSelected
+                                    ? 'opacity-100'
+                                    : 'opacity-40 hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-sm:opacity-100',
+                                )}
+                                data-testid={`page-select-${item.id}`}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/pages/${item.id}`)}
+                                tabIndex={focusedSearchRowIndex === i ? 0 : -1}
+                                onFocus={() => setFocusedSearchRowIndex(i)}
+                                onKeyDown={(e) => handleSearchRowKeyDown(i, itemId, displayItems.length, e)}
+                                className="nm-focus-ring flex min-w-0 flex-1 items-center gap-3 text-left max-sm:flex-wrap max-sm:gap-y-1 rounded-sm"
+                              >
+                                <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
+                                  <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
+                                    {item.icon && <PageIcon icon={item.icon} pageId={itemId} size="row" />}
+                                    <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
+                                  </p>
+                                  {item.excerpt && (
+                                    <SanitizedHtml
+                                      html={item.excerpt}
+                                      allowedTags={['mark']}
+                                      allowedAttrs={[]}
+                                      className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-action/15 [&_mark]:font-medium [&_mark]:text-foreground"
+                                    />
+                                  )}
+                                {item.spaceKey && (
+                                  <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                                    {item.spaceKey !== '__local__' ? (
+                                      <span
+                                        className={cn('shrink-0', neutralChipClass)}
+                                        data-testid="badge-confluence"
+                                        data-source-badge={item.id}
+                                      >
+                                        {spaceNameByKey.get(item.spaceKey) ?? item.spaceKey}
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className={cn('shrink-0', neutralChipClass)}
+                                        data-testid="badge-local"
+                                        data-source-badge={item.id}
+                                      >
+                                        Local
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Similarity only — renderable cosine distance percentage */}
+                              {item.similarity !== null && item.similarity > 0 && (
                                 <span
-                                  className={cn('shrink-0', neutralChipClass)}
-                                  data-testid="badge-confluence"
-                                  data-source-badge={item.id}
+                                  title="Semantic similarity to your query"
+                                  className="shrink-0 rounded bg-muted/80 px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground border border-border/50"
                                 >
-                                  {item.spaceKey}
-                                </span>
-                              ) : (
-                                <span
-                                  className={cn('shrink-0', neutralChipClass)}
-                                  data-testid="badge-local"
-                                  data-source-badge={item.id}
-                                >
-                                  Local
+                                  {(item.similarity * 100).toFixed(0)}%
                                 </span>
                               )}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Similarity only — renderable cosine distance percentage */}
-                        {item.similarity !== null && item.similarity > 0 && (
-                          <span
-                            title="Semantic similarity to your query"
-                            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground border border-border/40"
-                          >
-                            {(item.similarity * 100).toFixed(0)}%
-                          </span>
-                        )}
-                      </button>
-                    </m.div>
-                  ))}
+                            </button>
+                          </div>
+                        </m.div>
+                      );
+                    })}
+                  </div>
                 </div>
               </>
             );
@@ -1423,7 +1787,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
-                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
+                className="nm-icon-button disabled:opacity-30"
               >
                 <ChevronLeft size={16} />
               </button>
@@ -1434,7 +1798,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.min(searchResults.totalPages, page + 1) })}
                 disabled={page >= searchResults.totalPages}
                 aria-label="Next page"
-                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
+                className="nm-icon-button disabled:opacity-30"
               >
                 <ChevronRight size={16} />
               </button>
@@ -1445,121 +1809,155 @@ export function PagesPage() {
         <>
           {/* Page list — keyword/browse mode (original) */}
           {isLoading ? (
-            <div className="space-y-3">
+            <div className="space-y-0.5">
               {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="rounded-xl border border-border bg-card h-16 animate-pulse" />
+                <div key={i} className="h-11 animate-pulse rounded-md bg-foreground/5" />
               ))}
             </div>
           ) : pagesError && !pagesData ? (
             <div
-              className="flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm"
+              className="flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
               data-testid="pages-error-state"
             >
               <AlertTriangle size={18} className="mt-0.5 shrink-0 text-destructive" />
               <div className="flex-1">
                 <p className="font-medium text-destructive">Couldn't load pages</p>
                 <p className="mt-1 text-muted-foreground">{pagesError.message}</p>
+                <button
+                  onClick={() => refetchPages()}
+                  disabled={isFetchingPages}
+                  className="nm-focus-ring flex items-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid="pages-error-retry"
+                >
+                  {isFetchingPages && <Loader2 size={12} className="animate-spin" />}
+                  {isFetchingPages ? 'Retrying…' : 'Retry'}
+                </button>
               </div>
-              <button
-                onClick={() => refetchPages()}
-                disabled={isFetchingPages}
-                className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
-                data-testid="pages-error-retry"
-              >
-                {isFetchingPages && <Loader2 size={12} className="animate-spin" />}
-                {isFetchingPages ? 'Retrying…' : 'Retry'}
-              </button>
             </div>
           ) : !pagesData?.items.length ? (
-            // Filters first, search second, corpus-emptiness last (harden
-            // pass, 2026-08-17): an empty result set with active filters was
-            // reported as "Sync your Confluence spaces to see pages here",
-            // sending the user to Settings for a problem their own filters
-            // caused, with no mention of the filters and no way to clear
-            // them from this screen. `activeFilterCount` already reflects
-            // exactly what's filtering this list (Space included, since it
-            // now participates in `activeFilters` above) — a real empty
-            // corpus is the one case where it, and `search`, are both empty.
             <EmptyState
               icon={FolderOpen}
+              className="border-0 bg-transparent"
               title="No pages found"
               description={
                 activeFilterCount > 0
                   ? (search
                       ? `No pages match "${search}" with ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`
                       : `No pages match ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`)
-                  : (search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here')
+                  : (search ? 'Try a different search term' : 'Create a page, or connect a Confluence space to fill this list')
               }
               action={
                 activeFilterCount > 0
                   ? { label: 'Clear filters', onClick: clearAllFilters }
                   : (!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined)
               }
+              secondaryAction={
+                activeFilterCount === 0 && !search
+                  ? { label: 'Create a Page', onClick: () => navigate('/pages/new') }
+                  : undefined
+              }
             />
           ) : (
             <>
-            {/* Select-all + bulk actions. The four /pages/bulk/* endpoints
-                shipped with no UI, so re-embedding a large space meant one
-                row at a time. */}
-            <div className="mb-3 space-y-3">
-              <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={allVisibleSelected}
-                  ref={(el) => {
-                    // Partial selection is a third state; without it the box
-                    // reads "nothing selected" while rows plainly are.
-                    if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
-                  }}
-                  onChange={toggleSelectAll}
-                  aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
-                  className="size-4 cursor-pointer accent-[var(--color-action)]"
-                  data-testid="select-all-pages"
-                />
-                Select all on this page
-              </label>
-
-              <BulkActionBar
-                selectedIds={visibleSelectedIds}
-                confluenceCount={selectedConfluenceCount}
-                onClear={clearSelection}
-              />
-            </div>
-
-            <div
-              ref={listContainerRef}
-              data-testid="virtual-list-container"
-              style={{ position: 'relative', height: virtualizer.getTotalSize() }}
-            >
-              {virtualizer.getVirtualItems().map((virtualRow) => {
-                const pageItem = pageItems[virtualRow.index];
-                if (!pageItem) return null;
-                return (
-                  <div
-                    key={pageItem.id}
-                    data-index={virtualRow.index}
-                    ref={virtualizer.measureElement}
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '100%',
-                      transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
-                    }}
-                  >
-                    <div className="pb-2">
-                      <PageListItem
-                        pageItem={pageItem}
-                        index={virtualRow.index}
-                        onNavigate={navigateToPage}
-                        selected={selectedIds.has(pageItem.id)}
-                        onToggleSelect={toggleSelect}
-                      />
-                    </div>
+              <div data-testid="library-results-panel" className="overflow-hidden rounded-lg border border-border bg-card">
+                <div className="panel-toolbar flex flex-wrap items-center gap-3 border-b border-border px-3 py-2 text-xs text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      ref={(el) => {
+                        // Partial selection is a third state; without it the box
+                        // reads "nothing selected" while rows plainly are.
+                        if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
+                      }}
+                      onChange={toggleSelectAll}
+                      aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
+                      className="size-4 shrink-0 cursor-pointer accent-[var(--color-action)]"
+                      data-testid="select-all-pages"
+                    />
+                    <span className="font-medium text-foreground" data-testid="browse-results-count">
+                      {visibleSelectedIds.length > 0 ? (
+                        `${visibleSelectedIds.length} of ${currentIds.length} selected`
+                      ) : (
+                        `${pagesData.total} ${pagesData.total === 1 ? 'page' : 'pages'}`
+                      )}
+                    </span>
+                    {selectedSpace && (
+                      <>
+                        <span aria-hidden="true" className="text-muted-foreground/60">·</span>
+                        <span className="truncate">{selectedSpace.name}</span>
+                      </>
+                    )}
                   </div>
-                );
-              })}
-            </div>
+
+                  <div className="ml-auto flex items-center gap-1.5 text-xs">
+                    <span className="text-muted-foreground">Sort</span>
+                    <LibrarySortFilter
+                      value={sort}
+                      onChange={(newSort) => setFilters({ sort: newSort, page: 1 })}
+                      hasSearchQuery={hasActiveQuery}
+                    />
+                  </div>
+                </div>
+
+                <BulkActionBar
+                  selectedIds={visibleSelectedIds}
+                  confluenceCount={selectedConfluenceCount}
+                  onClear={clearSelection}
+                />
+
+                <div
+                  ref={listContainerRef}
+                  data-testid="virtual-list-container"
+                  role="feed"
+                  aria-label="Pages list"
+                  aria-rowcount={pagesData.total}
+                  aria-busy={isLoading}
+                  style={{ position: 'relative', height: virtualizer.getTotalSize() }}
+                >
+                  {virtualizer.getVirtualItems().map((virtualRow) => {
+                    const pageItem = pageItems[virtualRow.index];
+                    if (!pageItem) return null;
+                    return (
+                      <div
+                        key={pageItem.id}
+                        data-index={virtualRow.index}
+                        data-row-index={virtualRow.index}
+                        role="article"
+                        aria-rowindex={virtualRow.index + 1}
+                        aria-posinset={virtualRow.index + 1}
+                        aria-setsize={pagesData.total}
+                        ref={virtualizer.measureElement}
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
+                        }}
+                      >
+                        <div>
+                          <PageListItem
+                            pageItem={pageItem}
+                            index={virtualRow.index}
+                            onNavigate={navigateToPage}
+                            selected={selectedIds.has(pageItem.id)}
+                            onToggleSelect={toggleSelect}
+                            showSource={showSourceBadges}
+                            showVisibility={showVisibilityBadges}
+                            showQuality={showQualityBadges}
+                            showIdleEmbedding={showIdleEmbedding}
+                            spaceName={pageItem.spaceKey ? spaceNameByKey.get(pageItem.spaceKey) ?? null : null}
+                            tabIndex={focusedRowIndex === virtualRow.index ? 0 : -1}
+                            onFocus={() => setFocusedRowIndex(virtualRow.index)}
+                            onKeyDown={(e) => handleRowKeyDown(virtualRow.index, pageItem.id, e)}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </>
           )}
 
@@ -1570,7 +1968,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
-                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
+                className="nm-icon-button disabled:opacity-30"
               >
                 <ChevronLeft size={16} />
               </button>
@@ -1581,7 +1979,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.min(pagesData.totalPages, page + 1) })}
                 disabled={page >= pagesData.totalPages}
                 aria-label="Next page"
-                className="nm-icon-button h-8 w-8 rounded-md border border-border bg-card hover:bg-accent disabled:opacity-30"
+                className="nm-icon-button disabled:opacity-30"
               >
                 <ChevronRight size={16} />
               </button>
@@ -1592,6 +1990,7 @@ export function PagesPage() {
       </section>
       </>
       )}
+
     </div>
   );
 }

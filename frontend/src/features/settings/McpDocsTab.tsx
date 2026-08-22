@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Globe, CheckCircle2, XCircle, Loader2, Trash2, Plus, ExternalLink } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
+import { Button } from '../../shared/components/Button';
 
 interface McpDocsSettings {
   enabled: boolean;
@@ -264,15 +265,15 @@ export function McpDocsTab() {
       {/* Save button */}
       {isDirty && (
         <div className="sticky bottom-0 flex justify-end border-t border-border bg-card pt-4">
-          <button
+          <Button
             onClick={() => saveMutation.mutate(form)}
             disabled={saveMutation.isPending}
-            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+            isLoading={saveMutation.isPending}
+            variant="primary"
             data-testid="mcp-docs-save"
           >
-            {saveMutation.isPending && <Loader2 size={14} className="animate-spin" />}
             Save MCP Docs Settings
-          </button>
+          </Button>
         </div>
       )}
     </div>

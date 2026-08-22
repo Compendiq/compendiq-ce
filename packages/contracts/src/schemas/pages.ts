@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PageIconSchema } from './page-icon.js';
 
 export const PageTypeEnum = z.enum(['page', 'folder']);
 export type PageType = z.infer<typeof PageTypeEnum>;
@@ -49,6 +50,7 @@ export const PageSummarySchema = z.object({
   createdByUserId: z.union([z.string(), z.number()]).nullable().optional(),
   deletedAt: z.string().nullable().optional(),
   confluenceId: z.string().nullable().optional(),
+  icon: PageIconSchema.nullable().optional(),
 });
 
 export const PageDetailSchema = PageSummarySchema.extend({
@@ -61,6 +63,7 @@ export const PageDetailSchema = PageSummarySchema.extend({
   summaryError: z.string().nullable().optional(),
   hasDraft: z.boolean().default(false),
   draftUpdatedAt: z.coerce.date().nullable().optional(),
+  verifiedAt: z.coerce.date().nullable().optional(),
 });
 
 export const CreatePageSchema = z.object({
@@ -135,6 +138,7 @@ export const SearchResultItemSchema = z.object({
   spaceKey: z.string().nullable(),
   excerpt: z.string(),
   score: z.number(),
+  icon: PageIconSchema.nullable().optional(),
 });
 export type SearchResultItem = z.infer<typeof SearchResultItemSchema>;
 
@@ -169,6 +173,7 @@ export const PageTreeItemSchema = z.object({
   parentId: z.string().nullable(),
   labels: z.array(z.string()),
   lastModifiedAt: z.coerce.date().nullable(),
+  icon: PageIconSchema.nullable().optional(),
 });
 
 export const PageTreeQuerySchema = z.object({

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { KPICards } from './KPICards';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
@@ -64,35 +64,14 @@ describe('KPICards', () => {
     expect(segments.indexOf(lastSync)).toBe(segments.length - 1);
   });
 
-  it('offers the sync action inside the Last Sync tile', () => {
-    const onSync = vi.fn();
+  it('renders Last Sync as ambient status without button clutter', () => {
     render(
-      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} onSync={onSync} />,
+      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} lastSynced="2026-03-10T10:00:00Z" />,
       { wrapper: Wrapper },
     );
 
-    const btn = screen.getByTestId('kpi-sync-btn');
-    expect(screen.getByTestId('kpi-last-sync')).toContainElement(btn);
-    fireEvent.click(btn);
-    expect(onSync).toHaveBeenCalledOnce();
-  });
-
-  it('disables the sync action while a sync is running', () => {
-    render(
-      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} onSync={vi.fn()} isSyncing />,
-      { wrapper: Wrapper },
-    );
-
-    expect(screen.getByTestId('kpi-sync-btn')).toBeDisabled();
-    expect(screen.getByTestId('kpi-sync-btn')).toHaveTextContent('Syncing...');
-  });
-
-  it('omits the sync action when no handler is supplied', () => {
-    render(
-      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} />,
-      { wrapper: Wrapper },
-    );
-
+    const lastSync = screen.getByTestId('kpi-last-sync');
+    expect(lastSync).toBeInTheDocument();
     expect(screen.queryByTestId('kpi-sync-btn')).not.toBeInTheDocument();
   });
 
@@ -254,7 +233,7 @@ describe('KPICards', () => {
     expect(screen.getByTestId('kpi-embedding-coverage')).toHaveTextContent('--');
   });
 
-  it('shows "Never" when lastSynced is not provided', () => {
+  it('says Not recorded when lastSynced is missing but pages exist', () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -265,7 +244,36 @@ describe('KPICards', () => {
 
     const card = screen.getByTestId('kpi-last-sync');
     expect(card).toHaveTextContent('Last Sync');
-    expect(card).toHaveTextContent('Never');
+    expect(card).toHaveTextContent('Not recorded');
+    expect(card).not.toHaveTextContent('Never');
+    expect(card).not.toHaveTextContent('Local pages only');
+  });
+
+  it('renders Local pages only when no Confluence spaces are connected', () => {
+    render(
+      <KPICards
+        embeddingStatus={mockEmbeddingStatus}
+        spacesCount={0}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    expect(screen.queryByTestId('kpi-sync-btn')).not.toBeInTheDocument();
+    expect(screen.getByTestId('kpi-last-sync')).toHaveTextContent('Local pages only');
+    expect(screen.getByTestId('kpi-last-sync')).not.toHaveTextContent('Never');
+  });
+
+  it('does not claim zero spaces when the library already has pages', () => {
+    render(
+      <KPICards
+        embeddingStatus={mockEmbeddingStatus}
+        spacesCount={0}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    expect(screen.getByTestId('kpi-spaces-synced')).toHaveTextContent('in this library');
+    expect(screen.getByTestId('kpi-spaces-synced')).not.toHaveTextContent('0 spaces');
   });
 
   it('shows relative time for lastSynced', () => {
