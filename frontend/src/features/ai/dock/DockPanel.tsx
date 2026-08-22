@@ -95,9 +95,19 @@ function DockAttachmentPicker({
 export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void; variant?: 'column' | 'sheet' | 'tab' }) {
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
-    streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
-    chatVisionModel, mode, setMode, improvementType, createSkill, setCreateSkill, abortRef,
+    streamingContent, streamingThreadId, activeThreadId, input, setInput, modelsError,
+    refetchModels, model, chatVision, chatVisionModel, mode, setMode, improvementType,
+    createSkill, setCreateSkill, abortRef,
   } = useAiContext();
+
+  // #1361: the streaming buffer and both busy flags are provider-wide, and this
+  // renderer decides "the last bubble is the in-flight answer" from
+  // `isStreaming && isLast` — so a question asked on `/ai`, or on another
+  // article, would repaint this page's last answer with that thread's partial
+  // text. Only the turns are gated; the violet hairline, the disabled composer
+  // and Stop stay provider-wide, because a stream really is running.
+  const streamingHere = isStreaming && streamingThreadId === activeThreadId;
+  const thinkingHere = isThinking && streamingThreadId === activeThreadId;
   const selectedAction = resolveAssistantAction(mode, improvementType, createSkill);
   const isCreateAction = selectedAction.startsWith('create-') || selectedAction === 'generate';
   const currentSkill = isCreateAction && createSkill ? getCreateSkill(createSkill) : undefined;
@@ -339,10 +349,12 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                 key={msg.id}
                 msg={msg}
                 isLast={i === messages.length - 1}
-                isStreaming={isStreaming}
-                isThinking={isThinking}
+                isStreaming={streamingHere}
+                isThinking={thinkingHere}
                 thinkingElapsed={thinkingElapsed}
-                streamingContent={i === messages.length - 1 ? streamingContent : undefined}
+                streamingContent={
+                  streamingHere && i === messages.length - 1 ? streamingContent : undefined
+                }
               />
             ))}
             {/* Artifacts belong to the assistant's turn, so they line up with

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiAssistantPage } from './AiAssistantPage';
@@ -2476,6 +2476,85 @@ describe('AiAssistantPage', () => {
       expect(classes).not.toMatch(/status-(connected|disconnected|syncing|embedding|ai)/);
     });
 
+  });
+
+  describe('cross-thread streaming (#1361)', () => {
+    /** Navigates the hoisted provider, which is what changes the thread. */
+    function AiNavProbe({ to }: { to: string }) {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate(to)}>{`go ${to}`}</button>;
+    }
+
+    /** Puts a finished answer on one thread and starts a stream on another. */
+    function ThreadTools() {
+      const { setMessages, runStream } = useAiContext();
+      return (
+        <>
+          <button
+            onClick={() =>
+              setMessages([
+                { id: 'seed-user', role: 'user', content: 'what changed in the runbook?' },
+                { id: 'seed-answer', role: 'assistant', content: 'answer one' },
+              ])
+            }
+          >
+            seed answered thread
+          </button>
+          <button onClick={() => void runStream('/llm/ask', { question: 'about the article' })}>
+            ask here
+          </button>
+        </>
+      );
+    }
+
+    it("does not paint another thread's in-flight answer onto this one", async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/llm/usecase-default?usecase=chat') {
+          return Promise.resolve({
+            usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: false,
+          });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        return Promise.resolve([]);
+      });
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      streamSSEMock.mockImplementation((_endpoint: string, _body: unknown, signal: AbortSignal) =>
+        (async function* () {
+          yield { content: 'partial from the other thread' };
+          await gate;
+          if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        })(),
+      );
+
+      render(
+        <>
+          <ThreadTools />
+          <AiNavProbe to="/pages/p9" />
+          <AiNavProbe to="/ai" />
+          <AiAssistantPage />
+        </>,
+        { wrapper: createWrapper(['/ai']) },
+      );
+
+      // The draft already holds a finished answer.
+      fireEvent.click(screen.getByText('seed answered thread'));
+      expect(screen.getByText('answer one')).toBeInTheDocument();
+
+      // Ask on the article thread, then come back to the draft mid-stream.
+      fireEvent.click(screen.getByText('go /pages/p9'));
+      fireEvent.click(screen.getByText('ask here'));
+      await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+      fireEvent.click(screen.getByText('go /ai'));
+
+      // Its own last answer, not the other thread's partial text — and it is
+      // not "typing", because nothing here is.
+      await waitFor(() => expect(screen.getByText('answer one')).toBeInTheDocument());
+      expect(screen.queryByText('partial from the other thread')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
+
+      await act(async () => { release(); await Promise.resolve(); });
+    });
   });
 
 });

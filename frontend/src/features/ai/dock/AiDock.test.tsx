@@ -7,10 +7,10 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
-import { AiProvider } from '../AiContext';
+import { AiProvider, useAiContext } from '../AiContext';
 import { DockPanel } from './DockPanel';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 
@@ -49,6 +49,36 @@ function sse(...chunks: Array<Record<string, unknown>>) {
 
 let modelsFail = false;
 
+/**
+ * Reaches the hoisted provider the way a sibling surface would, so a test can
+ * put a finished answer on one page's thread and a running stream on another —
+ * the only way to observe which thread the in-flight bubble belongs to (#1361).
+ */
+function DockThreadTools() {
+  const navigate = useNavigate();
+  const { setMessages, runStream } = useAiContext();
+  return (
+    <>
+      <button
+        data-testid="dock-seed-answer"
+        onClick={() =>
+          setMessages([
+            { id: 'seed-user', role: 'user', content: 'what changed here?' },
+            { id: 'seed-answer', role: 'assistant', content: 'answer one' },
+          ])
+        }
+      >
+        seed
+      </button>
+      <button data-testid="dock-ask-here" onClick={() => void runStream('/llm/ask', { question: 'q' })}>
+        ask
+      </button>
+      <button data-testid="dock-go-page-2" onClick={() => navigate('/pages/page-2')}>page 2</button>
+      <button data-testid="dock-go-page-1" onClick={() => navigate('/pages/page-1')}>page 1</button>
+    </>
+  );
+}
+
 function renderDock(
   opts: { initialEntry?: string; onClose?: () => void } | string = {},
 ) {
@@ -61,6 +91,7 @@ function renderDock(
         <MemoryRouter initialEntries={[initialEntry]}>
           <AiProvider>
             <button data-testid="dock-trigger">AI Assistant</button>
+            <DockThreadTools />
             <Routes>
               <Route path="/pages/:id" element={<div>article</div>} />
               <Route path="/ai" element={<div>ai page</div>} />
@@ -548,5 +579,35 @@ describe('AiDock (#1126)', () => {
       fireEvent.click(toggle);
       expect(toggle).toHaveTextContent('Show more');
     });
+  });
+
+  it("does not paint another page's in-flight answer onto this thread (#1361)", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    streamSSEMock.mockImplementation((_endpoint: string, _body: unknown, signal: AbortSignal) =>
+      (async function* () {
+        yield { content: 'partial from the other page' };
+        await gate;
+        if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      })(),
+    );
+
+    renderDock();
+    await openAndSettle();
+
+    fireEvent.click(screen.getByTestId('dock-seed-answer'));
+    expect(await screen.findByText('answer one')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('dock-go-page-2'));
+    fireEvent.click(screen.getByTestId('dock-ask-here'));
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('dock-go-page-1'));
+
+    expect(await screen.findByText('answer one')).toBeInTheDocument();
+    expect(screen.queryByText('partial from the other page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-dock-typing')).not.toBeInTheDocument();
+
+    await act(async () => { release(); await Promise.resolve(); });
   });
 });

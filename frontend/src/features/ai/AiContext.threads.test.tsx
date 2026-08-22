@@ -34,7 +34,7 @@ vi.mock('sonner', () => ({
 function ThreadProbe() {
   const {
     pageId, mode, setMode, messages, conversationId, input, activeThreadId, composerFocusRequest,
-    setMessages, setConversationId, setInput, startNewConversation, runStream,
+    streamingThreadId, setMessages, setConversationId, setInput, startNewConversation, runStream,
   } = useAiContext();
   const label = pageId ?? 'no page';
 
@@ -49,6 +49,7 @@ function ThreadProbe() {
           never against a literal. */}
       <span data-testid="active-thread">{activeThreadId}</span>
       <span data-testid="focus-request">{composerFocusRequest}</span>
+      <span data-testid="streaming-thread">{streamingThreadId ?? 'none'}</span>
       <ul data-testid="thread">
         {messages.map((msg) => (
           <li key={msg.id}>{msg.content}</li>
@@ -75,6 +76,7 @@ function ThreadProbe() {
       </button>
       <button onClick={startNewConversation}>new conversation</button>
       <button onClick={() => setMode('generate')}>go generate</button>
+      <button onClick={() => setInput(`typing on ${label}`)}>type</button>
     </div>
   );
 }
@@ -511,6 +513,116 @@ describe('activeThreadId (#1361)', () => {
     goTo('/ai?q=how do I rotate the PAT');
     expect(screen.getByTestId('draft')).toHaveTextContent('how do I rotate the PAT');
     expect(activeThread()).toBe(before);
+  });
+});
+
+describe('identity-bound stream writers (#1361)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock.mockResolvedValue([]);
+  });
+
+  /** A stream that yields once, then waits for the test to release it. */
+  function gatedStream() {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    streamSSEMock.mockImplementation((_endpoint: string, _body: unknown, signal: AbortSignal) =>
+      (async function* () {
+        yield { content: 'partial answer' };
+        await gate;
+        if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        yield { content: ' and the rest' };
+      })(),
+    );
+    return () => release();
+  }
+
+  it('drops the aborted answer when New chat replaced the thread that asked', async () => {
+    // The whole reason writers bind to identity rather than key: `draft` still
+    // exists after New chat, so a key-bound commit would land the abandoned
+    // half-answer in the brand-new draft the user is looking at.
+    const release = gatedStream();
+    renderThreadApp('/ai');
+
+    fireEvent.click(screen.getByText('stream'));
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText('new conversation'));
+    await act(async () => { release(); await Promise.resolve(); });
+
+    expect(threadContents()).toEqual([]);
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
+  });
+
+  it('does not abort on a write to the thread that is already active', async () => {
+    // A re-key and a write are both non-switches. This pins the write half;
+    // the re-key half arrives with the promotion in the next task, which is
+    // the first thing that can produce one.
+    const release = gatedStream();
+    renderThreadApp('/ai');
+
+    fireEvent.click(screen.getByText('stream'));
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText('type'));
+    expect(screen.getByTestId('draft')).toHaveTextContent('typing on no page');
+
+    await act(async () => { release(); await Promise.resolve(); });
+
+    await waitFor(() => {
+      expect(threadContents()).toEqual([
+        'streamed question about no page',
+        'partial answer and the rest',
+      ]);
+    });
+  });
+
+  it('names the thread whose answer is streaming, and clears it when the stream ends', async () => {
+    const release = gatedStream();
+    renderThreadApp('/ai', ['/pages/page-b', '/ai']);
+
+    expect(screen.getByTestId('streaming-thread')).toHaveTextContent('none');
+
+    fireEvent.click(screen.getByText('stream'));
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+
+    const streaming = screen.getByTestId('streaming-thread').textContent;
+    expect(streaming).not.toBe('none');
+    expect(streaming).toBe(screen.getByTestId('active-thread').textContent);
+
+    // Switching does not move the marker: it still names the thread that asked,
+    // which is what stops the other surface painting this partial answer into
+    // whatever bubble happens to be last there.
+    goTo('/pages/page-b');
+    expect(screen.getByTestId('streaming-thread').textContent).toBe(streaming);
+    expect(screen.getByTestId('active-thread').textContent).not.toBe(streaming);
+
+    await act(async () => { release(); await Promise.resolve(); });
+    await waitFor(() => {
+      expect(screen.getByTestId('streaming-thread')).toHaveTextContent('none');
+    });
+  });
+
+  it('aborts an in-flight stream when the active thread changes', async () => {
+    // The abort effect keys on activeThreadId now, not on the key.
+    const release = gatedStream();
+    renderThreadApp('/ai', ['/pages/page-b', '/ai']);
+
+    fireEvent.click(screen.getByText('stream'));
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+
+    goTo('/pages/page-b');
+    await act(async () => { release(); await Promise.resolve(); });
+
+    // The partial is committed to the thread that asked, and only there.
+    expect(threadContents()).toEqual([]);
+    goTo('/ai');
+    await waitFor(() => {
+      expect(threadContents()).toEqual([
+        'streamed question about no page',
+        'partial answer',
+      ]);
+    });
   });
 });
 

@@ -129,6 +129,13 @@ interface AiContextValue {
   isStreaming: boolean;
   setIsStreaming: (v: boolean) => void;
   /**
+   * Identity of the thread whose answer is streaming, or null (#1361).
+   * `isStreaming` is provider-wide; the two renderers gate "this bubble is the
+   * in-flight answer" on `streamingThreadId === activeThreadId` so a stream on
+   * one thread cannot repaint another thread's last answer.
+   */
+  streamingThreadId: string | null;
+  /**
    * rAF-batched content of the in-flight assistant answer (#747). During a
    * stream the placeholder assistant message in `messages` stays empty and
    * the UI renders this value instead; runStream commits the final content
@@ -440,6 +447,21 @@ function touchThread(
 }
 
 /**
+ * The key a given identity currently sits under, or undefined if the thread is
+ * gone. A ≤ 12-entry scan: `MAX_RETAINED_THREADS` is the whole map, so an index
+ * would be a second thing to keep in step for no measurable gain.
+ */
+function findThreadKeyByIdentity(
+  threads: Map<string, AiThread>,
+  identity: number,
+): string | undefined {
+  for (const [key, thread] of threads) {
+    if (thread.identity === identity) return key;
+  }
+  return undefined;
+}
+
+/**
  * Resolve which page the assistant is talking about — the dock's context, and
  * nothing else since #1361.
  *
@@ -527,8 +549,26 @@ export function AiProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setThreads((prev) => (prev.has(threadKey) ? prev : fileThread(prev, threadKey)));
   }, [threadKey]);
+  // Through refs so `runStream` can read the map and the active key at CALL
+  // time without taking `threads` as a dependency — which would rebuild it, and
+  // every composer handler that depends on it, on each keystroke. Same pattern
+  // and same reason as `EmbeddingShadowMigrationCard.tsx:89-90`.
+  const threadsRef = useRef(threads);
+  threadsRef.current = threads;
+  const threadKeyRef = useRef(threadKey);
+  threadKeyRef.current = threadKey;
   const [createSkill, setCreateSkill] = useState<CreateSkillId>('spec');
   const [isStreaming, setIsStreaming] = useState(false);
+  /**
+   * Identity of the thread whose answer is in flight (#1361), or null.
+   *
+   * `streamingContent`, `isStreaming` and `isThinking` are one provider-wide
+   * value each and cannot be bound to a thread, while both renderers decide
+   * "this bubble is the in-flight answer" from `isStreaming && isLast`. Without
+   * this marker, switching to a retained conversation mid-stream repaints ITS
+   * last answer with the other thread's partial text.
+   */
+  const [streamingThreadId, setStreamingThreadId] = useState<string | null>(null);
   const [isThinking, setIsThinking] = useState(false);
   const [thinkingElapsed, setThinkingElapsed] = useState(false);
   const thinkingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -549,6 +589,24 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const updateThread = useCallback(
     (key: string, patch: (thread: AiThread) => Partial<AiThread>) => {
       setThreads((prev) => touchThread(prev, key, patch));
+    },
+    [],
+  );
+  /**
+   * Write to a thread by identity rather than key (#1361).
+   *
+   * A missing identity is a silent DROP, and that is the feature: it means the
+   * thread that started this stream has been replaced (New chat) or evicted, so
+   * there is nothing this write could correctly land on. Landing it on whatever
+   * now holds the old key is the defect.
+   */
+  const updateThreadByIdentity = useCallback(
+    (identity: number, patch: (thread: AiThread) => Partial<AiThread>) => {
+      setThreads((prev) => {
+        const key = findThreadKeyByIdentity(prev, identity);
+        if (key === undefined) return prev;
+        return touchThread(prev, key, patch);
+      });
     },
     [],
   );
@@ -623,18 +681,24 @@ export function AiProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Changing the AI context page swaps threads (#1126) — it no longer clears
-  // messages, conversation id or diff/diagram state, which is what silently
-  // discarded an in-progress conversation on a sidebar click. The one thing a
-  // switch still does is stop an in-flight stream; its partial answer is
-  // committed to the thread that started it, not to the one being switched to,
-  // because runStream captured that thread's writers.
-  const prevThreadKeyRef = useRef(threadKey);
+  // Changing which thread is on screen swaps threads (#1126) — it no longer
+  // clears messages, conversation id or diff/diagram state, which is what
+  // silently discarded an in-progress conversation on a sidebar click. The one
+  // thing a switch still does is stop an in-flight stream; its partial answer
+  // is committed to the thread that started it, located by identity, and
+  // dropped if that thread is gone.
+  //
+  // Keyed on `activeThreadId`, not on the key (#1361). A RE-KEY is not a
+  // switch: the first answer on a draft moves the same object to `conv:<id>`
+  // and replaces the URL, and aborting the very stream that produced the id
+  // would kill the answer mid-flight. The identity does not move, so this
+  // effect does not fire.
+  const prevActiveThreadIdRef = useRef(activeThreadId);
   useEffect(() => {
-    if (threadKey === prevThreadKeyRef.current) return;
-    prevThreadKeyRef.current = threadKey;
+    if (activeThreadId === prevActiveThreadIdRef.current) return;
+    prevActiveThreadIdRef.current = activeThreadId;
     abortRef.current?.abort();
-  }, [threadKey]);
+  }, [activeThreadId]);
 
   // The provider now outlives the /ai route, so `mode` can no longer be seeded
   // once from the URL at mount. Re-apply the URL's mode whenever its mode/page
@@ -886,6 +950,27 @@ export function AiProvider({ children }: { children: ReactNode }) {
   ) => {
     if (isStreamingRef.current) return;
 
+    // Bind this stream to the thread that started it (#1361). The KEY is kept
+    // for the fallback below; the IDENTITY is what every write dispatches on,
+    // so a re-key is followed (the promotion moves the same object) and a
+    // thread that has since been REPLACED — New chat while this stream was
+    // running — is not found at all, so the write drops instead of landing an
+    // orphan turn in the fresh draft.
+    const originKey = threadKeyRef.current;
+    const originIdentity = threadsRef.current.get(originKey)?.identity ?? 0;
+    // 0 means the active key was not filed yet — reachable only in the render
+    // before the filing effect runs, i.e. before anyone could have clicked.
+    // Fall back to a key-bound write rather than dispatching on an identity no
+    // entry carries, which would silently drop the entire answer.
+    const writeOrigin = (patch: (thread: AiThread) => Partial<AiThread>) => {
+      if (originIdentity === 0) updateThread(originKey, patch);
+      else updateThreadByIdentity(originIdentity, patch);
+    };
+    const setThreadMessages = (action: React.SetStateAction<Message[]>) =>
+      writeOrigin((thread) => ({
+        messages: typeof action === 'function' ? action(thread.messages) : action,
+      }));
+
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -903,13 +988,17 @@ export function AiProvider({ children }: { children: ReactNode }) {
     const seededUserMessage = opts?.userMessage;
     const seededUserMsgId = seededUserMessage ? nextMessageId() : null;
     if (seededUserMessage && seededUserMsgId) {
-      setMessages((prev) => [...prev, { id: seededUserMsgId, role: 'user', content: seededUserMessage }]);
+      setThreadMessages((prev) => [...prev, { id: seededUserMsgId, role: 'user', content: seededUserMessage }]);
     }
 
     opts?.onBeforeStream?.();
     isStreamingRef.current = true;
     setIsStreaming(true);
     setIsThinking(true);
+    // Mirrors `activeThreadId`'s own fallback: the bare key in the one render
+    // window where the thread is not filed yet, so the two can still compare
+    // equal and the renderers do not blank the typing indicator.
+    setStreamingThreadId(originIdentity === 0 ? originKey : String(originIdentity));
 
     let accumulated = '';
     let finalSources: Source[] = [];
@@ -924,13 +1013,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
     // rAF-batched streamingContent — and gets the full content committed in
     // a single update once the stream ends.
     const assistantMsgId = nextMessageId();
-    setMessages((prev) => [...prev, { id: assistantMsgId, role: 'assistant', content: '' }]);
+    setThreadMessages((prev) => [...prev, { id: assistantMsgId, role: 'assistant', content: '' }]);
     streamingStart();
 
     // Commit the accumulated answer (and sources, if any) to the placeholder
     // assistant message in one state update.
     const commitToMessages = () => {
-      setMessages((prev) => {
+      setThreadMessages((prev) => {
         const updated = [...prev];
         const lastMsg = updated[updated.length - 1];
         if (lastMsg) {
@@ -948,7 +1037,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     // Replace the placeholder assistant message with an inline error bubble —
     // shared by thrown errors (catch below) and in-band SSE error events.
     const failLastMessage = (text: string) => {
-      setMessages((prev) => {
+      setThreadMessages((prev) => {
         const updated = [...prev];
         const lastMsg = updated[updated.length - 1];
         if (lastMsg && lastMsg.role === 'assistant') {
@@ -978,7 +1067,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
           opts?.onContent?.(accumulated);
         }
         if (chunk.conversationId) {
-          setConversationId(chunk.conversationId);
+          const id = chunk.conversationId;
+          writeOrigin(() => ({ conversationId: id }));
         }
         if (chunk.final && chunk.sources) {
           finalSources = chunk.sources;
@@ -1032,7 +1122,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       // `seededUserMsgId` is null when the caller seeded its own turn, and no
       // message carries a null id, so that case filters nothing.
       if (opts?.onError?.(err)) {
-        setMessages((prev) => prev.filter(
+        setThreadMessages((prev) => prev.filter(
           (m) => m.id !== assistantMsgId && m.id !== seededUserMsgId,
         ));
         return;
@@ -1055,8 +1145,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
       isStreamingRef.current = false;
       setIsStreaming(false);
       setIsThinking(false);
+      setStreamingThreadId(null);
     }
-  }, [streamingStart, streamingAppend, streamingReplace, streamingFinish, setMessages, setConversationId]);
+  }, [streamingStart, streamingAppend, streamingReplace, streamingFinish, updateThread, updateThreadByIdentity]);
 
   const value: AiContextValue = {
     retainAi,
@@ -1085,6 +1176,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setInput,
     isStreaming,
     setIsStreaming,
+    streamingThreadId,
     streamingContent: streamingDisplayContent,
     isThinking,
     setIsThinking,

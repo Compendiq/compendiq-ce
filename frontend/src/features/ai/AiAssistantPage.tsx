@@ -217,12 +217,24 @@ export function AiAssistantPage() {
   const {
     mode, page, pageHasChildren,
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
-    streamingContent,
+    streamingContent, streamingThreadId, activeThreadId,
     model, models, setModel, modelsError, refetchModels, isLight,
     includeSubPages, setIncludeSubPages,
     thinkingMode, setThinkingMode,
     embeddingStatus,
   } = ctx;
+
+  // #1361: `isStreaming` / `isThinking` / `streamingContent` are one
+  // provider-wide value each, and this renderer decides "the last bubble is the
+  // in-flight answer" from `isStreaming && isLast`. A question asked on another
+  // thread — the dock on an article, or a conversation left running — would
+  // therefore repaint THIS thread's last answer with that thread's partial
+  // text. `streamingThreadId` is the identity of the thread that asked.
+  //
+  // Only the message bubbles are gated. The announcer, the composer's disabled
+  // state and the Stop control stay provider-wide: a stream really is running.
+  const streamingHere = isStreaming && streamingThreadId === activeThreadId;
+  const thinkingHere = isThinking && streamingThreadId === activeThreadId;
 
   const shouldReduceMotion = useReducedMotion();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -522,15 +534,17 @@ export function AiAssistantPage() {
               msg={msg}
               index={i}
               isLast={i === messages.length - 1}
-              isStreaming={isStreaming}
-              isThinking={isThinking}
+              isStreaming={streamingHere}
+              isThinking={thinkingHere}
               thinkingElapsed={thinkingElapsed}
               isLight={isLight}
               shouldReduceMotion={shouldReduceMotion}
               // #747: only the last bubble receives the batched in-flight
               // content; earlier (committed) bubbles keep a stable prop so
               // the memo comparator skips re-rendering them per flush.
-              streamingContent={i === messages.length - 1 ? streamingContent : undefined}
+              streamingContent={
+                streamingHere && i === messages.length - 1 ? streamingContent : undefined
+              }
             />
           ))}
           <div ref={messagesEndRef} />
