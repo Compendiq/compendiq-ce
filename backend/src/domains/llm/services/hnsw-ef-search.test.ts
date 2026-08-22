@@ -108,6 +108,19 @@ describe('efSearchFor — the callsite form', () => {
  * list is cross-checked against a walk of `backend/src`, so a probe in a new
  * file fails this suite until it is registered here (which is also where its
  * author is told it needs a runtime companion).
+ *
+ * SCOPE, stated so the next author can see what it does and does not buy.
+ * This is a TEXT guard: it reads every non-test `.ts` file under
+ * `backend/src` and reasons about character offsets, so it proves an
+ * ORDERING within one function body and nothing about runtime values. Two
+ * walks discover the files it must cover, and they key on different things
+ * on purpose — one on `await efSearchFor(` (a probe that goes through the
+ * knob), one on `SET LOCAL hnsw.ef_search` (a kNN that sets the depth by any
+ * means, including a literal) — and both must equal `CALLSITES` exactly. The
+ * rules a new probe inherits: a file that gains a SECOND probe has it checked
+ * like the first, with no ordering borrowed from its neighbour above; a probe
+ * in a NEW file must be added to `CALLSITES`; and a file that sets the depth
+ * without resolving it fails the second walk rather than passing unseen.
  */
 describe('every kNN callsite resolves the floor before it checks a client out', () => {
   const CALLSITES: ReadonlyArray<readonly [string, string]> = [
@@ -118,25 +131,30 @@ describe('every kNN callsite resolves the floor before it checks a client out', 
   ];
 
   const PROBE = 'await efSearchFor(';
+  const SET_LOCAL = 'SET LOCAL hnsw.ef_search';
 
   /**
-   * Character offset of every REAL probe in a source file.
+   * Character offset of every occurrence of `needle` that is REAL code.
    *
-   * A comment is not a probe: this module's own JSDoc names the callsite form
-   * verbatim and a callsite's comment may quote it too, so a bare `indexOf`
-   * would discover the resolver as one of its own callers.
+   * A comment is not code: this module's own JSDoc names both the callsite
+   * form and the `SET LOCAL` verbatim, and a callsite's comment may quote
+   * either (`duplicate-detector.ts` explains where it deliberately issues no
+   * `SET LOCAL` at all), so a bare `indexOf` would discover the resolver as
+   * one of its own callers and a file's prose as a kNN probe.
    */
-  function probeOffsets(source: string): number[] {
+  function codeOffsets(source: string, needle: string): number[] {
     const found: number[] = [];
     for (let cursor = 0; ; ) {
-      const at = source.indexOf(PROBE, cursor);
+      const at = source.indexOf(needle, cursor);
       if (at < 0) return found;
-      cursor = at + PROBE.length;
+      cursor = at + needle.length;
       const prefix = source.slice(source.lastIndexOf('\n', at) + 1, at).trimStart();
       if (prefix.startsWith('*') || prefix.startsWith('//') || prefix.startsWith('/*')) continue;
       found.push(at);
     }
   }
+
+  const probeOffsets = (source: string) => codeOffsets(source, PROBE);
 
   function sourceFilesUnder(dir: string): string[] {
     return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -167,6 +185,31 @@ describe('every kNN callsite resolves the floor before it checks a client out', 
       discovered,
       'register a new kNN probe in CALLSITES above — and, where this text guard is the only ' +
         'coverage its pool has, give it a runtime ordering assertion beside its own tests',
+    ).toEqual(listed);
+  });
+
+  it('lists every file under backend/src that sets `hnsw.ef_search` at all', () => {
+    // The walk above discovers a file by its RESOLVER CALL, so it can only
+    // see a probe that already goes through the knob. The regression #1285
+    // exists to prevent takes the other shape: a new kNN writing
+    // `SET LOCAL hnsw.ef_search = 200` — or re-reading `process.env` — with
+    // no `efSearchFor` anywhere in it. That file resolves nothing, so it is
+    // invisible to every assertion in this describe, and the ADR-021 ruling
+    // that the depth is `admin_settings.rag_ef_search` quietly stops being
+    // true of one query. Keying a second walk on the STATEMENT closes it: the
+    // two sets must name exactly the same files.
+    const src = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/+$/, '');
+    const setters = sourceFilesUnder(src)
+      .filter((file) => codeOffsets(readFileSync(file, 'utf8'), SET_LOCAL).length > 0)
+      .sort();
+    const listed = CALLSITES.map(([, relative]) =>
+      fileURLToPath(new URL(relative, import.meta.url)),
+    ).sort();
+
+    expect(
+      setters,
+      'a kNN that sets `hnsw.ef_search` must take the depth from `efSearchFor` — never a literal ' +
+        'and never `process.env.RAG_EF_SEARCH` — and must then be registered in CALLSITES above',
     ).toEqual(listed);
   });
 
