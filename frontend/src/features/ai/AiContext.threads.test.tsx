@@ -302,8 +302,10 @@ describe('AiContext per-page threads (#1126)', () => {
 
     // Since #1361 a bare visit files a thread too (needed to stamp an identity
     // before a person can type), so revisiting an already-evicted key consumes
-    // a slot and evicts one more victim of its own — visiting page-0 here
-    // evicts page-1, which is why only the evicted/MRU ends are checked below.
+    // a slot and evicts one more victim of its own — visiting page-0 evicts
+    // page-1, so page-1 is checked first, before that visit happens.
+    goTo(urls[1]!);
+    expect(threadContents()).toEqual(['question about page-1']);
     goTo(urls[0]!);
     expect(threadContents()).toEqual([]);
     goTo(urls[12]!);
