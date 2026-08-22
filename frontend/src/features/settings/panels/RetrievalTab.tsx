@@ -1639,16 +1639,29 @@ function CalibrationNotice({
             // on every read, so the panel would keep naming the wrong cause
             // and send the operator to the assignment grid instead of the
             // provider row.
+            //
+            // Review r3 — the wayfinding LINK is the one thing that does not
+            // belong in here: this span is the `Keep` button's
+            // `aria-describedby` region, which flattens to one string, so a
+            // link inside it announces as prose the reader cannot follow. It
+            // moved to its own line below, the same relocation `NumberRow`'s
+            // `aside` performs for the three rows that carried one.
             <>
               The live {basisNoun} model could not be resolved, so the threshold is not gating
-              against anything it was tuned on — check its provider in{' '}
-              <Link className="underline underline-offset-2" to={LLM_PROVIDERS_PATH}>
-                {SETTINGS_PANELS.models.label} → LLM providers
-              </Link>
-              , then re-tune it below or keep it and record it once the model resolves.
+              against anything it was tuned on — re-tune it below, or keep it and record it once
+              the model resolves.
             </>
           )}
         </span>
+        {calibration.liveModel === null && !calibration.liveResolved && (
+          <span>
+            Check its provider in{' '}
+            <Link className="underline underline-offset-2" to={LLM_PROVIDERS_PATH}>
+              {SETTINGS_PANELS.models.label} → LLM providers
+            </Link>
+            .
+          </span>
+        )}
         {/*
           WCAG 2.5.3: the accessible name is the visible label, so no
           `aria-label` overrides it. Two strips can both read "Keep 0.2"; what
@@ -1722,8 +1735,11 @@ function NumberRow({
    * announcement. That is the exact reason the `RAG_EF_SEARCH` note sits
    * outside its row (see its comment in the Candidate pools section); the
    * blanket wiring above would otherwise have re-created it inside three
-   * rows. `RetrievalTab.test.tsx` walks every described region and fails if
-   * one contains an interactive element.
+   * rows. `RetrievalTab.test.tsx` walks the region behind EVERY
+   * `aria-describedby` on the panel — not only a field's — and fails if one
+   * contains an interactive element; review r3 widened it from inputs and
+   * selects after the calibration strip's `Keep` button turned out to be
+   * described by a sentence carrying a wayfinding link.
    */
   aside?: React.ReactNode;
 }) {

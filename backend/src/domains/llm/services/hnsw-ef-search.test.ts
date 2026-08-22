@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 /**
  * #1285 — the one `hnsw.ef_search` resolver every pgvector kNN probe shares.
@@ -98,6 +99,15 @@ describe('efSearchFor — the callsite form', () => {
  * (`rag-service.test.ts`), the callsite #1260 edits; this one is what reaches
  * `image-leg-search.ts`, whose only coverage is a real-Postgres integration
  * test with no pool to instrument.
+ *
+ * Review r3 — the first cut of this guard checked each listed file's FIRST
+ * probe only, and read its file list off a hand-maintained array, so both
+ * shapes a new probe can take were silent: a SECOND probe added below a
+ * correct one in a listed file, and a probe in a file nobody remembered to
+ * list. Both are closed below — every probe in a file is checked, and the
+ * list is cross-checked against a walk of `backend/src`, so a probe in a new
+ * file fails this suite until it is registered here (which is also where its
+ * author is told it needs a runtime companion).
  */
 describe('every kNN callsite resolves the floor before it checks a client out', () => {
   const CALLSITES: ReadonlyArray<readonly [string, string]> = [
@@ -107,22 +117,84 @@ describe('every kNN callsite resolves the floor before it checks a client out', 
     ['duplicate-detector.ts', '../../knowledge/services/duplicate-detector.ts'],
   ];
 
+  const PROBE = 'await efSearchFor(';
+
+  /**
+   * Character offset of every REAL probe in a source file.
+   *
+   * A comment is not a probe: this module's own JSDoc names the callsite form
+   * verbatim and a callsite's comment may quote it too, so a bare `indexOf`
+   * would discover the resolver as one of its own callers.
+   */
+  function probeOffsets(source: string): number[] {
+    const found: number[] = [];
+    for (let cursor = 0; ; ) {
+      const at = source.indexOf(PROBE, cursor);
+      if (at < 0) return found;
+      cursor = at + PROBE.length;
+      const prefix = source.slice(source.lastIndexOf('\n', at) + 1, at).trimStart();
+      if (prefix.startsWith('*') || prefix.startsWith('//') || prefix.startsWith('/*')) continue;
+      found.push(at);
+    }
+  }
+
+  function sourceFilesUnder(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : sourceFilesUnder(full);
+      return entry.isFile() && entry.name.endsWith('.ts') && !entry.name.includes('.test.')
+        ? [full]
+        : [];
+    });
+  }
+
+  it('lists every file under backend/src that resolves the floor', () => {
+    // The array above is a hand-written claim about the tree, and on its own
+    // it is only ever as complete as the last person to add a probe
+    // remembered to make it — a probe in a NEW file would be covered by
+    // nothing at all, with no test turning red to say so.
+    // A directory URL ends in a slash; `${dir}/${name}` would then double it
+    // and no path in the walk would ever equal a resolved CALLSITES entry.
+    const src = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/+$/, '');
+    const discovered = sourceFilesUnder(src)
+      .filter((file) => probeOffsets(readFileSync(file, 'utf8')).length > 0)
+      .sort();
+    const listed = CALLSITES.map(([, relative]) =>
+      fileURLToPath(new URL(relative, import.meta.url)),
+    ).sort();
+
+    expect(
+      discovered,
+      'register a new kNN probe in CALLSITES above — and, where this text guard is the only ' +
+        'coverage its pool has, give it a runtime ordering assertion beside its own tests',
+    ).toEqual(listed);
+  });
+
   it.each(CALLSITES)('%s', (_label, relative) => {
     const source = readFileSync(new URL(relative, import.meta.url), 'utf8');
 
-    const resolved = source.indexOf('await efSearchFor(');
-    expect(resolved, `${relative} must call efSearchFor`).toBeGreaterThanOrEqual(0);
-    const setLocal = source.indexOf('SET LOCAL hnsw.ef_search', resolved);
-    expect(setLocal, `${relative} must interpolate it into SET LOCAL`).toBeGreaterThan(resolved);
+    const probes = probeOffsets(source);
+    expect(probes.length, `${relative} must call efSearchFor`).toBeGreaterThan(0);
 
-    // The checkout is what must sit BETWEEN them. Move the await below
-    // `connect()` / `BEGIN` and this window no longer contains one.
-    const between = source.slice(resolved, setLocal);
-    expect(
-      between,
-      `${relative}: resolve the ef_search floor before .connect(), never between BEGIN and the ` +
-        'SET LOCAL — awaiting an admin_settings read while holding a client is a nested acquire ' +
-        'on a pool that may be saturated',
-    ).toMatch(/\.connect\(\)/);
+    // EVERY probe, not only the first: a file that gains a second one below a
+    // correct one is exactly the regression this guard exists to catch, and
+    // anchoring on a single `indexOf` inspected probe #1's window forever.
+    probes.forEach((resolved, index) => {
+      const setLocal = source.indexOf('SET LOCAL hnsw.ef_search', resolved);
+      expect(
+        setLocal,
+        `${relative}: probe #${index + 1} must interpolate the floor into SET LOCAL`,
+      ).toBeGreaterThan(resolved);
+
+      // The checkout is what must sit BETWEEN them. Move the await below
+      // `connect()` / `BEGIN` and this window no longer contains one.
+      const between = source.slice(resolved, setLocal);
+      expect(
+        between,
+        `${relative} (probe #${index + 1}): resolve the ef_search floor before .connect(), never ` +
+          'between BEGIN and the SET LOCAL — awaiting an admin_settings read while holding a ' +
+          'client is a nested acquire on a pool that may be saturated',
+      ).toMatch(/\.connect\(\)/);
+    });
   });
 });

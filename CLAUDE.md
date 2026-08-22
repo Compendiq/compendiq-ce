@@ -165,14 +165,25 @@ panel. Review r2 added the guards those three rules were missing: the ordering
 one is pinned at all four probes by a source assertion in
 `hnsw-ef-search.test.ts` plus an `invocationCallOrder` assertion at the vector
 leg, and the `Keep` one by a test that edits the ef-search field itself before
-pressing it. The startup notice's out-of-range branch hedges on the row too
+pressing it. Review r3 closed the two holes in the first of those: it checked
+each file's FIRST probe only, and read its file list off a hand-maintained
+array — so a second probe added below a correct one passed green, and a probe
+in a NEW file was covered by nothing at all. It now checks EVERY probe in a
+file and cross-checks that array against a walk of `backend/src`, so a fifth
+probe fails the suite until it is registered there (which is where its author
+is told a pool this text guard cannot instrument also wants a runtime
+ordering assertion). The startup notice's out-of-range branch hedges on the row too
 ("while no `rag_ef_search` row exists…"): the function reads `process.env` and
 cannot know the resolved floor. And the panel-wide `aria-describedby` wiring
 those knobs gained means **a `NumberRow`'s `children` are prose only** — a
 description flattens to one string, so an operable control or a wayfinding
 link goes in the row's `aside` prop, beside the region rather than inside it
-(`RetrievalTab.test.tsx` walks every described region and fails on a `button`
-or `a[href]` in one). **#1285's
+(`RetrievalTab.test.tsx` walks the region behind every `aria-describedby` on
+the panel — review r3 widened it from `input`/`select` describers, which
+certified the layer #1285 had just fixed and stayed silent on the one live
+offender: the #1114 calibration strip's `Keep` **button**, described by a
+sentence that carried the LLM-providers link. That link now sits on its own
+line inside the strip). **#1285's
 other value went the other way and must stay there**: `TRGM_SIMILARITY_THRESHOLD`
 in `routes/knowledge/search.ts` is FIXED at 0.3 because the fuzzy-title query is
 sargable only through pg_trgm's `%` operator, which compares against the

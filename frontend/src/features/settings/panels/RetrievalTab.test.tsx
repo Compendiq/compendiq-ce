@@ -171,6 +171,37 @@ function type(key: string, value: string) {
   fireEvent.blur(el);
 }
 
+/**
+ * Every element on the panel that carries an `aria-describedby`.
+ *
+ * Review r3 — deliberately NOT `input[aria-describedby], select[...]`. The
+ * rule is about the region, not about what points at it, and the narrow
+ * selector certified the layer #1285 had just fixed while staying silent on
+ * the one live offender: the calibration strip's `Keep` BUTTON.
+ */
+const describedRegions = () =>
+  Array.from(document.querySelectorAll<HTMLElement>('[aria-describedby]'));
+
+/** `"<describer> -> #<region>: <the controls it wrongly contains>"`, one per violation. */
+function describedRegionOffenders(): string[] {
+  const offenders: string[] = [];
+  for (const el of describedRegions()) {
+    for (const id of (el.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)) {
+      const region = document.getElementById(id);
+      if (!region) continue;
+      const interactive = region.querySelectorAll('button, a[href], input, select, textarea');
+      if (interactive.length === 0) continue;
+      offenders.push(
+        `${el.getAttribute('data-testid') ?? el.id} -> #${id}: ` +
+          Array.from(interactive)
+            .map((n) => `<${n.tagName.toLowerCase()}>${(n.textContent ?? '').trim()}`)
+            .join(', '),
+      );
+    }
+  }
+  return offenders;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -2182,29 +2213,9 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     await ready();
     await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
 
-    const described = Array.from(
-      document.querySelectorAll<HTMLElement>('input[aria-describedby], select[aria-describedby]'),
-    );
-    expect(described.length).toBeGreaterThan(0);
-
-    const offenders: string[] = [];
-    for (const el of described) {
-      for (const id of (el.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)) {
-        const region = document.getElementById(id);
-        if (!region) continue;
-        const interactive = region.querySelectorAll('button, a[href], input, select, textarea');
-        if (interactive.length > 0) {
-          offenders.push(
-            `${el.getAttribute('data-testid') ?? el.id} -> #${id}: ` +
-              Array.from(interactive)
-                .map((n) => `<${n.tagName.toLowerCase()}>${(n.textContent ?? '').trim()}`)
-                .join(', '),
-          );
-        }
-      }
-    }
+    expect(describedRegions().length).toBeGreaterThan(0);
     expect(
-      offenders,
+      describedRegionOffenders(),
       'a description is read as one flat string \u2014 put operable controls and wayfinding links in `aside`, beside it',
     ).toEqual([]);
 
@@ -2212,6 +2223,49 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     // rather than a deletion.
     expect(screen.getByTestId('retrieval-rerank-stage-status')).toBeInTheDocument();
     expect(screen.getByTestId('retrieval-prior-use-measured')).toBeInTheDocument();
+  });
+
+  it('holds the rule for a described BUTTON too, not only a described field', async () => {
+    // Review r3 \u2014 the sweep above read `input[aria-describedby],
+    // select[aria-describedby]`, so it certified the layer that was never at
+    // risk and stayed silent about the one live counterexample on the panel:
+    // the #1114 calibration strip's `Keep` button is described by the strip's
+    // sentence, and that sentence's unresolved branch carried a `<Link>` to
+    // LLM providers \u2014 the exact "a link announces as wayfinding the reader
+    // cannot act on from the announcement" case. The selector now reads every
+    // `[aria-describedby]`, and this renders the branch that produced it.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: {
+          similarity: {
+            providerId: '11111111-2222-3333-4444-555555555555',
+            model: 'bge-m3',
+            setAt: '2026-08-01T10:00:00.000Z',
+            liveProviderId: null,
+            liveModel: null,
+            liveResolved: false,
+            stale: true,
+          },
+          rerank: null,
+        },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const keep = await screen.findByTestId('retrieval-ragConfidenceThreshold-calibration-keep');
+    expect(keep.getAttribute('aria-describedby')).toBeTruthy();
+    expect(
+      describedRegionOffenders(),
+      'a description is read as one flat string \u2014 put operable controls and wayfinding links in `aside`, beside it',
+    ).toEqual([]);
+
+    // Relocation, not deletion: the strip still points at the row that can
+    // actually be wrong, on its own line beside the sentence.
+    const strip = screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-stale');
+    expect(within(strip).getByRole('link', { name: /LLM providers/i })).toBeInTheDocument();
   });
 
   it('pairs min with a step the field\u2019s own values satisfy', async () => {
@@ -2248,6 +2302,15 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     expect(note.textContent).toMatch(/RAG_EF_SEARCH/);
     expect(note.className).toContain('text-muted-foreground');
     expect(note.className).not.toMatch(/warning|amber|destructive/);
+
+    // Review r3 — the note's own sentence says "the setting below", and its
+    // `Keep` button writes THAT field's saved value, so drifting away from
+    // the row makes the copy false and the button unattributable. This is the
+    // #1114 strip's adjacency guard, which exists because ORDER alone passes
+    // for a notice parked four sections away.
+    const row = input('ragEfSearch').closest('div.space-y-1\\.5');
+    expect(row).not.toBeNull();
+    expect(row!.previousElementSibling).toBe(note);
   });
 
   it('renders that note ONLY while the variable is what produced the value', async () => {
