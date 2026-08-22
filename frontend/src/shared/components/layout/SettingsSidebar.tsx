@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import { m, useReducedMotion } from 'framer-motion';
 import { PanelLeftClose, PanelLeft } from 'lucide-react';
 import { useUiStore } from '../../../stores/ui-store';
@@ -39,13 +39,14 @@ export function SettingsSidebar({
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
   const reduceEffects = useReducedMotion();
+  const isSettings = location.pathname.startsWith('/settings');
 
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === 'admin';
   const { isEnterprise, hasFeature } = useEnterprise();
   const ctx: AccessContext = { isAdmin, isEnterprise, hasFeature };
 
-  if (treeSidebarCollapsed) {
+  if (treeSidebarCollapsed && !isSettings) {
     return (
       <m.div
         key="settings-sidebar-collapsed"
@@ -82,28 +83,32 @@ export function SettingsSidebar({
       {/* Same 48px rule height as SidebarTreeView's — the two sidebars share
           MainNavStrip precisely so this row cannot drift between routes. */}
       {embedMainNav ? (
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
-        <MainNavStripExpanded onNavigate={onNavigate} />
-        <button
-          onClick={toggleTreeSidebar}
-          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={14} />
-        </button>
-      </div>
+        <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+          <MainNavStripExpanded onNavigate={onNavigate} />
+          {!isSettings && (
+            <button
+              onClick={toggleTreeSidebar}
+              className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+              aria-label="Collapse sidebar"
+              title="Collapse sidebar (,)"
+            >
+              <PanelLeftClose size={14} />
+            </button>
+          )}
+        </div>
       ) : (
-      <div className="flex h-8 shrink-0 items-center justify-end px-2 pt-1.5">
-        <button
-          onClick={toggleTreeSidebar}
-          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={14} />
-        </button>
-      </div>
+        <div className="flex h-8 shrink-0 items-center justify-end px-2 pt-1.5">
+          {!isSettings && (
+            <button
+              onClick={toggleTreeSidebar}
+              className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+              aria-label="Collapse sidebar"
+              title="Collapse sidebar (,)"
+            >
+              <PanelLeftClose size={14} />
+            </button>
+          )}
+        </div>
       )}
 
       {/* No standalone "Settings" header here — the page H1 inside
