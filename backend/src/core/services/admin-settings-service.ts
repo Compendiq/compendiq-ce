@@ -816,6 +816,14 @@ export function invalidateRagEfSearchCache(): void {
  * knob replaced (it validated 1..10000), and is not under pgvector's own
  * [1, 1000] bound: such an instance drops from a 1000 floor to 100 on
  * upgrade. Saying "it is used" there would name the one case where it is not.
+ *
+ * **Both branches hedge on the row** (review r2). This function reads
+ * `process.env` and nothing else — it cannot know whether a `rag_ef_search`
+ * row exists, and a present row wins over the variable either way. The
+ * out-of-range branch used to state the fallback flatly ("the floor falls
+ * back to 100"), which is a claim about the *resolved* floor and is simply
+ * false on any instance that has saved the panel; it now scopes the sentence
+ * the same way the in-range branch does.
  */
 export function warnIfRagEfSearchEnvSet(): void {
   const present = process.env.RAG_EF_SEARCH;
@@ -824,7 +832,7 @@ export function warnIfRagEfSearchEnvSet(): void {
   if (parsed === null) {
     logger.warn(
       { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search', value: present },
-      `RAG_EF_SEARCH=${present} is not a whole number inside pgvector's [${RAG_EF_SEARCH_MIN}, ${RAG_EF_SEARCH_MAX}] and is ignored — the floor falls back to ${RAG_EF_SEARCH_DEFAULT}; set it on Settings → AI Models → Retrieval`,
+      `RAG_EF_SEARCH=${present} is not a whole number inside pgvector's [${RAG_EF_SEARCH_MIN}, ${RAG_EF_SEARCH_MAX}] and is ignored — while no \`rag_ef_search\` row exists the floor falls back to ${RAG_EF_SEARCH_DEFAULT}; set it on Settings → AI Models → Retrieval`,
     );
     return;
   }

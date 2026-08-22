@@ -976,27 +976,36 @@ export function RetrievalTab() {
           value={values.ragRerankCandidates}
           onChange={(v) => set('ragRerankCandidates', v)}
           defaultValue={DEFAULTS.ragRerankCandidates}
+          // Wayfinding, not description (review r2): its disabled branch
+          // carries a Link, and a link folded into `aria-describedby` flattens
+          // to prose the reader cannot act on from the announcement.
+          aside={
+            <p data-testid="retrieval-rerank-stage-status">
+              {rerankActive ? (
+                <>
+                  Rerank stage:{' '}
+                  <span className="text-foreground">{rerankRow.resolved.providerName}</span>
+                  {rerankRow.resolved.model ? ` / ${rerankRow.resolved.model}` : ''}.
+                </>
+              ) : (
+                <>
+                  Rerank stage: <span className="text-foreground">Disabled (no reranking)</span> —
+                  this pool applies only once a rerank provider is assigned in{' '}
+                  <Link
+                    className="underline underline-offset-2 hover:text-foreground"
+                    to={LLM_PROVIDERS_PATH}
+                  >
+                    {SETTINGS_PANELS.models.label} → LLM providers
+                  </Link>
+                  . Setting the pool first is fine; it just has nothing to size yet.
+                </>
+              )}
+            </p>
+          }
         >
           <p>
             Fused candidates the cross-encoder re-scores. Every candidate is a document shipped to
             the rerank provider, so this bounds the stage&apos;s cost as well as its reach.
-          </p>
-          <p data-testid="retrieval-rerank-stage-status">
-            {rerankActive ? (
-              <>
-                Rerank stage: <span className="text-foreground">{rerankRow.resolved.providerName}</span>
-                {rerankRow.resolved.model ? ` / ${rerankRow.resolved.model}` : ''}.
-              </>
-            ) : (
-              <>
-                Rerank stage: <span className="text-foreground">Disabled (no reranking)</span> — this
-                pool applies only once a rerank provider is assigned in{' '}
-                <Link className="underline underline-offset-2 hover:text-foreground" to={LLM_PROVIDERS_PATH}>
-                  {SETTINGS_PANELS.models.label} → LLM providers
-                </Link>
-                . Setting the pool first is fine; it just has nothing to size yet.
-              </>
-            )}
           </p>
         </NumberRow>
       </Section>
@@ -1168,6 +1177,22 @@ export function RetrievalTab() {
           value={values.ragAnswerMaxImages}
           onChange={(v) => set('ragAnswerMaxImages', v)}
           defaultValue={DEFAULTS.ragAnswerMaxImages}
+          // The pointer is wayfinding, so it leaves the described region
+          // (review r2) — the two sentences above it still describe the knob,
+          // and the reader who needs the verdict reaches the link by reading
+          // on rather than through a flattened description string.
+          aside={
+            <p>
+              Whether yours can is shown on the chat row under{' '}
+              <Link
+                className="underline underline-offset-2 hover:text-foreground"
+                to={LLM_PROVIDERS_PATH}
+              >
+                {SETTINGS_PANELS.models.label} → LLM providers
+              </Link>
+              .
+            </p>
+          }
         >
           {/*
             The second sentence is the only place this fact is ever stated.
@@ -1185,12 +1210,7 @@ export function RetrievalTab() {
           */}
           <p>
             Up to this many retrieved images are attached to the question when the chat model can
-            see images; 0 turns this off. Text-only chat models never receive images. Whether
-            yours can is shown on the chat row under{' '}
-            <Link className="underline underline-offset-2 hover:text-foreground" to={LLM_PROVIDERS_PATH}>
-              {SETTINGS_PANELS.models.label} → LLM providers
-            </Link>
-            .
+            see images; 0 turns this off. Text-only chat models never receive images.
           </p>
         </NumberRow>
 
@@ -1272,6 +1292,34 @@ export function RetrievalTab() {
               value={values.ragRankingPriorWeight}
               onChange={(v) => set('ragRankingPriorWeight', v)}
               defaultValue={DEFAULTS.ragRankingPriorWeight}
+              // Outside the description (review r2): `Use measured value` is
+              // an operable control, and `aria-describedby` flattens its
+              // region to text — folded in, it announced as part of a
+              // two-paragraph rationale with nothing saying it can be
+              // pressed. The note below it moves with it so the visible order
+              // is unchanged.
+              aside={
+                <>
+                  {values.ragRankingPriorWeight !== RANKING_PRIOR_TUNED && (
+                    <button
+                      type="button"
+                      onClick={() => set('ragRankingPriorWeight', RANKING_PRIOR_TUNED)}
+                      className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                      data-testid="retrieval-prior-use-measured"
+                    >
+                      Use measured value ({RANKING_PRIOR_TUNED})
+                    </button>
+                  )}
+                  {rerankActive && values.ragRankingPriorWeight > 0 && (
+                    <p data-testid="retrieval-prior-discarded-note">
+                      A rerank provider is assigned on this deployment, and the rerank pool is
+                      wider than the fused candidate set — so the cross-encoder re-scores every
+                      candidate and discards this ordering wholesale. The prior will have no
+                      effect here.
+                    </p>
+                  )}
+                </>
+              }
             >
               {/*
                 Never a bare RRF-scale number: 0.003 means nothing without the
@@ -1285,23 +1333,6 @@ export function RetrievalTab() {
                 0.05 the prior exceeds that tier gap entirely and starts outranking retrieval
                 itself. 0 disables the stage and skips its signal query.
               </p>
-              {values.ragRankingPriorWeight !== RANKING_PRIOR_TUNED && (
-                <button
-                  type="button"
-                  onClick={() => set('ragRankingPriorWeight', RANKING_PRIOR_TUNED)}
-                  className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-                  data-testid="retrieval-prior-use-measured"
-                >
-                  Use measured value ({RANKING_PRIOR_TUNED})
-                </button>
-              )}
-              {rerankActive && values.ragRankingPriorWeight > 0 && (
-                <p data-testid="retrieval-prior-discarded-note">
-                  A rerank provider is assigned on this deployment, and the rerank pool is wider
-                  than the fused candidate set — so the cross-encoder re-scores every candidate and
-                  discards this ordering wholesale. The prior will have no effect here.
-                </p>
-              )}
             </NumberRow>
           </div>
         </div>
@@ -1668,13 +1699,33 @@ function NumberRow({
   defaultValue,
   disabled,
   children,
+  aside,
 }: {
   field: NumericField;
   value: number;
   onChange: (value: number) => void;
   defaultValue: number;
   disabled?: boolean;
+  /**
+   * The row's DESCRIPTION — prose only. It becomes the input's
+   * `aria-describedby` region, so nothing operable may go in here.
+   */
   children?: React.ReactNode;
+  /**
+   * Everything under the row that is NOT description: an operable control, or
+   * a wayfinding sentence pointing at another panel. Rendered in the same
+   * muted block, immediately below the description and OUTSIDE it.
+   *
+   * Review r2 — `aria-describedby` flattens its region to a text string, so a
+   * button folded into it announces as prose with no hint it can be pressed,
+   * and a link announces as wayfinding the reader cannot act on from the
+   * announcement. That is the exact reason the `RAG_EF_SEARCH` note sits
+   * outside its row (see its comment in the Candidate pools section); the
+   * blanket wiring above would otherwise have re-created it inside three
+   * rows. `RetrievalTab.test.tsx` walks every described region and fails if
+   * one contains an interactive element.
+   */
+  aside?: React.ReactNode;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   // Any committed change — Save's re-hydration, "reset to default", "use
@@ -1728,9 +1779,15 @@ function NumberRow({
           {field.unit && <span className="w-24 text-xs text-muted-foreground">{field.unit}</span>}
         </div>
       </div>
-      <div id={`${field.key}-help`} className="space-y-1.5 text-xs text-muted-foreground">
-        {children}
-      </div>
+      {(children || aside) && (
+        <div className="space-y-1.5 text-xs text-muted-foreground">
+          {/* Only this half is the input's description — see `aside`'s JSDoc. */}
+          <div id={`${field.key}-help`} className="space-y-1.5">
+            {children}
+          </div>
+          {aside}
+        </div>
+      )}
       {value !== defaultValue && (
         <button
           type="button"

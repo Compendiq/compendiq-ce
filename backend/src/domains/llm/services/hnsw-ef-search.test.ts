@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 /**
  * #1285 — the one `hnsw.ef_search` resolver every pgvector kNN probe shares.
@@ -77,5 +78,51 @@ describe('efSearchFor — the callsite form', () => {
     const ef = await efSearchFor(11);
     expect(Number.isInteger(ef)).toBe(true);
     expect(String(ef)).toMatch(/^\d+$/);
+  });
+});
+
+/**
+ * Review r2 — the "resolve the floor BEFORE checking a client out" rule
+ * (review r1's own fix, stated in this module's JSDoc, in all four callsite
+ * comments, in CLAUDE.md and in `docs/architecture/09-flow-rag-chat.md`) had
+ * nothing enforcing it: moving `await efSearchFor(…)` back inside the open
+ * transaction left every suite in the repo green, and #1260 adds a fifth
+ * probe coded against this head.
+ *
+ * The regression it admits is invisible outside production saturation — a
+ * probe holding a client asks its own pool for a second one, waits out
+ * `connectionTimeoutMillis`, soft-fails to the default floor and caches THAT
+ * for a TTL — so no result assertion can see it. What CAN be seen is where
+ * the checkout sits: between the resolve and the `SET LOCAL` that consumes
+ * it. A runtime companion pins the same rule at the vector leg
+ * (`rag-service.test.ts`), the callsite #1260 edits; this one is what reaches
+ * `image-leg-search.ts`, whose only coverage is a real-Postgres integration
+ * test with no pool to instrument.
+ */
+describe('every kNN callsite resolves the floor before it checks a client out', () => {
+  const CALLSITES: ReadonlyArray<readonly [string, string]> = [
+    ['rag-service.ts (vector leg)', './rag-service.ts'],
+    ['image-leg-search.ts (image leg)', './image-leg-search.ts'],
+    ['embedding-service.ts (page relationships)', './embedding-service.ts'],
+    ['duplicate-detector.ts', '../../knowledge/services/duplicate-detector.ts'],
+  ];
+
+  it.each(CALLSITES)('%s', (_label, relative) => {
+    const source = readFileSync(new URL(relative, import.meta.url), 'utf8');
+
+    const resolved = source.indexOf('await efSearchFor(');
+    expect(resolved, `${relative} must call efSearchFor`).toBeGreaterThanOrEqual(0);
+    const setLocal = source.indexOf('SET LOCAL hnsw.ef_search', resolved);
+    expect(setLocal, `${relative} must interpolate it into SET LOCAL`).toBeGreaterThan(resolved);
+
+    // The checkout is what must sit BETWEEN them. Move the await below
+    // `connect()` / `BEGIN` and this window no longer contains one.
+    const between = source.slice(resolved, setLocal);
+    expect(
+      between,
+      `${relative}: resolve the ef_search floor before .connect(), never between BEGIN and the ` +
+        'SET LOCAL — awaiting an admin_settings read while holding a client is a nested acquire ' +
+        'on a pool that may be saturated',
+    ).toMatch(/\.connect\(\)/);
   });
 });

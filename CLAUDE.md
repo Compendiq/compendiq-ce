@@ -159,7 +159,20 @@ renders only where `ragEfSearchFromEnv` says the variable really produced the
 number, carrying its own one-key `Keep <value>` write — Save is a pure value
 diff, so on exactly that instance the number on screen already matches the
 server's and the row the note asks for could not be written from the panel
-(the #1114 `Keep`/`Record` precedent, same reason, same discipline). **#1285's
+(the #1114 `Keep`/`Record` precedent, same reason, same discipline) — reading
+`saved` and never the draft in the field, like every other `Keep` on this
+panel. Review r2 added the guards those three rules were missing: the ordering
+one is pinned at all four probes by a source assertion in
+`hnsw-ef-search.test.ts` plus an `invocationCallOrder` assertion at the vector
+leg, and the `Keep` one by a test that edits the ef-search field itself before
+pressing it. The startup notice's out-of-range branch hedges on the row too
+("while no `rag_ef_search` row exists…"): the function reads `process.env` and
+cannot know the resolved floor. And the panel-wide `aria-describedby` wiring
+those knobs gained means **a `NumberRow`'s `children` are prose only** — a
+description flattens to one string, so an operable control or a wayfinding
+link goes in the row's `aside` prop, beside the region rather than inside it
+(`RetrievalTab.test.tsx` walks every described region and fails on a `button`
+or `a[href]` in one). **#1285's
 other value went the other way and must stay there**: `TRGM_SIMILARITY_THRESHOLD`
 in `routes/knowledge/search.ts` is FIXED at 0.3 because the fuzzy-title query is
 sargable only through pg_trgm's `%` operator, which compares against the

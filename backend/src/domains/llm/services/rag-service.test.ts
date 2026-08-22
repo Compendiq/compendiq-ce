@@ -914,6 +914,36 @@ describe('RAG Service', () => {
         expect(efSearchStatement()).toContain('= 100');
       });
 
+      it('resolves the floor BEFORE it checks a vector-pool client out (#1285 r1)', async () => {
+        // Review r2 — r1's fix was unguarded: moving `await efSearchFor(…)`
+        // back below `getVectorPool().connect()` left this whole suite green,
+        // because the position-indexed mocks only ever look at statements
+        // INSIDE the transaction and cannot see an admin_settings SELECT
+        // issued on the main pool while a client is held.
+        //
+        // What that regression costs is invisible in a result: on a cache
+        // miss the read is a nested acquire, so under saturation the probe
+        // waits out `connectionTimeoutMillis`, soft-fails to the default
+        // floor, caches THAT for a TTL and holds its own scarce vector-pool
+        // client for the whole stall. Only the ORDER shows it, so assert the
+        // order. (#1260 adds a fifth probe against this callsite.)
+        routeQueries([], [{ setting_value: '400' }]);
+        await hybridSearch('user-1', 'test query');
+
+        const efReadIndex = mocks.mockQuery.mock.calls.findIndex(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('rag_ef_search'),
+        );
+        expect(efReadIndex, 'the floor read must have happened').toBeGreaterThanOrEqual(0);
+        expect(mocks.mockPool.connect.mock.invocationCallOrder.length).toBeGreaterThan(0);
+        expect(
+          mocks.mockQuery.mock.invocationCallOrder[efReadIndex],
+          'rag_ef_search must be read before the vector pool hands out a client',
+        ).toBeLessThan(mocks.mockPool.connect.mock.invocationCallOrder[0]);
+        // …and the value still reaches the transaction, so this is an
+        // ordering guard on a working probe rather than on a skipped one.
+        expect(efSearchStatement()).toContain('= 400');
+      });
+
       it('builds the keyword SQL with the real FTS language, not a wiped mock', async () => {
         // Guards the vi.resetAllMocks() footgun: with a queued
         // `.mockResolvedValue('simple')` the reset left getFtsLanguage

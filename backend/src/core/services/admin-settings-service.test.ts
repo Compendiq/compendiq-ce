@@ -746,6 +746,13 @@ describe('warnIfRagEfSearchEnvSet (#1285)', () => {
     expect(message).toContain('is ignored');
     expect(message).toContain('100');
     expect(message).not.toContain('it is used only while');
+    // Review r2 — and the fallback has to be scoped to the no-row case, the
+    // way the in-range branch already scopes "it is used". This function
+    // reads `process.env` and never the row, so "the floor falls back to 100"
+    // stated flatly is false on every instance that HAS saved the panel: with
+    // `RAG_EF_SEARCH=2000` and a saved row of 300 every probe runs at 300
+    // while boot claims 100.
+    expect(message).toContain('while no `rag_ef_search` row exists');
     // …and it is still resolved that way, which is what the notice claims.
     invalidateRagEfSearchCache();
     mockQuery.mockReset();

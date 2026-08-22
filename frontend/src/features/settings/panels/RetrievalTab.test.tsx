@@ -2069,7 +2069,17 @@ describe('RetrievalTab — images shown to the model (#1115 P4)', () => {
     expect(screen.queryByTestId('retrieval-image-unassigned')).not.toBeInTheDocument();
 
     const helper = screen.getByText(/Text-only chat models never receive images/i);
-    const link = within(helper).getByRole('link', { name: /LLM providers/i });
+    // Review r2 of #1285 — the pointer is now the paragraph immediately AFTER
+    // the description rather than its last sentence: this row's help text is
+    // the input's `aria-describedby` region, which flattens to a text string,
+    // so a link inside it announces as wayfinding the reader cannot follow
+    // from the announcement. It still has to sit with the sentence it
+    // answers, which is what the sibling assertion below pins.
+    const help = helper.closest('[id$="-help"]');
+    expect(help, 'the sentence stays the input’s own description').not.toBeNull();
+    const pointer = help!.nextElementSibling as HTMLElement | null;
+    expect(pointer, 'the destination sits directly under it').not.toBeNull();
+    const link = within(pointer!).getByRole('link', { name: /LLM providers/i });
     expect(link.getAttribute('href')).toContain('?sub=llm');
   });
 });
@@ -2155,6 +2165,55 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     expect(help!.textContent).not.toMatch(/footprint/i);
   });
 
+  it('keeps every described region prose \u2014 no control folded into a field\u2019s description', async () => {
+    // Review r2 \u2014 the wiring above is on EVERY NumberRow, and three rows
+    // carried interactive children: the rerank-stage link, the vision
+    // wayfinding link, and `Use measured value`. `aria-describedby` flattens
+    // its region to a text string, so a button in there announces as prose
+    // with nothing saying it can be pressed, and a link announces as
+    // wayfinding the reader cannot follow from the announcement. It is the
+    // same rule the RAG_EF_SEARCH note is placed outside its row to obey, so
+    // it is enforced across the panel rather than stated once in a comment.
+    //
+    // Rendered with rerank UNASSIGNED and the prior at its 0 default, which
+    // is what makes the link and the button render at all.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+
+    const described = Array.from(
+      document.querySelectorAll<HTMLElement>('input[aria-describedby], select[aria-describedby]'),
+    );
+    expect(described.length).toBeGreaterThan(0);
+
+    const offenders: string[] = [];
+    for (const el of described) {
+      for (const id of (el.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)) {
+        const region = document.getElementById(id);
+        if (!region) continue;
+        const interactive = region.querySelectorAll('button, a[href], input, select, textarea');
+        if (interactive.length > 0) {
+          offenders.push(
+            `${el.getAttribute('data-testid') ?? el.id} -> #${id}: ` +
+              Array.from(interactive)
+                .map((n) => `<${n.tagName.toLowerCase()}>${(n.textContent ?? '').trim()}`)
+                .join(', '),
+          );
+        }
+      }
+    }
+    expect(
+      offenders,
+      'a description is read as one flat string \u2014 put operable controls and wayfinding links in `aside`, beside it',
+    ).toEqual([]);
+
+    // \u2026and the three that moved are still on screen, so this is a relocation
+    // rather than a deletion.
+    expect(screen.getByTestId('retrieval-rerank-stage-status')).toBeInTheDocument();
+    expect(screen.getByTestId('retrieval-prior-use-measured')).toBeInTheDocument();
+  });
+
   it('pairs min with a step the field\u2019s own values satisfy', async () => {
     // Review r1 — for `type=number` the step BASE is `min`, so `min: 1` with
     // `step: 10` made 100 (this field's default), 1000 (its max) and every
@@ -2232,6 +2291,40 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     // Exactly the resolved number, exactly one key.
     expect(puts[0]).toEqual({ ragEfSearch: 250 });
     expect(input('ragFetchWidth').value).toBe('30');
+  });
+
+  it('pins the number the SERVER resolved, never the draft in the field', async () => {
+    // Review r2 — the #1114 discipline this control copies verbatim
+    // ("`saved`, never the draft in the field") had nothing enforcing it here:
+    // the test above types into a DIFFERENT field, so swapping
+    // `pinEfSearchMutation.mutate(saved.ragEfSearch)` for
+    // `values.ragEfSearch` left the whole panel suite green.
+    //
+    // The failure it admits is a button that lies about what it does: on an
+    // env-sourced instance the field is editable, so an operator who types
+    // 400 into Index search depth and then presses the button labelled
+    // `Keep 250` would PUT 400 — and the note beside it would disappear,
+    // certifying a depth nobody chose.
+    const puts = mockApi({
+      settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    type('ragEfSearch', '400');
+    expect(input('ragEfSearch').value).toBe('400');
+
+    const pin = screen.getByTestId('retrieval-ef-search-env-pin');
+    // The visible label still promises the server's number…
+    expect(pin.textContent).toContain('250');
+    fireEvent.click(pin);
+
+    // …and that is what it writes.
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragEfSearch: 250 });
+    // The draft is untouched — this mutation submits one row, not the form.
+    expect(input('ragEfSearch').value).toBe('400');
   });
 
   it('describes that button with the sentence above it (WCAG 2.5.3 / 4.1.2)', async () => {
