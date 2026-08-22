@@ -90,7 +90,7 @@
 >    `app-shell-layout.test.ts:304` (`AppLayout` contains no `AppHeaderMain`) and
 >    `AppLayout.test.tsx:140` (*"does not put a route title in the header"*, rendered at
 >    `/ai`). The band is also **44px now, not 48** — `index.css` `--app-header-height:
->    2.75rem`, enforced by `app-shell-layout.test.ts:120-131`, which additionally asserts
+>    2.75rem`, enforced by `app-shell-layout.test.ts:121-131`, which additionally asserts
 >    `AppLayout` has no `<header … h-12>` and no `<header … border-b>` — so "the 48px header
 >    slot" was doubly wrong. The one live `h-12` line is the *panel toolbars*'
 >    (`toolbar-rule-alignment.test.ts`).

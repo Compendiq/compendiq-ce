@@ -1054,7 +1054,7 @@ Implements spec §*Thread keys* (the key table, `AiThread`'s four new fields,
 machine*, and §*`AiContextValue` changes*.
 
 **Files:**
-- Modify: `frontend/src/features/ai/AiContext.tsx` — `Conversation` (`:46-51`), `AiContextValue` (`:80-92`), `AiThread` (`:266-283`), `EMPTY_THREAD` (`:284-294`), the key sentinel + `threadKeyFor` (`:296-306`), `touchThread` (`:318-333`), the provider's thread state and read path (`:391-397`), the conversations mirror (`:403`, `:606-621`), `startNewConversation` (`:660-673`), `loadConversation` / `deleteConversation` (`:675-716`), the value object (`:964-968`)
+- Modify: `frontend/src/features/ai/AiContext.tsx` — `Conversation` (`:46-51`), `AiContextValue` (`:80-92`), `AiThread` (`:274-313`), `EMPTY_THREAD` (`:284-294`), the key sentinel + `threadKeyFor` (`:296-306`), `touchThread` (`:318-333`), the provider's thread state and read path (`:391-397`), the conversations mirror (`:403`, `:606-621`), `startNewConversation` (`:660-673`), `loadConversation` / `deleteConversation` (`:675-716`), the value object (`:964-968`)
 - Test: `frontend/src/features/ai/AiContext.threads.test.tsx`
 - Modify (test fallout): `frontend/src/features/ai/AiAssistantPage.test.tsx` (`:2230-2296`, `:2588-2637` deleted)
 
@@ -8307,7 +8307,12 @@ export function AiConversationsSidebar({
           Rendered only when this rail owns the destination strip. On desktop
           the chassis rail does (embedMainNav={false}), and then this row does
           not exist — so the collapse button moves into the New chat row below,
-          exactly as SidebarTreeView.tsx:1087-1096 moves its own. */}
+          exactly as SidebarTreeView.tsx:1087-1096 moves its own. And the New
+          chat row then BECOMES the bordered toolbar row (the tree's own
+          !embedMainNav shape keeps its bordered space row at the top): without
+          this, a desktop pane would be the one rail with no hairline across
+          its top. Both class branches keep the guard honest — the branch
+          containing panel-toolbar+border-b carries h-12 and no py-*. */}
       {embedMainNav && (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
         <MainNavStripExpanded onNavigate={onNavigate} />
@@ -8323,7 +8328,12 @@ export function AiConversationsSidebar({
       </div>
       )}
 
-      <div className="flex shrink-0 items-center gap-1 px-2 py-2">
+      <div
+        className={cn(
+          'flex shrink-0 items-center gap-1 px-2',
+          embedMainNav ? 'py-2' : 'panel-toolbar h-12 border-b',
+        )}
+      >
         <button
           type="button"
           onClick={handleNewChat}
@@ -8524,8 +8534,8 @@ Implements spec §The conversation pane "Mounted by `AppLayout`" plus amendment 
    additionally requires the first `<SidebarTreeView` after `data-testid="app-workspace"` to
    precede `id="main-content"`, which the desktop form below satisfies — an AI arm hoisted
    out of the workspace `<div>` would not.
-5. **This task adds no responsive `pt-` to `AppLayout`.** `scroll-padding-mask.test.ts:82`
-   asserts the file contains none (`not.toMatch(/(?:^|\s)[a-z-]+:pt-/)`), and `:74-77` pins
+5. **This task adds no responsive `pt-` to `AppLayout`.** `scroll-padding-mask.test.ts:81`
+   asserts the file contains none (`not.toMatch(/(?:^|\s)[a-z-]+:pt-/)`), and `:73-74` pins
    the `isArticleRoute ? 'overflow-hidden'` and `isArticleRoute ? 'max-w-none'` ternaries —
    leave both intact while wiring the pane.
 
@@ -10018,8 +10028,10 @@ old
 new
 ```tsx
   // #1361: which modes a `?mode=` deep link may select depends on the surface
-  // the provider is serving. On an AI route it is `AI_HOME_ACTIONS`' two
-  // (`isAiHomeAction`); on `/pages/:id` — the dock — the full set still
+  // the provider is serving. On an AI route it is the two `isAiHomeAction`
+  // admits — `ask` and `generate` — deliberately NARROWER than the seven-item
+  // `AI_HOME_ACTIONS` menu list, because a `create-*` skill is picked in-app
+  // and is never a URL value; on `/pages/:id` — the dock — the full set still
   // applies, because the dock offers the rewrite skills and Diagram. This
   // boolean is read again by the `?q=` prefill below; there is exactly one of
   // it in the provider.
@@ -11522,7 +11534,7 @@ const PREFETCH_MARGIN = '200px';
  * placeholder box, no layout shift.
  *
  * Neutral by ADR-010: an image source is a CATEGORY, not a state, so the frame
- * is `--color-border` and nothing here is teal or violet.
+ * is `--color-border` and nothing here is Steel or violet.
  */
 export function SourceThumbnail({ url, size, className }: SourceThumbnailProps) {
   const sentinelRef = useRef<HTMLSpanElement>(null);
@@ -11691,7 +11703,7 @@ one comment, and its "tests" are the documentation guards that already run on ev
 - Modify: `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md:774-778`, `:1211-1220` (both moved by the 2026-08-22 re-amendment of that spec's own header block)
 - Modify: `CLAUDE.md:66`, `:278`, `:318` (three separate replacements in that one line), and one new paragraph before `:320`
 - Modify: `docs/USER-GUIDE.md:109-112`
-- Modify: `frontend/src/shared/components/layout/MainNavStrip.tsx:7-17`
+- Modify: `frontend/src/shared/components/layout/MainNavStrip.tsx:6-16`
 - Test: `frontend/src/architecture-docs-mermaid.test.ts`, `frontend/src/docs-image-retrieval-record.test.ts`,
   `frontend/src/architecture-docs-embedding-model.test.ts` (all existing; no new test file — these
   three are the guards that read the files this task edits)
@@ -11827,8 +11839,10 @@ New:
   `/ai` entirely and with it all three `/ai?pageId=` producers, so nothing
   rewrites the URL on a click. What makes `?mode=improve|diagram` land on Q&A
   is now explicit: `AiContext`'s URL-mode parser accepts, on an AI route, only
-  a mode `AI_HOME_ACTIONS` names, exactly as the retired `summarize` /
-  `quality` values already fell back. Old bookmarks therefore open the Ask
+  `ask` or `generate` (`isAiHomeAction`) — narrower than the `AI_HOME_ACTIONS`
+  menu list, because a create skill is picked in-app and never appears in a
+  URL — exactly as the retired `summarize` / `quality` values already fell
+  back. Old bookmarks therefore open the Ask
   composer instead of a document screen with no action selected and no way
   back except the URL bar.
 ```
@@ -12174,7 +12188,7 @@ Run: `cd frontend && npx vitest run src/docs-image-retrieval-record.test.ts`
 Expected: PASS (four assertions: one retrieval block ≤ 1,300 words, one corpus block
 ≤ 700 words, no stray `#1115` paragraph, and the backend-module/measured-record checks).
 
-- [ ] **Step 15: `MainNavStrip.tsx:7-17` — the strip now sits above three sidebars**
+- [ ] **Step 15: `MainNavStrip.tsx:6-16` — the strip now sits above three sidebars**
 
 Old (lines 7-17):
 
