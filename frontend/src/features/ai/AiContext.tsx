@@ -2,7 +2,7 @@
 import { createContext, useContext, useState, useRef, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { UsecaseDefault } from '@compendiq/contracts';
+import type { ConversationDetail, UsecaseDefault } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { AI_HOME_PATH, isAiRoute, conversationIdFromPath, conversationPath } from '../../shared/lib/ai-routes';
@@ -94,6 +94,27 @@ interface AiContextValue {
    * and leaves a dead URL with a `replace` navigation to `/ai`.
    */
   purgeConversation: (id: string) => void;
+  /**
+   * #1361: hydration state of the ACTIVE thread. `draft` and `page:` threads
+   * are always `'ready'`; a `conv:` thread is `'loading'` from the first paint
+   * of `/ai/c/:id` until `GET /llm/conversations/:id` answers.
+   */
+  threadLoadState: 'ready' | 'loading' | 'error';
+  /**
+   * The curated `ApiError.message` behind a `'error'` load, or `null` for a
+   * failure that produced no prose worth showing (a raw network `TypeError`).
+   * The page renders its own sentence in that case — `SidebarTreeView`'s rule.
+   */
+  threadLoadError: string | null;
+  /** Re-arm the hydration effect for the open conversation. */
+  retryThreadLoad: () => void;
+  /**
+   * Decision 10: the server dropped older exchanges from the replay budget for
+   * this conversation. Two sources — each ask's final frame, and
+   * `GET /llm/conversations/:id` on reopen — or the note is invisible in
+   * exactly the case it exists for.
+   */
+  historyTruncated: boolean;
   /**
    * Bumped by `startNewConversation`. The composer focuses its textarea
    * whenever this changes — a counter rather than a boolean, because two New
@@ -260,6 +281,12 @@ interface StreamChunk {
    * closest partial matches the gate declined to use.
    */
   refused?: boolean;
+  /**
+   * Ask route (#1361, decision 10): the replay budget dropped older exchanges
+   * from what the model was shown. Omitted entirely when the whole history
+   * fitted, so ABSENT means false.
+   */
+  historyTruncated?: boolean;
 }
 
 /** Extra, non-content metadata surfaced to `onComplete` once a stream finishes. */
@@ -575,6 +602,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     messages, conversationId, input, showDiffView,
     improvedContent, originalMarkdown, layoutTokensLost, diagramCode, diffBaseVersion,
     generatedDraft,
+    loadState, loadError, historyTruncated,
   } = activeThread;
   /**
    * The one thing every switch-sensitive effect keys on (#1361): the filed
@@ -964,14 +992,24 @@ export function AiProvider({ children }: { children: ReactNode }) {
     originHadId: boolean;
     assistantMsgId: string;
     frameConversationId: string | null | undefined;
+    historyTruncated: boolean;
   }) => {
-    const { originKey, originIdentity, originHadId, assistantMsgId, frameConversationId } = args;
+    const {
+      originKey, originIdentity, originHadId, assistantMsgId,
+      frameConversationId, historyTruncated,
+    } = args;
 
     // Nothing on this stream concerns conversations: Improve, Generate,
     // Diagram and Summarize emit no `conversationId` frame at all. Returning
     // here is also what keeps an Improve run on a page thread that happens to
     // carry an id from refetching the conversation list.
     if (frameConversationId === undefined) return;
+
+    // Decision 10: the flag describes THIS conversation's replay budget, so it
+    // is written only for an exchange that was saved to one. Its own update —
+    // the big pass below returns `prev` untouched when nothing was promoted
+    // and nothing was mirrored, and this must land either way.
+    updateThreadByIdentity(originIdentity, () => ({ historyTruncated }));
 
     // Promotion guard, both halves. The key half is what stops the dock: a
     // `page:` origin never promotes, never re-keys and never navigates. The
@@ -1048,7 +1086,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     // Every completed ask moves a row or its position — a promotion creates
     // one, a follow-up bumps `updated_at`, a null frame means it is gone.
     queryClient.invalidateQueries({ queryKey: ['llm', 'conversations'] });
-  }, [navigate, queryClient]);
+  }, [navigate, queryClient, updateThreadByIdentity]);
 
   /**
    * Delete succeeded — the pane owns the mutation (`useDeleteConversation`),
@@ -1073,6 +1111,115 @@ export function AiProvider({ children }: { children: ReactNode }) {
       navigate(AI_HOME_PATH, { replace: true });
     }
   }, [location.pathname, navigate]);
+
+  /**
+   * Keys with a `GET /llm/conversations/:id` in flight. A ref, not state: it
+   * exists only to stop the effect firing twice for the same key, and putting
+   * it in state would re-run the effect it guards.
+   */
+  const hydratingRef = useRef<Set<string>>(new Set());
+
+  /**
+   * Fetch one conversation INTO its own key — never into "the current thread".
+   * The internal successor of #1126's `loadConversation`, exported nowhere:
+   * opening a row is a navigation now, and the route is the only caller.
+   */
+  const hydrateThread = useCallback(async (key: string, id: string) => {
+    if (hydratingRef.current.has(key)) return;
+    hydratingRef.current.add(key);
+    try {
+      const conv = await apiFetch<ConversationDetail>(`/llm/conversations/${id}`);
+      updateThread(key, () => ({
+        // `refused` is what `saveConversation` writes onto a #1105 refusal
+        // turn, and the route returns the messages JSONB verbatim — so a
+        // reopened thread has to carry the marker across or the refusal
+        // silently downgrades to an ordinary answer, which is precisely the
+        // state #1119 exists to stop rendering. Since PR 1 the persisted turn
+        // carries its `sources` (the chip allow-list) too.
+        messages: conv.messages
+          .filter((msg) => msg.role !== 'system')
+          .map((msg) => ({
+            id: nextMessageId(),
+            role: msg.role as 'user' | 'assistant',
+            content: msg.content,
+            ...(msg.sources ? { sources: msg.sources as Source[] } : {}),
+            ...(msg.refused === true ? { isRefusal: true } : {}),
+          })),
+        conversationId: conv.id,
+        historyTruncated: conv.historyTruncated,
+        loadState: 'ready',
+        loadError: null,
+      }));
+      // Opening loads, never sends (#1176), and puts the Ask composer on
+      // screen. It deliberately does NOT call setModel: the per-conversation
+      // dropdown is gone, and a stored model would silently repoint every
+      // later question on the instance.
+      setMode('ask');
+    } catch (err) {
+      const status = err instanceof ApiError ? err.statusCode : 0;
+      if (status === 404 || status === 400) {
+        toast.error('Conversation not found');
+        // Remove the placeholder in the same tick as the navigation, so the
+        // two batch into one render and the read path never re-seeds
+        // `conv:<id>` as `loading` behind the redirect.
+        setThreads((prev) => {
+          const next = new Map(prev);
+          next.delete(key);
+          return next;
+        });
+        navigate(AI_HOME_PATH, { replace: true });
+        return;
+      }
+      // Anything else stays put with an in-pane error and a Retry: redirecting
+      // on a network blip would lose a URL the user typed.
+      updateThread(key, () => ({
+        loadState: 'error',
+        loadError: err instanceof ApiError ? err.message : null,
+      }));
+    } finally {
+      hydratingRef.current.delete(key);
+    }
+  }, [navigate, updateThread]);
+
+  /**
+   * Hydration is keyed on STATE, not on presence: whenever the active thread
+   * says `loading` and no fetch is in flight for its key, fetch. Effect order
+   * therefore cannot break it — a `?q=` prefill that files the key first files
+   * it through `seedFor`, which is what keeps `loading` on the entry.
+   *
+   * Reads `threads` directly rather than the destructured `loadState` —
+   * `activeThread`'s `?? seedFor(threadKey)` fallback is a render-only
+   * artifact for a key that is not (or no longer) in the map, and a rekey
+   * lands its `setThreads` update at least one render ahead of the matching
+   * `navigate`. On that in-between render `threadKey` still names the OLD
+   * key (which the rekey just vacated), so the fallback reports a phantom
+   * `'loading'` for a conversation this tab no longer has open. Firing on
+   * that would fetch an id the app has already moved past — one whose
+   * record may be legitimately gone (a stale-404 promotion, #1361) — and its
+   * 404 branch would toast and redirect the user off the thread they are
+   * actually looking at. Reading `threads.get(key)` bypasses the fallback:
+   * it is undefined for that same render, so the effect stands down and
+   * fires only once the filing effect (or a real reopen) has actually
+   * committed a `loading` entry under `key`.
+   */
+  useEffect(() => {
+    const id = conversationIdFromPath(location.pathname);
+    if (!id) return;
+    const key = `conv:${id}`;
+    if (threads.get(key)?.loadState !== 'loading') return;
+    if (hydratingRef.current.has(key)) return;
+    void hydrateThread(key, id);
+  }, [threads, location.pathname, hydrateThread]);
+
+  /**
+   * The error state's remedy. Setting `loadState` back to `'loading'` is the
+   * whole mechanism — the effect above is armed by state, so this re-arms it.
+   */
+  const retryThreadLoad = useCallback(() => {
+    const id = conversationIdFromPath(location.pathname);
+    if (!id) return;
+    updateThread(`conv:${id}`, () => ({ loadState: 'loading', loadError: null }));
+  }, [location.pathname, updateThread]);
 
   /**
    * Generic SSE streaming helper used by all mode handlers.
@@ -1206,6 +1353,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
      * ask), a string (saved to that row), `null` (the append hit zero rows).
      */
     let frameConversationId: string | null | undefined;
+    /**
+     * Decision 10's live half. Absent on the frame ⇒ false: the backend omits
+     * the field when the whole history fitted.
+     */
+    let frameHistoryTruncated = false;
 
     // Add the placeholder assistant message with a stable ID. It stays empty
     // during the stream (#747) — the in-flight answer renders through the
@@ -1300,6 +1452,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
         if (chunk.final && chunk.refused === true) {
           refusedTurn = true;
         }
+        if (chunk.final) {
+          frameHistoryTruncated = chunk.historyTruncated === true;
+        }
         // Improve route (#704): capture the original markdown baseline so the
         // diff compares like-for-like markdown instead of stripped bodyText.
         // Use !== undefined (not truthiness) so an intentionally empty baseline
@@ -1331,6 +1486,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
         originHadId,
         assistantMsgId,
         frameConversationId,
+        historyTruncated: frameHistoryTruncated,
       });
       opts?.onComplete?.(
         accumulated,
@@ -1418,6 +1574,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
     activeThreadId,
     startNewConversation,
     purgeConversation,
+    threadLoadState: loadState,
+    threadLoadError: loadError,
+    retryThreadLoad,
+    historyTruncated,
     composerFocusRequest,
     model,
     setModel,

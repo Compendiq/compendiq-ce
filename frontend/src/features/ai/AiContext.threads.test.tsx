@@ -683,6 +683,7 @@ describe('resolveAiPageId', () => {
 function StateProbe() {
   const {
     messages, conversationId, input, mode, model, activeThreadId,
+    threadLoadState, threadLoadError, historyTruncated, retryThreadLoad,
     setInput, setConversationId, purgeConversation, runStream,
   } = useAiContext();
   const navigate = useNavigate();
@@ -694,6 +695,9 @@ function StateProbe() {
       <span data-testid="draft">{input}</span>
       <span data-testid="mode">{mode}</span>
       <span data-testid="model">{model}</span>
+      <span data-testid="load-state">{threadLoadState}</span>
+      <span data-testid="load-error">{threadLoadError ?? 'none'}</span>
+      <span data-testid="history-truncated">{historyTruncated ? 'yes' : 'no'}</span>
       <ul data-testid="thread">
         {messages.map((msg) => (
           <li
@@ -719,6 +723,7 @@ function StateProbe() {
       <button onClick={() => setInput('half-typed question')}>type</button>
       <button onClick={() => setConversationId('c-1')}>claim c-1</button>
       <button onClick={() => purgeConversation('c-1')}>purge c-1</button>
+      <button onClick={retryThreadLoad}>retry</button>
       <button onClick={() => navigate(-1)}>back</button>
       <button onClick={() => navigate(1)}>forward</button>
     </div>
@@ -1056,5 +1061,228 @@ describe('AiContext conversation state machine (#1361)', () => {
       expect(screen.getByTestId('location')).toHaveTextContent('/ai');
     });
     expect(screen.getByTestId('location').textContent).not.toContain('/ai/c/');
+  });
+
+  /** A `GET /llm/conversations/:id` payload shaped like PR 1's contract. */
+  function conversationDetail(id: string, overrides: Record<string, unknown> = {}) {
+    return {
+      id,
+      title: `Conversation ${id}`,
+      titleSource: 'question',
+      model: 'a-model-nobody-selected',
+      pageId: null,
+      pageTitle: null,
+      createdAt: '2026-08-01T10:00:00.000Z',
+      updatedAt: '2026-08-01T11:00:00.000Z',
+      historyTruncated: false,
+      messages: [
+        { role: 'user', content: `question in ${id}` },
+        { role: 'assistant', content: `answer in ${id}` },
+      ],
+      ...overrides,
+    };
+  }
+
+  /** Route `/llm/conversations/:id` to `detail`, leaving the model queries alone. */
+  function withConversations(detail: (id: string) => unknown) {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/llm/usecase-default?usecase=chat') {
+        return Promise.resolve({ model: 'llama3', vision: null });
+      }
+      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+      if (path.startsWith('/llm/conversations/')) {
+        return Promise.resolve(detail(path.slice('/llm/conversations/'.length)));
+      }
+      return Promise.resolve([]);
+    });
+  }
+
+  it('shows the loading state on the first render of /ai/c/X, never the Ask empty state', async () => {
+    withConversations(() => new Promise(() => {}));
+    renderStateApp('/ai/c/c-1');
+
+    // The read path yields `seedFor('conv:c-1')`, so the very first paint is
+    // already `loading` — the empty state renders only on `ready`.
+    expect(screen.getByTestId('load-state')).toHaveTextContent('loading');
+    expect(threadContents()).toEqual([]);
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith('/llm/conversations/c-1');
+    });
+  });
+
+  it('fetches into conv:<id>, never into the thread that was on screen', async () => {
+    withConversations((id) => conversationDetail(id));
+    renderStateApp('/ai', ['/ai', '/ai/c/c-1']);
+
+    fireEvent.click(screen.getByText('type'));
+    expect(screen.getByTestId('draft')).toHaveTextContent('half-typed question');
+
+    goTo('/ai/c/c-1');
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['question in c-1', 'answer in c-1']);
+    });
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('c-1');
+    expect(screen.getByTestId('load-state')).toHaveTextContent('ready');
+    // Opening loads, never sends (#1176), and sets the action to Q&A…
+    expect(screen.getByTestId('mode')).toHaveTextContent('ask');
+    // …but never the model: the per-conversation dropdown is gone (#355 AC-4).
+    expect(screen.getByTestId('model')).toHaveTextContent('llama3');
+
+    // The draft it was fetched next to is untouched.
+    goTo('/ai');
+    expect(threadContents()).toEqual([]);
+    expect(screen.getByTestId('draft')).toHaveTextContent('half-typed question');
+  });
+
+  it('renders a reopened refusal as a refusal, not as an ordinary answer', async () => {
+    withConversations((id) => conversationDetail(id, {
+      messages: [
+        { role: 'system', content: 'you are a helpful assistant' },
+        { role: 'user', content: 'what is the retention window?' },
+        { role: 'assistant', content: 'I am not answering that.', refused: true },
+      ],
+    }));
+    renderStateApp('/ai/c/c-1');
+
+    await waitFor(() => {
+      expect(threadContents()).toEqual([
+        'what is the retention window?',
+        'I am not answering that.',
+      ]);
+    });
+    const rows = Array.from(screen.getByTestId('thread').querySelectorAll('li'));
+    expect(rows[1]!.getAttribute('data-refusal')).toBe('yes');
+  });
+
+  it('toasts and redirects to /ai when the id is unknown', async () => {
+    const { toast } = await import('sonner');
+    withConversations(() => Promise.reject(new ApiError(404, 'Conversation not found')));
+    renderStateApp('/ai/c/gone');
+
+    // A plain `toHaveTextContent('/ai')` substring-matches the dead URL
+    // itself (`/ai/c/gone` contains `/ai`), so it can resolve before the
+    // redirect actually lands — assert the real postcondition instead.
+    await waitFor(() => {
+      expect(screen.getByTestId('location').textContent).not.toContain('/ai/c/');
+    });
+    expect(toast.error).toHaveBeenCalledWith('Conversation not found');
+    // The placeholder thread is removed, so /ai is the ordinary draft.
+    expect(screen.getByTestId('load-state')).toHaveTextContent('ready');
+    expect(threadContents()).toEqual([]);
+  });
+
+  it('keeps the URL and records the error on a network failure, then retries', async () => {
+    const { toast } = await import('sonner');
+    withConversations(() => Promise.reject(new ApiError(503, 'Service Unavailable (HTTP 503)')));
+    renderStateApp('/ai/c/c-1');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('load-state')).toHaveTextContent('error');
+    });
+    // Redirecting on a blip would lose a URL the user typed.
+    expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    expect(screen.getByTestId('load-error')).toHaveTextContent('Service Unavailable (HTTP 503)');
+    expect(toast.error).not.toHaveBeenCalled();
+
+    withConversations((id) => conversationDetail(id));
+    fireEvent.click(screen.getByText('retry'));
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['question in c-1', 'answer in c-1']);
+    });
+    expect(screen.getByTestId('load-state')).toHaveTextContent('ready');
+  });
+
+  it('still hydrates when the URL also carries a ?q= prefill', async () => {
+    withConversations((id) => conversationDetail(id));
+    renderStateApp('/ai/c/c-1?q=and one more thing');
+
+    expect(screen.getByTestId('load-state')).toHaveTextContent('loading');
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['question in c-1', 'answer in c-1']);
+    });
+    // The prefill is a WRITE to `conv:c-1`, which files the key — and files it
+    // through `seedFor`, so hydration is not suppressed by the write arriving
+    // first. Both landed.
+    expect(screen.getByTestId('draft')).toHaveTextContent('and one more thing');
+  });
+
+  it('walks two conversations with Back and Forward', async () => {
+    withConversations((id) => conversationDetail(id));
+    renderStateApp('/ai/c/c-1', ['/ai/c/c-2']);
+
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['question in c-1', 'answer in c-1']);
+    });
+    goTo('/ai/c/c-2');
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['question in c-2', 'answer in c-2']);
+    });
+
+    fireEvent.click(screen.getByText('back'));
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['question in c-1', 'answer in c-1']);
+    });
+    fireEvent.click(screen.getByText('forward'));
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['question in c-2', 'answer in c-2']);
+    });
+    // Retained, so walking back and forward costs one fetch each, not four.
+    expect(apiFetchMock.mock.calls.filter(
+      (call) => String(call[0]).startsWith('/llm/conversations/'),
+    )).toHaveLength(2);
+  });
+
+  it('treats an evicted conversation reopened as a switch and refetches it', async () => {
+    withConversations((id) => conversationDetail(id));
+    const pages = Array.from({ length: 12 }, (_, i) => `/pages/p${i}`);
+    renderStateApp('/ai/c/c-1', [...pages, '/ai/c/c-1']);
+
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['question in c-1', 'answer in c-1']);
+    });
+    const firstIdentity = screen.getByTestId('active-thread-id').textContent;
+
+    // draft + conv:c-1 + twelve page threads is fourteen entries against a cap
+    // of twelve, so the two oldest go.
+    for (const page of pages) goTo(page);
+
+    goTo('/ai/c/c-1');
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['question in c-1', 'answer in c-1']);
+    });
+    expect(apiFetchMock.mock.calls.filter(
+      (call) => call[0] === '/llm/conversations/c-1',
+    )).toHaveLength(2);
+    // A re-filed thread is a new identity, and opening is a switch by
+    // definition — Deep Search and staged attachments clear.
+    expect(screen.getByTestId('active-thread-id').textContent).not.toBe(firstIdentity);
+  });
+
+  it('reads historyTruncated from the reopen and from each ask’s final frame', async () => {
+    withConversations((id) => conversationDetail(id, { historyTruncated: true }));
+    renderStateApp('/ai/c/c-1');
+
+    // Decision 10's reopen half: a long conversation says so the moment it
+    // opens, not after the next question has already been clipped.
+    await waitFor(() => {
+      expect(screen.getByTestId('history-truncated')).toHaveTextContent('yes');
+    });
+
+    // …and the live half, which can also take it back down: the frame omits
+    // the field when the whole history fitted.
+    streamSSEMock.mockImplementation(askStreamReturning('c-1', 'shorter now'));
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('history-truncated')).toHaveTextContent('no');
+    });
+
+    streamSSEMock.mockImplementation(async function* () {
+      yield { content: 'clipped' };
+      yield { done: true, final: true, conversationId: 'c-1', sources: [], historyTruncated: true };
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('history-truncated')).toHaveTextContent('yes');
+    });
   });
 });
