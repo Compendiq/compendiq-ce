@@ -173,7 +173,7 @@ describe('#1349 attachment sweep routes', () => {
       expect(svc.run).toHaveBeenCalledWith({ dryRun: true });
     });
 
-    it('reports alreadyRunning when the worker lock is held', async () => {
+    it('a LIVE trigger under a held lock reports alreadyRunning and does NOT kick (review r3)', async () => {
       redis.locked.mockResolvedValue(true);
       const res = await app.inject({
         method: 'POST',
@@ -182,9 +182,28 @@ describe('#1349 attachment sweep routes', () => {
       });
       expect(res.statusCode).toBe(202);
       expect(res.json()).toEqual({ started: false, alreadyRunning: true });
-      // It still kicks — the read and the kick are not atomic, and a lock
-      // released in between must not leave nothing running (kickScan's rule).
-      expect(svc.run).toHaveBeenCalledWith({ dryRun: false });
+      // The response just said the delete did not start, and the card toasts
+      // exactly that — a redundant kick that then runs the destructive sweep
+      // (the running dry run releasing the lock in the race window) would make
+      // the toast a lie about a delete. Silently not-running is the honest
+      // outcome for a destructive trigger; the operator can press again.
+      expect(svc.run).not.toHaveBeenCalled();
+    });
+
+    it('a DRY trigger under a held lock reports alreadyRunning but still kicks (kickScan liveness)', async () => {
+      redis.locked.mockResolvedValue(true);
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/admin/attachments/sweep',
+        payload: { dryRun: true },
+      });
+      expect(res.statusCode).toBe(202);
+      expect(res.json()).toEqual({ started: false, alreadyRunning: true });
+      // The lock read and the kick are not atomic; for the NON-destructive
+      // mode a lock released in between must not leave nothing running — the
+      // redundant kick answers alreadyRunning inside the service for one
+      // Redis round trip (the kickScan precedent, which is also a scan).
+      expect(svc.run).toHaveBeenCalledWith({ dryRun: true });
     });
 
     it('refuses a body without an explicit dryRun', async () => {

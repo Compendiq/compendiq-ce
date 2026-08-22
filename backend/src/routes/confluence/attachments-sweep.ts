@@ -77,15 +77,23 @@ export async function attachmentSweepRoutes(fastify: FastifyInstance) {
       const { dryRun } = AttachmentSweepTriggerSchema.parse(request.body);
       // The verdict is read from the lock, not from the detached run (the
       // kickScan rule): the run's own `alreadyRunning` arrives long after the
-      // response. It still kicks when the lock is held — the read and the
-      // kick are not atomic, and a lock released in between must not leave
-      // nothing running; a redundant kick answers `null` for one Redis round
-      // trip. Pessimistic by construction: never "started" for a sweep that
-      // did not start.
+      // response. A DRY trigger still kicks when the lock is held — the read
+      // and the kick are not atomic, and a lock released in between must not
+      // leave nothing running; a redundant kick answers `alreadyRunning` for
+      // one Redis round trip (kickScan's precedent, which is also a scan). A
+      // LIVE trigger under a held lock does NOT kick (review r3): the response
+      // just said the delete did not start and the card toasts exactly that,
+      // so a kick that then wins the lock race would run a destructive sweep
+      // the operator was told was a no-op. Silently not-running is the honest
+      // outcome for a destructive trigger; pressing again is the remedy.
+      // Pessimistic by construction: never "started" for a sweep that did not
+      // start.
       const alreadyRunning = await isWorkerLocked(ATTACHMENT_SWEEP_WORKER_LOCK);
-      void runAttachmentSweep({ dryRun }).catch((err) => {
-        logger.error({ err, dryRun }, 'Attachment sweep failed after an admin trigger');
-      });
+      if (!alreadyRunning || dryRun) {
+        void runAttachmentSweep({ dryRun }).catch((err) => {
+          logger.error({ err, dryRun }, 'Attachment sweep failed after an admin trigger');
+        });
+      }
       reply.code(202);
       return { started: !alreadyRunning, alreadyRunning };
     },

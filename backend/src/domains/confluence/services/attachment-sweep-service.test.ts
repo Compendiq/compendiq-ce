@@ -96,6 +96,26 @@ describe('collectAttachmentUrlReferences (#1349 keep-set feeder)', () => {
     expect(sets.confluence.has('plain.png')).toBe(true);
   });
 
+  it('a single-quoted attribute with no space before the self-closing slash still lands the name (review r3)', () => {
+    // `src='…/a.png'/>` drags `'/` into the match: `/` is not in the trim set,
+    // so the trimmed variant still ends in a slash and the basename filter
+    // drops the whole spelling — the pre-r2 regex terminated at the quote and
+    // kept `a.png`, so r2's widening was a substitution here, not an addition.
+    // The apostrophe-truncated prefix is re-added as one more variant, which
+    // restores the keep-set as a superset of both regimes.
+    const sets = emptySets();
+    collectAttachmentUrlReferences("<img src='/api/attachments/90001/a.png'/>", sets);
+    expect(sets.confluence.has('a.png')).toBe(true);
+    collectAttachmentUrlReferences("[link](/api/local-attachments/7/b.png'/extra)", sets);
+    expect(sets.local.has('b.png')).toBe(true);
+  });
+
+  it("the truncated prefix is ADDED, never substituted — a real apostrophe-named file keeps its full name (review r2's case)", () => {
+    const sets = emptySets();
+    collectAttachmentUrlReferences('<img src="/api/attachments/1/John\'s%20notes.png">', sets);
+    expect(sets.confluence.has("John's notes.png")).toBe(true);
+  });
+
   it('never emits a name that is not a plain basename', () => {
     const sets = emptySets();
     collectAttachmentUrlReferences('<img src="/api/attachments/1/..%2Fescape.png">', sets);

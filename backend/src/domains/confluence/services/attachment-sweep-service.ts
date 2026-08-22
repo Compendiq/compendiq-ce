@@ -59,6 +59,18 @@
  * (`removeCachedAttachment*`, `removeLocalAttachment*`); no path is ever
  * concatenated from DB values here.
  *
+ * One residual TOCTOU window is ACCEPTED and bounded (review r3): the
+ * keep-set is built once per run, so a body reference written to an
+ * already-aged orphan file AFTER the build but BEFORE the delete loop reaches
+ * it is not re-seen, and the file is deleted while a body now names it. Every
+ * product path that creates a reference also writes the bytes — a fresh mtime
+ * the grace re-check does honour — so the exposed spelling is a
+ * reference-without-write: a raw attachment URL pasted as text into a body
+ * mid-run, pointing at a >24h-old file no other body referenced. The window
+ * is one run's duration. Tightening it would mean re-running
+ * `collectAttachmentUrlReferences` over bodies modified since the run started
+ * before each delete; not worth the extra read pass today.
+ *
  * Lives in `domains/confluence` (not `core`): the keep-set needs
  * `getExpectedAttachmentFilenames`, which is confluence-domain, and `core`
  * may not import a domain. Routes reach it from `routes/confluence`.
@@ -159,7 +171,10 @@ export interface AttachmentKeepSets {
  * file missed the keep-set, and a live run deleted a referenced file. The
  * single-quoted-attribute spelling this admits (`src='…/a.png'`) drags the
  * closing quote into the match; the punctuation trim below adds the clean
- * variant, and keeping the quoted spelling too only over-keeps.
+ * variant, and keeping the quoted spelling too only over-keeps. When the
+ * quote is chased by a slash (`src='…/a.png'/>`, review r3), the trim cannot
+ * reach it — the apostrophe-truncated prefix in the loop below covers that
+ * spelling instead.
  */
 const ATTACHMENT_URL_RE = /\/api\/(local-attachments|attachments)\/[A-Za-z0-9_-]+\/([^"<>\s?#\\]+)/g;
 
@@ -183,6 +198,17 @@ export function collectAttachmentUrlReferences(
     for (const name of [...names]) {
       const trimmed = name.replace(/['")\]},.;:!]+$/, '');
       if (trimmed) names.add(trimmed);
+    }
+    // And the apostrophe-truncated prefix (review r3): `src='…/a.png'/>` with
+    // no space before the self-closing slash drags `'/` into the match — `/`
+    // is not in the trim set, so every variant above still ends in a slash and
+    // the basename filter below drops the whole spelling. The pre-r2 regex
+    // terminated at the quote and kept `a.png`; re-adding that spelling as one
+    // more ADDED variant makes the keep-set a superset of both regimes (the
+    // full apostrophe-carrying name stays kept — r2's fix is untouched).
+    for (const name of [...names]) {
+      const cut = name.indexOf("'");
+      if (cut > 0) names.add(name.slice(0, cut));
     }
     for (const name of names) {
       if (!name || name.startsWith('.') || name.includes('\0')) continue;
