@@ -590,3 +590,128 @@ export const ForceReleaseLockResponseSchema = z.object({
   userId: z.string().min(1),
 });
 export type ForceReleaseLockResponse = z.infer<typeof ForceReleaseLockResponseSchema>;
+
+// ─── #1349 — attachment storage observability + orphan sweep ─────────────────
+// Shared contract for `GET /api/admin/attachments/stats`,
+// `POST /api/admin/attachments/sweep` and `GET /api/admin/attachments/sweep`.
+// New named schemas appended at the end of this file by convention (parallel
+// lanes append their own; never reorder).
+
+/**
+ * One store's figures as the last walk measured them. The two stores are
+ * walked SEPARATELY: the Confluence-style tree (`<ATTACHMENTS_DIR>/<key>/`)
+ * and the local store (`<ATTACHMENTS_DIR>/local/<page_id>/`).
+ */
+export const AttachmentStoreSweepStatsSchema = z.object({
+  /** Total bytes of the store's plain files (dot-files excluded). */
+  bytes: z.number().int().nonnegative(),
+  /** Plain files counted (dot-files excluded). */
+  files: z.number().int().nonnegative(),
+  /** Attachment-key directories walked. */
+  directories: z.number().int().nonnegative(),
+  /** Directories whose key matches no page row at all (grace-window aged). */
+  orphanDirectories: z.number().int().nonnegative(),
+  orphanDirectoryBytes: z.number().int().nonnegative(),
+  /** Files orphaned inside a directory that DOES belong to a page. */
+  orphanFiles: z.number().int().nonnegative(),
+  orphanFileBytes: z.number().int().nonnegative(),
+  /** Candidates skipped only because they are younger than the grace window. */
+  graceSkipped: z.number().int().nonnegative(),
+  /** Directories whose readdir failed — never judged, reported instead. */
+  unreadableDirectories: z.number().int().nonnegative(),
+});
+export type AttachmentStoreSweepStats = z.infer<typeof AttachmentStoreSweepStatsSchema>;
+
+/** One orphan candidate (dry run) or deletion (live run), for the sample list. */
+export const AttachmentSweepCandidateSchema = z.object({
+  store: z.enum(['confluence', 'local']),
+  /** Attachment-key directory (`confluence_id` | page id | local page id). */
+  key: z.string(),
+  /** `null` = the whole directory is the candidate. */
+  filename: z.string().nullable(),
+  bytes: z.number().int().nonnegative(),
+  reason: z.enum(['orphan_directory', 'orphan_file']),
+});
+export type AttachmentSweepCandidate = z.infer<typeof AttachmentSweepCandidateSchema>;
+
+/** What a live run deleted; `null` on a dry run (nothing is ever touched). */
+export const AttachmentSweepDeletedSchema = z.object({
+  directories: z.number().int().nonnegative(),
+  files: z.number().int().nonnegative(),
+  bytes: z.number().int().nonnegative(),
+  /** `page_image_embeddings` rows removed for files the sweep deleted (safety net). */
+  imageEmbeddingRows: z.number().int().nonnegative(),
+  /** Pages marked `image_embedding_dirty` because their files were removed. */
+  pagesMarkedDirty: z.number().int().nonnegative(),
+});
+export type AttachmentSweepDeleted = z.infer<typeof AttachmentSweepDeletedSchema>;
+
+/**
+ * What the last sweep run (dry or live) did — the persisted record the admin
+ * card reads. `refused` means the run declined to judge or delete anything
+ * (unreadable root, or a live run against a store that is empty on disk while
+ * the database still references it — a mis-pointed `ATTACHMENTS_DIR`).
+ */
+export const AttachmentSweepRunSchema = z.object({
+  /** ISO-8601 completion time. */
+  at: z.string(),
+  dryRun: z.boolean(),
+  status: z.enum(['completed', 'refused', 'failed']),
+  /** Human-readable reason for `refused` / `failed`; null on `completed`. */
+  note: z.string().nullable(),
+  durationMs: z.number().int().nonnegative(),
+  /** Per-store figures; null when the walk never completed. */
+  stores: z
+    .object({
+      confluence: AttachmentStoreSweepStatsSchema,
+      local: AttachmentStoreSweepStatsSchema,
+    })
+    .nullable(),
+  /** `local_attachments` rows whose file is missing on disk — counted, never deleted. */
+  missingLocalFiles: z.number().int().nonnegative(),
+  /** Bounded sample of candidates/deletions; `candidatesTotal` is the real count. */
+  candidateSample: z.array(AttachmentSweepCandidateSchema),
+  candidatesTotal: z.number().int().nonnegative(),
+  deleted: AttachmentSweepDeletedSchema.nullable(),
+});
+export type AttachmentSweepRun = z.infer<typeof AttachmentSweepRunSchema>;
+
+/** `GET /api/admin/attachments/sweep` — status + the persisted last run. */
+export const AttachmentSweepStatusSchema = z.object({
+  /** Whether the sweep worker lock is held right now; the card polls on it. */
+  running: z.boolean(),
+  lastRun: AttachmentSweepRunSchema.nullable(),
+});
+export type AttachmentSweepStatus = z.infer<typeof AttachmentSweepStatusSchema>;
+
+/** `POST /api/admin/attachments/sweep` body. */
+export const AttachmentSweepTriggerSchema = z.object({
+  dryRun: z.boolean(),
+});
+export type AttachmentSweepTrigger = z.infer<typeof AttachmentSweepTriggerSchema>;
+
+/** `POST /api/admin/attachments/sweep` 202 response. */
+export const AttachmentSweepTriggerResponseSchema = z.object({
+  started: z.boolean(),
+  alreadyRunning: z.boolean(),
+});
+export type AttachmentSweepTriggerResponse = z.infer<typeof AttachmentSweepTriggerResponseSchema>;
+
+/**
+ * `GET /api/admin/attachments/stats` — read from the persisted record only.
+ * The GET never walks the tree (the card polls it); a fresh figure is
+ * obtained by pressing Dry run. `stores: null` + `computedAt: null` is the
+ * explicit "no run yet" state.
+ */
+export const AttachmentStorageStatsSchema = z.object({
+  computedAt: z.string().nullable(),
+  running: z.boolean(),
+  stores: z
+    .object({
+      confluence: AttachmentStoreSweepStatsSchema,
+      local: AttachmentStoreSweepStatsSchema,
+    })
+    .nullable(),
+  missingLocalFiles: z.number().int().nonnegative().nullable(),
+});
+export type AttachmentStorageStats = z.infer<typeof AttachmentStorageStatsSchema>;
