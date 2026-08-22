@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../shared/lib/api';
@@ -19,68 +19,17 @@ interface LlmStepProps {
   onBack: () => void;
 }
 
-// UX-only preset that picks sensible defaults for the test endpoint:
-//   - 'local'  → Ollama-style local URL, no API key
-//   - 'remote' → OpenAI-compatible cloud URL, API key required
-// The deprecated `'ollama' | 'openai'` enum (LlmProviderTypeSchema in
-// @compendiq/contracts) is mapped from this preset only at the API
-// boundary below; nothing else in the wizard touches the legacy strings.
-type LlmKindPreset = 'local' | 'remote';
-
-const PRESET_DEFAULTS: Record<LlmKindPreset, { baseUrl: string }> = {
-  local: { baseUrl: 'http://localhost:11434' },
-  remote: { baseUrl: 'https://api.openai.com' },
-};
-
-// Boundary mapping to the legacy `provider` enum the backend test
-// endpoint still accepts. Remove once `LlmTestSchema.provider` is dropped.
-function presetToLegacyProvider(kind: LlmKindPreset): 'ollama' | 'openai' {
-  return kind === 'local' ? 'ollama' : 'openai';
-}
-
 export function LlmStep({ onNext, onBack }: LlmStepProps) {
-  const [kind, setKind] = useState<LlmKindPreset>('local');
-  const [baseUrl, setBaseUrl] = useState(PRESET_DEFAULTS.local.baseUrl);
+  const [baseUrl, setBaseUrl] = useState('http://host.docker.internal:1234/v1');
   const [apiKey, setApiKey] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<LlmTestResult | null>(null);
-  const [autoDetecting, setAutoDetecting] = useState(true);
-
-  // Auto-detect a local Ollama on mount
-  useEffect(() => {
-    let cancelled = false;
-    async function autoDetect() {
-      try {
-        const result = await apiFetch<LlmTestResult>('/setup/llm-test', {
-          method: 'POST',
-          body: JSON.stringify({
-            provider: presetToLegacyProvider('local'),
-            baseUrl: PRESET_DEFAULTS.local.baseUrl,
-          }),
-        });
-        if (!cancelled) {
-          setTestResult(result);
-          if (result.success) {
-            toast.success(`Ollama detected with ${result.models.length} model${result.models.length === 1 ? '' : 's'}`);
-          }
-        }
-      } catch {
-        // Auto-detect failed silently — user can configure manually
-      } finally {
-        if (!cancelled) {
-          setAutoDetecting(false);
-        }
-      }
-    }
-    autoDetect();
-    return () => { cancelled = true; };
-  }, []);
 
   async function handleTest() {
     setTesting(true);
     setTestResult(null);
     try {
-      const payload: Record<string, string> = { provider: presetToLegacyProvider(kind) };
+      const payload: Record<string, string> = { provider: 'openai' };
       if (baseUrl) payload.baseUrl = baseUrl;
       if (apiKey) payload.apiKey = apiKey;
 
@@ -117,43 +66,14 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
     >
       <h2 className="text-xl font-semibold">Configure LLM Provider</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Compendiq uses a large language model for AI features. Configure your preferred provider below.
+        Compendiq uses an OpenAI-compatible large language model API for AI features.
       </p>
 
-      {autoDetecting && (
-        <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          Auto-detecting Ollama...
-        </div>
-      )}
-
       <div className="mt-6 space-y-4">
-        {/* Provider select */}
-        <div>
-          <label htmlFor="llm-provider" className="mb-1.5 block text-sm font-medium">
-            Provider
-          </label>
-          <select
-            id="llm-provider"
-            value={kind}
-            onChange={(e) => {
-              const next = e.target.value as LlmKindPreset;
-              setKind(next);
-              setTestResult(null);
-              setBaseUrl(PRESET_DEFAULTS[next].baseUrl);
-            }}
-            className="nm-select-md"
-            data-testid="llm-provider-select"
-          >
-            <option value="local">Ollama (Local)</option>
-            <option value="remote">OpenAI-Compatible API</option>
-          </select>
-        </div>
-
         {/* Base URL */}
         <div>
           <label htmlFor="llm-base-url" className="mb-1.5 block text-sm font-medium">
-            Base URL
+            OpenAI-Compatible Base URL
           </label>
           <input
             id="llm-base-url"
@@ -161,28 +81,31 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             className="nm-input"
-            placeholder={PRESET_DEFAULTS[kind].baseUrl}
+            placeholder="http://host.docker.internal:1234/v1"
             data-testid="llm-base-url"
           />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            For local servers (e.g. LM Studio, vLLM, LocalAI) running on your machine with Docker, use{' '}
+            <code className="text-foreground">http://host.docker.internal:1234/v1</code>. For cloud providers, use{' '}
+            <code className="text-foreground">https://api.openai.com/v1</code>.
+          </p>
         </div>
 
-        {/* API Key (remote provider only) */}
-        {kind === 'remote' && (
-          <div>
-            <label htmlFor="llm-api-key" className="mb-1.5 block text-sm font-medium">
-              API Key
-            </label>
-            <input
-              id="llm-api-key"
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              className="nm-input"
-              placeholder="sk-..."
-              data-testid="llm-api-key"
-            />
-          </div>
-        )}
+        {/* API Key */}
+        <div>
+          <label htmlFor="llm-api-key" className="mb-1.5 block text-sm font-medium">
+            API Key <span className="text-xs text-muted-foreground font-normal">(optional for local servers)</span>
+          </label>
+          <input
+            id="llm-api-key"
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            className="nm-input"
+            placeholder="sk-... or leave empty for LM Studio"
+            data-testid="llm-api-key"
+          />
+        </div>
 
         {/* Test connection button */}
         <button
@@ -195,19 +118,7 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
           {testing ? 'Testing...' : 'Test Connection'}
         </button>
 
-        {/* Test result indicator. Uses the semantic status tokens rather than
-            literal Tailwind emerald/red: those shades are dark-theme tuned and
-            (unlike the amber ones) are not remapped for Paper, so the
-            label rendered at 1.33:1 and the icon at 1.69:1 on the light
-            surface. The status tokens carry an AA-passing value per theme, and
-            match ConfluenceStep's banner. The icons move with the label
-            because they are meaningful state graphics, so they answer to WCAG
-            1.4.11's 3:1 non-text floor — the emerald (1.78:1) and red (2.65:1)
-            glyph shades they used to carry both missed it.
-
-            The ink sits on the icon/label row rather than on this container:
-            the model list below inherits from here, and a model name is data,
-            not status — it must keep reading as body text. */}
+        {/* Test result indicator */}
         {testResult && (
           <m.div
             initial={{ opacity: 0, height: 0 }}
@@ -224,8 +135,6 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
                 testResult.success ? 'text-status-connected' : 'text-status-disconnected'
               }`}
             >
-              {/* Both glyphs are fill="currentColor", so they inherit the row's
-                  status ink — one source of truth for the banner's colour. */}
               {testResult.success ? (
                 <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
