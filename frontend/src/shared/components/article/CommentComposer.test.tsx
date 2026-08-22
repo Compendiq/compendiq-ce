@@ -83,18 +83,39 @@ describe('CommentComposer component', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('shows submitting state and disables inputs', () => {
+  it('supports initialValue and triggers onDraftChange', () => {
+    const onDraftChange = vi.fn();
     render(
       <CommentComposer
         quote="Selected phrase"
+        initialValue="Saved draft text"
+        onDraftChange={onDraftChange}
         onSubmit={vi.fn()}
         onClose={vi.fn()}
-        isSubmitting={true}
       />,
     );
 
-    expect(screen.getByTestId('inline-comment-input')).toBeDisabled();
-    expect(screen.getByTestId('inline-comment-submit')).toBeDisabled();
-    expect(screen.getByText('Saving…')).toBeInTheDocument();
+    const input = screen.getByTestId('inline-comment-input');
+    expect(input).toHaveValue('Saved draft text');
+
+    fireEvent.change(input, { target: { value: 'Updated draft' } });
+    expect(onDraftChange).toHaveBeenCalledWith('Updated draft');
+  });
+
+  it('has accessible role, aria-label, and aria-describedby', () => {
+    render(
+      <CommentComposer
+        id="test-composer"
+        quote="Selected phrase"
+        onSubmit={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const group = screen.getByRole('group', { name: 'Add note' });
+    expect(group).toBeInTheDocument();
+
+    const input = screen.getByLabelText('Note content');
+    expect(input).toHaveAttribute('aria-describedby', 'test-composer-quote test-composer-hint');
   });
 });

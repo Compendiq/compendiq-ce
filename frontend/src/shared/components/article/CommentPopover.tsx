@@ -17,6 +17,7 @@ import { cn } from '../../lib/cn';
 import type { Editor as EditorType } from '@tiptap/react';
 import type { Comment } from './CommentThread';
 import { formatRelativeTime } from './CommentThread';
+import { getDraftNote } from './draft-notes-store';
 
 export interface CommentPopoverProps {
   pageId?: string | null;
@@ -263,9 +264,23 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [open]);
 
-  const isResolved = Boolean(activeComment?.resolved ?? activeComment?.isResolved);
   const isDraftNote = Boolean(activeCommentId && (activeCommentId.startsWith('local-') || !pageId));
-  const author = activeComment?.authorName ?? activeComment?.username ?? 'Note';
+  const draftNote = isDraftNote && activeCommentId ? getDraftNote(activeCommentId) : undefined;
+  const effectiveComment =
+    activeComment ??
+    (draftNote
+      ? ({
+          id: draftNote.id,
+          body: draftNote.body,
+          authorName: draftNote.authorName ?? 'You (Draft)',
+          createdAt: draftNote.createdAt,
+          anchorData: draftNote.anchorData,
+          resolved: draftNote.resolved,
+        } as Comment)
+      : undefined);
+
+  const isResolved = Boolean(effectiveComment?.resolved ?? effectiveComment?.isResolved);
+  const author = effectiveComment?.authorName ?? effectiveComment?.username ?? 'Note';
 
   const handleReplySubmit = useCallback(
     async (e?: React.FormEvent) => {
@@ -390,25 +405,32 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
       ) : null}
 
       {/* Quoted highlight snippet */}
-      {activeComment?.anchorData?.quote && (
+      {effectiveComment?.anchorData?.quote && (
         <div
           className="mt-2 flex items-start gap-1 rounded border-l-2 border-primary/70 bg-muted/40 px-2 py-1 text-xs italic text-muted-foreground"
           data-testid="popover-comment-quote"
         >
           <Quote size={11} className="mt-0.5 shrink-0 opacity-70" />
-          <span className="line-clamp-2">&ldquo;{activeComment.anchorData.quote}&rdquo;</span>
+          <span className="line-clamp-2">&ldquo;{effectiveComment.anchorData.quote}&rdquo;</span>
         </div>
       )}
 
       {/* Note content */}
       <div className="py-2.5">
-        {activeComment ? (
-          <p
-            className="text-xs text-foreground/90 whitespace-pre-wrap leading-relaxed"
-            data-testid="popover-comment-body"
-          >
-            {activeComment.body}
-          </p>
+        {effectiveComment ? (
+          <div>
+            <p
+              className="text-xs text-foreground/90 whitespace-pre-wrap leading-relaxed"
+              data-testid="popover-comment-body"
+            >
+              {effectiveComment.body}
+            </p>
+            {isDraftNote && (
+              <span className="mt-1 inline-block text-[11px] text-muted-foreground font-mono">
+                (Unsaved draft note)
+              </span>
+            )}
+          </div>
         ) : isDraftNote ? (
           <p className="text-xs text-muted-foreground italic">
             Local draft note. Will sync to the server when you save the page.
