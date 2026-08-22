@@ -64,11 +64,18 @@ vi.mock('./attachment-handler.js', () => ({
   getExpectedAttachmentFilenames: vi.fn(() => []),
 }));
 
-import { runAttachmentSweep, ATTACHMENT_SWEEP_LAST_RUN_KEY } from './attachment-sweep-service.js';
+import { acquireWorkerLock, releaseWorkerLock } from '../../../core/services/redis-cache.js';
+import {
+  runAttachmentSweep,
+  ATTACHMENT_SWEEP_LAST_RUN_KEY,
+  ATTACHMENT_SWEEP_WORKER_LOCK,
+} from './attachment-sweep-service.js';
 
 describe('#1349 runAttachmentSweep epilogue ordering', () => {
   beforeEach(() => {
     events.length = 0;
+    vi.mocked(acquireWorkerLock).mockClear();
+    vi.mocked(releaseWorkerLock).mockClear();
   });
 
   it('persists the last-run record BEFORE releasing the worker lock (and still releases and audits)', async () => {
@@ -84,5 +91,23 @@ describe('#1349 runAttachmentSweep epilogue ordering', () => {
     expect(persistAt).toBeLessThan(releaseAt);
     // The audit heartbeat still fires after the epilogue.
     expect(events).toContain('audit');
+  });
+
+  it('takes ownership of a caller-acquired token: no second acquire, releases THAT token (external round)', async () => {
+    // The route's race fix hands the token it acquired into the run — a
+    // second acquire here would fail against the caller's own lock and turn
+    // every triggered sweep into a false `alreadyRunning`, while releasing a
+    // different token would leave the caller's lock standing until TTL.
+    const run = await runAttachmentSweep({ dryRun: true, token: 'route-held-token' });
+
+    expect(run).not.toBeNull();
+    expect(run!.status).toBe('refused'); // the mocked root does not exist
+    expect(acquireWorkerLock).not.toHaveBeenCalled();
+    expect(releaseWorkerLock).toHaveBeenCalledWith(ATTACHMENT_SWEEP_WORKER_LOCK, 'route-held-token');
+    // The persist-before-release ordering holds on this path too.
+    const persistAt = events.indexOf(`persist:${ATTACHMENT_SWEEP_LAST_RUN_KEY}`);
+    const releaseAt = events.indexOf('release');
+    expect(persistAt).toBeGreaterThanOrEqual(0);
+    expect(persistAt).toBeLessThan(releaseAt);
   });
 });

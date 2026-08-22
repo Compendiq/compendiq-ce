@@ -875,14 +875,35 @@ function shapeRun(input: RunShapeInput): AttachmentSweepRun {
 }
 
 /**
- * Run one sweep. Answers `null` when another holder has the worker lock
- * (`alreadyRunning`); otherwise always answers the run it recorded —
+ * Acquire the sweep's worker lock on behalf of a caller that will pass the
+ * token into `runAttachmentSweep` (the POST trigger). Exists so the route can
+ * derive `started` from the ACTUAL acquisition — an advisory `isWorkerLocked`
+ * read followed by a detached self-acquiring run let two concurrent triggers
+ * both be answered `started: true` while the loser's `null` return vanished
+ * into the fire-and-forget (review, external round). One SET NX; the TTL is
+ * this module's, so the route cannot pick a different bound than the runner
+ * refreshes against. Mirrors `acquireWorkerLock`'s single-node fallback: a
+ * token (never `null`) when Redis is absent or errored.
+ */
+export async function acquireAttachmentSweepLock(): Promise<string | null> {
+  return acquireWorkerLock(ATTACHMENT_SWEEP_WORKER_LOCK, LOCK_TTL_SECONDS);
+}
+
+/**
+ * Run one sweep. Without `opts.token` it acquires the worker lock itself and
+ * answers `null` when another holder has it (`alreadyRunning`); with a
+ * caller-acquired token (from `acquireAttachmentSweepLock`) it takes OWNERSHIP
+ * of that token — no second acquire, and the epilogue's `finally` releases it,
+ * so the caller must not. Otherwise always answers the run it recorded —
  * `completed`, `refused` or `failed` — and persists it for the admin GETs.
  * Fire-and-forget callers must catch their own rejection; this function only
  * throws on a programming error before the lock is taken.
  */
-export async function runAttachmentSweep(opts: { dryRun: boolean }): Promise<AttachmentSweepRun | null> {
-  const token = await acquireWorkerLock(ATTACHMENT_SWEEP_WORKER_LOCK, LOCK_TTL_SECONDS);
+export async function runAttachmentSweep(opts: {
+  dryRun: boolean;
+  token?: string;
+}): Promise<AttachmentSweepRun | null> {
+  const token = opts.token ?? (await acquireWorkerLock(ATTACHMENT_SWEEP_WORKER_LOCK, LOCK_TTL_SECONDS));
   if (!token) return null;
 
   let lockLost = false;

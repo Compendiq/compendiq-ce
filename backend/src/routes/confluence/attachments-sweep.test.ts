@@ -17,11 +17,13 @@ import {
 
 const svc = vi.hoisted(() => ({
   run: vi.fn(),
+  acquire: vi.fn(),
   lastRun: vi.fn(),
   statsRecord: vi.fn(),
 }));
 vi.mock('../../domains/confluence/services/attachment-sweep-service.js', () => ({
   runAttachmentSweep: (...a: unknown[]) => svc.run(...a),
+  acquireAttachmentSweepLock: (...a: unknown[]) => svc.acquire(...a),
   readAttachmentSweepLastRun: (...a: unknown[]) => svc.lastRun(...a),
   readAttachmentStorageStatsRecord: (...a: unknown[]) => svc.statsRecord(...a),
   ATTACHMENT_SWEEP_WORKER_LOCK: 'attachment-sweep',
@@ -107,6 +109,7 @@ describe('#1349 attachment sweep routes', () => {
     vi.clearAllMocks();
     isAdmin = true;
     redis.locked.mockResolvedValue(false);
+    svc.acquire.mockResolvedValue('route-held-token');
     svc.run.mockResolvedValue(A_RUN);
     svc.lastRun.mockResolvedValue(A_RUN);
     svc.statsRecord.mockResolvedValue({
@@ -162,7 +165,7 @@ describe('#1349 attachment sweep routes', () => {
   });
 
   describe('POST /api/admin/attachments/sweep', () => {
-    it('answers 202 started and kicks the sweep with the requested mode', async () => {
+    it('answers 202 started and hands the acquired token to the sweep', async () => {
       const res = await app.inject({
         method: 'POST',
         url: '/api/admin/attachments/sweep',
@@ -170,11 +173,13 @@ describe('#1349 attachment sweep routes', () => {
       });
       expect(res.statusCode).toBe(202);
       expect(res.json()).toEqual({ started: true, alreadyRunning: false });
-      expect(svc.run).toHaveBeenCalledWith({ dryRun: true });
+      // The run gets the token the route acquired — a second acquire inside
+      // the runner would re-open the check-to-acquire race this route closed.
+      expect(svc.run).toHaveBeenCalledWith({ dryRun: true, token: 'route-held-token' });
     });
 
-    it('a LIVE trigger under a held lock reports alreadyRunning and does NOT kick (review r3)', async () => {
-      redis.locked.mockResolvedValue(true);
+    it('a LIVE trigger that loses the acquire reports alreadyRunning and does NOT kick (review r3)', async () => {
+      svc.acquire.mockResolvedValue(null);
       const res = await app.inject({
         method: 'POST',
         url: '/api/admin/attachments/sweep',
@@ -183,15 +188,13 @@ describe('#1349 attachment sweep routes', () => {
       expect(res.statusCode).toBe(202);
       expect(res.json()).toEqual({ started: false, alreadyRunning: true });
       // The response just said the delete did not start, and the card toasts
-      // exactly that — a redundant kick that then runs the destructive sweep
-      // (the running dry run releasing the lock in the race window) would make
-      // the toast a lie about a delete. Silently not-running is the honest
-      // outcome for a destructive trigger; the operator can press again.
+      // exactly that — kicking anyway would run a destructive sweep the
+      // operator was told was a no-op. Pressing again is the remedy.
       expect(svc.run).not.toHaveBeenCalled();
     });
 
-    it('a DRY trigger under a held lock reports alreadyRunning but still kicks (kickScan liveness)', async () => {
-      redis.locked.mockResolvedValue(true);
+    it('a DRY trigger that loses the acquire reports alreadyRunning and does not kick', async () => {
+      svc.acquire.mockResolvedValue(null);
       const res = await app.inject({
         method: 'POST',
         url: '/api/admin/attachments/sweep',
@@ -199,11 +202,28 @@ describe('#1349 attachment sweep routes', () => {
       });
       expect(res.statusCode).toBe(202);
       expect(res.json()).toEqual({ started: false, alreadyRunning: true });
-      // The lock read and the kick are not atomic; for the NON-destructive
-      // mode a lock released in between must not leave nothing running — the
-      // redundant kick answers alreadyRunning inside the service for one
-      // Redis round trip (the kickScan precedent, which is also a scan).
-      expect(svc.run).toHaveBeenCalledWith({ dryRun: true });
+      // SET NX is atomic: a lost acquire means the lock really was held at
+      // that instant — there is no read-to-kick window left for a redundant
+      // dry kick to paper over (the old kickScan-style workaround).
+      expect(svc.run).not.toHaveBeenCalled();
+    });
+
+    it('derives started from the ACQUISITION, never from an advisory lock read (external round)', async () => {
+      // The race the old shape lost: the advisory read says "free" while a
+      // concurrent trigger wins the lock between the read and the kick. The
+      // loser was still answered started:true, and the runner's null return
+      // vanished into the fire-and-forget. With the acquire in the route, the
+      // stale advisory read must not matter.
+      redis.locked.mockResolvedValue(false); // advisory read: "free" (stale)
+      svc.acquire.mockResolvedValue(null); // the acquire itself lost
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/admin/attachments/sweep',
+        payload: { dryRun: false },
+      });
+      expect(res.statusCode).toBe(202);
+      expect(res.json()).toEqual({ started: false, alreadyRunning: true });
+      expect(svc.run).not.toHaveBeenCalled();
     });
 
     it('refuses a body without an explicit dryRun', async () => {
