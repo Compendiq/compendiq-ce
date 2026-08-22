@@ -175,7 +175,14 @@ describe('#1349 attachment sweep routes', () => {
       expect(res.json()).toEqual({ started: true, alreadyRunning: false });
       // The run gets the token the route acquired — a second acquire inside
       // the runner would re-open the check-to-acquire race this route closed.
-      expect(svc.run).toHaveBeenCalledWith({ dryRun: true, token: 'route-held-token' });
+      // It also gets the triggering admin (verification r1): the sweep is
+      // manual-only, so its RETENTION_PRUNED event must name who pressed
+      // the button, not a null system actor.
+      expect(svc.run).toHaveBeenCalledWith({
+        dryRun: true,
+        token: 'route-held-token',
+        triggeredBy: 'test-admin',
+      });
     });
 
     it('a LIVE trigger that loses the acquire reports alreadyRunning and does NOT kick (review r3)', async () => {

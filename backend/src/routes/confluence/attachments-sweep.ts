@@ -93,7 +93,11 @@ export async function attachmentSweepRoutes(fastify: FastifyInstance) {
       // "started" for a sweep that did not start.
       const token = await acquireAttachmentSweepLock();
       if (token) {
-        void runAttachmentSweep({ dryRun, token }).catch((err) => {
+        // `triggeredBy` names this admin as the RETENTION_PRUNED event's
+        // actor (verification r1): the sweep is manual-only, so a destructive
+        // run always has a person behind it, and a null-actor event recorded
+        // that files were permanently deleted but never who asked.
+        void runAttachmentSweep({ dryRun, token, triggeredBy: request.userId }).catch((err) => {
           logger.error({ err, dryRun }, 'Attachment sweep failed after an admin trigger');
         });
       }

@@ -898,10 +898,18 @@ export async function acquireAttachmentSweepLock(): Promise<string | null> {
  * `completed`, `refused` or `failed` — and persists it for the admin GETs.
  * Fire-and-forget callers must catch their own rejection; this function only
  * throws on a programming error before the lock is taken.
+ *
+ * `triggeredBy` is the admin whose trigger started this run (the POST route's
+ * `request.userId`) and becomes the RETENTION_PRUNED event's actor — the sweep
+ * is manual-only, so a destructive run always has a person behind it, and an
+ * audit trail that never says WHO pressed Delete orphans is half a trail
+ * (verification r1). Absent means a non-request caller: a null-actor system
+ * event, the retention service's own convention.
  */
 export async function runAttachmentSweep(opts: {
   dryRun: boolean;
   token?: string;
+  triggeredBy?: string | null;
 }): Promise<AttachmentSweepRun | null> {
   const token = opts.token ?? (await acquireWorkerLock(ATTACHMENT_SWEEP_WORKER_LOCK, LOCK_TTL_SECONDS));
   if (!token) return null;
@@ -966,8 +974,8 @@ export async function runAttachmentSweep(opts: {
 
   // RETENTION_PRUNED-style heartbeat: one event per run, dry included, with
   // counts by reason class — the auditor can tell "ran, nothing matched"
-  // from "never ran".
-  await logAuditEvent(null, 'RETENTION_PRUNED', 'table', 'attachments_orphan_sweep', {
+  // from "never ran". The actor is the triggering admin when there is one.
+  await logAuditEvent(opts.triggeredBy ?? null, 'RETENTION_PRUNED', 'table', 'attachments_orphan_sweep', {
     dry_run: run.dryRun,
     status: run.status,
     note: run.note,

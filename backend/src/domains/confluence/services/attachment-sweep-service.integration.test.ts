@@ -551,14 +551,37 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       const run = await runAttachmentSweep({ dryRun: false });
       expect(run!.status).toBe('completed');
 
-      const audit = await query<{ metadata: { dry_run: boolean; files_pruned: number } }>(
-        `SELECT metadata FROM audit_log
+      const audit = await query<{
+        user_id: string | null;
+        metadata: { dry_run: boolean; files_pruned: number };
+      }>(
+        `SELECT user_id, metadata FROM audit_log
           WHERE action = 'RETENTION_PRUNED' AND resource_id = 'attachments_orphan_sweep'
           ORDER BY created_at DESC LIMIT 1`,
       );
       expect(audit.rows).toHaveLength(1);
       expect(audit.rows[0]!.metadata.dry_run).toBe(false);
       expect(audit.rows[0]!.metadata.files_pruned).toBeGreaterThan(0);
+      // No `triggeredBy` (a non-request caller): a null-actor system event.
+      expect(audit.rows[0]!.user_id).toBeNull();
+    });
+
+    // Verification round r1: the sweep is manual-only, so every destructive
+    // run has an admin behind it — an audit trail that records files were
+    // permanently deleted but never WHO pressed Delete orphans is half a
+    // trail. The route threads its `request.userId` through `triggeredBy`.
+    it('attributes the audit event to the triggering admin when triggeredBy is passed', async () => {
+      const adminId = await seedUser('sweep-admin');
+      const run = await runAttachmentSweep({ dryRun: true, triggeredBy: adminId });
+      expect(run!.status).toBe('completed');
+
+      const audit = await query<{ user_id: string | null }>(
+        `SELECT user_id FROM audit_log
+          WHERE action = 'RETENTION_PRUNED' AND resource_id = 'attachments_orphan_sweep'
+          ORDER BY created_at DESC LIMIT 1`,
+      );
+      expect(audit.rows).toHaveLength(1);
+      expect(audit.rows[0]!.user_id).toBe(adminId);
     });
 
     // Review r1: a throw mid-delete (an EACCES here; a lost worker lock in
