@@ -892,12 +892,6 @@ export function ArticleRightPane({
       'rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
     const railMenuItem =
       'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
-    const inspectorViewLabel =
-      activeInspectorView === 'assistant'
-        ? 'Assistant'
-        : activeInspectorView === 'outline'
-          ? 'Outline'
-          : 'Details';
     const assistantHint = formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac());
     const pinHint = formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac());
     const closeOutlineUnlessMovingInside = (next: Node | null) => {
@@ -1041,7 +1035,7 @@ export function ArticleRightPane({
                 >
                   <MessageSquare size={16} />
                   {openNotesCount > 0 && (
-                    <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-action px-1 text-[11px] font-semibold text-action-foreground">
+                    <span className="absolute top-0 right-0 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-action px-0.5 text-[11px] font-semibold text-action-foreground">
                       {openNotesCount}
                     </span>
                   )}
@@ -1135,12 +1129,6 @@ export function ArticleRightPane({
                 </span>
               </div>
             )}
-            <span
-              data-testid="inspector-rail-current-view"
-              className="mt-auto px-0.5 pb-1 text-center text-[11px] font-medium leading-tight text-foreground"
-            >
-              {inspectorViewLabel}
-            </span>
           </div>
         </m.aside>
       </AnimatePresence>
