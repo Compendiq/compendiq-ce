@@ -6,7 +6,6 @@ import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
-import { Highlight } from '@tiptap/extension-highlight';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import { common, createLowlight } from 'lowlight';
@@ -37,6 +36,7 @@ import {
   UnknownMacro,
   ExtendedTable,
   CommentMark,
+  SafeHighlight,
 } from './article-extensions';
 import { InlineLucideIcon } from './inline-lucide-icon';
 import { MermaidBlock } from './MermaidBlockExtension';
@@ -150,8 +150,8 @@ export function ArticleViewer({
       }),
       TextStyle,
       Color,
-      Highlight.configure({ multicolor: true }),
       CommentMark,
+      SafeHighlight.configure({ multicolor: true }),
       ExtendedTable.configure({ resizable: false }),
       TableRow,
       TableCell,

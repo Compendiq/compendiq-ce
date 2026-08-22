@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { CommentMark } from './comment-extension';
+import { SafeHighlight } from './article-extensions';
 
 describe('CommentMark TipTap extension', () => {
   let editor: Editor;
@@ -121,7 +122,42 @@ describe('CommentMark TipTap extension', () => {
     );
     expect(onCommentClick).toHaveBeenCalledWith('thread-99', clickEvent);
 
+    window.removeEventListener('compendiq:comment-open-sidebar', eventSpy);
     window.removeEventListener('compendiq:comment-select', eventSpy);
     customEditor.destroy();
+  });
+
+  it('preserves data-comment-id without converting to standard yellow highlight when Highlight extension is active', () => {
+    const editorWithHighlight = new Editor({
+      extensions: [
+        StarterKit,
+        CommentMark,
+        SafeHighlight.configure({ multicolor: true }),
+      ],
+      content: '<p>Some <mark data-comment-id="note-123">noted text</mark> and normal <mark>highlighted text</mark></p>',
+    });
+
+    const html = editorWithHighlight.getHTML();
+    // Must preserve data-comment-id and class="comment-mark" on the note
+    expect(html).toContain('data-comment-id="note-123"');
+    expect(html).toContain('class="comment-mark"');
+    expect(html).toContain('noted text');
+
+    // Re-parse the generated HTML into another editor to simulate page save and reload
+    const reloadedEditor = new Editor({
+      extensions: [
+        StarterKit,
+        CommentMark,
+        SafeHighlight.configure({ multicolor: true }),
+      ],
+      content: html,
+    });
+
+    const reloadedHtml = reloadedEditor.getHTML();
+    expect(reloadedHtml).toContain('data-comment-id="note-123"');
+    expect(reloadedHtml).toContain('class="comment-mark"');
+
+    editorWithHighlight.destroy();
+    reloadedEditor.destroy();
   });
 });

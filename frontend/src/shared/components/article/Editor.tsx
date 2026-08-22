@@ -7,7 +7,6 @@ import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
 import TextAlign from '@tiptap/extension-text-align';
-import { Highlight } from '@tiptap/extension-highlight';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import { lowlight } from '../../lib/lowlight';
@@ -52,6 +51,7 @@ import {
   ExtendedTable,
   BlockShortcutsExtension,
   CommentMark,
+  SafeHighlight,
 } from './article-extensions';
 import { InlineLucideIcon } from './inline-lucide-icon';
 import type { Editor as EditorType } from '@tiptap/react';
@@ -747,8 +747,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       }),
       TextStyle,
       Color,
-      Highlight.configure({ multicolor: true }),
       CommentMark,
+      SafeHighlight.configure({ multicolor: true }),
       ExtendedTable.configure({ resizable: true }),
       TableRow,
       TableCell,

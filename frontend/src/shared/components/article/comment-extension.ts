@@ -50,6 +50,7 @@ export const commentPluginKey = new PluginKey('commentClick');
  */
 export const CommentMark = Mark.create<CommentExtensionOptions>({
   name: 'comment',
+  priority: 1000,
 
   addOptions() {
     return {
@@ -90,9 +91,31 @@ export const CommentMark = Mark.create<CommentExtensionOptions>({
     return [
       {
         tag: 'mark[data-comment-id]',
+        priority: 1000,
+        getAttrs: (node) => {
+          if (typeof node === 'string') return false;
+          const element = node as HTMLElement;
+          const commentId = element.getAttribute('data-comment-id');
+          if (!commentId) return false;
+          return {
+            commentId,
+            resolved: element.getAttribute('data-comment-resolved') === 'true',
+          };
+        },
       },
       {
         tag: 'span[data-comment-id]',
+        priority: 1000,
+        getAttrs: (node) => {
+          if (typeof node === 'string') return false;
+          const element = node as HTMLElement;
+          const commentId = element.getAttribute('data-comment-id');
+          if (!commentId) return false;
+          return {
+            commentId,
+            resolved: element.getAttribute('data-comment-resolved') === 'true',
+          };
+        },
       },
     ];
   },
