@@ -20,10 +20,13 @@ import {
   releaseWorkerLock,
   setRedisClient,
 } from '../../../core/services/redis-cache.js';
+import type { AttachmentSweepCandidate } from '@compendiq/contracts';
 import {
   ATTACHMENT_SWEEP_GRACE_MS,
   ATTACHMENT_SWEEP_WORKER_LOCK,
   buildAttachmentKeepSets,
+  deleteCandidates,
+  emptyDeletedTotals,
   readAttachmentStorageStatsRecord,
   readAttachmentSweepLastRun,
   runAttachmentSweep,
@@ -110,10 +113,13 @@ interface SeededCorpus {
  * percent-encoded reference; a version, a pending sync version, a template
  * and a comment each reference one more of its files. Beside those sit an
  * unreferenced aged image (the per-file orphan), an unreferenced aged
- * external-cache image, an unreferenced non-image, and a dot-file. Directory
- * `55555` belongs to no page (aged orphan), `66666` to no page but young
- * (grace), and the local store carries a tracked file, an untracked orphan,
- * a row with no file, and an orphan directory `99999`.
+ * external-cache image, an unreferenced non-image, a dot-file, and an
+ * unreferenced YOUNG image — the exact state a paste leaves between staging
+ * bytes and saving the body, which the per-file mtime grace exists for.
+ * Directory `55555` belongs to no page (aged orphan), `66666` to no page but
+ * young (grace), and the local store carries a tracked file, an untracked
+ * orphan, an untracked YOUNG file, a row with no file, and an orphan
+ * directory `99999`.
  */
 async function seedCorpus(): Promise<SeededCorpus> {
   const userId = await seedUser();
@@ -205,6 +211,7 @@ async function seedCorpus(): Promise<SeededCorpus> {
   await writeAged('90001', 'external-aaaabbbbcccc.png');
   await writeAged('90001', 'manual.pdf');
   await writeAged('90001', '.DS_Store');
+  await writeYoung('90001', 'young-orphan.png');
   await writeAged(String(standalonePageId), 'pasted.png');
   await writeAged(String(trashedPageId), 'trash-kept.png');
   await writeAged('55555', 'old.png');
@@ -212,6 +219,7 @@ async function seedCorpus(): Promise<SeededCorpus> {
   await writeAged('local', String(localPageId), 'tracked.png');
   await writeAged('local', String(localPageId), 'local-keep.png');
   await writeAged('local', String(localPageId), 'untracked.png');
+  await writeYoung('local', String(localPageId), 'young-untracked.png');
   await writeAged('local', '99999', 'x.png');
   await ageDirs(
     '90001',
@@ -299,7 +307,15 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
 
       // The young orphan directory is grace-skipped, never listed.
       expect(run!.candidateSample.find((c) => c.key === '66666')).toBeUndefined();
-      expect(run!.stores!.confluence.graceSkipped).toBeGreaterThanOrEqual(1);
+
+      // The per-file mtime grace, in BOTH stores: an unreferenced young file
+      // inside a page's own directory — the paste-race state — is never a
+      // candidate (review r1: the directory-level grace alone left this
+      // unpinned).
+      expect(byKey('confluence', '90001', 'young-orphan.png')).toBeUndefined();
+      expect(byKey('local', String(localPageId), 'young-untracked.png')).toBeUndefined();
+      expect(run!.stores!.confluence.graceSkipped).toBeGreaterThanOrEqual(2); // 66666/ + young-orphan.png
+      expect(run!.stores!.local.graceSkipped).toBeGreaterThanOrEqual(1); // young-untracked.png
 
       // `local/` is never a candidate of the Confluence-tree walk.
       expect(run!.candidateSample.find((c) => c.store === 'confluence' && c.key === 'local')).toBeUndefined();
@@ -327,16 +343,16 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       const run = await runAttachmentSweep({ dryRun: true });
 
       const conf = run!.stores!.confluence;
-      // 90001: 13 plain files (dot-file excluded) + pasted.png + trash-kept.png
-      // + 55555/old.png + 66666/new.png = 17.
-      expect(conf.files).toBe(17);
+      // 90001: 14 plain files (dot-file excluded) + pasted.png + trash-kept.png
+      // + 55555/old.png + 66666/new.png = 18.
+      expect(conf.files).toBe(18);
       expect(conf.directories).toBe(5);
       expect(conf.bytes).toBeGreaterThan(0);
       expect(conf.orphanDirectories).toBe(1);
-      expect(conf.orphanFiles).toBe(1 + 1); // orphan.png + external-…
+      expect(conf.orphanFiles).toBe(1 + 1); // orphan.png + external-… (young-orphan.png grace-skipped)
 
       const local = run!.stores!.local;
-      expect(local.files).toBe(4);
+      expect(local.files).toBe(5);
       expect(local.directories).toBe(2);
       expect(local.orphanDirectories).toBe(1);
       expect(local.orphanFiles).toBe(1);
@@ -346,7 +362,7 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
 
       const stats = await readAttachmentStorageStatsRecord();
       expect(stats).not.toBeNull();
-      expect(stats!.stores.confluence.files).toBe(17);
+      expect(stats!.stores.confluence.files).toBe(18);
       expect(stats!.missingLocalFiles).toBe(1);
     });
 
@@ -400,6 +416,36 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       // The rows were counted as missing, not deleted.
       const rows = await query(`SELECT 1 FROM local_attachments WHERE page_id = $1`, [localPageId]);
       expect(rows.rows.length).toBe(2);
+    });
+
+    // The two anomaly branches, each pinned ALONE (review r1: emptying both
+    // stores let either branch's refusal satisfy the joint test, so disabling
+    // one shipped green).
+    it('refuses on its confluence branch when only the Confluence tree is empty', async () => {
+      const { localPageId } = await seedCorpus();
+      for (const entry of await fs.readdir(tempBase)) {
+        if (entry === 'local') continue;
+        await fs.rm(path.join(tempBase, entry), { recursive: true, force: true });
+      }
+
+      const live = await runAttachmentSweep({ dryRun: false });
+      expect(live!.status).toBe('refused');
+      expect(live!.note).toMatch(/^confluence store/);
+      expect(live!.deleted).toBeNull();
+      // The intact local store was not touched — the refusal is run-wide.
+      expect(await exists(path.join(tempBase, 'local', String(localPageId), 'untracked.png'))).toBe(true);
+    });
+
+    it('refuses on its local branch when only the local store is empty', async () => {
+      await seedCorpus();
+      await fs.rm(path.join(tempBase, 'local'), { recursive: true, force: true });
+
+      const live = await runAttachmentSweep({ dryRun: false });
+      expect(live!.status).toBe('refused');
+      expect(live!.note).toMatch(/^local store/);
+      expect(live!.deleted).toBeNull();
+      // The intact Confluence tree was not touched — the refusal is run-wide.
+      expect(await exists(path.join(tempBase, '90001', 'orphan.png'))).toBe(true);
     });
   });
 
@@ -457,9 +503,11 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
         path.join(tempBase, '90001', 'comment-kept.png'),
         path.join(tempBase, '90001', 'manual.pdf'),
         path.join(tempBase, '90001', '.DS_Store'),
+        path.join(tempBase, '90001', 'young-orphan.png'),
         path.join(tempBase, '66666', 'new.png'),
         path.join(tempBase, 'local', String(localPageId), 'tracked.png'),
         path.join(tempBase, 'local', String(localPageId), 'local-keep.png'),
+        path.join(tempBase, 'local', String(localPageId), 'young-untracked.png'),
       ]) {
         expect(await exists(p), `${p} must survive a live run`).toBe(true);
       }
@@ -502,6 +550,155 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(audit.rows).toHaveLength(1);
       expect(audit.rows[0]!.metadata.dry_run).toBe(false);
       expect(audit.rows[0]!.metadata.files_pruned).toBeGreaterThan(0);
+    });
+
+    // Review r1: a throw mid-delete (an EACCES here; a lost worker lock in
+    // production) must still record, audit and dirty-mark the destructive
+    // work already done — `deleted: null` + `files_pruned: 0` under-reported
+    // exactly the runs an operator most needs to audit. The EACCES also pins
+    // the local-store deleter's honesty: a swallowed `fs.rm` error used to be
+    // counted as a deletion that never happened.
+    it.skipIf(process.getuid?.() === 0)(
+      'a live run that fails mid-delete records the partial totals, audits them and still dirty-marks',
+      async () => {
+        const { confPageId, localPageId } = await seedCorpus();
+        await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1`, [confPageId]);
+        await seedEmbeddingRow(confPageId, 'confluence', 'orphan.png');
+
+        // Read-only parent directory: the rm of local/<id>/untracked.png
+        // fails with EACCES after every Confluence-tree candidate (which the
+        // delete loop visits first) has already been removed.
+        const lockedDir = path.join(tempBase, 'local', String(localPageId));
+        await fs.chmod(lockedDir, 0o555);
+        try {
+          const run = await runAttachmentSweep({ dryRun: false });
+
+          expect(run!.status).toBe('failed');
+          // The delete phase started, so the partial totals are recorded…
+          expect(run!.deleted).not.toBeNull();
+          expect(run!.deleted!.files).toBeGreaterThanOrEqual(3);
+          expect(await exists(path.join(tempBase, '90001', 'orphan.png'))).toBe(false);
+          // …and the file whose rm failed is neither deleted nor counted.
+          expect(await exists(path.join(lockedDir, 'untracked.png'))).toBe(true);
+          expect(run!.deleted!.files).toBeLessThanOrEqual(4);
+
+          // The audit event carries the partial counts, not zero.
+          const audit = await query<{ metadata: { status: string; files_pruned: number } }>(
+            `SELECT metadata FROM audit_log
+              WHERE action = 'RETENTION_PRUNED' AND resource_id = 'attachments_orphan_sweep'
+              ORDER BY created_at DESC LIMIT 1`,
+          );
+          expect(audit.rows[0]!.metadata.status).toBe('failed');
+          expect(audit.rows[0]!.metadata.files_pruned).toBe(run!.deleted!.files);
+
+          // Owners of files that WERE deleted are re-queued despite the throw.
+          expect(run!.deleted!.imageEmbeddingRows).toBe(1);
+          expect(run!.deleted!.pagesMarkedDirty).toBeGreaterThanOrEqual(1);
+          const dirty = await query<{ image_embedding_dirty: boolean }>(
+            `SELECT image_embedding_dirty FROM pages WHERE id = $1`,
+            [confPageId],
+          );
+          expect(dirty.rows[0]!.image_embedding_dirty).toBe(true);
+        } finally {
+          await fs.chmod(lockedDir, 0o755);
+        }
+      },
+    );
+  });
+
+  /**
+   * The DECISIONS' binding "a live run deletes ONLY what the same walk would
+   * list now" — exercised directly against `deleteCandidates` with hand-built
+   * (i.e. deliberately stale) candidates, because through `runAttachmentSweep`
+   * the walk and the delete run back-to-back and nothing can change in
+   * between (review r1: all three re-checks were deletable without a red
+   * test).
+   */
+  describe('delete-time re-verification (deleteCandidates)', () => {
+    const noAbort = () => undefined;
+    const dirCandidate = (store: 'confluence' | 'local', key: string): AttachmentSweepCandidate => ({
+      store,
+      key,
+      filename: null,
+      bytes: 0,
+      reason: 'orphan_directory',
+    });
+    const fileCandidate = (
+      store: 'confluence' | 'local',
+      key: string,
+      filename: string,
+    ): AttachmentSweepCandidate => ({ store, key, filename, bytes: 0, reason: 'orphan_file' });
+
+    it('a directory whose page appeared since the listing survives, in both stores (first-sync race)', async () => {
+      const userId = await seedUser();
+      await writeAged('55555', 'old.png');
+      await ageDirs('55555');
+      const local = await query<{ id: number }>(
+        `INSERT INTO pages (title, space_key, source, page_type, version, body_html, created_by_user_id)
+         VALUES ('Late local', 'LOCAL', 'standalone', 'page', 1, '', $1) RETURNING id`,
+        [userId],
+      );
+      const localId = local.rows[0]!.id;
+      await writeAged('local', String(localId), 'x.png');
+      await ageDirs(path.join('local', String(localId)));
+      // The page rows land AFTER the (simulated) walk listed both directories.
+      await query(
+        `INSERT INTO pages (title, space_key, confluence_id, source, page_type, version)
+         VALUES ('Late conf', 'DEV', '55555', 'confluence', 'page', 1)`,
+      );
+
+      const totals = emptyDeletedTotals();
+      await deleteCandidates(
+        [dirCandidate('confluence', '55555'), dirCandidate('local', String(localId))],
+        noAbort,
+        totals,
+      );
+
+      expect(await exists(path.join(tempBase, '55555', 'old.png'))).toBe(true);
+      expect(await exists(path.join(tempBase, 'local', String(localId), 'x.png'))).toBe(true);
+      expect(totals.directories).toBe(0);
+      expect(totals.files).toBe(0);
+    });
+
+    it('a directory that gained a young file since the listing survives (grace re-check)', async () => {
+      await writeAged('55555', 'old.png');
+      await writeYoung('55555', 'fresh.png');
+      await ageDirs('55555'); // dir mtime aged — only the contained file is young
+
+      const totals = emptyDeletedTotals();
+      await deleteCandidates([dirCandidate('confluence', '55555')], noAbort, totals);
+
+      expect(await exists(path.join(tempBase, '55555', 'old.png'))).toBe(true);
+      expect(await exists(path.join(tempBase, '55555', 'fresh.png'))).toBe(true);
+      expect(totals.directories).toBe(0);
+    });
+
+    it('a file rewritten inside the grace window since the listing survives (stat re-check)', async () => {
+      await writeYoung('90001', 'rewritten.png'); // young NOW; the stale candidate listed it aged
+
+      const totals = emptyDeletedTotals();
+      await deleteCandidates([fileCandidate('confluence', '90001', 'rewritten.png')], noAbort, totals);
+
+      expect(await exists(path.join(tempBase, '90001', 'rewritten.png'))).toBe(true);
+      expect(totals.files).toBe(0);
+    });
+
+    it('sanity: an unchanged orphan still falls through every re-check and is deleted', async () => {
+      await writeAged('55555', 'old.png');
+      await ageDirs('55555');
+      await writeAged('90001', 'gone.png');
+
+      const totals = emptyDeletedTotals();
+      await deleteCandidates(
+        [dirCandidate('confluence', '55555'), fileCandidate('confluence', '90001', 'gone.png')],
+        noAbort,
+        totals,
+      );
+
+      expect(await exists(path.join(tempBase, '55555'))).toBe(false);
+      expect(await exists(path.join(tempBase, '90001', 'gone.png'))).toBe(false);
+      expect(totals.directories).toBe(1);
+      expect(totals.files).toBe(2); // the directory's one file + gone.png
     });
   });
 

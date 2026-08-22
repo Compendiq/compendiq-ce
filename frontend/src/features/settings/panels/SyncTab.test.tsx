@@ -51,4 +51,52 @@ describe('SyncTab', () => {
     await screen.findByTestId('sync-tab-error');
     expect(screen.getByTestId('sync-tab-retry')).toBeInTheDocument();
   });
+
+  // #1349 (review r1): the Attachment Storage section is admin-only — its
+  // routes are requireAdmin, so rendering it for a non-admin would only
+  // paint two failing fetches beside a delete button that cannot work.
+  describe('Attachment Storage section (#1349)', () => {
+    const zeroAssets = { expected: 0, cached: 0, missing: 0 };
+    const overview = {
+      sync: { userId: '1', status: 'idle' },
+      totals: {
+        selectedSpaces: 0,
+        totalPages: 0,
+        pagesWithAssets: 0,
+        pagesWithIssues: 0,
+        healthyPages: 0,
+        images: zeroAssets,
+        drawio: zeroAssets,
+      },
+      spaces: [],
+      issues: [],
+    };
+
+    beforeEach(() => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as URL).toString();
+        const body = url.endsWith('/settings/sync-overview') ? overview : {};
+        return new Response(JSON.stringify(body), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    });
+
+    it('renders for an admin', async () => {
+      render(<SyncTab />, { wrapper: createWrapper() });
+      expect(await screen.findByTestId('attachment-storage-section')).toBeInTheDocument();
+    });
+
+    it('is absent for a non-admin', async () => {
+      useAuthStore.getState().setAuth('test-token', {
+        id: '2',
+        username: 'viewer',
+        role: 'user',
+      });
+      render(<SyncTab />, { wrapper: createWrapper() });
+      // Settle on a section that renders for every role before asserting an absence.
+      await screen.findByTestId('quality-worker-section');
+      expect(screen.queryByTestId('attachment-storage-section')).not.toBeInTheDocument();
+    });
+  });
 });

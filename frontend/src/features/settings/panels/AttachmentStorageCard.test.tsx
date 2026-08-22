@@ -132,6 +132,39 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(screen.queryByText(/0 B/)).not.toBeInTheDocument();
   });
 
+  // Review r1: `stats.isError && sweep.isError` needed BOTH GETs down before
+  // any failure showed — a one-sided failure (each route has its own
+  // rate-limit counter and `retry: false`) collapsed into the empty state or
+  // into silence, the exact anti-pattern the header comment forbids.
+  it('a failed stats fetch is a failure even when the sweep GET succeeds — never the empty state', async () => {
+    mockApi({ stats: 'error', sweep: { running: false, lastRun: null } });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-error');
+    expect(screen.queryByTestId('attachment-storage-empty')).not.toBeInTheDocument();
+  });
+
+  it('a failed stats fetch beside a healthy last run shows the failure AND keeps the last-run line', async () => {
+    mockApi({ stats: 'error', sweep: SWEEP });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-error');
+    expect(screen.queryByTestId('attachment-storage-empty')).not.toBeInTheDocument();
+    // The sweep GET answered, so its half of the card still renders.
+    expect(screen.getByTestId('attachment-sweep-last-run')).toBeInTheDocument();
+  });
+
+  it('a failed sweep GET is a failure beside healthy storage figures — a refused run must not vanish silently', async () => {
+    mockApi({ stats: STATS, sweep: 'error' });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-sweep-status-error');
+    expect(screen.getByTestId('attachment-sweep-status-error').textContent).toMatch(/could not be read/i);
+    expect(screen.queryByTestId('attachment-storage-empty')).not.toBeInTheDocument();
+    // The stats GET answered, so the figures still render.
+    expect(screen.getByTestId('attachment-storage-counters')).toBeInTheDocument();
+  });
+
   it('Dry run posts dryRun:true and reports the start', async () => {
     mockApi({});
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
@@ -200,6 +233,53 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(strip.textContent).toMatch(/attachments root missing/i);
     expect(strip.getAttribute('role')).toBe('status');
     expect(strip.className).toContain('text-warning');
+    // A refusal runs before the delete phase, so this claim is always true.
+    expect(strip.textContent).toMatch(/no files were deleted/i);
+  });
+
+  // Review r1: a FAILED live run can abort mid-delete, and the backend now
+  // records the partial totals — "No files were deleted." was a false claim
+  // on a destructive operator surface.
+  it('a failed live run with partial deletions says so instead of claiming nothing was deleted', async () => {
+    mockApi({
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          dryRun: false,
+          status: 'failed',
+          note: 'sweep failed — see the server logs',
+          stores: null,
+          deleted: { directories: 1, files: 3, bytes: 87, imageEmbeddingRows: 1, pagesMarkedDirty: 1 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const strip = await screen.findByTestId('attachment-sweep-last-run-problem');
+    expect(strip.textContent).toMatch(/stopped partway/i);
+    expect(strip.textContent).toMatch(/3 files/i);
+    expect(strip.textContent).not.toMatch(/no files were deleted/i);
+  });
+
+  it('a failed live run whose delete phase never started keeps the honest "no files" claim', async () => {
+    mockApi({
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          dryRun: false,
+          status: 'failed',
+          note: 'sweep failed — see the server logs',
+          stores: null,
+          deleted: null,
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const strip = await screen.findByTestId('attachment-sweep-last-run-problem');
+    expect(strip.textContent).toMatch(/no files were deleted/i);
   });
 
   it('a completed last run renders neutrally — no amber at rest', async () => {

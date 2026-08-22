@@ -92,7 +92,7 @@ import {
   LOCAL_STORE_DIRNAME,
   localAttachmentsRoot,
   removeLocalAttachmentDirectory,
-  removeLocalAttachmentFilesForRelocate,
+  removeLocalAttachmentFileForSweep,
 } from '../../../core/services/local-attachment-service.js';
 import { markPageImagesDirty } from '../../../core/services/image-embedding-dirty.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
@@ -603,12 +603,16 @@ async function walkLocalStore(
 
 // ── Live deletion (phase B) ────────────────────────────────────────────────
 
-interface DeletedTotals {
+export interface DeletedTotals {
   directories: number;
   files: number;
   bytes: number;
   imageEmbeddingRows: number;
   pagesMarkedDirty: number;
+}
+
+export function emptyDeletedTotals(): DeletedTotals {
+  return { directories: 0, files: 0, bytes: 0, imageEmbeddingRows: 0, pagesMarkedDirty: 0 };
 }
 
 /** Page ids owning a Confluence-tree directory key (0, 1 or 2 rows). */
@@ -639,12 +643,21 @@ async function confluenceKeyOwners(key: string): Promise<number[]> {
  * row kept by the reconcile belongs to a file the body still references,
  * which by definition sits in the keep-set and never becomes a candidate)
  * and the owning pages are re-queued via `image_embedding_dirty`.
+ *
+ * `totals` is the CALLER's object and is mutated per deletion, so a throw
+ * mid-loop (a lost worker lock, an EACCES) leaves the partial counts in the
+ * caller's hands — a failed run must still record and audit the destructive
+ * work it already did (review r1). The dirty-marking flush runs in a
+ * `finally` for the same reason: the owners of already-deleted files must be
+ * re-queued whether or not a later candidate failed. Exported for the
+ * delete-time re-verification tests; production callers reach it only
+ * through `runAttachmentSweep`.
  */
-async function deleteCandidates(
+export async function deleteCandidates(
   candidates: AttachmentSweepCandidate[],
   assertNotAborted: () => void,
+  totals: DeletedTotals,
 ): Promise<DeletedTotals> {
-  const totals: DeletedTotals = { directories: 0, files: 0, bytes: 0, imageEmbeddingRows: 0, pagesMarkedDirty: 0 };
   const cutoffMs = Date.now() - ATTACHMENT_SWEEP_GRACE_MS;
   const dirtyPages = new Set<number>();
   const ownersByKey = new Map<string, number[]>();
@@ -657,79 +670,91 @@ async function deleteCandidates(
   const stillKnownConfluence = await knownConfluenceTreeKeys(dirKeys.confluence);
   const stillKnownLocal = await knownLocalPageIds(dirKeys.local.map(Number));
 
-  for (const candidate of candidates) {
-    assertNotAborted();
-    const dirPath =
-      candidate.store === 'local'
-        ? path.join(localAttachmentsRoot(), candidate.key)
-        : path.join(attachmentsRootNow(), candidate.key);
-
-    if (candidate.reason === 'orphan_directory') {
-      const reappeared =
+  try {
+    for (const candidate of candidates) {
+      assertNotAborted();
+      const dirPath =
         candidate.store === 'local'
-          ? stillKnownLocal.has(Number(candidate.key))
-          : stillKnownConfluence.has(candidate.key);
-      if (reappeared) continue;
-      // Re-check the grace window over the directory's CURRENT contents.
-      const recheck = await readKeyDir(dirPath, candidate.key, emptyStats());
-      if (recheck === null) continue; // vanished or unreadable — do not judge
-      const aged = recheck.dirMtimeMs < cutoffMs && recheck.files.every((f) => f.mtimeMs < cutoffMs);
-      if (!aged) continue;
-      if (candidate.store === 'local') {
-        await removeLocalAttachmentDirectory(Number(candidate.key));
-      } else {
-        await removeCachedAttachmentDirectory(candidate.key);
+          ? path.join(localAttachmentsRoot(), candidate.key)
+          : path.join(attachmentsRootNow(), candidate.key);
+
+      if (candidate.reason === 'orphan_directory') {
+        const reappeared =
+          candidate.store === 'local'
+            ? stillKnownLocal.has(Number(candidate.key))
+            : stillKnownConfluence.has(candidate.key);
+        if (reappeared) continue;
+        // Re-check the grace window over the directory's CURRENT contents.
+        const recheck = await readKeyDir(dirPath, candidate.key, emptyStats());
+        if (recheck === null) continue; // vanished or unreadable — do not judge
+        const aged = recheck.dirMtimeMs < cutoffMs && recheck.files.every((f) => f.mtimeMs < cutoffMs);
+        if (!aged) continue;
+        if (candidate.store === 'local') {
+          await removeLocalAttachmentDirectory(Number(candidate.key));
+        } else {
+          await removeCachedAttachmentDirectory(candidate.key);
+        }
+        totals.directories += 1;
+        totals.files += recheck.files.length;
+        totals.bytes += recheck.bytes;
+        continue;
       }
-      totals.directories += 1;
-      totals.files += recheck.files.length;
-      totals.bytes += recheck.bytes;
-      continue;
-    }
 
-    // orphan_file
-    const filename = candidate.filename!;
-    let st;
-    try {
-      st = await fs.stat(path.join(dirPath, filename));
-    } catch {
-      continue; // vanished — nothing to do
-    }
-    if (!st.isFile() || st.mtimeMs >= cutoffMs) continue;
-    if (candidate.store === 'local') {
-      await removeLocalAttachmentFilesForRelocate(Number(candidate.key), [filename]);
-    } else {
-      await removeCachedAttachmentFile(candidate.key, filename);
-    }
-    totals.files += 1;
-    totals.bytes += st.size;
+      // orphan_file
+      const filename = candidate.filename!;
+      let st;
+      try {
+        st = await fs.stat(path.join(dirPath, filename));
+      } catch {
+        continue; // vanished — nothing to do
+      }
+      if (!st.isFile() || st.mtimeMs >= cutoffMs) continue;
+      if (candidate.store === 'local') {
+        // `false` = the name was refused, nothing was removed — skip WITHOUT
+        // counting, or the record claims a deletion that did not happen.
+        const removed = await removeLocalAttachmentFileForSweep(Number(candidate.key), filename);
+        if (!removed) continue;
+      } else {
+        await removeCachedAttachmentFile(candidate.key, filename);
+      }
+      totals.files += 1;
+      totals.bytes += st.size;
 
-    // Index-row prune + dirty marking for the owning pages.
-    const ownersCacheKey = `${candidate.store}:${candidate.key}`;
-    const cachedOwners = ownersByKey.get(ownersCacheKey);
-    const owners: number[] =
-      cachedOwners ??
-      (candidate.store === 'local'
-        ? [...(await knownLocalPageIds([Number(candidate.key)]))]
-        : await confluenceKeyOwners(candidate.key));
-    if (cachedOwners === undefined) {
-      ownersByKey.set(ownersCacheKey, owners);
+      // Index-row prune + dirty marking for the owning pages.
+      const ownersCacheKey = `${candidate.store}:${candidate.key}`;
+      const cachedOwners = ownersByKey.get(ownersCacheKey);
+      const owners: number[] =
+        cachedOwners ??
+        (candidate.store === 'local'
+          ? [...(await knownLocalPageIds([Number(candidate.key)]))]
+          : await confluenceKeyOwners(candidate.key));
+      if (cachedOwners === undefined) {
+        ownersByKey.set(ownersCacheKey, owners);
+      }
+      if (owners.length > 0) {
+        const pruned = await query(
+          `DELETE FROM page_image_embeddings
+            WHERE page_id = ANY($1::int[]) AND source = $2 AND attachment_key = $3`,
+          [owners, candidate.store, filename],
+        );
+        totals.imageEmbeddingRows += pruned.rowCount ?? 0;
+        for (const owner of owners) dirtyPages.add(owner);
+      }
+      await yieldToLoop();
     }
-    if (owners.length > 0) {
-      const pruned = await query(
-        `DELETE FROM page_image_embeddings
-          WHERE page_id = ANY($1::int[]) AND source = $2 AND attachment_key = $3`,
-        [owners, candidate.store, filename],
-      );
-      totals.imageEmbeddingRows += pruned.rowCount ?? 0;
-      for (const owner of owners) dirtyPages.add(owner);
+  } finally {
+    // Owners of files that WERE deleted are re-queued even when a later
+    // candidate threw — and the flush itself must not mask that error, so
+    // each page's failure is logged and the loop continues.
+    for (const pageId of dirtyPages) {
+      try {
+        await markPageImagesDirty(pageId);
+        totals.pagesMarkedDirty += 1;
+      } catch (err) {
+        logger.warn({ err, pageId }, 'attachment-sweep: failed to mark a page image-dirty');
+      }
     }
-    await yieldToLoop();
   }
-
-  for (const pageId of dirtyPages) {
-    await markPageImagesDirty(pageId);
-  }
-  totals.pagesMarkedDirty = dirtyPages.size;
   return totals;
 }
 
@@ -838,9 +863,14 @@ export async function runAttachmentSweep(opts: { dryRun: boolean }): Promise<Att
     if (lockLost) throw new SweepAborted();
   };
 
+  // Filled in by `executeSweep` the moment the delete phase starts, so a
+  // throw mid-delete still records and audits the partial destructive work
+  // (review r1): `null` here means the delete phase never ran at all.
+  const partial: { deleted: DeletedTotals | null } = { deleted: null };
+
   let run: AttachmentSweepRun;
   try {
-    run = await executeSweep(opts.dryRun, startedAt, assertNotAborted);
+    run = await executeSweep(opts.dryRun, startedAt, assertNotAborted, partial);
   } catch (err) {
     logger.error({ err, dryRun: opts.dryRun }, 'attachment-sweep: run failed');
     run = shapeRun({
@@ -851,7 +881,7 @@ export async function runAttachmentSweep(opts: { dryRun: boolean }): Promise<Att
       stores: null,
       missingLocalFiles: 0,
       candidates: [],
-      deleted: null,
+      deleted: partial.deleted,
     });
   } finally {
     clearInterval(guard);
@@ -906,6 +936,7 @@ async function executeSweep(
   dryRun: boolean,
   startedAt: number,
   assertNotAborted: () => void,
+  partial: { deleted: DeletedTotals | null },
 ): Promise<AttachmentSweepRun> {
   const refused = (note: string): AttachmentSweepRun =>
     shapeRun({
@@ -964,7 +995,8 @@ async function executeSweep(
     });
   }
 
-  const deleted = await deleteCandidates(candidates, assertNotAborted);
+  partial.deleted = emptyDeletedTotals();
+  const deleted = await deleteCandidates(candidates, assertNotAborted, partial.deleted);
   return shapeRun({
     dryRun,
     startedAt,

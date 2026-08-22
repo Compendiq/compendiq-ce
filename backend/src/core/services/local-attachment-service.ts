@@ -366,6 +366,32 @@ export async function removeLocalAttachmentFilesForRelocate(
   );
 }
 
+/**
+ * Remove one local-store file for the orphan sweep (#1349, review r1).
+ *
+ * The sweep must COUNT what it deleted — the run record, the audit event and
+ * the admin card all report those totals — so unlike
+ * {@link removeLocalAttachmentFilesForRelocate} (an unwind path that swallows
+ * everything), this reports its outcome: `false` when the name is refused
+ * (skipped, nothing removed — the caller must not count it), and it THROWS on
+ * a real `fs.rm` failure so the run records `failed` instead of claiming a
+ * deletion that did not happen. A name that is not its own basename is
+ * refused outright, the `removeCachedAttachmentFile` discipline: a deleter
+ * must never `basename`-collapse its way onto a different file than the
+ * caller named. ENOENT stays a no-op via `force` — the stat-then-rm window is
+ * real and a vanished orphan is a success.
+ */
+export async function removeLocalAttachmentFileForSweep(
+  pageId: number,
+  filename: string,
+): Promise<boolean> {
+  if (path.basename(filename) !== filename || !canStoreLocalFilename(filename)) {
+    return false;
+  }
+  await fs.rm(localFilePath(pageId, filename), { force: true });
+  return true;
+}
+
 /** Absolute directory holding a page's local attachments (#1123 relocate cleanup). */
 export function localAttachmentsDir(pageId: number): string {
   return localPageDir(pageId);

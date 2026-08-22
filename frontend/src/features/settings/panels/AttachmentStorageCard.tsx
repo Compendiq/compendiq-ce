@@ -23,7 +23,12 @@ import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
  *    reads as "nothing to sweep" — the exact opposite of what an unreadable
  *    store means. Three states: pending (em-dashes), error (the destructive
  *    treatment, actions kept live — a status read failing is no reason to
- *    withhold the Dry run that would explain it), and data.
+ *    withhold the Dry run that would explain it), and data. The two GETs are
+ *    separate requests with separate rate-limit counters and `retry: false`,
+ *    so EACH one's failure stands alone (review r1: `&&`-ing them collapsed
+ *    a one-sided failure into the empty state, or silently dropped a refused
+ *    last run): a failed stats GET fails the figures block while a healthy
+ *    last-run line stays, and vice versa.
  *  - **Everything at rest is neutral.** Storage figures, orphan candidates
  *    and the missing-rows count are MEASUREMENTS (the QualityScoreBadge
  *    argument). Amber appears only for a last run that did not complete —
@@ -124,10 +129,14 @@ export function AttachmentStorageCard() {
 
   const running = (stats.data?.running ?? false) || (sweep.data?.running ?? false);
   const isPending = stats.isPending || sweep.isPending;
-  const isError = stats.isError && sweep.isError;
+  // Each GET's failure stands alone — see the header comment (review r1).
+  const statsError = stats.isError;
+  const sweepError = sweep.isError;
   const lastRun = sweep.data?.lastRun ?? null;
   const stores = stats.data?.stores ?? null;
-  const noRunYet = !isPending && !isError && stores === null && lastRun === null;
+  // "No run yet" is a claim BOTH records support — a failed read of either
+  // one must never be reported as an empty history.
+  const noRunYet = !isPending && !statsError && !sweepError && stores === null && lastRun === null;
   // The actions stay live on a failed READ — Dry run is the remedy that
   // refreshes the very record the failed GET could not deliver. Only the
   // pending paint (nothing known yet) and a running sweep disable them.
@@ -148,7 +157,7 @@ export function AttachmentStorageCard() {
         )}
       </div>
 
-      {isError ? (
+      {statsError ? (
         <p className="text-destructive text-xs" data-testid="attachment-storage-error">
           The storage figures could not be read. The files on disk are unaffected — retry, or run a
           dry run to rebuild the record.
@@ -194,7 +203,7 @@ export function AttachmentStorageCard() {
         </dl>
       ) : null}
 
-      {!isPending && !isError && (stats.data?.missingLocalFiles ?? 0) > 0 && (
+      {!isPending && !statsError && (stats.data?.missingLocalFiles ?? 0) > 0 && (
         <p className="text-muted-foreground text-xs" data-testid="attachment-storage-missing-rows">
           {stats.data!.missingLocalFiles} local attachment record
           {stats.data!.missingLocalFiles === 1 ? ' points' : 's point'} at a file that is not on
@@ -228,6 +237,21 @@ export function AttachmentStorageCard() {
         references it (the mis-mount refusal). role="status" so the verdict
         reaches assistive tech without interrupting (the failed-save recipe).
       */}
+      {!isPending && sweepError && (
+        <p className="text-destructive text-xs" data-testid="attachment-sweep-status-error">
+          The last-run record could not be read — a refused or failed sweep would not show here.
+          Retry, or run a dry run to rewrite it.
+        </p>
+      )}
+
+      {/*
+        "No files were deleted." is a claim, so it is made only where it is
+        true by construction: a refusal runs before the delete phase, a dry
+        run never deletes, and a failed live run whose partial totals are
+        empty (or whose delete phase never started — `deleted: null`) removed
+        nothing. A failed live run that DID delete before aborting says so
+        with the recorded counts instead (review r1).
+      */}
       {lastRun && lastRun.status !== 'completed' && (
         <p
           role="status"
@@ -238,7 +262,10 @@ export function AttachmentStorageCard() {
           <span>
             The last {lastRun.dryRun ? 'dry run' : 'sweep'} {formatRelativeTime(lastRun.at)}{' '}
             {lastRun.status === 'refused' ? 'refused to proceed' : 'failed'}
-            {lastRun.note ? `: ${lastRun.note}` : ''}. No files were deleted.
+            {lastRun.note ? `: ${lastRun.note}` : ''}.{' '}
+            {lastRun.deleted && lastRun.deleted.files + lastRun.deleted.directories > 0
+              ? `The run stopped partway: ${lastRun.deleted.files} file${lastRun.deleted.files === 1 ? '' : 's'} and ${lastRun.deleted.directories} director${lastRun.deleted.directories === 1 ? 'y' : 'ies'} (${formatBytes(lastRun.deleted.bytes)}) had already been removed — press Dry run to refresh the figures.`
+              : 'No files were deleted.'}
           </span>
         </p>
       )}
