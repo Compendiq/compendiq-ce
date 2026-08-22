@@ -1132,6 +1132,59 @@ Pick one of the following when upgrading an existing install:
 
 2. Restart the services. Migrations run automatically.
 
+## Attachment Storage & Orphan Sweep
+
+`ATTACHMENTS_DIR` (default `data/attachments`) holds two stores that grow with
+use: the Confluence cache `<confluence_id | page id>/<file>` (synced
+attachments, pasted images — standalone pages key by numeric id, so the
+keyspace is shared with Confluence ids) and the local store
+`local/<page id>/<file>` (draw.io saves and relocated pages, with metadata
+rows in `local_attachments`). Sync and page deletes clean their own pages;
+everything else is covered by the observability card and the sweep shipped in
+#1349.
+
+**Where:** Settings → Knowledge → Spaces & Sync → **Attachment Storage**
+(admin only). The card shows per-store bytes / file / directory counts and the
+last sweep summary, read from a persisted record — the figures are as fresh as
+the last run, and **Dry run** is how you refresh them.
+
+**How to run a sweep:**
+
+1. Press **Dry run**. It walks both stores, measures them, and lists orphan
+   candidates without touching a single file. On a large corpus this takes
+   minutes; the card polls until it finishes.
+2. Review the candidate counts (and, in the API response
+   `GET /api/admin/attachments/sweep`, a bounded sample of candidates).
+3. Press **Delete orphans** and confirm. The live run re-walks and re-checks
+   every candidate at delete time — it never trusts a stale dry-run list.
+
+**What is deleted:** only files that (a) sit in a directory whose key matches
+no page row at all — including soft-deleted/trashed pages and folders, which
+all count as owners — or (b) are image-like files referenced by **no body
+text anywhere**: every page's `body_html`, draft and storage format (live and
+trashed), every retained version, every pending sync version, every template
+and every comment feed one global keep-set per store, because attachment URLs
+are copied verbatim between bodies. Nothing younger than **24 hours** is ever
+a candidate (paste and sync both write files before the referencing row
+exists). Non-image cached attachments (PDFs and other lazily fetched files)
+are never touched. `local_attachments` rows whose file is missing on disk are
+**counted, never deleted** — a mis-mounted `ATTACHMENTS_DIR` must not wipe the
+metadata. Files the sweep deletes take their `page_image_embeddings` rows with
+them and the owning pages are re-queued for image indexing.
+
+**Refusals:** any run refuses when the attachments root is missing or
+unreadable, and a live run refuses when a store has zero files on disk while
+the database still references it — the signature of an unmounted volume.
+Nothing is ever deleted on the strength of a missing directory alone.
+
+**Bookkeeping:** the sweep is single-flight (worker lock
+`attachment-sweep`), manual-only (no schedule), admin-rate-limited, and every
+run — dry runs included — emits a `RETENTION_PRUNED` audit event on
+`attachments_orphan_sweep` with counts by reason class, so the Data Retention
+Attestation report (Report 7) covers it. API:
+`GET /api/admin/attachments/stats`, `GET|POST /api/admin/attachments/sweep`
+(body `{ "dryRun": true|false }`).
+
 ## Backup Strategy
 
 ### PostgreSQL

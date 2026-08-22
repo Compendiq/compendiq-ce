@@ -487,6 +487,36 @@ together, which matters most for #1114's query-side prefix.
     attachment write to notice it). It is CLEARED only
     by a page whose scan had no failure, so the flag is the retry queue as well
     as the work queue. Design of record: ADR-025.
+- **The attachment stores are filesystem-only, and #1349 gives them a
+  reconciler.** Two trees under `ATTACHMENTS_DIR`:
+  `<confluence_id | page id>/<file>` (the Confluence cache — pasted images on
+  standalone pages land here keyed by PK, so the keyspace is SHARED with
+  Confluence ids) and `local/<page_id>/<file>` (the local store, whose metadata
+  rows are `local_attachments`). Three intake paths write and only page-scoped
+  cleanups delete; `local_attachments`' CASCADE removes rows, never files. The
+  standalone hard-delete and trash purge now remove both directories
+  (`core/services/standalone-attachment-cleanup.ts`) — but `<pk>/` only when no
+  page claims `confluence_id = <pk>`, because deleting a shared-keyspace
+  directory can evict a live Confluence page's whole cache. Everything else is
+  the admin-triggered, dry-run-first orphan sweep
+  (`domains/confluence/services/attachment-sweep-service.ts`, surfaced on
+  Settings → Knowledge → Spaces & Sync): the two stores are walked separately
+  (the reserved `local/` entry matches the Confluence tree's key pattern, so a
+  naive walk lists the whole local store as one orphan), a directory is
+  orphaned only when NO page row — trashed included — claims its key, and a
+  file only against a GLOBAL per-store keep-set fed from every body text in
+  the system (pages `body_html`/`draft_body_html`/`body_storage` live and
+  trashed, `page_versions`, `pending_sync_versions`, `templates`, `comments`),
+  because attachment URLs are copied verbatim between bodies. A 24h mtime
+  grace window covers sync/paste races (both write files before the row that
+  references them), only image-like files are per-file candidates in the
+  Confluence tree (non-image lazily-cached attachments have no enumerator),
+  local rows whose FILE is missing are counted, never deleted, and a live run
+  refuses against an empty-on-disk store the database still references. Files
+  a live run deletes take their `page_image_embeddings` rows with them and
+  re-raise `image_embedding_dirty` on the owning pages. State lives in two
+  `admin_settings` JSON rows (`attachment_sweep_last_run`,
+  `attachment_storage_stats`) — no new table.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
   page's average chunk vector, written by `embedPage` inside the same
   transaction as the chunk inserts, with its own HNSW index
