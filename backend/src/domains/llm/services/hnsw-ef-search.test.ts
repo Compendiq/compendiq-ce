@@ -111,16 +111,29 @@ describe('efSearchFor — the callsite form', () => {
  *
  * SCOPE, stated so the next author can see what it does and does not buy.
  * This is a TEXT guard: it reads every non-test `.ts` file under
- * `backend/src` and reasons about character offsets, so it proves an
- * ORDERING within one function body and nothing about runtime values. Two
- * walks discover the files it must cover, and they key on different things
- * on purpose — one on `await efSearchFor(` (a probe that goes through the
- * knob), one on `SET LOCAL hnsw.ef_search` (a kNN that sets the depth by any
- * means, including a literal) — and both must equal `CALLSITES` exactly. The
- * rules a new probe inherits: a file that gains a SECOND probe has it checked
- * like the first, with no ordering borrowed from its neighbour above; a probe
- * in a NEW file must be added to `CALLSITES`; and a file that sets the depth
- * without resolving it fails the second walk rather than passing unseen.
+ * `backend/src`, matches literal strings and reasons about character
+ * offsets, so it proves an ORDERING within one function body and nothing
+ * about runtime values. Two walks discover the files it must cover, and they
+ * key on different things on purpose — one on `await efSearchFor(` (a probe
+ * that goes through the knob), one on the bare GUC name `hnsw.ef_search`
+ * anywhere in code (a kNN that touches the depth at all, whatever statement
+ * it wraps it in) — and both must equal `CALLSITES` exactly. The rules a new
+ * probe inherits: a file that gains a SECOND probe has it checked like the
+ * first, with no ordering borrowed from its neighbour above; a probe in a NEW
+ * file must be added to `CALLSITES`; a file that touches the depth without
+ * resolving it fails the second walk rather than passing unseen; and every
+ * line that names the GUC must spell `SET LOCAL`, so a session-level `SET`
+ * fails on its own message rather than on an ordering assertion that cannot
+ * explain itself.
+ *
+ * What it does NOT buy, so nobody reads more into a green run than is there:
+ * the match is on the GUC name as written. A statement assembled from
+ * fragments or built out of a constant, an `ALTER {SYSTEM,DATABASE,ROLE} …
+ * SET`, an `options=-c hnsw.ef_search=…` connection parameter, or a depth set
+ * from outside this repo all evade it. Those are not worth chasing here — the
+ * regression this guard exists for is an ordinary new kNN written the
+ * ordinary way — and a guard that tried would trade its one clear failure
+ * message for false positives.
  */
 describe('every kNN callsite resolves the floor before it checks a client out', () => {
   const CALLSITES: ReadonlyArray<readonly [string, string]> = [
@@ -132,6 +145,20 @@ describe('every kNN callsite resolves the floor before it checks a client out', 
 
   const PROBE = 'await efSearchFor(';
   const SET_LOCAL = 'SET LOCAL hnsw.ef_search';
+  /**
+   * The GUC name alone — deliberately NOT `SET LOCAL hnsw.ef_search`.
+   *
+   * Keying the discovery walk on the full statement made the one spelling
+   * this module most needs to catch invisible to BOTH walks: a new kNN
+   * writing `SET hnsw.ef_search = 200` resolves nothing (so the probe walk
+   * cannot see it) and never types `SET LOCAL` (so a statement-keyed walk
+   * cannot either) — while being strictly worse than the literal the old
+   * comment worried about, because a session-level `SET` outlives the
+   * transaction and leaks the depth to the next borrower of that pooled
+   * connection. The name is what every such statement has in common, so the
+   * walk keys on it and a separate assertion below insists on `SET LOCAL`.
+   */
+  const GUC = 'hnsw.ef_search';
 
   /**
    * Character offset of every occurrence of `needle` that is REAL code.
@@ -141,20 +168,36 @@ describe('every kNN callsite resolves the floor before it checks a client out', 
    * either (`duplicate-detector.ts` explains where it deliberately issues no
    * `SET LOCAL` at all), so a bare `indexOf` would discover the resolver as
    * one of its own callers and a file's prose as a kNN probe.
+   *
+   * `caseInsensitive` exists for the GUC walk: SQL keywords and identifiers
+   * are case-insensitive, so `set local HNSW.EF_SEARCH` is the same statement
+   * and must not slip past a case-sensitive `indexOf`. Lowercasing is safe to
+   * do offset-for-offset here because the needles and the comment markers are
+   * ASCII.
    */
-  function codeOffsets(source: string, needle: string): number[] {
+  function codeOffsets(source: string, needle: string, caseInsensitive = false): number[] {
+    const haystack = caseInsensitive ? source.toLowerCase() : source;
+    const target = caseInsensitive ? needle.toLowerCase() : needle;
     const found: number[] = [];
     for (let cursor = 0; ; ) {
-      const at = source.indexOf(needle, cursor);
+      const at = haystack.indexOf(target, cursor);
       if (at < 0) return found;
-      cursor = at + needle.length;
-      const prefix = source.slice(source.lastIndexOf('\n', at) + 1, at).trimStart();
+      cursor = at + target.length;
+      const prefix = haystack.slice(haystack.lastIndexOf('\n', at) + 1, at).trimStart();
       if (prefix.startsWith('*') || prefix.startsWith('//') || prefix.startsWith('/*')) continue;
       found.push(at);
     }
   }
 
   const probeOffsets = (source: string) => codeOffsets(source, PROBE);
+
+  /** The whole source line carrying each code occurrence of the GUC name. */
+  function gucLines(source: string): string[] {
+    return codeOffsets(source, GUC, true).map((at) => {
+      const end = source.indexOf('\n', at);
+      return source.slice(source.lastIndexOf('\n', at) + 1, end < 0 ? undefined : end).trim();
+    });
+  }
 
   function sourceFilesUnder(dir: string): string[] {
     return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -188,7 +231,7 @@ describe('every kNN callsite resolves the floor before it checks a client out', 
     ).toEqual(listed);
   });
 
-  it('lists every file under backend/src that sets `hnsw.ef_search` at all', () => {
+  it('lists every file under backend/src that touches `hnsw.ef_search` at all', () => {
     // The walk above discovers a file by its RESOLVER CALL, so it can only
     // see a probe that already goes through the knob. The regression #1285
     // exists to prevent takes the other shape: a new kNN writing
@@ -196,11 +239,13 @@ describe('every kNN callsite resolves the floor before it checks a client out', 
     // no `efSearchFor` anywhere in it. That file resolves nothing, so it is
     // invisible to every assertion in this describe, and the ADR-021 ruling
     // that the depth is `admin_settings.rag_ef_search` quietly stops being
-    // true of one query. Keying a second walk on the STATEMENT closes it: the
-    // two sets must name exactly the same files.
+    // true of one query. Keying a second walk on the GUC NAME closes it: the
+    // two sets must name exactly the same files. The name, not the statement
+    // — see `GUC` above for why `SET hnsw.ef_search` is the spelling a
+    // statement-keyed walk could not see and the one that hurts most.
     const src = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/+$/, '');
     const setters = sourceFilesUnder(src)
-      .filter((file) => codeOffsets(readFileSync(file, 'utf8'), SET_LOCAL).length > 0)
+      .filter((file) => gucLines(readFileSync(file, 'utf8')).length > 0)
       .sort();
     const listed = CALLSITES.map(([, relative]) =>
       fileURLToPath(new URL(relative, import.meta.url)),
@@ -213,6 +258,25 @@ describe('every kNN callsite resolves the floor before it checks a client out', 
     ).toEqual(listed);
   });
 
+  it.each(CALLSITES)('%s sets the depth with SET LOCAL, never session-level', (_l, relative) => {
+    // `SET` without `LOCAL` survives COMMIT, so the next request to borrow
+    // that pooled connection inherits a depth nothing on its path chose —
+    // the hazard CLAUDE.md, this module's JSDoc and 09-flow-rag-chat.md all
+    // name, and the reason the walk above keys on the GUC rather than on the
+    // statement. Asserted per LINE so the failure names the statement.
+    const lines = gucLines(readFileSync(new URL(relative, import.meta.url), 'utf8'));
+    expect(lines.length, `${relative} must set hnsw.ef_search`).toBeGreaterThan(0);
+
+    lines.forEach((line) => {
+      expect(
+        line,
+        `${relative}: \`${line}\` must be a SET LOCAL inside the transaction it already owns — a ` +
+          'session-level SET outlives COMMIT and leaks the depth to the next borrower of this ' +
+          'pooled connection',
+      ).toMatch(/\bset\s+local\s+hnsw\.ef_search\b/i);
+    });
+  });
+
   it.each(CALLSITES)('%s', (_label, relative) => {
     const source = readFileSync(new URL(relative, import.meta.url), 'utf8');
 
@@ -223,7 +287,7 @@ describe('every kNN callsite resolves the floor before it checks a client out', 
     // correct one is exactly the regression this guard exists to catch, and
     // anchoring on a single `indexOf` inspected probe #1's window forever.
     probes.forEach((resolved, index) => {
-      const setLocal = source.indexOf('SET LOCAL hnsw.ef_search', resolved);
+      const setLocal = source.indexOf(SET_LOCAL, resolved);
       expect(
         setLocal,
         `${relative}: probe #${index + 1} must interpolate the floor into SET LOCAL`,
