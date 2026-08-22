@@ -11,6 +11,7 @@ import {
   Globe,
   ListTree,
   Lock,
+  MessageSquare,
   MoreHorizontal,
   PanelRight,
   PanelRightClose,
@@ -28,6 +29,7 @@ import {
 import { AutoTagger } from '../../../features/pages/AutoTagger';
 import { RelocateDialog } from '../../../features/pages/RelocateDialog';
 import { DockPanel } from '../../../features/ai/dock/DockPanel';
+import { NotesInspectorPanel, usePageNotes } from './NotesInspectorPanel';
 import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
@@ -247,7 +249,7 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
  * Details and Assistant stay one inspector, rather than leaving the first
  * two unreachable while Assistant had its own bottom sheet.
  */
-export type InspectorView = 'assistant' | 'outline' | 'details';
+export type InspectorView = 'assistant' | 'outline' | 'notes' | 'details';
 
 export type InspectorPresentation = 'rail' | 'sheet';
 
@@ -442,7 +444,13 @@ export function ArticleRightPane({
     setActiveInspectorView(inspectorViewRequest.view);
   }, [inspectorViewRequest]);
 
-  // Global hotkeys for tab switching: Alt+O (Outline) and Alt+D (Details)
+  const { data: pageNotes } = usePageNotes(id);
+  const openNotesCount = useMemo(
+    () => pageNotes?.filter((n) => !n.parentId && !n.resolved && !n.isResolved).length ?? 0,
+    [pageNotes],
+  );
+
+  // Global hotkeys for tab switching: Alt+O (Outline), Alt+N (Notes) and Alt+D (Details)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
@@ -455,12 +463,28 @@ export function ArticleRightPane({
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
           setActiveInspectorView('details');
+        } else if (key === 'n') {
+          e.preventDefault();
+          inspectorViewTouchedRef.current = true;
+          setActiveInspectorView('notes');
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  // Listen to open-sidebar requests from inline comment popovers
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleOpenNotes = () => {
+      inspectorViewTouchedRef.current = true;
+      setActiveInspectorView('notes');
+      handleExpandSidebar();
+    };
+    window.addEventListener('compendiq:comment-open-sidebar', handleOpenNotes);
+    return () => window.removeEventListener('compendiq:comment-open-sidebar', handleOpenNotes);
+  }, [handleExpandSidebar]);
 
   // Persist collapsed section IDs
   useEffect(() => {
@@ -984,6 +1008,42 @@ export function ArticleRightPane({
             </>
           )}
 
+          {id && (
+            <>
+              <div className="my-1 h-px w-6 bg-border" />
+              <div className="group relative flex w-full justify-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    inspectorViewTouchedRef.current = true;
+                    setActiveInspectorView('notes');
+                    handleExpandSidebar();
+                  }}
+                  className={cn(
+                    railIconBtn,
+                    activeInspectorView === 'notes' && 'nm-pill-active',
+                  )}
+                  aria-label={`Notes (${openNotesCount} open)`}
+                  title={`Notes — ${openNotesCount} open note${openNotesCount === 1 ? '' : 's'}. (Alt+N)`}
+                  data-testid="article-notes-rail-btn"
+                >
+                  <MessageSquare size={16} />
+                  {openNotesCount > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-action px-1 text-[11px] font-semibold text-action-foreground">
+                      {openNotesCount}
+                    </span>
+                  )}
+                </button>
+                <span
+                  role="tooltip"
+                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                >
+                  Notes · {openNotesCount} open · Alt+N
+                </span>
+              </div>
+            </>
+          )}
+
           <div className="my-1 h-px w-6 bg-border" />
           <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-0.5 overflow-y-auto p-1">
             {headings.length === 0 && (
@@ -1344,11 +1404,11 @@ export function ArticleRightPane({
             This was `rounded-xl` on `bg-foreground/[0.045]` with a 4px inset —
             a third distinct treatment for the same interaction. */}
         <div
-          className="grid min-w-0 flex-1 grid-cols-3 gap-0.5 rounded-md border border-border bg-muted p-0.5"
+          className="grid min-w-0 flex-1 grid-cols-4 gap-0.5 rounded-md border border-border bg-muted p-0.5"
           role="tablist"
           aria-label="Page context views"
           onKeyDown={(e) => {
-            const tabs: InspectorView[] = ['assistant', 'outline', 'details'];
+            const tabs: InspectorView[] = ['assistant', 'outline', 'notes', 'details'];
             const currentIndex = tabs.indexOf(activeInspectorView);
             if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
               e.preventDefault();
@@ -1380,7 +1440,7 @@ export function ArticleRightPane({
             setActiveInspectorView('assistant');
           }}
           className={cn(
-            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'flex h-7 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             activeInspectorView === 'assistant'
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',
@@ -1407,7 +1467,7 @@ export function ArticleRightPane({
             setActiveInspectorView('outline');
           }}
           className={cn(
-            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'flex h-7 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             activeInspectorView === 'outline'
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',
@@ -1423,6 +1483,32 @@ export function ArticleRightPane({
         <button
           type="button"
           role="tab"
+          id="page-context-tab-notes"
+          aria-controls="page-context-panel-notes"
+          aria-selected={activeInspectorView === 'notes'}
+          tabIndex={activeInspectorView === 'notes' ? 0 : -1}
+          title="Notes (Alt+N)"
+          onClick={() => {
+            inspectorViewTouchedRef.current = true;
+            setActiveInspectorView('notes');
+          }}
+          className={cn(
+            'flex h-7 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            activeInspectorView === 'notes'
+              ? 'panel-tab-active'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+          data-testid="page-context-tab-notes"
+        >
+          <MessageSquare size={13} />
+          Notes
+          {openNotesCount > 0 && (
+            <span className="tabular-nums text-[11px] opacity-65">{openNotesCount}</span>
+          )}
+        </button>
+        <button
+          type="button"
+          role="tab"
           id="page-context-tab-details"
           aria-controls="page-context-panel-details"
           aria-selected={activeInspectorView === 'details'}
@@ -1433,7 +1519,7 @@ export function ArticleRightPane({
             setActiveInspectorView('details');
           }}
           className={cn(
-            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'flex h-7 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             activeInspectorView === 'details'
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',
@@ -1477,6 +1563,17 @@ export function ArticleRightPane({
               (hidden via CSS when viewing Outline/Details) to preserve staged
               attachments and deep-search state during tab switching. */}
           <DockPanel variant="tab" onClose={() => setActiveInspectorView('outline')} />
+        </div>
+      )}
+
+      {activeInspectorView === 'notes' && id && (
+        <div
+          id="page-context-panel-notes"
+          role="tabpanel"
+          aria-labelledby="page-context-tab-notes"
+          className="flex min-h-0 flex-1 flex-col overflow-hidden"
+        >
+          <NotesInspectorPanel pageId={id} />
         </div>
       )}
 

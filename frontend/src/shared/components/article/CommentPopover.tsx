@@ -338,7 +338,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
         left: `${left}px`,
       }}
       className={cn(
-        'z-50 w-84 max-w-[calc(100vw-24px)] rounded-lg border border-border bg-card p-3 text-card-foreground nm-card-elevated shadow-xl',
+        'z-50 w-84 max-w-[calc(100vw-24px)] rounded-lg border border-border bg-card p-3 text-card-foreground nm-card-elevated',
         'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95 duration-100',
         className,
       )}
@@ -561,17 +561,17 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
             </button>
           )}
 
-          {/* View in full sidebar */}
+          {/* View in inspector panel */}
           {pageId && (
             <button
               type="button"
               onClick={handleOpenInSidebar}
               className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              title="Open full comments sidebar"
+              title="Open page notes inspector"
               data-testid="popover-open-sidebar-btn"
             >
               <ExternalLink size={12} />
-              <span>Sidebar</span>
+              <span>All notes</span>
             </button>
           )}
         </div>
