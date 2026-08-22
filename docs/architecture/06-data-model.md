@@ -12,6 +12,7 @@ erDiagram
     users ||--o{ page_embeddings : "owns"
     users ||--o{ llm_conversations : "owns"
     users ||--o{ retrieval_benchmark_runs : "requests"
+    users ||--o{ embedding_compare_judgements : "judges (#1260; SET NULL — the fixture outlives its author)"
     users ||--o{ notifications : "receives"
     users ||--o{ audit_log : "generates"
     users ||--o{ comments : "authors"
@@ -144,7 +145,7 @@ erDiagram
         uuid id PK
         uuid requested_by FK
         text status "queued | running | completed | failed"
-        jsonb config "query source and limits"
+        jsonb config "query source and limits; kind=shadow-compare marks a #1260 comparison run"
         int progress_done
         int progress_total
         jsonb result "compact ids, titles and timings"
@@ -152,6 +153,21 @@ erDiagram
         timestamptz created_at
         timestamptz started_at
         timestamptz completed_at
+    }
+
+    embedding_compare_judgements {
+        uuid id PK
+        text query_hash "sha256 of LOWER(TRIM(query)) — respellings converge"
+        text query_text
+        text live_provider_id "by NAME, no FK — must outlive the provider row"
+        text live_model
+        text candidate_provider_id
+        text candidate_model
+        text judged_side "live | candidate | neither | both"
+        int_array live_page_ids "what was on screen when judged"
+        int_array candidate_page_ids
+        uuid judged_by FK "SET NULL"
+        timestamptz created_at
     }
 
     comments {
@@ -354,6 +370,21 @@ together, which matters most for #1114's query-side prefix.
 
 - **User ownership is pervasive.** Almost every table carries `user_id`
   (UUID, FK → `users.id`) — Compendiq is multi-tenant at the user level.
+- **`retrieval_benchmark_runs` is shared by two run kinds (#1260).** The
+  production benchmark writes its config as-is; the shadow comparison marks
+  its rows `config.kind = 'shadow-compare'` and reads them back through its
+  own accessor, which answers null for any other kind. The 091 one-active
+  partial unique index is deliberately NOT scoped by kind: both runs spend
+  the shared LLM queue, so one at a time is the point, and the 092 heartbeat
+  recovery covers both.
+- **`embedding_compare_judgements` is the accumulating fixture (#1260 Mode
+  2).** One row per (normalised query hash, live model, candidate model),
+  models by NAME with no FK to `llm_providers` and no FK to the run — a
+  judgement must survive the run, the migration and the provider row that
+  produced it, which is what makes the second evaluation of the same pair
+  cheaper than the first. Re-judging replaces the row (upsert on the unique
+  key); the page-id arrays record what was on screen when the human judged
+  and are deliberately not FK-checked against `pages`.
 - **pgvector — the column type is dimension-driven, not one model's shape.**
   `page_embeddings.embedding` always carries a *declared* width — 006 shipped
   `vector(768)`, 048 re-typed it to `vector(1024)` — but the schema does not

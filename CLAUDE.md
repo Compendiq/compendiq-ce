@@ -94,7 +94,18 @@ job, scoped to PRs that touch retrieval, so the fast path never waits on it.
 The rule above still holds everywhere else — and note this model is for
 detecting *regressions in retrieval logic*, never for judging a model upgrade:
 those comparisons need the real candidates, run locally through the same script
-(`docs/runbooks/retrieval-eval.md`), or scored on the real corpus via #1260.
+(`docs/runbooks/retrieval-eval.md`), or scored on the real corpus during a
+#1116 shadow migration's `ready` window via the shadow card's **Compare on
+real queries** (#1260): `shadow-compare-service.ts` samples the most frequent
+`search_analytics` queries, embeds each once per model (prefix per model),
+retrieves top-K from `embedding` and `embedding_next` through `vectorSearch`'s
+allow-listed `column` option, and reports AGREEMENT (top-1 change rate,
+Jaccard, RBO) plus per-query disagreements — never presented as quality; Mode
+2 judgements accumulate in `embedding_compare_judgements` (099) and quote a
+McNemar p only from 20 judgements. Runs reuse `retrieval_benchmark_runs`
+(`config.kind = 'shadow-compare'`), so a comparison and the production
+benchmark exclude each other — deliberately, both spend the shared LLM queue.
+Lifecycle step 3b in `docs/runbooks/shadow-reembed.md`.
 There is no separate model-comparison harness — #1113 was closed without one.
 
 **A run states which FTS configuration it measured, and the default is

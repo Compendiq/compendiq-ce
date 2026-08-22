@@ -19,7 +19,7 @@ flowchart LR
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service"]
     end
 
@@ -178,6 +178,25 @@ The guard it exports the other way round, `assertNoShadowMigration` /
 `routes/knowledge/pages-crud.ts` and `routes/foundation/admin.ts` as well as
 `routes/llm` — the same `routes/* → domains/llm` composition those files
 already do for `processDirtyPages`.
+
+`domains/llm/services/shadow-compare-service.ts` (#1260) runs during that
+migration's `ready` window — the only time both models' vectors exist on the
+same chunk rows. It samples the most frequent `search_analytics` queries
+(`eval/analytics-query-sampler.ts`, ONE sampler shared with the production
+benchmark so the two harnesses' normalisation cannot drift; only the ORDER
+differs), embeds each query once per model with the #1114 instruction prefix
+applied per model, and retrieves top-K pages from `embedding` and
+`embedding_next` through `vectorSearch`'s allow-listed `column` option — the
+same SQL, ACL predicate and `ef_search` discipline as the live probe, never a
+sibling function. Run records reuse `retrieval_benchmark_runs` with
+`config.kind = 'shadow-compare'` (heartbeats included), so a comparison and a
+production benchmark exclude each other on the 091 one-active index. Mode 2
+judgements persist in `embedding_compare_judgements` (migration 099) and the
+verdict is computed from `eval/metrics.ts` (`pairedSignificance`,
+`recallAtK`, `meanReciprocalRank`) — never re-derived. The admin surface is
+four more routes on `routes/llm/llm-embedding-shadow.ts`
+(`POST/GET …/compare`, `POST/GET …/compare/:id/judgements`), all
+`requireAdmin`, results carrying page ids and titles only.
 
 ## The image-embedding leg (#1115 P1–P4)
 

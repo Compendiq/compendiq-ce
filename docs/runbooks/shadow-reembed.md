@@ -20,6 +20,7 @@ because text retrieval is unaffected and unchanged images are reused by sha256
 | 1. Start | Settings → AI → AI Models → change the embedding assignment → **Start zero-downtime re-embed** (or `POST /api/admin/embedding/shadow-migration {providerId, model}`) | Yes (Abort) | none |
 | 2. Backfill | background job embeds every existing chunk with the new model into `embedding_next`; edited pages dual-write both models | Yes (Abort) | none (background embedding load only) |
 | 3. Index build | HNSW indexes built on **both** shadow columns at the end of the backfill — unless the model's dimension exceeds 4000, which pgvector cannot index at all (the status card says so instead of claiming an index, and post-swap vector search scans sequentially) | Yes | none for reads; **writes to `page_embeddings` AND to `pages` queue for the build duration** (minutes) — the second index is on `pages`, so sync upserts, editor saves and embedding-status updates stall too |
+| 3b. Compare on real queries (#1260) | the shadow card's **Compare on real queries** (or `POST /api/admin/embedding/shadow-migration/compare {days, limit, topK}` → 202 + poll) — sample the most frequent recorded searches, embed each once per model, retrieve top-K from `embedding` and `embedding_next`, and read the disagreement list; optionally judge disagreements side-by-side (Mode 2) until the verdict quotes a McNemar p (N ≥ 20). **This is the go/no-go evidence between backfill and swap** — see *Comparing the candidate on real queries* below | Yes — reads only; never writes assignments or settings | N × 2 embed calls ride the shared LLM queue (like the backfill, may slow answers); one comparison at a time, shared with the Retrieval tab's production benchmark |
 | 4. Swap | **Swap to the new model** (`POST …/swap`) — one transaction of column/index renames under `lock_timeout 5s`, ≤5 attempts | Yes (Roll back) | sub-second on success. While a lock attempt waits behind a long reader, **new searches queue behind the pending exclusive lock** — each failed attempt can stall them up to 5s (≤5 attempts), so run the swap when long queries have drained |
 | 5. Validate | run real searches; the quality gate is #1102's eval rig. **Then settle the confidence thresholds (#1114)**: if either is non-zero it is still the number tuned on the old model — read your own logged `rag.confidence` values on the new model and either re-tune it or press **Keep &lt;value&gt;** on the notice to record the number you already have against the new model. Until then the swap's warning stands in the log and the Retrieval tab shows an amber notice on that control — **unless that threshold was set before #1114 shipped or written with SQL**, in which case there is no recorded model to compare against and you get a muted "calibration unknown" line instead, whose **Record &lt;value&gt;** button records the number you have against the model now serving; on that instance the log warning is the signal | — | new model serving |
 | — | *(automatic, in the background)* the swap and a post-swap rollback both rebuild `page_relationships.embedding_similarity` — the persisted derivative of `pages.page_avg_embedding` — and clear the graph cache. It runs **detached from the request**, because a whole-corpus recompute can outlast an edge proxy's read timeout and a failed-looking swap invites a rollback of a swap that worked | — | graph/related-pages serve the previous edges until it finishes; if it logs a failure (or the process restarted mid-run), run `POST /api/pages/graph/refresh` |
@@ -81,6 +82,53 @@ sub-second.
   long-running queries are hitting `page_embeddings` (every DDL step —
   start, swap, rollback, cleanup — runs under a bounded `lock_timeout` with
   retries; safe, but pointless until they drain).
+
+## Comparing the candidate on real queries (#1260, step 3b)
+
+The `ready` window — backfill complete, indexes built, swap not yet run — is
+the only time both models' vectors exist on the same chunk rows, and it is
+the one chance to answer *"is the candidate better on OUR content?"* before
+committing. The shadow card's **Compare on real queries** section (or
+`POST /api/admin/embedding/shadow-migration/compare`) runs it:
+
+- **What it does.** Samples the top `limit` distinct queries by FREQUENCY
+  from `search_analytics` over `days`, embeds each once per model — the
+  candidate through the migration's own provider/model pair, the live side
+  through the `embedding` assignment, with the #1114 instruction prefix
+  applied per model (Qwen3 prefixed, `bge-m3` bare) — and retrieves the top-K
+  pages from `embedding` and `embedding_next` through the same vector probe
+  and the same visibility predicate (scoped to the requesting admin).
+- **What it reports — Mode 1, agreement only.** Top-1 change rate, mean
+  Jaccard overlap@K, mean RBO (p = 0.9), and the per-query disagreement list
+  (live top-K titles vs candidate top-K titles). This is the **vector leg
+  only** — not what users see after keyword fusion and rerank — and it is an
+  agreement measure, never a quality verdict: it answers "how much would
+  this move?", which is often enough to decide.
+- **Mode 2 — judge the disagreements.** Each disagreement row offers
+  Live / Candidate / Neither / Both. Judgements persist in
+  `embedding_compare_judgements` keyed by (query, live model, candidate
+  model) — they survive the run, the migration, even the provider row — so
+  the fixture accumulates and the SECOND evaluation of a pair starts warm.
+  The verdict quotes Recall/MRR per side and an exact McNemar p **only once
+  N ≥ 20 judgements** exist for the pair; below that it says how many are
+  still needed rather than dressing a handful of clicks as statistics.
+- **Gates and failure modes.** The run 409s outside `ready` (no migration,
+  backfilling, swapped) — comparing a partially backfilled column measures
+  the backfill, not the model. One run at a time, **shared with the Retrieval
+  tab's production benchmark**: while either runs the other answers 409
+  "already running". A swap/abort/rollback landing mid-run fails the run
+  cleanly with a message naming the migration change; just start a new
+  comparison from the new state. A worker killed mid-run is recovered by the
+  same 30-minute heartbeat sweep the benchmark uses.
+- **Cost.** `limit × 2` embedding calls through the shared LLM queue
+  (`LLM_CONCURRENCY`, default 4) plus two kNN probes per query — same class
+  of load as a small backfill slice; answers may be slower while it runs.
+  Nothing is written except the run row and judgements; `enqueueReembedAll`
+  is never called and assignments/settings are never touched.
+
+Use it as the evidence for the Go / no-go above: a low disagreement rate
+means the swap changes little either way; a high one is exactly the case to
+spend twenty judgements on before deciding.
 
 ## Stragglers and stuck jobs
 
