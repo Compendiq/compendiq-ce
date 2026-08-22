@@ -172,7 +172,12 @@ in a NEW file was covered by nothing at all. It now checks EVERY probe in a
 file and cross-checks that array against a walk of `backend/src`, so a fifth
 probe fails the suite until it is registered there (which is where its author
 is told a pool this text guard cannot instrument also wants a runtime
-ordering assertion). The startup notice's out-of-range branch hedges on the row too
+ordering assertion). That cross-check keys on the GUC NAME, never on the
+statement: keyed on `SET LOCAL hnsw.ef_search` it could not see the one
+spelling that hurts most — a session-level `SET hnsw.ef_search`, invisible to
+both walks and worse than the literal, since it outlives `COMMIT` — so every
+code line in `backend/src` naming the GUC must now spell `SET LOCAL`, checked
+per line with its own failure message. The startup notice's out-of-range branch hedges on the row too
 ("while no `rag_ef_search` row exists…"): the function reads `process.env` and
 cannot know the resolved floor. And the panel-wide `aria-describedby` wiring
 those knobs gained means **a `NumberRow`'s `children` are prose only** — a
