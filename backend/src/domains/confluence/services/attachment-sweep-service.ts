@@ -906,31 +906,41 @@ export async function runAttachmentSweep(opts: { dryRun: boolean }): Promise<Att
 
   let run: AttachmentSweepRun;
   try {
-    run = await executeSweep(opts.dryRun, startedAt, assertNotAborted, partial);
-  } catch (err) {
-    logger.error({ err, dryRun: opts.dryRun }, 'attachment-sweep: run failed');
-    run = shapeRun({
-      dryRun: opts.dryRun,
-      startedAt,
-      status: 'failed',
-      note: err instanceof SweepAborted ? err.message : 'sweep failed — see the server logs',
-      stores: null,
-      missingLocalFiles: 0,
-      candidates: [],
-      deleted: partial.deleted,
-    });
+    try {
+      run = await executeSweep(opts.dryRun, startedAt, assertNotAborted, partial);
+    } catch (err) {
+      logger.error({ err, dryRun: opts.dryRun }, 'attachment-sweep: run failed');
+      run = shapeRun({
+        dryRun: opts.dryRun,
+        startedAt,
+        status: 'failed',
+        note: err instanceof SweepAborted ? err.message : 'sweep failed — see the server logs',
+        stores: null,
+        missingLocalFiles: 0,
+        candidates: [],
+        deleted: partial.deleted,
+      });
+    }
+
+    // Persist BEFORE the lock is released (review, external round): `running`
+    // on both admin GETs is read off the lock, so an observer that sees it
+    // free must also see this run's record — released first, the card could
+    // pair `running: false` with the previous run's summary, and a second run
+    // started inside that window could have its fresh record overwritten by
+    // this run's stale one landing late. `persistSetting` swallows its own
+    // errors (bookkeeping, not the work), so holding the lock through it
+    // cannot wedge it; the release below still sits in a `finally`.
+    await persistSetting(ATTACHMENT_SWEEP_LAST_RUN_KEY, run);
+    if (run.stores) {
+      await persistSetting(ATTACHMENT_STORAGE_STATS_KEY, {
+        at: run.at,
+        stores: run.stores,
+        missingLocalFiles: run.missingLocalFiles,
+      } satisfies AttachmentStorageStatsRecord);
+    }
   } finally {
     clearInterval(guard);
     await releaseWorkerLock(ATTACHMENT_SWEEP_WORKER_LOCK, token);
-  }
-
-  await persistSetting(ATTACHMENT_SWEEP_LAST_RUN_KEY, run);
-  if (run.stores) {
-    await persistSetting(ATTACHMENT_STORAGE_STATS_KEY, {
-      at: run.at,
-      stores: run.stores,
-      missingLocalFiles: run.missingLocalFiles,
-    } satisfies AttachmentStorageStatsRecord);
   }
 
   // RETENTION_PRUNED-style heartbeat: one event per run, dry included, with
