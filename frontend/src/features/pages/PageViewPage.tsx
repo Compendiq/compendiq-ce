@@ -20,7 +20,6 @@ import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
 import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
 import type { SettablePageIcon } from '@compendiq/contracts';
 import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
-import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { useArticleViewStore } from '../../stores/article-view-store';
@@ -45,70 +44,7 @@ import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button, IconButton } from '../../shared/components/Button';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
-
-function ImageLightbox({
-  alt,
-  onClose,
-  src,
-}: {
-  alt: string;
-  onClose: () => void;
-  src: string;
-}) {
-  const { blobSrc, loading } = useAuthenticatedSrc(src);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [onClose]);
-
-  // Move focus into the dialog on open and restore it to the trigger on close,
-  // so keyboard/screen-reader users are not stranded behind the overlay (#942).
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    closeButtonRef.current?.focus();
-    return () => previouslyFocused?.focus?.();
-  }, []);
-
-  return (
-    <m.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Image preview: ${alt}`}
-    >
-      <button
-        ref={closeButtonRef}
-        onClick={onClose}
-        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
-        aria-label="Close preview"
-      >
-        <X size={18} />
-      </button>
-
-      {loading ? (
-        <div className="text-sm text-white/70">Loading image…</div>
-      ) : blobSrc ? (
-        <img
-          src={blobSrc}
-          alt={alt}
-          className="max-h-[90vh] max-w-[90vw] rounded-2xl object-contain"
-          onClick={(event) => event.stopPropagation()}
-        />
-      ) : (
-        <div className="text-sm text-white/70">Failed to load image.</div>
-      )}
-    </m.div>
-  );
-}
+import { ImageLightbox } from '../../shared/components/article/ImageLightbox';
 
 function scrollArticleToTop() {
   const container = (
