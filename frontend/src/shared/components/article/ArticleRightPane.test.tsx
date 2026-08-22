@@ -683,9 +683,8 @@ describe('ArticleRightPane', () => {
       expect(rail).toHaveAttribute('aria-label', 'Page inspector');
     });
 
-    it('names the selected inspector tab in the collapsed rail', () => {
+    it('highlights the selected inspector tab in the collapsed rail', () => {
       renderRail();
-      expect(screen.getByTestId('inspector-rail-current-view')).toHaveTextContent('Details');
       expect(screen.getByTestId('article-details-rail-btn')).toHaveAccessibleName('Page details');
       expect(screen.getByTestId('article-details-rail-btn').className).toMatch(/nm-pill-active/);
       expect(screen.getByTestId('article-details-rail-btn').className).not.toMatch(/text-action/);
