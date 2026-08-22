@@ -544,7 +544,7 @@ export function BubbleMenuContent({
           onClose={closeComment}
           isSubmitting={isSubmittingComment}
           className={cn(
-            'w-80 max-w-[calc(100vw-24px)]',
+            'w-full max-w-[calc(100vw-24px)]',
             improvePanelPosition === 'above' ? 'border-b border-border' : 'border-t border-border',
           )}
         />
@@ -561,7 +561,7 @@ export function BubbleMenuContent({
           onInsertBelow={insertBelow}
           onClose={closeAi}
           replaceBlocked={dropsMacros ? MACRO_REPLACE_BLOCKED : null}
-          className="w-80"
+          className="w-full max-w-[calc(100vw-24px)]"
         />
       )}
     </div>
