@@ -94,8 +94,11 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
             className="nm-input w-full"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://api.openai.com/v1"
+            placeholder="http://host.docker.internal:1234/v1"
           />
+          <span className="mt-1 block text-[11px] text-muted-foreground">
+            For local servers (LM Studio, vLLM) in Docker, use <code className="text-foreground">http://host.docker.internal:1234/v1</code>.
+          </span>
         </label>
         <label className="block text-sm">
           API Key{' '}
