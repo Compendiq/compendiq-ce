@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ApiError } from '../../shared/lib/api';
 import { AiProvider, useAiContext, nextMessageId, resolveAiPageId } from './AiContext';
 
 Element.prototype.scrollIntoView = vi.fn();
@@ -662,5 +663,398 @@ describe('resolveAiPageId', () => {
   it('resolves to no document on unrelated routes', () => {
     expect(resolveAiPageId('/graph', new URLSearchParams())).toBeNull();
     expect(resolveAiPageId('/pages/abc/history', new URLSearchParams())).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1361 — the conversation state machine
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads the state-machine surface of the context and drives the four gestures
+ * the table's rows are about: an ask that carries the thread's own id (what
+ * `AskMode` builds), a typed draft, a claimed id (what a dock answer leaves
+ * behind), and a delete.
+ *
+ * Deliberately a second probe rather than a grown `ThreadProbe`: the #1126
+ * cells above are about retention across page changes and fail for entirely
+ * different reasons than these do.
+ */
+function StateProbe() {
+  const {
+    messages, conversationId, input, mode, model, activeThreadId,
+    setInput, setConversationId, purgeConversation, runStream,
+  } = useAiContext();
+  const navigate = useNavigate();
+
+  return (
+    <div>
+      <span data-testid="conversation-id">{conversationId ?? 'none'}</span>
+      <span data-testid="active-thread-id">{activeThreadId}</span>
+      <span data-testid="draft">{input}</span>
+      <span data-testid="mode">{mode}</span>
+      <span data-testid="model">{model}</span>
+      <ul data-testid="thread">
+        {messages.map((msg) => (
+          <li
+            key={msg.id}
+            data-refusal={msg.isRefusal ? 'yes' : 'no'}
+            data-error={msg.isError ? 'yes' : 'no'}
+          >
+            {msg.content}
+          </li>
+        ))}
+      </ul>
+      <button
+        onClick={() =>
+          runStream(
+            '/llm/ask',
+            { question: 'q', conversationId: conversationId ?? undefined },
+            { userMessage: 'q' },
+          )
+        }
+      >
+        ask
+      </button>
+      <button onClick={() => setInput('half-typed question')}>type</button>
+      <button onClick={() => setConversationId('c-1')}>claim c-1</button>
+      <button onClick={() => purgeConversation('c-1')}>purge c-1</button>
+      <button onClick={() => navigate(-1)}>back</button>
+      <button onClick={() => navigate(1)}>forward</button>
+    </div>
+  );
+}
+
+function renderStateApp(initialEntry: string, destinations: string[] = []) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <AiProvider>
+          <LocationDisplay />
+          {destinations.map((to) => (
+            <NavButton key={to} to={to} />
+          ))}
+          <Routes>
+            <Route path="/ai" element={<StateProbe />} />
+            <Route path="/ai/c/:conversationId" element={<StateProbe />} />
+            <Route path="/pages/:id" element={<StateProbe />} />
+          </Routes>
+        </AiProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return { ...view, queryClient, invalidate };
+}
+
+/** An /llm/ask stream whose final frame carries `id`. */
+function askStreamReturning(id: string | null, answer = 'the answer') {
+  return async function* fakeStream() {
+    yield { content: answer };
+    yield { done: true, final: true, conversationId: id, sources: [] };
+  };
+}
+
+describe('AiContext conversation state machine (#1361)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/llm/usecase-default?usecase=chat') {
+        return Promise.resolve({ model: 'llama3', vision: null });
+      }
+      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+      return Promise.resolve([]);
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('promotes the first answer on /ai: re-keys the draft, replaces the URL, files a fresh draft', async () => {
+    streamSSEMock.mockImplementation(askStreamReturning('c-1'));
+    const { invalidate } = renderStateApp('/ai', ['/ai']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    });
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('c-1');
+    expect(threadContents()).toEqual(['q', 'the answer']);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['llm', 'conversations'] });
+
+    // A fresh draft was filed under `draft`, so /ai is a new chat again rather
+    // than a second view of the conversation that just grew out of it.
+    goTo('/ai');
+    expect(threadContents()).toEqual([]);
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
+  });
+
+  it('leaves activeThreadId unchanged across the promotion', async () => {
+    streamSSEMock.mockImplementation(askStreamReturning('c-1'));
+    renderStateApp('/ai');
+
+    const before = screen.getByTestId('active-thread-id').textContent;
+    expect(before).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    });
+
+    // A re-key is not a switch: the same object moved keys, so every
+    // switch-sensitive effect (abort, Deep Search, attachments) must sit still.
+    // This also pins that the map write and the navigation land in ONE render —
+    // an unbatched pair would show the fresh draft's identity in between.
+    expect(screen.getByTestId('active-thread-id')).toHaveTextContent(before!);
+  });
+
+  it('does not promote a first answer that was stopped', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    streamSSEMock.mockImplementation((_endpoint: string, _body: unknown, signal: AbortSignal) =>
+      (async function* () {
+        yield { content: 'partial' };
+        await gate;
+        if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        yield { done: true, final: true, conversationId: 'c-1', sources: [] };
+      })(),
+    );
+
+    const { invalidate } = renderStateApp('/ai', ['/pages/p1', '/ai']);
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+
+    goTo('/pages/p1');
+    await act(async () => { release(); await Promise.resolve(); });
+
+    goTo('/ai');
+    // Decision 9: the partial stays under the origin key with no id, and the
+    // URL never became a conversation URL.
+    expect(screen.getByTestId('location')).toHaveTextContent('/ai');
+    expect(screen.getByTestId('location').textContent).not.toContain('/ai/c/');
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
+    expect(threadContents()).toEqual(['q', 'partial']);
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['llm', 'conversations'] });
+  });
+
+  it('re-keys but does not navigate when a completion outruns its own abort', async () => {
+    // The `activeKeyRef` guard is belt-and-braces behind the abort effect, so
+    // this is the synthetic race that reaches it: a stream that ignores its
+    // signal and finishes after the user has already moved. The thread is
+    // still promoted (the answer is real and the server saved it); the user is
+    // not dragged back to it.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    streamSSEMock.mockImplementation(() =>
+      (async function* () {
+        yield { content: 'the answer' };
+        await gate;
+        yield { done: true, final: true, conversationId: 'c-1', sources: [] };
+      })(),
+    );
+
+    renderStateApp('/ai', ['/pages/p1', '/ai/c/c-1']);
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+
+    goTo('/pages/p1');
+    await act(async () => { release(); await Promise.resolve(); });
+
+    expect(screen.getByTestId('location')).toHaveTextContent('/pages/p1');
+    goTo('/ai/c/c-1');
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['q', 'the answer']);
+    });
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('c-1');
+  });
+
+  it('sets the id on a fresh page: thread without re-keying or navigating', async () => {
+    streamSSEMock.mockImplementation(askStreamReturning('c-dock', 'dock answer'));
+    const { invalidate } = renderStateApp('/pages/p1', ['/ai']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('conversation-id')).toHaveTextContent('c-dock');
+    });
+
+    // `runStream` is shared by both surfaces; without the key half of the
+    // promotion guard the dock's first answer would re-key its thread out from
+    // under /pages/p1 and teleport the user to /ai.
+    expect(screen.getByTestId('location')).toHaveTextContent('/pages/p1');
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['llm', 'conversations'] });
+
+    goTo('/ai');
+    expect(threadContents()).toEqual([]);
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
+  });
+
+  it('clears the id and stays put on a stale 404, then the next ask promotes with the draft untouched', async () => {
+    streamSSEMock.mockImplementation(askStreamReturning('c-1'));
+    const { invalidate } = renderStateApp('/ai');
+
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    });
+
+    // Someone deleted the row in another tab. The server refuses before the
+    // SSE header, so this is a thrown ApiError, not an in-band error frame.
+    streamSSEMock.mockImplementation(() => { throw new ApiError(404, 'Conversation not found'); });
+    fireEvent.click(screen.getByText('type'));
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
+    });
+    // The turn explains itself; the URL does not move and no re-key happens.
+    expect(threadContents()).toContain(
+      'This conversation no longer exists — your next question starts a new one.',
+    );
+    expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['llm', 'conversations'] });
+    // The user turn is never marked as the error.
+    const rows = Array.from(screen.getByTestId('thread').querySelectorAll('li'));
+    expect(rows.filter((li) => li.getAttribute('data-error') === 'yes')).toHaveLength(1);
+    expect(screen.getByTestId('draft')).toHaveTextContent('half-typed question');
+
+    // The next ask is a fresh conversation, and it promotes the SAME thread —
+    // origin key `conv:c-1` with no id — onto the new row.
+    streamSSEMock.mockImplementation(askStreamReturning('c-2', 'a fresh answer'));
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-2');
+    });
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('c-2');
+    // The half-typed draft is composer state on a thread that was re-keyed,
+    // not switched — it survives untouched.
+    expect(screen.getByTestId('draft')).toHaveTextContent('half-typed question');
+  });
+
+  it('clears the id on a final frame carrying conversationId: null, keeping the messages', async () => {
+    streamSSEMock.mockImplementation(askStreamReturning('c-1'));
+    const { invalidate } = renderStateApp('/ai');
+
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    });
+    invalidate.mockClear();
+
+    // Deleted in another tab mid-answer: the append hit zero rows.
+    streamSSEMock.mockImplementation(askStreamReturning(null, 'answered anyway'));
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
+    });
+    // The on-screen exchange stays; history does not get it; nothing navigates
+    // and the deleted conversation is not resurrected.
+    expect(threadContents()).toEqual(['q', 'the answer', 'q', 'answered anyway']);
+    expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['llm', 'conversations'] });
+  });
+
+  it('ignores a final frame naming a different conversation', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    streamSSEMock.mockImplementation(askStreamReturning('c-1'));
+    renderStateApp('/ai');
+
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    });
+
+    streamSSEMock.mockImplementation(askStreamReturning('c-999', 'answer from elsewhere'));
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(threadContents()).toContain('answer from elsewhere');
+    });
+
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('c-1');
+    expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    expect(warn).toHaveBeenCalledWith(
+      '[ai] final frame named a different conversation; ignored',
+      { originKey: 'conv:c-1', frameId: 'c-999' },
+    );
+  });
+
+  it('mirrors a completed exchange into every other retained thread carrying the id', async () => {
+    streamSSEMock.mockImplementation(askStreamReturning('c-1'));
+    renderStateApp('/ai', ['/pages/p1', '/ai/c/c-1']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    });
+
+    // The dock's thread on the page this conversation started from holds the
+    // same server row.
+    goTo('/pages/p1');
+    fireEvent.click(screen.getByText('claim c-1'));
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('c-1');
+
+    goTo('/ai/c/c-1');
+    streamSSEMock.mockImplementation(askStreamReturning('c-1', 'follow-up answer'));
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['q', 'the answer', 'q', 'follow-up answer']);
+    });
+
+    // Server history is the truth; a second view of it that silently lags is
+    // what the mirror prevents.
+    goTo('/pages/p1');
+    expect(threadContents()).toEqual(['q', 'follow-up answer']);
+  });
+
+  it('purges a deleted conversation: its thread goes, other threads keep their messages and lose the id', async () => {
+    streamSSEMock.mockImplementation(askStreamReturning('c-1'));
+    renderStateApp('/ai', ['/pages/p1', '/ai/c/c-1']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    });
+
+    goTo('/pages/p1');
+    fireEvent.click(screen.getByText('claim c-1'));
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['q', 'the answer']);
+    });
+
+    fireEvent.click(screen.getByText('purge c-1'));
+
+    // The page thread keeps its messages and loses the id, so its next
+    // question starts a fresh row instead of 404-looping.
+    await waitFor(() => {
+      expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
+    });
+    expect(threadContents()).toEqual(['q', 'the answer']);
+    // Not open, so nothing navigated.
+    expect(screen.getByTestId('location')).toHaveTextContent('/pages/p1');
+
+    // And `conv:c-1` really is gone from the map — reopening it is a blank
+    // placeholder, not the retained copy.
+    goTo('/ai/c/c-1');
+    expect(threadContents()).toEqual([]);
+  });
+
+  it('leaves the dead URL with a replace navigation when the purged conversation is open', async () => {
+    streamSSEMock.mockImplementation(askStreamReturning('c-1'));
+    renderStateApp('/ai');
+
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-1');
+    });
+
+    fireEvent.click(screen.getByText('purge c-1'));
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai');
+    });
+    expect(screen.getByTestId('location').textContent).not.toContain('/ai/c/');
   });
 });

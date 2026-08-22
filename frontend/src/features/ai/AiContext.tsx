@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UsecaseDefault } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
-import { AI_HOME_PATH, isAiRoute, conversationIdFromPath } from '../../shared/lib/ai-routes';
+import { AI_HOME_PATH, isAiRoute, conversationIdFromPath, conversationPath } from '../../shared/lib/ai-routes';
 import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
 import { DEFAULT_IMPROVEMENT_TYPE, type ImprovementType } from './improvement-types';
 import { type CreateSkillId } from './create-skills';
@@ -88,6 +88,12 @@ interface AiContextValue {
    */
   activeThreadId: string;
   startNewConversation: () => void;
+  /**
+   * #1361: the delete mutation succeeded. Removes `conv:<id>`, clears the id
+   * from every other retained thread that carried it (keeping their messages),
+   * and leaves a dead URL with a `replace` navigation to `/ai`.
+   */
+  purgeConversation: (id: string) => void;
   /**
    * Bumped by `startNewConversation`. The composer focuses its textarea
    * whenever this changes — a counter rather than a boolean, because two New
@@ -234,7 +240,15 @@ interface StreamChunk {
   error?: string;
   done?: boolean;
   final?: boolean;
-  conversationId?: string;
+  /**
+   * #1361: `string | null`. The ask route's final frame is
+   * `conversationId: convId ?? null` (`llm-ask.ts`), and `null` is a fact, not
+   * an absence — the append hit zero rows because the conversation was deleted
+   * in another tab while the answer was streaming. Absent (`undefined`) still
+   * means "this stream is not about a conversation at all", which is every
+   * other `/llm/*` route.
+   */
+  conversationId?: string | null;
   sources?: Source[];
   /** Improve route (#704): the original markdown the model was fed, echoed on the final event. */
   originalMarkdown?: string;
@@ -399,14 +413,22 @@ function threadKeyFor(pathname: string): ThreadKey {
  */
 const MAX_RETAINED_THREADS = 12;
 
-/** LRU eviction, shared by the two writers below. */
-function evictOldest(next: Map<string, AiThread>): Map<string, AiThread> {
-  while (next.size > MAX_RETAINED_THREADS) {
-    const oldest = next.keys().next().value;
+/**
+ * Evict least-recently-used entries down to the cap, in place. A Map iterates
+ * in insertion order, so the first key is always the oldest touch.
+ *
+ * Shared by `fileThread` and `touchThread` below, and by the promotion
+ * (#1361): filing a fresh `draft` beside the thread it just re-keyed can
+ * therefore push the map one over the cap — a second copy of this loop is how
+ * the two would drift.
+ */
+function trimThreads(threads: Map<string, AiThread>): Map<string, AiThread> {
+  while (threads.size > MAX_RETAINED_THREADS) {
+    const oldest = threads.keys().next().value;
     if (oldest === undefined) break;
-    next.delete(oldest);
+    threads.delete(oldest);
   }
-  return next;
+  return threads;
 }
 
 /**
@@ -420,7 +442,7 @@ function fileThread(threads: Map<string, AiThread>, key: string): Map<string, Ai
   const next = new Map(threads);
   next.delete(key);
   next.set(key, { ...seedFor(key), identity: nextIdentity() });
-  return evictOldest(next);
+  return trimThreads(next);
 }
 
 /**
@@ -443,7 +465,7 @@ function touchThread(
   const next = new Map(threads);
   next.delete(key);
   next.set(key, { ...base, ...patch(base), identity: base.identity });
-  return evictOldest(next);
+  return trimThreads(next);
 }
 
 /**
@@ -459,6 +481,30 @@ function findThreadKeyByIdentity(
     if (thread.identity === identity) return key;
   }
   return undefined;
+}
+
+/**
+ * Move the thread at `fromKey` to `toKey`, in place — the SAME object, not a
+ * copy, so its `identity` (and everything else) survives untouched. The
+ * #1361 promotion depends on this: a re-key is not a switch, and stamping a
+ * new identity (what `fileThread` does) would fire every switch-sensitive
+ * effect keyed on `activeThreadId` for what is, from the user's chair, the
+ * same conversation growing an id.
+ *
+ * A no-op when `fromKey` is already gone — the caller checks
+ * `findThreadKeyByIdentity` first and only calls this when it found
+ * something, but staying defensive here costs nothing.
+ */
+function rekeyThread(
+  threads: Map<string, AiThread>,
+  fromKey: string,
+  toKey: string,
+): Map<string, AiThread> {
+  const thread = threads.get(fromKey);
+  if (!thread) return threads;
+  threads.delete(fromKey);
+  threads.set(toKey, thread);
+  return threads;
 }
 
 /**
@@ -888,6 +934,147 @@ export function AiProvider({ children }: { children: ReactNode }) {
   // mutation, which calls `purgeConversation` here when the server confirms.
 
   /**
+   * The LIVE active thread key, for callbacks captured before a navigation.
+   *
+   * The promotion has to answer "is the thread I started in still the one on
+   * screen?". A `threadKey` captured when the stream started answers "was it,
+   * when I started" — always yes — and would drag a user who navigated away
+   * mid-answer back onto the promoted conversation.
+   */
+  const activeKeyRef = useRef(threadKey);
+  useEffect(() => {
+    activeKeyRef.current = threadKey;
+  }, [threadKey]);
+
+  /**
+   * Everything that happens once a completed exchange lands: the three
+   * post-commit rows of #1361's state machine, plus list invalidation.
+   *
+   * One `setThreads` pass, so a promotion and the mirror can never be observed
+   * half-applied — and `navigate` is queued in the same synchronous block, so
+   * React batches the map write and the URL change into ONE render. That is
+   * what keeps `activeThreadId` from dipping through the fresh draft's
+   * identity between the re-key and the URL landing; a dip would fire the
+   * abort effect and clear both composers on a promotion, which is a re-key
+   * and explicitly not a switch.
+   */
+  const completeExchange = useCallback((args: {
+    originKey: string;
+    originIdentity: number;
+    originHadId: boolean;
+    assistantMsgId: string;
+    frameConversationId: string | null | undefined;
+  }) => {
+    const { originKey, originIdentity, originHadId, assistantMsgId, frameConversationId } = args;
+
+    // Nothing on this stream concerns conversations: Improve, Generate,
+    // Diagram and Summarize emit no `conversationId` frame at all. Returning
+    // here is also what keeps an Improve run on a page thread that happens to
+    // carry an id from refetching the conversation list.
+    if (frameConversationId === undefined) return;
+
+    // Promotion guard, both halves. The key half is what stops the dock: a
+    // `page:` origin never promotes, never re-keys and never navigates. The
+    // id half is what stops a follow-up: only a thread that had NO id when the
+    // stream started is a conversation being born.
+    const promotedId =
+      typeof frameConversationId === 'string'
+      && !originHadId
+      && (originKey === 'draft' || originKey.startsWith('conv:'))
+        ? frameConversationId
+        : null;
+
+    // Minted OUTSIDE the updater: React may invoke a state updater twice, and
+    // an updater that allocates ids is not pure. Two is the whole mirror — the
+    // pair is at most (user, assistant) — and reusing them across two target
+    // threads is correct, because a message id only has to be unique inside
+    // its own list.
+    const mirrorUserId = nextMessageId();
+    const mirrorAssistantId = nextMessageId();
+    const freshDraftIdentity = promotedId !== null && originKey === 'draft' ? nextIdentity() : 0;
+
+    setThreads((prev) => {
+      const fromKey = findThreadKeyByIdentity(prev, originIdentity);
+      // The thread that asked has been replaced (New chat while its stream was
+      // running). Its content write was dropped upstream; so is this.
+      if (fromKey === undefined) return prev;
+      const origin = prev.get(fromKey)!;
+
+      // The mirror pair. Only a SAVED exchange mirrors: a `null` frame means
+      // the row is gone, so there is no second view of it to keep in step.
+      const pair: Message[] = [];
+      if (typeof frameConversationId === 'string') {
+        const at = origin.messages.findIndex((msg) => msg.id === assistantMsgId);
+        if (at >= 0) {
+          const before = origin.messages[at - 1];
+          if (before && before.role === 'user') pair.push({ ...before, id: mirrorUserId });
+          pair.push({ ...origin.messages[at]!, id: mirrorAssistantId });
+        }
+      }
+      const mirrorTargets = pair.length > 0
+        ? Array.from(prev).filter(([, thread]) =>
+            thread.identity !== originIdentity && thread.conversationId === frameConversationId)
+        : [];
+
+      if (promotedId === null && mirrorTargets.length === 0) return prev;
+
+      let next = new Map(prev);
+      if (promotedId !== null) {
+        next = rekeyThread(next, fromKey, `conv:${promotedId}`);
+        if (fromKey === 'draft') {
+          // Exactly one draft exists. The promoted object took its content
+          // with it, so the draft slot is re-seeded with a fresh identity —
+          // which is what makes /ai a new chat again.
+          next.set('draft', { ...seedFor('draft'), identity: freshDraftIdentity });
+          next = trimThreads(next);
+        }
+      }
+      for (const [key] of mirrorTargets) {
+        const thread = next.get(key);
+        // Evicted by the trim above; nothing to keep in step.
+        if (!thread) continue;
+        // Map.set on an existing key keeps its position, so the mirror never
+        // reorders the LRU and never promotes a stale thread out of eviction.
+        next.set(key, { ...thread, messages: [...thread.messages, ...pair] });
+      }
+      return next;
+    });
+
+    if (promotedId !== null && activeKeyRef.current === originKey) {
+      // replace, not push: Back returns to where the user came from, not to
+      // the empty draft this conversation grew out of.
+      navigate(conversationPath(promotedId), { replace: true });
+    }
+    // Every completed ask moves a row or its position — a promotion creates
+    // one, a follow-up bumps `updated_at`, a null frame means it is gone.
+    queryClient.invalidateQueries({ queryKey: ['llm', 'conversations'] });
+  }, [navigate, queryClient]);
+
+  /**
+   * Delete succeeded — the pane owns the mutation (`useDeleteConversation`),
+   * this is the thread-side half.
+   *
+   * The conversation's own thread goes. Every OTHER retained thread carrying
+   * the id — the dock's `page:` thread on the page the conversation started
+   * from — keeps its messages and loses the id, so its next question starts a
+   * fresh row instead of 404-looping against a row that is gone.
+   */
+  const purgeConversation = useCallback((id: string) => {
+    setThreads((prev) => {
+      const next = new Map(prev);
+      next.delete(`conv:${id}`);
+      for (const [key, thread] of next) {
+        if (thread.conversationId === id) next.set(key, { ...thread, conversationId: null });
+      }
+      return next;
+    });
+    // The open URL is dead. `replace`, so it is not one Back press away.
+    if (conversationIdFromPath(location.pathname) === id) {
+      navigate(AI_HOME_PATH, { replace: true });
+    }
+  }, [location.pathname, navigate]);
+
+  /**
    * Generic SSE streaming helper used by all mode handlers.
    * Manages abort controller, streaming state, thinking state, and message accumulation.
    *
@@ -958,6 +1145,12 @@ export function AiProvider({ children }: { children: ReactNode }) {
     // orphan turn in the fresh draft.
     const originKey = threadKeyRef.current;
     const originIdentity = threadsRef.current.get(originKey)?.identity ?? 0;
+    // #1361: did the ORIGIN thread carry an id when this call started? Read
+    // off the request body — the only place a caller states it (`AskMode`
+    // passes its own `conversationId`) — which is also what the stale-404
+    // guard below keys on, per the same "a conversationId in the body is the
+    // REQUEST body" reasoning.
+    const originHadId = typeof body.conversationId === 'string';
     // 0 means the active key was not filed yet — reachable only in the render
     // before the filing effect runs, i.e. before anyone could have clicked.
     // Fall back to a key-bound write rather than dispatching on an identity no
@@ -1007,6 +1200,12 @@ export function AiProvider({ children }: { children: ReactNode }) {
     // #1119: the #1105 refusal verdict, read off the final frame. Local rather
     // than state because it is committed with the content in one update below.
     let refusedTurn = false;
+    /**
+     * #1361: the id the server named on this stream. Three distinct values,
+     * and the state machine reads all three — `undefined` (no frame: not an
+     * ask), a string (saved to that row), `null` (the append hit zero rows).
+     */
+    let frameConversationId: string | null | undefined;
 
     // Add the placeholder assistant message with a stable ID. It stays empty
     // during the stream (#747) — the in-flight answer renders through the
@@ -1066,9 +1265,30 @@ export function AiProvider({ children }: { children: ReactNode }) {
           streamingAppend(chunk.content);
           opts?.onContent?.(accumulated);
         }
-        if (chunk.conversationId) {
-          const id = chunk.conversationId;
-          writeOrigin(() => ({ conversationId: id }));
+        // `in` plus an explicit undefined check, NOT truthiness: the final
+        // frame is `conversationId: convId ?? null`, and the truthiness guard
+        // swallowed exactly the `null` — leaving the client holding an id for
+        // a row that was deleted mid-answer in another tab.
+        if ('conversationId' in chunk && chunk.conversationId !== undefined) {
+          const frameId = chunk.conversationId;
+          if (
+            frameId !== null
+            && originHadId
+            && originKey.startsWith('conv:')
+            && frameId !== originKey.slice('conv:'.length)
+          ) {
+            // Defensive: the server answered about a different row than the
+            // one this thread is pinned to. Adopting it would silently move
+            // the user's conversation, and `AskMode` reads this id straight
+            // into the next request body. Log and keep the thread where it is.
+            console.warn('[ai] final frame named a different conversation; ignored', {
+              originKey,
+              frameId,
+            });
+          } else {
+            frameConversationId = frameId;
+            writeOrigin(() => ({ conversationId: frameId }));
+          }
         }
         if (chunk.final && chunk.sources) {
           finalSources = chunk.sources;
@@ -1101,6 +1321,17 @@ export function AiProvider({ children }: { children: ReactNode }) {
         return;
       }
       commitToMessages();
+      // Promotion, the mirror and list invalidation — the NORMAL path only.
+      // An aborted or errored first answer is never promoted (decision 9): the
+      // abort branch below commits its partial and returns before reaching
+      // here, and so does every error branch.
+      completeExchange({
+        originKey,
+        originIdentity,
+        originHadId,
+        assistantMsgId,
+        frameConversationId,
+      });
       opts?.onComplete?.(
         accumulated,
         finalSources.length > 0 ? finalSources : undefined,
@@ -1113,6 +1344,28 @@ export function AiProvider({ children }: { children: ReactNode }) {
         // Keep whatever was streamed before the abort (matches the previous
         // per-chunk-commit behavior).
         commitToMessages();
+        return;
+      }
+      // #1361: a stale conversation id. The server refuses BEFORE any SSE
+      // header, so this arrives as a thrown ApiError rather than an in-band
+      // error frame, and it is handled here — ahead of `onError` — so both
+      // surfaces get it from the one helper they share.
+      //
+      // The id is read off the REQUEST body: `ApiError` carries a status and a
+      // message and never the response payload (`shared/lib/sse.ts`), so the
+      // body is the only place the client holds the id this 404 is about.
+      if (
+        err instanceof ApiError
+        && err.statusCode === 404
+        && typeof body.conversationId === 'string'
+      ) {
+        // No toast — the sentence IS the turn. No re-key and no navigation
+        // either: re-keying onto `draft` would clobber the incumbent draft,
+        // and the promotion rule already gives the next question a fresh row
+        // and a fresh URL. Never auto-resend (#1176).
+        failLastMessage('This conversation no longer exists — your next question starts a new one.');
+        writeOrigin(() => ({ conversationId: null }));
+        queryClient.invalidateQueries({ queryKey: ['llm', 'conversations'] });
         return;
       }
       // The caller may claim the error (#1154). It has then already told the
@@ -1147,7 +1400,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       setIsThinking(false);
       setStreamingThreadId(null);
     }
-  }, [streamingStart, streamingAppend, streamingReplace, streamingFinish, updateThread, updateThreadByIdentity]);
+  }, [streamingStart, streamingAppend, streamingReplace, streamingFinish, updateThread, updateThreadByIdentity, completeExchange, queryClient]);
 
   const value: AiContextValue = {
     retainAi,
@@ -1164,6 +1417,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setConversationId,
     activeThreadId,
     startNewConversation,
+    purgeConversation,
     composerFocusRequest,
     model,
     setModel,
