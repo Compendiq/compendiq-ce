@@ -37,6 +37,41 @@ vi.mock('../../core/services/rate-limit-service.js', () => ({
   getRateLimits: vi.fn(async () => ({ admin: { max: 1000 } })),
 }));
 
+// #1260 — the comparison run + judgements. Same boundary discipline: the
+// service is mocked here, its behavior lives in
+// shadow-compare-service.integration.test.ts against real Postgres.
+const compareSvc = vi.hoisted(() => ({
+  create: vi.fn(),
+  get: vi.fn(),
+  run: vi.fn(async () => undefined),
+  judge: vi.fn(),
+  judgements: vi.fn(),
+}));
+vi.mock('../../domains/llm/services/shadow-compare-service.js', () => ({
+  createShadowCompareRun: (...a: unknown[]) => compareSvc.create(...a),
+  getShadowCompareRun: (...a: unknown[]) => compareSvc.get(...a),
+  runShadowCompare: (...a: unknown[]) => compareSvc.run(...a),
+  recordShadowCompareJudgement: (...a: unknown[]) => compareSvc.judge(...a),
+  getShadowCompareJudgements: (...a: unknown[]) => compareSvc.judgements(...a),
+}));
+
+const benchmarkGuard = vi.hoisted(() => ({
+  active: vi.fn(async (): Promise<{ id: string } | null> => null),
+}));
+vi.mock('../../domains/llm/eval/production-benchmark.js', () => ({
+  getActiveProductionBenchmark: (...a: unknown[]) => benchmarkGuard.active(...(a as [])),
+  ProductionBenchmarkAlreadyRunningError: class ProductionBenchmarkAlreadyRunningError extends Error {
+    constructor(public readonly activeRunId: string) {
+      super('A production retrieval benchmark is already running');
+    }
+  },
+}));
+
+const auditMock = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../../core/services/audit-service.js', () => ({
+  logAuditEvent: (...a: unknown[]) => auditMock(...(a as [])),
+}));
+
 const { llmEmbeddingShadowRoutes } = await import('./llm-embedding-shadow.js');
 const { LlmHttpError } = await import('../../domains/llm/services/llm-http-error.js');
 const { ShadowProbeError } = await import('../../domains/llm/services/shadow-migration-service.js');
@@ -255,6 +290,113 @@ describe('#1116 shadow-migration routes', () => {
     expect(res.statusCode).toBe(409);
   });
 
+  // ── #1260 — the comparison run ─────────────────────────────────────────
+
+  const READY_STATUS = {
+    status: 'active',
+    phase: 'ready',
+    model: 'qwen3-embedding:4b',
+    stragglerPages: 0,
+    indexReady: true,
+  };
+
+  it('compare: 202 with a runId, recorded in the audit log, worker fired', async () => {
+    svc.status.mockResolvedValue(READY_STATUS);
+    benchmarkGuard.active.mockResolvedValue(null);
+    compareSvc.create.mockResolvedValue('run-1');
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/shadow-migration/compare',
+      payload: { days: 14, limit: 20, topK: 5 },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toMatchObject({ runId: 'run-1', status: 'queued' });
+    expect(compareSvc.create).toHaveBeenCalledWith('test-admin', {
+      kind: 'shadow-compare',
+      days: 14,
+      limit: 20,
+      topK: 5,
+    });
+    expect(compareSvc.run).toHaveBeenCalledWith('run-1', 'test-admin');
+    expect(auditMock).toHaveBeenCalledWith(
+      'test-admin',
+      'EMBEDDING_SHADOW_COMPARE_STARTED',
+      'llm',
+      undefined,
+      expect.objectContaining({ runId: 'run-1', days: 14, limit: 20, topK: 5 }),
+      expect.anything(),
+    );
+  });
+
+  it('compare: an empty body takes the schema defaults', async () => {
+    svc.status.mockResolvedValue(READY_STATUS);
+    benchmarkGuard.active.mockResolvedValue(null);
+    compareSvc.create.mockResolvedValue('run-2');
+    const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
+    expect(res.statusCode).toBe(202);
+    expect(compareSvc.create).toHaveBeenCalledWith('test-admin', {
+      kind: 'shadow-compare',
+      days: 30,
+      limit: 50,
+      topK: 10,
+    });
+  });
+
+  it('compare: 409 with no active shadow migration — there is nothing to compare against', async () => {
+    svc.status.mockResolvedValue(null);
+    const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/no active shadow migration/i);
+    expect(compareSvc.create).not.toHaveBeenCalled();
+  });
+
+  it('compare: 409 while backfilling, naming the straggler count — a partial column measures the backfill, not the model', async () => {
+    svc.status.mockResolvedValue({ ...READY_STATUS, phase: 'backfilling', stragglerPages: 7 });
+    const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/7 straggler/i);
+    expect(compareSvc.create).not.toHaveBeenCalled();
+  });
+
+  it('compare: 409 after the swap — the window is over', async () => {
+    svc.status.mockResolvedValue({ ...READY_STATUS, status: 'swapped', phase: 'swapped' });
+    const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
+    expect(res.statusCode).toBe(409);
+    expect(compareSvc.create).not.toHaveBeenCalled();
+  });
+
+  it('compare: 409 while a production benchmark (or another compare) holds the one-active slot', async () => {
+    svc.status.mockResolvedValue(READY_STATUS);
+    benchmarkGuard.active.mockResolvedValue({ id: 'bench-1' });
+    const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: 'benchmark_in_progress', runId: 'bench-1' });
+    expect(compareSvc.create).not.toHaveBeenCalled();
+  });
+
+  it('compare: a create losing the unique-index race is the same 409, not a masked 500', async () => {
+    svc.status.mockResolvedValue(READY_STATUS);
+    benchmarkGuard.active.mockResolvedValue(null);
+    const { ProductionBenchmarkAlreadyRunningError } = await import('../../domains/llm/eval/production-benchmark.js');
+    compareSvc.create.mockRejectedValue(new ProductionBenchmarkAlreadyRunningError('bench-2'));
+    const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: 'benchmark_in_progress', runId: 'bench-2' });
+  });
+
+  it('compare poll: returns the run, 404 for an unknown or foreign-kind id', async () => {
+    compareSvc.get.mockResolvedValue({ id: 'run-1', status: 'running', progressDone: 2, progressTotal: 5, result: null, error: null });
+    let res = await app.inject({ method: 'GET', url: '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ status: 'running', progressDone: 2 });
+
+    compareSvc.get.mockResolvedValue(null);
+    res = await app.inject({ method: 'GET', url: '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009' });
+    expect(res.statusCode).toBe(404);
+  });
+
   it('every route is admin-gated', async () => {
     isAdmin = false;
     for (const [method, url] of [
@@ -264,6 +406,8 @@ describe('#1116 shadow-migration routes', () => {
       ['POST', '/api/admin/embedding/shadow-migration/rollback'],
       ['POST', '/api/admin/embedding/shadow-migration/cleanup'],
       ['POST', '/api/admin/embedding/shadow-migration/backfill'],
+      ['POST', '/api/admin/embedding/shadow-migration/compare'],
+      ['GET', '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009'],
     ] as const) {
       const res = await app.inject({
         method,
@@ -276,5 +420,7 @@ describe('#1116 shadow-migration routes', () => {
     }
     expect(svc.start).not.toHaveBeenCalled();
     expect(svc.swap).not.toHaveBeenCalled();
+    expect(compareSvc.create).not.toHaveBeenCalled();
+    expect(compareSvc.get).not.toHaveBeenCalled();
   });
 });

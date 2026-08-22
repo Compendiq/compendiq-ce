@@ -355,18 +355,39 @@ export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[],
  * filter `routes/knowledge/search.ts` has always applied. Optional and
  * defaults to undefined/no-op, so every unscoped caller (RAG chat, deep
  * search, the eval/benchmark harness) is byte-identical.
+ *
+ * `opts.column` (#1260) points the SAME probe at the shadow column a #1116
+ * migration backfills, so the comparison run measures the candidate model
+ * through the identical SQL, ACL predicate and ef_search discipline as the
+ * live one — a sibling function would be a fifth `efSearchFor` call site and
+ * a second copy of all of the above. The value is a CLOSED two-member union
+ * re-narrowed below before it touches the SQL string; request input never
+ * reaches it (routes validate a boolean-ish choice away from this layer).
+ * There is deliberately NO cast on the parameter: the candidate column may be
+ * `halfvec`, and `<=>` resolves the untyped parameter from the column's own
+ * type — a `::vector` cast would break exactly the halfvec case the shadow
+ * tiering exists for. Everything but the column identifier — the fan-out, the
+ * ef_search coverage, `visiblePagesPredicate` — is shared by construction.
  */
+export type VectorSearchColumn = 'embedding' | 'embedding_next';
+
 export async function vectorSearch(
   userId: string,
   questionEmbedding: number[],
   limit = RAG_FETCH_WIDTH_DEFAULT,
-  opts?: { spaceKey?: string },
+  opts?: { spaceKey?: string; column?: VectorSearchColumn },
 ): Promise<SearchResult[]> {
   return withSpan(
     'rag.vector_search',
     async (span) => {
       const started = performance.now();
       const spaceKey = opts?.spaceKey;
+      // Allow-listed identifier, re-narrowed at the boundary: anything but
+      // the literal 'embedding_next' — including a value smuggled through a
+      // type assertion — degrades to the live column rather than reaching
+      // the SQL string (#1260).
+      const column: VectorSearchColumn =
+        opts?.column === 'embedding_next' ? 'embedding_next' : 'embedding';
       const vecSpaces = await getUserAccessibleSpaces(userId);
       // Use the dedicated vector pool so long-running similarity queries
       // do not starve the main pool used by CRUD routes.
@@ -407,12 +428,12 @@ export async function vectorSearch(
           distance: number;
         }>(
           `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.chunk_index, pe.metadata,
-                  pe.embedding <=> $2 AS distance
+                  pe.${column} <=> $2 AS distance
            FROM page_embeddings pe
            JOIN pages cp ON pe.page_id = cp.id
            WHERE ${visiblePagesPredicate(1, 4)}
            AND cp.deleted_at IS NULL${spaceKey ? ' AND cp.space_key = $5' : ''}
-           ORDER BY pe.embedding <=> $2
+           ORDER BY pe.${column} <=> $2
            LIMIT $3`,
           spaceKey
             ? [vecSpaces, pgvector.toSql(questionEmbedding), rawLimit, userId, spaceKey]

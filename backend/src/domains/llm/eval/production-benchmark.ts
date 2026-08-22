@@ -15,6 +15,7 @@ import {
   type SearchResult,
 } from '../services/rag-service.js';
 import { multiQuerySearch, type ExpansionOutcome } from '../services/multi-query-search.js';
+import { sampleAnalyticsQueries } from './analytics-query-sampler.js';
 // One definition, shared with the #1114 latency benchmark: two byte-identical
 // copies of a percentile rule is how two "p95" figures in one repo stop
 // meaning the same thing (review r2).
@@ -239,19 +240,17 @@ async function resolveBenchmarkQueries(config: RetrievalBenchmarkRequest): Promi
     }));
   }
 
-  const result = await query<{ query_text: string }>(
-    `SELECT (ARRAY_AGG(TRIM(query) ORDER BY created_at DESC))[1] AS query_text
-     FROM search_analytics
-     WHERE created_at >= NOW() - ($1 * INTERVAL '1 day')
-       AND char_length(TRIM(query)) BETWEEN 3 AND 1000
-     GROUP BY LOWER(TRIM(query))
-     ORDER BY MAX(created_at) DESC
-     LIMIT $2`,
-    [config.days, config.limit],
-  );
-  return result.rows.map((item, index) => ({
+  // Deliberately RECENCY-ordered — this benchmark reports on what people ask
+  // now. The shadow comparison (#1260) shares the sampler with
+  // `orderBy: 'frequency'` instead; only the ORDER differs.
+  const queries = await sampleAnalyticsQueries({
+    days: config.days,
+    limit: config.limit,
+    orderBy: 'recency',
+  });
+  return queries.map((text, index) => ({
     id: `recent-${index + 1}`,
-    query: item.query_text,
+    query: text,
   }));
 }
 

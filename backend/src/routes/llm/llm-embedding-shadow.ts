@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { ShadowCompareRequestSchema } from '@compendiq/contracts';
 import {
   startShadowMigration,
   getShadowMigrationStatus,
@@ -9,6 +10,17 @@ import {
   rerunShadowBackfill,
   ShadowProbeError,
 } from '../../domains/llm/services/shadow-migration-service.js';
+import {
+  createShadowCompareRun,
+  getShadowCompareRun,
+  runShadowCompare,
+} from '../../domains/llm/services/shadow-compare-service.js';
+import {
+  getActiveProductionBenchmark,
+  ProductionBenchmarkAlreadyRunningError,
+} from '../../domains/llm/eval/production-benchmark.js';
+import { logAuditEvent } from '../../core/services/audit-service.js';
+import { logger } from '../../core/utils/logger.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
 
@@ -163,6 +175,89 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
         if (mapped) return reply.code(mapped.statusCode).send({ error: mapped.message, statusCode: mapped.statusCode });
         throw err;
       }
+    },
+  );
+
+  // ── #1260 — compare the candidate against the live model on real queries ──
+
+  // POST /admin/embedding/shadow-migration/compare — start a Mode 1 agreement
+  // run over the shadow window. Async (202 + poll): N queries × 2 embed calls
+  // ride the shared LLM queue and can outlive an HTTP timeout. Gated on the
+  // same `ready` the swap gates on — a partially backfilled candidate column
+  // measures the backfill, not the model.
+  fastify.post(
+    '/admin/embedding/shadow-migration/compare',
+    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
+    async (request, reply) => {
+      const body = ShadowCompareRequestSchema.parse(request.body ?? {});
+      const status = await getShadowMigrationStatus();
+      if (!status || status.status !== 'active') {
+        return reply.code(409).send({
+          error:
+            'No active shadow migration — the comparison needs the candidate vectors a shadow migration backfills. Start one from the embedding assignment first.',
+          statusCode: 409,
+        });
+      }
+      if (status.phase !== 'ready') {
+        return reply.code(409).send({
+          error: `The candidate column is not fully backfilled (${status.stragglerPages} straggler pages${status.indexReady ? '' : ', shadow index not built'}) — comparing now would measure the backfill, not the model. Wait for the backfill to finish.`,
+          statusCode: 409,
+        });
+      }
+      // One run at a time, SHARED with the production retrieval benchmark:
+      // both spend the same LLM queue and the 091 partial unique index below
+      // is the cross-replica guard. Both cards' copy states the sharing.
+      const active = await getActiveProductionBenchmark();
+      if (active) {
+        return reply.code(409).send({
+          error: 'benchmark_in_progress',
+          message: 'A production retrieval benchmark is already running',
+          runId: active.id,
+        });
+      }
+
+      let runId: string;
+      try {
+        runId = await createShadowCompareRun(request.userId, { kind: 'shadow-compare', ...body });
+      } catch (err) {
+        if (err instanceof ProductionBenchmarkAlreadyRunningError) {
+          return reply.code(409).send({
+            error: 'benchmark_in_progress',
+            message: err.message,
+            runId: err.activeRunId,
+          });
+        }
+        throw err;
+      }
+
+      await logAuditEvent(
+        request.userId,
+        'EMBEDDING_SHADOW_COMPARE_STARTED',
+        'llm',
+        undefined,
+        { runId, days: body.days, limit: body.limit, topK: body.topK },
+        request,
+      );
+
+      void runShadowCompare(runId, request.userId).catch((err) => {
+        logger.error({ err, runId }, 'Shadow embedding comparison could not start');
+      });
+
+      return reply.code(202).send({ runId, status: 'queued' });
+    },
+  );
+
+  // GET /admin/embedding/shadow-migration/compare/:id — poll status/result.
+  // 404 for an unknown id AND for a run of another kind, so this surface
+  // cannot serve (or be used to poll) production-benchmark runs.
+  fastify.get(
+    '/admin/embedding/shadow-migration/compare/:id',
+    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
+    async (request, reply) => {
+      const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+      const run = await getShadowCompareRun(id);
+      if (!run) return reply.code(404).send({ error: 'not_found', message: 'Comparison run not found' });
+      return run;
     },
   );
 }
