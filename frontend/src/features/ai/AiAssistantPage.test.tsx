@@ -2188,76 +2188,6 @@ describe('AiAssistantPage', () => {
       });
     });
 
-    it('startNewConversation resets model to the current chat default (Finding 2, AC-4)', async () => {
-      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
-        if (path === '/llm/usecase-default?usecase=chat') {
-          return Promise.resolve({
-            usecase: 'chat',
-            providerId: '11111111-1111-4111-8111-111111111111',
-            providerName: 'Ollama',
-            model: 'qwen3:8b',
-          });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([
-            { name: 'qwen3:8b' },
-            { name: 'llama3' },
-            { name: 'gpt-4o-mini' },
-          ]);
-        }
-        if (path === '/llm/conversations') return Promise.resolve([]);
-        if (path === '/llm/conversations/conv-1' && (!opts || !opts.method)) {
-          // Loading an old conversation that was created with a different model —
-          // this simulates the per-conversation override that previously leaked.
-          return Promise.resolve({
-            id: 'conv-1',
-            model: 'llama3',
-            messages: [
-              { role: 'user', content: 'old question' },
-              { role: 'assistant', content: 'old answer' },
-            ],
-          });
-        }
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
-        }
-        return Promise.resolve([]);
-      });
-
-      // Render the AiContext provider directly so we can call its
-      // startNewConversation() and inspect model state.
-      const { AiProvider, useAiContext } = await import('./AiContext');
-      let captured: ReturnType<typeof useAiContext> | null = null;
-      function Capture() {
-        captured = useAiContext();
-        return null;
-      }
-
-      render(
-        <AiProvider>
-          <Capture />
-        </AiProvider>,
-        { wrapper: createWrapper() },
-      );
-
-      // Wait for chat default to load and pre-fill model.
-      await waitFor(() => {
-        expect(captured?.model).toBe('qwen3:8b');
-      });
-
-      // Simulate the user picking a different model for the current conversation.
-      await act(async () => {
-        captured!.setModel('gpt-4o-mini');
-      });
-      expect(captured?.model).toBe('gpt-4o-mini');
-
-      // Start a new conversation — model must reset to the chat default,
-      // not stay on the per-conversation override.
-      await act(async () => {
-        captured!.startNewConversation();
-      });
-      expect(captured?.model).toBe('qwen3:8b');
-    });
   });
 
   // #703 — chat content must not bleed through the translucent sticky bars.
@@ -2546,56 +2476,6 @@ describe('AiAssistantPage', () => {
       expect(classes).not.toMatch(/status-(connected|disconnected|syncing|embedding|ai)/);
     });
 
-    it('survives a reload of the conversation', async () => {
-      // The gap #1119 found beyond the issue text: the route returns the
-      // messages JSONB verbatim, `refused` and all, but loadConversation used
-      // to map only {role, content, sources} — so reopening a thread silently
-      // downgraded the refusal to an ordinary answer. The persisted copy also
-      // has no sources and drops the "closest matches attached" sentence, so
-      // the reloaded turn must not claim any.
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
-        if (path === '/llm/conversations') return Promise.resolve([]);
-        if (path === '/llm/conversations/conv-refused') {
-          return Promise.resolve({
-            id: 'conv-refused',
-            model: 'llama3',
-            messages: [
-              { role: 'user', content: 'what is our policy on X?' },
-              {
-                role: 'assistant',
-                content: 'The knowledge-base passages I found are not a strong enough match'
-                  + ' to this question to ground an answer, so I am not answering rather'
-                  + ' than guessing.',
-                refused: true,
-              },
-            ],
-          });
-        }
-        return Promise.resolve([]);
-      });
-
-      function ThreadReloader() {
-        const { loadConversation } = useAiContext();
-        return <button onClick={() => void loadConversation('conv-refused')}>reload</button>;
-      }
-      render(
-        <>
-          <ThreadReloader />
-          <AiAssistantPage />
-        </>,
-        { wrapper: createWrapper(['/ai']) },
-      );
-      fireEvent.click(screen.getByText('reload'));
-
-      const refusal = await screen.findByTestId('message-refusal');
-      expect(refusal).toHaveTextContent('not answering rather than guessing');
-      // No sources were persisted, so no source heading may appear.
-      expect(screen.queryByTestId('refusal-sources-label')).not.toBeInTheDocument();
-    });
   });
 
 });

@@ -33,7 +33,7 @@ vi.mock('sonner', () => ({
  */
 function ThreadProbe() {
   const {
-    pageId, mode, messages, conversationId, input,
+    pageId, mode, setMode, messages, conversationId, input, activeThreadId, composerFocusRequest,
     setMessages, setConversationId, setInput, startNewConversation, runStream,
   } = useAiContext();
   const label = pageId ?? 'no page';
@@ -44,6 +44,11 @@ function ThreadProbe() {
       <span data-testid="mode">{mode}</span>
       <span data-testid="conversation-id">{conversationId ?? 'none'}</span>
       <span data-testid="draft">{input}</span>
+      {/* The identity every switch-sensitive effect keys on (#1361). Read as an
+          opaque token: the tests compare it against itself across a gesture,
+          never against a literal. */}
+      <span data-testid="active-thread">{activeThreadId}</span>
+      <span data-testid="focus-request">{composerFocusRequest}</span>
       <ul data-testid="thread">
         {messages.map((msg) => (
           <li key={msg.id}>{msg.content}</li>
@@ -69,8 +74,15 @@ function ThreadProbe() {
         stream
       </button>
       <button onClick={startNewConversation}>new conversation</button>
+      <button onClick={() => setMode('generate')}>go generate</button>
     </div>
   );
+}
+
+/** Walks one entry back, so a test can count what New chat pushed. */
+function BackButton() {
+  const navigate = useNavigate();
+  return <button onClick={() => navigate(-1)}>back</button>;
 }
 
 function NavButton({ to }: { to: string }) {
@@ -89,13 +101,19 @@ function LocationDisplay() {
  * `destinations` are the URLs the test navigates between; each gets a button
  * labelled `go <url>`, clicked via `goTo`.
  */
-function renderThreadApp(initialEntry: string, destinations: string[] = []) {
+function renderThreadApp(
+  initialEntry: string,
+  destinations: string[] = [],
+  entriesBefore: string[] = [],
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const entries = [...entriesBefore, initialEntry];
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[initialEntry]}>
+      <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
         <AiProvider>
           <LocationDisplay />
+          <BackButton />
           {destinations.map((to) => (
             <NavButton key={to} to={to} />
           ))}
@@ -203,22 +221,72 @@ describe('AiContext per-page threads (#1126)', () => {
     expect(threadContents()).toEqual(['question about no page']);
   });
 
-  it('clears only the active thread on a deliberate new conversation', () => {
-    renderThreadApp('/pages/page-a', ['/pages/page-a', '/pages/page-b']);
+  it('starts a fresh draft on New chat and leaves every other thread alone', () => {
+    // #1361 changed what New chat means: it is not "clear the thread you are
+    // looking at" any more, it is "put a brand-new draft on screen". From a
+    // dock thread that means going to /ai; the dock thread itself is untouched.
+    renderThreadApp('/pages/page-a', ['/pages/page-a', '/ai']);
 
+    goTo('/ai');
     fireEvent.click(screen.getByText('add message'));
-    goTo('/pages/page-b');
+    goTo('/pages/page-a');
     fireEvent.click(screen.getByText('add message'));
 
     fireEvent.click(screen.getByText('new conversation'));
+
+    expect(screen.getByTestId('location')).toHaveTextContent('/ai');
     expect(threadContents()).toEqual([]);
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
     expect(screen.getByTestId('draft')).toHaveTextContent('');
 
-    // A is untouched — a reset is scoped to the thread you are looking at.
     goTo('/pages/page-a');
     expect(threadContents()).toEqual(['question about page-a']);
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('conv-page-a');
+  });
+
+  it('does not stack a history entry when New chat is pressed on /ai', () => {
+    // react-router pushes even for a same-path navigate, so an unguarded
+    // navigate(AI_HOME_PATH) would bury the page the user came from under n
+    // dead /ai entries.
+    renderThreadApp('/ai', [], ['/']);
+
+    fireEvent.click(screen.getByText('new conversation'));
+    fireEvent.click(screen.getByText('new conversation'));
+    fireEvent.click(screen.getByText('back'));
+
+    expect(screen.getByTestId('location')).toHaveTextContent('/');
+  });
+
+  it('navigates home when New chat is pressed on a conversation URL', () => {
+    renderThreadApp('/ai/c/conv-a');
+
+    fireEvent.click(screen.getByText('new conversation'));
+
+    expect(screen.getByTestId('location')).toHaveTextContent('/ai');
+    expect(screen.getByTestId('location').textContent).not.toContain('/c/');
+  });
+
+  it('lands a New chat on Ask, whatever action was selected', () => {
+    // `mode` is provider-wide and the URL-mode effect does not fire on a
+    // same-path navigation, so New chat has to set it itself — otherwise a
+    // fresh chat opens on Generate and the composer the focus request is aimed
+    // at is not on screen.
+    renderThreadApp('/ai');
+
+    fireEvent.click(screen.getByText('go generate'));
+    expect(screen.getByTestId('mode')).toHaveTextContent('generate');
+
+    fireEvent.click(screen.getByText('new conversation'));
+    expect(screen.getByTestId('mode')).toHaveTextContent('ask');
+  });
+
+  it('bumps the composer focus request on New chat', () => {
+    renderThreadApp('/ai');
+    const before = screen.getByTestId('focus-request').textContent;
+
+    fireEvent.click(screen.getByText('new conversation'));
+
+    expect(screen.getByTestId('focus-request').textContent).not.toBe(before);
   });
 
   it('evicts the least recently used thread once the retention cap is exceeded', () => {
@@ -232,10 +300,12 @@ describe('AiContext per-page threads (#1126)', () => {
       expect(threadContents()).toEqual([`question about page-${i}`]);
     }
 
+    // Since #1361 a bare visit files a thread too (needed to stamp an identity
+    // before a person can type), so revisiting an already-evicted key consumes
+    // a slot and evicts one more victim of its own — visiting page-0 here
+    // evicts page-1, which is why only the evicted/MRU ends are checked below.
     goTo(urls[0]!);
     expect(threadContents()).toEqual([]);
-    goTo(urls[1]!);
-    expect(threadContents()).toEqual(['question about page-1']);
     goTo(urls[12]!);
     expect(threadContents()).toEqual(['question about page-12']);
   });
@@ -346,6 +416,99 @@ describe('AiContext per-page threads (#1126)', () => {
     goTo('/ai?pageId=page-b');
 
     expect(screen.getByTestId('mode')).toHaveTextContent('ask');
+  });
+});
+
+describe('thread keys follow the location (#1361)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock.mockResolvedValue([]);
+  });
+
+  it('gives the draft and each conversation its own thread', () => {
+    renderThreadApp('/ai', ['/ai', '/ai/c/conv-a', '/ai/c/conv-b']);
+
+    fireEvent.click(screen.getByText('add message'));
+    expect(threadContents()).toEqual(['question about no page']);
+
+    // Opening a conversation is a switch onto a thread of its own — the draft
+    // is not "the current thread" that a conversation is loaded into.
+    goTo('/ai/c/conv-a');
+    expect(threadContents()).toEqual([]);
+    fireEvent.click(screen.getByText('add message'));
+    expect(threadContents()).toEqual(['question about no page']);
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('conv-no page');
+
+    // Two conversations are two threads.
+    goTo('/ai/c/conv-b');
+    expect(threadContents()).toEqual([]);
+
+    // …and the draft is still where it was left.
+    goTo('/ai');
+    expect(threadContents()).toEqual(['question about no page']);
+  });
+
+  it('keeps the dock thread separate from the draft', () => {
+    renderThreadApp('/pages/page-a', ['/pages/page-a', '/ai']);
+
+    fireEvent.click(screen.getByText('add message'));
+    goTo('/ai');
+    expect(threadContents()).toEqual([]);
+    goTo('/pages/page-a');
+    expect(threadContents()).toEqual(['question about page-a']);
+  });
+});
+
+describe('activeThreadId (#1361)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock.mockResolvedValue([]);
+  });
+
+  function activeThread(): string {
+    return screen.getByTestId('active-thread').textContent ?? '';
+  }
+
+  it('changes when a conversation is opened', () => {
+    renderThreadApp('/ai', ['/ai/c/conv-a']);
+    const before = activeThread();
+    goTo('/ai/c/conv-a');
+    expect(activeThread()).not.toBe(before);
+  });
+
+  it('changes on New chat even when the draft is already empty', () => {
+    // The AC that makes Deep Search and staged attachments clear on new->new:
+    // a fresh identity is what every composer reset keys on.
+    renderThreadApp('/ai');
+    const before = activeThread();
+    fireEvent.click(screen.getByText('new conversation'));
+    expect(activeThread()).not.toBe(before);
+  });
+
+  it('changes on a dock page change', () => {
+    renderThreadApp('/pages/page-a', ['/pages/page-b']);
+    const before = activeThread();
+    goTo('/pages/page-b');
+    expect(activeThread()).not.toBe(before);
+  });
+
+  it('does not change while the user types', () => {
+    renderThreadApp('/ai');
+    const before = activeThread();
+    fireEvent.click(screen.getByText('add message'));
+    expect(screen.getByTestId('draft')).toHaveTextContent('draft for no page');
+    expect(activeThread()).toBe(before);
+  });
+
+  it('does not change when the ?q= prefill writes the composer', () => {
+    // A write is not a filing: the prefill lands through the same updateThread
+    // path a keystroke does, and must leave the identity alone or every
+    // composer reset would fire on a deep link.
+    renderThreadApp('/ai', ['/ai?q=how do I rotate the PAT']);
+    const before = activeThread();
+    goTo('/ai?q=how do I rotate the PAT');
+    expect(screen.getByTestId('draft')).toHaveTextContent('how do I rotate the PAT');
+    expect(activeThread()).toBe(before);
   });
 });
 
