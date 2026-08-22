@@ -539,8 +539,13 @@ describe('identity-bound stream writers (#1361)', () => {
 
   it('drops the aborted answer when New chat replaced the thread that asked', async () => {
     // The whole reason writers bind to identity rather than key: `draft` still
-    // exists after New chat, so a key-bound commit would land the abandoned
-    // half-answer in the brand-new draft the user is looking at.
+    // exists after New chat (same key, a fresh identity underneath), so a
+    // key-bound commit would land the abandoned half-answer there. An empty
+    // fresh draft can't tell that apart from a correct drop — `updated[-1]`
+    // is undefined either way, so the commit no-ops regardless of which
+    // thread it targeted. Giving the fresh draft a message of its own first
+    // makes a key-bound write observably WRONG: it has a real last message to
+    // clobber.
     const release = gatedStream();
     renderThreadApp('/ai');
 
@@ -548,10 +553,15 @@ describe('identity-bound stream writers (#1361)', () => {
     await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
 
     fireEvent.click(screen.getByText('new conversation'));
+    fireEvent.click(screen.getByText('add message'));
+    expect(threadContents()).toEqual(['question about no page']);
+
     await act(async () => { release(); await Promise.resolve(); });
 
-    expect(threadContents()).toEqual([]);
-    expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
+    // The fresh draft's own message survives untouched — a key-bound writer
+    // would have overwritten it with the abandoned stream's partial answer.
+    expect(threadContents()).toEqual(['question about no page']);
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('conv-no page');
   });
 
   it('does not abort on a write to the thread that is already active', async () => {
