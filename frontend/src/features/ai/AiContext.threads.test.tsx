@@ -932,6 +932,8 @@ describe('AiContext conversation state machine (#1361)', () => {
     await waitFor(() => {
       expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-2');
     });
+    // Pin the effect reading live map state — a presence/destructure-keyed effect would re-fetch the deleted c-1 during the rekey→navigate render lag.
+    expect(apiFetchMock).not.toHaveBeenCalledWith('/llm/conversations/c-1');
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('c-2');
     // The half-typed draft is composer state on a thread that was re-keyed,
     // not switched — it survives untouched.
@@ -1165,6 +1167,7 @@ describe('AiContext conversation state machine (#1361)', () => {
     await waitFor(() => {
       expect(screen.getByTestId('location').textContent).not.toContain('/ai/c/');
     });
+    expect(screen.getByTestId('location')).toHaveTextContent('/ai');
     expect(toast.error).toHaveBeenCalledWith('Conversation not found');
     // The placeholder thread is removed, so /ai is the ordinary draft.
     expect(screen.getByTestId('load-state')).toHaveTextContent('ready');
