@@ -39,6 +39,7 @@ function AskModeInputContent() {
     input, setInput, isStreaming, model, conversationId, pageId,
     includeSubPages, thinkingMode, setMessages, runStream,
     chatVision, chatVisionModel,
+    activeThreadId, composerFocusRequest, threadLoadState,
   } = useAiContext();
 
   const [externalUrls, setExternalUrls] = useState<string[]>([]);
@@ -65,19 +66,24 @@ function AskModeInputContent() {
     void pickFiles(files);
   }, [pickFiles]);
 
-  // The one boundary a remount does not cover. Switching threads from the
-  // conversation sidebar — or starting a new one — swaps the conversation under
-  // a composer that stays mounted, so an unconsumed toggle would carry a choice
-  // made about one conversation into the first question of another. That is the
-  // per-conversation stickiness this state's placement exists to prevent,
-  // arrived at from the other side; the dock clears its own slots at its pageId
-  // boundary for the same reason.
+  // The one boundary a remount does not cover. Opening another conversation —
+  // or starting a new one — swaps the thread under a composer that stays
+  // mounted, so an unconsumed toggle would carry a choice made about one
+  // conversation into the first question of another.
   //
-  // Harmless on the id the server assigns mid-answer: `handleAsk` has already
-  // cleared the flag by then, and the toggle is disabled while streaming.
+  // Keyed on `activeThreadId` (#1361), NOT on `conversationId`: a promotion
+  // writes the id onto the SAME thread, which is a re-key and not a switch, so
+  // the id both fires when it must not (mid-answer) and stays put when it must
+  // fire (New chat on an already-empty draft — both drafts carry `null`).
+  //
+  // `externalUrls` is the same per-send state and goes with it, along with the
+  // row that adds them: a URL bar left open over a conversation the user has
+  // just switched to is the same carried-over choice.
   useEffect(() => {
     setDeepSearch(false);
-  }, [conversationId]);
+    setExternalUrls((prev) => (prev.length === 0 ? prev : []));
+    setShowUrlInput(false);
+  }, [activeThreadId]);
 
   // Check if MCP docs is enabled via public status endpoint (cache for 5 min)
   const { data: mcpSettings } = useQuery<McpDocsSettings>({
@@ -118,9 +124,15 @@ function AskModeInputContent() {
   // #350: focus input on mount so the user can type immediately. Use a ref +
   // useEffect rather than autoFocus so it survives StrictMode double-mount and
   // route transitions reliably.
+  //
+  // #1361: the same effect answers `composerFocusRequest`, which
+  // `startNewConversation` bumps — New chat lands the caret where the next
+  // question goes (the #1176 dock convention). Opening a row deliberately does
+  // NOT bump it: a keyboard user is mid-list and `aria-current` tells them
+  // where they are.
   useEffect(() => {
     inputRef.current?.focus();
-  }, [inputRef]);
+  }, [inputRef, composerFocusRequest]);
 
   // The composer is deliberately NOT gated on embedding status, unlike the
   // example chips below (#1257 post-review, decided on backend evidence):
@@ -138,7 +150,10 @@ function AskModeInputContent() {
   // stay inert until it verifiably exists. The amber banner above the thread
   // keeps naming the degradation in both empty and answered states.
   const handleAsk = useCallback(async () => {
-    if (!input.trim() || isStreaming || isBusy) return;
+    // `threadLoadState` is checked here as well as on Send: the textarea is not
+    // disabled while a conversation loads, so Enter reaches this handler and
+    // would post a question against a thread whose history has not arrived.
+    if (!input.trim() || isStreaming || isBusy || threadLoadState === 'loading') return;
     if (!model) {
       toast.error('No model available. Check your LLM provider settings.');
       return;
@@ -195,6 +210,7 @@ function AskModeInputContent() {
   }, [
     input, model, isStreaming, isBusy, conversationId, pageId, includeSubPages, thinkingMode,
     deepSearch, documents, image, externalUrls, setInput, setMessages, removeImage, runStream,
+    threadLoadState,
   ]);
 
   const handleSubmit = () => handleAsk();
@@ -345,7 +361,7 @@ function AskModeInputContent() {
           variant="primary"
           size="sm"
           onClick={handleSubmit}
-          disabled={isStreaming || isBusy || !input.trim() || !model}
+          disabled={isStreaming || isBusy || !input.trim() || !model || threadLoadState === 'loading'}
           isLoading={isStreaming}
           aria-label={isStreaming ? 'Sending...' : 'Send message'}
           className="shrink-0 self-end h-8 px-3"

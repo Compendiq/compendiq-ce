@@ -749,6 +749,20 @@ describe('AskMode', () => {
         if (path.startsWith('/ollama/models')) {
           return Promise.resolve([{ name: 'llama3' }]);
         }
+        if (path.startsWith('/llm/conversations/')) {
+          return Promise.resolve({
+            id: 'conv-2',
+            title: 'Another conversation',
+            titleSource: 'question',
+            model: 'llama3',
+            pageId: null,
+            pageTitle: null,
+            createdAt: '2026-08-01T10:00:00.000Z',
+            updatedAt: '2026-08-01T11:00:00.000Z',
+            historyTruncated: false,
+            messages: [],
+          });
+        }
         if (path === '/llm/conversations') {
           return Promise.resolve([]);
         }
@@ -780,14 +794,23 @@ describe('AskMode', () => {
     }
 
     /**
-     * Stands in for the conversation sidebar, which lives in `AiAssistantPage`
-     * and is not rendered here. What matters is the shape it produces: the
-     * thread underneath changes while the composer stays mounted, so no
-     * unmount tidies the toggle away.
+     * The two gestures that really change the active thread now that threads
+     * are keyed by location (#1361): New chat, which files a fresh draft
+     * identity, and opening another conversation, which is a route change.
+     *
+     * `setConversationId` is deliberately NOT one of them any more — a
+     * promotion writes the id onto the SAME thread, so the old stub would go
+     * green against a composer that never cleared.
      */
-    function ConversationSwitcher() {
-      const { setConversationId } = useAiContext();
-      return <button onClick={() => setConversationId('conv-2')}>switch</button>;
+    function ThreadSwitcher() {
+      const { startNewConversation } = useAiContext();
+      const navigate = useNavigate();
+      return (
+        <>
+          <button onClick={startNewConversation}>new chat</button>
+          <button onClick={() => navigate('/ai/c/conv-2')}>open conv-2</button>
+        </>
+      );
     }
 
     it('defaults to off and omits the flag entirely — an untouched composer sends the body it always sent', async () => {
@@ -915,13 +938,14 @@ describe('AskMode', () => {
         .toBe(screen.getByTestId('ask-deep-search-caveat'));
     });
 
-    // #1119 review: the sidebar swaps the thread under a mounted composer, so
-    // this boundary is not covered by the remount test above.
-    it('clears an unconsumed toggle when the conversation changes', async () => {
+    // #1119 review: a switch swaps the thread under a mounted composer, so
+    // this boundary is not covered by the remount test above. Since #1361 the
+    // boundary is `activeThreadId`, not `conversationId`.
+    it('clears an unconsumed toggle when another conversation is opened', async () => {
       withModel();
       render(
         <>
-          <ConversationSwitcher />
+          <ThreadSwitcher />
           <AskModeInput />
         </>,
         { wrapper: createWrapper() },
@@ -930,9 +954,168 @@ describe('AskMode', () => {
       fireEvent.click(screen.getByTestId('ask-deep-search'));
       expect(screen.getByTestId('ask-deep-search')).toBeChecked();
 
-      fireEvent.click(screen.getByText('switch'));
+      fireEvent.click(screen.getByText('open conv-2'));
       await waitFor(() => {
         expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
+      });
+    });
+
+    // NON-STICKINESS TEST 3 — new -> new. Pressing New chat on an already
+    // empty draft files a fresh identity precisely so this clears; keyed on
+    // `conversationId` it would not, because both drafts carry `null`.
+    it('clears an unconsumed toggle when New chat is pressed on an empty draft', async () => {
+      withModel();
+      render(
+        <>
+          <ThreadSwitcher />
+          <AskModeInput />
+        </>,
+        { wrapper: createWrapper() },
+      );
+
+      fireEvent.click(screen.getByTestId('ask-deep-search'));
+      expect(screen.getByTestId('ask-deep-search')).toBeChecked();
+
+      fireEvent.click(screen.getByText('new chat'));
+      await waitFor(() => {
+        expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #1361 — the composer follows the active thread
+  // -------------------------------------------------------------------------
+  describe('composer state is scoped to the active thread', () => {
+    function withModel() {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        if (path === '/mcp-docs/status') return Promise.resolve({ enabled: true });
+        return Promise.resolve([]);
+      });
+      streamSSEMock.mockImplementation(async function* fakeStream() {
+        yield { content: 'Answer' };
+      });
+    }
+
+    function ThreadSwitcher() {
+      const { startNewConversation } = useAiContext();
+      return <button onClick={startNewConversation}>new chat</button>;
+    }
+
+    it('drops attached external URLs when the active thread changes', async () => {
+      withModel();
+      render(
+        <>
+          <ThreadSwitcher />
+          <AskModeInput />
+        </>,
+        { wrapper: createWrapper() },
+      );
+
+      fireEvent.click(await screen.findByTestId('attach-url-button'));
+      fireEvent.change(screen.getByTestId('external-url-input'), {
+        target: { value: 'https://docs.example.com/runbook' },
+      });
+      fireEvent.click(screen.getByLabelText('Add URL'));
+      expect(await screen.findByText('docs.example.com')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('new chat'));
+
+      // The URLs describe the question they were attached to, and the row that
+      // adds them is the same per-send state.
+      await waitFor(() => {
+        expect(screen.queryByText('docs.example.com')).not.toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('external-url-input')).not.toBeInTheDocument();
+    });
+
+    it('clears staged attachments when the active thread changes', async () => {
+      withModel();
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        format: 'txt',
+        text: 'The rollout requires two approvals.',
+        fileSize: 35,
+        preview: 'The rollout requires two approvals.',
+      }), { headers: { 'Content-Type': 'application/json' } }));
+
+      render(
+        <>
+          <ThreadSwitcher />
+          <AskModeInput />
+        </>,
+        { wrapper: createWrapper() },
+      );
+
+      fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
+        target: { files: [new File(['policy'], 'policy.txt', { type: 'text/plain' })] },
+      });
+      await screen.findByTestId('ask-doc-attachment-card');
+
+      fireEvent.click(screen.getByText('new chat'));
+
+      // `AssistantAttachmentsScope` cleared on `pageId` before #1361, which on
+      // /ai is null for every thread — so nothing cleared between conversations
+      // and an uploaded source crossed into the next one.
+      await waitFor(() => {
+        expect(screen.queryByTestId('ask-doc-attachment-card')).not.toBeInTheDocument();
+      });
+    });
+
+    it('focuses the textarea on every composer focus request', async () => {
+      withModel();
+      render(
+        <>
+          <ThreadSwitcher />
+          <AskModeInput />
+        </>,
+        { wrapper: createWrapper() },
+      );
+
+      const input = screen.getByTestId('ask-input');
+      (screen.getByText('new chat') as HTMLButtonElement).focus();
+      expect(document.activeElement).not.toBe(input);
+
+      fireEvent.click(screen.getByText('new chat'));
+
+      // New chat lands the caret where the next question goes (the #1176 dock
+      // convention). Opening a row deliberately does not.
+      await waitFor(() => {
+        expect(document.activeElement).toBe(input);
+      });
+    });
+
+    it('disables Send while the open conversation is still loading', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        if (path.startsWith('/llm/conversations/')) return new Promise(() => {});
+        return Promise.resolve([]);
+      });
+      streamSSEMock.mockImplementation(async function* fakeStream() {
+        yield { content: 'Answer' };
+      });
+
+      render(<AskModeInput />, { wrapper: createWrapper(['/ai/c/pending?q=already typed']) });
+
+      const input = await screen.findByTestId('ask-input');
+      await waitFor(() => {
+        expect((input as HTMLTextAreaElement).value).toBe('already typed');
+      });
+
+      // A ?q= prefill is exactly the case where the composer has text before
+      // the history has arrived, so "empty input" is not the guard.
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+
+      // …and Enter must not slip past it: the textarea is not disabled.
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => {
+        expect(streamSSEMock).not.toHaveBeenCalled();
       });
     });
   });
