@@ -118,7 +118,7 @@ describe('DiagramMode', () => {
         data: { id: 'p1', title: 'Test', bodyHtml: '<p>test</p>', bodyText: 'test', version: 1 },
       };
 
-      render(<DiagramModeInput />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<DiagramModeInput />, { wrapper: createWrapper(['/pages/p1']) });
 
       await waitFor(() => {
         const btns = screen.getAllByRole('button');
@@ -157,7 +157,7 @@ describe('DiagramMode', () => {
       }
       streamSSEMock.mockReturnValue(fakeDiagramStream());
 
-      render(<DiagramModeInput />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<DiagramModeInput />, { wrapper: createWrapper(['/pages/p1']) });
 
       await waitFor(() => {
         const btns = screen.getAllByRole('button');
@@ -194,7 +194,7 @@ describe('DiagramMode', () => {
       }
       streamSSEMock.mockReturnValue(fakeErrorStream());
 
-      render(<DiagramModeInput />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<DiagramModeInput />, { wrapper: createWrapper(['/pages/p1']) });
 
       await waitFor(() => {
         const btns = screen.getAllByRole('button');

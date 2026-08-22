@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UsecaseDefault } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
+import { isAiRoute } from '../../shared/lib/ai-routes';
 import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
 import { DEFAULT_IMPROVEMENT_TYPE, type ImprovementType } from './improvement-types';
 import { type CreateSkillId } from './create-skills';
@@ -350,12 +351,19 @@ function touchThread(
 const ARTICLE_ROUTE = /^\/pages\/([^/]+)$/;
 
 /**
- * Resolve which page the assistant is talking about. `?pageId=` is one *input*
- * to this, not the definition of it: on an article route the open document is
- * the context, which is what lets a thread follow the page being read. An
- * explicit `?pageId=` still wins, so `/ai?pageId=…` keeps working unchanged.
+ * Resolve which page the assistant is talking about — the dock's context, and
+ * nothing else since #1361.
+ *
+ * An AI route has no document. `/ai` and `/ai/c/:id` are conversation routes:
+ * the left rail there lists conversations, not pages, so nothing can set a page
+ * context and nothing would clear one. A legacy `/ai?pageId=…` bookmark
+ * therefore opens a plain new chat rather than silently scoping answers to a
+ * page the UI does not mention — which is the state the context chip existed to
+ * paper over. Off the AI routes an explicit `?pageId=` still wins over the
+ * article route, which is what lets a thread follow the page being read.
  */
 export function resolveAiPageId(pathname: string, searchParams: URLSearchParams): string | null {
+  if (isAiRoute(pathname)) return null;
   const explicit = searchParams.get('pageId');
   if (explicit) return explicit;
   const routeId = ARTICLE_ROUTE.exec(pathname)?.[1];
@@ -540,12 +548,16 @@ export function AiProvider({ children }: { children: ReactNode }) {
   // search params change. The param is consumed — removed from the URL with a
   // replace navigation — so refresh/back doesn't re-prefill an asked question.
   //
-  // Scoped to /ai, which is the only route CommandPalette ever puts ?q= on
-  // (CommandPalette.tsx:134). The provider mounts app-wide now, so without the
-  // guard it would claim `q` from ANY route carrying it — silently rewriting
-  // that page's URL and stuffing its search term into the AI composer.
-  const isAiRoute = location.pathname === '/ai';
-  const urlQuestion = isAiRoute ? searchParams.get('q') : null;
+  // Scoped to the AI route FAMILY. CommandPalette's two producers both land on
+  // bare /ai (its AI mode and #1364's no-results recovery item), but the guard
+  // is about which routes may have their `q` claimed, and `/ai/c/:id` is the
+  // same surface. The provider mounts app-wide, so without it the prefill would
+  // claim `q` from ANY route carrying it — silently rewriting that page's URL
+  // and stuffing its search term into the AI composer.
+  //
+  // The local is `onAiRoute` because `isAiRoute` is now the imported predicate.
+  const onAiRoute = isAiRoute(location.pathname);
+  const urlQuestion = onAiRoute ? searchParams.get('q') : null;
   useEffect(() => {
     if (urlQuestion === null) return;
     if (urlQuestion) setInput(urlQuestion);

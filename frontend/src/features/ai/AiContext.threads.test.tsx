@@ -102,6 +102,7 @@ function renderThreadApp(initialEntry: string, destinations: string[] = []) {
           <Routes>
             <Route path="/" element={<div>pages list</div>} />
             <Route path="/ai" element={<ThreadProbe />} />
+            <Route path="/ai/c/:conversationId" element={<ThreadProbe />} />
             <Route path="/pages/:id" element={<ThreadProbe />} />
           </Routes>
         </AiProvider>
@@ -147,15 +148,17 @@ describe('AiContext per-page threads (#1126)', () => {
   });
 
   it('swaps threads on a page change instead of destroying them', () => {
-    // The sidebar navigates exactly like this while on /ai — the click that
-    // used to silently discard an in-progress conversation.
-    renderThreadApp('/ai?pageId=page-a', ['/ai?pageId=page-a', '/ai?pageId=page-b']);
+    // The dock's contract (#1126): walking the page tree with the assistant
+    // open swaps which thread is on screen and destroys none of them. Since
+    // #1361 a page context comes only from the article route — `/ai?pageId=`
+    // resolves to no document — so this is now written where the dock lives.
+    renderThreadApp('/pages/page-a', ['/pages/page-a', '/pages/page-b']);
 
     fireEvent.click(screen.getByText('add message'));
     expect(threadContents()).toEqual(['question about page-a']);
 
     // A -> B: B starts empty and must not show A's messages.
-    goTo('/ai?pageId=page-b');
+    goTo('/pages/page-b');
     expect(screen.getByTestId('context-page')).toHaveTextContent('page-b');
     expect(threadContents()).toEqual([]);
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
@@ -164,55 +167,47 @@ describe('AiContext per-page threads (#1126)', () => {
     expect(threadContents()).toEqual(['question about page-b']);
 
     // B -> A: A's thread comes back intact, and is still distinct from B's.
-    goTo('/ai?pageId=page-a');
+    goTo('/pages/page-a');
     expect(threadContents()).toEqual(['question about page-a']);
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('conv-page-a');
     expect(screen.getByTestId('draft')).toHaveTextContent('draft for page-a');
 
-    goTo('/ai?pageId=page-b');
+    goTo('/pages/page-b');
     expect(threadContents()).toEqual(['question about page-b']);
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('conv-page-b');
   });
 
   it('gives the no-document case a thread a real page cannot collide with', () => {
-    // A page whose id is literally the no-document key is the adversarial case
-    // for the thread-key scheme.
-    renderThreadApp('/ai', ['/ai', '/ai?pageId=no-page']);
+    // Pages whose ids are literally the sentinel keys are the adversarial case
+    // for the thread-key scheme. Both spellings are checked — 'no-page' is
+    // today's sentinel and 'draft' is Task 2's — so renaming it cannot quietly
+    // open a collision.
+    renderThreadApp('/ai', ['/ai', '/pages/no-page', '/pages/draft']);
 
     fireEvent.click(screen.getByText('add message'));
     expect(threadContents()).toEqual(['question about no page']);
 
-    goTo('/ai?pageId=no-page');
+    goTo('/pages/no-page');
     expect(screen.getByTestId('context-page')).toHaveTextContent('no-page');
     expect(threadContents()).toEqual([]);
-
     fireEvent.click(screen.getByText('add message'));
     expect(threadContents()).toEqual(['question about no-page']);
+
+    goTo('/pages/draft');
+    expect(screen.getByTestId('context-page')).toHaveTextContent('draft');
+    expect(threadContents()).toEqual([]);
+    fireEvent.click(screen.getByText('add message'));
+    expect(threadContents()).toEqual(['question about draft']);
 
     goTo('/ai');
     expect(threadContents()).toEqual(['question about no page']);
   });
 
-  it('shares one thread between /ai?pageId=x and the article route for x', () => {
-    // ?pageId= is an input to context resolution, not its definition: the open
-    // document resolves to the same thread.
-    renderThreadApp('/pages/page-a', ['/pages/page-a', '/ai?pageId=page-a']);
-
-    expect(screen.getByTestId('context-page')).toHaveTextContent('page-a');
-    fireEvent.click(screen.getByText('add message'));
-
-    goTo('/ai?pageId=page-a');
-    expect(threadContents()).toEqual(['question about page-a']);
-
-    goTo('/pages/page-a');
-    expect(threadContents()).toEqual(['question about page-a']);
-  });
-
   it('clears only the active thread on a deliberate new conversation', () => {
-    renderThreadApp('/ai?pageId=page-a', ['/ai?pageId=page-a', '/ai?pageId=page-b']);
+    renderThreadApp('/pages/page-a', ['/pages/page-a', '/pages/page-b']);
 
     fireEvent.click(screen.getByText('add message'));
-    goTo('/ai?pageId=page-b');
+    goTo('/pages/page-b');
     fireEvent.click(screen.getByText('add message'));
 
     fireEvent.click(screen.getByText('new conversation'));
@@ -221,14 +216,14 @@ describe('AiContext per-page threads (#1126)', () => {
     expect(screen.getByTestId('draft')).toHaveTextContent('');
 
     // A is untouched — a reset is scoped to the thread you are looking at.
-    goTo('/ai?pageId=page-a');
+    goTo('/pages/page-a');
     expect(threadContents()).toEqual(['question about page-a']);
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('conv-page-a');
   });
 
   it('evicts the least recently used thread once the retention cap is exceeded', () => {
     // MAX_RETAINED_THREADS is 12, so writing 13 threads must drop the oldest.
-    const urls = Array.from({ length: 13 }, (_, i) => `/ai?pageId=page-${i}`);
+    const urls = Array.from({ length: 13 }, (_, i) => `/pages/page-${i}`);
     renderThreadApp(urls[0]!, urls);
 
     for (const [i, url] of urls.entries()) {
@@ -261,14 +256,14 @@ describe('AiContext per-page threads (#1126)', () => {
       })(),
     );
 
-    renderThreadApp('/ai?pageId=page-a', ['/ai?pageId=page-a', '/ai?pageId=page-b']);
+    renderThreadApp('/pages/page-a', ['/pages/page-a', '/pages/page-b']);
 
     fireEvent.click(screen.getByText('stream'));
     await waitFor(() => {
       expect(streamSSEMock).toHaveBeenCalled();
     });
 
-    goTo('/ai?pageId=page-b');
+    goTo('/pages/page-b');
     await act(async () => {
       release();
       await Promise.resolve();
@@ -278,7 +273,7 @@ describe('AiContext per-page threads (#1126)', () => {
     expect(screen.getByTestId('context-page')).toHaveTextContent('page-b');
     expect(threadContents()).toEqual([]);
 
-    goTo('/ai?pageId=page-a');
+    goTo('/pages/page-a');
     await waitFor(() => {
       expect(threadContents()).toEqual([
         'streamed question about page-a',
@@ -296,6 +291,17 @@ describe('AiContext per-page threads (#1126)', () => {
       expect(screen.getByTestId('draft')).toHaveTextContent('how do I configure sync');
       // Consumed, so refresh/back does not re-prefill an asked question.
       expect(screen.getByTestId('location')).toHaveTextContent('/ai');
+      expect(screen.getByTestId('location').textContent).not.toContain('q=');
+    });
+
+    it('consumes ?q= on a conversation URL too', () => {
+      // The guard is the route FAMILY, not the literal '/ai': CommandPalette's
+      // two producers both land on bare /ai, but the prefill has to survive a
+      // user pasting ?q= onto the conversation they already have open.
+      renderThreadApp('/ai/c/conv-1?q=how do I rotate the PAT');
+
+      expect(screen.getByTestId('draft')).toHaveTextContent('how do I rotate the PAT');
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/conv-1');
       expect(screen.getByTestId('location').textContent).not.toContain('q=');
     });
 
@@ -340,8 +346,6 @@ describe('AiContext per-page threads (#1126)', () => {
     goTo('/ai?pageId=page-b');
 
     expect(screen.getByTestId('mode')).toHaveTextContent('ask');
-    // The page context still follows the URL — only the mode was dropped.
-    expect(screen.getByTestId('context-page')).toHaveTextContent('page-b');
   });
 });
 
@@ -349,6 +353,15 @@ describe('resolveAiPageId', () => {
   it('prefers an explicit ?pageId= over the route', () => {
     expect(resolveAiPageId('/pages/from-route', new URLSearchParams('pageId=explicit')))
       .toBe('explicit');
+  });
+
+  it('resolves to no document on an AI route, even with ?pageId=', () => {
+    // #1361: `/ai` and `/ai/c/:id` are conversation routes, not document ones.
+    // A legacy `/ai?pageId=…` bookmark therefore opens a plain new chat rather
+    // than a page-scoped one — the three producers of that URL go in Task 14.
+    expect(resolveAiPageId('/ai', new URLSearchParams('pageId=explicit'))).toBeNull();
+    expect(resolveAiPageId('/ai', new URLSearchParams())).toBeNull();
+    expect(resolveAiPageId('/ai/c/conv-1', new URLSearchParams('pageId=explicit'))).toBeNull();
   });
 
   it('falls back to the open document on an article route', () => {

@@ -378,45 +378,6 @@ describe('AiAssistantPage', () => {
     expect(screen.getByTestId('ask-image-card')).toBeInTheDocument();
   });
 
-  it('clears staged attachments when the page context changes', async () => {
-    mockPageData = {
-      data: {
-        id: 'p1', title: 'Runbook', bodyHtml: '<p>Original</p>', bodyText: 'Original', version: 1,
-      },
-    };
-    apiFetchMock.mockImplementation((path: string) => {
-      if (path === '/llm/usecase-default?usecase=chat') {
-        return Promise.resolve({
-          usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: true,
-        });
-      }
-      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
-      if (path === '/llm/conversations') return Promise.resolve([]);
-      return Promise.resolve([]);
-    });
-    const revokePreview = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
-
-    render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
-    await waitFor(() => expect(screen.getByTestId('ask-image-trigger')).not.toBeDisabled());
-    fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
-      target: { files: [new File(['pdf'], 'page-one.pdf', { type: 'application/pdf' })] },
-    });
-    fireEvent.change(screen.getByTestId('ask-image-file-input'), {
-      target: { files: [new File(['png'], 'page-one.png', { type: 'image/png' })] },
-    });
-    await screen.findByTestId('ask-doc-attachment-card');
-    await screen.findByTestId('ask-image-card');
-
-    fireEvent.click(screen.getByTestId('ai-context-chip'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('ai-location')).toHaveTextContent('/ai');
-      expect(screen.queryByTestId('ask-doc-attachment-card')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('ask-image-card')).not.toBeInTheDocument();
-    });
-    expect(revokePreview).toHaveBeenCalledWith('blob:assistant-preview');
-  });
-
   it('uses flex-1 column layout so the input bar anchors to the bottom of the viewport', () => {
     // The AI page opts into the flex column propagated by AppLayout +
     // PageTransition (both ship `flex flex-1 flex-col` on their wrappers).
@@ -561,7 +522,7 @@ describe('AiAssistantPage', () => {
         data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Hello</p>', bodyText: 'Hello' },
       };
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       // Mode should be 'improve' since pageId is provided
       // Button should show "Loading models..." and be disabled
@@ -576,7 +537,7 @@ describe('AiAssistantPage', () => {
         data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Hello</p>', bodyText: 'Hello' },
       };
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       // The button is disabled when !model, so we test the handler directly
       // by forcing a click via the button (which is disabled, so we simulate the handler)
@@ -604,7 +565,7 @@ describe('AiAssistantPage', () => {
         return Promise.resolve([]);
       });
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       await waitFor(() => {
         expect(screen.getByText('Ready to improve: My Article')).toBeInTheDocument();
@@ -627,7 +588,7 @@ describe('AiAssistantPage', () => {
         return Promise.resolve([]);
       });
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       // Button should show "Loading page..." and be disabled
       const buttons = screen.getAllByRole('button');
@@ -669,7 +630,7 @@ describe('AiAssistantPage', () => {
         return Promise.resolve([]);
       });
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       await waitFor(() => {
         const buttons = screen.getAllByRole('button');
@@ -703,7 +664,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       // Wait for models to load and button to be enabled
       await waitFor(() => {
@@ -760,7 +721,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeErrorStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       await waitFor(() => {
         const buttons = screen.getAllByRole('button');
@@ -804,7 +765,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeImproveStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       // Wait for models to load and button to be enabled
       await waitFor(() => {
@@ -872,7 +833,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeImproveStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       await waitFor(() => {
         const btns = screen.getAllByRole('button');
@@ -1275,7 +1236,7 @@ describe('AiAssistantPage', () => {
       streamSSEMock.mockReturnValue(fakeDiagramStream());
 
       // #1126: Diagram is a dock chip now, so the screen is reached by URL.
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=diagram&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=diagram']) });
 
       // Wait for models to load
       await waitFor(() => {
@@ -1345,7 +1306,7 @@ describe('AiAssistantPage', () => {
       streamSSEMock.mockReturnValue(fakeDiagramStream());
 
       // #1126: Diagram is a dock chip now, so the screen is reached by URL.
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=diagram&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=diagram']) });
 
       // Wait for models to load
       await waitFor(() => {
@@ -1399,7 +1360,7 @@ describe('AiAssistantPage', () => {
         data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: false },
       };
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       // The page-context chip that used to render the bare title is gone
       // (#1126); the mode's own empty state still names the resolved page.
@@ -1412,7 +1373,7 @@ describe('AiAssistantPage', () => {
         data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
       };
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       expect(screen.getByText('+ Sub-pages')).toBeInTheDocument();
     });
@@ -1422,7 +1383,7 @@ describe('AiAssistantPage', () => {
         data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
       };
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       const checkbox = screen.getByRole('checkbox', { name: 'Include sub-pages' });
       expect(checkbox).not.toBeChecked();
@@ -1457,7 +1418,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       // Enable sub-pages toggle
       const checkbox = screen.getByRole('checkbox', { name: 'Include sub-pages' });
@@ -1510,7 +1471,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/pages/p1?mode=improve']) });
 
       // Do NOT enable sub-pages toggle
 
@@ -1573,7 +1534,7 @@ describe('AiAssistantPage', () => {
       };
 
       const { unmount } = render(<AiAssistantPage />, {
-        wrapper: createWrapper(['/ai?mode=improve&pageId=p1']),
+        wrapper: createWrapper(['/pages/p1?mode=improve']),
       });
 
       expect(screen.getByText('Ready to improve: First Article')).toBeInTheDocument();
@@ -1585,7 +1546,7 @@ describe('AiAssistantPage', () => {
       };
 
       render(<AiAssistantPage />, {
-        wrapper: createWrapper(['/ai?mode=improve&pageId=p2']),
+        wrapper: createWrapper(['/pages/p2?mode=improve']),
       });
 
       // New page resolved, no stale state from p1. Asserted through the mode's
