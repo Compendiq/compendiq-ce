@@ -65,6 +65,7 @@
  */
 
 import fs from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import { setImmediate as yieldToLoop } from 'node:timers/promises';
 import { z } from 'zod';
@@ -539,7 +540,7 @@ async function walkLocalStore(
   const totalRows = [...rowsByPage.values()].reduce((n, s) => n + s.size, 0);
 
   const localRoot = localAttachmentsRoot();
-  let rootEntries: Awaited<ReturnType<typeof fs.readdir>>;
+  let rootEntries: Dirent[];
   try {
     rootEntries = await fs.readdir(localRoot, { withFileTypes: true });
   } catch {
@@ -703,13 +704,15 @@ async function deleteCandidates(
     totals.bytes += st.size;
 
     // Index-row prune + dirty marking for the owning pages.
-    let owners = ownersByKey.get(`${candidate.store}:${candidate.key}`);
-    if (owners === undefined) {
-      owners =
-        candidate.store === 'local'
-          ? await knownLocalPageIds([Number(candidate.key)]).then((s) => [...s])
-          : await confluenceKeyOwners(candidate.key);
-      ownersByKey.set(`${candidate.store}:${candidate.key}`, owners);
+    const ownersCacheKey = `${candidate.store}:${candidate.key}`;
+    const cachedOwners = ownersByKey.get(ownersCacheKey);
+    const owners: number[] =
+      cachedOwners ??
+      (candidate.store === 'local'
+        ? [...(await knownLocalPageIds([Number(candidate.key)]))]
+        : await confluenceKeyOwners(candidate.key));
+    if (cachedOwners === undefined) {
+      ownersByKey.set(ownersCacheKey, owners);
     }
     if (owners.length > 0) {
       const pruned = await query(
