@@ -62,6 +62,19 @@ describe('one destructive treatment', () => {
     );
   });
 
+  // Radix highlights a menu item with `data-highlighted` on keyboard travel and
+  // never with `:hover`. The conversation row menu (#1361) is this utility's
+  // first use on a role="menuitem", so without the branch the one destructive
+  // control in the app renders unmarked for anyone arrowing onto it.
+  it('covers the keyboard highlight, not only :hover', () => {
+    const css = readFileSync(join(SRC, 'index.css'), 'utf-8');
+    const start = css.indexOf('@utility nm-action-destructive');
+    expect(start, 'utility not found — this guard is stale').toBeGreaterThan(-1);
+    const block = css.slice(start, css.indexOf('@utility', start + 1));
+    expect(block).toMatch(/&:hover:not\(:disabled\)/);
+    expect(block, 'Radix uses data-highlighted, not :hover').toMatch(/&\[data-highlighted\]/);
+  });
+
   it.each(UNIFIED)('%s uses it', (file) => {
     expect(codeOf(file)).toMatch(/nm-action-destructive/);
   });
