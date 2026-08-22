@@ -503,7 +503,10 @@ together, which matters most for #1114's query-side prefix.
   Settings → Knowledge → Spaces & Sync → Sync schedule): the two stores are walked separately
   (the reserved `local/` entry matches the Confluence tree's key pattern, so a
   naive walk lists the whole local store as one orphan), a directory is
-  orphaned only when NO page row — trashed included — claims its key, and a
+  orphaned only when NO page row — trashed included — claims its key AND none
+  of its files carries a kept filename (the keep-set outranks the directory
+  verdict; a keep-intersecting pageless directory is skipped whole and
+  counted as keep-protected), and a
   file only against a GLOBAL per-store keep-set fed from every body text in
   the system (pages `body_html`/`draft_body_html`/`body_storage` live and
   trashed, `page_versions`, `pending_sync_versions`, `templates`, `comments`),

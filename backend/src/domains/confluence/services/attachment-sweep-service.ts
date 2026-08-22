@@ -20,7 +20,12 @@
  *     at all — `pages.confluence_id` OR `pages.id` for the Confluence-style
  *     tree (both kinds share one keyspace: DC ids sit inside `pages.id`'s
  *     range), `pages.id` for the local store — where "page row" includes
- *     soft-deleted/trashed pages (restorable) and folders.
+ *     soft-deleted/trashed pages (restorable) and folders. The keep-set
+ *     outranks this verdict (fixer r1): a pageless directory holding even
+ *     ONE filename some body still references (a template handed the URL to
+ *     pages it created, say) is skipped whole and counted
+ *     (`keepProtectedDirectories`) — the no-referenced-file-is-ever-deleted
+ *     invariant of (b) does not stop at the directory boundary.
  * (b) **Per-file orphans**, judged against a GLOBAL keep-set per store, never
  *     the owning page's body alone: attachment URLs are copied verbatim
  *     between bodies (templates hand their `body_html` to every page created
@@ -155,8 +160,17 @@ export interface AttachmentKeepSets {
  * A raw-string regex, deliberately: it sees `img[src]`, `a[href]` (#1169 —
  * Markdown import produces anchor references and relocate rewrites them), and
  * any other attribute or plain-text spelling, without a JSDOM parse per row.
- * Strictly MORE inclusive than an attribute walk — over-keeping is safe,
- * under-keeping deletes a referenced file.
+ * More inclusive than an attribute walk for every spelling that can carry a
+ * working reference — over-keeping is safe, under-keeping deletes a
+ * referenced file. The one class the bare regex missed (fixer r1): a literal
+ * SPACE inside a QUOTED attribute value is legal HTML and the reference
+ * works (the browser percent-encodes it on request, the route decodes it
+ * back), but `\s` is outside the filename class, so only the pre-space
+ * prefix reached the keep-set. When a match starts immediately after `"` or
+ * `'`, the collector therefore ALSO extends the candidate to the closing
+ * quote below — a plain-text spelling with a space stays unextended, because
+ * outside a quoted attribute there is no delimiter and a bare URL with a
+ * literal space does not function as a reference.
  *
  * Both the raw and the decoded spelling are kept: bytes sit on disk under the
  * URL-DECODED name (the converter percent-encodes on the way out), but a file
@@ -227,6 +241,14 @@ function decodeHtmlEntitiesOnce(name: string): string {
   });
 }
 
+/**
+ * Longest quoted-attribute continuation the collector will extend a match by.
+ * Real filenames are bounded well under this (`validateFilename` refuses
+ * anything near it at write time); the cap only stops a body whose closing
+ * quote sits megabytes away (malformed HTML) from seeding giant Set entries.
+ */
+const QUOTED_CONTINUATION_MAX = 512;
+
 export function collectAttachmentUrlReferences(
   text: string | null | undefined,
   into: AttachmentKeepSets,
@@ -235,11 +257,37 @@ export function collectAttachmentUrlReferences(
   for (const match of text.matchAll(ATTACHMENT_URL_RE)) {
     const store = match[1] === 'attachments' ? 'confluence' : 'local';
     const raw = match[2]!;
-    const names = new Set<string>([raw]);
-    try {
-      names.add(decodeURIComponent(raw));
-    } catch {
-      // A lone `%` throws; the raw name is then what is on disk.
+    const names = new Set<string>();
+    const addSeed = (name: string): void => {
+      if (!name) return;
+      names.add(name);
+      try {
+        names.add(decodeURIComponent(name));
+      } catch {
+        // A lone `%` throws; the raw name is then what is on disk.
+      }
+    };
+    addSeed(raw);
+    // Quoted-attribute continuation (fixer r1): a match that starts right
+    // after `"` or `'` is an attribute value, whose spelling legally runs to
+    // the closing quote — through characters the filename class excludes
+    // (literal spaces above all). The extension is one more SEED, so every
+    // decode/trim variant below applies to it too. The regex's own
+    // query/fragment termination is REPLAYED on it (`?`, and `#` only when
+    // it is not part of an `&#` entity): a spelling past either never
+    // reaches the disk file — the browser cuts the URL there before
+    // requesting — so keeping it would not protect anything, and the pinned
+    // fragment rule stays exact.
+    const quote = match.index > 0 ? text[match.index - 1] : '';
+    if (quote === '"' || quote === "'") {
+      const matchEnd = match.index + match[0].length;
+      const close = text.indexOf(quote, matchEnd);
+      if (close > matchEnd && close - matchEnd <= QUOTED_CONTINUATION_MAX) {
+        const prefixLength = match[0].length - raw.length;
+        const extended = text.slice(match.index + prefixLength, close);
+        const cut = extended.search(/\?|(?<!&)#/);
+        addSeed(cut === -1 ? extended : extended.slice(0, cut));
+      }
     }
     // Entity-decoded variants (review r1), BEFORE the trims below so they see
     // the decoded spellings too. Stepwise to a bounded fixpoint, keeping every
@@ -483,6 +531,7 @@ function emptyStats(): AttachmentStoreSweepStats {
     orphanFiles: 0,
     orphanFileBytes: 0,
     graceSkipped: 0,
+    keepProtectedDirectories: 0,
     unreadableDirectories: 0,
   };
 }
@@ -542,9 +591,21 @@ function judgeDirectoryOrphan(
   store: 'confluence' | 'local',
   dir: WalkedDir,
   cutoffMs: number,
+  keep: Set<string>,
   stats: AttachmentStoreSweepStats,
   candidates: AttachmentSweepCandidate[],
 ): void {
+  // The keep-set outranks the directory verdict (fixer r1): a pageless
+  // directory can still hold a file some OTHER body references by URL — a
+  // template that handed the URL out, a page created from it — and deleting
+  // the directory whole would take that referenced file with it. Checked
+  // before the grace window because it is the permanent verdict; skipping is
+  // all-or-nothing (conservative), and counted separately so the record says
+  // why the directory was left standing.
+  if (dir.files.some((f) => keep.has(f.name))) {
+    stats.keepProtectedDirectories += 1;
+    return;
+  }
   const aged = dir.dirMtimeMs < cutoffMs && dir.files.every((f) => f.mtimeMs < cutoffMs);
   if (!aged) {
     stats.graceSkipped += 1;
@@ -580,7 +641,7 @@ async function walkConfluenceTree(
     if (dir === null) continue;
 
     if (!known.has(key)) {
-      judgeDirectoryOrphan('confluence', dir, cutoffMs, stats, candidates);
+      judgeDirectoryOrphan('confluence', dir, cutoffMs, keep, stats, candidates);
     } else {
       for (const file of dir.files) {
         if (!isImageLikeCandidate(file.name)) continue;
@@ -670,7 +731,7 @@ async function walkLocalStore(
     seenByPage.set(pageId, new Set(dir.files.map((f) => f.name)));
 
     if (!known.has(pageId)) {
-      judgeDirectoryOrphan('local', dir, cutoffMs, stats, candidates);
+      judgeDirectoryOrphan('local', dir, cutoffMs, keep, stats, candidates);
     } else {
       const rows = rowsByPage.get(pageId);
       for (const file of dir.files) {
@@ -738,8 +799,11 @@ async function confluenceKeyOwners(key: string): Promise<number[]> {
 /**
  * Delete the candidates the walk just listed, re-verifying each at delete
  * time: a directory's page may have appeared since phase A (first sync
- * creates `<confluence_id>/` before the `pages` INSERT), and any file may
- * have been rewritten inside the grace window. ENOENT anywhere is a skip,
+ * creates `<confluence_id>/` before the `pages` INSERT), any file may have
+ * been rewritten inside the grace window, and a directory candidate's
+ * CURRENT contents are re-checked against the keep-set (fixer r1) — a
+ * directory holding a filename some body references is never removed, no
+ * matter how stale the listing that named it. ENOENT anywhere is a skip,
  * never an error — nothing is deleted on the strength of a stale listing.
  *
  * For every FILE removed, the matching `page_image_embeddings` rows
@@ -759,6 +823,7 @@ async function confluenceKeyOwners(key: string): Promise<number[]> {
  */
 export async function deleteCandidates(
   candidates: AttachmentSweepCandidate[],
+  keep: AttachmentKeepSets,
   assertNotAborted: () => void,
   totals: DeletedTotals,
 ): Promise<DeletedTotals> {
@@ -793,6 +858,11 @@ export async function deleteCandidates(
         if (recheck === null) continue; // vanished or unreadable — do not judge
         const aged = recheck.dirMtimeMs < cutoffMs && recheck.files.every((f) => f.mtimeMs < cutoffMs);
         if (!aged) continue;
+        // Keep-set over the CURRENT contents (fixer r1): the walk already
+        // refused a keep-intersecting directory, so this catches only a kept
+        // filename that landed here after the listing — and stale hand-built
+        // lists in the re-verification tests.
+        if (recheck.files.some((f) => keep[candidate.store].has(f.name))) continue;
         if (candidate.store === 'local') {
           await removeLocalAttachmentDirectory(Number(candidate.key));
         } else {
@@ -1144,7 +1214,7 @@ async function executeSweep(
   }
 
   partial.deleted = emptyDeletedTotals();
-  const deleted = await deleteCandidates(candidates, assertNotAborted, partial.deleted);
+  const deleted = await deleteCandidates(candidates, keep, assertNotAborted, partial.deleted);
   return shapeRun({
     dryRun,
     startedAt,

@@ -155,6 +155,43 @@ describe('collectAttachmentUrlReferences (#1349 keep-set feeder)', () => {
     expect(sets.confluence.has("O'Brien notes.png")).toBe(true);
   });
 
+  it('extends a quoted attribute value across a literal space (fixer r1)', () => {
+    // A literal space is legal inside a quoted HTML attribute and the
+    // reference WORKS — the browser percent-encodes it on request and the
+    // route decodes it back — but \s is outside the regex's filename class,
+    // so only the pre-space prefix ever reached the keep-set and a live run
+    // deleted a referenced file. When the match starts right after a quote,
+    // the candidate is extended to the closing quote.
+    const dq = emptySets();
+    collectAttachmentUrlReferences('<img src="/api/attachments/123/my file.png">', dq);
+    expect(dq.confluence.has('my file.png')).toBe(true);
+
+    const sq = emptySets();
+    collectAttachmentUrlReferences("<img src='/api/local-attachments/7/my file.png'>", sq);
+    expect(sq.local.has('my file.png')).toBe(true);
+  });
+
+  it('the quoted extension still drops query and fragment, and composes with entity decoding', () => {
+    const sets = emptySets();
+    collectAttachmentUrlReferences('<img src="/api/attachments/1/a b.png?v=2">', sets);
+    expect(sets.confluence.has('a b.png')).toBe(true);
+
+    collectAttachmentUrlReferences('<img src="/api/attachments/1/c d.png#frag">', sets);
+    expect(sets.confluence.has('c d.png')).toBe(true);
+
+    collectAttachmentUrlReferences('<img src="/api/attachments/1/a b&amp;c.png">', sets);
+    expect(sets.confluence.has('a b&c.png')).toBe(true);
+  });
+
+  it('a plain-text spelling with a space is NOT extended — the space genuinely terminates a bare URL', () => {
+    // Outside a quoted attribute there is no closing delimiter to extend to,
+    // and a bare URL with a literal space does not function as a reference.
+    const sets = emptySets();
+    collectAttachmentUrlReferences('see /api/attachments/1/my file.png here', sets);
+    expect(sets.confluence.has('my')).toBe(true);
+    expect(sets.confluence.has('my file.png here')).toBe(false);
+  });
+
   it('never emits a name that is not a plain basename', () => {
     const sets = emptySets();
     collectAttachmentUrlReferences('<img src="/api/attachments/1/..%2Fescape.png">', sets);

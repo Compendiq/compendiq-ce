@@ -617,6 +617,13 @@ export const AttachmentStoreSweepStatsSchema = z.object({
   orphanFileBytes: z.number().int().nonnegative(),
   /** Candidates skipped only because they are younger than the grace window. */
   graceSkipped: z.number().int().nonnegative(),
+  /**
+   * Pageless directories skipped because a contained filename sits in the
+   * keep-set — some body text still references a file inside, so the
+   * directory-level verdict stands down (never deleted, counted here).
+   * Defaulted so records persisted before the field existed still parse.
+   */
+  keepProtectedDirectories: z.number().int().nonnegative().default(0),
   /** Directories whose readdir failed — never judged, reported instead. */
   unreadableDirectories: z.number().int().nonnegative(),
 });

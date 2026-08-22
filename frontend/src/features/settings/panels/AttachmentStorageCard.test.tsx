@@ -37,6 +37,7 @@ const STORE_STATS = {
   orphanFiles: 2,
   orphanFileBytes: 2048,
   graceSkipped: 0,
+  keepProtectedDirectories: 0,
   unreadableDirectories: 0,
 };
 

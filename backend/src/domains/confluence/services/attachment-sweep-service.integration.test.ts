@@ -664,6 +664,57 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
   });
 
   /**
+   * Fixer r1: the acceptance criterion "never deletes files referenced by a
+   * live body, draft, retained version, pending sync version, template,
+   * comment or trashed page" is UNIVERSAL — it does not stop at the
+   * directory boundary. A directory whose page row is gone (a legacy leak
+   * from before the #1349 hard-delete fix) can still hold a file a template
+   * or another page's body references by URL, and deleting the directory
+   * whole would take that file with it. The keep-set outranks the
+   * directory-level verdict: such a directory is skipped (counted as
+   * `keepProtectedDirectories`), conservative by construction.
+   */
+  describe('directory-level candidates consult the keep-set (fixer r1)', () => {
+    it('a pageless directory holding a template-referenced file is never a candidate, in both stores', async () => {
+      const userId = await seedUser();
+      // NO page row claims key 77777 (Confluence tree) or 88888 (local
+      // store); the template body is each file's ONLY reference anywhere.
+      await query(
+        `INSERT INTO templates (title, body_json, body_html, created_by)
+         VALUES ('T', '{}',
+                 '<p><img src="/api/attachments/77777/legacy.png"><img src="/api/local-attachments/88888/local-legacy.png"></p>',
+                 $1)`,
+        [userId],
+      );
+      await writeAged('77777', 'legacy.png');
+      await writeAged('77777', 'junk.png');
+      await writeAged('local', '88888', 'local-legacy.png');
+      await ageDirs('77777', path.join('local', '88888'));
+
+      const dry = await runAttachmentSweep({ dryRun: true });
+      expect(dry!.status).toBe('completed');
+      expect(dry!.candidateSample.find((c) => c.key === '77777')).toBeUndefined();
+      expect(dry!.candidateSample.find((c) => c.key === '88888')).toBeUndefined();
+      expect(dry!.stores!.confluence.keepProtectedDirectories).toBe(1);
+      expect(dry!.stores!.local.keepProtectedDirectories).toBe(1);
+      expect(dry!.stores!.confluence.orphanDirectories).toBe(0);
+      expect(dry!.stores!.local.orphanDirectories).toBe(0);
+
+      const live = await runAttachmentSweep({ dryRun: false });
+      expect(live!.status).toBe('completed');
+      // The whole directory is skipped, unreferenced siblings included —
+      // all-or-nothing is the conservative direction for a directory verdict.
+      for (const p of [
+        path.join(tempBase, '77777', 'legacy.png'),
+        path.join(tempBase, '77777', 'junk.png'),
+        path.join(tempBase, 'local', '88888', 'local-legacy.png'),
+      ]) {
+        expect(await exists(p), `${p} must survive a live run`).toBe(true);
+      }
+    });
+  });
+
+  /**
    * The DECISIONS' binding "a live run deletes ONLY what the same walk would
    * list now" — exercised directly against `deleteCandidates` with hand-built
    * (i.e. deliberately stale) candidates, because through `runAttachmentSweep`
@@ -673,6 +724,7 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
    */
   describe('delete-time re-verification (deleteCandidates)', () => {
     const noAbort = () => undefined;
+    const emptyKeep = () => ({ confluence: new Set<string>(), local: new Set<string>() });
     const dirCandidate = (store: 'confluence' | 'local', key: string): AttachmentSweepCandidate => ({
       store,
       key,
@@ -707,6 +759,7 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       const totals = emptyDeletedTotals();
       await deleteCandidates(
         [dirCandidate('confluence', '55555'), dirCandidate('local', String(localId))],
+        emptyKeep(),
         noAbort,
         totals,
       );
@@ -723,7 +776,7 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       await ageDirs('55555'); // dir mtime aged — only the contained file is young
 
       const totals = emptyDeletedTotals();
-      await deleteCandidates([dirCandidate('confluence', '55555')], noAbort, totals);
+      await deleteCandidates([dirCandidate('confluence', '55555')], emptyKeep(), noAbort, totals);
 
       expect(await exists(path.join(tempBase, '55555', 'old.png'))).toBe(true);
       expect(await exists(path.join(tempBase, '55555', 'fresh.png'))).toBe(true);
@@ -734,9 +787,38 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       await writeYoung('90001', 'rewritten.png'); // young NOW; the stale candidate listed it aged
 
       const totals = emptyDeletedTotals();
-      await deleteCandidates([fileCandidate('confluence', '90001', 'rewritten.png')], noAbort, totals);
+      await deleteCandidates(
+        [fileCandidate('confluence', '90001', 'rewritten.png')],
+        emptyKeep(),
+        noAbort,
+        totals,
+      );
 
       expect(await exists(path.join(tempBase, '90001', 'rewritten.png'))).toBe(true);
+      expect(totals.files).toBe(0);
+    });
+
+    it('a directory candidate whose contents include a kept filename survives at delete time (fixer r1)', async () => {
+      // The walk already refuses such a directory; this pins the delete-time
+      // re-check against a stale candidate list, per store — a file carrying
+      // a kept name can land in the directory between the walk and the
+      // delete loop reaching it.
+      await writeAged('55555', 'kept.png');
+      await ageDirs('55555');
+      await writeAged('local', '99999', 'local-kept.png');
+      await ageDirs(path.join('local', '99999'));
+
+      const totals = emptyDeletedTotals();
+      await deleteCandidates(
+        [dirCandidate('confluence', '55555'), dirCandidate('local', '99999')],
+        { confluence: new Set(['kept.png']), local: new Set(['local-kept.png']) },
+        noAbort,
+        totals,
+      );
+
+      expect(await exists(path.join(tempBase, '55555', 'kept.png'))).toBe(true);
+      expect(await exists(path.join(tempBase, 'local', '99999', 'local-kept.png'))).toBe(true);
+      expect(totals.directories).toBe(0);
       expect(totals.files).toBe(0);
     });
 
@@ -748,6 +830,7 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       const totals = emptyDeletedTotals();
       await deleteCandidates(
         [dirCandidate('confluence', '55555'), fileCandidate('confluence', '90001', 'gone.png')],
+        emptyKeep(),
         noAbort,
         totals,
       );

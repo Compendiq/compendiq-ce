@@ -1167,7 +1167,10 @@ all count as owners — or (b) are image-like files referenced by **no body
 text anywhere**: every page's `body_html`, draft and storage format (live and
 trashed), every retained version, every pending sync version, every template
 and every comment feed one global keep-set per store, because attachment URLs
-are copied verbatim between bodies. Nothing younger than **24 hours** is ever
+are copied verbatim between bodies. The keep-set outranks the directory
+verdict too: a pageless directory that still holds even one referenced
+filename is skipped whole and reported as *keep-protected* rather than
+deleted, so a referenced file is never removed at either level. Nothing younger than **24 hours** is ever
 a candidate (paste and sync both write files before the referencing row
 exists). Non-image cached attachments (PDFs and other lazily fetched files)
 are never touched. `local_attachments` rows whose file is missing on disk are
