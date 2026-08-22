@@ -4,7 +4,9 @@
 
 **Goal:** `/ai` gets a per-conversation URL (`/ai/c/:id`), a conversations pane in the shell's left rail (replacing the Pages tree on AI routes), reopenable history, rename/delete, and a simplified `/ai` page — the frontend half of #1361, on top of PR 1's backend (#1365).
 
-**Architecture:** Threads in `AiContext` are re-keyed from *page* to *location* (`draft` / `conv:<id>` / `page:<id>`) and every thread carries an **identity** so stream writers follow re-keys and drop orphans; the pane is the third arm of `AppLayout`'s sidebar ternary and copies the Pages tree's chassis (ADR-010 v0.6) with a `SidebarSessionChrome` footer; server data lives in TanStack Query (`useInfiniteQuery` over PR 1's keyset list) and `AiContext`'s `useState` mirror is deleted; the New chat control lives in the 48px header slot via `HeaderHost`; `SourceThumbnail` is viewport-gated.
+**Architecture:** Threads in `AiContext` are re-keyed from *page* to *location* (`draft` / `conv:<id>` / `page:<id>`) and every thread carries an **identity** so stream writers follow re-keys and drop orphans; the pane is the third arm of `AppLayout`'s sidebar ternary and copies the Pages tree's chassis (ADR-010 v0.7) with a count-only footer; server data lives in TanStack Query (`useInfiniteQuery` over PR 1's keyset list) and `AiContext`'s `useState` mirror is deleted; the New chat control lives at the top of the `/ai` document column via `HeaderHost`; `SourceThumbnail` is viewport-gated.
+
+> **Re-anchored 2026-08-22** against `origin/dev` `a6a3d329` (merged into this branch as `f409a44b`) and the owner's three rulings of that date (`.claude/lanes/1361/owner-decisions-2026-08-22.md`). Three things dev changed reach almost every task in Parts B–D: **the session-chrome footer is gone** (theme + account moved back into the header, `SidebarSessionChrome` has no consumer), **the 48px header slot is gone** (`HeaderHost` renders in-document; the band is 44px), and **the sidebars take `embedMainNav`** where they used to take `forceCollapsed`. The spec's amendment block carries the argument for each; this plan carries the edits.
 
 **Tech Stack:** React 19, react-router (`NavLink`, `useLocation`, `useNavigate`), TanStack Query v5 (`useInfiniteQuery`, `useMutation`), Radix `DropdownMenu`, TailwindCSS 4 + the `nm-*` utilities, Zustand `ui-store`, Vitest + jsdom + `@testing-library/react`, `@compendiq/contracts` (`ConversationSummary`, `ConversationDetail`, `ConversationListResponseSchema`, `ATTACHMENT_URL_PATTERN`).
 
@@ -13,15 +15,15 @@
 ## Global Constraints
 
 - Branch `feature/1361-conversations-frontend` from `dev` after #1365 (already cut in the worktree `/Users/simon/Documents/localGIT/compendiq-ce-wt-1361-design`); PR targets `dev`; squash-merge; not stacked.
-- Tests required for every task (CLAUDE.md rule 1): Vitest + jsdom + `@testing-library/react`; mock at the network boundary (`fetch` / MSW), never internal components except where the existing test file already stubs a sibling (`SidebarTreeView.test.tsx:19-20` stubs `SidebarSessionChrome` — the pane's own test file does the same; `AppLayout.test.tsx` mocks `SidebarTreeView`, `ArticleRightPane`, `CommandPalette`, `ServiceStatus`, `ThemeToggle`, `use-media-query` and deliberately **not** `SettingsSidebar` — do the same for the pane so its "exactly one `/llm/conversations` request" test observes a real query).
+- Tests required for every task (CLAUDE.md rule 1): Vitest + jsdom + `@testing-library/react`; mock at the network boundary (`fetch` / MSW), never internal components. `AppLayout.test.tsx` mocks `SidebarTreeView` (`:16`), `ArticleRightPane` (`:30`), `CommandPalette` (`:55`), `ServiceStatus` (`:59`), `ThemeToggle` (`:63`), `NotificationBell` (`:67`), `UserMenu` (`:71`) and `use-media-query` (`:78`, which also stubs `useIsInspectorWideLayout` / `INSPECTOR_WIDE_QUERY`), and deliberately **not** `SettingsSidebar` — do the same for the pane so its "exactly one `/llm/conversations` request" test observes a real query. `SidebarTreeView.test.tsx:19-20`'s `vi.mock('./SidebarSessionChrome', …)` is **dead** — nothing renders that component any more — so do not copy it into the pane's test file (see Task 12).
 - **Bootstrap (once per worktree, before Task 1):** this worktree may be fresh — `node_modules/` and `packages/contracts/dist/` are both gitignored, so a newly created worktree has neither and `npx vitest` / `npx tsc --noEmit` cannot resolve `@compendiq/contracts` until they exist. Run `npm install` from the repo root (workspaces share one lockfile) — or link the main checkout's `node_modules` per the documented worktree-link recipe — then `npm run build -w packages/contracts`. PR 1's `ConversationSummary` / `ConversationDetail` reach the frontend only through that build.
 - Run from `frontend/`: `npx vitest run <file>`; `npx tsc --noEmit`; `npm run lint` (`eslint --max-warnings=0`). Contracts are consumed via built `dist/` — after any `packages/contracts/src` edit run `npm run build -w packages/contracts` from the repo root (see Bootstrap above — this PR edits no contracts source, but it consumes PR 1's).
 - **Line numbers in `**Files:**` blocks are navigational hints** against the branch base and may drift by a few lines; the authoritative anchor is always the verbatim `old` code block. If an `old` block does not match the file byte-for-byte, STOP and re-read the surrounding task and the file — never fuzzy-apply an edit.
-- Guard suites that must stay green at the end of every task that touches their subject and at the end of the plan: `src/ui-text-legibility.test.ts` (12px uppercase floor, 11px body floor), `src/flat-components.test.ts`, `src/destructive-treatment.test.ts` (ratchet ≤ 21 hand-rolled destructive callsites — use `nm-action-destructive`, never `text-destructive` + `hover:bg-destructive/NN`), `src/focus-ring-contrast.test.ts`, `src/workspace-themes.test.ts`, `src/ai-scroll-chain.test.ts`, `src/toolbar-rule-alignment.test.ts`, `src/docs-image-retrieval-record.test.ts` (**no CLAUDE.md paragraph this PR adds may contain the string `#1115`** unless it opens with a declared prefix), `src/scroll-padding-mask.test.ts`.
-- ADR-010 v0.6: flat surfaces, one shadow (`nm-card-elevated` for the kebab menu only), teal only on actions, the neutral pressed recipe (`nav-selection font-medium`) for the active row, amber only for degraded (`role="status"` failed-with-cache strip), red only for failure (`role="alert"` block), no per-row icon, `SECTION_LABEL` (12px uppercase `tracking-[0.08em]`) for group headings.
+- Guard suites that must stay green at the end of every task that touches their subject and at the end of the plan: `src/ui-text-legibility.test.ts` (12px uppercase floor, 11px body floor), `src/flat-components.test.ts`, `src/destructive-treatment.test.ts` (ratchet ≤ 21 hand-rolled destructive callsites — use `nm-action-destructive`, never `text-destructive` + `hover:bg-destructive/NN`), `src/focus-ring-contrast.test.ts`, `src/workspace-themes.test.ts`, `src/ai-scroll-chain.test.ts`, `src/toolbar-rule-alignment.test.ts`, **`src/app-shell-layout.test.ts`** (new since the plan was drafted — a guard suite over `AppLayout.tsx`, `index.css`, `SidebarTreeView.tsx`, `SettingsSidebar.tsx` and `ArticleRightPane.tsx`; the clauses that constrain PR 2 are `:241-250` (`<SidebarTreeView` inside `app-workspace`, before `id="main-content"`, `<ArticleRightPane` after), `:268-269` (no `forceCollapsed` / `forceTreeCollapsed` in `AppLayout`), `:300-305` (the two `embedMainNav={false}` literals plus the drawer literal, and no `AppHeaderMain`), `:314-317` (exactly one `data-scroll-container`) and `:336-341` (left-nav files use `app-sidebar`, never `app-context-rail`)), `src/docs-image-retrieval-record.test.ts` (**no CLAUDE.md paragraph this PR adds may contain the string `#1115`** unless it opens with a declared prefix), `src/scroll-padding-mask.test.ts` (whose `:82` forbids any responsive `pt-` variant in `AppLayout.tsx`).
+- ADR-010 v0.7: flat surfaces, one shadow (`nm-card-elevated` for the kebab menu only), **the accent is reserved for actions and filled primary controls use the separate neutral `--color-action` role** (the accent itself is Steel since #1398 — `--color-primary: #86aec8` dark / `#3f627c` paper; do not write "teal" anywhere), the neutral pressed recipe (`nav-selection font-medium`) for the active row — `nav-selection` sets `font-weight: 500` itself now, so the pairing is redundant but the tree still spells it that way, keep it for parity — amber only for degraded (`role="status"` failed-with-cache strip), red only for failure (`role="alert"` block), no per-row icon, `SECTION_LABEL` (12px uppercase `tracking-[0.08em]`) for group headings. The left-rail chassis utility is **`app-sidebar`** (`index.css:804-807`), never `nm-sidebar` and never `app-context-rail`.
 - Copy is exact where the spec quotes it: *Loading conversation…*, *Conversation not found*, *This conversation no longer exists — your next question starts a new one.*, *Older messages in this conversation are no longer sent to the model.*, *Your conversations will appear here. Only Q&A is saved.*, *No matching conversations*, *Couldn't load conversations*, *The request did not complete.*, *Showing the last loaded conversations*, *Delete conversation?*, *"<title>" will be permanently deleted. This can't be undone.*, *This page is no longer available to you*, "New chat", "Filter conversations", "Show more", "Loading…", "Try again", "Retry", "Rename", "Delete", `Actions for ${title}`, `Rename ${title}`, "Expand sidebar (,)", "Collapse sidebar (,)".
-- Test ids and labels: `data-testid="ai-conversations-sidebar"` on **both** branches of the pane; `data-testid="conversations-new-chat"` (pane), `data-testid="ai-new-chat"` (header slot), `data-testid="conversations-show-more"`, `data-testid="sidebar-session-chrome"` (from the shared component); `<aside aria-label="Conversations">` both branches; `<nav aria-label="Conversation history">`; `aria-current="page"` on the active row; `data-row-id` on the row link.
-- Constants: `MAX_RETAINED_THREADS = 12` (unchanged); `CONVERSATION_FILTER_THRESHOLD = 8`; query key `['llm', 'conversations', 'list']` for the list, invalidate `['llm', 'conversations']`; `AI_HOME_PATH = '/ai'`; `AI_HOME_ACTIONS = ['ask', 'generate']`; the recency labels *Today* / *Yesterday* / *Previous 7 days* / *Previous 30 days* / `Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' })`.
+- Test ids and labels: `data-testid="ai-conversations-sidebar"` on **both** branches of the pane; `data-testid="conversations-new-chat"` (pane), `data-testid="ai-new-chat"` (the `/ai` heading row), `data-testid="conversations-show-more"`; `<aside aria-label="Conversations">` both branches; `<nav aria-label="Conversation history">`; `aria-current="page"` on the active row; `data-row-id` on the row link.
+- Constants: `MAX_RETAINED_THREADS = 12` (unchanged); `CONVERSATION_FILTER_THRESHOLD = 8`; query key `['llm', 'conversations', 'list']` for the list, invalidate `['llm', 'conversations']`; `AI_HOME_PATH = '/ai'`; the three action lists of owner ruling 3 — `CREATE_SKILL_ACTIONS = ['create-spec', 'create-guide', 'create-notes', 'create-postmortem', 'create-custom']`, `AI_HOME_ACTIONS = ['ask', 'generate', ...CREATE_SKILL_ACTIONS]`, `DOCK_ACTIONS = ['ask', ...IMPROVEMENT_TYPES, 'diagram', 'generate', ...CREATE_SKILL_ACTIONS]`; the persisted rail width **resets to 282**, not 280 (`ui-store.ts:51`); the recency labels *Today* / *Yesterday* / *Previous 7 days* / *Previous 30 days* / `Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' })`.
 - Commit after every task with a message in the repo's style (`feat(ai): …`, `refactor(ui): …`, `test(ai): …`, `docs(…): …`), and end every commit message with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`. Stage by name — never `git add -A`.
 - Never touch the main checkout `/Users/simon/Documents/localGIT/compendiq-ce`; work only in the worktree.
 
@@ -34,7 +36,7 @@
 | File | Responsibility |
 |---|---|
 | `frontend/src/shared/lib/ai-routes.ts` (+ `.test.ts`) | The AI-route predicates: `AI_HOME_PATH`, `isAiRoute`, `conversationIdFromPath`, `conversationPath`. Shell plumbing (`AppLayout` and `AiContext` both need it; `shared/lib/article-route.ts` is the precedent). |
-| `frontend/src/features/ai/assistant-actions.ts` (+ `.test.ts`) | Leaf module: `AssistantAction`, `AI_HOME_ACTIONS`, `DOCK_ACTIONS`, `isAiHomeAction`. Lives apart from `AssistantActionSelect.tsx` so `AiContext` can import it without a cycle. |
+| `frontend/src/features/ai/assistant-actions.ts` (+ `.test.ts`) | Leaf module: `AssistantAction`, `CreateSkillAction`, `CREATE_SKILL_ACTIONS`, `AI_HOME_ACTIONS`, `DOCK_ACTIONS`, `isAiHomeAction`. Lives apart from `AssistantActionSelect.tsx` so `AiContext` can import it without a cycle. |
 | `frontend/src/features/ai/conversations/group-by-recency.ts` (+ `.test.ts`) | Pure `groupByRecency(items, now)`. |
 | `frontend/src/shared/hooks/use-list-roving-focus.ts` (+ `.test.ts`) | Flat vertical roving tabindex, `useTreeRovingFocus`'s contract shape. |
 | `frontend/src/features/ai/conversations/use-conversation-list.ts` (+ `.test.tsx`) | `useConversationList()` — `useInfiniteQuery` over `GET /llm/conversations`, flattened `rows`. |
@@ -42,7 +44,7 @@
 | `frontend/src/features/ai/conversations/ConversationRowMenu.tsx` | Kebab trigger + `DropdownMenu` (Rename / Delete) + delete `ConfirmDialog`. |
 | `frontend/src/features/ai/conversations/ConversationRow.tsx` (+ `.test.tsx`, covering the menu too) | One `<li>`: `NavLink`, page chip, kebab, inline rename. |
 | `frontend/src/features/ai/conversations/ConversationList.tsx` (+ `.test.tsx`) | `<nav>` → recency groups → rows; roving focus; three list states; Show more. |
-| `frontend/src/features/ai/conversations/AiConversationsSidebar.tsx` (+ `.test.tsx`) | Chassis: `<aside>` both branches, resize handle, nav row, New chat, filter, list, footer, collapsed rail. |
+| `frontend/src/features/ai/conversations/AiConversationsSidebar.tsx` (+ `.test.tsx`) | Chassis: `<aside>` both branches, resize handle, `embedMainNav` nav row, New chat, filter, list, count footer, collapsed rail. |
 | `docs/superpowers/plans/2026-08-18-ai-conversation-history-pr2-frontend.md` | This plan. |
 
 **Modify**
@@ -53,18 +55,18 @@
 | `frontend/src/shared/components/layout/PageTransition.tsx` (`:15`) | `routeDepth` uses `isAiRoute`. |
 | `frontend/src/features/ai/AiContext.tsx` | Thread keys by location; `AiThread` identity/loadState/loadError/historyTruncated; `seedFor`, `nextIdentity`; `activeThreadId`, `streamingThreadId`; identity-bound writers; promotion / 404 / null-frame / mirror; hydration; `startNewConversation` / `purgeConversation` / `retryThreadLoad` / `composerFocusRequest`; mirror deleted; `resolveAiPageId` null on AI routes; URL-mode allow-list on AI routes; `conversations`/`setConversations`/`loadConversation`/`deleteConversation` removed. |
 | `frontend/src/features/ai/AiContext.threads.test.tsx` | Every state-machine cell; delete `:196-209` (the `/ai?pageId=x ↔ /pages/x` shared-thread contract) and the `context-page` assertion at `:344`. |
-| `frontend/src/features/ai/AiAssistantPage.tsx` (+ `.test.tsx`) | `HeaderHost` (title + New chat) first inside the root `<m.div>`; delete model select, context chip, `+ Sub-pages`, divider, `flex-1` spacer; loading/error states for `conv:` threads; `MessageBubble` gates streaming on `streamingThreadId`; `AssistantActionSelect actions={AI_HOME_ACTIONS}`. |
-| `frontend/src/features/ai/AssistantActionSelect.tsx` | `actions: readonly AssistantAction[]` replaces `includeGenerate`. |
+| `frontend/src/features/ai/AiAssistantPage.tsx` (+ `.test.tsx`) | `HeaderHost` (in-document `<h1>AI</h1>` + New chat) first inside the root `<m.div>`; delete model select, context chip, `+ Sub-pages`, divider, `flex-1` spacer; loading/error states for `conv:` threads; `MessageBubble` gates streaming on `streamingThreadId`; `AssistantActionSelect actions={AI_HOME_ACTIONS}`. |
+| `frontend/src/features/ai/AssistantActionSelect.tsx` | `actions: readonly AssistantAction[]` replaces `includeGenerate`; the local `CREATE_SKILL_ACTIONS` definition array is renamed `CREATE_SKILL_DEFINITIONS` to free the name for the leaf module's id list. |
 | `frontend/src/features/ai/modes/AskMode.tsx` (+ `.test.tsx`) | `DeepSearchToggle` reset keyed on `activeThreadId`; `externalUrls` reset on `activeThreadId`; history note; composer focus on `composerFocusRequest`; Send disabled while loading. |
 | `frontend/src/features/ai/AssistantAttachments.tsx` | Scope clears on `activeThreadId`, not `pageId`. |
 | `frontend/src/features/ai/DockPanel.tsx` (+ tests) / `DockMessage` | History note; typing indicator gated on `streamingThreadId`. |
 | `frontend/src/features/ai/source-target.ts` (+ `.test.ts`), `SourceCitations.tsx` (`Source` gains `unavailable?: true`), `CitationChips.tsx` | `unavailable` → `{ kind: 'none' }` + `title="This page is no longer available to you"`; card thumbnail gated on `target.kind !== 'none'`. |
 | `frontend/src/features/ai/SourceThumbnail.tsx` (+ `CitationChips.test.tsx`, `SourceCitations.test.tsx`) | Viewport gate (`IntersectionObserver` sentinel, `useAuthenticatedSrc(null)` until intersected). |
-| `frontend/src/shared/components/layout/AppLayout.tsx` (+ `.test.tsx`) | Third arm of the sidebar ternary in the drawer (`:500-502`) and the desktop slot (`:519-528`), gated on `isAiRoute(location.pathname)`. |
+| `frontend/src/shared/components/layout/AppLayout.tsx` (+ `.test.tsx`) | Third arm of the sidebar ternary in the drawer (`:408-410`) and the desktop slot (`:521-525`), gated on `isAiRoute(location.pathname)`, passing `embedMainNav` / `embedMainNav={false}` as the sibling arms do. |
 | `frontend/src/shared/components/layout/SidebarTreeView.tsx` (+ `.test.tsx`) | `isAiRoute` prop and every branch keyed on it deleted; `SECTION_LABEL` exported. |
 | `frontend/src/shared/components/layout/DndLocalSpaceTree.tsx` (+ `.test.tsx`) | `isAiRoute` prop and branches deleted. |
-| `frontend/src/index.css` (`:925-943`) | `nm-action-destructive` gains `&[data-highlighted]` mirroring `&:hover:not(:disabled)`. |
-| `frontend/src/toolbar-rule-alignment.test.ts` | `SELF_BORDERED` gains the pane. |
+| `frontend/src/index.css` (`:1132-1150`) | `nm-action-destructive` gains `&[data-highlighted]` mirroring `&:hover:not(:disabled)`. |
+| `frontend/src/toolbar-rule-alignment.test.ts` (`:37-41`) | `SELF_BORDERED` gains the pane. |
 | `frontend/src/shared/components/layout/MainNavStrip.tsx` (`:6-15`) | Comment: `/ai` and `/ai/c/:id` both light the AI pill (code unchanged). |
 | Docs | `docs/architecture/04-frontend-structure.md`, `docs/architecture/09-flow-rag-chat.md`, `docs/architecture/README.md`, `docs/superpowers/specs/2026-07-28-docked-ai-assistant-design.md`, `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`, `docs/USER-GUIDE.md`, `CLAUDE.md`. |
 
@@ -131,15 +133,18 @@ export function ConversationList(props: ConversationListProps): JSX.Element;
 
 // Task 12 — AiConversationsSidebar.tsx
 export const CONVERSATION_FILTER_THRESHOLD = 8;
-export function AiConversationsSidebar(props: { onNavigate?: () => void }): JSX.Element;
-// SidebarTreeView.tsx: `export const SECTION_LABEL` (was module-private at :149)
+export function AiConversationsSidebar(props: { onNavigate?: () => void; embedMainNav?: boolean }): JSX.Element;   // embedMainNav defaults to true, exactly as SidebarTreeView / SettingsSidebar do
+// SidebarTreeView.tsx: `export const SECTION_LABEL` (was module-private at :151)
 
-// Task 15 — assistant-actions.ts / AssistantActionSelect.tsx
-export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate';    // moved here from AssistantActionSelect.tsx (re-exported there for existing importers)
-export const AI_HOME_ACTIONS: readonly AssistantAction[] = ['ask', 'generate'];
-export const DOCK_ACTIONS: readonly AssistantAction[] = ['ask', ...IMPROVEMENT_TYPES, 'diagram'];
-export function isAiHomeAction(value: string): value is 'ask' | 'generate';
-// AssistantActionSelect props: { actions: readonly AssistantAction[]; … } — `includeGenerate` removed
+// Task 15 — assistant-actions.ts / AssistantActionSelect.tsx (lists per owner ruling 3, 2026-08-22)
+export type CreateSkillAction = 'create-spec' | 'create-guide' | 'create-notes' | 'create-postmortem' | 'create-custom';   // moved here from AssistantActionSelect.tsx:29 (re-exported there)
+export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate' | CreateSkillAction;   // moved here from AssistantActionSelect.tsx:30 (re-exported there for existing importers)
+export const CREATE_SKILL_ACTIONS: readonly CreateSkillAction[];                  // derived from CREATE_SKILLS, not restated
+export const AI_HOME_ACTIONS: readonly AssistantAction[] = ['ask', 'generate', ...CREATE_SKILL_ACTIONS];
+export const DOCK_ACTIONS: readonly AssistantAction[] = ['ask', ...IMPROVEMENT_TYPES, 'diagram', 'generate', ...CREATE_SKILL_ACTIONS];
+export function isAiHomeAction(value: string): value is 'ask' | 'generate';       // the URL allow-list, deliberately NOT the menu list — `create-*` is never a URL mode value
+// AssistantActionSelect props: { actions: readonly AssistantAction[]; … } — `includeGenerate` removed;
+// its module-local `CREATE_SKILL_ACTIONS: ActionDefinition[]` (:69-74) is renamed CREATE_SKILL_DEFINITIONS.
 
 // Task 16 — SourceCitations.tsx / source-target.ts
 // Source gains `unavailable?: true`; resolveSourceTarget(source) returns { kind: 'none' } when source.unavailable === true, before every other rule.
@@ -1431,7 +1436,9 @@ interface Conversation {
 }
 ```
 
-`:266-306` — old:
+`:274-313` — old (note `generatedDraft`, which #1401's create-skills work added to both the
+interface and the constant after this plan was first drafted — it must survive into the new
+shape untouched):
 
 ```tsx
 interface AiThread {
@@ -1450,6 +1457,7 @@ interface AiThread {
    * re-run and silently overwriting someone else's edit.
    */
   diffBaseVersion: number | null;
+  generatedDraft: string;
 }
 
 const EMPTY_THREAD: AiThread = {
@@ -1462,6 +1470,7 @@ const EMPTY_THREAD: AiThread = {
   layoutTokensLost: undefined,
   diagramCode: '',
   diffBaseVersion: null,
+  generatedDraft: '',
 };
 
 /**
@@ -1495,6 +1504,7 @@ interface AiThread {
    * re-run and silently overwriting someone else's edit.
    */
   diffBaseVersion: number | null;
+  generatedDraft: string;
   /**
    * Stamped when the thread is FILED (#1361), never by a write.
    *
@@ -1527,6 +1537,7 @@ const EMPTY_THREAD: AiThread = {
   layoutTokensLost: undefined,
   diagramCode: '',
   diffBaseVersion: null,
+  generatedDraft: '',
   identity: 0,
   loadState: 'ready',
   loadError: null,
@@ -1671,7 +1682,8 @@ function touchThread(
 
 - [ ] **Step 4: Wire the provider to the new model**
 
-`frontend/src/features/ai/AiContext.tsx:391-397` — old:
+`frontend/src/features/ai/AiContext.tsx:400-408` — old (the destructure spans **four** lines
+since #1401, with `generatedDraft,` alone on the last):
 
 ```tsx
   // Conversations keyed by page and retained (#1126). Changing pages swaps
@@ -1681,6 +1693,7 @@ function touchThread(
   const {
     messages, conversationId, input, showDiffView,
     improvedContent, originalMarkdown, layoutTokensLost, diagramCode, diffBaseVersion,
+    generatedDraft,
   } = threads.get(threadKey) ?? EMPTY_THREAD;
 ```
 
@@ -1699,6 +1712,7 @@ new:
   const {
     messages, conversationId, input, showDiffView,
     improvedContent, originalMarkdown, layoutTokensLost, diagramCode, diffBaseVersion,
+    generatedDraft,
   } = activeThread;
   /**
    * The one thing every switch-sensitive effect keys on (#1361): the filed
@@ -1986,7 +2000,7 @@ Implements spec §*Thread keys* → *"Writers are bound to identity, not to key"
 **Files:**
 - Modify: `frontend/src/features/ai/AiContext.tsx` — `AiContextValue` streaming block (`:117-131`), the thread helpers (beside `touchThread`), the provider's writers block (`:407-412`), the abort effect (`:493-503`), `runStream` (`:741-947`), the value object
 - Modify: `frontend/src/features/ai/AiAssistantPage.tsx:219-220` (context destructure) and `:520-534` (the `MessageBubble` props)
-- Modify: `frontend/src/features/ai/dock/DockPanel.tsx:93-97` (context destructure) and `:322-331` (the `DockMessage` props)
+- Modify: `frontend/src/features/ai/dock/DockPanel.tsx:96-100` (context destructure) and `:338-346` (the `DockMessage` props)
 - Test: `frontend/src/features/ai/AiContext.threads.test.tsx`
 - Test: `frontend/src/features/ai/AiAssistantPage.test.tsx` (new `describe` at the end)
 - Test: `frontend/src/features/ai/dock/AiDock.test.tsx` (harness probes + one case)
@@ -2877,13 +2891,15 @@ reads the provider-wide flags exactly as `MessageBubble` did.
 
 - [ ] **Step 13: Gate the dock bubble on the streaming thread**
 
-`frontend/src/features/ai/dock/DockPanel.tsx:93-97` — old:
+`frontend/src/features/ai/dock/DockPanel.tsx:96-100` — old (the destructure gained
+`createSkill, setCreateSkill,` from #1401's create-skills work after this plan was first
+drafted; both must survive):
 
 ```tsx
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
-    chatVisionModel, mode, setMode, improvementType, abortRef,
+    chatVisionModel, mode, setMode, improvementType, createSkill, setCreateSkill, abortRef,
   } = useAiContext();
 ```
 
@@ -2893,7 +2909,8 @@ new:
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, streamingThreadId, activeThreadId, input, setInput, modelsError,
-    refetchModels, model, chatVision, chatVisionModel, mode, setMode, improvementType, abortRef,
+    refetchModels, model, chatVision, chatVisionModel, mode, setMode, improvementType,
+    createSkill, setCreateSkill, abortRef,
   } = useAiContext();
 
   // #1361: the streaming buffer and both busy flags are provider-wide, and this
@@ -2906,7 +2923,7 @@ new:
   const thinkingHere = isThinking && streamingThreadId === activeThreadId;
 ```
 
-`:322-331` — old:
+`:338-346` — old:
 
 ```tsx
               <DockMessage
@@ -4187,12 +4204,14 @@ render of an unfiled thread, the exact thing Task 2's memoisation pins):
   const {
     messages, conversationId, input, showDiffView,
     improvedContent, originalMarkdown, layoutTokensLost, diagramCode, diffBaseVersion,
+    generatedDraft,
   } = activeThread;
 
 // new
   const {
     messages, conversationId, input, showDiffView,
     improvedContent, originalMarkdown, layoutTokensLost, diagramCode, diffBaseVersion,
+    generatedDraft,
     loadState, loadError, historyTruncated,
   } = activeThread;
 ```
@@ -4505,7 +4524,7 @@ Implements the spec's *`activeThreadId`* section (the four switch-sensitive cons
 - **The composer focus effect is the existing mount-focus effect with `composerFocusRequest` added to its deps** — one effect, not two. The mount case is `composerFocusRequest`'s initial value; every later bump is New chat landing the caret where the next question goes.
 
 **Files:**
-- Modify: `frontend/src/features/ai/modes/AskMode.tsx` (`:37-40` destructure, `:66-79` the reset effect, `:117-122` the focus effect, `:139-140` the ask guard, `:344-346` Send)
+- Modify: `frontend/src/features/ai/modes/AskMode.tsx` (`:38-42` destructure, `:78-90` the reset effect, `:121-126` the focus effect, `:140-141` the ask guard, `:348` Send — which since #1398's control sweep is the `disabled` prop of a shared `<Button … isLoading={isStreaming} leftIcon={<Send size={14} />} />` at `:342-352`, not a hand-rolled `<button className="… bg-primary …">`; the accessible name is still `Send message` / `Sending...`, so the test queries below are unaffected. The URL trigger beside it is likewise an `IconButton` now (`:313-323`), which this task does not touch.)
 - Modify: `frontend/src/features/ai/AssistantAttachments.tsx` (`:25-27`, `:38-43`)
 - Test: `frontend/src/features/ai/modes/AskMode.test.tsx`
 
@@ -4803,7 +4822,7 @@ Expected: FAIL — `ThreadSwitcher` is fine, but the resets are still keyed on t
 
 - [ ] **Step 3: Key the Ask composer's resets and focus on the context**
 
-`frontend/src/features/ai/modes/AskMode.tsx` — the destructure (`:36-40`):
+`frontend/src/features/ai/modes/AskMode.tsx` — the destructure (`:38-42`):
 
 ```tsx
 // old
@@ -4822,7 +4841,7 @@ Expected: FAIL — `ThreadSwitcher` is fine, but the resets are still keyed on t
   } = useAiContext();
 ```
 
-The reset effect (`:66-79`):
+The reset effect (`:78-90`):
 
 ```tsx
 // old
@@ -4861,7 +4880,7 @@ The reset effect (`:66-79`):
   }, [activeThreadId]);
 ```
 
-The focus effect (`:117-122`) — one effect, not two: mount focus is `composerFocusRequest`'s initial value:
+The focus effect (`:121-126`) — one effect, not two: mount focus is `composerFocusRequest`'s initial value:
 
 ```tsx
 // old
@@ -4887,7 +4906,7 @@ The focus effect (`:117-122`) — one effect, not two: mount focus is `composerF
   }, [inputRef, composerFocusRequest]);
 ```
 
-The ask guard (`:139-140`):
+The ask guard (`:140-141`):
 
 ```tsx
 // old
@@ -4902,7 +4921,7 @@ The ask guard (`:139-140`):
     if (!input.trim() || isStreaming || isBusy || threadLoadState === 'loading') return;
 ```
 
-and its dependency array (`:194-197`):
+and its dependency array (`:195-198`):
 
 ```tsx
 // old
@@ -4919,7 +4938,7 @@ and its dependency array (`:194-197`):
   ]);
 ```
 
-Send (`:344-346`):
+Send — the `disabled` prop of the shared `<Button>` at `:348`, whose `isLoading` / `leftIcon` / `aria-label` are untouched:
 
 ```tsx
 // old
@@ -6383,13 +6402,13 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 10: `ConversationRowMenu` + `ConversationRow` (+ `nm-action-destructive` `data-highlighted`)
 
 Implements spec §Row anatomy, §Kebab menu, §Inline rename, §Delete, and amendment item 8's
-`index.css:925-943` note.
+`index.css:1132-1150` note.
 
 **Files:**
 - Create: `frontend/src/features/ai/conversations/ConversationRowMenu.tsx`
 - Create: `frontend/src/features/ai/conversations/ConversationRow.tsx`
 - Test: `frontend/src/features/ai/conversations/ConversationRow.test.tsx` (covers the menu too)
-- Modify: `frontend/src/index.css:925-943` (`nm-action-destructive` gains `&[data-highlighted]`)
+- Modify: `frontend/src/index.css:1132-1150` (`nm-action-destructive` gains `&[data-highlighted]`)
 - Modify: `frontend/src/destructive-treatment.test.ts` (one new assertion for that branch)
 
 **Interfaces:**
@@ -7249,7 +7268,7 @@ Implements spec §List semantics and keyboard, §Filter and Show more, §The thr
 **Files:**
 - Create: `frontend/src/features/ai/conversations/ConversationList.tsx`
 - Test: `frontend/src/features/ai/conversations/ConversationList.test.tsx`
-- Modify: `frontend/src/shared/components/layout/SidebarTreeView.tsx:149` (export `SECTION_LABEL`)
+- Modify: `frontend/src/shared/components/layout/SidebarTreeView.tsx:151` (export `SECTION_LABEL`)
 
 **Interfaces:**
 - Consumes: `useConversationList()` → `{ query, rows }` (Task 9); `groupByRecency(items, now)`
@@ -7265,7 +7284,7 @@ Implements spec §List semantics and keyboard, §Filter and Show more, §The thr
     now?: () => Date;   // test seam, defaults to () => new Date()
   }
   export function ConversationList(props: ConversationListProps): JSX.Element;
-  // SidebarTreeView.tsx: `export const SECTION_LABEL` (was module-private at :149) — Task 12 relies on it too.
+  // SidebarTreeView.tsx: `export const SECTION_LABEL` (was module-private at :151) — Task 12 relies on it too.
   ```
 
 **Pinned here (decisions the spec/brief left open):**
@@ -7551,7 +7570,7 @@ Expected: FAIL — `Failed to resolve import "./ConversationList"`.
 
 - [ ] **Step 3: Export `SECTION_LABEL` from `SidebarTreeView`**
 
-Edit `frontend/src/shared/components/layout/SidebarTreeView.tsx:149`.
+Edit `frontend/src/shared/components/layout/SidebarTreeView.tsx:151`.
 
 Old:
 ```ts
@@ -7797,17 +7816,17 @@ Implements spec §Chassis **as superseded by amendment items 1, 3 and 7**, §Fil
 **Files:**
 - Create: `frontend/src/features/ai/conversations/AiConversationsSidebar.tsx`
 - Test: `frontend/src/features/ai/conversations/AiConversationsSidebar.test.tsx`
-- Modify: `frontend/src/toolbar-rule-alignment.test.ts:36-40` (`SELF_BORDERED` gains the pane)
+- Modify: `frontend/src/toolbar-rule-alignment.test.ts:37-41` (`SELF_BORDERED` gains the pane)
 
 **Interfaces:**
 - Consumes: `useConversationList()` (Task 9); `ConversationList` (Task 11);
   `startNewConversation()` from `useAiContext()` (Task 2); `useUiStore`
   (`treeSidebarCollapsed` / `toggleTreeSidebar` / `treeSidebarWidth` / `setTreeSidebarWidth`);
-  `MainNavStripExpanded` / `MainNavStripCollapsed`; `SidebarSessionChrome`.
+  `MainNavStripExpanded` / `MainNavStripCollapsed`.
 - Produces:
   ```ts
   export const CONVERSATION_FILTER_THRESHOLD = 8;
-  export function AiConversationsSidebar(props: { onNavigate?: () => void }): JSX.Element;
+  export function AiConversationsSidebar(props: { onNavigate?: () => void; embedMainNav?: boolean }): JSX.Element;
   ```
 
 **Pinned here (decisions the spec/brief left open):**
@@ -7817,15 +7836,50 @@ Implements spec §Chassis **as superseded by amendment items 1, 3 and 7**, §Fil
    `AppLayout`'s drawer test writing the same query. (`AppLayout` mounts two *instances* —
    drawer + desktop — so those tests scope with `within(...)`, exactly as the existing
    slide-over tests already do for the tree.)
-2. **The footer count reads `list.rows.length`** and is labelled "conversation"/"conversations"
-   — amendment item 1 requires the loaded row count, i.e. the same number
-   `CONVERSATION_FILTER_THRESHOLD` is measured against, not a server total (the keyset list has
-   none).
+2. **The footer's ONLY content is the count**, read from `list.rows.length` and labelled
+   "conversation"/"conversations" — the loaded row count, i.e. the same number
+   `CONVERSATION_FILTER_THRESHOLD` is measured against, not a server total (the keyset list
+   has none). It takes `SidebarTreeView.tsx:1348`'s recipe byte for byte
+   (`panel-toolbar flex shrink-0 items-center gap-2 border-t px-2 py-1.5`, count span
+   `min-w-0 flex-1 truncate text-[11px] text-muted-foreground`) and leaves the right cell
+   empty: the tree spends it on a Trash `Button`, and the pane has no equivalent
+   low-frequency destination. **No session chrome, in either branch** — amendment item 1 as
+   re-decided 2026-08-22. #1377/#1378 put the theme toggle and the account menu back in the
+   header (`HeaderSessionCluster`, `AppLayout.tsx:498`), `SidebarSessionChrome` has no
+   consumer left anywhere in `frontend/src`, and `AppLayout.test.tsx:198`/`:241`/`:263-264`
+   pin that the header carries them — the `/ai` case among them. A pane that rendered one
+   would be the only rail in the app that does.
 3. **The `,` shortcut is `AppLayout`'s, not the pane's.** The pane only reads
    `treeSidebarCollapsed`, so its test drives the store directly and `AppLayout.test.tsx` keeps
-   owning the keystroke.
-4. The pane takes **no** `forceCollapsed` / `onForceExpand` (amendment item 3), so its expand
-   button is a plain `toggleTreeSidebar` with none of the tree's override branch.
+   owning the keystroke. `use-keyboard-shortcuts` lost its `singleKeyEnabled` option in #1405,
+   so the copy "Expand sidebar (,)" / "Collapse sidebar (,)" is now unconditionally truthful.
+4. The pane takes **no** `forceCollapsed` / `onForceExpand`. The mechanism is *gone*, not
+   merely inapplicable: `LayoutPresetMenu.tsx` and `article-layout-controls.tsx` were deleted
+   and `forceTreeCollapsed` no longer exists in `frontend/src`, with
+   `app-shell-layout.test.ts:268-269` failing if either name reappears in `AppLayout.tsx`. The
+   pane's expand button is a plain `toggleTreeSidebar` with none of the tree's override branch.
+5. **The pane takes `embedMainNav?: boolean`, defaulting to `true`, and it is load-bearing.**
+   A chassis-level `<MainNavChassisRail />` now renders outside the workspace card
+   (`AppLayout.tsx:509`), which is why both desktop sidebars pass `embedMainNav={false}`; a
+   pane that hard-coded the strip on would paint a second Pages/AI/Graph column beside it on
+   every desktop `/ai`. Copy the tree's **two-branch** treatment verbatim
+   (`SidebarTreeView.tsx:872-889` and `:1087-1096`): when `embedMainNav` is true the collapse
+   button sits in the nav row; when it is false there is no nav row and the collapse button
+   moves into the row below, so the control never disappears. The collapsed rail's
+   `MainNavStripCollapsed` is gated the same way (`SidebarTreeView.tsx:788`).
+6. **Every bordered `panel-toolbar` row in this file needs `h-12`.**
+   `toolbar-rule-alignment.test.ts:52-69` now loops over *all* `panel-toolbar` + `border-b`
+   lines in a `SELF_BORDERED` file, not just the first — the tree grew a second such row at
+   `:890` and the guard was tightened with it. The `py-*` ban at `:92-105` still checks only
+   the first. The footer is `border-t`, so it is in neither set.
+7. **"Show more" has no chassis precedent to copy.** The tree has none; the only "show more"
+   in dev is `PinnedArticlesSection`'s, a Library card control. Style
+   `conversations-show-more` on **this pane's own button recipe**, not on a tree fragment, and
+   keep it a `shrink-0` sibling of the scroller so it does not scroll away.
+8. **The double-click width reset is 282**, not 280 — `ui-store.ts:51` `treeSidebarWidth: 282`
+   and `SidebarTreeView.tsx:1386` `onDoubleClick={() => setTreeSidebarWidth(282)}`. The
+   keyboard `Home` reset matches it. Copying 280 would make the pane's "reset" land on a
+   width the tree never returns to.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -7853,11 +7907,11 @@ vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
-// Same stub SidebarTreeView.test.tsx:19-20 uses — it is what keeps UserMenu's
-// auth store out of a chassis test.
-vi.mock('../../../shared/components/layout/SidebarSessionChrome', () => ({
-  SidebarSessionChrome: () => <div data-testid="sidebar-session-chrome" />,
-}));
+// No SidebarSessionChrome stub. Theme and account live in the header
+// (HeaderSessionCluster) since #1377/#1378, the component has no consumer left,
+// and the pane must not grow one — so there is nothing here to keep UserMenu's
+// auth store out of. SidebarTreeView.test.tsx:19-20 still carries that stub; it
+// is dead, and copying it here would imply a footer this pane does not have.
 
 vi.mock('framer-motion', async () => {
   const actual = await vi.importActual('framer-motion');
@@ -7894,7 +7948,7 @@ function mockList(count: number) {
   });
 }
 
-function renderPane(props: { onNavigate?: () => void } = {}) {
+function renderPane(props: { onNavigate?: () => void; embedMainNav?: boolean } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
@@ -7908,7 +7962,7 @@ function renderPane(props: { onNavigate?: () => void } = {}) {
 describe('AiConversationsSidebar', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarWidth: 280 });
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarWidth: 282 });
   });
 
   afterEach(() => {
@@ -7921,17 +7975,16 @@ describe('AiConversationsSidebar', () => {
     const expanded = await screen.findByTestId('ai-conversations-sidebar');
     expect(expanded.tagName).toBe('ASIDE');
     expect(expanded).toHaveAttribute('aria-label', 'Conversations');
-    expect(within(expanded).getByTestId('sidebar-session-chrome')).toBeInTheDocument();
     unmount();
 
     useUiStore.setState({ treeSidebarCollapsed: true });
     renderPane();
     const collapsed = await screen.findByTestId('ai-conversations-sidebar');
     expect(collapsed.tagName).toBe('ASIDE');
+    // Collapsing shrinks the region; it never deletes the landmark. (It does
+    // not carry an account menu either — that lives in the app header since
+    // #1377/#1378, on every route including this one.)
     expect(collapsed).toHaveAttribute('aria-label', 'Conversations');
-    // Collapsing shrinks the region; it never deletes the landmark or the
-    // account menu — /ai would otherwise be the only route with neither.
-    expect(within(collapsed).getByTestId('sidebar-session-chrome')).toBeInTheDocument();
     expect(within(collapsed).getByTestId('conversations-new-chat')).toBeInTheDocument();
     expect(within(collapsed).queryByRole('navigation', { name: 'Conversation history' })).toBeNull();
   });
@@ -7942,13 +7995,32 @@ describe('AiConversationsSidebar', () => {
     const handle = await screen.findByRole('separator', { name: 'Resize conversations sidebar' });
     expect(handle).toHaveAttribute('aria-valuemin', '180');
     expect(handle).toHaveAttribute('aria-valuemax', '600');
-    expect(handle).toHaveAttribute('aria-valuenow', '280');
-    expect(handle).toHaveAttribute('aria-valuetext', '280 pixels');
+    expect(handle).toHaveAttribute('aria-valuenow', '282');
+    expect(handle).toHaveAttribute('aria-valuetext', '282 pixels');
 
     fireEvent.keyDown(handle, { key: 'ArrowRight' });
-    expect(useUiStore.getState().treeSidebarWidth).toBe(296);
+    expect(useUiStore.getState().treeSidebarWidth).toBe(298);
+    // 282, the store's own default and the tree's double-click reset — not 280.
     fireEvent.keyDown(handle, { key: 'Home' });
-    expect(useUiStore.getState().treeSidebarWidth).toBe(280);
+    expect(useUiStore.getState().treeSidebarWidth).toBe(282);
+  });
+
+  // The desktop shell renders <MainNavChassisRail /> outside the workspace card
+  // (AppLayout.tsx:509) and passes embedMainNav={false} to every sidebar in the
+  // slot; a pane that painted the strip anyway would put a second Pages/AI/Graph
+  // column beside it. The collapse control has to survive that branch, which is
+  // why the tree keeps two of them (SidebarTreeView.tsx:875-883 and :1087-1096).
+  it('drops the in-rail nav strip when the chassis owns it, and keeps Collapse', async () => {
+    mockList(3);
+    const { unmount } = renderPane();
+    expect(await screen.findByRole('link', { name: /Pages/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument();
+    unmount();
+
+    renderPane({ embedMainNav: false });
+    await screen.findByTestId('ai-conversations-sidebar');
+    expect(screen.queryByRole('link', { name: /Pages/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument();
   });
 
   it('follows the shared collapse state (the "," shortcut is AppLayout\'s)', async () => {
@@ -8057,7 +8129,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { PanelLeft, PanelLeftClose, SquarePen } from 'lucide-react';
 import { MainNavStripExpanded, MainNavStripCollapsed } from '../../../shared/components/layout/MainNavStrip';
-import { SidebarSessionChrome } from '../../../shared/components/layout/SidebarSessionChrome';
 import { useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../../shared/lib/cn';
 import { useAiContext } from '../AiContext';
@@ -8079,10 +8150,19 @@ export const CONVERSATION_FILTER_THRESHOLD = 8;
  *
  * It shares `treeSidebarCollapsed` / `treeSidebarWidth` with both trees, so "," and
  * the persisted width carry across routes, and it takes no forceCollapsed /
- * onForceExpand: `AppLayout` gates that compaction on article routes, so no layout
- * preset can act on /ai.
+ * onForceExpand: the layout presets that used to produce them were deleted, and
+ * `app-shell-layout.test.ts` fails if either name comes back in AppLayout.
+ *
+ * `embedMainNav` mirrors SidebarTreeView / SettingsSidebar exactly. The desktop
+ * shell renders <MainNavChassisRail /> outside the workspace card and passes
+ * `false`; the mobile drawer has no such rail and takes the default. When it is
+ * false there is no nav row at all, so the collapse button moves into the row
+ * below — the tree's own two-branch treatment (SidebarTreeView.tsx:1087-1096).
  */
-export function AiConversationsSidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
+export function AiConversationsSidebar({
+  onNavigate,
+  embedMainNav = true,
+}: { onNavigate?: () => void; embedMainNav?: boolean } = {}) {
   const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
@@ -8152,7 +8232,8 @@ export function AiConversationsSidebar({ onNavigate }: { onNavigate?: () => void
         setTreeSidebarWidth(treeSidebarWidth + 16);
       } else if (e.key === 'Home') {
         e.preventDefault();
-        setTreeSidebarWidth(280);
+        // 282, the store's default and the tree's own double-click reset.
+        setTreeSidebarWidth(282);
       }
     },
     [treeSidebarWidth, setTreeSidebarWidth],
@@ -8183,9 +8264,13 @@ export function AiConversationsSidebar({ onNavigate }: { onNavigate?: () => void
             <PanelLeft size={16} />
           </button>
 
-          <MainNavStripCollapsed onNavigate={onNavigate} />
+          {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
-          {/* One glyph, and only this one. Never a Delete; never the list. */}
+          {/* One glyph, and only this one. Never a Delete; never the list.
+              Nothing follows it: the tree's collapsed rail ends with an
+              `mt-auto` Trash button and the pane has no equivalent
+              low-frequency destination, and session chrome lives in the app
+              header (#1377/#1378) rather than at the foot of a rail. */}
           <button
             type="button"
             onClick={handleNewChat}
@@ -8196,10 +8281,6 @@ export function AiConversationsSidebar({ onNavigate }: { onNavigate?: () => void
           >
             <SquarePen size={16} />
           </button>
-
-          <div className="mt-auto">
-            <SidebarSessionChrome compact />
-          </div>
         </m.aside>
       </AnimatePresence>
     );
@@ -8219,7 +8300,15 @@ export function AiConversationsSidebar({ onNavigate }: { onNavigate?: () => void
       )}
     >
       {/* The 48px line across the top of every pane: h-12 with the hairline in
-          the same border box, never py-*. */}
+          the same border box, never py-*. EVERY bordered panel-toolbar row in
+          this file needs h-12 — toolbar-rule-alignment.test.ts:52-69 loops over
+          all of them, not just the first.
+
+          Rendered only when this rail owns the destination strip. On desktop
+          the chassis rail does (embedMainNav={false}), and then this row does
+          not exist — so the collapse button moves into the New chat row below,
+          exactly as SidebarTreeView.tsx:1087-1096 moves its own. */}
+      {embedMainNav && (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
         <MainNavStripExpanded onNavigate={onNavigate} />
         <button
@@ -8232,17 +8321,29 @@ export function AiConversationsSidebar({ onNavigate }: { onNavigate?: () => void
           <PanelLeftClose size={14} />
         </button>
       </div>
+      )}
 
-      <div className="shrink-0 px-2 py-2">
+      <div className="flex shrink-0 items-center gap-1 px-2 py-2">
         <button
           type="button"
           onClick={handleNewChat}
           data-testid="conversations-new-chat"
-          className="nm-button-ghost w-full justify-start gap-2"
+          className="nm-button-ghost min-w-0 flex-1 justify-start gap-2"
         >
           <SquarePen size={14} aria-hidden="true" />
           New chat
         </button>
+        {!embedMainNav && (
+          <button
+            type="button"
+            onClick={toggleTreeSidebar}
+            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (,)"
+          >
+            <PanelLeftClose size={14} />
+          </button>
+        )}
       </div>
 
       {showFilter && (
@@ -8262,14 +8363,18 @@ export function AiConversationsSidebar({ onNavigate }: { onNavigate?: () => void
           siblings, so the button is a shrink-0 row rather than scrolling away. */}
       <ConversationList list={list} filter={filter} onNavigate={onNavigate} />
 
-      {/* Loaded row count + session chrome. Out of the scroller so account and
-          theme stay reachable under a long list. border-t, never border-b —
-          exactly one bordered panel-toolbar row per file (the nav row). */}
-      <div className="panel-toolbar flex shrink-0 items-center justify-between gap-2 border-t px-2 py-1.5">
-        <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+      {/* Loaded row count, and nothing else. SidebarTreeView.tsx:1348's footer
+          recipe byte for byte; the tree spends its right cell on a Trash link
+          and this pane has no equivalent low-frequency destination, so the
+          count keeps flex-1 and the cell stays empty. No session chrome: theme
+          and account are in the app header on every route (#1377/#1378).
+          border-t, never border-b — a second bordered panel-toolbar row would
+          have to carry h-12 and would draw a rule where there is no chrome
+          line. */}
+      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t px-2 py-1.5">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
           {`${list.rows.length} ${list.rows.length === 1 ? 'conversation' : 'conversations'}`}
         </span>
-        <SidebarSessionChrome />
       </div>
 
       <div
@@ -8282,7 +8387,7 @@ export function AiConversationsSidebar({ onNavigate }: { onNavigate?: () => void
         aria-valuetext={`${treeSidebarWidth} pixels`}
         tabIndex={0}
         onMouseDown={handleResizeStart}
-        onDoubleClick={() => setTreeSidebarWidth(280)}
+        onDoubleClick={() => setTreeSidebarWidth(282)}
         onKeyDown={handleResizeKeyDown}
         className={cn(
           'group absolute bottom-0 right-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-end outline-none',
@@ -8311,7 +8416,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Add the pane to the 48px-line guard (failing first)**
 
-Edit `frontend/src/toolbar-rule-alignment.test.ts:36-40`.
+Edit `frontend/src/toolbar-rule-alignment.test.ts:37-41`.
 
 Old:
 ```ts
@@ -8341,14 +8446,19 @@ Run: `cd frontend && npx vitest run src/toolbar-rule-alignment.test.ts`
 Expected: PASS with two extra cases named
 `features/ai/conversations/AiConversationsSidebar.tsx keeps h-12 on the bordered row (the conversations rail's nav row)`
 and its `py-*` sibling. If either fails, the nav row has lost `h-12` or grown a `py-`, or the
-footer has been given `border-b` instead of `border-t` (which would make two bordered
-`panel-toolbar` rows in one file and trip the `toBe(1)` assertion).
+footer has been given `border-b` instead of `border-t`. Note the `h-12` case
+(`:52-69`) iterates **every** `panel-toolbar` + `border-b` line in the file, so adding a
+second bordered row later obliges that row to carry `h-12` too; the `py-*` case (`:92-105`)
+still inspects only the first.
 
 - [ ] **Step 6: Run the guard suites this task touches**
 
-Run: `cd frontend && npx vitest run src/toolbar-rule-alignment.test.ts src/ui-text-legibility.test.ts src/flat-components.test.ts src/focus-ring-contrast.test.ts src/workspace-themes.test.ts src/features/ai/conversations`
+Run: `cd frontend && npx vitest run src/toolbar-rule-alignment.test.ts src/app-shell-layout.test.ts src/ui-text-legibility.test.ts src/flat-components.test.ts src/focus-ring-contrast.test.ts src/workspace-themes.test.ts src/features/ai/conversations`
 
-Expected: PASS.
+Expected: PASS. `app-shell-layout.test.ts` is run here because its `:336-341` case requires
+every left-nav file to match `/app-sidebar/` and not `/app-context-rail/` — the pane's
+`<aside>` spells `app-sidebar`, which is correct as written; do not reach for the retired
+`nm-sidebar`.
 
 Then: `cd frontend && npx tsc --noEmit` and `cd frontend && npm run lint` — expected: clean.
 
@@ -8361,8 +8471,9 @@ git add frontend/src/features/ai/conversations/AiConversationsSidebar.tsx \
 git commit -m "feat(ai): conversations rail chassis
 
 The tree's chassis recipes verbatim — <aside> in both branches, the shared collapse
-state and width, the resize handle, the 48px nav row — plus New chat, the past-eight
-filter and a session-chrome footer, so /ai is not the one route with no account menu.
+state and width, the resize handle, the embedMainNav nav row with its two collapse
+positions — plus New chat, the past-eight filter and a footer carrying the loaded
+row count. No session chrome: theme and account are in the app header.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -8374,10 +8485,13 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 Implements spec §The conversation pane "Mounted by `AppLayout`" plus amendment items 3, 7 and 8.
 
 **Files:**
-- Modify: `frontend/src/shared/components/layout/AppLayout.tsx` (imports; `isAiRoute`;
-  drawer ternary `:500-502`; desktop slot `:519-528`)
-- Modify: `frontend/src/shared/components/layout/AppLayout.test.tsx` (`beforeEach` fetch stub;
-  `spyOnFetch` reuse; the `/ai` leg of `:299-332`; two new cases)
+- Modify: `frontend/src/shared/components/layout/AppLayout.tsx` (imports `:14-15` and `:28`;
+  `isAiRoute` beside `isSettingsRoute` at `:112-116`; drawer ternary `:408-410`; desktop slot
+  `:521-525`)
+- Modify: `frontend/src/shared/components/layout/AppLayout.test.tsx` (`beforeEach` fetch stub
+  at `:117`; `spyOnFetch` reuse at `:716`; the `/ai` leg of `:357-390`; two new cases)
+- Run (do not modify): `frontend/src/app-shell-layout.test.ts` — the shell guard suite, which
+  did not exist when this plan was drafted and which pins this task's exact edit sites.
 
 **Interfaces:**
 - Consumes: `isAiRoute(pathname)` (Task 1); `AiConversationsSidebar` (Task 12).
@@ -8392,10 +8506,28 @@ Implements spec §The conversation pane "Mounted by `AppLayout`" plus amendment 
    render `/ai` and would otherwise issue real requests. The AI-provider describe's private
    `spyOnFetch()` is rewritten to *reuse* that spy rather than layering a second one, so only
    one mock ever records a call.
-3. The pane is deliberately **not** mocked in `AppLayout.test.tsx` (amendment item 1/8), which
+3. The pane is deliberately **not** mocked in `AppLayout.test.tsx` (amendment item 8), which
    is what lets the "exactly one `/llm/conversations` request" test observe a real query. It is
    also why the drawer and desktop instances both render on `/ai` — assertions scope with
-   `within(...)`, as the existing slide-over tests already do.
+   `within(...)`, as the existing slide-over tests already do. The file's mock inventory has
+   grown since this plan was drafted: `SidebarTreeView` `:16`, `ArticleRightPane` `:30`,
+   `CommandPalette` `:55`, `ServiceStatus` `:59`, `ThemeToggle` `:63`, **`NotificationBell`
+   `:67`**, **`UserMenu` `:71`** and `use-media-query` `:78` (which now also stubs
+   `useIsInspectorWideLayout`). `SettingsSidebar` is still deliberately unmocked.
+4. **Both new arms must carry `embedMainNav` exactly as their siblings do** — bare in the
+   drawer, `={false}` on the desktop — or the desktop `/ai` renders a second Pages/AI/Graph
+   strip beside `<MainNavChassisRail />` (`AppLayout.tsx:509`). Two of the sibling arms are
+   grepped as **verbatim substrings** by `app-shell-layout.test.ts:300-305`
+   (`SettingsSidebar embedMainNav={false}`, `SidebarTreeView embedMainNav={false}`,
+   `SidebarTreeView onNavigate={closeMobileSidebar} embedMainNav`), so the three-arm forms
+   below keep those strings intact rather than reflowing the props across lines. `:241-250`
+   additionally requires the first `<SidebarTreeView` after `data-testid="app-workspace"` to
+   precede `id="main-content"`, which the desktop form below satisfies — an AI arm hoisted
+   out of the workspace `<div>` would not.
+5. **This task adds no responsive `pt-` to `AppLayout`.** `scroll-padding-mask.test.ts:82`
+   asserts the file contains none (`not.toMatch(/(?:^|\s)[a-z-]+:pt-/)`), and `:74-77` pins
+   the `isArticleRoute ? 'overflow-hidden'` and `isArticleRoute ? 'max-w-none'` ternaries —
+   leave both intact while wiring the pane.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -8431,7 +8563,7 @@ New:
   });
 ```
 
-**1b.** Rewrite the AI-provider describe's helper. Old (`:600-606`):
+**1b.** Rewrite the AI-provider describe's helper. Old (`:716-722`):
 ```tsx
     function spyOnFetch() {
       return vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
@@ -8455,7 +8587,7 @@ New:
     }
 ```
 
-**1c.** Split the `/ai` leg out of the three-route test and invert it. Old (`:298-332`):
+**1c.** Split the `/ai` leg out of the three-route test and invert it. Old (`:357-390`, whose `/ai` arm is `:368-379`):
 ```tsx
   it('shows tree sidebar on /pages and /ai, swaps to settings sidebar on /settings', () => {
     // Pages root — Pages tree visible
@@ -8610,7 +8742,7 @@ call.
 
 Edit `frontend/src/shared/components/layout/AppLayout.tsx`.
 
-**3a.** Imports. Old (`:13-14` and `:29`):
+**3a.** Imports. Old (`:14-15` and `:28`):
 ```tsx
 import { SidebarTreeView } from './SidebarTreeView';
 import { SettingsSidebar } from './SettingsSidebar';
@@ -8622,17 +8754,18 @@ import { SettingsSidebar } from './SettingsSidebar';
 import { AiConversationsSidebar } from '../../../features/ai/conversations/AiConversationsSidebar';
 ```
 
-Old:
+Old (the symbol was RENAMED in dev — `isExistingArticlePath` → `isArticlePath` — so the
+plan's original `old` side no longer matches):
 ```tsx
-import { isExistingArticlePath } from '../../lib/article-route';
+import { isArticlePath } from '../../lib/article-route';
 ```
 New:
 ```tsx
-import { isExistingArticlePath } from '../../lib/article-route';
+import { isArticlePath } from '../../lib/article-route';
 import { isAiRoute as isAiRoutePath } from '../../lib/ai-routes';
 ```
 
-**3b.** The route flag. Old (`:59-63`):
+**3b.** The route flag. Old (`:112-116`):
 ```tsx
   // On /settings* we swap the Pages tree for a Settings-specific sidebar so
   // the main nav (Pages / AI / Graph) stays accessible — otherwise users land
@@ -8653,65 +8786,71 @@ New:
   const isAiRoute = isAiRoutePath(location.pathname);
 ```
 
-**3c.** The mobile drawer. Old (`:500-502`):
+**3c.** The mobile drawer. Old (`:408-410` — both arms carry `embedMainNav` now, which the
+plan's original `old` side predates):
 ```tsx
               {isSettingsRoute
-                ? <SettingsSidebar onNavigate={closeMobileSidebar} />
-                : <SidebarTreeView onNavigate={closeMobileSidebar} />}
+                ? <SettingsSidebar onNavigate={closeMobileSidebar} embedMainNav />
+                : <SidebarTreeView onNavigate={closeMobileSidebar} embedMainNav />}
 ```
-New:
+New — the AI arm takes `embedMainNav` bare, like its siblings, and the
+`SidebarTreeView onNavigate={closeMobileSidebar} embedMainNav` substring
+`app-shell-layout.test.ts:303` greps for is left byte-identical:
 ```tsx
               {isAiRoute
-                ? <AiConversationsSidebar onNavigate={closeMobileSidebar} />
+                ? <AiConversationsSidebar onNavigate={closeMobileSidebar} embedMainNav />
                 : isSettingsRoute
-                  ? <SettingsSidebar onNavigate={closeMobileSidebar} />
-                  : <SidebarTreeView onNavigate={closeMobileSidebar} />}
+                  ? <SettingsSidebar onNavigate={closeMobileSidebar} embedMainNav />
+                  : <SidebarTreeView onNavigate={closeMobileSidebar} embedMainNav />}
 ```
 
-**3d.** The desktop slot. Old (`:519-528`):
+**3d.** The desktop slot. Old (`:522-524`, inside the `<div className="hidden md:flex">` at
+`:521`). **This is bigger than a line shift**: the `forceCollapsed` / `onForceExpand`
+mechanism the plan's original `old` side quoted has been deleted from dev entirely, and both
+arms now take `embedMainNav={false}` instead:
 ```tsx
           {isSettingsRoute
-            ? <SettingsSidebar />
-            : (
-              <SidebarTreeView
-                forceCollapsed={forceTreeCollapsed}
-                onForceExpand={() => setMidWidthTreeExpandedOverride(true)}
-              />
-            )}
+            ? <SettingsSidebar embedMainNav={false} />
+            : <SidebarTreeView embedMainNav={false} />}
 ```
-New:
+New — the two `embedMainNav={false}` substrings `app-shell-layout.test.ts:301-302` greps for
+stay byte-identical, and the AI arm sits inside the same workspace `<div>` so
+`:241-250`'s ordering assertion still holds:
 ```tsx
-          {/* The AI arm takes no forceCollapsed / onForceExpand: that compaction
-              is the article inspector's, and forceTreeCollapsed is already gated
-              on isArticleRoute. Restored layout presets (#1368) reach the pane
-              only through the shared treeSidebarCollapsed, which is intended. */}
+          {/* Third arm on AI routes (#1361). No forceCollapsed / onForceExpand
+              on any of them any more — the layout presets that produced them
+              were deleted, and app-shell-layout.test.ts:268-269 fails if either
+              name reappears here. The pane reads the shared treeSidebarCollapsed
+              itself, exactly as the two trees do. */}
           {isAiRoute
-            ? <AiConversationsSidebar />
+            ? <AiConversationsSidebar embedMainNav={false} />
             : isSettingsRoute
-              ? <SettingsSidebar />
-              : (
-                <SidebarTreeView
-                  forceCollapsed={forceTreeCollapsed}
-                  onForceExpand={() => setMidWidthTreeExpandedOverride(true)}
-                />
-              )}
+              ? <SettingsSidebar embedMainNav={false} />
+              : <SidebarTreeView embedMainNav={false} />}
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd frontend && npx vitest run src/shared/components/layout/AppLayout.test.tsx`
 
-Expected: PASS — all cases, including the untouched `keeps session chrome out of the header`
-(`:287-297`), `hides article right pane on non-article routes` and the AI-provider describe's
-`issues no AI requests on a route with no AI surface mounted` (`:628-643`), which stays green by
-construction: the pane mounts only on AI routes and that test renders `/pages/abc`.
+Expected: PASS — all cases, including the untouched `keeps session chrome in the header
+landmark` (`:255-268`, which asserts the header carries `header-session-cluster`,
+`theme-toggle`, `notification-bell` and `user-menu` while rendering `/ai` — the pane must not
+compete with it), `hides article right pane on non-article routes` and the AI-provider
+describe's `issues no AI requests on a route with no AI surface mounted` (`:742-758`), which
+stays green by construction: the pane mounts only on AI routes and that test renders
+`/pages/abc`.
 
 - [ ] **Step 5: Confirm the shell guards**
 
-Run: `cd frontend && npx vitest run src/ai-scroll-chain.test.ts src/scroll-padding-mask.test.ts src/toolbar-rule-alignment.test.ts src/shared/components/layout/AppLayout.test.tsx src/features/ai/conversations`
+Run: `cd frontend && npx vitest run src/app-shell-layout.test.ts src/ai-scroll-chain.test.ts src/scroll-padding-mask.test.ts src/toolbar-rule-alignment.test.ts src/shared/components/layout/AppLayout.test.tsx src/features/ai/conversations`
 
-Expected: PASS. `ai-scroll-chain` names only `AppLayout`, `PageTransition` and
-`AiAssistantPage`; the pane is a sibling of `<main>` under `panel-wrapper` and owes that chain
+Expected: PASS. `app-shell-layout.test.ts` is the one this task can actually break — `:241-250`
+(the AI arm must stay inside `app-workspace`, before `id="main-content"`), `:268-269` (no
+`forceCollapsed` / `forceTreeCollapsed`), `:300-305` (the three verbatim `embedMainNav`
+substrings, and still no `AppHeaderMain`) and `:314-317` (still exactly one
+`data-scroll-container`). `ai-scroll-chain` names only `AppLayout`, `PageTransition` and
+`AiAssistantPage`; the pane is a sibling of `<main>` under `app-workspace` and owes that chain
 nothing (amendment item 7).
 
 Then: `cd frontend && npx tsc --noEmit` and `cd frontend && npm run lint` — expected: clean.
@@ -8724,8 +8863,9 @@ git add frontend/src/shared/components/layout/AppLayout.tsx \
 git commit -m "feat(ai): mount the conversations pane on AI routes
 
 Third arm of the sidebar ternary in both the desktop slot and the mobile drawer,
-gated on isAiRoute. The AI arm takes no forceCollapsed/onForceExpand — no layout
-preset can act on /ai — and the drawer passes onNavigate so a tap closes it.
+gated on isAiRoute. It takes embedMainNav exactly as its siblings do, so the
+desktop rail does not double the chassis nav strip, and the drawer passes
+onNavigate so a tap closes it.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -8734,7 +8874,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 14: The Pages tree leaves `/ai`
 
-Implements the spec's *`/ai` page changes* first bullet ("The Pages tree leaves `/ai`") — `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`, and amendment item 8's anchor note (`isAiRoute` is still `pathname === '/ai'` at `SidebarTreeView.tsx:513`, still 26 occurrences in its test file).
+Implements the spec's *`/ai` page changes* first bullet ("The Pages tree leaves `/ai`") — `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`, and amendment item 8's anchor note (`isAiRoute` is still `pathname === '/ai'` at `SidebarTreeView.tsx:522`, still 26 occurrences in its test file).
 
 The pane (Tasks 12–13) replaces the tree on AI routes, so the tree's `/ai` special-casing is dead weight: three producers of `/ai?pageId=`, one `activePageId` branch that reads `?pageId`, one prop threaded through two trees, and one memo-comparator field.
 
@@ -9244,29 +9384,32 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
-### Task 15: `/ai` page simplification + New chat in the header slot
+### Task 15: `/ai` page simplification + New chat in the `/ai` heading row
 
-Implements the spec's *`/ai` page changes* bullets 2–4 (*Page scope retired on `/ai`*, *Action selector on `/ai` offers Q&A + Generate*, *The model `<select>` goes*) and its *Loading and error states* bullet, **as superseded by amendment item 2** (New chat moves to the 48px header slot; the sub-header bar stays with Think + `DiagramTypeSelector`; the divider `:384` and the `flex-1` spacer `:298` go).
+Implements the spec's *`/ai` page changes* bullets 2–4 (*Page scope retired on `/ai`*, *Action selector on `/ai` offers Q&A + Generate*, *The model `<select>` goes*) and its *Loading and error states* bullet, **as superseded by amendment items 2 and 9** — New chat renders at the top of the `/ai` **document column** via `HeaderHost` (the 48px header slot the 2026-08-18 amendment named no longer exists; owner ruling 1, 2026-08-22); the sub-header bar stays with Think + `DiagramTypeSelector`; the divider `:383-384` and the `flex-1` spacer `:298` go; and the action lists follow owner ruling 3, which keeps #1401's create skills on **both** surfaces.
 
-**Pinned here (three decisions the spec leaves open):**
+**Pinned here (five decisions the spec leaves open, one of them a conflict with a green dev test):**
 1. **Improve and Diagram become unreachable on `/ai`, and their page-level tests go with them.** `AI_HOME_ACTIONS` removes the menu items and the URL allow-list removes the deep link, so `mode` on an AI route can only ever be `ask` or `generate`. The page's `mode === 'improve'` / `mode === 'diagram'` arms are **left in the source** (amendment item 2 explicitly keeps `DiagramTypeSelector`, and deleting `ImproveMode`/`DiagramMode` from the page is a change the spec does not ask for), but every `AiAssistantPage.test.tsx` case that reaches them through a `?mode=` deep link is deleted rather than kept alive through a synthetic mode-setter: with `resolveAiPageId` answering `null` on AI routes (Task 1), those cases also assert a resolved page that `/ai` can no longer have, so keeping them would pin a state production cannot enter. The components keep their own suites (`modes/ImproveMode.test.tsx`, `modes/ImproveMode.attachments.test.tsx`, `modes/DiagramMode.test.tsx`) and the live equivalents keep the dock's (`dock/AiDock.improve-type.test.tsx`, `dock/AiDock.upload.test.tsx`, `dock/DockDiffCard.test.tsx`). Two cases are **moved rather than dropped**, because their subject is still live in the dock: *Use in page* (`DiagramPreview` is rendered by `DockPanel` too) moves to `modes/DiagramMode.test.tsx`, and *attachments paused for Diagram* moves to `dock/AiDock.upload.test.tsx`.
 2. **The error block's copy.** The spec quotes *Loading conversation…* but not the error heading. This task uses *Couldn't load conversation* (singular — one conversation, not the list, whose heading is Task 11's *Couldn't load conversations*), the body `threadLoadError ?? 'The request did not complete.'` (the shared string from Global Constraints) and the button label **Retry**.
-3. **The header cluster's alignment.** `PagesPage.tsx:763-771` is the button recipe; the slot itself is `flex min-w-0 flex-1 items-center gap-3`, so the button carries `ml-auto` to sit at the far end, exactly as `PagesPage`'s right cluster does.
+3. **The heading row's layout.** `PagesPage.tsx:1037-1058` is the recipe (the plan's earlier `:763-771` citation is gone — that file was rewritten and those lines are now a `navigateToPage` callback). `HeaderHost` renders a plain `<div className={fallbackClassName}>`, so the row supplies its own layout: `fallbackClassName="mb-1"` on the host and `flex min-w-0 items-center justify-between gap-3` on the row inside it, with New chat in the right cell — **no `ml-auto` is needed**, and there is no `flex-1` slot to sit at the far end of any more. The `<h1>` takes `PagesPage.tsx:1039`'s recipe verbatim (`min-w-0 truncate text-[15px] font-semibold sm:text-lg`). **What is borrowed is the ROW, not the button.** `PagesPage`'s right cluster is `nm-button-primary h-8 px-3 text-xs sm:text-sm` with its label always visible (`:1046-1055`), because New Page is the Library's one primary action. New chat is a **ghost** button with the label hidden below `sm` behind an `aria-label`, because `/ai`'s primary action is Send in the composer below, and ADR-010 reserves the accent for actions — a second filled accent at the top of the column would compete with the one that matters. Do not copy `nm-button-primary` across. Two warnings from the old amendment are **retired**: there is no `data-header-kpis` attribute anywhere in the codebase to avoid, and there is no `AppHeaderMain` fallback title to suppress, so the `<h1>` is load-bearing only as the route's heading. The `<m.div>`-root warning **stands and is sharper**: `ai-scroll-chain.test.ts:110-126` scopes to `export function AiAssistantPage()`, matches `/return \(\s*<m\.div([\s\S]*?)>/`, and then requires a **static `className="…"` string literal** on that root — so `HeaderHost` goes *inside* the root, never as a fragment sibling above it, and the root's `className` must not become a `cn(...)` call.
+4. **Both create-skill lists come from `CREATE_SKILLS`, not from a restated string union.** `CREATE_SKILL_ACTIONS` is `CREATE_SKILLS.map((s) => \`create-${s.id}\`)`, the same contract-derived argument `improvement-types.ts` makes: a sixth skill added to `create-skills.ts` reaches both surfaces without this file being edited.
+5. **CONFLICT, decided by ruling 3: adding `'generate'` to `DOCK_ACTIONS` reds two currently-green dev tests, and this task updates them.** `AssistantActionSelect` renders `GENERATE_ACTION` only behind `includeGenerate`, and `DockPanel.tsx:471` never passed it, so the dock's menu shows the five `create-*` items but not a plain **Generate**. `dock/AiDock.improve-type.test.tsx:83-90` (*"does not offer Summarize, Quality, or Generate in the article Assistant"*) and `dock/AiDockSheet.test.tsx:414` both assert `assistant-action-generate` is absent. Owner ruling 3 lists `'generate'` in `DOCK_ACTIONS`, which is coherent with what #1401 already shipped — `applyAssistantAction` maps plain `'generate'` to `setCreateSkill('custom'); setMode('generate')`, `DockPanel.sendSelectedAction` (`:154-165`) already routes it to `runCreateSkill('custom')`, and the dock's empty-state picker already offers that same custom skill — so the item was hidden rather than unsupported. Step 9 therefore **drops the `assistant-action-generate` clause from both assertions and renames the improve-type case** to *"does not offer Summarize or Quality in the article Assistant"*. Everything else in both files, and all of `dock/AiDock.create-skills.test.tsx` (whose `:107-117` *"offers all create skills in the action select dropdown"* is the pin that must stay green), is untouched. **If the owner would rather the dock keep no plain Generate item, the only change is dropping `'generate'` from `DOCK_ACTIONS`** — the create skills, and every other line of this task, are unaffected.
 
 **Files:**
 - Create: `frontend/src/features/ai/assistant-actions.ts`
 - Test: `frontend/src/features/ai/assistant-actions.test.ts`
-- Modify: `frontend/src/features/ai/AssistantActionSelect.tsx` (`:24`, `:110-176`)
-- Modify: `frontend/src/features/ai/modes/AskMode.tsx` (`:4`, `:326`), `modes/ImproveMode.tsx` (`:13`, `:273`), `modes/DiagramMode.tsx` (`:5`, `:202`), `modes/GenerateMode.tsx` (`:5`, `:544`), `dock/DockPanel.tsx` (`:19`, `:437`)
-- Modify: `frontend/src/features/ai/AiContext.tsx` (`:385-386`, and the `?q=` prefill's route boolean)
-- Modify: `frontend/src/features/ai/AiAssistantPage.tsx` (`:1-7`, `:214-228`, `:297-386`, `:497`, `:1461-…`)
+- Modify: `frontend/src/features/ai/AssistantActionSelect.tsx` (`:24`, `:29-30`, `:69-74`, `:153-176`, `:204-227`)
+- Modify: `frontend/src/features/ai/modes/AskMode.tsx` (`:4`, `:325`), `modes/ImproveMode.tsx` (`:14`, `:274`), `modes/DiagramMode.tsx` (`:5`, `:202`), `modes/GenerateMode.tsx` (`:5`, `:544`), `dock/DockPanel.tsx` (`:20`, `:471`)
+- Modify: `frontend/src/features/ai/AiContext.tsx` (`:394-395`, and the `?q=` prefill's route boolean)
+- Modify: `frontend/src/features/ai/AiAssistantPage.tsx` (`:1-7`, `:215-228`, `:229-252` for the heading-row insertion, `:297-386`, `:497`)
 - Test: `frontend/src/features/ai/AiAssistantPage.test.tsx`
 - Test: `frontend/src/features/ai/modes/DiagramMode.test.tsx` (one moved case)
 - Test: `frontend/src/features/ai/dock/AiDock.upload.test.tsx` (one moved case)
+- Test: `frontend/src/features/ai/dock/AiDock.improve-type.test.tsx` (`:83-90`) and `dock/AiDockSheet.test.tsx` (`:414`) — the Generate-absent clauses, per pin 5
 
 **Interfaces:**
-- Consumes: Task 1's `isAiRoute(pathname)` from `shared/lib/ai-routes` (already imported by `AiContext.tsx` after Task 1); Task 2's `startNewConversation()`; Task 5's `threadLoadState` / `threadLoadError` / `retryThreadLoad`.
-- Produces: `AssistantAction`, `AI_HOME_ACTIONS`, `DOCK_ACTIONS`, `isAiHomeAction` from `features/ai/assistant-actions.ts`; `AssistantActionSelect`'s `actions: readonly AssistantAction[]` prop (`includeGenerate` removed); `data-testid="ai-new-chat"`; `data-testid="ai-thread-loading"`; `data-testid="ai-thread-error"`.
+- Consumes: Task 1's `isAiRoute(pathname)` from `shared/lib/ai-routes` (already imported by `AiContext.tsx` after Task 1); Task 2's `startNewConversation()`; Task 5's `threadLoadState` / `threadLoadError` / `retryThreadLoad`; `CREATE_SKILLS` / `CreateSkillId` from `features/ai/create-skills.ts`.
+- Produces: `AssistantAction`, `CreateSkillAction`, `CREATE_SKILL_ACTIONS`, `AI_HOME_ACTIONS`, `DOCK_ACTIONS`, `isAiHomeAction` from `features/ai/assistant-actions.ts`; `AssistantActionSelect`'s `actions: readonly AssistantAction[]` prop (`includeGenerate` removed); `data-testid="ai-new-chat"`; `data-testid="ai-thread-loading"`; `data-testid="ai-thread-error"`.
 
 - [ ] **Step 1: Write the failing test for the action allow-list module**
 
@@ -9274,31 +9417,44 @@ Create `frontend/src/features/ai/assistant-actions.test.ts`:
 
 ```ts
 import { describe, it, expect } from 'vitest';
-import { AI_HOME_ACTIONS, DOCK_ACTIONS, isAiHomeAction } from './assistant-actions';
+import { AI_HOME_ACTIONS, CREATE_SKILL_ACTIONS, DOCK_ACTIONS, isAiHomeAction } from './assistant-actions';
 import { IMPROVEMENT_TYPES } from './improvement-types';
+import { CREATE_SKILLS } from './create-skills';
 
 describe('assistant action allow-lists (#1361)', () => {
-  it('offers Q&A and Generate on /ai, in that order', () => {
-    expect(AI_HOME_ACTIONS).toEqual(['ask', 'generate']);
+  it('offers Q&A, Generate and the create skills on /ai, in that order', () => {
+    // Owner ruling 3 (2026-08-22): decision 13 dropped the rewrite skills and
+    // Diagram from /ai — they act ON a document and /ai has no page scope left
+    // — but the #1401 create skills BELONG here: they create a new page, which
+    // is exactly what the no-document home is for.
+    expect(AI_HOME_ACTIONS).toEqual(['ask', 'generate', ...CREATE_SKILL_ACTIONS]);
+    for (const type of IMPROVEMENT_TYPES) expect(AI_HOME_ACTIONS).not.toContain(type);
+    expect(AI_HOME_ACTIONS).not.toContain('diagram');
   });
 
-  it('offers Q&A, every rewrite skill and Diagram in the dock — never Generate', () => {
-    // Generate creates a NEW page rather than acting on the open one, which is
-    // why the dock has never offered it (CLAUDE.md's docked-assistant note).
-    expect(DOCK_ACTIONS).toEqual(['ask', ...IMPROVEMENT_TYPES, 'diagram']);
-    expect(DOCK_ACTIONS).not.toContain('generate');
+  it('offers everything in the dock', () => {
+    // Ruling 2: #1401's create skills on the dock are intended, and the dock
+    // already routes plain `generate` to runCreateSkill('custom'), so the item
+    // was hidden rather than unsupported.
+    expect(DOCK_ACTIONS).toEqual(['ask', ...IMPROVEMENT_TYPES, 'diagram', 'generate', ...CREATE_SKILL_ACTIONS]);
   });
 
-  it('derives the dock list from the contract rather than restating the skills', () => {
-    // A sixth improvement pass added to the contract enum has to reach the dock
-    // without this file being edited — the `improvement-types.ts` argument.
+  it('derives both lists from the contracts rather than restating them', () => {
+    // A sixth improvement pass added to the contract enum, or a sixth create
+    // skill added to create-skills.ts, has to reach both surfaces without this
+    // file being edited — the `improvement-types.ts` argument, twice.
     for (const type of IMPROVEMENT_TYPES) expect(DOCK_ACTIONS).toContain(type);
+    expect(CREATE_SKILL_ACTIONS).toEqual(CREATE_SKILLS.map((skill) => `create-${skill.id}`));
+    expect(CREATE_SKILL_ACTIONS).toHaveLength(5);
   });
 
-  it('narrows a raw URL mode to the two actions /ai can run', () => {
+  it('narrows a raw URL mode to the two modes /ai can be deep-linked into', () => {
+    // Deliberately NOT the menu list: `create-*` is never a URL `mode` value —
+    // the URL carries `mode=generate` and the skill is picked in-app — so a
+    // create id reaching this predicate is a malformed link, not a mode.
     expect(isAiHomeAction('ask')).toBe(true);
     expect(isAiHomeAction('generate')).toBe(true);
-    for (const rejected of ['improve', 'diagram', 'grammar', 'summarize', 'quality', '', 'ASK']) {
+    for (const rejected of ['improve', 'diagram', 'grammar', 'summarize', 'quality', 'create-spec', '', 'ASK']) {
       expect(isAiHomeAction(rejected)).toBe(false);
     }
   });
@@ -9316,43 +9472,66 @@ Create `frontend/src/features/ai/assistant-actions.ts`:
 
 ```ts
 import { IMPROVEMENT_TYPES, type ImprovementType } from './improvement-types';
+import { CREATE_SKILLS } from './create-skills';
 
 /**
  * What the one control beside Send can be set to.
  *
- * The type and the two allow-lists live in this leaf module rather than in
- * `AssistantActionSelect.tsx` (which is where the type used to live) because
+ * The types and the allow-lists live in this leaf module rather than in
+ * `AssistantActionSelect.tsx` (which is where the types used to live) because
  * `AssistantActionSelect` imports `AiContext`, and `AiContext` now has to read
  * the `/ai` list to decide which `?mode=` deep links it accepts — putting the
  * list in the component would close that import cycle. Same shape and same
- * argument as `improvement-types.ts`.
+ * argument as `improvement-types.ts`. `create-skills.ts` has no imports at all,
+ * so pulling it in here adds no edge.
  */
-export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate';
+export type CreateSkillAction = 'create-spec' | 'create-guide' | 'create-notes' | 'create-postmortem' | 'create-custom';
+export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate' | CreateSkillAction;
 
 /**
- * `/ai` (#1361). Q&A and Generate — the two actions that do not need an open
- * document. The rewrite skills and Diagram act ON the page you are reading,
- * and `/ai` no longer carries a page scope for them to act on: the Pages tree
- * has left the rail and `resolveAiPageId` answers `null` on an AI route.
- */
-export const AI_HOME_ACTIONS: readonly AssistantAction[] = ['ask', 'generate'];
-
-/**
- * The article-side dock. Everything except Generate, which creates a NEW page
- * rather than acting on the open one.
+ * The five #1401 create skills, as action ids.
  *
- * Spread from the contract-derived `IMPROVEMENT_TYPES` rather than restated, so
- * a sixth pass added to the enum reaches the dock without this file changing.
+ * Derived from `CREATE_SKILLS` rather than restated, so a sixth skill added
+ * there reaches both surfaces without this file changing — the same argument
+ * `IMPROVEMENT_TYPES` makes one line down.
  */
-export const DOCK_ACTIONS: readonly AssistantAction[] = ['ask', ...IMPROVEMENT_TYPES, 'diagram'];
+export const CREATE_SKILL_ACTIONS: readonly CreateSkillAction[] = CREATE_SKILLS.map(
+  (skill) => `create-${skill.id}` as CreateSkillAction,
+);
+
+/**
+ * `/ai` (#1361, owner ruling 3 of 2026-08-22). Q&A, Generate and the create
+ * skills — the actions that do not need an open document. The rewrite skills
+ * and Diagram act ON the page you are reading, and `/ai` no longer carries a
+ * page scope for them to act on: the Pages tree has left the rail and
+ * `resolveAiPageId` answers `null` on an AI route. The create skills are the
+ * opposite case — they produce a new page, which is what this surface is for.
+ */
+export const AI_HOME_ACTIONS: readonly AssistantAction[] = ['ask', 'generate', ...CREATE_SKILL_ACTIONS];
+
+/**
+ * The article-side dock: everything.
+ *
+ * #1401 gave the dock a `runCreateSkill` path to `POST /llm/generate` with an
+ * Apply-to-Page draft card, and `sendSelectedAction` already routes a plain
+ * `generate` through it as the `custom` skill — so the dock's old "no Generate"
+ * rule described a hidden menu item, not a missing capability. Owner ruling 2
+ * (2026-08-22) confirms that behaviour as intended; ruling 3 makes the item
+ * visible.
+ */
+export const DOCK_ACTIONS: readonly AssistantAction[] = [
+  'ask', ...IMPROVEMENT_TYPES, 'diagram', 'generate', ...CREATE_SKILL_ACTIONS,
+];
 
 /**
  * Narrows a raw `?mode=` value to the modes an AI route accepts.
  *
  * A predicate rather than `AI_HOME_ACTIONS.includes(value)` because the caller
- * needs the *type* narrowing: `AiContext` assigns the result to `Mode`, and
- * `readonly AssistantAction[]` includes the five improvement types, which are
- * not modes at all.
+ * needs the *type* narrowing, and because the two lists answer different
+ * questions: `AI_HOME_ACTIONS` is what the MENU offers, and it carries the five
+ * improvement types' shape plus five `create-*` ids, none of which is a `Mode`.
+ * A create skill is never a URL value at all — the URL carries `mode=generate`
+ * and the skill is picked in-app.
  */
 export function isAiHomeAction(value: string): value is 'ask' | 'generate' {
   return value === 'ask' || value === 'generate';
@@ -9382,20 +9561,25 @@ old
 ```
 new
 ```tsx
-  // #1361: the two actions that need no open document. The rewrite skills and
-  // Diagram act ON the page you are reading, and `/ai` has no page scope left —
-  // the Pages tree has left the rail and `resolveAiPageId` answers null here.
-  // They stay in the dock, which does have one (`DOCK_ACTIONS`).
-  it('offers Q&A and Generate only', async () => {
+  // #1361 + owner ruling 3: the actions that need no open document. The rewrite
+  // skills and Diagram act ON the page you are reading, and `/ai` has no page
+  // scope left — the Pages tree has left the rail and `resolveAiPageId` answers
+  // null here. They stay in the dock, which does have one (`DOCK_ACTIONS`). The
+  // #1401 create skills stay HERE too: they produce a new page, which is what
+  // this surface is for.
+  it('offers Q&A, Generate and the create skills — no rewrite skills, no Diagram', async () => {
     render(<AiAssistantPage />, { wrapper: createWrapper() });
     fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
-    for (const action of ['ask', 'generate']) {
+    for (const action of ['ask', 'generate', 'create-spec', 'create-guide', 'create-notes', 'create-postmortem', 'create-custom']) {
       expect(await screen.findByTestId(`assistant-action-${action}`)).toBeInTheDocument();
     }
     for (const action of ['grammar', 'structure', 'clarity', 'technical', 'completeness', 'diagram']) {
       expect(screen.queryByTestId(`assistant-action-${action}`)).not.toBeInTheDocument();
     }
+    // The section label goes with its items — a header over nothing is worse
+    // than a shorter menu.
     expect(screen.queryByText('Rewrite skills')).not.toBeInTheDocument();
+    expect(screen.getByText('Create skills')).toBeInTheDocument();
     expect(screen.queryByText('Summarize')).not.toBeInTheDocument();
     expect(screen.queryByText('Quality')).not.toBeInTheDocument();
   });
@@ -9403,12 +9587,16 @@ new
 
 - [ ] **Step 6: Run the test to verify it fails**
 
-Run: `cd frontend && npx vitest run src/features/ai/AiAssistantPage.test.tsx -t "offers Q&A and Generate only"`
-Expected: FAIL — `expected null not to be null` on `assistant-action-grammar` (the flat list still renders all eight items).
+Run: `cd frontend && npx vitest run src/features/ai/AiAssistantPage.test.tsx -t "offers Q&A, Generate and the create skills"`
+Expected: FAIL — `expected null not to be null` on `assistant-action-grammar` (the flat list still renders every item on every surface).
 
 - [ ] **Step 7: Give `AssistantActionSelect` an allow-list prop**
 
-Edit 1 — the type moves out (`AssistantActionSelect.tsx:16-24`):
+Edit 1 — the two types move out, and the local definition array is renamed
+(`AssistantActionSelect.tsx:18-30` and `:69-74`). Note the file gained a `CreateSkillAction`
+type and a module-local `CREATE_SKILL_ACTIONS: ActionDefinition[]` in #1401; the leaf module
+now owns that *name* for the id list, so the definition array becomes
+`CREATE_SKILL_DEFINITIONS`.
 
 old
 ```tsx
@@ -9418,9 +9606,13 @@ import {
   IMPROVEMENT_TYPES,
   type ImprovementType,
 } from './improvement-types';
+import { CREATE_SKILLS, type CreateSkillId } from './create-skills';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
+import { SkillsIcon } from '../../shared/components/SkillsIcon';
 
-export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate';
+export type CreateSkillAction = 'create-spec' | 'create-guide' | 'create-notes' | 'create-postmortem' | 'create-custom';
+export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate' | CreateSkillAction;
 ```
 new
 ```tsx
@@ -9430,16 +9622,41 @@ import {
   IMPROVEMENT_TYPES,
   type ImprovementType,
 } from './improvement-types';
-import { type AssistantAction } from './assistant-actions';
+import { CREATE_SKILLS, type CreateSkillId } from './create-skills';
+import { type AssistantAction, type CreateSkillAction } from './assistant-actions';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
+import { SkillsIcon } from '../../shared/components/SkillsIcon';
 
-// The type moved to the leaf module (#1361) so `AiContext` can read the
+// Both types moved to the leaf module (#1361) so `AiContext` can read the
 // allow-lists without closing an import cycle through this component.
-// Re-exported here for the callers that already import it from this path.
-export type { AssistantAction };
+// Re-exported here for the callers that already import them from this path.
+export type { AssistantAction, CreateSkillAction };
 ```
 
-Edit 2 — the component takes `actions` (`:110-124`):
+old (`:69-74`)
+```tsx
+const CREATE_SKILL_ACTIONS: ActionDefinition[] = CREATE_SKILLS.map((skill) => ({
+  id: `create-${skill.id}` as CreateSkillAction,
+  label: skill.shortName,
+  description: skill.description,
+  Icon: CREATE_SKILL_ICONS[skill.id],
+}));
+```
+new
+```tsx
+// Renamed from CREATE_SKILL_ACTIONS (#1361): `assistant-actions.ts` now exports
+// that name for the list of create-skill IDS, which is what a surface's
+// allow-list carries. These are the menu's rendered definitions.
+const CREATE_SKILL_DEFINITIONS: ActionDefinition[] = CREATE_SKILLS.map((skill) => ({
+  id: `create-${skill.id}` as CreateSkillAction,
+  label: skill.shortName,
+  description: skill.description,
+  Icon: CREATE_SKILL_ICONS[skill.id],
+}));
+```
+
+Edit 2 — the component takes `actions` (`:153-172`):
 
 old
 ```tsx
@@ -9452,11 +9669,16 @@ export function AssistantActionSelect({
   disabled?: boolean;
   className?: string;
 }) {
-  const { mode, setMode, improvementType, setImprovementType } = useAiContext();
-  const selected = resolveAssistantAction(mode, improvementType);
-  const available = includeGenerate || selected !== 'generate' ? selected : 'ask';
-  const definitions = [CHAT_ACTION, ...IMPROVEMENT_ACTIONS, DIAGRAM_ACTION, ...(includeGenerate ? [GENERATE_ACTION] : [])];
-  const current = definitions.find((action) => action.id === available) ?? CHAT_ACTION;
+  const { mode, setMode, improvementType, setImprovementType, createSkill, setCreateSkill } = useAiContext();
+  const selected = resolveAssistantAction(mode, improvementType, createSkill);
+  const definitions = [
+    CHAT_ACTION,
+    ...IMPROVEMENT_ACTIONS,
+    ...CREATE_SKILL_ACTIONS,
+    DIAGRAM_ACTION,
+    ...(includeGenerate ? [GENERATE_ACTION] : []),
+  ];
+  const current = definitions.find((action) => action.id === selected) ?? CHAT_ACTION;
   const { Icon } = current;
 ```
 new
@@ -9469,51 +9691,59 @@ export function AssistantActionSelect({
   /**
    * The allow-list this surface offers — `AI_HOME_ACTIONS` on `/ai`,
    * `DOCK_ACTIONS` in the article dock (#1361). It replaced a boolean
-   * `includeGenerate`, which could only ever describe one of the two
-   * differences between the surfaces.
+   * `includeGenerate`, which could only ever describe one of the several
+   * differences between the surfaces, and which said nothing at all about the
+   * five create skills #1401 added to both.
    */
   actions: readonly AssistantAction[];
   disabled?: boolean;
   className?: string;
 }) {
-  const { mode, setMode, improvementType, setImprovementType } = useAiContext();
-  const selected = resolveAssistantAction(mode, improvementType);
+  const { mode, setMode, improvementType, setImprovementType, createSkill, setCreateSkill } = useAiContext();
+  const selected = resolveAssistantAction(mode, improvementType, createSkill);
   // A selection this surface does not offer reads as Q&A rather than as a
   // trigger naming an action Send cannot run — the same fallback the old
   // `includeGenerate` form applied to Generate, generalised.
   const available = actions.includes(selected) ? selected : 'ask';
   const chatActions = actions.includes('ask') ? [CHAT_ACTION] : [];
   const rewriteActions = IMPROVEMENT_ACTIONS.filter((action) => actions.includes(action.id));
-  const createActions = [DIAGRAM_ACTION, GENERATE_ACTION].filter((action) => actions.includes(action.id));
+  const createActions = [...CREATE_SKILL_DEFINITIONS, DIAGRAM_ACTION, GENERATE_ACTION]
+    .filter((action) => actions.includes(action.id));
   const definitions = [...chatActions, ...rewriteActions, ...createActions];
   const current = definitions.find((action) => action.id === available) ?? CHAT_ACTION;
   const { Icon } = current;
 ```
 
-Edit 3 — the menu body (`:155-176`):
+Edit 3 — the menu body (`:204-227`). The #1401 **Create skills** section keeps its own label
+and renders iff the passed list carries those ids; `Diagram` and `Generate` stay in the
+**Create** group below it. `applyAssistantAction`'s `create-*` → `setCreateSkill(id)` mapping
+(`:102-125`) is **not touched by this task**.
 
 old
 ```tsx
           <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
             Assistant chat
           </DropdownMenu.Label>
-          <ActionItem action={CHAT_ACTION} selected={available === 'ask'} onSelect={selectAction} />
+          <ActionItem action={CHAT_ACTION} selected={selected === 'ask'} onSelect={selectAction} />
 
           <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
           <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
             Rewrite skills
           </DropdownMenu.Label>
           {IMPROVEMENT_ACTIONS.map((action) => (
-            <ActionItem key={action.id} action={action} selected={available === action.id} onSelect={selectAction} />
+            <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
           ))}
 
           <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
           <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
-            Create
+            Create skills
           </DropdownMenu.Label>
-          <ActionItem action={DIAGRAM_ACTION} selected={available === 'diagram'} onSelect={selectAction} />
+          {CREATE_SKILL_ACTIONS.map((action) => (
+            <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
+          ))}
+          <ActionItem action={DIAGRAM_ACTION} selected={selected === 'diagram'} onSelect={selectAction} />
           {includeGenerate && (
-            <ActionItem action={GENERATE_ACTION} selected={available === 'generate'} onSelect={selectAction} />
+            <ActionItem action={GENERATE_ACTION} selected={selected === 'generate'} onSelect={selectAction} />
           )}
 ```
 new
@@ -9547,8 +9777,12 @@ new
           {createActions.length > 0 && (
             <>
               <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
+              {/* Both shipped surfaces carry the create skills, so this reads
+                  "Create skills" exactly as dev does today; the fallback is for
+                  a surface that offers only Diagram and/or Generate, where that
+                  label would name items it does not contain. */}
               <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
-                Create
+                {createActions.some((action) => action.id.startsWith('create-')) ? 'Create skills' : 'Create'}
               </DropdownMenu.Label>
               {createActions.map((action) => (
                 <ActionItem key={action.id} action={action} selected={available === action.id} onSelect={selectAction} />
@@ -9571,7 +9805,7 @@ import { AssistantActionSelect } from '../AssistantActionSelect';
 import { AI_HOME_ACTIONS } from '../assistant-actions';
 ```
 
-`:326`:
+`:325`:
 
 old
 ```tsx
@@ -9582,7 +9816,7 @@ new
         <AssistantActionSelect actions={AI_HOME_ACTIONS} disabled={isStreaming} className="self-end" />
 ```
 
-`frontend/src/features/ai/modes/ImproveMode.tsx` — `:13`:
+`frontend/src/features/ai/modes/ImproveMode.tsx` — `:14`:
 
 old
 ```tsx
@@ -9594,7 +9828,7 @@ import { AssistantActionSelect } from '../AssistantActionSelect';
 import { AI_HOME_ACTIONS } from '../assistant-actions';
 ```
 
-`:273`:
+`:274`:
 
 old
 ```tsx
@@ -9651,7 +9885,7 @@ new
           <AssistantActionSelect actions={AI_HOME_ACTIONS} disabled={isStreaming} className="self-end" />
 ```
 
-`frontend/src/features/ai/dock/DockPanel.tsx` — `:19`:
+`frontend/src/features/ai/dock/DockPanel.tsx` — `:20`:
 
 old
 ```tsx
@@ -9663,7 +9897,7 @@ import { AssistantActionSelect, resolveAssistantAction } from '../AssistantActio
 import { DOCK_ACTIONS } from '../assistant-actions';
 ```
 
-`:437`:
+`:471`:
 
 old
 ```tsx
@@ -9676,14 +9910,63 @@ new
 
 `ImproveMode.tsx` and `DiagramMode.tsx` are `/ai` composers, so they take `AI_HOME_ACTIONS` like the other two — after this task their modes are unreachable on `/ai`, and the `available` fallback above means the trigger reads "Q&A" rather than naming a missing item if one is ever mounted in that state.
 
-- [ ] **Step 9: Run the tests to verify the menu is right**
+- [ ] **Step 9: Update the two dock assertions that pinned a hidden Generate, then run the menu tests**
 
-Run: `cd frontend && npx vitest run src/features/ai/AiAssistantPage.test.tsx -t "offers Q&A and Generate only" && npx vitest run src/features/ai/dock/AiDock.improve-type.test.tsx`
-Expected: both PASS. `AiDock.improve-type.test.tsx:76-89` is the dock's own list assertion (all five skills present, `assistant-action-generate` absent) and proves `DOCK_ACTIONS` did not change the dock.
+This is pin 5. `DOCK_ACTIONS` now carries `'generate'`, so the dock's menu grows a plain
+**Generate** item beside the five create skills it already shows. Two dev assertions pinned
+its absence and must be corrected, not worked around.
+
+`frontend/src/features/ai/dock/AiDock.improve-type.test.tsx:83-90` — old:
+```tsx
+  it('does not offer Summarize, Quality, or Generate in the article Assistant', async () => {
+    renderDock();
+    fireEvent.pointerDown(await screen.findByTestId('assistant-action-select'), { button: 0 });
+
+    expect(screen.queryByText('Summarize')).not.toBeInTheDocument();
+    expect(screen.queryByText('Quality')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('assistant-action-generate')).not.toBeInTheDocument();
+  });
+```
+new:
+```tsx
+  // #1361 / owner ruling 3: Generate IS offered here now. #1401 already routed
+  // it — `sendSelectedAction` (DockPanel.tsx:154-165) sends a plain `generate`
+  // through `runCreateSkill('custom')`, and the dock's empty state already
+  // offers that same custom skill — so the old assertion pinned a hidden menu
+  // item rather than a missing capability. Summarize and Quality are still not
+  // assistant modes at all, on any surface.
+  it('does not offer Summarize or Quality in the article Assistant', async () => {
+    renderDock();
+    fireEvent.pointerDown(await screen.findByTestId('assistant-action-select'), { button: 0 });
+
+    expect(screen.queryByText('Summarize')).not.toBeInTheDocument();
+    expect(screen.queryByText('Quality')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('assistant-action-generate')).toBeInTheDocument();
+  });
+```
+
+`frontend/src/features/ai/dock/AiDockSheet.test.tsx:414` — old:
+```tsx
+    expect(screen.queryByTestId('assistant-action-generate')).not.toBeInTheDocument();
+```
+new:
+```tsx
+    // #1361 / owner ruling 3: the sheet renders DockPanel, which now offers
+    // Generate (routed to runCreateSkill('custom') since #1401).
+    expect(screen.getByTestId('assistant-action-generate')).toBeInTheDocument();
+```
+Read the surrounding `it(...)` before editing — if its **title** also names Generate, rename
+it the same way the improve-type case is renamed above.
+
+Run: `cd frontend && npx vitest run src/features/ai/AiAssistantPage.test.tsx -t "offers Q&A, Generate and the create skills" && npx vitest run src/features/ai/dock/AiDock.improve-type.test.tsx src/features/ai/dock/AiDock.create-skills.test.tsx src/features/ai/dock/AiDockSheet.test.tsx`
+Expected: all PASS. `AiDock.improve-type.test.tsx:74-81` (all five rewrite skills present) and
+`AiDock.create-skills.test.tsx:107-117` (all five create skills present) are the two
+assertions proving `DOCK_ACTIONS` *removed* nothing from the dock; they must stay green
+untouched.
 
 - [ ] **Step 10: Write the failing test for the URL-mode allow-list**
 
-In `frontend/src/features/ai/AiAssistantPage.test.tsx`, replace the two deep-link tests at `:639-653` (inside `describe('improve mode')`, which Step 14 deletes) by adding this new top-level describe immediately after the `offers Q&A and Generate only` test:
+In `frontend/src/features/ai/AiAssistantPage.test.tsx`, replace the two deep-link tests at `:639-653` (inside `describe('improve mode')`, which Step 14 deletes) by adding this new top-level describe immediately after the `offers Q&A, Generate and the create skills` test:
 
 ```tsx
   // #1361: `/ai` runs two actions, so its URL parser admits two modes. A
@@ -9725,7 +10008,7 @@ import { DEFAULT_IMPROVEMENT_TYPE, type ImprovementType } from './improvement-ty
 import { isAiHomeAction } from './assistant-actions';
 ```
 
-Then the parser itself (`:385-386` at HEAD, ~`:390` after Tasks 1–5):
+Then the parser itself (`:394-395` at HEAD, ~`:399` after Tasks 1–5):
 
 old
 ```tsx
@@ -9913,42 +10196,42 @@ new
 Run: `cd frontend && npx vitest run src/features/ai/AiAssistantPage.test.tsx -t "chat use-case default"`
 Expected: PASS (4 tests) — and they still pass *before* the page edit in Step 17, because they no longer touch the page at all.
 
-- [ ] **Step 16: Write the failing tests for the header slot and the two thread states**
+- [ ] **Step 16: Write the failing tests for the heading row and the two thread states**
 
-Add to `frontend/src/features/ai/AiAssistantPage.test.tsx`, after the `offers Q&A and Generate only` test. Note `HeaderHost` renders in place when no `#app-header-slot` exists, so the first case needs no shell; the second mounts `AppHeaderMain` to prove the portal and the fallback-title suppression that makes the `<h1>` load-bearing.
+Add to `frontend/src/features/ai/AiAssistantPage.test.tsx`, after the `offers Q&A, Generate and the create skills` test. `HeaderHost` renders its children in place, full stop — there is no portal branch left and no `AppHeaderMain` to mount, so both cases below need nothing but the page.
 
 ```tsx
-  // #1361 / amendment item 2. New chat lives in the 48px header, not in the
-  // sub-header: the header renders at every width, sits outside the scroll
-  // container, and stays reachable with the conversations rail collapsed.
-  describe('header slot (#1361)', () => {
-    it('claims the slot with the route title and a New chat action', () => {
+  // #1361 / amendment item 2, as re-decided by the owner on 2026-08-22: New
+  // chat lives at the TOP OF THE PAGE COLUMN, not in the sub-header and not in
+  // the app header — dev deleted the header slot outright (#1377/#1378), so
+  // `HeaderHost` renders in the document. It still renders at every width and
+  // still survives a collapsed conversations rail, and it stays on screen as
+  // the log grows because /ai scrolls its message pane, not the page.
+  describe('the /ai heading row (#1361)', () => {
+    it('carries the route title and a New chat action, in the document', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper() });
 
       expect(screen.getByRole('heading', { level: 1, name: 'AI' })).toBeInTheDocument();
       const newChat = screen.getByTestId('ai-new-chat');
       expect(newChat).toHaveAttribute('aria-label', 'New chat');
-      // `header-slot.tsx:58` hides anything marked with this below `lg`, which
-      // would delete the control on exactly the phone it exists for.
-      expect(newChat).not.toHaveAttribute('data-header-kpis');
+      // One heading, and it is this page's: there is no fallback title left
+      // anywhere else to collide with, AppHeaderMain having been deleted.
+      expect(screen.getAllByRole('heading', { level: 1, name: 'AI' })).toHaveLength(1);
     });
 
-    it('portals into the app header and suppresses its fallback title', async () => {
-      render(
-        <>
-          <AppHeaderMain />
-          <AiAssistantPage />
-        </>,
-        { wrapper: createWrapper() },
-      );
+    it('never portals into a header slot, even when one exists in the DOM', () => {
+      // `header-slot.test.tsx:7-19` makes this assertion about HeaderHost
+      // itself; this is the /ai-shaped case, and it is what goes red if anyone
+      // reintroduces the portal underneath this page.
+      const slot = document.createElement('div');
+      slot.id = 'app-header-slot';
+      document.body.appendChild(slot);
 
-      const slot = screen.getByTestId('app-header-slot');
-      await waitFor(() => expect(slot).toContainElement(screen.getByTestId('ai-new-chat')));
-      expect(slot).toContainElement(screen.getByRole('heading', { level: 1, name: 'AI' }));
-      // `AppHeaderMain` drops its own fallback <h1> once the slot has children,
-      // which is why the page has to supply one — otherwise /ai loses its
-      // heading outright.
-      expect(screen.getAllByRole('heading', { level: 1, name: 'AI' })).toHaveLength(1);
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      expect(slot.querySelector('h1')).toBeNull();
+      expect(slot.querySelector('[data-testid="ai-new-chat"]')).toBeNull();
+      slot.remove();
     });
 
     it('New chat starts a fresh conversation', async () => {
@@ -10028,18 +10311,16 @@ Add to `frontend/src/features/ai/AiAssistantPage.test.tsx`, after the `offers Q&
   });
 ```
 
-and add the import the two new blocks need, beside the existing `AiAssistantPage` import:
-
-```tsx
-import { AppHeaderMain } from '../../shared/components/layout/header-slot';
-```
+The two new blocks need **no** extra import: `AppHeaderMain` no longer exists
+(`header-slot.tsx` is sixteen lines and exports only `HeaderHost`), and nothing in either
+block reaches for it.
 
 - [ ] **Step 17: Run the tests to verify they fail**
 
-Run: `cd frontend && npx vitest run src/features/ai/AiAssistantPage.test.tsx -t "header slot" && npx vitest run src/features/ai/AiAssistantPage.test.tsx -t "reopened-conversation states"`
-Expected: FAIL — `Unable to find an accessible element with the role "heading" and name "AI"` and `Unable to find an element by: [data-testid="ai-new-chat"]` for the first group; `Unable to find an element by: [data-testid="ai-thread-loading"]` for the second.
+Run: `cd frontend && npx vitest run src/features/ai/AiAssistantPage.test.tsx -t "heading row" && npx vitest run src/features/ai/AiAssistantPage.test.tsx -t "reopened-conversation states"`
+Expected: FAIL — `Unable to find an accessible element with the role "heading" and name "AI"` and `Unable to find an element by: [data-testid="ai-new-chat"]` for the first group (the *never portals* case passes vacuously until the row exists, which is why it is not the one that drives the change); `Unable to find an element by: [data-testid="ai-thread-loading"]` for the second.
 
-- [ ] **Step 18: Simplify the page and add the header slot and the two states**
+- [ ] **Step 18: Simplify the page and add the heading row and the two states**
 
 Edit 1 — imports (`AiAssistantPage.tsx:1-7`):
 
@@ -10068,7 +10349,7 @@ and add, after the `AssistantAttachmentsScope` import at `:28`:
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 ```
 
-Edit 2 — what the page reads from the context (`:214-228`):
+Edit 2 — what the page reads from the context (`:215-228`):
 
 old
 ```tsx
@@ -10104,45 +10385,50 @@ export function AiAssistantPage() {
   const shouldReduceMotion = useReducedMotion();
 ```
 
-Edit 3 — the header slot, as the FIRST child inside the root `<m.div>` (`:231-…`). Insert immediately after the root element's opening `>` (the line `      className="flex min-h-0 flex-1 flex-col gap-3"` and its `>`), before the sticky sub-header's comment block:
+Edit 3 — the heading row, as the FIRST child inside the root `<m.div>` (the root spans `:229-252`). Insert immediately after the root element's opening `>` (the line `      className="flex min-h-0 flex-1 flex-col gap-3"` and the `    >` under it), before the sticky sub-header's comment block:
 
 ```tsx
-      {/* The route's claim on the 48px app header (#1364's HeaderHost), and the
-          home of New chat (#1361, amendment item 2 — owner decision 12 amended
-          2026-08-18). The header renders at every width, sits outside the
-          scroll container, and survives a collapsed conversations rail, which
-          the sub-header could not offer all three of.
+      {/* The route's heading, and the home of New chat (#1361, amendment item 2
+          — owner decision 12, re-decided 2026-08-22 after #1377/#1378 deleted
+          the header slot the 08-18 amendment had named). `HeaderHost` renders
+          in the document now: there is no #app-header-slot producer left, no
+          AppHeaderMain to suppress a fallback title, and no data-header-kpis to
+          avoid. It still renders at every width and still survives a collapsed
+          conversations rail, and it stays on screen as the log grows because
+          the MESSAGE PANE owns the scroller (#1218), not this column.
 
-          The <h1> is required, not decorative: `AppHeaderMain` drops its own
-          fallback title the moment the slot has children, so a slot claimed
-          with the button alone leaves /ai with no heading.
+          The Library heading row is the recipe (PagesPage.tsx:1037-1058).
+          HeaderHost renders a plain <div className={fallbackClassName}>, so the
+          row supplies its own layout — justify-between, and no ml-auto, because
+          there is no flex-1 slot to sit at the far end of.
 
           FIRST CHILD INSIDE the root <m.div>, never a fragment sibling above
-          it — `ai-scroll-chain.test.ts` finds this page's root with
-          /return \(\s*<m\.div([\s\S]*?)>/ and throws when that match fails,
-          which would take two of its cases down and leave
-          `scroll-padding-mask.test.ts` describing a strategy nothing enforces.
-
-          No `data-header-kpis`: `header-slot.tsx:58` hides anything so marked
-          below `lg`, i.e. on exactly the phone this control exists for. */}
-      <HeaderHost fallbackClassName="flex items-center gap-3">
-        <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">AI</h1>
-        <button
-          type="button"
-          onClick={() => startNewConversation()}
-          className="nm-button-ghost ml-auto flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
-          aria-label="New chat"
-          data-testid="ai-new-chat"
-        >
-          <SquarePen size={15} />
-          {/* The label yields the header's width below `sm`; the aria-label
-              above is what keeps the accessible name when it does. */}
-          <span className="hidden sm:inline">New chat</span>
-        </button>
+          it, and the root's className must stay a STATIC string literal:
+          `ai-scroll-chain.test.ts:110-126` finds this page's root with
+          /return \(\s*<m\.div([\s\S]*?)>/ and then requires className="…" on
+          it, throwing on either failure — which takes two of its cases down and
+          leaves `scroll-padding-mask.test.ts` describing a strategy nothing
+          enforces. */}
+      <HeaderHost fallbackClassName="mb-1">
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">AI</h1>
+          <button
+            type="button"
+            onClick={() => startNewConversation()}
+            className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
+            aria-label="New chat"
+            data-testid="ai-new-chat"
+          >
+            <SquarePen size={15} />
+            {/* The label yields the row's width below `sm`; the aria-label
+                above is what keeps the accessible name when it does. */}
+            <span className="hidden sm:inline">New chat</span>
+          </button>
+        </div>
       </HeaderHost>
 ```
 
-Edit 4 — the sub-header's contents (`:297-386`). The bar, its card and Think stay; the `flex-1` spacer, the model select with its loading and retry states, the context chip, `+ Sub-pages` and the divider go:
+Edit 4 — the sub-header's contents (`:297-386`; the `{modelsError ? (` run opens at `:305` and the divider `<span>` is `:384`). The bar, its card and Think stay; the `flex-1` spacer, the model select with its loading and retry states, the context chip, `+ Sub-pages` and the divider go:
 
 old
 ```tsx
@@ -10246,7 +10532,7 @@ new
 Run: `cd frontend && npx vitest run src/features/ai/AiAssistantPage.test.tsx`
 Expected: PASS.
 
-Then move the three deleted `diagram mode - Use in page` cases into `frontend/src/features/ai/modes/DiagramMode.test.tsx`, whose `DiagramPreview` subject is still live — `DockPanel.tsx:336` renders it. Add to that file's imports:
+Then move the three deleted `diagram mode - Use in page` cases into `frontend/src/features/ai/modes/DiagramMode.test.tsx`, whose `DiagramPreview` subject is still live — `DockPanel.tsx:354` renders it. Add to that file's imports:
 
 old
 ```tsx
@@ -10370,7 +10656,7 @@ npx vitest run src/ai-scroll-chain.test.ts src/scroll-padding-mask.test.ts src/f
 npx tsc --noEmit
 npm run lint
 ```
-Expected: all pass. `ai-scroll-chain.test.ts` is the sharp one — it must still find the page's root `<m.div>` with `HeaderHost` as its first child. `destructive-treatment.test.ts`'s ratchet is `<= 21` hand-rolled callsites, and deleting the models-error chip (a `text-destructive` + `hover:bg-destructive/10` pair) lowers the count, which the ratchet allows.
+Expected: all pass. `ai-scroll-chain.test.ts` is the sharp one — it must still find the page's root `<m.div>`, with a **static** `className` on it, and with `HeaderHost` as its first child. `destructive-treatment.test.ts`'s ratchet is `<= 21` hand-rolled callsites, and deleting the models-error chip (a `text-destructive` + `hover:bg-destructive/10` pair) lowers the count, which the ratchet allows. Add `src/app-shell-layout.test.ts` and `src/header-slot.test.tsx` to the second command: the first fails if `AppHeaderMain` reappears anywhere in the shell, the second is the standing guard that `HeaderHost` renders in the document.
 
 - [ ] **Step 22: Commit**
 
@@ -10387,15 +10673,18 @@ git add frontend/src/features/ai/assistant-actions.ts \
         frontend/src/features/ai/modes/DiagramMode.test.tsx \
         frontend/src/features/ai/modes/GenerateMode.tsx \
         frontend/src/features/ai/dock/DockPanel.tsx \
-        frontend/src/features/ai/dock/AiDock.upload.test.tsx
-git commit -m "feat(ai): simplify /ai and move New chat into the 48px header slot
+        frontend/src/features/ai/dock/AiDock.upload.test.tsx \
+        frontend/src/features/ai/dock/AiDock.improve-type.test.tsx \
+        frontend/src/features/ai/dock/AiDockSheet.test.tsx
+git commit -m "feat(ai): simplify /ai and put New chat in its heading row
 
 /ai carries no page scope now that the tree has left the rail, so the context
 chip, + Sub-pages and the model select go; the action selector takes an explicit
-allow-list (Q&A + Generate here, the rewrite skills + Diagram in the dock) and
-the URL parser accepts only what /ai can run. New chat claims the header slot
-beside the route title, and the message pane gains the loading and error states
-a reopened conversation needs.
+allow-list (Q&A, Generate and the create skills here; everything in the dock)
+and the URL parser accepts only the two modes /ai can be deep-linked into. New
+chat sits beside the route title at the top of the page column — the header slot
+the design first named was deleted in dev — and the message pane gains the
+loading and error states a reopened conversation needs.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -10408,15 +10697,15 @@ Implements the spec's *`/ai` page changes* → **History note** bullet and **Reo
 **Pinned here:** the two note test ids are `ask-history-truncated` and `ai-dock-history-truncated`; the shared copy string lives in `source-target.ts` as `UNAVAILABLE_SOURCE_TITLE` so the chip and the card cannot drift (the same argument that put `isImageSource` in its own module).
 
 **Files:**
-- Modify: `frontend/src/features/ai/source-target.ts` (`:54`, plus a new exported constant)
+- Modify: `frontend/src/features/ai/source-target.ts` (`:52`, plus a new exported constant)
 - Test: `frontend/src/features/ai/source-target.test.ts`
-- Modify: `frontend/src/features/ai/SourceCitations.tsx` (`Source` gains `unavailable?: true`; the inert card's `title`; the thumbnail gate at `:133-139`)
+- Modify: `frontend/src/features/ai/SourceCitations.tsx` (`Source` gains `unavailable?: true`; the inert card's `title`; the thumbnail gate at `:137-138`)
 - Test: `frontend/src/features/ai/SourceCitations.test.tsx`
-- Modify: `frontend/src/features/ai/CitationChips.tsx` (`:105-114`)
+- Modify: `frontend/src/features/ai/CitationChips.tsx` (`:111-119`, the inert-span branch)
 - Test: `frontend/src/features/ai/CitationChips.test.tsx`
-- Modify: `frontend/src/features/ai/modes/AskMode.tsx` (`:36-41` destructure, `:283` render)
+- Modify: `frontend/src/features/ai/modes/AskMode.tsx` (`:38-42` destructure, the render immediately above the `{/* Main input row */}` comment)
 - Test: `frontend/src/features/ai/modes/AskMode.test.tsx`
-- Modify: `frontend/src/features/ai/dock/DockPanel.tsx` (`:92-96` destructure, `:396` render)
+- Modify: `frontend/src/features/ai/dock/DockPanel.tsx` (`:96-100` destructure — chained onto Task 3's rewrite of it — and the render inside the composer run at `:414-520`)
 - Test: `frontend/src/features/ai/dock/AiDock.test.tsx`
 
 **Interfaces:**
@@ -10862,7 +11151,7 @@ Expected: FAIL — `Unable to find an element by: [data-testid="ask-history-trun
 
 - [ ] **Step 11: Render the note on both composers**
 
-`frontend/src/features/ai/modes/AskMode.tsx` — the destructure at `:36-41`:
+`frontend/src/features/ai/modes/AskMode.tsx` — the destructure at `:38-42`. The four-line prefix below still matches after Task 6, which appended its own names on a new line beneath it:
 
 old
 ```tsx
@@ -10909,26 +11198,31 @@ new
       <div className="nm-composer flex-wrap">
 ```
 
-`frontend/src/features/ai/dock/DockPanel.tsx` — the destructure at `:92-96`:
+`frontend/src/features/ai/dock/DockPanel.tsx` — the destructure, **as Task 3 leaves it** (this
+block does not exist in the raw worktree file; Task 3 added `streamingThreadId` /
+`activeThreadId` to the HEAD form, which itself carries `createSkill` / `setCreateSkill` from
+#1401):
 
-old
+old (as Task 3 leaves it)
 ```tsx
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
-    streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
-    chatVisionModel, mode, setMode, improvementType, abortRef,
+    streamingContent, streamingThreadId, activeThreadId, input, setInput, modelsError,
+    refetchModels, model, chatVision, chatVisionModel, mode, setMode, improvementType,
+    createSkill, setCreateSkill, abortRef,
   } = useAiContext();
 ```
 new
 ```tsx
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
-    streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
-    chatVisionModel, mode, setMode, improvementType, abortRef, historyTruncated,
+    streamingContent, streamingThreadId, activeThreadId, input, setInput, modelsError,
+    refetchModels, model, chatVision, chatVisionModel, mode, setMode, improvementType,
+    createSkill, setCreateSkill, abortRef, historyTruncated,
   } = useAiContext();
 ```
 
-and the render, immediately before the composer box's own comment block (i.e. after the `DeepSearchToggle` block that ends at `:395`):
+and the render, immediately before the composer box's own comment block (i.e. after the `DeepSearchToggle` block, in the composer/attachment run at `:414-520`):
 
 old
 ```tsx
@@ -11382,23 +11676,22 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 18: Docs, guards and final verification
 
 Implements the spec's **PR 2 — frontend › Docs (same PR)** paragraph
-(`docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md:1067-1077`) plus
+(`docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md:1161-1171`) plus
 amendment items **4** (viewport-gated thumbnails — closes the two forward references),
 **5** (which CLAUDE.md sentences PR 2 owns, and the `#1115` constraint on the new
-paragraph) and **8** (the anchors, and `UserMenu.tsx:38-41`'s stale comment fixed in
-passing). It is the last task: it edits no component, and its "tests" are the
-documentation guards that already run on every PR.
+paragraph), **8** (the anchors) and **9** (owner rulings 2 and 3, which make two further
+CLAUDE.md sentences this task's problem). It is the last task: it edits no component beyond
+one comment, and its "tests" are the documentation guards that already run on every PR.
 
 **Files:**
-- Modify: `docs/architecture/04-frontend-structure.md:27`, `:33`, `:129-138`, `:259-261`
+- Modify: `docs/architecture/04-frontend-structure.md:27`, `:33`, `:150-159`, `:278-280`
 - Modify: `docs/architecture/09-flow-rag-chat.md:691-693`
-- Modify: `docs/architecture/README.md:49` (insert one row after it)
+- Modify: `docs/architecture/README.md:49` (insert one row after it — re-verified 2026-08-22, still `:49`)
 - Modify: `docs/superpowers/specs/2026-07-28-docked-ai-assistant-design.md:5`, `:36-38`
-- Modify: `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md:680-684`, `:1117-1126`
-- Modify: `CLAUDE.md:60`, `:265`, `:305`, and one new paragraph before `:307`
+- Modify: `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md:774-778`, `:1211-1220` (both moved by the 2026-08-22 re-amendment of that spec's own header block)
+- Modify: `CLAUDE.md:66`, `:278`, `:318` (three separate replacements in that one line), and one new paragraph before `:320`
 - Modify: `docs/USER-GUIDE.md:109-112`
-- Modify: `frontend/src/shared/components/layout/MainNavStrip.tsx:6-16`
-- Modify: `frontend/src/shared/components/layout/UserMenu.tsx:38-40`
+- Modify: `frontend/src/shared/components/layout/MainNavStrip.tsx:7-17`
 - Test: `frontend/src/architecture-docs-mermaid.test.ts`, `frontend/src/docs-image-retrieval-record.test.ts`,
   `frontend/src/architecture-docs-embedding-model.test.ts` (all existing; no new test file — these
   three are the guards that read the files this task edits)
@@ -11421,22 +11714,34 @@ documentation guards that already run on every PR.
    "Append, don't replace" guards against clobbering the string #1362 grew; it does not
    ask us to leave the route name wrong.
 2. CLAUDE.md's new pane paragraph is inserted **immediately before** the `#1218`
-   scroll-chain paragraph (`:307` today), so the three `/ai`-subject paragraphs stay
+   scroll-chain paragraph (`:320` today), so the three `/ai`-subject paragraphs stay
    adjacent and a reader meets the topology before the scroll rule that depends on it.
 3. `docs/architecture/README.md`'s new row goes **immediately after `:49`** (the existing
    frontend row) and is worded as the narrower case, per amendment item 8.
-4. **Two CLAUDE.md sentences beyond the brief's three are corrected in the same edits**,
-   because PR 2 makes them false: `:60`'s closing guard sentence ("a conversation switch")
-   and `:305`'s attachment-scope sentence ("clears on `pageId` changes", which Task 6
-   changed to `activeThreadId`). Leaving a paragraph half-true is the drift CLAUDE.md
-   rule 6 exists to prevent.
-5. `UserMenu.tsx:38-41`'s comment is fixed **here**, not in a code task: amendment item 8
-   calls it a fix in passing, and this is the only task in the plan that edits comments.
+4. **Four CLAUDE.md sentences beyond the brief's three are corrected in the same edits.**
+   Two because PR 2 makes them false: `:66`'s closing guard sentence ("a conversation
+   switch") and `:318`'s attachment-scope sentence ("clears on `pageId` changes", which
+   Task 6 changed to `activeThreadId`). **Two more because DEV already made them false**
+   (spec amendment item 9, owner ruling 2 of 2026-08-22): the same `:318` paragraph's *"the
+   article-side dock deliberately does not [offer Generate]"*, which #1401 reversed by
+   shipping create skills and a `runCreateSkill` path on the dock, and that paragraph's
+   closing *"Alt+I and layout presets still expand it"*, which names a feature #1391/#1377
+   deleted. These two are pre-existing dev/doc drift rather than PR 2's doing; they are
+   fixed here because PR 2 is rewriting the sentences around them and leaving a paragraph
+   half-true is the drift CLAUDE.md rule 6 exists to prevent.
+5. **STRUCK.** The old plan fixed `UserMenu.tsx:38-40`'s stale `/ai`-header comment "in
+   passing" per amendment item 8. Dev has already corrected it: `UserMenu.tsx:39-41` now
+   reads *"…when the trigger is in the header session cluster"*, which is true — the trigger
+   IS in the header session cluster since #1377/#1378. There is nothing to fix, so Step 16
+   is struck and `UserMenu.tsx` leaves this task's file list.
 6. `docs/USER-GUIDE.md`'s AI Chat list keeps its numbering and grows step 4 into the
    mechanism plus a new step 5 for what is *not* saved.
-7. Final verification compares against **`origin/dev`**, not the local `dev` ref: the
-   worktree's `dev` is stale (`d7b9208b`) while `origin/dev` is `4357f454`, so
-   `git log dev..HEAD` lists ten commits that are already on the target branch.
+7. Final verification compares against **`origin/dev` as it stands at PR time**, not the
+   local `dev` ref and not a pinned SHA: the worktree's `dev` is stale, and `origin/dev`
+   moves — it was `4357f454` when this plan was drafted and `a6a3d329` when it was
+   re-anchored on 2026-08-22, already merged into this branch. Run `git fetch origin dev`
+   first and diff against `origin/dev`, so `git log dev..HEAD` does not list commits that
+   are already on the target branch.
 
 ---
 
@@ -11455,16 +11760,20 @@ this task must not bury the failure.
 - [ ] **Step 2: `04-frontend-structure.md` — the fAI node (`:27`) and the shell node (`:33`)**
 
 Both are mermaid flowchart node labels inside the `## Provider & feature layout` block.
+**Re-derived 2026-08-22:** the fAI string changed again in dev — `AiDock` and `AiDockSheet`
+were dropped from the `dock/` sub-list and the ArticleRightPane clause was reworded — so the
+`old` below is the current string and the `new` is that string with the two `#1361` segments
+appended, which is what amendment item 8's "append, don't replace" asks for.
 Old (line 27, one line):
 
 ```
-        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockPanel · AiDockSheet · DockDiffCard (#1126)<br/>tab inside ArticleRightPane, sheet over the article below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
+        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ DockPanel · DockDiffCard (#1126)<br/>tab inside ArticleRightPane; mobile inspector sheet below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
 ```
 
 New (one line):
 
 ```
-        fAI["ai/<br/>AiAssistantPage (/ai and /ai/c/:id — no-document home)<br/>conversations/ AiConversationsSidebar · ConversationList · ConversationRow (#1361)<br/>ai-routes.ts (shared/lib) · assistant-actions.ts<br/>dock/ AiDock · DockPanel · AiDockSheet · DockDiffCard (#1126)<br/>tab inside ArticleRightPane, sheet over the article below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
+        fAI["ai/<br/>AiAssistantPage (/ai and /ai/c/:id — no-document home)<br/>conversations/ AiConversationsSidebar · ConversationList · ConversationRow (#1361)<br/>ai-routes.ts (shared/lib) · assistant-actions.ts<br/>dock/ DockPanel · DockDiffCard (#1126)<br/>tab inside ArticleRightPane; mobile inspector sheet below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
 ```
 
 Old (line 33, one line):
@@ -11484,9 +11793,9 @@ written: all five fenced blocks in the file still parse, and a raw `#`, `/` or `
 inside a quoted flowchart label is captured whole (the mermaid guard's own header says
 so — only *sequence* diagrams have the `[^#\n;]` lexer boundary).
 
-- [ ] **Step 3: `04-frontend-structure.md:129-138` — no tree clears a mode any more**
+- [ ] **Step 3: `04-frontend-structure.md:150-159` — no tree clears a mode any more**
 
-Old (lines 129-138 verbatim):
+Old (lines 150-159 verbatim):
 
 ```
 - `/ai` keeps only the Ask and Generate tabs. The four document actions are
@@ -11524,10 +11833,10 @@ New:
   back except the URL bar.
 ```
 
-- [ ] **Step 4: `04-frontend-structure.md:259-261` — state the thumbnail decision**
+- [ ] **Step 4: `04-frontend-structure.md:278-280` — state the thumbnail decision**
 
 This closes the first of the two forward references amendment item 4 names.
-Old (lines 259-261, inside the `## Image retrieval on the frontend (#1115)` byte-cost
+Old (lines 278-280, inside the `## Image retrieval on the frontend (#1115)` byte-cost
 bullet):
 
 ```
@@ -11560,7 +11869,7 @@ Expected: PASS. The mermaid guard parses all five blocks in the edited file; the
 embedding-model guard only requires that `09-flow-rag-chat.md` keeps naming
 `rag-service.ts` and `routes/knowledge/search.ts`, which Step 6 does not touch.
 
-- [ ] **Step 6: `09-flow-rag-chat.md:691-693` — the deep-search reset keys on `activeThreadId`**
+- [ ] **Step 6: `09-flow-rag-chat.md:691-693` — the deep-search reset keys on `activeThreadId`** (re-verified 2026-08-22: still `:691-693`, byte-identical)
 
 Old (lines 691-693 verbatim):
 
@@ -11661,7 +11970,7 @@ New:
 
 The second forward reference amendment item 4 names. In
 `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`, old (lines
-680-684, the last bullet of `## /ai page changes`):
+774-778, the last bullet of `## /ai page changes` — moved by the 2026-08-22 re-amendment of that spec's own header block, not by dev):
 
 ```
 - **PR 2 flag, not decided here**: every persisted `kind: 'image'` source reopens as a live
@@ -11698,7 +12007,7 @@ mark them decided rather than leave them open. Verified in the worktree:
 and `backend/src/routes/llm/llm-ask.ts:664` writes `page_ref` with `userCanAccessPage`
 authorising the id at `:379`.
 
-Old (lines 1117-1126):
+Old (lines 1211-1220):
 
 ```
 9. **A refused exchange's orphan user turn is dropped from replay.** Today the `refused`
@@ -11731,10 +12040,11 @@ New:
     dock conversation.
 ```
 
-- [ ] **Step 10: `CLAUDE.md:60` — the DeepSearchToggle reset**
+- [ ] **Step 10: `CLAUDE.md:66` — the DeepSearchToggle reset**
 
-Two replacements inside the single line 60 (each substring is unique in the file —
-verified with `grep -F -c`).
+Two replacements inside the single line 66 (each substring is unique in the file —
+re-verified 2026-08-22 with `grep -F -c`; the line moved from `:60` under #1371's
+consolidation and both sentences are intact).
 
 Edit A — old:
 
@@ -11760,9 +12070,9 @@ New:
 each fail if the flag survives a send, a remount, a chip run or an `activeThreadId` change
 ```
 
-- [ ] **Step 11: `CLAUDE.md:265` — the rail contract gains a third occupant**
+- [ ] **Step 11: `CLAUDE.md:278` — the rail contract gains a third occupant**
 
-Old (the closing sentence of line 265):
+Old (the closing sentence of line 278):
 
 ```
 Both tree implementations (`SidebarTreeView`, `DndLocalSpaceTree`) render in the same rail and must move together.
@@ -11771,12 +12081,14 @@ Both tree implementations (`SidebarTreeView`, `DndLocalSpaceTree`) render in the
 New:
 
 ```
-Both tree implementations (`SidebarTreeView`, `DndLocalSpaceTree`) render in the same rail and must move together — and since #1361 so does a third occupant, the `/ai` conversations pane (`AiConversationsSidebar`), which is the shell's left rail on `/ai` and `/ai/c/:id` instead of the Pages tree. It shares `ui-store`'s `treeSidebarCollapsed` / `treeSidebarWidth`, the same resize handle, the same `h-12` `panel-toolbar` nav row carrying `MainNavStrip`, and the same `SidebarSessionChrome` footer, so a chassis change lands in all three or the rail visibly changes shape when you switch tabs. `toolbar-rule-alignment.test.ts` holds each of them to exactly one `panel-toolbar` + `border-b` row with no `py-` on it — the footer is `border-t`.
+Both tree implementations (`SidebarTreeView`, `DndLocalSpaceTree`) render in the same rail and must move together — and since #1361 so does a third occupant, the `/ai` conversations pane (`AiConversationsSidebar`), which is the shell's left rail on `/ai` and `/ai/c/:id` instead of the Pages tree. It shares `ui-store`'s `treeSidebarCollapsed` / `treeSidebarWidth` (default and reset **282**), the same resize handle, and the same `embedMainNav` contract — bare in the mobile drawer, `={false}` in the desktop slot, where `MainNavChassisRail` owns the destination strip and a rail painting its own would double it, which is also why the `h-12` `panel-toolbar` nav row's collapse button moves into the row below when the strip is not embedded. Its footer carries the loaded row count and nothing else: theme and account live in the app header (`HeaderSessionCluster`), not at the foot of a rail. A chassis change lands in all three or the rail visibly changes shape when you switch tabs. `toolbar-rule-alignment.test.ts` requires **every** `panel-toolbar` + `border-b` row in each of them to carry `h-12`, with no `py-` on the first — the footer is `border-t`, so it is in neither set.
 ```
 
-- [ ] **Step 12: `CLAUDE.md:305` — two action sets, and the scope keys on the thread**
+- [ ] **Step 12: `CLAUDE.md:318` — the action sets, the scope key, and two sentences dev already falsified**
 
-Two replacements inside line 305 (both unique).
+**Four** replacements inside line 318 (each unique). Edits A and B are PR 2's own; edits C
+and D correct sentences #1401 and #1391/#1377 made false in dev before PR 2 started (pin 4,
+owner ruling 2).
 
 Edit A — old:
 
@@ -11787,7 +12099,7 @@ Both assistant surfaces select the action **inside the composer beside Send**: Q
 New:
 
 ```
-Both assistant surfaces select the action **inside the composer beside Send**, and since #1361 they offer **different sets**, declared once in `features/ai/assistant-actions.ts` and passed to `AssistantActionSelect` as an `actions` allow-list rather than an `includeGenerate` boolean: the dock gets `DOCK_ACTIONS` — Q&A, five standalone rewrite skills and Diagram — and `/ai` gets `AI_HOME_ACTIONS`, which is Q&A and Generate only. The dock has no Generate because Generate creates a new page rather than acting on the open one; `/ai` has no rewrite skills and no Diagram because page scope was retired there and it has no document to act on. That list is also the fallback rule: a `?mode=improve|diagram` deep link on an AI route lands on Q&A because the URL-mode parser checks it, which is a stated allow-list rather than the accident it replaced (a tree click that rewrote the URL and dropped the `mode=` on the way).
+Both assistant surfaces select the action **inside the composer beside Send**, and since #1361 they offer **different sets**, declared once in `features/ai/assistant-actions.ts` and passed to `AssistantActionSelect` as an `actions` allow-list rather than an `includeGenerate` boolean: the dock gets `DOCK_ACTIONS` — Q&A, five standalone rewrite skills, Diagram, Generate and the five #1401 create skills — and `/ai` gets `AI_HOME_ACTIONS`, which is Q&A, Generate and those same create skills. **The dock offers Generate-shaped actions now** (#1401): `runCreateSkill` POSTs `/llm/generate` and returns a draft card with *Apply to Page*, so the old rule that the dock deliberately withheld Generate is retired — what it withheld was a menu item for a path it already had. `/ai` has no rewrite skills and no Diagram because page scope was retired there and it has no document to act on. Those lists are the menu, not the URL: a `?mode=improve|diagram` deep link on an AI route lands on Q&A because the URL-mode parser admits only `ask` and `generate`, which is a stated allow-list rather than the accident it replaced (a tree click that rewrote the URL and dropped the `mode=` on the way); a create skill is never a URL value at all, since the URL carries `mode=generate` and the skill is picked in-app.
 ```
 
 Edit B — old:
@@ -11802,14 +12114,36 @@ New:
 The scope clears on `activeThreadId` changes — New chat, opening a saved conversation, a dock page switch — so source material cannot leak into another conversation.
 ```
 
+Edit C — the same paragraph's `Alt+I` sentence, which names a feature dev deleted (#1391/#1377
+removed `LayoutPresetMenu` and `article-layout-controls.tsx`; `edit-affordance.test.ts:60`/`:62`
+now assert their absence). Old:
+
+```
+Below `xl` the inspector starts collapsed so the article keeps the workspace; Alt+I and layout presets still expand it.
+```
+
+New:
+
+```
+Below `xl` the inspector starts collapsed so the article keeps the workspace; Alt+I still expands it — the layout presets that also did were deleted with the rest of the preset menu.
+```
+
+Edit D — the sentence that used to promise the dock had no Generate is folded into edit A
+above, which replaces it wholesale. **Confirm it is gone** rather than editing it twice:
+
+Run: `grep -F -c 'the article-side dock deliberately does not' CLAUDE.md`
+
+Expected: `0`. If it prints `1`, edit A did not apply and the paragraph now contradicts
+itself — the dock has shipped create skills and an Apply-to-Page draft card since #1401.
+
 - [ ] **Step 13: `CLAUDE.md` — the new paragraph for the pane and the per-conversation URL**
 
-Inserted immediately before the `#1218` scroll-chain paragraph, so the `/ai` paragraphs
-stay adjacent. It **must not contain the string `#1115`**
+Inserted immediately before the `#1218` scroll-chain paragraph (now line 320), so the `/ai`
+paragraphs stay adjacent. It **must not contain the string `#1115`**
 (`src/docs-image-retrieval-record.test.ts:82-95` fails otherwise); Step 14 proves that
 guard actually bites.
 
-Old (the opening of line 307):
+Old (the opening of line 320):
 
 ```
 **`/ai` scrolls its message pane, not the page (#1218).**
@@ -11840,9 +12174,9 @@ Run: `cd frontend && npx vitest run src/docs-image-retrieval-record.test.ts`
 Expected: PASS (four assertions: one retrieval block ≤ 1,300 words, one corpus block
 ≤ 700 words, no stray `#1115` paragraph, and the backend-module/measured-record checks).
 
-- [ ] **Step 15: `MainNavStrip.tsx:6-16` — the strip now sits above three sidebars**
+- [ ] **Step 15: `MainNavStrip.tsx:7-17` — the strip now sits above three sidebars**
 
-Old (lines 6-16):
+Old (lines 7-17):
 
 ```tsx
 /**
@@ -11862,8 +12196,10 @@ New:
 
 ```tsx
 /**
- * The "Pages / AI / Graph" strip that appears at the top of every left
- * sidebar — `SidebarTreeView` on `/` and `/pages/*`,
+ * The "Pages / AI / Graph" strip. It renders in two places: the chassis-level
+ * `MainNavChassisRail`, which owns it at desktop widths, and — when a sidebar
+ * is passed `embedMainNav` — the top of that sidebar, which is how the mobile
+ * drawer gets it. The sidebars are `SidebarTreeView` on `/` and `/pages/*`,
  * `AiConversationsSidebar` on `/ai` and `/ai/c/:id` (#1361), and
  * `SettingsSidebar` on `/settings/*`. Extracted into one component so the
  * three sidebars can't drift in order or in styling. The visual order here
@@ -11879,29 +12215,22 @@ New:
  */
 ```
 
-- [ ] **Step 16: `UserMenu.tsx:38-40` — the stale `/ai` header comment (amendment item 8)**
+- [ ] ~~**Step 16: `UserMenu.tsx:38-40` — the stale `/ai` header comment**~~ — **STRUCK (2026-08-22), do nothing**
 
-The trigger has not been in the top-right of the header since #1364 moved session chrome
-into the rails; the `z-50` is still right, but its stated reason is now the sidebar
-footer sitting under `/ai`'s sticky sub-header.
-
-Old (lines 38-40):
+The 2026-08-18 plan fixed this comment "in passing" because it claimed the trigger was "in the
+top-right of the header on `/ai`", which #1364 had made false. Dev has since corrected it
+itself. `UserMenu.tsx:39-41` now reads:
 
 ```tsx
-          // z-50 sits above the AI sub-header's z-20 sticky strip; without
-          // it the portaled menu is clipped behind that strip when the trigger
-          // is in the top-right of the header on /ai.
+            // z-50 sits above the AI sub-header's z-20 sticky strip; without
+            // it the portaled menu is clipped behind that strip when the trigger
+            // is in the header session cluster.
 ```
 
-New:
-
-```tsx
-          // z-50 sits above the AI sub-header's z-20 sticky strip; without it
-          // the portaled menu is clipped behind that strip. Since #1364 the
-          // trigger is in the foot of the left rail (SidebarSessionChrome),
-          // not the header, and the menu opens upward across /ai's sub-header
-          // from there — including from the conversations pane (#1361).
-```
+…which is accurate — #1377/#1378 put the trigger *back* in the header session cluster, and the
+`z-50` reason is unchanged. There is no edit to make. `UserMenu.tsx` is therefore **not** in
+this task's file list and **not** in its commit. (Do not "improve" it to mention the
+conversations pane: the pane does not host this trigger.)
 
 - [ ] **Step 17: `docs/USER-GUIDE.md:109-112` — name the mechanism**
 
@@ -11962,8 +12291,9 @@ Expected: PASS.
 
 Run: `cd frontend && npx tsc --noEmit && npm run lint`
 
-Expected: clean. (`MainNavStrip.tsx` and `UserMenu.tsx` changed only inside comments, so
-this is a cheap confirmation that neither comment block was closed wrongly.)
+Expected: clean. (`MainNavStrip.tsx` changed only inside a comment, so this is a cheap
+confirmation that the block was closed correctly. `UserMenu.tsx` is untouched — see the
+struck Step 16.)
 
 - [ ] **Step 20: Commit the docs**
 
@@ -11975,14 +12305,16 @@ git add docs/architecture/04-frontend-structure.md \
         docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md \
         docs/USER-GUIDE.md \
         CLAUDE.md \
-        frontend/src/shared/components/layout/MainNavStrip.tsx \
-        frontend/src/shared/components/layout/UserMenu.tsx
+        frontend/src/shared/components/layout/MainNavStrip.tsx
 git commit -m "docs(ai): record saved conversations on /ai — location-keyed threads, the pane, the viewport-gated thumbnail
 
 The two forward references amendment item 4 left open are now answers rather
 than questions, the deep-search reset is documented as keying on activeThreadId
 instead of \"the sidebar\", and the rail contract names its third occupant.
-Architect's calls 9 and 10 are marked decided — PR 1 shipped both.
+Architect's calls 9 and 10 are marked decided — PR 1 shipped both. Two sentences
+dev had already falsified are corrected in passing: the dock offers
+Generate-shaped create skills (#1401), and the layout presets that used to
+expand the inspector were deleted.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -12030,14 +12362,17 @@ cd frontend && npx vitest run \
   src/toolbar-rule-alignment.test.ts \
   src/docs-image-retrieval-record.test.ts \
   src/scroll-padding-mask.test.ts \
+  src/app-shell-layout.test.ts \
   src/architecture-docs-mermaid.test.ts
 ```
 
-Expected: PASS, ten files. Two of them are the ones this PR is most likely to have moved:
-`destructive-treatment.test.ts` (the ratchet must still read ≤ 21 — Task 10 used
-`nm-action-destructive` and hand-rolled nothing) and `toolbar-rule-alignment.test.ts`
-(Task 12 added the pane to `SELF_BORDERED`, so the pane must carry exactly one
-`panel-toolbar` + `border-b` row and no `py-` on it).
+Expected: PASS, eleven files. Three of them are the ones this PR is most likely to have
+moved: `destructive-treatment.test.ts` (the ratchet must still read ≤ 21 — Task 10 used
+`nm-action-destructive` and hand-rolled nothing), `toolbar-rule-alignment.test.ts` (Task 12
+added the pane to `SELF_BORDERED`, so **every** bordered `panel-toolbar` row in the pane
+must carry `h-12`, with no `py-` on the first) and `app-shell-layout.test.ts` (Task 13's
+three-arm ternary must keep the `embedMainNav` literals, stay inside `app-workspace`, and
+reintroduce neither `forceCollapsed` nor `AppHeaderMain`).
 
 - [ ] **Step 23: Final verification — the deletions really happened**
 
@@ -12076,9 +12411,11 @@ git status --short
 ```
 
 Expected: eighteen commits, one per task, in task order; a clean working tree; and
-**`origin/dev`, not the local `dev` ref** — the worktree's `dev` is stale (`d7b9208b`
-against `origin/dev` `4357f454`), so `dev..HEAD` lists ten commits that are already on the
-target branch and makes the review look twice its size.
+**`origin/dev` as `git fetch` has just left it, not the local `dev` ref and not a SHA
+pinned in this plan** — the worktree's `dev` is stale, and `origin/dev` moves (it was
+`4357f454` when this plan was drafted and `a6a3d329` when it was re-anchored on
+2026-08-22, already merged into this branch), so `dev..HEAD` lists commits that are already
+on the target branch and makes the review look twice its size.
 
 Confirm the PR targets `dev` (CLAUDE.md rule 2) and that no `.env`, key or binary is in
 the diff (rule 3):
@@ -12131,14 +12468,16 @@ key every composer reset now hangs off.
   over PR 1's keyset list), rename and delete mutations, `groupByRecency`,
   `useListRovingFocus`, `ConversationRow` + `ConversationRowMenu` (kebab, inline rename,
   delete confirm), `ConversationList` (groups, filter, Show more, three list states) and
-  `AiConversationsSidebar` (the Pages-tree chassis plus a `SidebarSessionChrome` footer).
+  `AiConversationsSidebar` (the Pages-tree chassis — shared collapse state and width, the
+  resize handle, the `embedMainNav` nav row — with a footer carrying the loaded row count).
   `AppLayout` mounts it as the third arm of the sidebar ternary, in the drawer and on the
-  desktop.
+  desktop, passing `embedMainNav` exactly as the two trees receive it.
 - **`/ai` simplified.** The Pages tree leaves AI routes (the `isAiRoute` prop and all
   three `/ai?pageId=` producers are deleted from both trees); the model `<select>`, the
-  context chip and `+ Sub-pages` go; New chat moves into the 48px header slot via
-  `HeaderHost`; `AssistantActionSelect` takes an `actions` allow-list, so `/ai` is Q&A +
-  Generate and a `?mode=improve` deep link falls back to Q&A.
+  context chip and `+ Sub-pages` go; New chat sits beside the route title at the top of the
+  page column via `HeaderHost`; `AssistantActionSelect` takes an `actions` allow-list, so
+  `/ai` is Q&A + Generate + the five create skills, the dock is everything, and a
+  `?mode=improve` deep link falls back to Q&A.
 - **Sources.** A `Source` may be `unavailable`, which resolves to `{ kind: 'none' }` and
   renders inert with `title="This page is no longer available to you"`;
   `SourceThumbnail` is viewport-gated with an `IntersectionObserver` sentinel, so a
@@ -12163,7 +12502,7 @@ Screenshots to attach before review — this is a shell-level UI change and the 
 not show it: the expanded pane on `/ai` in Graphite and in Paper, the collapsed rail, the
 mobile drawer with a row selected, the kebab menu open with Delete highlighted (the
 `nm-action-destructive` `data-highlighted` state added in `index.css`), a row in inline
-rename, and the header slot showing `AI` + New chat.
+rename, and the `/ai` heading row showing `AI` + New chat.
 
 ## Related Issues
 

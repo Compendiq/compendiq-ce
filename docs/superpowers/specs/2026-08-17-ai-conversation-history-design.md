@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-17
 **Issue:** #1361 (saved conversations in the `/ai` left pane — reopenable `/ai/c/:id`, replaces the page tree and page-click context on `/ai`)
-**Status:** Proposed — design of record for the three PRs in [Sequencing](#sequencing). PR 1 shipped (#1365, 2026-08-18); **amended 2026-08-18** for dev drift before PR 2 — see the amendment block below, which supersedes three sentences of the body.
+**Status:** Proposed — design of record for the three PRs in [Sequencing](#sequencing). PR 1 shipped (#1365, 2026-08-18); **amended 2026-08-18 and re-amended 2026-08-22** for dev drift before PR 2 — see the amendment block below, which supersedes four sentences of the body.
 **Verified against:** `origin/dev` `7c3a7bf8` (2026-08-17). Every `file:line` below was re-read at that commit; where the issue's own citations had drifted, this document carries the corrected anchor.
 
 > The fourteen decisions in the issue's table are the owner's (interview, 2026-08-17). This
@@ -14,88 +14,135 @@
 
 > ## Amendment (2026-08-18, dev drift before PR 2)
 >
-> Re-verified against `origin/dev` `bbe8118a`. Between this spec's base (`7c3a7bf8`) and PR 2's
-> start, #1364 (header chrome distilled into the 48px bar; theme + account moved into the
+> First written against `origin/dev` `bbe8118a`. Between this spec's base (`7c3a7bf8`) and that
+> point, #1364 (header chrome distilled into a 48px bar; theme + account moved into the
 > rails), #1362/#1366/#1367 (#1115 P3–P5: image sources on the `/llm/ask` wire and shown to the
 > model), #1368 (layout presets restored, article-only), #1371 (CLAUDE.md consolidation),
-> **#1373 (the article *format toolbar* moved back out of the header slot into the page column
-> — the route's title-and-actions claim on the slot stays)** and #1372 (article inspector
-> reading rail) landed. Routing, thread keys, the state machine and every `/ai` page change
-> hold — `AiAssistantPage.tsx` has no commit since `7c3a7bf8`. Eight things moved under the
-> pane; items 1, 2 and 4 supersede sentences below (2 and 4 with the **owner's decisions from a
-> 2026-08-18 interview**), the rest bind the PR 2 plan. The body is left as written (the
+> #1373 (the article *format toolbar* moved back out of the header slot into the page column)
+> and #1372 (article inspector reading rail) landed. **Two of those six have since been
+> reversed** — see the re-verification paragraph below — so read #1364's rails claim and
+> #1368's presets claim as history, not as the state of the code.
+>
+> **Re-verified 2026-08-22 against `origin/dev` `a6a3d329`** (76 further commits, merged into
+> the PR 2 branch as `f409a44b`), and amended again against the **owner's three rulings of
+> 2026-08-22**. Dev reversed both halves of #1364: **#1377/#1378 moved theme + account back
+> out of the rails into the header** (`HeaderSessionCluster`) and **retired the header slot
+> entirely** — `HeaderHost` renders in the document column, `#app-header-slot` has no
+> producer, and the header band is 44px, not 48. **#1391/#1377 deleted the layout presets**
+> and `forceTreeCollapsed` with them. **#1401 put five "create skills" on both assistant
+> surfaces** and gave the dock a Generate-shaped path. Items **1, 2 and 3 below are rewritten
+> for that**; item 2 carries the owner's re-decided **placement** for New chat (ruling 1),
+> and item 9 carries rulings 2 and 3. Routing, thread keys, the state machine and every `/ai`
+> page change still hold — `AiAssistantPage.tsx` has had no commit since `4357f454`. Nine
+> things moved under the pane; items 1–4 supersede sentences below (2 and 4 with the
+> **owner's decisions**), the rest bind the PR 2 plan. The body is left as written (the
 > docked-AI spec's precedent); this block is what the plan reads.
 >
-> 1. **The chassis gains a session-chrome footer.** #1364 moved the theme toggle and the
->    account menu out of the app header into the foot of both existing rails
->    (`shared/components/layout/SidebarSessionChrome.tsx`; `SidebarTreeView.tsx:1469-1476`
->    expanded and `:862-864` collapsed; `SettingsSidebar.tsx:178-180` and `:64-66`), and
->    `AppLayout.test.tsx:287-297` pins that the header carries neither `theme-toggle` nor
->    `user-avatar-initial`. `SidebarSessionChrome` has no other consumer, and `AppLayout`
->    imports neither `ThemeToggle` nor `UserMenu`, so a pane without it makes `/ai` the only
->    authenticated route with no account menu, no logout and no theme control — in the drawer
->    too, which renders the same components — and the collapsed case is reachable: a Reading or
->    Focus preset on an article writes the shared `treeSidebarCollapsed` (`AppLayout.tsx:74-120`).
->    The [Chassis](#chassis) structure is therefore nav row → New chat → filter → `<nav>` → Show
->    more → a `panel-toolbar flex shrink-0 items-center justify-between gap-2 border-t px-2
->    py-1.5` footer (`SidebarTreeView.tsx:1469`, byte for byte) whose left cell is the **loaded
->    row count** — the same number `CONVERSATION_FILTER_THRESHOLD` is measured against — and
->    whose right cell is `<SidebarSessionChrome />`; not `SettingsSidebar.tsx:178`'s shorter
->    `panel-toolbar shrink-0 border-t px-2 py-1.5`, which is correct only for a footer with one
->    child. The collapsed rail is expand button → `MainNavStripCollapsed` → `SquarePen` New chat
->    → `mt-auto` + `<SidebarSessionChrome compact />`. **`border-t`, never `border-b`**:
->    `toolbar-rule-alignment.test.ts:52-67` requires exactly one `panel-toolbar` + `border-b`
->    row per file — the nav row — and a second case at `:90-103` forbids `/\bpy-\d/` on that
->    same row, so the nav row keeps `h-12` and never sizes itself with padding. Pane test: both
->    branches render `sidebar-session-chrome`, with `vi.mock('./SidebarSessionChrome', …)` in
->    the pane's own test file (`SidebarTreeView.test.tsx:19-20`'s stub, which is what keeps
->    `UserMenu`'s auth store out of chassis tests) and **no** mock of the pane in
->    `AppLayout.test.tsx` (item 8).
-> 2. **New chat moves from `/ai`'s sub-header to the 48px header slot — owner decision 12
->    amended by the owner (interview, 2026-08-18).** Decision 12 read *"List in the slide-over
->    drawer + a 'New chat' control in the `/ai` sub-header so a phone user needn't open the
->    drawer"*, and the issue's acceptance criteria carry *"`/ai`'s sub-header carries a New chat
->    control"*; the owner re-decided the **placement** — the intent ("a phone user needn't open
->    the drawer") stands and is better served, and Architect's call 2 (renders at every width)
->    stands. The [Mobile](#mobile) sentence and the AC line read "the 48px header" from here on.
->    Why the header: #1364 made `HeaderHost` → `#app-header-slot`
->    (`shared/components/layout/header-slot.tsx:15-67`) the way a route contributes its title
->    and actions, with five claiming routes (`PagesPage.tsx:742`, `SettingsLayout.tsx:44`,
->    `TrashPage.tsx:31`, `GraphPage.tsx:656`, and `PageViewPage.tsx` — **one** claim at `:805`
->    after #1373, which took the dense edit-mode toolbar back out of the bar while leaving the
->    route's title-and-actions claim intact; a small action cluster is exactly what New chat
->    is); the header renders at every width, sits outside the scroll container, and stays
->    reachable with the pane collapsed. Mechanism: `AiAssistantPage` claims the slot with its
->    own `<h1>AI</h1>` — required, because `AppHeaderMain` (`header-slot.tsx:42-50` computes
->    `occupied`, `:60-64` hides) drops the fallback title once the slot has children (the
->    `TrashPage.tsx:31-36` pattern) — plus the ghost `SquarePen` "New chat"
->    (`data-testid="ai-new-chat"`), which calls `startNewConversation()`. The `HeaderHost` is
->    the **first child inside** the page's root `<m.div>` (`AiAssistantPage.tsx:230-231`), never
->    a fragment sibling above it: `ai-scroll-chain.test.ts:106-120` finds the root with
->    `/return \(\s*<m\.div([\s\S]*?)>/` and throws when that fails, taking two of its cases
->    down and leaving `scroll-padding-mask.test.ts:140-168` describing a strategy nothing
->    enforces. Recipe: `PagesPage.tsx:763-771` verbatim — `nm-button-ghost flex h-8 items-center
->    gap-1.5 px-2.5 text-xs sm:text-sm`, `<SquarePen size={15} />` + `<span className="hidden
->    sm:inline">New chat</span>` + an `aria-label`, so the label yields the header's width below
->    `sm` without losing the accessible name. It must **not** carry `data-header-kpis` —
->    `header-slot.tsx:58` hides anything so marked below `lg`, which would delete the control on
->    exactly the phone decision 12 exists for. **The pane's own full-width New chat and the
->    collapsed rail's glyph stay** (owner's choice): two controls on an expanded desktop pane is
->    deliberate — the header's is the one that survives a collapsed rail, the pane's is the one
->    inside the mobile drawer. `routeHeaderTitle` (`header-slot-utils.ts:7-15`) already answers
->    `AI` for `/ai/c/:id`; the follow-up "the conversation title in `/ai`'s sub-header on
->    `/ai/c/:id`" becomes "in the header slot", beside `Settings · panel`'s precedent
->    (`SettingsLayout.tsx:47-55`). **The sub-header bar stays** (owner, same interview): the
+> 1. **The chassis has NO session-chrome footer; it has a count-and-navigation footer.**
+>    (Rewritten 2026-08-22 — the 2026-08-18 version of this item argued the opposite from
+>    #1364, which dev has since reversed.) #1377/#1378 moved the theme toggle and the account
+>    menu back out of the rails into the **header** — `HeaderSessionCluster`
+>    (`NotificationBell` + `ThemeToggle` + `UserMenu`), mounted at `AppLayout.tsx:498` inside
+>    `<header>` — and `AppLayout.test.tsx:198`/`:241`/`:263-264` now pin that the header
+>    *contains* `header-session-cluster` and `theme-toggle`. `SidebarSessionChrome.tsx` still
+>    exists but **has no consumer left**: zero occurrences in `SidebarTreeView.tsx` and
+>    `SettingsSidebar.tsx`, and the only live references are its own test plus a now-dead
+>    `vi.mock('./SidebarSessionChrome', …)` stub at `SidebarTreeView.test.tsx:19-20`. So the
+>    argument the old item rested on ("a pane without it makes `/ai` the only authenticated
+>    route with no account menu") is **false** — the account menu is in the header on every
+>    route, mobile included, and the pane must not render one.
+>
+>    The [Chassis](#chassis) structure is therefore nav row → New chat → filter → `<nav>` →
+>    Show more → a `panel-toolbar flex shrink-0 items-center gap-2 border-t px-2 py-1.5`
+>    footer (`SidebarTreeView.tsx:1348`, byte for byte) whose left cell is the **loaded row
+>    count** — the same number `CONVERSATION_FILTER_THRESHOLD` is measured against — in a
+>    `min-w-0 flex-1 truncate text-[11px] text-muted-foreground` span. The right cell is
+>    **empty**: the tree spends it on a Trash `Button`, and the pane has no equivalent
+>    low-frequency destination. The collapsed rail is expand button → `MainNavStripCollapsed`
+>    (only when `embedMainNav`) → `SquarePen` New chat, with **no** `mt-auto` footer —
+>    matching the tree's collapsed branch, whose one `mt-auto` child is that same Trash
+>    button. **`border-t`, never `border-b`**: `toolbar-rule-alignment.test.ts:52-69` now
+>    requires **every** `panel-toolbar` + `border-b` line in a `SELF_BORDERED` file to carry
+>    `h-12` (it used to check only the first, and the tree now has two such rows), and
+>    `:92-105` forbids `/\bpy-\d/` on the first such row. Pane test: **no
+>    `SidebarSessionChrome` mock is needed and none may be added**, and **no** mock of the
+>    pane in `AppLayout.test.tsx` (item 8).
+> 2. **New chat lives at the top of the `/ai` document column, via `HeaderHost` — owner
+>    decision 12's intent preserved, its 2026-08-18 placement amendment overtaken by dev and
+>    re-decided by the owner on 2026-08-22 (ruling 1).** Decision 12 read *"List in the
+>    slide-over drawer + a 'New chat' control in the `/ai` sub-header so a phone user needn't
+>    open the drawer"*; the 2026-08-18 interview moved it to the **48px header slot**, and
+>    **dev then deleted that slot outright**, so the owner re-decided the placement on
+>    2026-08-22. The intent ("a phone user needn't open the drawer") stands and is still
+>    served, and Architect's call 2 (renders at every width) stands. The [Mobile](#mobile)
+>    sentence and the AC line read "the top of the `/ai` page column" from here on.
+>
+>    What dev did: #1377/#1378 retired the header slot entirely. `HeaderHost`
+>    (`shared/components/layout/header-slot.tsx:7-16`) is now the whole file and renders its
+>    children **in place** — `return <div className={fallbackClassName}>{node}</div>`. There
+>    is **no `#app-header-slot` element anywhere in `frontend/src`**: `APP_HEADER_SLOT_ID`
+>    (`header-slot-utils.ts:1`) has no producer and only tests read it. `AppHeaderMain`, the
+>    `occupied` computation and `data-header-kpis` are **all gone** (zero hits), so the old
+>    item's `data-header-kpis` warning is moot and its `AppHeaderMain` fallback-title argument
+>    names nothing. Three guards fail any attempt to put a route title back in the band:
+>    `header-slot.test.tsx:7-19` (*"renders the heading in the document, never in the header
+>    slot"* — it appends a real `#app-header-slot` node and asserts nothing lands in it),
+>    `app-shell-layout.test.ts:304` (`AppLayout` contains no `AppHeaderMain`) and
+>    `AppLayout.test.tsx:140` (*"does not put a route title in the header"*, rendered at
+>    `/ai`). The band is also **44px now, not 48** — `index.css` `--app-header-height:
+>    2.75rem`, enforced by `app-shell-layout.test.ts:120-131`, which additionally asserts
+>    `AppLayout` has no `<header … h-12>` and no `<header … border-b>` — so "the 48px header
+>    slot" was doubly wrong. The one live `h-12` line is the *panel toolbars*'
+>    (`toolbar-rule-alignment.test.ts`).
+>
+>    Mechanism: `AiAssistantPage` renders `<HeaderHost fallbackClassName="mb-1">` as the
+>    **first child inside** its root `<m.div>` (`AiAssistantPage.tsx:229-252` — insert directly
+>    after the root's `className="flex min-h-0 flex-1 flex-col gap-3"` and its `>`), never a
+>    fragment sibling above it: `ai-scroll-chain.test.ts:110-126` scopes to
+>    `export function AiAssistantPage()`, finds the root with
+>    `/return \(\s*<m\.div([\s\S]*?)>/` and then requires a **static** `className="…"` on it,
+>    so a moved root or a `cn(...)` root throws and takes two of its cases down. Inside, the
+>    Library heading-row pattern (`PagesPage.tsx:1037-1058`): `<h1>AI</h1>` on the h1 recipe
+>    `min-w-0 truncate text-[15px] font-semibold sm:text-lg`, plus a ghost `SquarePen` "New
+>    chat" (`data-testid="ai-new-chat"`) calling `startNewConversation()`. Because `HeaderHost`
+>    renders a plain `<div className={fallbackClassName}>`, the row supplies its own layout —
+>    `flex min-w-0 items-center justify-between gap-3` — and needs no `ml-auto`. It renders at
+>    every width and stays visible while the log scrolls, because `/ai` scrolls its message
+>    pane and not the page (#1218). `routeHeaderTitle` (`header-slot-utils.ts:6-15`) still
+>    answers `AI` for `/ai/c/:id` but now has **no runtime consumer at all**, so it is dead
+>    code and the follow-up "the conversation title in `/ai`'s sub-header on `/ai/c/:id`"
+>    becomes "in the `/ai` heading row". **The pane's own full-width New chat and the collapsed
+>    rail's glyph stay** (owner's choice): the page column's is the one that survives a
+>    collapsed rail, the pane's is the one inside the mobile drawer. **The sub-header bar
+>    stays** (owner, 2026-08-18, unchanged by ruling 1): the
 >    sticky wrapper (`:292-296`), the bordered card (`:297`), the Think toggle (`:389-409`) and
 >    `DiagramTypeSelector` (`:415`) remain; the divider (`:384`) and the `flex-1` spacer (`:298`)
 >    go with the controls they separated, so Think sits left rather than being pushed right by
 >    a spacer with nothing on its left. Nothing pins the bar: `ai-scroll-chain.test.ts` names
 >    only the root and the message pane.
-> 3. **The pane takes no `forceCollapsed` / `onForceExpand`, and there is now a code reason.**
->    `AppLayout.tsx:160-165` gates `forceTreeCollapsed` on `isArticleRoute`, and
->    `ArticleLayoutControlsProvider` receives `null` off article routes (`:418-422`): no layout
->    preset can act on `/ai`. Restored presets (#1368) reach the pane only through the shared
->    `treeSidebarCollapsed`, which is intended.
+> 3. **The pane takes no `forceCollapsed` / `onForceExpand`, and dev removed the only
+>    producer.** (Rewritten 2026-08-22: the conclusion survives, its cited mechanism does
+>    not.) `LayoutPresetMenu.tsx` and `article-layout-controls.tsx` were **deleted** in the
+>    #1391/#1377 shell work — `features/pages/edit-affordance.test.ts:60`/`:62` now assert
+>    `LayoutPresetMenu`'s *absence* from `PageViewPage` and the inspector — and
+>    `forceTreeCollapsed` no longer exists anywhere in `frontend/src`. `AppLayout` passes
+>    neither prop to either sidebar, and there is a **new guard against re-adding them**:
+>    `app-shell-layout.test.ts:268-269` fails if `forceCollapsed` or `forceTreeCollapsed`
+>    reappears in `AppLayout.tsx`. `SidebarTreeView` still *declares* the props
+>    (`:431-439`, used at `:749`, `:773`, `:808`) for its own callers; the pane must not grow
+>    them, and its expand button is a plain `toggleTreeSidebar`. CLAUDE.md says the same in
+>    prose: *"The laptop-width force-collapse of the page tree is gone."*
+>
+>    **What the desktop arms DO carry is `embedMainNav`.** A chassis-level `<MainNavChassisRail
+>    />` now sits outside the workspace card (`AppLayout.tsx:509`), so both desktop sidebars
+>    pass `embedMainNav={false}` and both drawer sidebars pass bare `embedMainNav`. The pane
+>    needs the same prop (`embedMainNav?: boolean`, defaulting to `true`) or the desktop arm
+>    renders a second Pages/AI/Graph strip beside the chassis rail. Two literals in
+>    `AppLayout.tsx` are grepped verbatim by `app-shell-layout.test.ts:300-305` —
+>    `SettingsSidebar embedMainNav={false}`, `SidebarTreeView embedMainNav={false}` and
+>    `SidebarTreeView onNavigate={closeMobileSidebar} embedMainNav` — so the three-arm ternary
+>    must not reorder them out of existence, and `:241-250` additionally requires
+>    `<SidebarTreeView` to appear inside `app-workspace` and before `id="main-content"`.
 > 4. **`SourceThumbnail` is viewport-gated in PR 2 (owner's decision, 2026-08-18).** #1362
 >    renders a `SourceThumbnail` in `CitationChips` (on every answer) and `SourceCitations`,
 >    each fetching the full attachment through `useAuthenticatedSrc` at mount
@@ -133,9 +180,10 @@
 >    `image-source.ts:1`/`:31` already gates `isImageSource` on the contract's
 >    `ATTACHMENT_URL_PATTERN` (`packages/contracts/src/schemas/llm.ts:220`), the last gate
 >    before `<img>` — PR 2 adds only the `target.kind !== 'none'` half. PR 2's CLAUDE.md work
->    is the DeepSearchToggle sentence (the reset keys on `activeThreadId`), the rail-contract
->    sentence ("Both tree implementations … render in the same rail", now `:265`), the
->    two-action-sets sentence (`:305`) and the new pane paragraph — which must **not** contain
+>    is the DeepSearchToggle sentence (the reset keys on `activeThreadId`, now `:66`), the
+>    rail-contract sentence ("Both tree implementations … render in the same rail", now
+>    `:278`), the two-action-sets sentence (now `:318`, and see item 9 — dev has already made
+>    its Generate clause false) and the new pane paragraph — which must **not** contain
 >    the string `#1115`, or `frontend/src/docs-image-retrieval-record.test.ts:69-95` fails
 >    (every `#1115`-mentioning CLAUDE.md paragraph must open with a declared prefix or be a
 >    declared cross-reference).
@@ -143,24 +191,40 @@
 >    pushes `path: '/ai?q=' + encodeURIComponent(q)`), so the `?q=` prefill has two callers to
 >    keep working; the "exactly three producers of `/ai?pageId=`" count is unchanged.
 > 7. **The pane owes the `#1218` chain nothing, footer included.** It is a sibling of `<main>`
->    under `panel-wrapper` (`AppLayout.tsx:515`), and `ai-scroll-chain.test.ts:142-148` names
->    only `AppLayout`, `PageTransition` and `AiAssistantPage`. Inside the aside the footer is
->    one more `shrink-0` row: nav row (`h-12 shrink-0`) → New chat → filter → `<nav
->    className="min-h-0 flex-1 overflow-y-auto">` → Show more → session chrome.
-> 8. **Anchors.** Everything else is renumbering and is carried by the PR 2 plan, not repeated
->    here: `AppLayout.tsx` (drawer ternary `:500-502`, desktop `:519-528`, `AiProvider :417`,
->    drawer-close effect `:339-341`, `panel-wrapper :515`), `AppLayout.test.tsx:299-332` (the
->    `/ai` leg to invert is `:311-320`; `SettingsSidebar` is deliberately unmocked there — do
->    the same for the pane), `AppLayout.test.tsx:628-643` (the "issues no AI requests" test,
->    spec `:678-693`), `SidebarTreeView.tsx` chassis anchors (+5…+10; `SECTION_LABEL` `:149`
->    still module-private; `isAiRoute` still `pathname === '/ai'` at `:513`; both `#417` tests
->    at `SidebarTreeView.test.tsx:368`/`:374`; still 26 `isAiRoute` occurrences),
->    `UserMenu.tsx:34`/`:50` (recipe unchanged, `align` prop added; its `:38-41` comment about
->    the trigger being "in the top-right of the header on `/ai`" is stale since #1364 — fix in
->    passing), `SettingsSidebar.tsx:135-146`, `index.css:925-943` (`nm-action-destructive`;
->    `destructive-treatment.test.ts`'s ratchet is still 21 after #1372 moved the file under
->    it), `04-frontend-structure.md:27` (the fAI node string grew under #1362 — append, don't
->    replace), `09-flow-rag-chat.md:692` (the "conversation switch on `/ai`" sentence, spec
+>    under `app-workspace` (`AppLayout.tsx:517`), itself under `panel-wrapper` (`:510-516`),
+>    and `ai-scroll-chain.test.ts:145-151` names only `AppLayout`, `PageTransition` and
+>    `AiAssistantPage`. Inside the aside the footer is one more `shrink-0` row: nav row
+>    (`h-12 shrink-0`, rendered only when `embedMainNav`) → New chat → filter → `<nav
+>    className="min-h-0 flex-1 overflow-y-auto">` → Show more → footer. One constraint from
+>    the neighbouring guard: `scroll-padding-mask.test.ts:82` asserts `AppLayout` contains no
+>    responsive `pt-` variant anywhere, so do not add one while wiring the pane.
+> 8. **Anchors** (re-read 2026-08-22 at `a6a3d329`). Everything else is renumbering and is
+>    carried by the PR 2 plan, not repeated
+>    here: `AppLayout.tsx` (drawer ternary `:408-410`, desktop slot `:521-525`, `AiProvider
+>    :351`, drawer-close effect `:317-320`, `panel-wrapper :510-516`, `app-workspace :517`,
+>    the new `<MainNavChassisRail />` at `:509`, and `isExistingArticlePath` renamed to
+>    `isArticlePath` at `:28`), `AppLayout.test.tsx:357-390` (the
+>    `/ai` leg to invert is `:368-379`; `SettingsSidebar` is deliberately unmocked there — do
+>    the same for the pane; the file now also mocks `NotificationBell` `:67` and `UserMenu`
+>    `:71`, and its `use-media-query` stub `:78` gained `useIsInspectorWideLayout`),
+>    `AppLayout.test.tsx:742-758` (the "issues no AI requests" test,
+>    spec `:678-693`), `SidebarTreeView.tsx` chassis anchors (`SECTION_LABEL` `:151`
+>    still module-private; the nav row `:873` now wrapped in `{embedMainNav && (…)}`, with a
+>    **second** bordered `panel-toolbar … h-12` space row at `:890` and a second collapse
+>    button at `:1087-1096` for the `!embedMainNav` branch; the footer `:1348`; the resize
+>    handle `:1373-1401`, whose double-click **resets to 282, not 280** — `ui-store.ts:51`
+>    `treeSidebarWidth: 282`; `isAiRoute` still `pathname === '/ai'` at `:522`; both `#417`
+>    tests at `SidebarTreeView.test.tsx:368`/`:374`; still 26 `isAiRoute` occurrences),
+>    `UserMenu.tsx:34`/`:51` (recipe unchanged, `align` prop added; **its `:39-41` comment has
+>    already been corrected in dev** — it now says "in the header session cluster", which is
+>    true, so PR 2 has nothing to fix in passing there and the step should be struck),
+>    `SettingsSidebar.tsx:147-153`, `index.css:1132-1150` (`nm-action-destructive`, same
+>    shape, still `&:hover:not(:disabled)` at `:1136-1139` and still no `&[data-highlighted]`;
+>    `destructive-treatment.test.ts`'s ratchet is still 21),
+>    `04-frontend-structure.md:27` (the fAI node string **changed again** under the shell work
+>    — `AiDock`/`AiDockSheet` dropped and the inspector clause reworded — so re-derive the
+>    append from the current string, and `:129-138` is now `:150-159`, `:259-261` now
+>    `:278-280`), `09-flow-rag-chat.md:691-693` (the "conversation switch on `/ai`" sentence, spec
 >    `:391-397` — moved ~+300 lines by #1115's docs), `docs/architecture/README.md`'s table at
 >    `:43-63` — the new row must be worded as the narrower case (a new **route inside an
 >    existing feature**, or a provider's data model changing), or it duplicates the row already
@@ -172,6 +236,36 @@
 >    `backend/src/domains/llm/services/history-budget.ts`, which already implements the
 >    whole-exchanges walk with the orphan user turn dropped; call 10's `page_ref` write landed
 >    beside `llm-ask.ts:373-379`. Mark both decided rather than open.
+> 9. **Create skills (#1401) are intended on BOTH surfaces, and decision 13's `/ai` list grows
+>    by five — owner rulings 2 and 3, 2026-08-22.** #1401 added a fifth block of actions to
+>    `AssistantActionSelect` — `CreateSkillAction = 'create-spec' | 'create-guide' |
+>    'create-notes' | 'create-postmortem' | 'create-custom'` (`:29-30`), rendered
+>    unconditionally at `:217-223`, with `applyAssistantAction` mapping `create-*` →
+>    `setCreateSkill(id); setMode('generate')` (`:102-125`) — and gave the **dock** a
+>    `runCreateSkill` path to `POST /llm/generate` with an *Apply to Page* draft card
+>    (`dock/use-dock-actions.ts`, `dock/DockDraftCard.tsx`, the five-item empty-state picker
+>    at `DockPanel.tsx:570-600`), deleting the effect that used to keep `generate` off the
+>    dock. It is pinned green by `dock/AiDock.create-skills.test.tsx:107-117`.
+>
+>    **The owner ruled this intended (ruling 2): keep it.** It makes CLAUDE.md's standing
+>    sentence *"the article-side dock deliberately does not [offer Generate]"* false in dev
+>    already — a pre-existing dev/doc inconsistency PR 2 did not create — so PR 2's docs task
+>    rewrites that sentence to the new rule rather than reverting a shipped feature. The same
+>    paragraph's closing *"layout presets still expand it"* names the feature item 3 records
+>    as deleted, and is fixed in the same edit.
+>
+>    **Decision 13's "drop the rewrite skills and Diagram from `/ai`" half still stands**, so
+>    the `actions` allow-list restructure stays in PR 2, with these three lists (ruling 3):
+>    `AI_HOME_ACTIONS = ['ask', 'generate', ...CREATE_SKILL_ACTIONS]`;
+>    `DOCK_ACTIONS = ['ask', ...IMPROVEMENT_TYPES, 'diagram', 'generate',
+>    ...CREATE_SKILL_ACTIONS]`; `CREATE_SKILL_ACTIONS` = the five `create-*` ids, sourced from
+>    `features/ai/assistant-actions.ts` alongside the `AssistantAction` /
+>    `CreateSkillAction` type re-export. `AssistantActionSelect` gains `actions` replacing
+>    `includeGenerate`, its #1401 create-skills section renders **iff** the passed list
+>    carries those ids, and `applyAssistantAction`'s `create-*` mapping is preserved
+>    unchanged. **The URL-mode allow-list on AI routes stays `ask | generate` only**:
+>    `create-*` is never a URL `mode` value — `mode=generate` is the URL form and the skill is
+>    picked in-app — so `isAiHomeAction` needs no create entries.
 
 ## Problem
 
