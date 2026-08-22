@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useId, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../shared/lib/api';
@@ -66,6 +66,31 @@ interface CompareRun {
   error: string | null;
 }
 
+type JudgementSide = 'live' | 'candidate' | 'neither' | 'both';
+
+interface JudgedVerdict {
+  judgementCount: number;
+  liveBetter: number;
+  candidateBetter: number;
+  both: number;
+  neither: number;
+  mcnemar: {
+    wins: number;
+    losses: number;
+    pValue: number | null;
+    significant: boolean;
+    direction: 'improvement' | 'regression' | 'none';
+  } | null;
+  recall: { live: number; candidate: number } | null;
+  mrr: { live: number; candidate: number } | null;
+  minJudgementsForP: number;
+}
+
+interface JudgementsView {
+  judgements: Record<string, JudgementSide>;
+  verdict: JudgedVerdict;
+}
+
 const inputClass =
   'w-20 rounded-md border border-border-interactive bg-background/50 px-2 py-1.5 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring';
 
@@ -74,6 +99,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
+  const queryClient = useQueryClient();
   const [days, setDays] = useState(30);
   const [limit, setLimit] = useState(50);
   const [topK, setTopK] = useState(10);
@@ -89,6 +115,27 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
       // polls share this card while a run is under way.
       return status === 'queued' || status === 'running' ? 5_000 : false;
     },
+  });
+
+  // Mode 2 — fetched once the run completes; every judgement POST answers the
+  // refreshed view, which replaces this cache entry rather than refetching.
+  const { data: judgementView } = useQuery<JudgementsView>({
+    queryKey: ['shadow-compare-judgements', runId],
+    queryFn: () => apiFetch(`/admin/embedding/shadow-migration/compare/${runId}/judgements`),
+    enabled: runId !== null && run?.status === 'completed',
+  });
+
+  const judge = useMutation({
+    mutationFn: ({ queryId, side }: { queryId: string; side: JudgementSide }) =>
+      apiFetch<JudgementsView>(`/admin/embedding/shadow-migration/compare/${runId}/judgements`, {
+        method: 'POST',
+        body: JSON.stringify({ queryId, side }),
+      }),
+    onSuccess: (view) => {
+      queryClient.setQueryData(['shadow-compare-judgements', runId], view);
+    },
+    onError: (err) =>
+      toast.error(err instanceof Error ? err.message : 'Could not record the judgement'),
   });
 
   const start = useMutation({
@@ -180,12 +227,32 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
           <p>{run.error ?? 'The comparison failed.'}</p>
         </div>
       )}
-      {run?.status === 'completed' && run.result && <CompareResult report={run.result} />}
+      {run?.status === 'completed' && run.result && (
+        <CompareResult
+          report={run.result}
+          judgements={judgementView?.judgements ?? {}}
+          verdict={judgementView?.verdict ?? null}
+          judging={judge.isPending}
+          onJudge={(queryId, side) => judge.mutate({ queryId, side })}
+        />
+      )}
     </div>
   );
 }
 
-function CompareResult({ report }: { report: CompareReport }) {
+function CompareResult({
+  report,
+  judgements,
+  verdict,
+  judging,
+  onJudge,
+}: {
+  report: CompareReport;
+  judgements: Record<string, JudgementSide>;
+  verdict: JudgedVerdict | null;
+  judging: boolean;
+  onJudge: (queryId: string, side: JudgementSide) => void;
+}) {
   // Rank-only disagreements (same set, different order) count: the head
   // moving IS the movement an admin needs to read.
   const disagreements = report.queries.filter((row) => row.top1Changed || row.jaccard < 1);
@@ -210,6 +277,7 @@ function CompareResult({ report }: { report: CompareReport }) {
           value={`${report.agreement.disagreementCount}/${report.queryCount}`}
         />
       </div>
+      {verdict && <VerdictLine verdict={verdict} />}
       {disagreements.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           Both models returned the same pages in the same order for every sampled query.
@@ -230,10 +298,97 @@ function CompareResult({ report }: { report: CompareReport }) {
                   pages={row.candidate.pages}
                 />
               </div>
+              <JudgementRow
+                query={row.query}
+                judged={judgements[row.id]}
+                judging={judging}
+                onJudge={(side) => onJudge(row.id, side)}
+              />
             </li>
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/**
+ * The Mode 2 verdict line. It names its own basis (N judgements for this
+ * model pair), and quotes McNemar's p ONLY when the server did — below the
+ * floor it states how many judgements are still needed, because a p over a
+ * handful of clicks reads as a verdict the evidence cannot carry.
+ */
+function VerdictLine({ verdict }: { verdict: JudgedVerdict }) {
+  if (verdict.judgementCount === 0) {
+    return (
+      <p className="text-xs text-muted-foreground" data-testid="shadow-compare-verdict">
+        No judgements yet for this model pair — pick the better side on a disagreement below to
+        start building a judged verdict.
+      </p>
+    );
+  }
+  const n = verdict.judgementCount;
+  const p = verdict.mcnemar?.pValue;
+  return (
+    <p className="text-xs text-muted-foreground" data-testid="shadow-compare-verdict">
+      <span className="font-medium text-foreground">
+        Judged: {n} {n === 1 ? 'judgement' : 'judgements'} for this model pair
+      </span>{' '}
+      — candidate better on {verdict.candidateBetter}, live better on {verdict.liveBetter}
+      {verdict.both > 0 ? `, both good on ${verdict.both}` : ''}
+      {verdict.neither > 0 ? `, neither on ${verdict.neither}` : ''}.{' '}
+      {p !== null && p !== undefined && verdict.mcnemar
+        ? `McNemar p = ${p < 0.001 ? '< 0.001' : p.toFixed(3)}${
+            verdict.mcnemar.significant
+              ? verdict.mcnemar.direction === 'improvement'
+                ? ' — significant, favouring the candidate'
+                : ' — significant, favouring the live model'
+              : ' — not significant'
+          }.`
+        : `${n} of ${verdict.minJudgementsForP} judgements before a p-value is quoted.`}
+    </p>
+  );
+}
+
+function JudgementRow({
+  query,
+  judged,
+  judging,
+  onJudge,
+}: {
+  query: string;
+  judged: JudgementSide | undefined;
+  judging: boolean;
+  onJudge: (side: JudgementSide) => void;
+}) {
+  const captionId = useId();
+  const sides: Array<{ side: JudgementSide; label: string }> = [
+    { side: 'live', label: 'Live' },
+    { side: 'candidate', label: 'Candidate' },
+    { side: 'neither', label: 'Neither' },
+    { side: 'both', label: 'Both' },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label={`Which answered better: ${query}`}
+      className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2"
+    >
+      <span id={captionId} className="text-xs text-muted-foreground">
+        Which answered better?
+      </span>
+      {sides.map(({ side, label }) => (
+        <button
+          key={side}
+          type="button"
+          className="nm-button-ghost"
+          aria-pressed={judged === side}
+          disabled={judging}
+          onClick={() => onJudge(side)}
+        >
+          {label}
+        </button>
+      ))}
     </div>
   );
 }

@@ -83,16 +83,42 @@ const COMPLETED_RESULT = {
   ],
 };
 
+const EMPTY_VERDICT = {
+  judgementCount: 0,
+  liveBetter: 0,
+  candidateBetter: 0,
+  both: 0,
+  neither: 0,
+  mcnemar: null,
+  recall: null,
+  mrr: null,
+  minJudgementsForP: 20,
+};
+
 function mockApi(opts: {
   run?: Partial<Run>;
   capture?: Array<{ url: string; method: string; body?: string }>;
   runSequence?: Array<Partial<Run>>;
+  judgements?: Record<string, string>;
+  verdict?: object;
+  judgementResponse?: object;
 }) {
   let polls = 0;
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
     const method = init?.method ?? 'GET';
     opts.capture?.push({ url, method, body: typeof init?.body === 'string' ? init.body : undefined });
+    if (url.includes('/judgements')) {
+      if (method === 'POST' && opts.judgementResponse) {
+        return new Response(JSON.stringify(opts.judgementResponse), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify({ judgements: opts.judgements ?? {}, verdict: opts.verdict ?? EMPTY_VERDICT }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    }
     if (url.includes('/compare/') && method === 'GET') {
       const seq = opts.runSequence;
       const override = seq ? seq[Math.min(polls++, seq.length - 1)] : opts.run;
@@ -210,6 +236,88 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     const result = await screen.findByTestId('shadow-compare-result');
     expect(within(result).getByText(/same pages/i)).toBeInTheDocument();
     expect(within(result).queryAllByTestId('shadow-compare-disagreement')).toHaveLength(0);
+  });
+
+  it('each disagreement offers the four judgement sides; a pick posts and renders pressed from the response (Mode 2)', async () => {
+    const capture: Array<{ url: string; method: string; body?: string }> = [];
+    mockApi({
+      capture,
+      judgementResponse: {
+        judgements: { 'query-1': 'candidate' },
+        verdict: { ...EMPTY_VERDICT, judgementCount: 1, candidateBetter: 1 },
+      },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const rows = await screen.findAllByTestId('shadow-compare-disagreement');
+
+    // Each row's controls are one labelled group, so twenty "Candidate"
+    // buttons stay tellable apart for a screen reader.
+    const group = within(rows[0]!).getByRole('group', { name: /how to configure sync/ });
+    for (const name of ['Live', 'Candidate', 'Neither', 'Both']) {
+      expect(within(group).getByRole('button', { name })).toBeInTheDocument();
+    }
+
+    fireEvent.click(within(group).getByRole('button', { name: 'Candidate' }));
+    await waitFor(() => {
+      const post = capture.find((c) => c.method === 'POST' && c.url.includes('/judgements'));
+      expect(post?.body).toBe(JSON.stringify({ queryId: 'query-1', side: 'candidate' }));
+    });
+    await waitFor(() => {
+      expect(within(group).getByRole('button', { name: 'Candidate' })).toHaveAttribute('aria-pressed', 'true');
+    });
+    expect(within(group).getByRole('button', { name: 'Live' })).toHaveAttribute('aria-pressed', 'false');
+    // The verdict updates from the same response.
+    expect(screen.getByTestId('shadow-compare-verdict')).toHaveTextContent(/1 judgement/i);
+  });
+
+  it('renders stored judgements as pressed on load, and names N-of-20 instead of quoting a premature p', async () => {
+    mockApi({
+      judgements: { 'query-2': 'live' },
+      verdict: {
+        ...EMPTY_VERDICT,
+        judgementCount: 5,
+        liveBetter: 3,
+        candidateBetter: 2,
+        mcnemar: { wins: 2, losses: 3, pValue: null, significant: false, direction: 'none' },
+      },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const rows = await screen.findAllByTestId('shadow-compare-disagreement');
+    const group = within(rows[1]!).getByRole('group', { name: /reset password/ });
+    await waitFor(() => {
+      expect(within(group).getByRole('button', { name: 'Live' })).toHaveAttribute('aria-pressed', 'true');
+    });
+    const verdict = screen.getByTestId('shadow-compare-verdict').textContent ?? '';
+    expect(verdict).toMatch(/5 judgements/i);
+    expect(verdict).toMatch(/candidate better on 2/i);
+    expect(verdict).toMatch(/live better on 3/i);
+    expect(verdict).toMatch(/5 of 20 judgements/i);
+    expect(verdict).not.toMatch(/p =/);
+  });
+
+  it('quotes McNemar p with its direction once the pair has enough judgements', async () => {
+    mockApi({
+      verdict: {
+        ...EMPTY_VERDICT,
+        judgementCount: 24,
+        liveBetter: 4,
+        candidateBetter: 18,
+        both: 1,
+        neither: 1,
+        mcnemar: { wins: 15, losses: 2, pValue: 0.0023, significant: true, direction: 'improvement' },
+        recall: { live: 0.4, candidate: 0.95 },
+        mrr: { live: 0.35, candidate: 0.9 },
+      },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-result');
+    const verdict = await screen.findByTestId('shadow-compare-verdict');
+    expect(verdict).toHaveTextContent(/24 judgements/i);
+    expect(verdict).toHaveTextContent(/p = 0.002/);
+    expect(verdict).toHaveTextContent(/favouring the candidate/i);
   });
 
   it('a failed run is an amber status strip carrying the server sentence', async () => {

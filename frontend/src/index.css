@@ -1579,6 +1579,24 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   color: var(--color-foreground);
 }
 
+/* #1260 — the shadow comparison's judgement choices (Live / Candidate /
+   Neither / Both) are `nm-button-ghost` toggles carrying `aria-pressed`, and
+   without this rule the chosen one rendered identically to its neighbours —
+   the exact invisible-pressed-state defect the icon-button rule above exists
+   to prevent. Same neutral recipe (never Steel: four toggles lighting up the
+   accent read as four primary buttons), same plain-CSS placement rules: not
+   nested in the `@utility`, and after the media-query blocks. */
+.nm-button-ghost[aria-pressed='true'] {
+  background-color: var(--color-background);
+  border-color: var(--color-border-interactive);
+  color: var(--color-foreground);
+}
+
+.nm-button-ghost[aria-pressed='true']:hover {
+  background-color: var(--color-accent);
+  color: var(--color-foreground);
+}
+
 /* ===========================
    SKELETON LOADER
    =========================== */
