@@ -454,25 +454,37 @@ export function ArticleRightPane({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const target = e.target as HTMLElement | null;
+        const isEditable =
+          target &&
+          (target.tagName === 'INPUT' ||
+            target.tagName === 'TEXTAREA' ||
+            target.isContentEditable ||
+            Boolean(target.closest?.('[contenteditable="true"]')));
+        if (isEditable) return;
+
         const key = e.key.toLowerCase();
         if (key === 'o') {
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
           setActiveInspectorView('outline');
+          handleExpandSidebar();
         } else if (key === 'd') {
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
           setActiveInspectorView('details');
+          handleExpandSidebar();
         } else if (key === 'n') {
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
           setActiveInspectorView('notes');
+          handleExpandSidebar();
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [handleExpandSidebar]);
 
   // Listen to open-sidebar requests from inline comment popovers
   useEffect(() => {
@@ -1566,7 +1578,7 @@ export function ArticleRightPane({
         </div>
       )}
 
-      {activeInspectorView === 'notes' && id && (
+      {activeInspectorView === 'notes' && (
         <div
           id="page-context-panel-notes"
           role="tabpanel"

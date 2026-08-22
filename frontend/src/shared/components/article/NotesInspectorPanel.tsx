@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { MessageSquare, Plus, Loader2 } from 'lucide-react';
+import { MessageSquare, Plus, Loader2, AlertCircle, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '../../lib/api';
 import { CommentForm } from './CommentForm';
@@ -8,7 +8,7 @@ import { CommentThread, type Comment } from './CommentThread';
 import { cn } from '../../lib/cn';
 
 export interface NotesInspectorPanelProps {
-  pageId: string;
+  pageId: string | undefined | null;
   className?: string;
   onJumpToAnchor?: (commentId: string) => void;
 }
@@ -35,23 +35,27 @@ export function usePageNotes(pageId: string | undefined | null) {
   });
 }
 
-function useAddNote(pageId: string) {
+function useAddNote(pageId: string | undefined | null) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { body: string; parentId?: string }) =>
-      apiFetch<Comment>(`/pages/${encodeURIComponent(pageId)}/comments`, {
+    mutationFn: (data: { body: string; parentId?: string }) => {
+      if (!pageId) throw new Error('Cannot add notes to an unsaved page.');
+      return apiFetch<Comment>(`/pages/${encodeURIComponent(pageId)}/comments`, {
         method: 'POST',
         body: JSON.stringify(data),
-      }),
+      });
+    },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['comments', pageId] });
+      if (pageId) {
+        void queryClient.invalidateQueries({ queryKey: ['comments', pageId] });
+      }
       toast.success('Note added');
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to post note'),
   });
 }
 
-function useResolveNote(pageId: string) {
+function useResolveNote(pageId: string | undefined | null) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ commentId, resolved }: { commentId: string; resolved: boolean }) => {
@@ -61,14 +65,18 @@ function useResolveNote(pageId: string) {
           method: 'POST',
         });
       } catch {
-        return await apiFetch(`/pages/${encodeURIComponent(pageId)}/comments/${encodeURIComponent(commentId)}/resolve`, {
-          method: 'PUT',
-          body: JSON.stringify({ resolved }),
-        });
+        if (pageId) {
+          return await apiFetch(`/pages/${encodeURIComponent(pageId)}/comments/${encodeURIComponent(commentId)}/resolve`, {
+            method: 'PUT',
+            body: JSON.stringify({ resolved }),
+          });
+        }
       }
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['comments', pageId] });
+      if (pageId) {
+        void queryClient.invalidateQueries({ queryKey: ['comments', pageId] });
+      }
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to update note'),
   });
@@ -83,7 +91,7 @@ export function NotesInspectorPanel({
   const [selectedCommentId, setSelectedCommentId] = useState<string | null>(null);
   const [showNewNoteForm, setShowNewNoteForm] = useState(false);
 
-  const { data: comments, isLoading } = usePageNotes(pageId);
+  const { data: comments, isLoading, isError, error, refetch } = usePageNotes(pageId);
   const addNote = useAddNote(pageId);
   const resolveNote = useResolveNote(pageId);
 
@@ -155,20 +163,16 @@ export function NotesInspectorPanel({
   }, [resolvedThreads]);
 
   const handleNewNoteSubmit = useCallback(
-    (body: string) => {
-      addNote.mutate(
-        { body },
-        {
-          onSuccess: () => setShowNewNoteForm(false),
-        },
-      );
+    async (body: string) => {
+      await addNote.mutateAsync({ body });
+      setShowNewNoteForm(false);
     },
     [addNote],
   );
 
   const handleReply = useCallback(
-    (parentId: string, body: string) => {
-      addNote.mutate({ body, parentId });
+    async (parentId: string, body: string) => {
+      await addNote.mutateAsync({ body, parentId });
     },
     [addNote],
   );
@@ -187,6 +191,21 @@ export function NotesInspectorPanel({
     [resolveNote],
   );
 
+  if (!pageId) {
+    return (
+      <div
+        className={cn('flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center text-xs text-muted-foreground', className)}
+        data-testid="notes-inspector-panel"
+      >
+        <MessageSquare size={28} className="text-muted-foreground/30 mb-2" />
+        <p className="font-medium text-foreground/80 mb-1">Notes are available on saved pages</p>
+        <p className="text-[11px] leading-relaxed">
+          Save this page to create notes and collaborate with your team.
+        </p>
+      </div>
+    );
+  }
+
   const displayedThreads = filter === 'open' ? unresolvedThreads : resolvedThreads;
 
   return (
@@ -197,14 +216,19 @@ export function NotesInspectorPanel({
       {/* Header with Filters and Add Note button */}
       <div className="border-b border-border p-3">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1 rounded-md bg-muted p-0.5 text-xs">
+          <div role="tablist" aria-label="Filter notes by status" className="flex items-center gap-1 rounded-md bg-muted p-0.5 text-xs">
             <button
               type="button"
+              role="tab"
+              id="notes-tab-open"
+              aria-selected={filter === 'open'}
+              aria-controls="notes-threads-list"
+              tabIndex={filter === 'open' ? 0 : -1}
               onClick={() => setFilter('open')}
               className={cn(
-                'rounded px-2.5 py-1 font-medium transition-colors',
+                'inline-flex h-7 items-center justify-center rounded px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 filter === 'open'
-                  ? 'bg-background text-foreground'
+                  ? 'bg-card text-foreground shadow-xs'
                   : 'text-muted-foreground hover:text-foreground',
               )}
               data-testid="notes-filter-open"
@@ -213,11 +237,16 @@ export function NotesInspectorPanel({
             </button>
             <button
               type="button"
+              role="tab"
+              id="notes-tab-resolved"
+              aria-selected={filter === 'resolved'}
+              aria-controls="notes-threads-list"
+              tabIndex={filter === 'resolved' ? 0 : -1}
               onClick={() => setFilter('resolved')}
               className={cn(
-                'rounded px-2.5 py-1 font-medium transition-colors',
+                'inline-flex h-7 items-center justify-center rounded px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 filter === 'resolved'
-                  ? 'bg-background text-foreground'
+                  ? 'bg-card text-foreground shadow-xs'
                   : 'text-muted-foreground hover:text-foreground',
               )}
               data-testid="notes-filter-resolved"
@@ -229,35 +258,57 @@ export function NotesInspectorPanel({
           <button
             type="button"
             onClick={() => setShowNewNoteForm((v) => !v)}
-            className="flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-foreground hover:bg-muted transition-colors"
+            aria-expanded={showNewNoteForm}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border-interactive bg-background px-2.5 text-xs font-medium text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             data-testid="add-page-note-btn"
           >
-            <Plus size={13} />
+            <Plus size={14} />
             <span>New note</span>
           </button>
         </div>
 
         {/* New Note Form */}
         {showNewNoteForm && (
-          <div className="mt-3 rounded-lg border border-border bg-muted/40 p-2.5">
-            <div className="mb-1.5 text-xs font-medium text-foreground">Add Page Note</div>
+          <div className="mt-3 rounded-lg border border-border bg-card p-2.5 shadow-xs">
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Add Page Note</div>
             <CommentForm
               onSubmit={handleNewNoteSubmit}
               onCancel={() => setShowNewNoteForm(false)}
               isSubmitting={addNote.isPending}
               autoFocus
-              placeholder="Write a note about this page…"
+              placeholder="Write a note about this page… (⌘Enter to post)"
             />
           </div>
         )}
       </div>
 
       {/* Threads List */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div
+        id="notes-threads-list"
+        role="region"
+        aria-label={filter === 'open' ? 'Open notes list' : 'Resolved notes list'}
+        className="flex-1 overflow-y-auto p-3 space-y-3"
+      >
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-12 text-xs text-muted-foreground">
             <Loader2 size={20} className="animate-spin text-primary mb-2" />
             <span>Loading notes…</span>
+          </div>
+        ) : isError ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center text-xs text-muted-foreground px-4" role="alert">
+            <AlertCircle size={24} className="text-destructive mb-2 opacity-80" />
+            <p className="font-medium text-foreground mb-1">Failed to load notes</p>
+            <p className="text-[11px] leading-relaxed mb-3">
+              {error instanceof Error ? error.message : 'An error occurred while fetching page notes.'}
+            </p>
+            <button
+              type="button"
+              onClick={() => void refetch()}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <RotateCcw size={12} />
+              <span>Retry</span>
+            </button>
           </div>
         ) : displayedThreads.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-center text-xs text-muted-foreground px-4">

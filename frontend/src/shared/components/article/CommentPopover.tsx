@@ -361,7 +361,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-2">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-action text-xs font-semibold text-action-foreground">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground border border-border/50">
             {author.charAt(0).toUpperCase()}
           </div>
           <span className="truncate text-xs font-semibold text-foreground">{author}</span>
@@ -373,13 +373,13 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
           {isResolved && (
             <span
               data-testid="popover-resolved-badge"
-              className="rounded-full bg-success/15 px-1.5 py-0.5 text-[11px] font-medium text-success"
+              className="rounded-full bg-muted border border-border/60 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
             >
               Resolved
             </span>
           )}
           {isDraftNote && (
-            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+            <span className="rounded-full bg-muted border border-border/60 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
               Draft
             </span>
           )}
@@ -407,7 +407,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
       {/* Quoted highlight snippet */}
       {effectiveComment?.anchorData?.quote && (
         <div
-          className="mt-2 flex items-start gap-1 rounded border-l-2 border-primary/70 bg-muted/40 px-2 py-1 text-xs italic text-muted-foreground"
+          className="mt-2 flex items-start gap-1.5 rounded border-l-2 border-border-interactive bg-muted/50 px-2 py-1 text-xs italic text-muted-foreground"
           data-testid="popover-comment-quote"
         >
           <Quote size={11} className="mt-0.5 shrink-0 opacity-70" />
@@ -420,7 +420,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
         {effectiveComment ? (
           <div>
             <p
-              className="text-xs text-foreground/90 whitespace-pre-wrap leading-relaxed"
+              className="text-xs text-foreground whitespace-pre-wrap leading-relaxed"
               data-testid="popover-comment-body"
             >
               {effectiveComment.body}
@@ -473,7 +473,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
                     <span className="font-medium text-foreground">{replyAuthor}</span>
                     <span>{formatRelativeTime(reply.createdAt)}</span>
                   </div>
-                  <p className="text-foreground/90 whitespace-pre-wrap">{reply.body}</p>
+                  <p className="text-foreground whitespace-pre-wrap">{reply.body}</p>
                 </div>
               );
             })}
@@ -498,7 +498,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
             }}
             placeholder="Write a reply… (Cmd+Enter to send)"
             rows={2}
-            className="w-full rounded border border-border bg-background p-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full rounded border border-border-interactive bg-background p-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
             autoFocus
             data-testid="popover-reply-input"
           />
@@ -513,7 +513,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
             <button
               type="submit"
               disabled={!replyText.trim() || addReply.isPending}
-              className="rounded bg-action px-2.5 py-1 text-xs font-medium text-action-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
               data-testid="popover-reply-submit-btn"
             >
               {addReply.isPending ? 'Sending…' : 'Reply'}
@@ -549,7 +549,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
                 'flex items-center gap-1 rounded px-2 py-1 transition-colors',
                 isResolved
                   ? 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                  : 'text-success hover:bg-success/10',
+                  : 'text-foreground hover:bg-muted',
               )}
               data-testid="popover-resolve-btn"
             >
