@@ -59,7 +59,7 @@ Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-
 
 N named `openai-compatible` providers in `llm_providers` table, configured via Settings → AI Models. Each use case (chat / summary / quality / auto_tag / embedding) inherits a default or pins an explicit `provider+model` — **except `rerank` (#1104), which never inherits: unassigned means the rerank stage is disabled** (it targets a Cohere/Jina-style `/v1/rerank` endpoint the default provider cannot serve; `resolveRerankUsecase`, not `resolveUsecase`, and a dedicated `rerank-client.ts` sharing the queue/breaker infra) **and `image_embedding` (#1115), which never inherits for the same reason one rung stronger** — a text embedder answers the plain shape with a plausible but wrong vector, so unassigned means the image leg is off (see the multimodal block below). Ollama uses its `/v1` shim — not a separate protocol. Queue + per-provider circuit breakers wrap every outbound call in `openai-compatible-client.ts`.
 
-**Legacy env vars** (`OLLAMA_BASE_URL`, `OPENAI_*`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `LLM_MAX_CONCURRENT_STREAMS_PER_USER`, `COMPENDIQ_LICENSE_KEY`) are **deprecated bootstrap fallbacks** — consulted only on fresh install when the DB row / `admin_settings` value is absent. `EMBEDDING_MODEL` is one rung further gone: it is **fully inert** since migration 054 (#1114) — `llm-provider-bootstrap.ts` keeps it in `DEPRECATED_VARS` only so that setting it logs a notice, and nothing reads its value, so a fresh install resolves the `embedding` use case to the default provider's `default_model` until an admin assigns it. (`EMBEDDING_DIMENSIONS` is unaffected — it is still the fallback for a missing `admin_settings.embedding_dimensions` row.) Don't add new env-driven LLM config; extend the providers table or `admin_settings` instead.
+**Legacy env vars** (`OLLAMA_BASE_URL`, `OPENAI_*`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `LLM_MAX_CONCURRENT_STREAMS_PER_USER`, `COMPENDIQ_LICENSE_KEY`, `RAG_EF_SEARCH`) are **deprecated bootstrap fallbacks** — consulted only on fresh install when the DB row / `admin_settings` value is absent. `EMBEDDING_MODEL` is one rung further gone: it is **fully inert** since migration 054 (#1114) — `llm-provider-bootstrap.ts` keeps it in `DEPRECATED_VARS` only so that setting it logs a notice, and nothing reads its value, so a fresh install resolves the `embedding` use case to the default provider's `default_model` until an admin assigns it. (`EMBEDDING_DIMENSIONS` is unaffected — it is still the fallback for a missing `admin_settings.embedding_dimensions` row.) Don't add new env-driven LLM config; extend the providers table or `admin_settings` instead.
 
 **Deep search reuses `chat` — do not give it a use case (#1112).** Multi-query expansion asks the `chat` model for two paraphrases of the question, retrieves all three phrasings and fuses them (`multi-query-search.ts`, in front of `hybridSearch` — `/api/search` paginates and must never expand). It is one extra completion for a one-sentence rewrite, so a sixth ADR-021 assignment would be a knob every operator has to set before the feature works at all. It is per-request and **default off** (`deepSearch`, the `searchWeb` precedent), it never expands an exact-identifier or pasted-error query (#1107 pins the first, and the second IS the literal FTS matches), and every failure — timeout, open breaker, no assignment, unparseable reply — soft-fails to the original query alone. Design of record: `docs/architecture/09-flow-rag-chat.md`.
 
@@ -123,9 +123,34 @@ top-1 is now unestablished in both languages. So the panel's note states the
 result rather than a pending flag, and the Retrieval tab's keyword-language
 hint names the rebuild cost instead of promising a recall gain. `ef_search` at
 `halfvec(2560)` is **measured, not settled**: effectively exact from 40,
-recall@10 0.9995 at the `RAG_EF_SEARCH=100` default and unchanged to the 1000
+recall@10 0.9995 at the default floor of 100 and unchanged to the 1000
 ceiling — leave it alone and watch **footprint** instead (18.6 MiB of HNSW for
-2,377 vectors, larger than heap and TOAST combined). That was one
+2,377 vectors, larger than heap and TOAST combined). **Since #1285 that floor
+is a knob, not an environment variable**: `admin_settings.rag_ef_search`
+(default 100, range 1–1000 — pgvector's own bound), read through the same
+60-second cached reader as its Retrieval-panel siblings and written by
+`PUT /admin/settings`, with the panel's help text quoting the measurement above
+so nobody raises it hoping for recall. `efSearchFor(k)` in
+`domains/llm/services/hnsw-ef-search.ts` is the ONE form all four kNN probes
+call (retrieval's vector leg, the image leg, `computePageRelationships`, the
+duplicate detector) — it resolves the floor and returns
+`min(1000, max(floor, 2k))`, and a fifth probe needs nothing but `await
+efSearchFor(rawRowCount)` interpolated into a `SET LOCAL` **inside the
+transaction it already owns** (a session-level `SET` leaks into the next
+borrower of that pooled connection). `RAG_EF_SEARCH` survives as a bootstrap
+fallback in `getRagEfSearch`'s row → env → 100 cascade, and it is the LEGACY-LLM-VARS
+kind of deprecated rather than `FTS_LANGUAGE`'s: nothing seeds the row, so the
+variable is still live on every instance that has never saved the panel, which
+is exactly what the startup notice and the panel's own muted line say. **#1285's
+other value went the other way and must stay there**: `TRGM_SIMILARITY_THRESHOLD`
+in `routes/knowledge/search.ts` is FIXED at 0.3 because the fuzzy-title query is
+sargable only through pg_trgm's `%` operator, which compares against the
+`pg_trgm.similarity_threshold` GUC — so the constant must equal the GUC's
+default or the retained `similarity() > $4` stops being exact, and making it a
+knob means moving the GUC too (a `SET LOCAL` per search, i.e. a checked-out
+client where a pooled `query()` does now). Documented as deliberately fixed in
+its JSDoc, in ADMIN-GUIDE's Retrieval section and on the panel's Keyword index
+group; don't "finish the job" by making it configurable. That was one
 cache-resident 2,377-chunk corpus with **build time unmeasured**, so it does not
 license extrapolating to production scale. **The proposed go/no-go, revert
 criteria and measured costs for the Qwen3 cutover live in

@@ -40,6 +40,8 @@ import {
   invalidateRagImageLegCache,
   getRagAnswerMaxImages,
   invalidateRagAnswerMaxImagesCache,
+  getRagEfSearch,
+  invalidateRagEfSearchCache,
 } from '../../core/services/admin-settings-service.js';
 import {
   computeCalibrationStatus,
@@ -365,6 +367,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragImageLegEnabled,
       ragAnswerMaxImages,
       imageEmbeddingTargetDimensions,
+      ragEfSearch,
     ] = await Promise.all([
       getEmbeddingDimensions(),
       getAiGuardrails(),
@@ -417,6 +420,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // per admin action, and a stale one would let a probe fired seconds after
       // the width was saved measure the OLD width and type the column to it.
       getImageEmbeddingTargetDimensions(),
+      // #1285 — the `ef_search` floor, through its own cached reader for the
+      // #1118 reason plus one of its own: this is the only knob on the panel
+      // with a deprecated env var behind it, and the reader owns the
+      // row → `RAG_EF_SEARCH` → 100 cascade. Reading the row here would report
+      // 100 on every instance still running on the variable, i.e. a panel that
+      // contradicts what the kNN probes are doing.
+      getRagEfSearch(),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
@@ -531,6 +541,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // is still the live one. Provider id + model name only: this payload is
       // the settings document, not the provider document.
       ragConfidenceCalibration,
+      // #1285 — the HNSW `ef_search` floor, beside Fetch width on the panel.
+      ragEfSearch,
     };
   });
 
@@ -759,6 +771,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
         'rag_answer_max_images',
         invalidateRagAnswerMaxImagesCache,
         body.ragAnswerMaxImages !== undefined ? String(body.ragAnswerMaxImages) : undefined,
+      ],
+      // #1285 — the `ef_search` floor. The moment this row lands, the
+      // deprecated `RAG_EF_SEARCH` variable stops being consulted: the reader
+      // falls back to it only for an ABSENT row, so the first save on an
+      // instance is also what retires the environment.
+      [
+        'rag_ef_search',
+        invalidateRagEfSearchCache,
+        body.ragEfSearch !== undefined ? String(body.ragEfSearch) : undefined,
       ],
     ];
     const invalidateFor = new Map<string, () => void>();

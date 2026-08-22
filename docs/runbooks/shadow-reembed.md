@@ -489,7 +489,7 @@ leaning on the table should say so.
 | Ingest cost | **~9.4–10× slower.** 4 m 21 s vs 40 m 55 s (275 pages, `german` re-run); 3 m 31 s vs 36 m 13 s over the earlier run's **2,198**-chunk count — see *On the chunk count* below, the same corpus was later counted at 2,377 | same, and *German result* |
 | Query latency | **~12× at concurrency 1** on the dev Mac (224 ms vs 18 ms p50 embedding) | same, latency table |
 | fp16 rounding | **Below the corpus's own rank gaps.** Largest fp16-induced \|Δdistance\| 2.67e-5 against a p01 adjacent-rank gap of 4.44e-5; 0/200 top-1 changes. **Caveat carried from the source: measured at 768 dims with `nomic-embed-text` on real corpus vectors, NOT at 2560 with Qwen3** — it is evidence that fp16 rounding is small relative to rank spacing, not a 2560-dim measurement | #1114 comment, *The fp16 gate*; ADR-012 `#1114` amendment |
-| `ef_search` at `halfvec(2560)` | **Effectively exact from ef = 40.** recall@10 = 0.9995 at the `RAG_EF_SEARCH` default of 100 and unchanged at 200/240/400/1000 | #1114 comment, *`ef_search` at `halfvec(2560)`: effectively exact from 40, and the number to watch is footprint* (2,377 chunks in `kb_eval`, PostgreSQL 17.10 + pgvector 0.8.5, read-only) |
+| `ef_search` at `halfvec(2560)` | **Effectively exact from ef = 40.** recall@10 = 0.9995 at the default floor of 100 (`rag_ef_search`, `RAG_EF_SEARCH` when this was measured) and unchanged at 200/240/400/1000 | #1114 comment, *`ef_search` at `halfvec(2560)`: effectively exact from 40, and the number to watch is footprint* (2,377 chunks in `kb_eval`, PostgreSQL 17.10 + pgvector 0.8.5, read-only) |
 
 **On the two German configurations.** The model gap is the sturdiest thing in
 this data and it does not depend on the stemmer: under `german`, Qwen3 is ahead
@@ -530,7 +530,9 @@ one. The *ratio* is unaffected either way — a *rate* recomputed by mixing the
 two counts would not be, which is the same pages-versus-chunks trap pre-flight
 (ii) warns about, one level up.
 
-**On `ef_search`.** Leave `RAG_EF_SEARCH` at 100. On the 2,377-chunk German
+**On `ef_search`.** Leave **Index search depth** (`admin_settings.rag_ef_search`,
+Settings → AI Models → Retrieval, the setting the deprecated `RAG_EF_SEARCH`
+environment variable became in #1285) at 100. On the 2,377-chunk German
 corpus, recall@10 is 0.9995 at ef = 100 and *identical* at 200, 240, 400 and
 pgvector's 1000 ceiling; the single non-matching row across 2,000 comparisons
 is a 7×10⁻⁷ distance tie at rank 10, inside halfvec's own fp16 quantization

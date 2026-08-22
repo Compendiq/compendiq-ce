@@ -172,6 +172,23 @@ const RagImageLegEnabledSchema = z.boolean();
  * byte budget the cap cannot exceed.
  */
 const RagAnswerMaxImagesSchema = z.number().int().min(0).max(8);
+/**
+ * `rag_ef_search` (#1285) — the HNSW `ef_search` FLOOR every pgvector kNN probe
+ * runs at. Default 100, range [1, 1000].
+ *
+ * The range is **pgvector's own bound**, not a reader-invented one: values
+ * above 1000 are refused by the extension itself, and 0 is not a legal
+ * `ef_search` at all — which is why this floor is 1 and not the 0 that would
+ * read as an off switch. The reader mirrors both ends, treating a `'0'` row as
+ * unset.
+ *
+ * It is a floor, not the per-query value: `efSearchFor` raises it to twice a
+ * probe's raw row count when that is larger. And it is very unlikely to buy
+ * recall — measured on the `halfvec(2560)` corpus the index is effectively
+ * exact from 40 — so the panel's help text quotes that measurement rather than
+ * inviting an operator to raise it.
+ */
+const RagEfSearchSchema = z.number().int().min(1).max(1000);
 
 /**
  * #1115 — `image_embedding_target_dimensions`, the MRL truncation width the
@@ -449,6 +466,13 @@ export const AdminSettingsSchema = z.object({
   /** #1115 P4 — how many retrieved images the answer path shows the model. */
   ragAnswerMaxImages: RagAnswerMaxImagesSchema,
   /**
+   * #1285 — the HNSW `ef_search` floor, required on read for the same reason
+   * as every knob above: the GET resolves it through its own reader, so an
+   * absent row (and a deployment still on the deprecated `RAG_EF_SEARCH` env
+   * var) answers with the value the kNN probes are really using.
+   */
+  ragEfSearch: RagEfSearchSchema,
+  /**
    * #1114 — read-only, and deliberately absent from the update schema below.
    * The server resolves the pair itself when it writes a threshold; a client
    * that could assert this could also assert "still calibrated" for a
@@ -535,6 +559,8 @@ export const UpdateAdminSettingsSchema = z.object({
   ragImageLegEnabled: RagImageLegEnabledSchema.optional(),
   /** #1115 P4 — the Retrieval tab's `Images shown to the model` cap. */
   ragAnswerMaxImages: RagAnswerMaxImagesSchema.optional(),
+  /** #1285 — the Retrieval tab's `Index search depth` floor, beside Fetch width. */
+  ragEfSearch: RagEfSearchSchema.optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;

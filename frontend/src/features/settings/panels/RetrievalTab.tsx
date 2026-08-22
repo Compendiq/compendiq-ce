@@ -71,6 +71,15 @@ interface RetrievalValues {
    */
   ftsLanguage: FtsLanguage;
   ragFetchWidth: number;
+  /**
+   * #1285 — the HNSW `ef_search` FLOOR. It sits beside the fetch width because
+   * the two are coupled: an HNSW scan returns at most `ef_search` rows
+   * whatever the LIMIT says, so a width raised past the floor plateaus
+   * silently. It used to be `RAG_EF_SEARCH`, read at module load, which is
+   * exactly how an admin could raise the width in this panel and have the
+   * recall they expected bounded by a variable they never set.
+   */
+  ragEfSearch: number;
   ragRerankCandidates: number;
   ragConfidenceThreshold: number;
   ragConfidenceThresholdRerank: number;
@@ -137,6 +146,7 @@ interface BenchmarkRun {
 const DEFAULTS: RetrievalValues = {
   ftsLanguage: 'simple',
   ragFetchWidth: 10,
+  ragEfSearch: 100,
   ragRerankCandidates: 30,
   ragConfidenceThreshold: 0,
   ragConfidenceThresholdRerank: 0,
@@ -183,6 +193,16 @@ interface NumericField {
 
 const FIELDS: Record<NumericKey, NumericField> = {
   ragFetchWidth: { key: 'ragFetchWidth', label: 'Fetch width', unit: 'rows / leg', min: 10, max: 200, step: 1 },
+  ragEfSearch: {
+    key: 'ragEfSearch',
+    label: 'Index search depth',
+    unit: 'candidates',
+    // pgvector's own bound, both ends. 0 is not "off" — the extension has no
+    // such value — so the floor is 1 and the reader reads a `'0'` row as unset.
+    min: 1,
+    max: 1000,
+    step: 10,
+  },
   ragRerankCandidates: {
     key: 'ragRerankCandidates',
     label: 'Rerank candidate pool',
@@ -786,6 +806,20 @@ export function RetrievalTab() {
             </div>
           )}
         </div>
+
+        {/*
+          #1285 — the keyword leg's other lever, stated because it is NOT one.
+          Fuzzy title matching is pinned to pg_trgm's own default threshold,
+          which is what lets the query use the GIN index rather than scanning
+          every title; a knob here would have to move the database setting too.
+          Its own sibling paragraph rather than part of the select's
+          description: it describes the leg, not the language control.
+        */}
+        <p className="text-xs text-muted-foreground" data-testid="retrieval-trgm-fixed">
+          Fuzzy title matching is fixed at similarity 0.3 and is not configurable. It is
+          PostgreSQL&apos;s own <code className="font-mono">pg_trgm</code> default, and the title
+          index depends on the two agreeing.
+        </p>
       </Section>
 
       {/* ── Candidate pools ─────────────────────────────────────────────── */}
@@ -808,6 +842,45 @@ export function RetrievalTab() {
             30 under plain fusion scored Recall@5 0.72 against the width-10 baseline&apos;s 0.88.
             The cross-encoder is the stage that turns a wide pool into better answers, so raise
             this together with a rerank provider.
+          </p>
+        </NumberRow>
+
+        {/*
+          #1285 — directly under Fetch width, because that is the coupling this
+          control exists to make visible: an HNSW scan returns at most
+          `ef_search` rows whatever the SQL LIMIT says, so a width raised past
+          the floor plateaus without saying so. It was `RAG_EF_SEARCH` until
+          this release — env-only, read at module load, and absent from the
+          panel that owns every knob around it.
+        */}
+        <NumberRow
+          field={FIELDS.ragEfSearch}
+          value={values.ragEfSearch}
+          onChange={(v) => set('ragEfSearch', v)}
+          defaultValue={DEFAULTS.ragEfSearch}
+        >
+          <p>
+            Candidates the vector index walks per probe. This is a{' '}
+            <span className="text-foreground">floor</span>: each probe runs at this value or at
+            twice the rows it asks for, whichever is larger, capped at pgvector&apos;s limit of
+            1,000.
+          </p>
+          <p>
+            Raising it is not measured to buy recall. On a 2,560-dimension index the search is
+            effectively exact from 40 — recall@10 was 0.9995 at the default 100 and unchanged all
+            the way to 1,000. The cost that does move with it is scan time and index footprint, so
+            watch those rather than expecting better answers.
+          </p>
+          {/*
+            Muted, never amber (ADR-010): this is a fact at rest on every
+            instance that has not saved this panel, not an attention state.
+            Unlike `FTS_LANGUAGE`, nothing seeds this row — so the variable is
+            still in force until the first save, and an operator has to be able
+            to learn that here rather than from a startup log line.
+          */}
+          <p data-testid="retrieval-ef-search-env-note" className="text-xs text-muted-foreground">
+            Set here, not in the environment. <code className="font-mono">RAG_EF_SEARCH</code> is
+            deprecated and is read only while this setting has never been saved.
           </p>
         </NumberRow>
 
@@ -1555,13 +1628,22 @@ function NumberRow({
             onKeyDown={(e) => {
               if (e.key === 'Enter') commit();
             }}
+            // #1285 — the help text under a knob carries the part of the
+            // decision the number cannot: what the value bounds, and what it
+            // does not buy. Printed near the input it was reachable by eye
+            // only; wired here it reaches touch, keyboard and screen readers
+            // too (ADR-010's `DeepSearchToggle` precedent). Every row gets it,
+            // because every row's caveat was equally unreachable.
+            aria-describedby={children ? `${field.key}-help` : undefined}
             className="w-24 rounded-md border border-border-interactive bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-45"
             data-testid={`retrieval-${field.key}`}
           />
           {field.unit && <span className="w-24 text-xs text-muted-foreground">{field.unit}</span>}
         </div>
       </div>
-      <div className="space-y-1.5 text-xs text-muted-foreground">{children}</div>
+      <div id={`${field.key}-help`} className="space-y-1.5 text-xs text-muted-foreground">
+        {children}
+      </div>
       {value !== defaultValue && (
         <button
           type="button"

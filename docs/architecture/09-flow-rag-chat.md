@@ -1389,7 +1389,8 @@ truncates at the requested page count, so the old chunks-vs-pages
 under-delivery is resolved at the source). Widening is order-preserving
 (cosine order is a stable prefix) while `ef_search` is constant — since
 #1106 ef covers the RAW fetch, so the constant range is stage limits
-≤ `RAG_EF_SEARCH/8` = 12, still true at the default width 10; beyond it a
+≤ `rag_ef_search/8` = 12 at the default floor of 100, still true at the
+default width 10; beyond it a
 raised `ef` explores more of the HNSW graph and can surface genuinely nearer
 neighbours above previous results.
 
@@ -1790,7 +1791,23 @@ test pins that.
   corrupts every query vector.
 - **Vector search** uses pgvector's `<=>` cosine distance against an HNSW
   index on `page_embeddings.embedding`. `ef_search` is set per request for
-  a recall/latency trade-off.
+  a recall/latency trade-off — `SET LOCAL` inside the probe's own transaction,
+  never a session-level `SET`, which would leak the value to the next borrower
+  of that pooled connection. The value is
+  `min(1000, max(floor, 2 × raw row count))`, one definition in
+  `domains/llm/services/hnsw-ef-search.ts` shared by all four kNN probes (the
+  vector leg, the image leg, `computePageRelationships` and the duplicate
+  detector). Since **#1285** the floor is `admin_settings.rag_ef_search`
+  (default 100, range 1–1000, 60-second cached reader), edited in
+  Settings → AI Models → Retrieval beside Fetch width — the two are coupled,
+  since an HNSW scan returns at most `ef_search` rows whatever the `LIMIT`
+  says, so a width raised past the floor plateaus silently. It was
+  `RAG_EF_SEARCH`, read at module load, which is exactly how an admin could
+  widen the fetch in the panel and have the recall they expected bounded by a
+  variable they never set; that variable is now a bootstrap fallback consulted
+  only while no row exists, and reported as deprecated at startup. Raising the
+  floor is not measured to buy recall — see the `ef_search` sizing item in
+  ADR-025's neighbourhood (`docs/runbooks/shadow-reembed.md`).
 - **Keyword search** uses the PostgreSQL text-search configuration stored in
   `admin_settings.fts_language` (default `simple`; set `german`, `english`,
   etc. for language-aware stemming), edited in

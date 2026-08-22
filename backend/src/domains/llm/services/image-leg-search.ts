@@ -441,7 +441,7 @@ async function imageKnn(
     // ef_search must cover the RAW fetch — HNSW returns at most `ef_search`
     // rows, so a LIMIT above it silently plateaus. 2x for graph-walk headroom;
     // `efSearchFor` clamps to pgvector's [1, 1000].
-    await client.query(`SET LOCAL hnsw.ef_search = ${efSearchFor(rawLimit)}`);
+    await client.query(`SET LOCAL hnsw.ef_search = ${await efSearchFor(rawLimit)}`);
     // …and the leg's own budget for the scan below (see the constant). The
     // vector leg has no equivalent because a bypass there is not equivalent:
     // it sets `embeddingFailed`, which `/llm/ask` refuses the turn on. This

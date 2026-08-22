@@ -1331,9 +1331,10 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
     // visits is an edge that never reaches page_relationships, so the graph and
     // the related-page suggestions are just thinner than they should be. This is
     // the SAME arithmetic vectorSearch uses (#1113 folded this path into its
-    // tuning scope); TOP_K sits far below the floor, so it resolves to
-    // RAG_EF_SEARCH today and keeps its 2x headroom if TOP_K is ever raised.
-    await client.query(`SET LOCAL hnsw.ef_search = ${efSearchFor(TOP_K)}`);
+    // tuning scope); TOP_K sits far below the floor, so it resolves to the
+    // configured `rag_ef_search` floor today (#1285) and keeps its 2x headroom
+    // if TOP_K is ever raised.
+    await client.query(`SET LOCAL hnsw.ef_search = ${await efSearchFor(TOP_K)}`);
 
     // Delete only affected relationships when changedPageIds provided, otherwise full recompute
     if (changedPageIds && changedPageIds.length > 0) {

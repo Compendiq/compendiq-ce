@@ -104,6 +104,9 @@ import {
   getRagAnswerMaxImages,
   invalidateRagImageIntakeCache,
   invalidateRagAnswerMaxImagesCache,
+  getRagEfSearch,
+  invalidateRagEfSearchCache,
+  RAG_EF_SEARCH_DEFAULT,
 } from '../../core/services/admin-settings-service.js';
 
 /**
@@ -220,6 +223,11 @@ beforeEach(() => {
   invalidateRagRankingPriorCache();
   invalidateRagImageIntakeCache();
   invalidateRagAnswerMaxImagesCache();
+  invalidateRagEfSearchCache();
+  // #1285 — the deprecated bootstrap variable is process-global too. A stray
+  // value would make the "absent row answers with the default" assertions
+  // measure the environment instead of the handler.
+  delete process.env.RAG_EF_SEARCH;
 });
 
 let app: ReturnType<typeof Fastify>;
@@ -869,6 +877,86 @@ describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () 
       { ragAnswerMaxImages: -1 },
       { ragAnswerMaxImages: 2.5 },
       { ragAnswerMaxImages: '2' },
+    ]) {
+      const res = await put(body);
+      expect(res.statusCode, JSON.stringify(body)).toBe(400);
+    }
+    expect(rows).toEqual({});
+  });
+});
+
+/**
+ * #1285 — `rag_ef_search`, the HNSW `ef_search` floor, joins the panel.
+ *
+ * It is the one knob on this surface that arrives with a **deprecated
+ * environment variable behind it**, so the tests below cover a case none of
+ * its siblings have: the env var is a bootstrap fallback for an ABSENT row and
+ * must lose to a present one — otherwise ADR-021's rule is stated in the
+ * JSDoc and broken in the code.
+ */
+describe('PUT /api/admin/settings — the ef_search floor (#1285)', () => {
+  it('writes rag_ef_search under its documented admin_settings key', async () => {
+    const res = await put({ ragEfSearch: 250 });
+
+    expect(res.statusCode).toBe(200);
+    expect(rows).toEqual({ rag_ef_search: '250' });
+  });
+
+  it('makes the NEXT kNN see the change — the write goes through the cached path (#1118)', async () => {
+    await put({ ragEfSearch: 400 });
+    await expect(getRagEfSearch()).resolves.toBe(400);
+    await put({ ragEfSearch: 100 });
+    await expect(getRagEfSearch()).resolves.toBe(100);
+  });
+
+  it('writes NOTHING when the body omits it', async () => {
+    const res = await put({ ragFetchWidth: 20 });
+
+    expect(res.statusCode).toBe(200);
+    expect(rows).toEqual({ rag_fetch_width: '20' });
+  });
+
+  it('answers the resolved value on the READ half, with no row at all', async () => {
+    // The panel must never have to restate a default: GET resolves through the
+    // reader, so an instance that has never opened this panel sees the number
+    // its kNN probes are really running at.
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+
+    expect(res.statusCode).toBe(200);
+    expect(AdminSettingsSchema.parse(res.json()).ragEfSearch).toBe(RAG_EF_SEARCH_DEFAULT);
+  });
+
+  it('answers the saved value on the READ half', async () => {
+    await put({ ragEfSearch: 300 });
+
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+
+    expect(AdminSettingsSchema.parse(res.json()).ragEfSearch).toBe(300);
+  });
+
+  it('reports the deprecated env var only until a row exists (ADR-021)', async () => {
+    // Fresh install, no row: the variable a running deployment set is still
+    // honoured, and the panel shows THAT number rather than 100 — an operator
+    // who reads 100 while their probes run at 250 cannot tune anything.
+    process.env.RAG_EF_SEARCH = '250';
+    const before = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(AdminSettingsSchema.parse(before.json()).ragEfSearch).toBe(250);
+
+    // One save, and the environment is inert for good — never read on the hot
+    // path over a present row.
+    await put({ ragEfSearch: 120 });
+    const after = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(AdminSettingsSchema.parse(after.json()).ragEfSearch).toBe(120);
+    await expect(getRagEfSearch()).resolves.toBe(120);
+  });
+
+  it('rejects a value outside pgvector’s own bound, rather than saving a lie', async () => {
+    for (const body of [
+      { ragEfSearch: 0 },
+      { ragEfSearch: -1 },
+      { ragEfSearch: 1001 },
+      { ragEfSearch: 100.5 },
+      { ragEfSearch: '100' },
     ]) {
       const res = await put(body);
       expect(res.statusCode, JSON.stringify(body)).toBe(400);

@@ -2073,3 +2073,107 @@ describe('RetrievalTab — images shown to the model (#1115 P4)', () => {
     expect(link.getAttribute('href')).toContain('?sub=llm');
   });
 });
+
+describe('RetrievalTab — the ef_search floor (#1285)', () => {
+  it('seeds the input from the server document and sends only what changed', async () => {
+    const puts = mockApi({ settings: { ...defaultSettings, ragEfSearch: 250 } });
+    renderTab();
+    await ready();
+
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    type('ragEfSearch', '400');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragEfSearch: 400 });
+  });
+
+  it('renders the reader default when the server has no row', async () => {
+    // The panel must never invent its own default: 100 is what the reader
+    // resolves, so DEFAULTS has to mirror it or the control reports a number
+    // the kNN probes are not running at.
+    mockApi();
+    renderTab();
+    await ready();
+
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+  });
+
+  it("clamps to pgvector's own [1, 1000] bound on commit", async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+
+    type('ragEfSearch', '0');
+    expect(input('ragEfSearch').value).toBe('1');
+    type('ragEfSearch', '5000');
+    expect(input('ragEfSearch').value).toBe('1000');
+  });
+
+  it('is covered by Reset all to defaults', async () => {
+    // `DEFAULTS` is what that button spreads, so a field missing from it is
+    // silently skipped by a control labelled "all".
+    mockApi({ settings: { ...defaultSettings, ragEfSearch: 400 } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('400'));
+
+    fireEvent.click(screen.getByTestId('retrieval-reset-all-btn'));
+    expect(input('ragEfSearch').value).toBe('100');
+  });
+
+  it('states that it is a FLOOR, and quotes the measurement, on screen and to the control', async () => {
+    // The two things an operator cannot work out from the number: raising it
+    // does not raise the per-query value on its own (each probe already takes
+    // 2x its own row count), and raising it is not measured to buy recall. A
+    // caveat that lives only in a `title` is unreachable by touch, keyboard
+    // and screen readers — ADR-010's `DeepSearchToggle` precedent — so it is
+    // wired to the input with `aria-describedby`.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+
+    const describedBy = input('ragEfSearch').getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    const help = document.getElementById(describedBy!);
+    expect(help).toBeTruthy();
+    expect(help!.textContent).toMatch(/floor/i);
+    expect(help!.textContent).toMatch(/twice/i);
+    expect(help!.textContent).toMatch(/1,?000/);
+    // The measured no-gain, so nobody raises this hoping for recall.
+    expect(help!.textContent).toMatch(/0\.9995/);
+    expect(help!.textContent).toMatch(/footprint/i);
+  });
+
+  it('names the environment variable it supersedes, in muted copy and never amber', async () => {
+    // Nothing seeds `rag_ef_search`, so `RAG_EF_SEARCH` stays live until this
+    // panel is saved once. An operator upgrading has to be able to find that
+    // out here rather than from a log line that has scrolled away — and it is
+    // a fact at rest, not an attention state, so ADR-010 keeps it muted.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+
+    const note = screen.getByTestId('retrieval-ef-search-env-note');
+    expect(note.textContent).toMatch(/RAG_EF_SEARCH/);
+    expect(note.className).toContain('text-muted-foreground');
+    expect(note.className).not.toMatch(/warning|amber|destructive/);
+  });
+
+  it('states that fuzzy title matching is fixed, where the keyword index is configured', async () => {
+    // #1285's other half: 0.3 stays a source constant, and the panel that owns
+    // everything around it says so rather than staying silent.
+    mockApi();
+    renderTab();
+    await ready();
+
+    const note = screen.getByTestId('retrieval-trgm-fixed');
+    expect(note.textContent).toMatch(/fuzzy title/i);
+    expect(note.textContent).toMatch(/0\.3/);
+    expect(note.className).toContain('text-muted-foreground');
+  });
+});

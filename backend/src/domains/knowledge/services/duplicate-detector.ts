@@ -1,13 +1,15 @@
 import { query, getPool } from '../../../core/db/postgres.js';
 import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
-// The third copy of this constant, now retired. The local `parseInt` had no
-// bounds check, so RAG_EF_SEARCH=garbage produced `SET LOCAL hnsw.ef_search =
-// NaN` and a SQL error here while retrieval quietly fell back to 100.
-// `efSearchFor` closes the matching over-ceiling hole: the knob validates to
-// <= 10000, pgvector's ceiling is 1000, so a bare interpolation of the constant
-// made RAG_EF_SEARCH=2000 a SQL error at this one call site while the other two
-// clamped and worked.
+// The third copy of this setting, now retired. The local `parseInt` had no
+// bounds check, so a garbage `RAG_EF_SEARCH` produced `SET LOCAL
+// hnsw.ef_search = NaN` and a SQL error here while retrieval quietly fell back
+// to 100. `efSearchFor` closes the matching over-ceiling hole: the old env var
+// validated to <= 10000 while pgvector's ceiling is 1000, so a bare
+// interpolation made `RAG_EF_SEARCH=2000` a SQL error at this one call site
+// while the other two clamped and worked. Since #1285 the floor is
+// `admin_settings.rag_ef_search`, validated to pgvector's own [1, 1000] on the
+// way in and clamped again on the way out.
 import { efSearchFor } from '../../llm/services/hnsw-ef-search.js';
 
 interface DuplicateCandidate {
@@ -103,8 +105,10 @@ export async function findDuplicates(
     // silently capped the scan below its own LIMIT, and the post-scan filters
     // above then cut into what little came back. Same silent-shortfall class as
     // the relationship kNN; efSearchFor also clamps to pgvector's 1000 ceiling,
-    // which a bare RAG_EF_SEARCH (validated to 10000) did not.
-    await client.query(`SET LOCAL hnsw.ef_search = ${efSearchFor(rawCandidateLimit)}`);
+    // which the bare env var it replaced (validated to 10000) did not. Since
+    // #1285 the floor itself comes from `admin_settings.rag_ef_search`, so this
+    // probe follows the panel like the retrieval legs do.
+    await client.query(`SET LOCAL hnsw.ef_search = ${await efSearchFor(rawCandidateLimit)}`);
 
     // Find nearest neighbors using pgvector kNN on the average embedding
     const result = await client.query<{

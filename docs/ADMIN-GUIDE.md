@@ -163,7 +163,7 @@ curl http://localhost:8081/api/health
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EMBEDDING_MODEL` | `bge-m3` | Server-wide embedding model (1024 dimensions by default) |
-| `RAG_EF_SEARCH` | `100` | HNSW ef_search parameter for pgvector similarity queries |
+| `RAG_EF_SEARCH` | `100` | **Deprecated (#1285)** — the HNSW `ef_search` floor is now `admin_settings.rag_ef_search`, set in `Settings → AI Models → Retrieval`. Nothing seeds that row, so this variable is still read on an instance that has never saved the panel; the first save retires it permanently. Setting it logs a startup notice. |
 
 ### Background Workers
 
@@ -383,6 +383,7 @@ panel writes the same `admin_settings` rows.
 | --- | --- | --- | --- |
 | Keyword index language | `fts_language` | `simple` | see allow-list below |
 | Fetch width | `rag_fetch_width` | 10 | 10–200 |
+| Index search depth (#1285) | `rag_ef_search` | 100 | 1–1000 |
 | Rerank candidate pool | `rag_rerank_candidates` | 30 | 10–100 |
 | Confidence gate, similarity basis | `rag_confidence_threshold` | 0 (off) | 0 – <1 |
 | Confidence gate, rerank basis | `rag_confidence_threshold_rerank` | 0 (off) | 0 – <1 |
@@ -418,6 +419,32 @@ vision-capable never receives images whatever this says**; the answer is then
 text-only with nothing on it saying so, which is why the panel states that
 beside the control. Fix a wrong verdict with **Re-check** on the chat row in
 Settings → AI Models, not with this number.
+
+**Index search depth (`rag_ef_search`) is a FLOOR, and one worth leaving
+alone.** It is pgvector's `hnsw.ef_search`: how many candidates the HNSW graph
+walk visits before returning. An index scan returns at most that many rows
+whatever the SQL `LIMIT` says, which is why it belongs beside Fetch width — a
+width raised past the floor plateaus silently. Every probe runs at this value
+or at twice the rows it asks for, whichever is larger, capped at pgvector's own
+limit of 1000, and all four kNN probes in the product (retrieval's vector leg,
+the image leg, page relationships and duplicate detection) read the same
+number. Raising it is **not measured to buy recall**: on the 2,560-dimension
+`halfvec` corpus the search is effectively exact from 40, recall@10 was 0.9995
+at 100 and unchanged to 1000. What does move with it is scan time and index
+footprint. It was `RAG_EF_SEARCH` before #1285 — env-only, read once at
+startup — and that variable is now a bootstrap fallback consulted only while
+no `rag_ef_search` row exists.
+
+**Fuzzy title matching is fixed at similarity 0.3 and is deliberately not a
+setting (#1285).** The typo-tolerant title lookup in search uses `pg_trgm`'s
+`%` operator, which is what lets PostgreSQL use the `idx_pages_title_trgm` GIN
+index instead of scanning every title — and `%` compares against PostgreSQL's
+own `pg_trgm.similarity_threshold` GUC, whose default is 0.3. The constant in
+the code is pinned to it so the retained `similarity() > 0.3` check stays
+exact. A deployment that genuinely needs a different threshold changes the
+database setting (`ALTER DATABASE … SET pg_trgm.similarity_threshold`) and the
+constant together; changing only one of them either loses the index or changes
+which rows match without saying so.
 
 Three things worth knowing before you use it.
 

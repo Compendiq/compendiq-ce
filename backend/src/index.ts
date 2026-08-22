@@ -15,6 +15,7 @@ import { initLlmQueue } from './domains/llm/services/llm-queue.js';
 import { initRateLimiter } from './domains/confluence/services/confluence-rate-limiter.js';
 import { initEmailService, closeEmailService } from './core/services/email-service.js';
 import { warnIfFtsLanguageEnvSet } from './core/services/fts-language.js';
+import { warnIfRagEfSearchEnvSet } from './core/services/admin-settings-service.js';
 import { isValidEncryptionKey } from './core/utils/crypto.js';
 
 const PORT = parseInt(process.env.BACKEND_PORT ?? '3051', 10);
@@ -55,6 +56,12 @@ async function start() {
   // so the row it points at is guaranteed to exist by the time an operator
   // follows the message.
   warnIfFtsLanguageEnvSet();
+  // #1285 — `RAG_EF_SEARCH` is deprecated the way the legacy LLM vars are, NOT
+  // the way `FTS_LANGUAGE` is: nothing seeds `admin_settings.rag_ef_search`, so
+  // the variable is still live on every instance that has never saved the
+  // Retrieval panel. The notice says exactly that, so an operator does not read
+  // "deprecated" as "already ignored" and delete a value that is in force.
+  warnIfRagEfSearchEnvSet();
   await initLlmQueue();
   await initRateLimiter();
   await initEmailService();
