@@ -86,6 +86,18 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   const [confirmingCleanup, setConfirmingCleanup] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cancelCleanupRef = useRef<HTMLButtonElement | null>(null);
+  /**
+   * The id of a #1260 comparison this admin started that is still running, as
+   * reported up by the compare section (r3). It lives HERE, not there, because
+   * every lifecycle action below ends such a run server-side AND unmounts the
+   * section that would have said so: swap and rollback move the card out of
+   * the `ready` branch, and rollback can take the card away entirely. The card
+   * is the last surface standing at that moment, so it is the one that speaks.
+   */
+  const compareRunInFlight = useRef<string | null>(null);
+  const onCompareRunInFlightChange = useCallback((runId: string | null) => {
+    compareRunInFlight.current = runId;
+  }, []);
   // Through a ref so an inline arrow prop cannot re-fire the effect each render.
   const onActiveChangeRef = useRef(onActiveChange);
   onActiveChangeRef.current = onActiveChange;
@@ -111,9 +123,27 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
 
   async function post(path: string, okMessage: string, body?: object) {
     setBusy(true);
+    // Read BEFORE the request: `refresh()` below re-renders the card into
+    // another phase branch, which unmounts the compare section and clears
+    // this ref on the way out.
+    const endedComparison = compareRunInFlight.current;
     try {
       await apiFetch(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
       toast.success(okMessage);
+      if (endedComparison) {
+        // The action succeeded; the comparison is the collateral, hence
+        // `warning` rather than `error` (#1260 r3). The run re-reads the
+        // migration fingerprint per query and fails cleanly on the next one,
+        // but the section that renders that failure is inside the `ready`
+        // branch and is already gone — an admin who aborted at 7/16 saw the
+        // progress line, the section and any strip vanish within one poll,
+        // with the run's N x 2 embedding calls silently spent. Said here it
+        // outlives every unmount, because a toast renders at the app root.
+        compareRunInFlight.current = null;
+        toast.warning(
+          'The comparison in progress ended — the shadow migration changed underneath it. Start a new comparison from the current migration.',
+        );
+      }
       await refresh();
       // Swap/rollback/cleanup repoint the embedding assignment and
       // dimensions server-side — the sibling panels (assignments section,
@@ -322,7 +352,10 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
         </div>
         {/* #1260 — the one window a real-data A/B is possible: both models'
             vectors exist on the same rows, and the backfill is complete. */}
-        <EmbeddingShadowCompareSection candidateModel={migration.model} />
+        <EmbeddingShadowCompareSection
+          candidateModel={migration.model}
+          onRunInFlightChange={onCompareRunInFlightChange}
+        />
       </div>
     );
   }

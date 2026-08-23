@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { EmbeddingShadowMigrationCard } from './EmbeddingShadowMigrationCard';
 import { useAuthStore } from '../../../stores/auth-store';
+
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}));
 
 let queryClient: QueryClient;
 function renderCard(pending: { providerId: string; model: string } | null) {
@@ -19,6 +24,9 @@ function renderCard(pending: { providerId: string; model: string } | null) {
 
 beforeEach(() => {
   useAuthStore.getState().setAuth('t', { id: '1', username: 'admin', role: 'admin' });
+  vi.mocked(toast.success).mockClear();
+  vi.mocked(toast.error).mockClear();
+  vi.mocked(toast.warning).mockClear();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -378,5 +386,75 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     await screen.findByRole('button', { name: /roll back/i });
     expect(screen.queryByTestId('shadow-compare-section')).toBeNull();
     expect(screen.queryByTestId('shadow-compare-locked')).toBeNull();
+  });
+
+  it('speaks for a comparison its own Abort ends, because the section that would have is unmounted by it (r3)', async () => {
+    // Browser-verified failure: a comparison observed at 7/16, Abort pressed,
+    // and within one 5s poll the section, its progress line and any error
+    // strip were all gone — while the run failed server-side with "The shadow
+    // migration changed while the comparison ran…" and nothing rendered it.
+    // The section lives inside the `ready` branch, so the card is the only
+    // surface left standing at that moment.
+    const ready = {
+      active: true,
+      migration: {
+        phase: 'ready' as const,
+        model: 'qwen3-embedding:4b',
+        dimensions: 2560,
+        totalPages: 40,
+        backfilledPages: 40,
+        stragglerPages: 0,
+        indexed: true,
+        indexReady: true,
+        startedAt: '2026-08-06T10:00:00.000Z',
+      },
+    };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) {
+        return json({
+          id: 'run-1',
+          status: 'running',
+          progressDone: 7,
+          progressTotal: 16,
+          error: null,
+          result: null,
+        });
+      }
+      if (url.endsWith('/compare') && method === 'POST') return json({ runId: 'run-1' }, 202);
+      if (url.endsWith('/compare') && method === 'GET') return json({ run: null });
+      if (url.includes('/judgements')) return json({ judgements: {}, verdict: null });
+      if (url.includes('/shadow-migration') && method === 'GET') return json(ready);
+      return json({});
+    });
+    renderCard(null);
+
+    fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-progress');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Abort$/ }));
+    await waitFor(() =>
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(
+        expect.stringMatching(/comparison in progress ended/i),
+      ),
+    );
+    // The action itself still reports success — the comparison is collateral,
+    // not a failure of the abort.
+    expect(vi.mocked(toast.success)).toHaveBeenCalledWith('Shadow migration aborted');
+  });
+
+  it('says nothing about a comparison when none was running', async () => {
+    // A warning every abort carries is a warning every admin learns to skip.
+    mockApi({
+      active: true,
+      migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
+    });
+    renderCard(null);
+    fireEvent.click(await screen.findByRole('button', { name: /^Abort$/ }));
+    await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalled());
+    expect(vi.mocked(toast.warning)).not.toHaveBeenCalled();
   });
 });

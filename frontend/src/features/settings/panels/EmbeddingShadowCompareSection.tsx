@@ -1,6 +1,6 @@
-import { useCallback, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../shared/lib/api';
 import { cn } from '../../../shared/lib/cn';
@@ -39,6 +39,16 @@ import { cn } from '../../../shared/lib/cn';
 interface Props {
   /** The migration's candidate model — names the shadow side before a report exists. */
   candidateModel: string;
+  /**
+   * Reports the id of a comparison THIS SESSION started while it is still
+   * queued or running, and `null` the moment it settles (r3). The card needs
+   * it because this whole section lives inside the `ready` branch: a swap or
+   * an abort re-renders the card into another branch, this component unmounts
+   * mid-run, and the failure the migration change causes server-side then has
+   * nowhere to appear. The card is the only surviving surface at that moment,
+   * so it is the one that has to say so.
+   */
+  onRunInFlightChange?: (runId: string | null) => void;
 }
 
 interface ComparedPages {
@@ -114,6 +124,9 @@ interface JudgementsView {
 const inputClass =
   'w-20 rounded-md border border-border-interactive bg-background/50 px-2 py-1.5 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring';
 
+/** How many disagreeing queries render before the list asks to be expanded. */
+const DISAGREEMENTS_SHOWN = 10;
+
 /**
  * `Number.isFinite`, never a truthiness test: `value || min` treats a cleared
  * field (Number('') === 0) as "use the minimum" and REWRITES the input to it,
@@ -126,7 +139,7 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
+export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightChange }: Props) {
   const queryClient = useQueryClient();
   const titleId = useId();
   // The fields hold the RAW string while the admin types; clamping happens on
@@ -295,6 +308,37 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
   // not be loaded and leaves Run available.
   const pollUnavailable = startedHere && pollFailed;
   const adoptedRunUnreadable = !startedHere && runId !== null && pollFailed;
+
+  // Two halves of the same hole (r3), because this section is mounted only
+  // while the migration is `ready` and every way the run can end is also a way
+  // this component can vanish.
+  //
+  // (a) A failure READ HERE is announced as a toast as well as rendered as the
+  //     strip below. The strip is the better surface while it exists — but the
+  //     card's own 5s status poll is racing this one, so a migration changed
+  //     from another tab (or by another admin) takes the whole `ready` branch
+  //     away within a poll of the run failing, taking the strip with it. A
+  //     toast is rendered at the app root and outlives the unmount.
+  // (b) The in-flight id is reported UP, so the card can speak for a run whose
+  //     section its own action is about to unmount.
+  const failureToasted = useRef<string | null>(null);
+  useEffect(() => {
+    if (!startedHere || runId === null) return;
+    if (run?.status !== 'failed') return;
+    if (failureToasted.current === runId) return;
+    failureToasted.current = runId;
+    toast.error(run.error ?? 'The comparison failed.');
+  }, [startedHere, runId, run?.status, run?.error]);
+
+  const inFlightRunId = startedHere && running ? runId : null;
+  const onRunInFlightChangeRef = useRef(onRunInFlightChange);
+  onRunInFlightChangeRef.current = onRunInFlightChange;
+  useEffect(() => {
+    onRunInFlightChangeRef.current?.(inFlightRunId);
+    // Clearing on unmount would erase the very fact the card needs, because
+    // the unmount IS the event: the card re-renders into another branch, this
+    // component goes away, and the run keeps going server-side.
+  }, [inFlightRunId]);
 
   const storedJudgements = judgementView?.judgements ?? {};
   const judgedSide = (queryId: string): JudgementSide | undefined =>
@@ -500,6 +544,14 @@ function CompareResult({
   const disagreements = report.queries.filter(
     (row) => row.top1Changed || row.jaccard < 1 || row.rbo < 1,
   );
+  // The list is the section's tallest element by an order of magnitude: the
+  // caps allow 100 queries x 20 titles a side, so an uncapped render is ~4000
+  // lines of settings card and pushes the migration's own Swap and Abort —
+  // the card's reason for existing — thousands of pixels above the fold (r3).
+  // It opens at a readable sample and expands on request; nothing is removed,
+  // and the aggregate chips above already state the totals.
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? disagreements : disagreements.slice(0, DISAGREEMENTS_SHOWN);
   const failed = report.failedQueries ?? 0;
   const sampled = report.sampledQueryCount ?? report.queryCount + failed;
   const failedShare = sampled > 0 ? failed / sampled : 0;
@@ -560,30 +612,49 @@ function CompareResult({
           Both models returned the same pages in the same order for every sampled query.
         </p>
       ) : (
-        <ul className="space-y-2">
-          {disagreements.map((row) => (
-            <li
-              key={row.id}
-              className="rounded-md border border-border bg-background/40 p-3"
-              data-testid="shadow-compare-disagreement"
-            >
-              <p className="break-words text-xs font-medium text-foreground">{row.query}</p>
-              <div className="mt-2 grid gap-3 text-xs sm:grid-cols-2">
-                <ResultSide label={`Live · ${report.live.model}`} pages={row.live.pages} />
-                <ResultSide
-                  label={`Candidate · ${report.candidate.model}`}
-                  pages={row.candidate.pages}
+        <>
+          <ul className="space-y-2">
+            {shown.map((row) => (
+              <li
+                key={row.id}
+                className="rounded-md border border-border bg-background/40 p-3"
+                data-testid="shadow-compare-disagreement"
+              >
+                <p className="break-words text-xs font-medium text-foreground">{row.query}</p>
+                <div className="mt-2 grid gap-3 text-xs sm:grid-cols-2">
+                  <ResultSide
+                    label={`Live · ${report.live.model}`}
+                    pages={row.live.pages}
+                    otherPageIds={row.candidate.pageIds}
+                  />
+                  <ResultSide
+                    label={`Candidate · ${report.candidate.model}`}
+                    pages={row.candidate.pages}
+                    otherPageIds={row.live.pageIds}
+                  />
+                </div>
+                <JudgementRow
+                  query={row.query}
+                  judged={judgedSide(row.id)}
+                  saving={savingQueryId === row.id}
+                  onJudge={(side) => onJudge(row.id, side)}
                 />
-              </div>
-              <JudgementRow
-                query={row.query}
-                judged={judgedSide(row.id)}
-                saving={savingQueryId === row.id}
-                onJudge={(side) => onJudge(row.id, side)}
-              />
-            </li>
-          ))}
-        </ul>
+              </li>
+            ))}
+          </ul>
+          {disagreements.length > DISAGREEMENTS_SHOWN && (
+            <button
+              type="button"
+              className="nm-button-ghost"
+              onClick={() => setExpanded((prev) => !prev)}
+              data-testid="shadow-compare-show-all"
+            >
+              {expanded
+                ? `Show the first ${DISAGREEMENTS_SHOWN} disagreements`
+                : `Show all ${disagreements.length} disagreements`}
+            </button>
+          )}
+        </>
       )}
     </div>
   );
@@ -662,6 +733,13 @@ function VerdictLine({ verdict }: { verdict: JudgedVerdict }) {
   );
 }
 
+const JUDGEMENT_SIDES: Array<{ side: JudgementSide; label: string }> = [
+  { side: 'live', label: 'Live' },
+  { side: 'candidate', label: 'Candidate' },
+  { side: 'neither', label: 'Neither' },
+  { side: 'both', label: 'Both' },
+];
+
 function JudgementRow({
   query,
   judged,
@@ -674,12 +752,50 @@ function JudgementRow({
   onJudge: (side: JudgementSide) => void;
 }) {
   const captionId = useId();
-  const sides: Array<{ side: JudgementSide; label: string }> = [
-    { side: 'live', label: 'Live' },
-    { side: 'candidate', label: 'Candidate' },
-    { side: 'neither', label: 'Neither' },
-    { side: 'both', label: 'Both' },
-  ];
+  const groupRef = useRef<HTMLDivElement | null>(null);
+  const sides = JUDGEMENT_SIDES;
+
+  /**
+   * A radio group's roving tabindex (r3). These four are one mutually
+   * exclusive choice, and as four `aria-pressed` toggles a screen reader
+   * announced four independent switches with no statement that picking one
+   * unpicks the rest — while a completed run put four tab stops on every
+   * disagreeing row, so the ten rows below cost forty stops between the
+   * report and the migration's own Swap and Abort. One stop per row instead;
+   * the chosen side is that stop, or `live` before anything is chosen (APG:
+   * an unselected group is entered on its first radio).
+   */
+  const tabbable = judged ?? sides[0]!.side;
+
+  /**
+   * Arrows move FOCUS ONLY — deliberately not APG's default "selection
+   * follows focus". Each selection is a POST that becomes a row in the
+   * McNemar count, so arrowing from Live to Both across a twenty-row report
+   * would silently record sixty judgements nobody made and move the verdict
+   * this surface exists to produce. Space and Enter select, which a native
+   * `<button>` already does.
+   */
+  function moveFocus(event: React.KeyboardEvent<HTMLDivElement>) {
+    const keys = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'];
+    if (!keys.includes(event.key)) return;
+    const radios = Array.from(
+      groupRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+    );
+    if (radios.length === 0) return;
+    event.preventDefault();
+    const current = radios.indexOf(document.activeElement as HTMLButtonElement);
+    const from = current === -1 ? 0 : current;
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? radios.length - 1
+          : event.key === 'ArrowRight' || event.key === 'ArrowDown'
+            ? (from + 1) % radios.length
+            : (from - 1 + radios.length) % radios.length;
+    radios[next]?.focus();
+  }
+
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
       <span id={captionId} className="text-xs text-muted-foreground">
@@ -701,38 +817,58 @@ function JudgementRow({
           both survive `forced-colors`. Still neutral, never Steel: four
           toggles lighting up the accent read as four primary buttons. */}
       <div
-        role="group"
+        ref={groupRef}
+        role="radiogroup"
         aria-label={`Which answered better: ${query}`}
-        // The row is saving, not unavailable: every button stays operable and
+        // The row is saving, not unavailable: every control stays operable and
         // every click is recorded, so this announces work in progress rather
         // than claiming the control cannot be used.
         aria-busy={saving || undefined}
+        onKeyDown={moveFocus}
         className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
       >
-        {sides.map(({ side, label }) => (
-          <button
-            key={side}
-            type="button"
-            className={cn(
-              'rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
-              judged === side ? 'nm-pill-active' : 'text-muted-foreground hover:text-foreground',
-            )}
-            aria-pressed={judged === side}
-            // The visible caption is what these four bare labels mean; without
-            // it "Live" is the whole accessible name of twenty buttons.
-            aria-describedby={captionId}
-            // Never `disabled`, and never a no-op: Chromium drops focus to
-            // <body> when the focused element is disabled, so a keyboard admin
-            // judging twenty rows would re-Tab from the top of the panel after
-            // every single pick (WCAG 2.4.3 — the same focus drop the sibling
-            // card's cancelCleanupRef engineers around). Writes are serialised
-            // and queued in the parent instead, so a deliberate pick on another
-            // row mid-save is accepted rather than silently dropped.
-            onClick={() => onJudge(side)}
-          >
-            {label}
-          </button>
-        ))}
+        {sides.map(({ side, label }) => {
+          const chosen = judged === side;
+          return (
+            <button
+              key={side}
+              type="button"
+              role="radio"
+              aria-checked={chosen}
+              tabIndex={tabbable === side ? 0 : -1}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                chosen ? 'nm-pill-active' : 'text-muted-foreground hover:text-foreground',
+              )}
+              // The visible caption is what these four bare labels mean; without
+              // it "Live" is the whole accessible name of twenty controls.
+              aria-describedby={captionId}
+              // Never `disabled`, and never a no-op: Chromium drops focus to
+              // <body> when the focused element is disabled, so a keyboard admin
+              // judging twenty rows would re-Tab from the top of the panel after
+              // every single pick (WCAG 2.4.3 — the same focus drop the sibling
+              // card's cancelCleanupRef engineers around). Writes are serialised
+              // and queued in the parent instead, so a deliberate pick on another
+              // row mid-save is accepted rather than silently dropped.
+              onClick={() => onJudge(side)}
+            >
+              {/* The chosen side's THIRD channel, and the only one that is not
+                  a contrast question (r3). `nm-pill-active` on a `bg-muted`
+                  track is the system's own "selected" recipe and it is what
+                  this control wears — but measured off the tokens its fill
+                  step is 1.07:1 in Graphite and 1.11:1 in Paper, and even the
+                  ink step (muted-foreground to foreground) is 2.06:1 in
+                  Graphite, under WCAG 1.4.11's 3:1. A glyph is a SHAPE: it
+                  survives `forced-colors`, colour blindness and a retune of
+                  every token above, the same argument that put a segment meter
+                  on `QualityScoreBadge`. `aria-hidden`, because `aria-checked`
+                  already carries the state and the glyph would otherwise be
+                  announced twice. */}
+              {chosen && <Check className="h-3 w-3" aria-hidden="true" />}
+              {label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -747,25 +883,56 @@ function CompareMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
+/**
+ * One side's top-K, with the pages the OTHER side did not return marked (r3).
+ *
+ * Two undifferentiated lists of ten titles are a diff the admin has to perform
+ * by eye, twenty rows deep — the chips above say how much moved, and this is
+ * the only surface that can say WHAT moved. So the shared titles recede to
+ * muted (they are the agreement) and the unique ones keep foreground ink at
+ * weight 500 and name themselves in words. The wording is the channel, not the
+ * ink: `forced-colors` flattens both to CanvasText and a colour-blind reader
+ * sees one grey, so "(only here)" has to be readable text rather than a dot, a
+ * rule or a hue. Neutral throughout — a disagreement is a measurement, and
+ * neither side is the right one until Mode 2 says so.
+ */
 function ResultSide({
   label,
   pages,
+  otherPageIds,
 }: {
   label: string;
   pages: Array<{ pageId: number; title: string; spaceKey: string | null }>;
+  otherPageIds: number[];
 }) {
+  const other = new Set(otherPageIds);
+  const uniqueCount = pages.filter((page) => !other.has(page.pageId)).length;
   return (
     <div>
-      <p className="text-muted-foreground">{label}</p>
+      <p className="text-muted-foreground">
+        {label}
+        {uniqueCount > 0 ? ` · ${uniqueCount} only here` : ''}
+      </p>
       {pages.length === 0 ? (
         <p className="mt-1 text-muted-foreground">No results</p>
       ) : (
-        <ol className="mt-1 list-inside list-decimal space-y-0.5 text-foreground">
-          {pages.map((page) => (
-            <li key={page.pageId} className="break-words">
-              {page.title}
-            </li>
-          ))}
+        <ol className="mt-1 list-inside list-decimal space-y-0.5">
+          {pages.map((page) => {
+            const unique = !other.has(page.pageId);
+            return (
+              <li
+                key={page.pageId}
+                className={cn(
+                  'break-words',
+                  unique ? 'font-medium text-foreground' : 'text-muted-foreground',
+                )}
+                data-unique={unique ? 'true' : undefined}
+              >
+                {page.title}
+                {unique && <span className="font-normal text-muted-foreground"> (only here)</span>}
+              </li>
+            );
+          })}
         </ol>
       )}
     </div>

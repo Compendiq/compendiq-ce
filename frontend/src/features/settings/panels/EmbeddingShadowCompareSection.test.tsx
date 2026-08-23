@@ -1,25 +1,33 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { EmbeddingShadowCompareSection } from './EmbeddingShadowCompareSection';
 import { createQueryClient } from '../../../shared/lib/query-client';
 import { useAuthStore } from '../../../stores/auth-store';
+
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}));
 
 // #1260 — the "Compare on real queries" section inside the shadow card's
 // ready branch. Fetch is mocked at the network boundary.
 
 let queryClient: QueryClient;
-function renderSection() {
+function renderSection(props: { onRunInFlightChange?: (runId: string | null) => void } = {}) {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <EmbeddingShadowCompareSection candidateModel="qwen3-embedding:4b" />
+      <EmbeddingShadowCompareSection candidateModel="qwen3-embedding:4b" {...props} />
     </QueryClientProvider>,
   );
 }
 
 beforeEach(() => {
   useAuthStore.getState().setAuth('t', { id: '1', username: 'admin', role: 'admin' });
+  vi.mocked(toast.error).mockClear();
+  vi.mocked(toast.success).mockClear();
+  vi.mocked(toast.warning).mockClear();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -412,20 +420,20 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
 
     // Each row's controls are one labelled group, so twenty "Candidate"
     // buttons stay tellable apart for a screen reader.
-    const group = within(rows[0]!).getByRole('group', { name: /how to configure sync/ });
+    const group = within(rows[0]!).getByRole('radiogroup', { name: /how to configure sync/ });
     for (const name of ['Live', 'Candidate', 'Neither', 'Both']) {
-      expect(within(group).getByRole('button', { name })).toBeInTheDocument();
+      expect(within(group).getByRole('radio', { name })).toBeInTheDocument();
     }
 
-    fireEvent.click(within(group).getByRole('button', { name: 'Candidate' }));
+    fireEvent.click(within(group).getByRole('radio', { name: 'Candidate' }));
     await waitFor(() => {
       const post = capture.find((c) => c.method === 'POST' && c.url.includes('/judgements'));
       expect(post?.body).toBe(JSON.stringify({ queryId: 'query-1', side: 'candidate' }));
     });
     await waitFor(() => {
-      expect(within(group).getByRole('button', { name: 'Candidate' })).toHaveAttribute('aria-pressed', 'true');
+      expect(within(group).getByRole('radio', { name: 'Candidate' })).toHaveAttribute('aria-checked', 'true');
     });
-    expect(within(group).getByRole('button', { name: 'Live' })).toHaveAttribute('aria-pressed', 'false');
+    expect(within(group).getByRole('radio', { name: 'Live' })).toHaveAttribute('aria-checked', 'false');
     // The verdict updates from the same response.
     expect(screen.getByTestId('shadow-compare-verdict')).toHaveTextContent(/1 judgement/i);
 
@@ -436,8 +444,8 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     // not be seen. jsdom measures no colour, so what is pinned here is that
     // the chosen side wears the design system's named selected recipe and its
     // siblings do not.
-    const chosen = within(group).getByRole('button', { name: 'Candidate' });
-    const sibling = within(group).getByRole('button', { name: 'Live' });
+    const chosen = within(group).getByRole('radio', { name: 'Candidate' });
+    const sibling = within(group).getByRole('radio', { name: 'Live' });
     expect(chosen.className).toMatch(/nm-pill-active/);
     expect(sibling.className).not.toMatch(/nm-pill-active/);
     expect(chosen.className).not.toBe(sibling.className);
@@ -453,7 +461,7 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     const caption = within(row).getByText('Which answered better?');
     expect(caption.id).toBeTruthy();
     for (const name of ['Live', 'Candidate', 'Neither', 'Both']) {
-      expect(within(row).getByRole('button', { name })).toHaveAttribute(
+      expect(within(row).getByRole('radio', { name })).toHaveAttribute(
         'aria-describedby',
         caption.id,
       );
@@ -461,7 +469,7 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     // The group's own name still carries the query, so the twenty groups are
     // tellable apart.
     expect(
-      within(row).getByRole('group', { name: /how to configure sync/ }),
+      within(row).getByRole('radiogroup', { name: /how to configure sync/ }),
     ).toBeInTheDocument();
   });
 
@@ -503,8 +511,8 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     renderSection();
     fireEvent.click(screen.getByTestId('shadow-compare-start'));
     const rows = await screen.findAllByTestId('shadow-compare-disagreement');
-    const group = within(rows[0]!).getByRole('group', { name: /how to configure sync/ });
-    const candidateBtn = within(group).getByRole('button', { name: 'Candidate' });
+    const group = within(rows[0]!).getByRole('radiogroup', { name: /how to configure sync/ });
+    const candidateBtn = within(group).getByRole('radio', { name: 'Candidate' });
     const judgementPosts = () =>
       capture.filter((c) => c.method === 'POST' && c.url.includes('/judgements')).length;
 
@@ -512,12 +520,12 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     fireEvent.click(candidateBtn);
     await waitFor(() => expect(group).toHaveAttribute('aria-busy', 'true'));
     for (const name of ['Live', 'Candidate', 'Neither', 'Both']) {
-      expect(within(group).getByRole('button', { name })).not.toBeDisabled();
+      expect(within(group).getByRole('radio', { name })).not.toBeDisabled();
     }
     expect(candidateBtn).toHaveFocus();
     // The pick reads back immediately, before the round trip: what the admin
     // sees always matches what they clicked.
-    expect(candidateBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(candidateBtn).toHaveAttribute('aria-checked', 'true');
 
     // A REPEAT of the pick already showing changes nothing — the double-click.
     expect(judgementPosts()).toBe(1);
@@ -527,9 +535,9 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
 
     release();
     await waitFor(() => expect(group).not.toHaveAttribute('aria-busy'));
-    expect(candidateBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(candidateBtn).toHaveAttribute('aria-checked', 'true');
     // …and a change of mind still posts.
-    fireEvent.click(within(group).getByRole('button', { name: 'Live' }));
+    fireEvent.click(within(group).getByRole('radio', { name: 'Live' }));
     await waitFor(() => expect(judgementPosts()).toBe(2));
   });
 
@@ -553,8 +561,8 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     renderSection();
     fireEvent.click(screen.getByTestId('shadow-compare-start'));
     const rows = await screen.findAllByTestId('shadow-compare-disagreement');
-    const group = within(rows[0]!).getByRole('group', { name: /how to configure sync/ });
-    const candidateBtn = within(group).getByRole('button', { name: 'Candidate' });
+    const group = within(rows[0]!).getByRole('radiogroup', { name: /how to configure sync/ });
+    const candidateBtn = within(group).getByRole('radio', { name: 'Candidate' });
 
     fireEvent.click(candidateBtn);
     fireEvent.click(candidateBtn);
@@ -562,7 +570,7 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(capture.filter((c) => c.method === 'POST' && c.url.includes('/judgements'))).toHaveLength(1);
 
     release();
-    await waitFor(() => expect(candidateBtn).toHaveAttribute('aria-pressed', 'true'));
+    await waitFor(() => expect(candidateBtn).toHaveAttribute('aria-checked', 'true'));
   });
 
   it('a deliberate pick on ANOTHER row mid-save is recorded, not silently dropped', async () => {
@@ -599,22 +607,22 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     renderSection();
     fireEvent.click(screen.getByTestId('shadow-compare-start'));
     const rows = await screen.findAllByTestId('shadow-compare-disagreement');
-    const first = within(rows[0]!).getByRole('group', { name: /how to configure sync/ });
-    const second = within(rows[1]!).getByRole('group', { name: /reset password/ });
+    const first = within(rows[0]!).getByRole('radiogroup', { name: /how to configure sync/ });
+    const second = within(rows[1]!).getByRole('radiogroup', { name: /reset password/ });
     const judgementPosts = () =>
       capture.filter((c) => c.method === 'POST' && c.url.includes('/judgements'));
 
-    fireEvent.click(within(first).getByRole('button', { name: 'Candidate' }));
+    fireEvent.click(within(first).getByRole('radio', { name: 'Candidate' }));
     await waitFor(() => expect(first).toHaveAttribute('aria-busy', 'true'));
 
     // The second row's pick lands while the first is still saving.
-    fireEvent.click(within(second).getByRole('button', { name: 'Live' }));
+    fireEvent.click(within(second).getByRole('radio', { name: 'Live' }));
     await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
     // Serialised: still one POST in flight…
     expect(judgementPosts()).toHaveLength(1);
     // …but the pick is already visible, so nothing looks lost.
-    expect(within(second).getByRole('button', { name: 'Live' })).toHaveAttribute(
-      'aria-pressed',
+    expect(within(second).getByRole('radio', { name: 'Live' })).toHaveAttribute(
+      'aria-checked',
       'true',
     );
 
@@ -642,9 +650,9 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     renderSection();
     fireEvent.click(screen.getByTestId('shadow-compare-start'));
     const rows = await screen.findAllByTestId('shadow-compare-disagreement');
-    const group = within(rows[1]!).getByRole('group', { name: /reset password/ });
+    const group = within(rows[1]!).getByRole('radiogroup', { name: /reset password/ });
     await waitFor(() => {
-      expect(within(group).getByRole('button', { name: 'Live' })).toHaveAttribute('aria-pressed', 'true');
+      expect(within(group).getByRole('radio', { name: 'Live' })).toHaveAttribute('aria-checked', 'true');
     });
     const verdict = screen.getByTestId('shadow-compare-verdict').textContent ?? '';
     expect(verdict).toMatch(/5 judgements/i);
@@ -920,5 +928,211 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(strip).toHaveTextContent(/changed while the comparison ran/);
     // A finished (failed) run frees the control for the retry.
     expect(screen.getByTestId('shadow-compare-start')).not.toBeDisabled();
+  });
+
+  it('also TOASTS the failure of a run started here, because the strip lives inside a branch that is about to unmount (r3)', async () => {
+    // The section renders only while the migration is `ready`. The card's own
+    // 5s status poll races this one, so a migration swapped or aborted from
+    // another tab takes the whole branch — strip included — away within a poll
+    // of the run failing. A toast renders at the app root and outlives that.
+    const message =
+      'The shadow migration changed while the comparison ran (swap, abort or rollback) — start a new comparison from the current migration';
+    mockApi({ run: { status: 'failed', result: null, error: message } });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-error');
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith(message));
+    // Once per run, not once per poll — the poll keeps answering `failed`.
+    expect(vi.mocked(toast.error).mock.calls.filter(([m]) => m === message)).toHaveLength(1);
+  });
+
+  it('a failure ADOPTED on mount is not toasted — it is history, not news', async () => {
+    mockApi({
+      latestRun: { id: 'old-run', status: 'failed', result: null, error: 'it failed' },
+      run: { status: 'failed', result: null, error: 'it failed' },
+    });
+    renderSection();
+    await screen.findByTestId('shadow-compare-error-adopted');
+    expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
+  });
+
+  it('reports an in-flight run UP to the card, and clears it when the run settles (r3)', async () => {
+    // The card is the only surface that survives its own Abort/Swap, so it is
+    // the one that must know a comparison was running when the migration
+    // moved. Without this the run's failure has nowhere to appear at all.
+    const seen: Array<string | null> = [];
+    mockApi({
+      runSequence: [
+        { status: 'running', progressDone: 7, progressTotal: 16, result: null },
+        { status: 'completed' },
+      ],
+    });
+    renderSection({ onRunInFlightChange: (id) => seen.push(id) });
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await waitFor(() => expect(seen).toContain('run-1'));
+    await screen.findByTestId('shadow-compare-progress');
+    // The poll's second answer completes the run; the card must stop
+    // attributing an in-flight comparison to a lifecycle action after that.
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['shadow-compare', 'run-1'] });
+    });
+    await waitFor(() => expect(seen[seen.length - 1]).toBeNull());
+  });
+
+  it('a run merely ADOPTED on mount is never reported as in-flight', async () => {
+    // The card's message names an action the admin just took. A comparison
+    // someone else started, or one adopted from an earlier sitting, is not
+    // that, and blaming their Abort for it would be a false statement.
+    const seen: Array<string | null> = [];
+    mockApi({
+      latestRun: { id: 'old-run', status: 'running', progressDone: 2, progressTotal: 9, result: null },
+      run: { id: 'old-run', status: 'running', progressDone: 2, progressTotal: 9, result: null },
+    });
+    renderSection({ onRunInFlightChange: (id) => seen.push(id) });
+    await screen.findByTestId('shadow-compare-progress');
+    expect(seen.every((id) => id === null)).toBe(true);
+  });
+
+  it('marks the pages unique to each side, so the admin does not diff two lists by eye (r3)', async () => {
+    mockApi({});
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const rows = await screen.findAllByTestId('shadow-compare-disagreement');
+    // query-1: live [Sync setup, Spaces] vs candidate [Sync troubleshooting, Spaces].
+    const first = rows[0]!;
+    const unique = within(first)
+      .getAllByRole('listitem')
+      .filter((li) => li.dataset.unique === 'true')
+      .map((li) => li.textContent);
+    expect(unique).toHaveLength(2);
+    expect(unique.join(' ')).toMatch(/Sync setup/);
+    expect(unique.join(' ')).toMatch(/Sync troubleshooting/);
+    // `Spaces` is on both sides and must NOT be marked.
+    expect(unique.join(' ')).not.toMatch(/Spaces/);
+    // The marker is WORDS, not a hue or a rule: `forced-colors` flattens both
+    // inks to CanvasText and a colour-blind reader sees one grey.
+    expect(within(first).getAllByText(/\(only here\)/).length).toBe(2);
+    // …and the side header counts them, so the movement reads without a scan.
+    expect(within(first).getByText(/Live · bge-m3 · 1 only here/)).toBeInTheDocument();
+
+    // query-2 is a pure REORDER — same set both sides. Nothing is unique, and
+    // marking a reorder as a set change would misdescribe it.
+    const second = rows[1]!;
+    expect(
+      within(second).getAllByRole('listitem').filter((li) => li.dataset.unique === 'true'),
+    ).toHaveLength(0);
+    expect(within(second).queryByText(/only here/)).toBeNull();
+  });
+
+  it('caps the disagreement list and expands it on request (r3)', async () => {
+    // 100 queries x 20 titles a side is ~4000 lines inside a settings card,
+    // which puts the migration's own Swap and Abort thousands of pixels above
+    // the fold. Twelve rows is enough to see the cap engage.
+    const queries = Array.from({ length: 12 }, (_, i) => ({
+      id: `q-${i}`,
+      query: `query number ${i}`,
+      top1Changed: true,
+      jaccard: 0.5,
+      rbo: 0.4,
+      live: { pageIds: [100 + i], pages: [{ pageId: 100 + i, title: `Live ${i}`, spaceKey: null }] },
+      candidate: {
+        pageIds: [200 + i],
+        pages: [{ pageId: 200 + i, title: `Candidate ${i}`, spaceKey: null }],
+      },
+    }));
+    mockApi({
+      run: {
+        result: {
+          ...COMPLETED_RESULT,
+          queryCount: 12,
+          agreement: { ...COMPLETED_RESULT.agreement, queryCount: 12, disagreementCount: 12 },
+          queries,
+        },
+      },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await waitFor(() =>
+      expect(screen.getAllByTestId('shadow-compare-disagreement')).toHaveLength(10),
+    );
+    // The total is never hidden — the chip above already states it.
+    expect(screen.getByTestId('shadow-compare-result')).toHaveTextContent(/12\/12/);
+    const showAll = screen.getByTestId('shadow-compare-show-all');
+    expect(showAll).toHaveTextContent(/Show all 12 disagreements/);
+    fireEvent.click(showAll);
+    expect(screen.getAllByTestId('shadow-compare-disagreement')).toHaveLength(12);
+    fireEvent.click(screen.getByTestId('shadow-compare-show-all'));
+    expect(screen.getAllByTestId('shadow-compare-disagreement')).toHaveLength(10);
+  });
+
+  it('offers no expander when everything already fits', async () => {
+    mockApi({});
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await screen.findAllByTestId('shadow-compare-disagreement');
+    expect(screen.queryByTestId('shadow-compare-show-all')).toBeNull();
+  });
+
+  it('the four sides are ONE radio group with one tab stop, and arrows move focus without recording a judgement (r3)', async () => {
+    const capture: Array<{ url: string; method: string; body?: string }> = [];
+    mockApi({ capture });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const rows = await screen.findAllByTestId('shadow-compare-disagreement');
+    const group = within(rows[0]!).getByRole('radiogroup', { name: /how to configure sync/ });
+    const radios = within(group).getAllByRole('radio');
+    expect(radios).toHaveLength(4);
+    // Four `aria-pressed` toggles announced four independent switches and put
+    // four tab stops on every disagreeing row — ten rows was forty stops
+    // between the report and the migration's Swap and Abort.
+    expect(radios.filter((r) => r.getAttribute('tabindex') === '0')).toHaveLength(1);
+    expect(radios[0]).toHaveAttribute('tabindex', '0');
+
+    radios[0]!.focus();
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(radios[1]);
+    fireEvent.keyDown(group, { key: 'End' });
+    expect(document.activeElement).toBe(radios[3]);
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(radios[0]);
+    // Selection does NOT follow focus: every selection is a POST that becomes
+    // a row in the McNemar count, so arrowing across twenty rows would record
+    // judgements nobody made.
+    expect(capture.filter((c) => c.method === 'POST' && c.url.includes('/judgements'))).toHaveLength(
+      0,
+    );
+    for (const radio of radios) expect(radio).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('the chosen side carries a SHAPE channel, not only a fill (r3)', async () => {
+    // `nm-pill-active` on a `bg-muted` track measures 1.07:1 in Graphite and
+    // 1.11:1 in Paper, and even its ink step is 2.06:1 in Graphite — all under
+    // WCAG 1.4.11's 3:1. A glyph survives forced-colors, colour blindness and
+    // a retune of every token. jsdom measures no colour; what is pinned is
+    // that a non-text marker exists on the chosen side and only there.
+    mockApi({
+      judgements: { 'query-1': 'candidate' },
+      verdict: { ...EMPTY_VERDICT, judgementCount: 1, candidateBetter: 1 },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const rows = await screen.findAllByTestId('shadow-compare-disagreement');
+    const group = within(rows[0]!).getByRole('radiogroup', { name: /how to configure sync/ });
+    await waitFor(() =>
+      expect(within(group).getByRole('radio', { name: 'Candidate' })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      ),
+    );
+    const chosen = within(group).getByRole('radio', { name: 'Candidate' });
+    const sibling = within(group).getByRole('radio', { name: 'Live' });
+    expect(chosen.querySelector('svg')).not.toBeNull();
+    expect(sibling.querySelector('svg')).toBeNull();
+    // The glyph is decoration for a state `aria-checked` already carries, so
+    // it must not be announced a second time.
+    expect(chosen.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    // The chosen radio is also the group's single tab stop.
+    expect(chosen).toHaveAttribute('tabindex', '0');
+    expect(sibling).toHaveAttribute('tabindex', '-1');
   });
 });
