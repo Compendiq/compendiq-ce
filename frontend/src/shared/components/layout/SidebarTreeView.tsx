@@ -159,11 +159,11 @@ export interface SidebarTreeNodeProps {
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
-  // #960: derived once by the parent from location.pathname and passed down as
-  // a stable prop. Rows must NOT call useLocation() themselves — that subscribed
-  // every memoized row to every location/searchParams change, defeating the memo
-  // comparator and re-rendering the whole tree on each navigation.
-  isAiRoute: boolean;
+  // #960's per-row AI-route prop is gone (#1361): the conversations pane
+  // replaces this tree on AI routes, so a row has no route-dependent destination left.
+  // The rule it existed to enforce still stands — rows must NOT call
+  // useLocation() themselves, or every memoized row re-renders on every
+  // location/searchParams change and the comparator below never gets to bail.
   // True only in "All Spaces" scope, where sibling rows can come from
   // different spaces (and, in a real corpus, can share a title outright —
   // see the spaceKey suffix below). Scoped to one space, the tree already
@@ -184,7 +184,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   expandedSet,
   toggleExpand,
   activePageId,
-  isAiRoute,
   showSpaceKey,
   rovingId,
   onRowFocus,
@@ -205,12 +204,8 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   // navigates, matching the other three expand/collapse paths.
   const handleNavigate = useCallback(() => {
     if (hasChildren && !isExpanded) toggleExpand(node.page.id);
-    if (isAiRoute) {
-      navigate(`/ai?pageId=${node.page.id}`, { replace: true });
-    } else {
-      navigate(`/pages/${node.page.id}`);
-    }
-  }, [navigate, node.page.id, hasChildren, isExpanded, toggleExpand, isAiRoute]);
+    navigate(`/pages/${node.page.id}`);
+  }, [navigate, node.page.id, hasChildren, isExpanded, toggleExpand]);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -388,7 +383,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
               expandedSet={expandedSet}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
-              isAiRoute={isAiRoute}
               showSpaceKey={showSpaceKey}
               rovingId={rovingId}
               onRowFocus={onRowFocus}
@@ -405,7 +399,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
     prev.expandedSet === next.expandedSet &&
-    prev.isAiRoute === next.isAiRoute &&
     prev.showSpaceKey === next.showSpaceKey &&
     prev.rovingId === next.rovingId &&
     prev.onRowFocus === next.onRowFocus &&
@@ -453,16 +446,14 @@ export function SidebarTreeView({
   // Extract active page ID from pathname (useParams is unavailable here
   // because this component is rendered in AppLayout, outside the inner
   // <Routes> that defines /pages/:id).
-  // On the AI route, also highlight the article selected via ?pageId query param.
+  // The AI-route query-param branch went with #1361: `/ai` carries no page
+  // scope, and `location.search` left the dependency array with it — a
+  // query-string change no longer re-derives the active row.
   const activePageId = useMemo(() => {
     const match = location.pathname.match(/^\/pages\/([^/]+)$/);
     if (match) return match[1];
-    if (location.pathname === '/ai') {
-      const params = new URLSearchParams(location.search);
-      return params.get('pageId') ?? undefined;
-    }
     return undefined;
-  }, [location.pathname, location.search]);
+  }, [location.pathname]);
 
   const { data: confluenceSpaces } = useSpaces();
   const { data: localSpacesData } = useLocalSpaces();
@@ -520,9 +511,6 @@ export function SidebarTreeView({
   const homepageId = selectedSpaceOption?.homepageId;
   const tree = useMemo(() => buildTree(pages, homepageId), [pages, homepageId]);
   const isLocalSpace = selectedSpaceOption?.source === 'local';
-  // #960: derive the /ai signal once here and thread it into every row as a
-  // stable prop so the rows themselves don't subscribe to location.
-  const isAiRoute = location.pathname === '/ai';
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
@@ -1126,11 +1114,7 @@ export function SidebarTreeView({
                   key={item.id}
                   type="button"
                   onClick={() => {
-                    if (isAiRoute) {
-                      navigate(`/ai?pageId=${item.id}`, { replace: true });
-                    } else {
-                      navigate(`/pages/${item.id}`);
-                    }
+                    navigate(`/pages/${item.id}`);
                     onNavigate?.();
                   }}
                   // Same geometry as a tree row (28px / 6px corner / 13px), not
@@ -1314,7 +1298,6 @@ export function SidebarTreeView({
               expandedIds={expandedIds}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
-              isAiRoute={isAiRoute}
               reorderPage={reorderPage}
               rovingId={rovingId}
               onRowFocus={handleRowFocus}
@@ -1334,7 +1317,6 @@ export function SidebarTreeView({
                 expandedSet={expandedIds}
                 toggleExpand={toggleExpand}
                 activePageId={activePageId}
-                isAiRoute={isAiRoute}
                 showSpaceKey={!treeSidebarSpaceKey}
                 rovingId={rovingId}
                 onRowFocus={handleRowFocus}
