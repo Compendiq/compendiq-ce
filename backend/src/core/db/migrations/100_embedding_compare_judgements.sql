@@ -15,9 +15,19 @@
 -- keying on the names alone would pool one migration's judgements into a
 -- later migration's verdict, and would collapse both sides onto one row when
 -- a model is re-hosted (live_model = candidate_model).
--- Page-id arrays record what was ON SCREEN when the human judged — they are
--- historical evidence, deliberately not FK-checked against pages that may be
--- deleted later. `query_text` is real user data: it stays inside the
+-- The key carries NO admin dimension, and that is deliberate: one query is
+-- one McNemar trial, so keying per judge would let two admins vote the same
+-- query twice and inflate both N and the p drawn from it. The consequence on
+-- a multi-admin instance is that the LAST judge of a query wins it and the
+-- verdict pools every judge's rows. Page-id arrays record what was ON SCREEN
+-- when the human judged — they are historical evidence, deliberately not
+-- FK-checked against pages that may be deleted later, and they carry the
+-- VISIBILITY of the judge who wrote them (the report's retrieval runs through
+-- `visiblePagesPredicate` scoped to the admin who started the run), which is
+-- why `judged_by` is recorded even though no read filters on it. Accepted for
+-- the single-evaluator go/no-go this surface is written for; a multi-
+-- evaluator design needs a per-judge key AND an aggregation rule, which is a
+-- different feature rather than a wider index. `query_text` is real user data: it stays inside the
 -- instance, on admin-only routes.
 CREATE TABLE embedding_compare_judgements (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

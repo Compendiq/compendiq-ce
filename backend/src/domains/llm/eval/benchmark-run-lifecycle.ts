@@ -45,12 +45,16 @@ export interface BenchmarkRunRecord<TConfig, TReport> {
 /**
  * The 091 partial unique index refused the insert: another run already holds
  * the shared slot. `kind` names the HOLDER so each route can word its 409 by
- * what is actually running rather than by which route was asked.
+ * what is actually running rather than by which route was asked, and
+ * `requestedBy` names its OWNER so a route can decide whether the caller may
+ * be handed the id at all — every `:id` read is scoped to the admin who
+ * started the run, so a foreign id is a poll that 404s forever.
  */
 export class BenchmarkRunSlotBusyError extends Error {
   constructor(
     public readonly activeRunId: string,
     public readonly kind: BenchmarkRunKind = null,
+    public readonly requestedBy: string | null = null,
   ) {
     super('A production retrieval benchmark is already running');
   }
@@ -152,19 +156,30 @@ export async function recoverStaleBenchmarkRuns(): Promise<void> {
 /**
  * The run holding the shared slot, if any — after sweeping stale rows, which
  * is what keeps a killed worker from wedging the slot forever. Deliberately
- * NOT scoped by kind; `kind` is reported so the caller can name the holder.
+ * NOT scoped by kind; `kind` is reported so the caller can name the holder,
+ * and `requestedBy` so the caller can tell whether the holder is the caller's
+ * OWN run. The query is scoped by neither: the slot is global, and a 409 must
+ * be raised by another admin's run just as much as by your own.
  */
-export async function activeBenchmarkRun(): Promise<{ id: string; kind: BenchmarkRunKind } | null> {
+export async function activeBenchmarkRun(): Promise<{
+  id: string;
+  kind: BenchmarkRunKind;
+  requestedBy: string | null;
+} | null> {
   await recoverStaleBenchmarkRuns();
-  const result = await query<{ id: string; kind: string | null }>(
-    `SELECT id, config->>'kind' AS kind FROM retrieval_benchmark_runs
+  const result = await query<{ id: string; kind: string | null; requested_by: string | null }>(
+    `SELECT id, config->>'kind' AS kind, requested_by FROM retrieval_benchmark_runs
      WHERE status IN ('queued', 'running')
      ORDER BY created_at ASC
      LIMIT 1`,
   );
   const row = result.rows[0];
   if (!row) return null;
-  return { id: row.id, kind: row.kind === 'shadow-compare' ? 'shadow-compare' : null };
+  return {
+    id: row.id,
+    kind: row.kind === 'shadow-compare' ? 'shadow-compare' : null,
+    requestedBy: row.requested_by,
+  };
 }
 
 /**
@@ -184,7 +199,7 @@ export async function insertBenchmarkRun(requestedBy: string, config: unknown): 
   } catch (err) {
     if (isUniqueActiveRunError(err)) {
       const active = await activeBenchmarkRun();
-      if (active) throw new BenchmarkRunSlotBusyError(active.id, active.kind);
+      if (active) throw new BenchmarkRunSlotBusyError(active.id, active.kind, active.requestedBy);
     }
     throw err;
   }

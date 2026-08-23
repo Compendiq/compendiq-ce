@@ -147,9 +147,19 @@ function mockApi(opts: {
   latestError?: boolean;
   /** `GET …/compare/:id/judgements` answers HTTP 500. */
   judgementsError?: boolean;
+  /** How many of the failing reads actually fail; the rest succeed. Lets a
+   *  test drive the ORDINARY outcome of a retry — it works. */
+  latestFailures?: number;
+  judgementsFailures?: number;
+  /** Held by every read AFTER the first, so a test can inspect the surface
+   *  while a re-read is genuinely in flight. */
+  latestRetryGate?: Promise<void>;
+  judgementsRetryGate?: Promise<void>;
 }) {
   let polls = 0;
   let posts = 0;
+  let latestGets = 0;
+  let judgementGets = 0;
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
     const method = init?.method ?? 'GET';
@@ -162,10 +172,14 @@ function mockApi(opts: {
     }
     if (url.includes('/judgements')) {
       if (opts.judgementsError && method === 'GET') {
-        return new Response(JSON.stringify({ message: 'boom' }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        judgementGets += 1;
+        if (judgementGets > 1 && opts.judgementsRetryGate) await opts.judgementsRetryGate;
+        if (opts.judgementsFailures === undefined || judgementGets <= opts.judgementsFailures) {
+          return new Response(JSON.stringify({ message: 'boom' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
       }
       if (method === 'POST' && (opts.judgementResponse || opts.judgementResponses)) {
         if (opts.judgementGate) await opts.judgementGate;
@@ -196,10 +210,15 @@ function mockApi(opts: {
       return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
     }
     if (url.endsWith('/compare') && method === 'GET' && opts.latestError) {
-      return new Response(JSON.stringify({ message: 'boom' }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      latestGets += 1;
+      if (latestGets > 1 && opts.latestRetryGate) await opts.latestRetryGate;
+      if (opts.latestFailures === undefined || latestGets <= opts.latestFailures) {
+        return new Response(JSON.stringify({ message: 'boom' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      // Falls through to the success branch below: the retry worked.
     }
     if (url.endsWith('/compare') && method === 'GET') {
       const run = opts.latestRun
@@ -886,6 +905,78 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(screen.getByTestId('shadow-compare-start')).not.toBeDisabled();
   });
 
+  it("a notice's Check again survives the read it starts, keeping the admin's focus (r1)", async () => {
+    // react-query's fetchState spreads `...(data === undefined && { error:
+    // null, status: 'pending' })`, so a refetch with nothing cached reverts
+    // the query to `pending` and `isError` goes false. Gated on `isError`
+    // alone, the `role="status"` line CONTAINING the button unmounted the
+    // instant it was clicked and focus fell to `<body>` in a ~30-stop panel —
+    // for seconds, since the app client retries a non-4xx twice with backoff.
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockApi({ latestError: true, latestRetryGate: gate });
+    renderSection();
+    const notice = await screen.findByTestId('shadow-compare-latest-error');
+    const button = within(notice).getByRole('button', { name: /check again/i });
+    button.focus();
+    fireEvent.click(button);
+
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId('shadow-compare-latest-error')).getByRole('button'),
+      ).toHaveTextContent(/checking…/i),
+    );
+    const busy = within(screen.getByTestId('shadow-compare-latest-error')).getByRole('button');
+    // `aria-disabled`, never native `disabled`: per the HTML focus fixup rule
+    // a control that stops being focusable is blurred, which is the very
+    // thing keeping the strip mounted exists to prevent. jsdom implements
+    // none of that, so the assertion is on the attribute pair.
+    expect(busy).toHaveAttribute('aria-disabled', 'true');
+    expect(busy).not.toBeDisabled();
+    expect(document.activeElement).toBe(busy);
+    // The label is the only channel the busy state has, so it must stay
+    // legible: 70%, never 45 (the RetrievalTab measurement).
+    expect(busy.className).toMatch(/aria-disabled:opacity-70/);
+
+    await act(async () => {
+      release();
+      await gate;
+    });
+  });
+
+  it('rehomes focus to the section prose when a SUCCESSFUL retry removes the notice (r1)', async () => {
+    // The ordinary outcome: the retry works, the notice's condition resolves
+    // and the button is removed with focus still on it. Keeping the strip up
+    // for the request and stopping there just moves the drop to `<body>` one
+    // beat later.
+    mockApi({ latestError: true, latestFailures: 1 });
+    renderSection();
+    const notice = await screen.findByTestId('shadow-compare-latest-error');
+    const button = within(notice).getByRole('button', { name: /check again/i });
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.queryByTestId('shadow-compare-latest-error')).toBeNull());
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByTestId('shadow-compare-intro')),
+    );
+  });
+
+  it('leaves focus alone when the admin moved on during the retry (r1)', async () => {
+    // The rehome is guarded on `activeElement === document.body`: a retry can
+    // be seconds long, and stealing the caret back from a knob the admin went
+    // to in the meantime is its own defect.
+    mockApi({ latestError: true, latestFailures: 1 });
+    renderSection();
+    const notice = await screen.findByTestId('shadow-compare-latest-error');
+    fireEvent.click(within(notice).getByRole('button', { name: /check again/i }));
+    const days = screen.getByTestId('shadow-compare-days');
+    days.focus();
+    await waitFor(() => expect(screen.queryByTestId('shadow-compare-latest-error')).toBeNull());
+    expect(document.activeElement).toBe(days);
+  });
+
   it('a poll failure on a run ADOPTED on mount leaves Run available', async () => {
     // `pollUnavailable` used to fire for any runId, so one transient 500 on a
     // comparison that finished last week disabled the section's only action
@@ -1276,6 +1367,76 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     // row as unjudged.
     expect(screen.queryByTestId('shadow-compare-verdict')).toBeNull();
     expect(screen.queryAllByRole('radio')).toHaveLength(0);
+  });
+
+  it('keeps the picks hidden for the WHOLE judgements re-read, not only while isError holds (r1)', async () => {
+    // Both `judgementsUnreadable` and the substitute notice were gated on
+    // `judgementsFailed && judgementView === undefined`, and BOTH flipped
+    // false the moment the retry started — so four `role="radio"` controls
+    // returned reading `aria-checked="false"` on a model pair whose stored
+    // judgements the client has never once read. That is the precise false
+    // statement the picks' own comment says must never render, and the move
+    // it invites (re-judging from a blank slate) rewrites the evidence a swap
+    // is decided on.
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockApi({ judgementsError: true, judgementsRetryGate: gate });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-result');
+    const notice = await screen.findByTestId('shadow-compare-judgements-error');
+    fireEvent.click(within(notice).getByRole('button', { name: /check again/i }));
+
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId('shadow-compare-judgements-error')).getByRole('button'),
+      ).toHaveTextContent(/checking…/i),
+    );
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    expect(screen.queryByTestId('shadow-compare-verdict')).toBeNull();
+
+    await act(async () => {
+      release();
+      await gate;
+    });
+  });
+
+  it('names the COMPARED set in the full-agreement sentence, never the sampled one (r1)', async () => {
+    // "every sampled query" borrowed the skipped-queries line's own word for
+    // the strictly larger denominator two elements above it: with 12 of 50
+    // skipped it claimed agreement over 50 where only 38 were compared, and
+    // the service tolerates up to half the sample going missing.
+    mockApi({
+      run: {
+        result: {
+          ...COMPLETED_RESULT,
+          queryCount: 38,
+          sampledQueryCount: 50,
+          failedQueries: 12,
+          agreement: {
+            queryCount: 38,
+            top1ChangedQueries: 0,
+            top1ChangeRate: 0,
+            meanJaccard: 1,
+            meanRbo: 1,
+            disagreementCount: 0,
+          },
+          queries: [],
+        },
+      },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const result = await screen.findByTestId('shadow-compare-result');
+    expect(result).toHaveTextContent(/same order for all 38 compared queries/i);
+    expect(result).not.toHaveTextContent(/for every sampled query/i);
+    // The skipped line still speaks for the larger denominator, so the two
+    // sentences must not be reading the same word two ways.
+    expect(screen.getByTestId('shadow-compare-failed-queries')).toHaveTextContent(
+      /12 of 50 sampled/i,
+    );
   });
 
   it('keeps the completion announcer mounted BEFORE the run completes (r2)', async () => {

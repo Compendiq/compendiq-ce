@@ -121,6 +121,7 @@ export { BenchmarkRunSlotBusyError as ProductionBenchmarkAlreadyRunningError };
 export async function getActiveProductionBenchmark(): Promise<{
   id: string;
   kind: BenchmarkRunKind;
+  requestedBy: string | null;
 } | null> {
   return activeBenchmarkRun();
 }

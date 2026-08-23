@@ -115,15 +115,24 @@ test can make that clause fail, and its comment must not claim a fetch-budget
 effect it does not have. A transient failure costs its own query
 (`failedQueries` on the report), never the 46 comparisons already paid for;
 only a majority of failures fails the run. Mode 2 judgements accumulate in
-`embedding_compare_judgements` (099) keyed by **provider AND model on each
+`embedding_compare_judgements` (100) keyed by **provider AND model on each
 side** — the same name behind a different provider is a different index — and
 quote a McNemar p only from 20 **live-or-candidate PICKS**, never from a total
 that ties inflate (fourteen ties plus six picks published `p = 0.031` from six
-clicks). Runs reuse `retrieval_benchmark_runs`
+clicks). That key carries **no admin dimension on purpose** — one query is one
+McNemar trial, so a per-judge key would let two admins vote it twice and
+inflate N and the p drawn from it; the cost, stated in 100's header and in
+`06-data-model.md`, is that on a multi-admin instance the last judge of a
+query wins it and the stored page-id arrays carry THAT judge's visibility.
+Runs reuse `retrieval_benchmark_runs`
 (`config.kind = 'shadow-compare'`), so a comparison and the production
 benchmark exclude each other — deliberately, both spend the shared LLM queue —
 **and BOTH 409s are worded by the run that HOLDS the slot** (`slotBusyMessage`,
-beside `staleRunError`; a route may not import another route). The exclusion is
+beside `staleRunError`; a route may not import another route) **while the
+holder's id is withheld unless it is the caller's OWN run of the caller's own
+kind** — `activeBenchmarkRun` reports `requestedBy` for that decision alone, and
+both `:id` reads are scoped by kind AND by `requested_by`, so a foreign id is a
+card re-attached to a run whose every poll 404s. The exclusion is
 the owner decision and both cards' copy states it; telling an operator refused
 by a comparison that "a production retrieval benchmark is already running" is
 not part of that decision, and it named a run that does not exist on the one
@@ -195,6 +204,16 @@ over a run holding the slot, while a run that FINISHED behind the note kept
 "still running" for as long as the stragglers lasted and left a stale id that
 made the next swap warn about a comparison that had completed. It reads the
 section's own cache key, candidate and all, so the two are one entry.
+All four "could not be read" notices on the section carry the
+`RetrievalTab` retry recipe (`useNoticeRetry`), because all four were gated on
+`isError` alone and react-query reverts a refetch with nothing cached to
+`pending`: the `role="status"` line containing the pressed button unmounted
+under the admin's focus, and for the judgement notice the four picks came back
+reading `aria-checked="false"` on a pair whose stored side had never been read.
+So each notice is gated on `<its isError> || retryInFlight`, the busy state is
+`aria-disabled` + a label swap (never native `disabled`, which blurs the focus
+the flag exists to hold) and a successful retry rehomes focus to the nearest
+surviving prose, guarded on `activeElement === document.body`.
 The judgements read consumes `isError` like its two
 siblings — a failed read of a MODEL PAIR's accumulated judgements is a
 failure, not "nothing judged yet" — in THREE states, not two: unreadable

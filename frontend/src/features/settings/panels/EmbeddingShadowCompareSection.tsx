@@ -150,9 +150,77 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+/**
+ * The retry a "could not be read" notice owns — the `RetrievalTab` recipe
+ * (adjudicated over three rounds there, same directory, same panel), applied
+ * to the four notices on this surface (r1).
+ *
+ * The defect it closes is that every one of those notices is gated on
+ * `isError` ALONE, and react-query's `fetchState` spreads
+ * `...(data === undefined && { error: null, status: 'pending' })`: refetching
+ * an errored query with NOTHING cached drops back to `pending`, `isError`
+ * goes false, and the `role="status"` strip CONTAINING the button the admin
+ * just pressed unmounts under their focus, which falls to `<body>` in a
+ * settings tab with ~30 stops. The window is not a tick — `query-client.ts`
+ * retries a non-4xx twice more with backoff — so this is seconds of a panel
+ * with focus lost and nothing saying a read is in flight.
+ *
+ * Three rules, each of them one of that adjudication's rounds:
+ *
+ *  - `retryInFlight` is set in the handler and cleared in `.finally()`, and
+ *    each notice is gated on `<its own isError> || retryInFlight`, so the
+ *    strip survives the request it started.
+ *  - the busy state is `aria-disabled` and a label swap, NEVER a native
+ *    `disabled`: per the HTML focus fixup rule a control that stops being
+ *    focusable is blurred, which is the very thing the flag above exists to
+ *    prevent (jsdom does not implement that, so a test can assert both and be
+ *    wrong). The handler is the refusal instead. And it is `retryInFlight`
+ *    alone, never `isFetching` — a window-focus refetch is not the user's
+ *    action and must not be labelled as one.
+ *  - the ORDINARY outcome is that the retry SUCCEEDS and the notice is
+ *    removed with focus still on it, so a successful retry rehomes focus to
+ *    the nearest surviving prose. Guarded twice: only for a retry this control
+ *    started, and only if focus really did fall to `<body>`.
+ */
+function useNoticeRetry(
+  refetch: () => Promise<{ isError: boolean }>,
+  stillFailing: boolean,
+  focusTarget: React.RefObject<HTMLElement | null>,
+) {
+  const [retryInFlight, setRetryInFlight] = useState(false);
+  const [restoreFocusAfterRetry, setRestoreFocusAfterRetry] = useState(false);
+
+  useEffect(() => {
+    if (!restoreFocusAfterRetry) return;
+    // The notice is still up (the retry failed, or is still out) — the button
+    // is still under the admin's focus, which is where it belongs.
+    if (stillFailing || retryInFlight) return;
+    setRestoreFocusAfterRetry(false);
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    focusTarget.current?.focus();
+  }, [restoreFocusAfterRetry, stillFailing, retryInFlight, focusTarget]);
+
+  const onRetry = useCallback(() => {
+    // The refusal `aria-disabled` cannot perform.
+    if (retryInFlight) return;
+    setRetryInFlight(true);
+    setRestoreFocusAfterRetry(true);
+    void refetch()
+      .then(
+        (result) => setRestoreFocusAfterRetry(!result.isError),
+        () => setRestoreFocusAfterRetry(false),
+      )
+      .finally(() => setRetryInFlight(false));
+  }, [refetch, retryInFlight]);
+
+  return { retryInFlight, onRetry };
+}
+
 export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightChange }: Props) {
   const queryClient = useQueryClient();
   const titleId = useId();
+  const pollErrorSentenceId = useId();
   // The fields hold the RAW string while the admin types; clamping happens on
   // blur and at submit, so a half-typed or empty field is never rewritten
   // under the caret.
@@ -371,9 +439,8 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
   // under "it may still be running" leaves the admin unable to start a
   // comparison at all. The server's own 409 is the authority on the shared
   // slot, so that case reports what could not be loaded and leaves Run
-  // available.
-  const pollUnavailable = liveHere && pollFailed;
-  const adoptedRunUnreadable = !liveHere && runId !== null && pollFailed;
+  // available. (Both flags are derived below, beside the retry controls that
+  // have to keep them raised for the length of a re-read.)
 
   // Two halves of the same hole (r3), because this section is mounted only
   // while the migration is `ready` and every way the run can end is also a way
@@ -419,7 +486,36 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
   // ="false"` on a judged row invites re-judging from a blank slate),
   // failed-with-cache keeps them under a degraded line, and neither is the
   // never-judged state the verdict speaks for.
-  const judgementsUnreadable = judgementsFailed && judgementView === undefined;
+  // Where focus goes when a notice the admin pressed is removed BENEATH it —
+  // the section's own orienting prose for the three section-level notices,
+  // and the report's basis line for the judgement one, which sits inside the
+  // report. Both are `tabIndex={-1}` paragraphs: programmatically focusable
+  // without adding a tab stop to a panel that already has ~30.
+  const introRef = useRef<HTMLParagraphElement | null>(null);
+  const basisRef = useRef<HTMLParagraphElement | null>(null);
+  const latestRetry = useNoticeRetry(refetchLatest, latestFailed, introRef);
+  const pollRetry = useNoticeRetry(refetchRun, pollFailed, introRef);
+  const judgementsRetry = useNoticeRetry(refetchJudgements, judgementsFailed, basisRef);
+
+  // Each notice survives the read it starts (r1): see `useNoticeRetry`. Gated
+  // on `isError` alone, all three unmounted the button under the admin's
+  // focus the instant it was clicked, because a refetch with nothing cached
+  // reverts the query to `pending`.
+  const pollUnavailable = liveHere && (pollFailed || pollRetry.retryInFlight);
+  const adoptedRunUnreadable =
+    !liveHere && runId !== null && (pollFailed || pollRetry.retryInFlight);
+  const latestUnreadable = latestFailed || latestRetry.retryInFlight;
+
+  // The judgement picks are suppressed for the WHOLE read, not just while
+  // `isError` happens to be true (r1). Both this flag and the substitute
+  // notice below were gated on `judgementsFailed && judgementView ===
+  // undefined`, and BOTH flipped false together the moment a retry started —
+  // so four `role="radio"` controls returned reading `aria-checked="false"`
+  // on a model pair whose stored judgements the client has never once read,
+  // which is exactly the false statement the comment on the picks says must
+  // never render.
+  const judgementsUnreadable =
+    (judgementsFailed || judgementsRetry.retryInFlight) && judgementView === undefined;
   const judgementsStale = judgementsFailed && judgementView !== undefined;
 
   const storedJudgements = judgementView?.judgements ?? {};
@@ -451,7 +547,12 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
       <h3 id={titleId} className="text-sm font-semibold">
         Compare on real queries
       </h3>
-      <p className="text-xs text-muted-foreground" data-testid="shadow-compare-intro">
+      <p
+        ref={introRef}
+        tabIndex={-1}
+        className="text-xs text-muted-foreground"
+        data-testid="shadow-compare-intro"
+      >
         Runs this deployment's most frequent recorded searches against the live index and the{' '}
         <b>{candidateModel}</b> shadow, and lists the queries where the two disagree. This measures
         agreement on the vector leg only — not answer quality, and not what users see after keyword
@@ -519,26 +620,44 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
         >
           <AlertTriangle className="h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
           <p>
-            The comparison was started, but its status could not be fetched — it may still be
-            running.{' '}
-            <button type="button" className="underline" onClick={() => void refetchRun()}>
-              Check again
+            <span id={pollErrorSentenceId}>
+              The comparison was started, but its status could not be fetched — it may still be
+              running.
+            </span>{' '}
+            {/* Same busy contract as `MutedNotice` — see `useNoticeRetry`. */}
+            <button
+              type="button"
+              className="underline aria-disabled:cursor-default aria-disabled:opacity-70"
+              onClick={pollRetry.onRetry}
+              aria-disabled={pollRetry.retryInFlight || undefined}
+              aria-describedby={pollErrorSentenceId}
+              data-testid="shadow-compare-poll-retry"
+            >
+              {pollRetry.retryInFlight ? 'Checking…' : 'Check again'}
             </button>
           </p>
         </div>
       )}
-      {latestFailed && (
+      {latestUnreadable && (
         // A failed lookup is a failure, not "there is no earlier comparison":
         // absence would silently hide a finished report, its disagreement list
         // and an accumulated Mode 2 workflow, and a re-run costs another N x 2
         // provider calls. Muted rather than amber — nothing is wrong with the
         // migration, and this notice can appear on any mount.
-        <MutedNotice testId="shadow-compare-latest-error" onRetry={() => void refetchLatest()}>
+        <MutedNotice
+          testId="shadow-compare-latest-error"
+          onRetry={latestRetry.onRetry}
+          retryInFlight={latestRetry.retryInFlight}
+        >
           Could not check whether an earlier comparison exists.
         </MutedNotice>
       )}
       {adoptedRunUnreadable && (
-        <MutedNotice testId="shadow-compare-adopted-error" onRetry={() => void refetchRun()}>
+        <MutedNotice
+          testId="shadow-compare-adopted-error"
+          onRetry={pollRetry.onRetry}
+          retryInFlight={pollRetry.retryInFlight}
+        >
           The last comparison could not be loaded.
         </MutedNotice>
       )}
@@ -584,7 +703,9 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
           verdict={judgementView?.verdict ?? null}
           judgementsUnreadable={judgementsUnreadable}
           judgementsStale={judgementsStale}
-          onRetryJudgements={() => void refetchJudgements()}
+          onRetryJudgements={judgementsRetry.onRetry}
+          judgementsRetryInFlight={judgementsRetry.retryInFlight}
+          basisRef={basisRef}
           onJudge={onJudge}
         />
       )}
@@ -611,21 +732,41 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
 
 /** A quiet "could not be read" line with the one action that can fix it.
  *  Muted, not amber: this is a failed READ of history, not a degraded
- *  migration, and it can appear on any mount. */
+ *  migration, and it can appear on any mount.
+ *
+ *  Its button carries `useNoticeRetry`'s busy state, and the mechanics are
+ *  that hook's doc: `aria-disabled` and a label swap rather than a native
+ *  `disabled` (which would blur the very focus the flag exists to hold), no
+ *  `aria-busy` on either the button or the `role="status"` line around it
+ *  (busy WITHHOLDS a region's own updates, silencing the announcement the
+ *  label swap is), and `aria-disabled:opacity-70` — never 45, which
+ *  composites under the 4.5:1 floor this 12px text is held to, and the label
+ *  is the only channel the busy state has. `aria-describedby` points at the
+ *  sentence because up to three identically-labelled "Check again" buttons
+ *  can be on screen at once. */
 function MutedNotice({
   testId,
   onRetry,
+  retryInFlight,
   children,
 }: {
   testId: string;
   onRetry: () => void;
+  retryInFlight: boolean;
   children: React.ReactNode;
 }) {
+  const sentenceId = useId();
   return (
     <p role="status" className="text-xs text-muted-foreground" data-testid={testId}>
-      {children}{' '}
-      <button type="button" className="underline" onClick={onRetry}>
-        Check again
+      <span id={sentenceId}>{children}</span>{' '}
+      <button
+        type="button"
+        className="underline aria-disabled:cursor-default aria-disabled:opacity-70"
+        onClick={onRetry}
+        aria-disabled={retryInFlight || undefined}
+        aria-describedby={sentenceId}
+      >
+        {retryInFlight ? 'Checking…' : 'Check again'}
       </button>
     </p>
   );
@@ -639,6 +780,8 @@ function CompareResult({
   judgementsUnreadable,
   judgementsStale,
   onRetryJudgements,
+  judgementsRetryInFlight,
+  basisRef,
   onJudge,
 }: {
   report: CompareReport;
@@ -650,6 +793,10 @@ function CompareResult({
   /** Loaded, but the latest read failed — the picks stay, degraded. */
   judgementsStale: boolean;
   onRetryJudgements: () => void;
+  /** Raised for the whole re-read, not only while `isError` is true. */
+  judgementsRetryInFlight: boolean;
+  /** Where focus goes when the judgement notice is removed beneath it. */
+  basisRef: React.RefObject<HTMLParagraphElement | null>;
   onJudge: (queryId: string, side: JudgementSide) => void;
 }) {
   // ANY difference between the lists counts — head moved, sets differ, or the
@@ -676,7 +823,12 @@ function CompareResult({
   const heavilyThinned = failedShare >= 0.2;
   return (
     <div className="space-y-2" data-testid="shadow-compare-result">
-      <p className="text-xs font-medium text-foreground" data-testid="shadow-compare-basis">
+      <p
+        ref={basisRef}
+        tabIndex={-1}
+        className="text-xs font-medium text-foreground"
+        data-testid="shadow-compare-basis"
+      >
         Agreement between {report.live.model} (live) and {report.candidate.model} (candidate) on{' '}
         {report.queryCount} real queries — how much results would move, not which model is better.
       </p>
@@ -722,7 +874,11 @@ function CompareResult({
           failed. Muted, not amber, exactly like the two sibling read failures
           above: nothing is wrong with the migration. */}
       {judgementsUnreadable ? (
-        <MutedNotice testId="shadow-compare-judgements-error" onRetry={onRetryJudgements}>
+        <MutedNotice
+          testId="shadow-compare-judgements-error"
+          onRetry={onRetryJudgements}
+          retryInFlight={judgementsRetryInFlight}
+        >
           The judgements recorded for this model pair could not be loaded, so no judged verdict can
           be stated and the picks below are hidden rather than shown as unmade.
         </MutedNotice>
@@ -733,7 +889,11 @@ function CompareResult({
               cheaper than hiding a correct verdict, and hiding it is what a
               single background 500 used to do. */}
           {judgementsStale && (
-            <MutedNotice testId="shadow-compare-judgements-stale" onRetry={onRetryJudgements}>
+            <MutedNotice
+              testId="shadow-compare-judgements-stale"
+              onRetry={onRetryJudgements}
+              retryInFlight={judgementsRetryInFlight}
+            >
               These are the judgements last loaded for this model pair — the latest could not be
               fetched, so a pick recorded since then may be missing.
             </MutedNotice>
@@ -750,7 +910,15 @@ function CompareResult({
       )}
       {disagreements.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          Both models returned the same pages in the same order for every sampled query.
+          {/* Names the COMPARED set, not "every sampled query" (r1). Two
+              elements up, the skipped-queries line spends the word "sampled"
+              on the strictly larger denominator that INCLUDES the queries
+              never compared, and the service tolerates up to half the sample
+              going missing — so with 12 of 50 skipped the old sentence claimed
+              agreement over 50 where only 38 were run. One word, two sets, on
+              a surface whose only output is swap go/no-go evidence. */}
+          Both models returned the same pages in the same order for all {report.queryCount}{' '}
+          compared queries.
         </p>
       ) : (
         <>

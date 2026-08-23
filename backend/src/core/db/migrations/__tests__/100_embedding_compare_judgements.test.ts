@@ -9,7 +9,7 @@ const dbAvailable = await isDbAvailable();
 // to a run), because a judgement must survive the migration, the run and
 // even the provider row that produced it — that is what makes the SECOND
 // model change cheaper to evaluate than the first.
-describe.skipIf(!dbAvailable)('Migration 099 — embedding_compare_judgements (#1260)', () => {
+describe.skipIf(!dbAvailable)('Migration 100 — embedding_compare_judgements (#1260)', () => {
   beforeAll(async () => { await setupTestDb(); });
   afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => { await truncateAllTables(); });

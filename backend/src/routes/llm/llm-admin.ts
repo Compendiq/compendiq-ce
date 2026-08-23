@@ -71,16 +71,15 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
         // exclusion itself is acceptable and stated in both cards' copy is the
         // #1260 owner decision; wording it wrongly is not part of it.
         message: slotBusyMessage(active.kind),
-        // The ID is withheld for the mirror-image reason: the #1260 shadow
-        // comparison, and `GET /admin/retrieval-benchmark/:id` is kind-guarded
-        // and 404s a compare run's id. Handing it back would let this card
-        // adopt an id its own poll refuses (r1) — the mirror of the guard the
-        // compare route already applies. Note the same GET is also scoped to
-        // the admin who STARTED the run (r2 — its report carries page titles
-        // read under that admin's ACL), so a benchmark id handed to a
-        // different admin is likewise unreadable by them; the Retrieval tab
-        // reads only its own POST's id and never this field.
-        ...(active.kind === null ? { runId: active.id } : {}),
+        // The ID is withheld unless the holder is a benchmark THIS admin
+        // started. `GET /admin/retrieval-benchmark/:id` is guarded twice:
+        // by kind (it 404s a #1260 compare run's id) and by `requested_by`
+        // (r2 — its report carries page titles read under the starting
+        // admin's ACL). An id failing either guard is one this card could
+        // adopt but never poll, so both guards are applied here (r1).
+        ...(active.kind === null && active.requestedBy === request.userId
+          ? { runId: active.id }
+          : {}),
       });
     }
 
@@ -94,8 +93,10 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
           // Same holder-worded sentence as above: the race's winner may be a
           // comparison, and `err.message` is the class's fixed benchmark one.
           message: slotBusyMessage(err.kind),
-          // Same kind guard as above: only ever a benchmark's own id.
-          ...(err.kind === null ? { runId: err.activeRunId } : {}),
+          // Same two guards as above: only ever this admin's own benchmark.
+          ...(err.kind === null && err.requestedBy === request.userId
+            ? { runId: err.activeRunId }
+            : {}),
         });
       }
       throw err;

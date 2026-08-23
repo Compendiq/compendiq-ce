@@ -415,6 +415,20 @@ together, which matters most for #1114's query-side prefix.
   Re-judging replaces the row (upsert on the unique key); the page-id arrays
   record what was on screen when the human judged and are deliberately not
   FK-checked against `pages`.
+  **The key carries no admin dimension, deliberately — on a multi-admin
+  instance the LAST judge of a query wins it, and the verdict pools every
+  judge's rows.** That is the point of a fixture accumulated across sittings
+  and across runs: one query is one trial, and McNemar counts trials, so a
+  per-admin key would let two admins vote the same query twice and inflate
+  both N and the significance drawn from it. The cost is that `live_page_ids`
+  / `candidate_page_ids` reflect the visibility of whoever judged last —
+  `vectorSearch(adminUserId, …)` filters through `visiblePagesPredicate`, so a
+  judge who cannot see a private page judged a shorter list — and `judged_by`
+  records who that was without the verdict reading it. Accepted for the
+  single-evaluator workflow this surface is written for (the runbook's step
+  3b is one operator's go/no-go); a multi-evaluator design would need a
+  per-judge key AND an aggregation rule (majority? first? weighted?), which is
+  a different feature, not a wider index.
 - **pgvector — the column type is dimension-driven, not one model's shape.**
   `page_embeddings.embedding` always carries a *declared* width — 006 shipped
   `vector(768)`, 048 re-typed it to `vector(1024)` — but the schema does not

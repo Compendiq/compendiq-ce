@@ -74,7 +74,7 @@ import {
 
 export type ShadowCompareStatus = 'queued' | 'running' | 'completed' | 'failed';
 
-/** Provider AND model, like 099's judgement key: the same model name behind a
+/** Provider AND model, like 100's judgement key: the same model name behind a
  *  different provider is a different index. */
 export interface ComparePair {
   providerId: string;
@@ -464,7 +464,7 @@ function publicErrorMessage(err: unknown): string {
 // ── Mode 2 — side-by-side judgements ─────────────────────────────────────
 //
 // Where Mode 1 shows a disagreement, the admin can record which side
-// answered better. Judgements live in `embedding_compare_judgements` (099),
+// answered better. Judgements live in `embedding_compare_judgements` (100),
 // keyed by (normalised query hash, live PAIR, candidate PAIR) — NOT by run —
 // so the fixture accumulates across runs and even across migrations of the
 // same pair, and re-judging a query replaces its row instead of stacking
@@ -592,7 +592,7 @@ interface JudgementRow {
 async function judgementsForReport(
   report: ShadowCompareReport,
 ): Promise<ShadowCompareJudgementsView> {
-  // Both PAIRS, not both model names: 099's identity is the provider beside
+  // Both PAIRS, not both model names: 100's identity is the provider beside
   // the model, and reading by name alone would pool a different provider's
   // migration into this verdict — page-id arrays from a different index.
   const stored = await query<JudgementRow>(
@@ -627,7 +627,7 @@ function computeJudgedVerdict(rows: JudgementRow[]): JudgedVerdict {
   const baseline: QueryRun[] = [];
   const candidate: QueryRun[] = [];
   for (const row of rows) {
-    // Exhaustive by construction — the 099 CHECK constraint admits exactly
+    // Exhaustive by construction — the 100 CHECK constraint admits exactly
     // these four. An `else neither++` tail would silently count a fifth side
     // as a tie, which is the one bucket that changes no number and therefore
     // hides the bug (r-external).

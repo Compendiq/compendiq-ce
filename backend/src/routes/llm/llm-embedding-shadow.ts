@@ -255,12 +255,17 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
         return reply.code(409).send({
           error: 'benchmark_in_progress',
           message: slotBusyMessage(active.kind),
-          // Only ever a COMPARE run's id here: the card polls this id on the
-          // compare surface, and handing it a production benchmark's id would
-          // make every poll 404 (the kind guard) while the card believed it
-          // had re-attached. The compare kind is also the only one this card
-          // could legitimately adopt.
-          ...(active.kind === 'shadow-compare' ? { runId: active.id } : {}),
+          // Only ever a COMPARE run's id, and only ever THIS admin's (r1).
+          // The card polls whatever id it is handed, and `GET …/compare/:id`
+          // is guarded twice over: by kind, and by `requested_by`. So a
+          // production benchmark's id 404s on every poll — and so does
+          // another admin's comparison, because that run's report carries
+          // page titles read under THAT admin's ACL. Either one leaves the
+          // card re-attached to a run it can never read; the only id worth
+          // adopting is a comparison the caller started themselves.
+          ...(active.kind === 'shadow-compare' && active.requestedBy === request.userId
+            ? { runId: active.id }
+            : {}),
         });
       }
 
@@ -272,7 +277,10 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
           return reply.code(409).send({
             error: 'benchmark_in_progress',
             message: slotBusyMessage(err.kind),
-            ...(err.kind === 'shadow-compare' ? { runId: err.activeRunId } : {}),
+            // Same two guards as above: the caller's OWN comparison only.
+            ...(err.kind === 'shadow-compare' && err.requestedBy === request.userId
+              ? { runId: err.activeRunId }
+              : {}),
           });
         }
         throw err;

@@ -98,7 +98,11 @@ describe('production retrieval benchmark admin routes', () => {
     // `kind: null` is the production benchmark — its own id, so the card may
     // adopt it. (The real `getActiveProductionBenchmark` always reports the
     // holder's kind; the fixture says so too.)
-    mockActive.mockResolvedValue({ id: '22222222-2222-4222-8222-222222222222', kind: null });
+    mockActive.mockResolvedValue({
+      id: '22222222-2222-4222-8222-222222222222',
+      kind: null,
+      requestedBy: 'admin-user',
+    });
 
     const response = await app.inject({
       method: 'POST',
@@ -121,6 +125,7 @@ describe('production retrieval benchmark admin routes', () => {
     mockActive.mockResolvedValue({
       id: '33333333-3333-4333-8333-333333333333',
       kind: 'shadow-compare',
+      requestedBy: 'admin-user',
     });
 
     const response = await app.inject({
@@ -142,10 +147,38 @@ describe('production retrieval benchmark admin routes', () => {
     expect(body).not.toHaveProperty('runId');
   });
 
+  it('withholds the run id when the benchmark holding the slot belongs to ANOTHER admin (r1)', async () => {
+    // `GET /admin/retrieval-benchmark/:id` scopes by `requested_by` as well
+    // as by kind — the report carries page titles read under the starting
+    // admin's ACL. A colleague's benchmark id is therefore just as unpollable
+    // here as a comparison's, so the same rule withholds it.
+    mockActive.mockResolvedValue({
+      id: '66666666-6666-4666-8666-666666666666',
+      kind: null,
+      requestedBy: 'some-other-admin',
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/retrieval-benchmark',
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(409);
+    const body = response.json();
+    expect(body.error).toBe('benchmark_in_progress');
+    expect(body.message).toMatch(/production retrieval benchmark is already running/i);
+    expect(body).not.toHaveProperty('runId');
+  });
+
   it('a benchmark holding the slot keeps the benchmark sentence', async () => {
     // The other half of the same rule: the holder's kind decides, so the
     // ordinary case must be untouched by the fix above.
-    mockActive.mockResolvedValue({ id: '44444444-4444-4444-8444-444444444444', kind: null });
+    mockActive.mockResolvedValue({
+      id: '44444444-4444-4444-8444-444444444444',
+      kind: null,
+      requestedBy: 'admin-user',
+    });
     const response = await app.inject({
       method: 'POST',
       url: '/api/admin/retrieval-benchmark',
