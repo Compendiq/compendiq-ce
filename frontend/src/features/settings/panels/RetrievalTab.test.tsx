@@ -2813,4 +2813,110 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     expect(note.textContent).toMatch(/0\.3/);
     expect(note.className).toContain('text-muted-foreground');
   });
+
+  it('keeps the env note prose too — its own pin is beside the sentence, not inside it', async () => {
+    // Review r2 of the verification round — the panel-wide walker is seeded
+    // twice above, and NEITHER seeding renders `ragEfSearchFromEnv`, so the
+    // one branch the rule is stated for (the source comment beside this note
+    // says the note sits outside the row precisely to obey it) was the one
+    // branch nothing walked. Verified as a gap by mutation: moving the
+    // `</span>` below the `</button>`, i.e. folding this operable control into
+    // the field-description region, left the whole suite green.
+    //
+    // A third cell rather than a re-seeding of the two above: each of those
+    // renders the state that makes ITS counterexample appear (rerank
+    // unassigned with the prior at 0; a stale similarity record), and this
+    // branch needs a third state they cannot carry at the same time without
+    // becoming a test of everything at once.
+    mockApi({ settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    // The branch really is mounted, or the assertion below is vacuous.
+    const pin = screen.getByTestId('retrieval-ef-search-env-pin');
+    expect(pin.getAttribute('aria-describedby')).toBeTruthy();
+    expect(screen.getByTestId('retrieval-ef-search-env-note')).toBeInTheDocument();
+
+    expect(
+      describedRegionOffenders(),
+      'a description is read as one flat string — the pin goes beside the sentence, never inside it',
+    ).toEqual([]);
+  });
+
+  it('hands focus off, never grabs it back from a control the operator moved to', async () => {
+    // Review r2 of the verification round — the handoff fired unconditionally,
+    // so a pin resolving after the operator had moved on YANKED the caret to
+    // the depth field: the same 2.4.3 failure the handoff exists to prevent,
+    // arriving from the other direction. Reachable because a write is in
+    // flight for as long as the server takes and this panel can render two
+    // notices at once.
+    //
+    // It also pins the ruling behind that: the three one-key remedies are
+    // deliberately NOT locked against each other (only against Save, which
+    // re-hydrates the form). They PUT three different single keys, so the
+    // calibration `Keep` stays live while the pin is in flight — and a lock
+    // would not have fixed this anyway, since `aria-disabled` leaves a button
+    // focusable by design.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const puts = mockApi({
+      settings: {
+        ...defaultSettings,
+        ragEfSearch: 250,
+        ragEfSearchFromEnv: true,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: {
+          similarity: {
+            providerId: '11111111-2222-3333-4444-555555555555',
+            model: 'bge-m3',
+            setAt: '2026-08-01T10:00:00.000Z',
+            liveProviderId: '11111111-2222-3333-4444-555555555555',
+            liveModel: 'Qwen3-Embedding-4B',
+            liveResolved: true,
+            stale: true,
+          },
+          rerank: null,
+        },
+      },
+      afterPut: (body, settings) => {
+        if ('ragEfSearch' in body) settings.ragEfSearchFromEnv = false;
+      },
+      holdPut: held,
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    const pin = screen.getByTestId('retrieval-ef-search-env-pin');
+    pin.focus();
+    fireEvent.click(pin);
+    await waitFor(() => expect(puts).toHaveLength(1));
+
+    // The other remedy is not collateral damage: it writes a different key.
+    const keep = screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-keep');
+    expect(
+      keep,
+      'a pin in flight says nothing about the calibration record beside it',
+    ).not.toHaveAttribute('aria-disabled');
+
+    // The operator moves on while the pin is still writing.
+    keep.focus();
+    expect(document.activeElement).toBe(keep);
+
+    await act(async () => {
+      release();
+      await held;
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId('retrieval-ef-search-env-note')).not.toBeInTheDocument(),
+    );
+
+    expect(
+      document.activeElement,
+      'the pin unmounted itself, but the caret was somewhere else — leave it there',
+    ).toBe(screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-keep'));
+  });
 });

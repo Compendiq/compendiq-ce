@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, type MouseEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -167,8 +167,20 @@ const EF_SEARCH_ENV_NOTE_ID = 'retrieval-ef-search-env-sentence';
  * is what the notice was about, its `aria-describedby` help is then announced,
  * and it is where an operator who has just been told the value is now theirs
  * to set would want the caret.
+ *
+ * It is a HANDOFF, never a grab (review r2 of the verification round), which is
+ * why it takes the element that was pressed and moves nothing unless the caret
+ * is still on it. A write is in flight for as long as the server takes, the
+ * three remedies are deliberately not locked against one another (see
+ * `keepPending`), and every one of them resolves into a panel the operator may
+ * have moved on in — onto another remedy's button, or into any of fourteen
+ * fields. Yanking the caret out of one of those is the same 2.4.3 failure this
+ * function exists to prevent, arriving from the other direction. A `null`
+ * pressed element therefore moves nothing at all: not knowing where the press
+ * came from is not a licence to take focus.
  */
-function focusKnobBeforeNoticeClears(fieldId: string): void {
+function focusKnobBeforeNoticeClears(fieldId: string, pressed: HTMLElement | null): void {
+  if (pressed === null || document.activeElement !== pressed) return;
   document.getElementById(fieldId)?.focus();
 }
 
@@ -533,14 +545,14 @@ export function RetrievalTab() {
     // `saved`, never `values`: the record must describe the number the SERVER
     // is holding, which is the same reason the strip itself reads `saved`. A
     // half-typed draft in the field must not be what gets certified.
-    mutationFn: async (key: CalibrationFieldKey) => {
+    mutationFn: async ({ key }: { key: CalibrationFieldKey; pressed: HTMLElement | null }) => {
       const result = await apiFetch<UpdateAdminSettingsResult>('/admin/settings', {
         method: 'PUT',
         body: JSON.stringify({ [key]: saved[key] }),
       });
       return { key, result };
     },
-    onSuccess: async ({ key, result }) => {
+    onSuccess: async ({ key, result }, { pressed }) => {
       // Read the server's verdict BEFORE the invalidate, because focus has to
       // move before it: on the one outcome that clears the notice the button
       // is about to be unmounted from under the operator's caret (WCAG 2.4.3,
@@ -555,7 +567,7 @@ export function RetrievalTab() {
       const { basis, basisNoun } = CONFIDENCE_BASIS_COPY[key];
       const write = result?.ragConfidenceCalibrationWrite?.[basis] ?? null;
       if (write === null || write.outcome === 'recorded' || write.outcome === 'cleared') {
-        focusKnobBeforeNoticeClears(key);
+        focusKnobBeforeNoticeClears(key, pressed);
       }
       await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
       // Review r3 — the toast reports what the SERVER did, not that the
@@ -600,8 +612,8 @@ export function RetrievalTab() {
     },
   });
 
-  function handleKeepCalibration(key: CalibrationFieldKey) {
-    keepMutation.mutate(key);
+  function handleKeepCalibration(key: CalibrationFieldKey, pressed: HTMLElement | null) {
+    keepMutation.mutate({ key, pressed });
   }
 
   /**
@@ -620,13 +632,14 @@ export function RetrievalTab() {
    * on the panel for a request that submitted nothing the operator typed.
    */
   const pinEfSearchMutation = useMutation({
-    mutationFn: (value: number) =>
+    mutationFn: ({ value }: { value: number; pressed: HTMLElement | null }) =>
       apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify({ ragEfSearch: value }) }),
-    onSuccess: async (_data, value) => {
+    onSuccess: async (_data, { value, pressed }) => {
       // This press is the last thing this button ever does: the refetch below
       // clears the note and takes the button with it. Move focus first
-      // (WCAG 2.4.3) — see `focusKnobBeforeNoticeClears`.
-      focusKnobBeforeNoticeClears(FIELDS.ragEfSearch.key);
+      // (WCAG 2.4.3) — see `focusKnobBeforeNoticeClears`, which hands focus on
+      // only if the caret is still on the button that is about to vanish.
+      focusKnobBeforeNoticeClears(FIELDS.ragEfSearch.key, pressed);
       // Invalidating is what clears the note: the refetch comes back with
       // `ragEfSearchFromEnv: false` because the row now exists.
       await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
@@ -638,9 +651,21 @@ export function RetrievalTab() {
   });
 
   /**
-   * A write is in flight over one of the panel's one-key remedies, so they all
-   * report themselves unavailable — `aria-disabled`, never `disabled`, and
-   * every handler guards on this itself (see `PENDING_REMEDY_CLASS`).
+   * A remedy reports itself unavailable while ITS OWN write is in flight, and
+   * while SAVE is — `aria-disabled`, never `disabled`, and every handler
+   * guards on this itself (see `PENDING_REMEDY_CLASS`).
+   *
+   * Deliberately not one lock across all three (review r2 of the verification
+   * round, which found the comment here claiming one). Save is in both flags
+   * because it PUTs the whole changed set and its `onSuccess` re-hydrates the
+   * form, so a one-key write racing it can be reverted or can revert. The
+   * three remedies race nothing: each PUTs a single, different key, none of
+   * them re-hydrates, and `admin.ts` writes only the keys a request carried.
+   * Greying two unrelated notices because the operator pressed a third would
+   * report an unavailability that is not real — and it would not have bought
+   * the focus safety either, since `aria-disabled` leaves a button focusable
+   * by design. That is `focusKnobBeforeNoticeClears`'s job, and it does it by
+   * refusing to move a caret that is no longer on the pressed button.
    */
   const keepPending = keepMutation.isPending || mutation.isPending;
   const efSearchPinPending = pinEfSearchMutation.isPending || mutation.isPending;
@@ -1021,11 +1046,14 @@ export function RetrievalTab() {
             */}
             <button
               type="button"
-              onClick={() => {
+              onClick={(event) => {
                 // `aria-disabled` blocks no events, so the guard is the handler
                 // (see `PENDING_REMEDY_CLASS`).
                 if (efSearchPinPending) return;
-                pinEfSearchMutation.mutate(saved.ragEfSearch);
+                pinEfSearchMutation.mutate({
+                  value: saved.ragEfSearch,
+                  pressed: event.currentTarget,
+                });
               }}
               aria-disabled={efSearchPinPending || undefined}
               aria-busy={efSearchPinPending || undefined}
@@ -1122,7 +1150,7 @@ export function RetrievalTab() {
           value={saved.ragConfidenceThreshold}
           supported={settings?.ragConfidenceCalibration !== undefined}
           calibration={settings?.ragConfidenceCalibration?.similarity ?? null}
-          onKeep={() => handleKeepCalibration('ragConfidenceThreshold')}
+          onKeep={(event) => handleKeepCalibration('ragConfidenceThreshold', event.currentTarget)}
           keepPending={keepPending}
         />
         <NumberRow
@@ -1145,7 +1173,8 @@ export function RetrievalTab() {
           value={saved.ragConfidenceThresholdRerank}
           supported={settings?.ragConfidenceCalibration !== undefined}
           calibration={settings?.ragConfidenceCalibration?.rerank ?? null}
-          onKeep={() => handleKeepCalibration('ragConfidenceThresholdRerank')}
+          onKeep={(event) =>
+            handleKeepCalibration('ragConfidenceThresholdRerank', event.currentTarget)}
           keepPending={keepPending}
         />
         <NumberRow
@@ -1659,14 +1688,20 @@ function CalibrationNotice({
   value: number;
   supported: boolean;
   calibration: ConfidenceCalibration | null;
-  onKeep: () => void;
+  /**
+   * Carries the EVENT, so the handler can hand its `currentTarget` on: what
+   * `focusKnobBeforeNoticeClears` needs is the element that was pressed, and
+   * this component renders two different buttons (`Keep` and `Record`) into
+   * one callback.
+   */
+  onKeep: (event: MouseEvent<HTMLButtonElement>) => void;
   keepPending: boolean;
 }) {
   // `aria-disabled` blocks no events, so the inert state is enforced here
   // rather than by the attribute (see `PENDING_REMEDY_CLASS`).
-  const keep = () => {
+  const keep = (event: MouseEvent<HTMLButtonElement>) => {
     if (keepPending) return;
-    onKeep();
+    onKeep(event);
   };
   if (value <= 0 || !supported) return null;
 
