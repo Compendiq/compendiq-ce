@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { SettingsResponse } from '@compendiq/contracts';
 import { useSettings, useUpdateSettings } from './use-settings';
 
@@ -38,12 +38,43 @@ export interface OnboardingStep {
   complete: boolean;
 }
 
+/**
+ * Flags this session has already written, keyed by the QueryClient they were
+ * written through.
+ *
+ * The cache read below cannot carry the dedupe on its own: `['settings']` is
+ * only populated where something mounts `useSettings()`, and **`/ai` mounts
+ * nothing that does** — `invalidateQueries` never creates an entry, and an
+ * inactive one is marked stale rather than refetched. So on the busiest
+ * auto-mark surface in the app the guard read `undefined` forever and every
+ * answered question fired another `PUT /settings`.
+ *
+ * A `WeakMap` rather than a module-level `Set` so the record dies with the
+ * QueryClient it belongs to: a `Set` would leak across the whole test file and,
+ * in the app, across a client rebuilt on sign-out.
+ *
+ * The entry is added optimistically and **removed again if the write fails**,
+ * which is what keeps the documented retry-on-the-next-occurrence behaviour of
+ * a `silentErrors` auto-mark: a flag lost to a network blip must not be
+ * suppressed for the rest of the page load.
+ */
+const flagsWrittenThisSession = new WeakMap<QueryClient, Set<OnboardingFlag>>();
+
+function sessionWrites(queryClient: QueryClient): Set<OnboardingFlag> {
+  let written = flagsWrittenThisSession.get(queryClient);
+  if (!written) {
+    written = new Set<OnboardingFlag>();
+    flagsWrittenThisSession.set(queryClient, written);
+  }
+  return written;
+}
+
 export interface OnboardingActions {
   /**
    * Record one milestone. Idempotent and fire-and-forget: the write is skipped
-   * entirely when the cached settings already report the flag, so the AI
-   * composers and page mutations can call this on every success without
-   * turning every send into a second request.
+   * entirely when the cached settings already report the flag or this session
+   * has already written it, so the AI composers and page mutations can call
+   * this on every success without turning every send into a second request.
    */
   markComplete: (flag: OnboardingFlag) => void;
   /** Hide the checklist for this user, persistently. */
@@ -76,7 +107,13 @@ export function useOnboardingActions(): OnboardingActions {
     (flag: OnboardingFlag) => {
       const cached = queryClient.getQueryData<SettingsResponse>(['settings']);
       if (cached?.onboardingState?.[flag] === true) return;
-      autoMarkMutate({ onboardingState: { [flag]: true } });
+      const written = sessionWrites(queryClient);
+      if (written.has(flag)) return;
+      written.add(flag);
+      autoMarkMutate(
+        { onboardingState: { [flag]: true } },
+        { onError: () => written.delete(flag) },
+      );
     },
     [queryClient, autoMarkMutate],
   );
@@ -111,6 +148,15 @@ export interface UseOnboarding extends OnboardingActions {
   steps: OnboardingStep[];
   completedCount: number;
   allComplete: boolean;
+  /**
+   * Has the graduation write already landed for this user (`completedAt` set)?
+   *
+   * The card needs the *server's* answer to "has anyone congratulated this
+   * user yet", not an in-mount transition: three of the five CTAs navigate
+   * away from `/`, so the last milestone usually lands on another route and
+   * the overview is re-entered already-complete.
+   */
+  graduated: boolean;
   dismissed: boolean;
   /** Whether the checklist card should be on screen at all. */
   visible: boolean;
@@ -136,6 +182,7 @@ export function useOnboarding({ trackCompletion = false }: UseOnboardingOptions 
   const ready = settings !== undefined;
   const completedCount = steps.filter((s) => s.complete).length;
   const allComplete = ready && completedCount === steps.length;
+  const graduated = state?.completedAt != null;
   const dismissed = state?.dismissed === true;
 
   /**
@@ -157,18 +204,19 @@ export function useOnboarding({ trackCompletion = false }: UseOnboardingOptions 
   const graduateMutate = graduate.mutate;
   useEffect(() => {
     if (!trackCompletion || !allComplete) return;
-    if (state?.completedAt != null || graduationWritten.current) return;
+    if (graduated || graduationWritten.current) return;
     graduationWritten.current = true;
     graduateMutate({
       onboardingState: { completedAt: new Date().toISOString(), dismissed: true },
     });
-  }, [trackCompletion, allComplete, state?.completedAt, graduateMutate]);
+  }, [trackCompletion, allComplete, graduated, graduateMutate]);
 
   return {
     ready,
     steps,
     completedCount,
     allComplete,
+    graduated,
     dismissed,
     visible: ready && !dismissed,
     ...actions,

@@ -58,7 +58,7 @@ function settingsFixture(
   } as SettingsResponse;
 }
 
-function renderCard(settings: SettingsResponse | undefined) {
+function renderCard(settings: SettingsResponse | undefined, onDismissed?: () => void) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -66,11 +66,36 @@ function renderCard(settings: SettingsResponse | undefined) {
   const result = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <OnboardingChecklistCard />
+        <OnboardingChecklistCard onDismissed={onDismissed} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
   return { ...result, queryClient };
+}
+
+/**
+ * A settings endpoint that behaves like phase 1's: `GET` answers the current
+ * row and `PUT` merges `onboardingState` into it, top level by top-level key.
+ *
+ * The graduation tests below turn on what the invalidation REFETCH brings
+ * back, so a mock that answered `{}` (or a frozen fixture) would be testing the
+ * stub rather than the card.
+ */
+function serveSettings(initial: SettingsResponse) {
+  let current = initial;
+  apiFetchMock.mockImplementation((path: string, init?: { method?: string; body?: string }) => {
+    if (path !== '/settings') return Promise.resolve({});
+    if (init?.method === 'PUT') {
+      const patch = JSON.parse(init.body ?? '{}') as Partial<SettingsResponse>;
+      current = {
+        ...current,
+        ...patch,
+        onboardingState: { ...current.onboardingState, ...(patch.onboardingState ?? {}) },
+      };
+      return Promise.resolve({});
+    }
+    return Promise.resolve(current);
+  });
 }
 
 function settingsPuts() {
@@ -152,6 +177,53 @@ describe('OnboardingChecklistCard — steps', () => {
     expect(screen.queryByTestId('onboarding-cta-connect-confluence')).not.toBeInTheDocument();
     expect(screen.getByTestId('onboarding-cta-select-spaces')).toBeInTheDocument();
   });
+
+  // "Connect" and "New page" are meaningless to a reader browsing by control;
+  // the row title is the missing half and DOM proximity does not supply it.
+  it('describes each CTA with the milestone its row names', () => {
+    renderCard(settingsFixture());
+    expect(screen.getByTestId('onboarding-cta-connect-confluence')).toHaveAccessibleDescription(
+      'Connect your Confluence account',
+    );
+    expect(screen.getByTestId('onboarding-cta-create-page')).toHaveAccessibleDescription(
+      'Create or edit a page',
+    );
+    // …without borrowing it as the name (WCAG 2.5.3: the visible label is the
+    // name, so "Connect" still matches a voice command).
+    expect(screen.getByTestId('onboarding-cta-connect-confluence')).toHaveAccessibleName(
+      'Connect',
+    );
+  });
+
+  /**
+   * The shortcuts CTA is the one that acts in place, and it completes its own
+   * step: opening the modal marks `shortcutsModalViewed`. Removing the button
+   * the user is still standing on strands their focus — the modal then has
+   * nothing to restore to on close and it falls to `<body>`.
+   */
+  it('keeps a CTA the user just pressed, so its completion does not strand focus', async () => {
+    const { queryClient } = renderCard(settingsFixture());
+    const cta = screen.getByTestId('onboarding-cta-shortcuts');
+    cta.focus();
+    fireEvent.click(cta);
+
+    act(() => {
+      queryClient.setQueryData(
+        ['settings'],
+        settingsFixture({ hasConfluencePat: true }, { shortcutsModalViewed: true }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('onboarding-step-shortcuts')).toHaveAttribute(
+        'data-complete',
+        'true',
+      ),
+    );
+    expect(screen.getByTestId('onboarding-cta-shortcuts')).toBe(document.activeElement);
+    // A step that completed without the user pressing its CTA still loses it.
+    expect(screen.queryByTestId('onboarding-cta-connect-confluence')).not.toBeInTheDocument();
+  });
 });
 
 describe('OnboardingChecklistCard — CTAs', () => {
@@ -205,6 +277,27 @@ describe('OnboardingChecklistCard — dismissal', () => {
     renderCard(settingsFixture());
     expect(screen.getByTestId('onboarding-dismiss')).toHaveAccessibleName('Dismiss guide');
   });
+
+  /**
+   * The card removes itself while the user's focus is on its button, which
+   * drops focus to `<body>` — the `RetrievalTab` Retry failure CLAUDE.md
+   * records. The card cannot rehome focus itself (the target goes with it), so
+   * it reports the removal and `PagesPage` moves focus to the Library heading.
+   */
+  it('reports the removal once the dismissal has actually taken the card away', async () => {
+    serveSettings(settingsFixture());
+    const onDismissed = vi.fn();
+    renderCard(settingsFixture(), onDismissed);
+
+    fireEvent.click(screen.getByTestId('onboarding-dismiss'));
+    // Not while the write is still out and the button is still under focus.
+    expect(onDismissed).not.toHaveBeenCalled();
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument(),
+    );
+    expect(onDismissed).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('OnboardingChecklistCard — graduation', () => {
@@ -230,6 +323,56 @@ describe('OnboardingChecklistCard — graduation', () => {
     const done = await screen.findByTestId('onboarding-complete');
     expect(done).toHaveAttribute('role', 'status');
     expect(screen.queryByRole('listitem')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The dominant flow: three of the five CTAs navigate away from `/`, so the
+   * fifth milestone is normally recorded elsewhere and the overview is
+   * re-entered already-complete. A transition-only latch never fires for that
+   * user — the fully-checked list flashed and vanished a round-trip later, and
+   * the line telling them where the guide went was never shown at all.
+   */
+  it('congratulates a user who arrives already complete but not yet graduated', async () => {
+    serveSettings(allDone);
+    renderCard(allDone);
+
+    expect(screen.getByTestId('onboarding-complete')).toBeInTheDocument();
+
+    // The graduation write lands and reports `dismissed: true`; the completion
+    // state stays on screen rather than deleting itself under the reader.
+    await waitFor(() => expect(settingsPuts()).toHaveLength(1));
+    await waitFor(() =>
+      expect(apiFetchMock.mock.calls.some(([p, i]) => p === '/settings' && !i)).toBe(true),
+    );
+    expect(screen.getByTestId('onboarding-complete')).toBeInTheDocument();
+  });
+
+  /**
+   * `shortcutsModalViewed` is the one milestone completable without leaving
+   * `/` — pressing `?` while the card is mounted-but-hidden. The card must
+   * stay gone: a guide the user closed does not come back as a congratulation.
+   */
+  it('stays gone for a dismissed user when the last step lands behind it', async () => {
+    const dismissed = settingsFixture({ hasConfluencePat: true, selectedSpaces: ['ENG'] }, {
+      firstAiQueryMade: true,
+      pageCreatedOrEdited: true,
+      dismissed: true,
+    });
+    serveSettings(dismissed);
+    const { queryClient } = renderCard(dismissed);
+    expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument();
+
+    act(() => {
+      queryClient.setQueryData(['settings'], {
+        ...dismissed,
+        onboardingState: { ...dismissed.onboardingState, shortcutsModalViewed: true },
+      });
+    });
+
+    // Graduation is still recorded — it just does not resurface the card.
+    await waitFor(() => expect(settingsPuts()).toHaveLength(1));
+    expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('onboarding-complete')).not.toBeInTheDocument();
   });
 
   it('does not celebrate again for a user who already graduated', () => {

@@ -25,8 +25,14 @@ itself as you do it — there is nothing to mark complete by hand:
 5. Create or edit a page
 
 Each outstanding step carries a button that takes you straight to it. The
-checklist never blocks the page list, and **Dismiss guide** hides it for good.
-Once every step is done it retires itself.
+checklist never blocks the page list, and **Dismiss guide** hides it for good —
+once hidden it stays hidden, even when a later step completes behind it.
+
+When the last step lands, the checklist replaces itself with a short note
+saying so and telling you where to find the guide afterwards. That note stays
+until you leave the overview or dismiss it, and it appears wherever the final
+step happened to be completed — you do not have to be looking at the checklist
+at the time.
 
 To bring it back at any time — finished or dismissed — open the account menu in
 the top right and choose **Getting Started Guide**.

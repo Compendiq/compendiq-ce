@@ -436,11 +436,31 @@ skips the "Settings saved" toast, and `{ silentErrors }` additionally
 suppresses the failure toast for background auto-marks nobody asked for. Every
 pre-existing Settings-panel Save keeps its confirmation.
 
+The auto-mark is also deduped **per session**, not only against the cache:
+`/ai` mounts nothing that calls `useSettings()`, so `['settings']` is genuinely
+absent there and a cache-only guard let every answered question fire another
+`PUT`. A `WeakMap<QueryClient, Set<flag>>` carries the record, and a failed
+write releases its entry so the next occurrence still retries.
+
 When all five are true, `useOnboarding({ trackCompletion: true })` — mounted by
 the card and nowhere else — writes `completedAt` and `dismissed: true` once and
-never again. The card holds a neutral completion line on screen for the rest of
-that mount, and **User Menu → Getting Started Guide** brings the finished list
-back at any time by clearing `dismissed`.
+never again. **The completion line is driven by that server fact, not by an
+in-mount transition**: three of the five CTAs navigate away from `/`, so the
+last milestone normally lands on another route and the overview is re-entered
+already-complete. The card congratulates whichever client finds all five done
+with `completedAt` still null — and only while the guide is **not** dismissed,
+so a flag flipping behind a closed guide records the graduation without
+resurfacing the panel. **User Menu → Getting Started Guide** brings the
+finished list (not a second congratulation — `completedAt` is set by then) back
+at any time by clearing `dismissed`.
+
+Two focus rules follow from the card removing its own controls. Dismiss reports
+the removal to `PagesPage`, which moves focus to the Library heading
+(`tabIndex={-1}`) when the unmount really dropped it to `<body>` — the
+`RetrievalTab` Retry precedent. And a CTA the user has activated stays rendered
+for the life of the mount even once its step completes, because `shortcuts` is
+the one milestone that completes in place and its button used to disappear
+while the modal it opened was still on screen.
 
 ## Enterprise gating
 

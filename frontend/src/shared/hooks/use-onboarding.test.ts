@@ -244,6 +244,47 @@ describe('useOnboardingActions — silent auto-marks', () => {
     await Promise.resolve();
     expect(putBodies()).toEqual([]);
   });
+
+  /**
+   * `/ai` mounts nothing that calls `useSettings()`, so the `['settings']`
+   * entry is genuinely absent there: `invalidateQueries` never creates one and
+   * an inactive entry is marked stale rather than refetched. The cache read
+   * alone therefore deduped nothing on the busiest auto-mark surface in the
+   * app, and every answered question fired another silent `PUT /settings`.
+   */
+  it('writes a flag once per session even with no settings observer to cache it', async () => {
+    apiFetchMock.mockResolvedValue({});
+    const { queryClient, wrapper } = harness(undefined);
+    const { result } = renderHook(() => useOnboardingActions(), { wrapper });
+
+    act(() => result.current.markComplete('firstAiQueryMade'));
+    await waitFor(() => expect(putBodies()).toHaveLength(1));
+    act(() => result.current.markComplete('firstAiQueryMade'));
+    act(() => result.current.markComplete('firstAiQueryMade'));
+
+    await Promise.resolve();
+    expect(putBodies()).toEqual([{ onboardingState: { firstAiQueryMade: true } }]);
+    // The premise: nothing ever populated the cache the old guard read.
+    expect(queryClient.getQueryData(['settings'])).toBeUndefined();
+  });
+
+  it('retries on the next occurrence when the write failed — the flag is not lost', async () => {
+    apiFetchMock.mockRejectedValueOnce(new Error('Network down')).mockResolvedValue({});
+    const { wrapper } = harness(undefined);
+    const { result } = renderHook(() => useOnboardingActions(), { wrapper });
+
+    act(() => result.current.markComplete('pageCreatedOrEdited'));
+    // Let the rejection settle, so the session record is released before the
+    // next occurrence rather than in the middle of it.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(putBodies()).toHaveLength(1);
+
+    act(() => result.current.markComplete('pageCreatedOrEdited'));
+    await waitFor(() => expect(putBodies()).toHaveLength(2));
+    expect(toastError).not.toHaveBeenCalled();
+  });
 });
 
 describe('useOnboarding — completion', () => {
@@ -280,6 +321,47 @@ describe('useOnboarding — completion', () => {
 
     rerender();
     await Promise.resolve();
+    expect(putBodies()).toHaveLength(1);
+  });
+
+  /**
+   * The ref half of the graduation guard, on its own.
+   *
+   * A bare `rerender()` cannot reach it — every dependency is unchanged, so
+   * the effect never re-runs and the assertion passes with the ref deleted.
+   * This drives a real second invocation: `allComplete` genuinely leaves and
+   * re-enters while the write is still out and `completedAt` is therefore
+   * still null on the server, which is the window (React StrictMode's dev
+   * double-invoke is the other) the ref exists for.
+   */
+  it('records completedAt once even when all-complete is re-entered before the write lands', async () => {
+    // The PUT never settles, so nothing can invalidate the guard for us.
+    apiFetchMock.mockReturnValue(new Promise(() => {}));
+    const base = { hasConfluencePat: true, selectedSpaces: ['ENG'] };
+    const marks = {
+      firstAiQueryMade: true,
+      shortcutsModalViewed: true,
+      pageCreatedOrEdited: true,
+    };
+    const { queryClient, wrapper } = harness(settingsFixture(base, marks));
+    const { result } = renderHook(() => useOnboarding({ trackCompletion: true }), { wrapper });
+
+    await waitFor(() => expect(putBodies()).toHaveLength(1));
+
+    act(() => {
+      queryClient.setQueryData(
+        ['settings'],
+        settingsFixture(base, { ...marks, pageCreatedOrEdited: false }),
+      );
+    });
+    // The observer notification is batched, so the effect has genuinely re-run
+    // on a false `allComplete` before the second write goes back to true.
+    await waitFor(() => expect(result.current.allComplete).toBe(false));
+    act(() => {
+      queryClient.setQueryData(['settings'], settingsFixture(base, marks));
+    });
+    await waitFor(() => expect(result.current.allComplete).toBe(true));
+
     expect(putBodies()).toHaveLength(1);
   });
 

@@ -1026,6 +1026,23 @@ export function PagesPage() {
     }
   }, [currentAddressableItems, selectedIds, toggleSelect]);
 
+  /**
+   * #1402: Dismiss removes the checklist while the user's focus is on its
+   * button, which drops focus to `<body>` — the failure CLAUDE.md records for
+   * `RetrievalTab`'s Retry. Focus lands on the Library heading, the first
+   * thing above what was removed, so a keyboard or screen-reader user resumes
+   * where the region was rather than at the top of the document.
+   *
+   * Guarded like the precedent: `dismiss()` is a network round-trip, and if
+   * the user moved on during it their caret stays where they put it.
+   */
+  const libraryHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const handleChecklistDismissed = useCallback(() => {
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    libraryHeadingRef.current?.focus();
+  }, []);
+
   return (
     // max-w-[1100px], matching the app's 1200px document-column convention:
     // uncapped, a short title's flex-1 block stretched to fill whatever the
@@ -1037,7 +1054,15 @@ export function PagesPage() {
     <div className="max-w-[1180px] space-y-5">
       <HeaderHost fallbackClassName="mb-1">
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
-          <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">{LIBRARY_HEADING}</h1>
+          {/* `tabIndex={-1}` adds no tab stop; it is the landing place for
+              focus when the #1402 checklist below removes itself under it. */}
+          <h1
+            ref={libraryHeadingRef}
+            tabIndex={-1}
+            className="min-w-0 truncate text-[15px] font-semibold sm:text-lg"
+          >
+            {LIBRARY_HEADING}
+          </h1>
           <div className="flex flex-wrap items-center gap-3 sm:gap-4">
             <KPICards
               embeddingStatus={embeddingStatusData}
@@ -1062,7 +1087,7 @@ export function PagesPage() {
           it sits above discovery and the tree and never replaces any of their
           loading / failed / failed-with-cache / empty states. It renders
           nothing once the user dismisses it. */}
-      <OnboardingChecklistCard />
+      <OnboardingChecklistCard onDismissed={handleChecklistDismissed} />
 
       {/* Pins are the Library's quickest return path, so keep them in the
           first viewport above discovery controls. Active queries still hide

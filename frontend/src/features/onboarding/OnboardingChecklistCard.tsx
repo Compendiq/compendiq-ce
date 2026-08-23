@@ -47,40 +47,92 @@ const STEP_COPY: Record<OnboardingStepId, StepCopy> = {
   'create-page': { title: 'Create or edit a page', cta: 'New page' },
 };
 
-export function OnboardingChecklistCard() {
+export interface OnboardingChecklistCardProps {
+  /**
+   * Called once, after a user-pressed Dismiss has actually removed the card.
+   *
+   * The card cannot rehome focus itself: the element the user was on goes with
+   * it. `PagesPage` owns the heading above it and does the move, guarded the
+   * way `RetrievalTab` guards its own (CLAUDE.md's "unmounted the button under
+   * the user's focus, dropping it to `<body>`").
+   */
+  onDismissed?: () => void;
+}
+
+export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCardProps = {}) {
   const navigate = useNavigate();
   const openShortcuts = useKeyboardShortcutsStore((s) => s.open);
   // This is the one mount that records `completedAt` — see the hook's
   // `trackCompletion` note for why exactly one instance may.
-  const { ready, steps, completedCount, allComplete, visible, dismiss } = useOnboarding({
-    trackCompletion: true,
-  });
+  const { ready, steps, completedCount, allComplete, graduated, visible, dismissed, dismiss } =
+    useOnboarding({ trackCompletion: true });
 
   /**
-   * Did THIS mount watch the last step land?
+   * Is THIS client the one graduating the user?
    *
-   * Graduation persists `dismissed: true`, so without a latch the card would
-   * vanish the moment the write's invalidation returned — the user would see
-   * their fifth checkmark and then an empty space. The latch holds the
-   * completion state until they leave the overview or press Dismiss; there is
-   * no timer, because a panel that removes itself on a clock is one a slow
-   * reader never gets to read.
+   * Not "did this mount watch the last step land". Three of the five CTAs
+   * navigate away from `/` (`/settings/…`, `/ai`, `/pages/new`), so the fifth
+   * milestone is normally recorded on another route and the overview is
+   * re-entered already-complete — an in-mount transition latch never fires for
+   * that user, and because graduation persists `dismissed: true` they instead
+   * saw the fully-checked list flash and vanish a round-trip later, never
+   * reading the line that tells them where the guide went.
    *
-   * It is deliberately per-mount: reopening the finished guide from the User
-   * Menu shows the checked list, not a second congratulation.
+   * The server fact is the right test: `completedAt` is null exactly until
+   * someone congratulates them, so the client that finds all five done with it
+   * still null is the one doing it, wherever the last step landed.
+   *
+   * `!dismissed` is the other half. A user who dismissed the guide asked for it
+   * to be gone, and the card is still MOUNTED while hidden (`PagesPage` renders
+   * it unconditionally), so without this a background flag flip — pressing `?`
+   * on `/`, or a cross-tab completion arriving on refetch — resurfaced a panel
+   * they had closed. There is no race with the graduation write: `dismissed` is
+   * still false on the render that decides this, and the write's own
+   * `dismissed: true` only returns a round-trip later, by which time the latch
+   * is set.
+   *
+   * The latch then holds the completion state until they leave the overview or
+   * press Dismiss; there is no timer, because a panel that removes itself on a
+   * clock is one a slow reader never gets to read. Reopening a FINISHED guide
+   * from the User Menu shows the checked list rather than a second
+   * congratulation — by then `completedAt` is set.
    */
   const [celebrating, setCelebrating] = useState(false);
-  const wasComplete = useRef<boolean | null>(null);
   useEffect(() => {
     if (!ready) return;
-    if (wasComplete.current === false && allComplete) setCelebrating(true);
-    wasComplete.current = allComplete;
-  }, [ready, allComplete]);
+    if (allComplete && !graduated && !dismissed) setCelebrating(true);
+  }, [ready, allComplete, graduated, dismissed]);
+
+  /**
+   * Steps whose CTA the user has activated on this mount.
+   *
+   * Only `shortcuts` acts in place, and it completes itself: opening the modal
+   * marks `shortcutsModalViewed`, the settings refetch ticks the row, and the
+   * button the user is still standing on used to disappear from under them —
+   * so closing the dialog had nothing to restore focus to and dropped it to
+   * `<body>`. A control the user just pressed stays where they left it for the
+   * life of the mount; the row's checkmark is what reports the new state.
+   */
+  const [activated, setActivated] = useState<readonly OnboardingStepId[]>([]);
+
+  /**
+   * A dismissal only counts once the card is really gone: `dismiss()` is a
+   * network round-trip, and until it lands the user's focus is still on a
+   * button that is still on screen.
+   */
+  const dismissPressed = useRef(false);
+  const onScreen = visible || celebrating;
+  useEffect(() => {
+    if (!dismissPressed.current || onScreen) return;
+    dismissPressed.current = false;
+    onDismissed?.();
+  }, [onScreen, onDismissed]);
 
   if (!ready) return null;
-  if (!visible && !celebrating) return null;
+  if (!onScreen) return null;
 
   const runStep = (id: OnboardingStepId) => {
+    setActivated((prev) => (prev.includes(id) ? prev : [...prev, id]));
     switch (id) {
       case 'connect-confluence':
         return navigate(CONFLUENCE_SETTINGS_PATH);
@@ -98,6 +150,7 @@ export function OnboardingChecklistCard() {
   };
 
   const handleDismiss = () => {
+    dismissPressed.current = true;
     setCelebrating(false);
     dismiss();
   };
@@ -167,6 +220,7 @@ export function OnboardingChecklistCard() {
                 {/* Wraps rather than truncates: at phone widths a truncated
                     instruction is the one thing the row exists to say. */}
                 <span
+                  id={`onboarding-step-title-${step.id}`}
                   className={
                     step.complete
                       ? 'min-w-0 flex-1 text-sm text-muted-foreground'
@@ -177,11 +231,17 @@ export function OnboardingChecklistCard() {
                 </span>
                 {/* The glyph is decoration; the state has to be readable. */}
                 <span className="sr-only">{step.complete ? 'Done' : 'Not done yet'}</span>
-                {!step.complete && (
+                {(!step.complete || activated.includes(step.id)) && (
                   <button
                     type="button"
                     onClick={() => runStep(step.id)}
                     data-testid={`onboarding-cta-${step.id}`}
+                    /* The visible label stays the accessible name (WCAG 2.5.3),
+                       but "Connect" and "New page" say nothing on their own to
+                       a reader browsing by control — the row title is the
+                       missing half, and DOM proximity is not an accessibility
+                       relationship. */
+                    aria-describedby={`onboarding-step-title-${step.id}`}
                     className="nm-button-ghost h-8 shrink-0 px-2.5 text-xs"
                   >
                     {copy.cta}

@@ -3014,4 +3014,49 @@ describe('PagesPage — Getting Started checklist (#1402)', () => {
       screen.getByTestId('onboarding-checklist').contains(screen.getByText('Test Page')),
     ).toBe(false);
   });
+
+  /**
+   * Dismiss removes the card while the user's focus is on its button. Without
+   * a rehome that drops focus to `<body>` — the failure CLAUDE.md records for
+   * `RetrievalTab`'s Retry — and the keyboard user restarts from the top of
+   * the document with nothing announced.
+   */
+  it('hands focus to the Library heading when the checklist removes itself', async () => {
+    // The shared mock answers `{}` for `/settings` on every method, so a
+    // dismissal could never come back dismissed. This one persists it.
+    let dismissed = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+      if (url.includes('/pages/filters')) return json(mockFilterOptions);
+      if (url.includes('/spaces')) return json(mockSpaces);
+      if (url.includes('/sync/status')) return json({ status: 'idle' });
+      if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+      if (url.includes('/settings')) {
+        if (init?.method === 'PUT') {
+          const patch = JSON.parse(String(init.body)) as {
+            onboardingState?: { dismissed?: boolean };
+          };
+          if (patch.onboardingState?.dismissed !== undefined) {
+            dismissed = patch.onboardingState.dismissed;
+          }
+          return json({});
+        }
+        return json({ onboardingState: { dismissed } });
+      }
+      return json(mockPagesResponse);
+    });
+
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const dismiss = await screen.findByTestId('onboarding-dismiss');
+    dismiss.focus();
+    fireEvent.click(dismiss);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument(),
+    );
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Library' }));
+  });
 });
