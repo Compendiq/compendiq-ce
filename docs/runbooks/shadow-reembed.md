@@ -127,12 +127,23 @@ committing. The shadow card's **Compare on real queries** section (or
   failure as a comparison, so a row reading "start a new benchmark" is a
   benchmark's, not yours. A one-off provider hiccup (a 429, an opened
   breaker) costs only its own query: the run carries on and the report says
-  how many of the sampled queries were skipped. Only a majority of failures
-  fails the run. **The comparison is yours alone** — the card, the poll and
+  how many of the sampled queries were skipped — and states the share with
+  more weight once a fifth of the sample is gone, because the figures then
+  describe noticeably less than the sample you asked for. **A majority of
+  failures fails the run**: past half the sample the remainder is not a
+  comparison of the two models but a sample of whichever queries got through.
+  A missing shadow column while the migration still reports as active is a
+  schema fault, not a provider one: the run stops at the first query and says
+  so, rather than spending the whole sample on an error no retry can clear.
+  **The comparison is yours alone** — the card, the poll and
   the judgement routes serve the admin who started the run, because the
   report's page titles were retrieved under that admin's own visibility. If
   you leave the tab and come back, the card re-attaches to your latest
-  comparison by itself; there is nothing to write down.
+  comparison by itself; there is nothing to write down. That re-attachment is
+  scoped to the migration that is live NOW: a run recorded against another
+  candidate pair — an earlier, aborted attempt at the cutover — is never
+  adopted into this migration's card, so the numbers under the heading are
+  always the numbers for the model the heading names.
 - **Cost.** `limit × 2` embedding calls through the shared LLM queue
   (`LLM_CONCURRENCY`, default 4) plus two kNN probes per query — same class
   of load as a small backfill slice; answers may be slower while it runs.
