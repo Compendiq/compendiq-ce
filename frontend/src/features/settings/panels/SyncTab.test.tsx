@@ -113,6 +113,31 @@ describe('SyncTab', () => {
       expect(screen.getByTestId('attachment-storage-card')).toBeInTheDocument();
     });
 
+    // Review r2: the restructure lifted the section above BOTH early returns,
+    // but only the `isError` one was pinned — deleting `{attachmentStorageSection}`
+    // from the `isLoading || !data` branch left this suite green. A slow
+    // overview (a large corpus, a cold connection) hides the card for as long
+    // as it takes, on the panel an admin came to to reclaim disk.
+    it('renders beside the skeleton while the sync overview is still in flight', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as URL).toString();
+        if (url.endsWith('/settings/sync-overview')) {
+          // Never resolves: the overview query stays pending for the whole test.
+          return new Promise<Response>(() => undefined);
+        }
+        return new Response(JSON.stringify({}), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      render(<SyncTab />, { wrapper: createWrapper() });
+
+      expect(await screen.findByTestId('attachment-storage-section')).toBeInTheDocument();
+      expect(screen.getByTestId('attachment-storage-card')).toBeInTheDocument();
+      // …and it really is the loading branch, not a settled one.
+      expect(screen.queryByTestId('sync-tab-error')).not.toBeInTheDocument();
+    });
+
     it('is absent for a non-admin', async () => {
       useAuthStore.getState().setAuth('test-token', {
         id: '2',

@@ -1186,7 +1186,19 @@ is something the walk cannot measure, and the card reports it instead. Nothing y
 a candidate (paste and sync both write files before the referencing row
 exists); the card says how many candidates are waiting out that window, so a
 freshly-emptied store does not read as a clean one. Non-image cached attachments (PDFs and other lazily fetched files)
-are never touched. `local_attachments` rows whose file is missing on disk are
+are never touched.
+
+**An image attached to a live Confluence page but embedded in no body is
+treated as cache** and may be removed — the attachments macro and the article
+view fetch attachments lazily through `GET /api/attachments/:pageId/:filename`,
+which caches whatever filename it was asked for, and nothing in the corpus
+references those files. Removing one costs a re-fetch from Confluence the next
+time it is viewed, not the file: Confluence remains the copy of record.
+(Non-image attachments on the same path are excluded by the rule above, so a
+cached PDF is left alone either way.) Locally uploaded images are a different
+matter and are protected by their `local_attachments` row.
+
+`local_attachments` rows whose file is missing on disk are
 **counted, never deleted** — a mis-mounted `ATTACHMENTS_DIR` must not wipe the
 metadata. Files the sweep deletes take their `page_image_embeddings` rows with
 them and the owning pages are re-queued for image indexing.

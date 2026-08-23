@@ -853,11 +853,31 @@ async function walkLocalStore(
     .filter((n) => Number.isInteger(n) && n > 0 && n <= PG_INT4_MAX);
 
   const known = await knownLocalPageIds(ids);
+  /**
+   * Pages whose directory could not be READ (review r2).
+   *
+   * `readKeyDir` answers `null` for two different facts — the directory
+   * vanished (ENOENT), and the directory is there but unreadable — and only
+   * the first is evidence a row's file is gone. Counting the second as
+   * `missingLocalFiles` had the card state that N records "point at a file
+   * that is not on disk" for files demonstrably present, on a surface whose
+   * stated contract is to report only what the walk could see. The
+   * `unreadableDirectories` counter already carries the honest verdict for
+   * them, and the card renders it.
+   *
+   * Told apart by the counter `readKeyDir` increments, so the shared helper
+   * keeps its one return contract for all three callers.
+   */
+  const unreadableLocalPages = new Set<number>();
 
   for (const pageId of ids) {
     assertNotAborted();
+    const unreadableBefore = stats.unreadableDirectories;
     const dir = await readKeyDir(path.join(localRoot, String(pageId)), String(pageId), stats);
-    if (dir === null) continue;
+    if (dir === null) {
+      if (stats.unreadableDirectories > unreadableBefore) unreadableLocalPages.add(pageId);
+      continue;
+    }
     seenByPage.set(pageId, new Set(dir.files.map((f) => f.name)));
 
     if (!known.has(pageId)) {
@@ -887,6 +907,8 @@ async function walkLocalStore(
 
   let missingLocalFiles = 0;
   for (const [pageId, filenames] of rowsByPage) {
+    // Unreadable ≠ absent — see `unreadableLocalPages`.
+    if (unreadableLocalPages.has(pageId)) continue;
     const seen = seenByPage.get(pageId);
     for (const filename of filenames) {
       if (!seen?.has(filename)) missingLocalFiles += 1;
@@ -1310,6 +1332,7 @@ export async function runAttachmentSweep(opts: {
     candidates: [],
     deleted: null,
     adjustments: null,
+    anomalousStores: [],
   };
 
   let run: AttachmentSweepRun;
@@ -1339,8 +1362,8 @@ export async function runAttachmentSweep(opts: {
     // errors (bookkeeping, not the work), so holding the lock through it
     // cannot wedge it; the release below still sits in a `finally`.
     await persistSetting(ATTACHMENT_SWEEP_LAST_RUN_KEY, run);
-    // The stats record is the last COMPLETED run only (review r1): the
-    // anomaly refusal carries `stores` too — a zero-file walk over a store
+    // The stats record is the last CLEAN COMPLETED run only (review r1, r2):
+    // the anomaly refusal carries `stores` too — a zero-file walk over a store
     // the database still references — and persisting those figures would
     // clobber the one reference record an operator diagnosing the suspected
     // mis-mount needs. The refused run keeps its figures in the RUN record.
@@ -1349,7 +1372,21 @@ export async function runAttachmentSweep(opts: {
     // measurement, and the card's amber strip already sends the operator to
     // Dry run. `run.stores` for a completed LIVE run is post-delete —
     // see `residualStores`.
-    if (run.status === 'completed' && run.stores) {
+    //
+    // `anomalousStores` is the r2 half: a ONE-store anomaly COMPLETES (that is
+    // the whole point of the per-store stand-down), so `run.status` alone let
+    // the zeroed figures of the store the run had just declined to trust
+    // overwrite that same reference record — the invariant above, defeated at
+    // half scope. The operator diagnosing ONE unmounted store loses exactly
+    // what the operator diagnosing two keeps.
+    //
+    // A DRY run over the same tree still writes its figures, and that is not
+    // an oversight: nothing about it is a verdict on the mount, it is the
+    // operator explicitly asking for a fresh measurement, and it is the one
+    // remedy the card offers for a stale record. The live path is different
+    // because THIS run already decided those figures were untrustworthy enough
+    // to refuse deleting against.
+    if (run.status === 'completed' && run.stores && walk.anomalousStores.length === 0) {
       await persistSetting(ATTACHMENT_STORAGE_STATS_KEY, {
         at: run.at,
         stores: run.stores,
@@ -1415,6 +1452,15 @@ interface SweepProgress {
   deleted: DeletedTotals | null;
   /** `null` until the delete phase starts; mutated per removal. */
   adjustments: StoreStatsAdjustments | null;
+  /**
+   * Stores this LIVE run stood down for the mis-mount anomaly (review r2).
+   *
+   * Carried out of `executeSweep` because the stats-record decision is
+   * `runAttachmentSweep`'s, and `run.status` cannot answer it: a ONE-store
+   * anomaly COMPLETES. Reading `run.note` instead would work today and be a
+   * string test on a sentence the backend is free to reword.
+   */
+  anomalousStores: Array<'confluence' | 'local'>;
 }
 
 /**
@@ -1500,6 +1546,9 @@ async function executeSweep(
   }
   const anomalyNotes = [anomalies.confluence, anomalies.local].filter(
     (n): n is string => n !== undefined,
+  );
+  walk.anomalousStores = (['confluence', 'local'] as const).filter(
+    (s) => anomalies[s] !== undefined,
   );
   if (anomalyNotes.length === 2) {
     const run = refused(anomalyNotes.join('; '));

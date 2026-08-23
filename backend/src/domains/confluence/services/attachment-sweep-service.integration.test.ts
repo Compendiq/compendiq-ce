@@ -561,6 +561,35 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       ).toBe(true);
     });
 
+    // Review r2: the invariant one test up is defeated at half scope by the
+    // per-store stand-down. A ONE-store anomaly COMPLETES, and the persist was
+    // gated on `status === 'completed'` alone — so the zeroed figures of the
+    // store the run had just declined to trust overwrote the reference record
+    // an operator diagnosing that mount needs. Neither one-store test asserted
+    // anything about the record, in either direction.
+    it('a one-store anomaly leaves the stats record standing too (review r2)', async () => {
+      await seedCorpus();
+      const dry = await runAttachmentSweep({ dryRun: true });
+      expect(dry!.status).toBe('completed');
+      const before = await readAttachmentStorageStatsRecord();
+      expect(before!.stores.confluence.files).toBeGreaterThan(0);
+      expect(before!.stores.local.files).toBeGreaterThan(0);
+
+      // ONE store mis-mounts: every Confluence-tree key goes, `local/` stays.
+      for (const entry of await fs.readdir(tempBase)) {
+        if (entry === 'local') continue;
+        await fs.rm(path.join(tempBase, entry), { recursive: true, force: true });
+      }
+
+      const live = await runAttachmentSweep({ dryRun: false });
+      expect(live!.status).toBe('completed');
+      expect(live!.note).toMatch(/^confluence store/);
+      // The RUN record reports the zero-file walk it stood the store down over…
+      expect(live!.stores!.confluence.files).toBe(0);
+      // …and the reference figures survive it untouched, both stores.
+      expect(await readAttachmentStorageStatsRecord()).toEqual(before);
+    });
+
     it('an empty local store stands that store down and still sweeps the Confluence tree', async () => {
       const { standalonePageId } = await seedCorpus();
       await fs.rm(path.join(tempBase, 'local'), { recursive: true, force: true });
@@ -568,6 +597,9 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       const live = await runAttachmentSweep({ dryRun: false });
       expect(live!.status).toBe('completed');
       expect(live!.note).toMatch(/^local store/);
+      // The mirror of the case above: this run stood a store down, so it is
+      // not the clean measurement the stats record publishes.
+      expect(await readAttachmentStorageStatsRecord()).toBeNull();
       // Swept: the pageless aged directory and the per-file orphan.
       expect(await exists(path.join(tempBase, '55555'))).toBe(false);
       expect(await exists(path.join(tempBase, '90001', 'orphan.png'))).toBe(false);
@@ -679,6 +711,39 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
           expect(await exists(sealed)).toBe(true);
           // …and it is not counted as walked content either.
           expect(await exists(path.join(tempBase, '55555'))).toBe(false);
+        } finally {
+          await fs.chmod(sealed, 0o700);
+        }
+      },
+    );
+
+    // Review r2: `readKeyDir` answers `null` for two different facts — the
+    // directory vanished, and the directory is there but unreadable — and only
+    // the first is evidence a row's file is gone. Counting the second made the
+    // card state that N `local_attachments` records "point at a file that is
+    // not on disk" for files sitting right there, on a surface whose stated
+    // contract is to report only what the walk could see.
+    it.skipIf(process.getuid?.() === 0)(
+      'does not report a row as missing because its directory could not be read',
+      async () => {
+        const { localPageId } = await seedCorpus();
+        const baseline = await runAttachmentSweep({ dryRun: true });
+        // seedCorpus's one genuinely absent file (`missing.png`).
+        expect(baseline!.missingLocalFiles).toBe(1);
+
+        const sealed = path.join(tempBase, 'local', String(localPageId));
+        await fs.chmod(sealed, 0o000);
+        try {
+          const dry = await runAttachmentSweep({ dryRun: true });
+
+          expect(dry!.status).toBe('completed');
+          expect(dry!.stores!.local.unreadableDirectories).toBe(1);
+          // `tracked.png` is on disk and unreachable — a fact about the mount,
+          // already carried by the counter above, not a missing record.
+          expect(
+            dry!.missingLocalFiles,
+            'an unreadable directory is not evidence its rows are missing',
+          ).toBe(0);
         } finally {
           await fs.chmod(sealed, 0o700);
         }

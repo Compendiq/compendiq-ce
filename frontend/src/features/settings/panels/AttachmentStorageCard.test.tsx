@@ -72,6 +72,16 @@ interface FetchPlan {
 
 let postedBodies: unknown[] = [];
 
+/**
+ * Restated, not imported: the card does not export them, and a test that read
+ * the module's own constants would advance by whatever they happen to be and
+ * pass against a warm-up shortened to nothing. These are the documented
+ * values — 5s poll (the admin rate limit is 20/min per route and two routes
+ * poll) and a 20s post-kick window.
+ */
+const POLL_MS_UNDER_TEST = 5_000;
+const KICK_WARMUP_MS_UNDER_TEST = 20_000;
+
 function mockApi(plan: FetchPlan): void {
   postedBodies = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -772,6 +782,46 @@ describe('AttachmentStorageCard (#1349)', () => {
     const summary = disclosure.querySelector('summary')!;
     for (const cls of ['focus-visible:outline-none', 'focus-visible:ring-2', 'focus-visible:ring-ring']) {
       expect(summary.className.split(/\s+/), `summary must carry ${cls}`).toContain(cls);
+    }
+  });
+
+  /**
+   * Review r2. The post-kick warm-up had no test in either direction —
+   * deleting the `kickedAt` line from `pollWhile` left all 35 cells green —
+   * and it is the only thing that fetches the finished record on the path its
+   * comment documents: with Redis unreachable `isWorkerLocked` cannot report a
+   * lock, so `running` never flips and the interval would never arm at all.
+   *
+   * Both halves are asserted: it polls inside the window, and it stops after
+   * it. A warm-up that never expires is its own defect (a card polling two
+   * admin routes forever against a 20/min limit).
+   */
+  it('polls after a kick even when the payload never reports a lock, and stops after the warm-up', async () => {
+    vi.useFakeTimers();
+    try {
+      mockApi({});
+      render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+      await vi.waitFor(() => expect(screen.getByTestId('attachment-sweep-dry-run')).toBeEnabled());
+      fireEvent.click(screen.getByTestId('attachment-sweep-dry-run'));
+      // Settle the POST and the two invalidations it fires.
+      await vi.advanceTimersByTimeAsync(50);
+
+      const afterKick = vi.mocked(globalThis.fetch).mock.calls.length;
+      // Two GETs per poll tick, and `running` is false on every one of them.
+      await vi.advanceTimersByTimeAsync(3 * POLL_MS_UNDER_TEST);
+      const duringWarmup = vi.mocked(globalThis.fetch).mock.calls.length;
+      expect(duringWarmup, 'the card must keep polling inside the warm-up').toBeGreaterThan(
+        afterKick,
+      );
+
+      // Past the 20s window with `running` still false: the interval stands down.
+      await vi.advanceTimersByTimeAsync(KICK_WARMUP_MS_UNDER_TEST);
+      const settled = vi.mocked(globalThis.fetch).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(3 * POLL_MS_UNDER_TEST);
+      expect(vi.mocked(globalThis.fetch).mock.calls.length, 'the warm-up must expire').toBe(settled);
+    } finally {
+      vi.useRealTimers();
     }
   });
 
