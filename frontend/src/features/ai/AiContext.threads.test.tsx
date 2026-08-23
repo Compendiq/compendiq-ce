@@ -391,32 +391,38 @@ describe('AiContext per-page threads (#1126)', () => {
     });
   });
 
-  it('applies an explicit ?mode= when navigating onto /ai', () => {
+  it('applies an explicit ?mode=generate when navigating onto /ai, and no longer honours ?mode=improve (#1361)', () => {
     // The provider no longer remounts on route entry, so a mode carried in the
-    // URL has to be applied reactively. Nothing in the app still produces one:
-    // #1126 turned the article rail's link into the dock, and #1176 took the
-    // last of its Improve wording with it. Bookmarks and links made before that
-    // change still arrive here, which is why the mode screens still render.
-    renderThreadApp('/ai', ['/ai?mode=improve&pageId=page-a']);
+    // URL has to be applied reactively. This case used to cover an `improve`
+    // bookmark from before #1126 turned the article rail's link into the
+    // dock; #1361 (owner ruling 3, pin 1) retired that path outright — `/ai`'s
+    // URL allow-list (`isAiHomeAction`) now admits only `ask` and `generate`,
+    // because Improve and Diagram act on a page `/ai` no longer has. An old
+    // `mode=improve` bookmark now falls back to Q&A instead of rendering a
+    // screen with no way back to the composer the route is for. `generate`
+    // stays a real deep link, so it is what now proves the reactive apply.
+    renderThreadApp('/ai', ['/ai?mode=improve&pageId=page-a', '/ai?mode=generate&pageId=page-a']);
 
     expect(screen.getByTestId('mode')).toHaveTextContent('ask');
     goTo('/ai?mode=improve&pageId=page-a');
-    expect(screen.getByTestId('mode')).toHaveTextContent('improve');
+    expect(screen.getByTestId('mode')).toHaveTextContent('ask');
+    goTo('/ai?mode=generate&pageId=page-a');
+    expect(screen.getByTestId('mode')).toHaveTextContent('generate');
   });
 
   // The mode-less half of the same contract, and the reason `SidebarTreeView`
   // cannot strand anyone on a retired screen. Clicking a page while already on
   // /ai navigates to `/ai?pageId=…` — a URL carrying no `mode=` — which has to
-  // CLEAR an active mode rather than leave it in place. A sticky `improve`
+  // CLEAR an active mode rather than leave it in place. A sticky `generate`
   // would render a document screen with no tab selected and no route back
-  // except the URL bar, since #1126 left /ai offering only Ask and Generate.
+  // except the URL bar, since #1361 left /ai offering only Ask and Generate.
   //
   // This is what makes SidebarTreeView the thing that *clears* a mode deep
   // link rather than a source of one — it has never built a `?mode=` URL.
   it('clears an active mode when a navigation carries none, the way SidebarTreeView does', () => {
-    renderThreadApp('/ai?mode=improve&pageId=page-a', ['/ai?pageId=page-b']);
+    renderThreadApp('/ai?mode=generate&pageId=page-a', ['/ai?pageId=page-b']);
 
-    expect(screen.getByTestId('mode')).toHaveTextContent('improve');
+    expect(screen.getByTestId('mode')).toHaveTextContent('generate');
 
     goTo('/ai?pageId=page-b');
 

@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
-import { DiagramTypeSelector, DiagramModeInput, DIAGRAM_EMPTY_TITLE, diagramEmptySubtitle } from './DiagramMode';
+import { DiagramTypeSelector, DiagramModeInput, DiagramPreview, DIAGRAM_EMPTY_TITLE, diagramEmptySubtitle } from './DiagramMode';
 import { AiProvider } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 
@@ -208,6 +208,70 @@ describe('DiagramMode', () => {
 
       await waitFor(() => {
         expect(toastErrorMock).toHaveBeenCalledWith('Connection lost');
+      });
+    });
+  });
+
+  // Moved out of AiAssistantPage.test.tsx by #1361: `/ai` no longer offers
+  // Diagram, but `DockPanel` still renders this preview, so "Use in page" is
+  // live code and this is the only coverage it has. `/pages/p1` is where a page
+  // now resolves — `resolveAiPageId` answers null on every AI route.
+  describe('DiagramPreview — Use in page', () => {
+    async function generate() {
+      streamSSEMock.mockReturnValue((async function* () {
+        yield { content: '```mermaid\ngraph TD;\nA-->B;\n```' };
+        yield { final: true, done: true };
+      })());
+      await waitFor(() => expect(screen.getByRole('button', { name: /Generate Diagram/i })).not.toBeDisabled());
+      fireEvent.click(screen.getByRole('button', { name: /Generate Diagram/i }));
+    }
+
+    it('offers "Use in page" once a diagram exists and a page is open', async () => {
+      mockPageData = { data: { id: 'p1', title: 'My Article', bodyHtml: '<p>C</p>', bodyText: 'C', version: 2 } };
+      render(
+        <>
+          <DiagramModeInput />
+          <DiagramPreview />
+        </>,
+        { wrapper: createWrapper(['/pages/p1']) },
+      );
+      await generate();
+      expect(await screen.findByText('Use in page')).toBeInTheDocument();
+    });
+
+    it('does not offer it with no page open', async () => {
+      mockPageData = { data: undefined };
+      render(
+        <>
+          <DiagramModeInput />
+          <DiagramPreview />
+        </>,
+        { wrapper: createWrapper(['/ai']) },
+      );
+      streamSSEMock.mockReturnValue((async function* () {
+        yield { content: '```mermaid\ngraph TD;\nA-->B;\n```' };
+        yield { final: true, done: true };
+      })());
+      expect(screen.queryByText('Use in page')).not.toBeInTheDocument();
+    });
+
+    it('PUTs the diagram into the page when it is clicked', async () => {
+      mockPageData = { data: { id: 'p1', title: 'My Article', bodyHtml: '<p>C</p>', bodyText: 'C', version: 2 } };
+      render(
+        <>
+          <DiagramModeInput />
+          <DiagramPreview />
+        </>,
+        { wrapper: createWrapper(['/pages/p1']) },
+      );
+      await generate();
+      fireEvent.click(await screen.findByText('Use in page'));
+
+      await waitFor(() => {
+        const put = apiFetchMock.mock.calls.find(
+          (c) => typeof c[0] === 'string' && c[0] === '/pages/p1' && (c[1] as RequestInit | undefined)?.method === 'PUT',
+        );
+        expect(put, 'expected a PUT to /pages/p1').toBeDefined();
       });
     });
   });

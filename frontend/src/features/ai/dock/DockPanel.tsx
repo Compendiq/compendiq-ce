@@ -18,6 +18,7 @@ import { DockDiffCard } from './DockDiffCard';
 import { DockDraftCard } from './DockDraftCard';
 import { useDockActions } from './use-dock-actions';
 import { AssistantActionSelect, resolveAssistantAction } from '../AssistantActionSelect';
+import { DOCK_ACTIONS } from '../assistant-actions';
 import { CREATE_SKILLS, getCreateSkill, type CreateSkillId } from '../create-skills';
 import { cn } from '../../../shared/lib/cn';
 import { Button } from '../../../shared/components/Button';
@@ -480,7 +481,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             onPickFiles={handlePickFiles}
             disabled={isStreaming || selectedAction === 'diagram' || isBusy}
           />
-          <AssistantActionSelect disabled={isStreaming || modelsError} className="self-end" />
+          <AssistantActionSelect actions={DOCK_ACTIONS} disabled={isStreaming || modelsError} className="self-end" />
           <textarea
             ref={composerRef}
             value={input}

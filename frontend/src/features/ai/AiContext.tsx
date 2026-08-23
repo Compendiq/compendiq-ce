@@ -8,6 +8,7 @@ import { streamSSE } from '../../shared/lib/sse';
 import { AI_HOME_PATH, isAiRoute, conversationIdFromPath, conversationPath } from '../../shared/lib/ai-routes';
 import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
 import { DEFAULT_IMPROVEMENT_TYPE, type ImprovementType } from './improvement-types';
+import { isAiHomeAction } from './assistant-actions';
 import { type CreateSkillId } from './create-skills';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { useStreamingContent } from '../../shared/hooks/use-streaming-content';
@@ -583,8 +584,20 @@ export function AiProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // #1361: which modes a `?mode=` deep link may select depends on the surface
+  // the provider is serving. On an AI route it is the two `isAiHomeAction`
+  // admits — `ask` and `generate` — deliberately NARROWER than the seven-item
+  // `AI_HOME_ACTIONS` menu list, because a `create-*` skill is picked in-app
+  // and is never a URL value; on `/pages/:id` — the dock — the full set still
+  // applies, because the dock offers the rewrite skills and Diagram. This
+  // boolean is read again by the `?q=` prefill below; there is exactly one of
+  // it in the provider.
+  const onAiRoute = isAiRoute(location.pathname);
   const rawMode = searchParams.get('mode');
-  const urlMode = VALID_MODES.includes(rawMode as Mode) ? (rawMode as Mode) : null;
+  const urlMode = rawMode !== null
+    && (onAiRoute ? isAiHomeAction(rawMode) : VALID_MODES.includes(rawMode as Mode))
+    ? (rawMode as Mode)
+    : null;
   // A page context is still an input to Q&A, so it remains the honest default.
   // An explicit valid `?mode=` can deep-link to another selectable action;
   // retired Summarize and Quality values deliberately fall back to Q&A.
@@ -805,8 +818,6 @@ export function AiProvider({ children }: { children: ReactNode }) {
   // claim `q` from ANY route carrying it — silently rewriting that page's URL
   // and stuffing its search term into the AI composer.
   //
-  // The local is `onAiRoute` because `isAiRoute` is now the imported predicate.
-  const onAiRoute = isAiRoute(location.pathname);
   const urlQuestion = onAiRoute ? searchParams.get('q') : null;
   useEffect(() => {
     if (urlQuestion === null) return;

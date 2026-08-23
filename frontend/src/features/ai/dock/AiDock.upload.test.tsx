@@ -366,4 +366,27 @@ describe('AiDock — reference document (#1131)', () => {
     await screen.findByTestId('ai-dock-doc-attachment-card');
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
+
+  // Moved from AiAssistantPage.test.tsx by #1361: the dock is the only surface
+  // that still offers Diagram, and the rule is the dock's own — an attachment
+  // is KEPT (not dropped) while Diagram is selected, and is not sent, because
+  // /llm/generate-diagram takes no reference material.
+  it('keeps an attached document but does not send it while Diagram is selected', async () => {
+    renderDock();
+    await openAndSettle();
+    await attach();
+    await selectAction('diagram');
+
+    expect(screen.getByTestId('ai-dock-attachments-paused')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-dock-doc-attachment-card')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('ai-dock-input'), { target: { value: 'show the retry loop' } });
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
+
+    await waitFor(() => {
+      const call = streamSSEMock.mock.calls.find((c) => c[0] === '/llm/generate-diagram');
+      expect(call, 'expected a /llm/generate-diagram request').toBeDefined();
+      expect(call![1]).not.toHaveProperty('referenceText');
+    });
+  });
 });

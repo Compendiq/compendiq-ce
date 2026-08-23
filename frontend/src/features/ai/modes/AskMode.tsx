@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Send, Link2, X, Plus } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { AssistantActionSelect } from '../AssistantActionSelect';
+import { AI_HOME_ACTIONS } from '../assistant-actions';
 import { DeepSearchToggle } from '../DeepSearchToggle';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
@@ -338,7 +339,7 @@ function AskModeInputContent() {
             icon={<Link2 size={16} />}
           />
         )}
-        <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
+        <AssistantActionSelect actions={AI_HOME_ACTIONS} disabled={isStreaming} className="self-end" />
         <textarea
           ref={inputRef}
           value={input}
