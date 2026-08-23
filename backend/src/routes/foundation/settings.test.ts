@@ -864,6 +864,39 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     });
   });
 
+  it('GET /settings falls back to defaults instead of 400ing when stored onboarding_state fails validation (#1402 review r1)', async () => {
+    // A corrupt/legacy value here (bad out-of-band SQL write, or a future phase
+    // changing a field's type) must degrade only this field, never the whole
+    // GET /settings response. Before the fix, OnboardingStateSchema.parse threw
+    // and Fastify's default error handler turned that into a 400 for every
+    // other settings field too.
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        confluence_url: null,
+        confluence_pat: null,
+        theme: 'glass-dark',
+        sync_interval_min: 15,
+        show_space_home_content: true,
+        inline_completion_enabled: true,
+        inline_completion_delay: 'balanced',
+        inline_completion_code_only: false,
+        onboarding_state: { firstAiQueryMade: 'yes', legacyKey: 1 },
+      }],
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/settings' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.onboardingState).toEqual({
+      firstAiQueryMade: false,
+      shortcutsModalViewed: false,
+      pageCreatedOrEdited: false,
+      dismissed: false,
+      completedAt: null,
+    });
+  });
+
   it('PUT /settings merges onboardingState at the top level rather than overwriting it (#1402)', async () => {
     // This is the test a reviewer will try hardest to break by reverting the
     // merge operator (`onboarding_state || $n::jsonb`) to a plain assignment
@@ -890,9 +923,17 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(values).toContain(JSON.stringify({ firstAiQueryMade: true }));
   });
 
-  it('PUT /settings twice with different single-key onboardingState patches both survive in the next GET (#1402)', async () => {
-    // End-to-end proof of merge-not-overwrite at the route layer: two
-    // sequential single-key PUTs, then a GET showing both flags true.
+  it('GET /settings echoes back whatever onboarding_state the DB row holds (#1402)', async () => {
+    // NOTE (review r1): despite the two PUTs below, this test cannot observe
+    // the route's merge behavior — `query` is mocked, so neither PUT's SQL is
+    // ever executed, and the GET's response is entirely determined by the
+    // mockResolvedValueOnce row fed to it just before the GET. Renamed from
+    // "...both survive in the next GET" / "End-to-end proof of merge-not-
+    // overwrite at the route layer", which this test cannot provide (a
+    // mutation reverting the merge operator to a bare assignment leaves it
+    // green). The real merge-not-overwrite proof is the SQL-regex assertion
+    // above plus the real-Postgres round trip in
+    // settings-onboarding-state.test.ts (added in review round r1).
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE #1
     const first = await app.inject({
       method: 'PUT',

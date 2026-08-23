@@ -84,8 +84,22 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       inlineCompletionDelay: row.inline_completion_delay,
       inlineCompletionCodeOnly: row.inline_completion_code_only,
       // #1402: always fully defaulted — a row that predates this migration (or
-      // predates a given flag being added) still returns every key.
-      onboardingState: OnboardingStateSchema.parse(row.onboarding_state ?? {}),
+      // predates a given flag being added) still returns every key. Uses
+      // safeParse (not .parse) so an unreadable stored value — a bad out-of-band
+      // SQL write, or a future phase changing a field's type — degrades this one
+      // field to "nothing recorded yet" instead of 400ing the entire GET
+      // /settings response (review r1, #1402).
+      onboardingState: (() => {
+        const parsed = OnboardingStateSchema.safeParse(row.onboarding_state ?? {});
+        if (!parsed.success) {
+          logger.warn(
+            { userId: request.userId, issues: parsed.error.issues },
+            'Stored onboarding_state failed validation; returning defaults',
+          );
+          return OnboardingStateSchema.parse({});
+        }
+        return parsed.data;
+      })(),
     };
   });
 
