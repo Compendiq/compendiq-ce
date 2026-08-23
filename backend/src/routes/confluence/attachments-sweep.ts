@@ -86,7 +86,11 @@ export async function attachmentSweepRoutes(fastify: FastifyInstance) {
       // across the pair. Deriving `started` from the acquire closes that, and
       // it retires the old redundant DRY kick with it: a lost acquire means
       // the lock really was held at that instant, so there is no
-      // read-to-kick window left for the redundancy to paper over. A LIVE
+      // read-to-kick window left for the redundancy to paper over. The
+      // acquire is `failClosed` (see `acquireAttachmentSweepLock`), so a Redis
+      // ERROR also answers `alreadyRunning` rather than letting two delete
+      // loops run unlocked — the copy is imprecise on that path and the
+      // remedy ("press again") is the same. A LIVE
       // trigger that loses likewise does not kick (review r3): the response
       // just said the delete did not start and the card toasts exactly that;
       // pressing again is the remedy. Pessimistic by construction: never
