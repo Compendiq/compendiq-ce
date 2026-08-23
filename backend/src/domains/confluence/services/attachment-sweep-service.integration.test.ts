@@ -513,7 +513,11 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(await readAttachmentStorageStatsRecord()).toEqual(before);
     });
 
-    it('refuses on its confluence branch when only the Confluence tree is empty', async () => {
+    // Review r1: the anomaly is PER STORE. It used to be computed globally
+    // and returned before the delete phase, so an instance whose Confluence
+    // cache is legitimately empty could never sweep its LOCAL orphans — which
+    // are not re-fetchable — at all. The anomalous store still stands down.
+    it('an empty Confluence tree stands that store down and still sweeps the local one', async () => {
       const { localPageId } = await seedCorpus();
       for (const entry of await fs.readdir(tempBase)) {
         if (entry === 'local') continue;
@@ -521,24 +525,117 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       }
 
       const live = await runAttachmentSweep({ dryRun: false });
-      expect(live!.status).toBe('refused');
+      expect(live!.status).toBe('completed');
       expect(live!.note).toMatch(/^confluence store/);
-      expect(live!.deleted).toBeNull();
-      // The intact local store was not touched — the refusal is run-wide.
-      expect(await exists(path.join(tempBase, 'local', String(localPageId), 'untracked.png'))).toBe(true);
+      // The sound store really was swept: its aged untracked orphan is gone…
+      expect(await exists(path.join(tempBase, 'local', String(localPageId), 'untracked.png'))).toBe(
+        false,
+      );
+      // …and its referenced/tracked/young files are not.
+      expect(await exists(path.join(tempBase, 'local', String(localPageId), 'local-keep.png'))).toBe(
+        true,
+      );
+      expect(await exists(path.join(tempBase, 'local', String(localPageId), 'tracked.png'))).toBe(true);
+      expect(
+        await exists(path.join(tempBase, 'local', String(localPageId), 'young-untracked.png')),
+      ).toBe(true);
     });
 
-    it('refuses on its local branch when only the local store is empty', async () => {
-      await seedCorpus();
+    it('an empty local store stands that store down and still sweeps the Confluence tree', async () => {
+      const { standalonePageId } = await seedCorpus();
       await fs.rm(path.join(tempBase, 'local'), { recursive: true, force: true });
 
       const live = await runAttachmentSweep({ dryRun: false });
-      expect(live!.status).toBe('refused');
+      expect(live!.status).toBe('completed');
       expect(live!.note).toMatch(/^local store/);
-      expect(live!.deleted).toBeNull();
-      // The intact Confluence tree was not touched — the refusal is run-wide.
-      expect(await exists(path.join(tempBase, '90001', 'orphan.png'))).toBe(true);
+      // Swept: the pageless aged directory and the per-file orphan.
+      expect(await exists(path.join(tempBase, '55555'))).toBe(false);
+      expect(await exists(path.join(tempBase, '90001', 'orphan.png'))).toBe(false);
+      // Kept: everything referenced anywhere, and the standalone's own paste.
+      expect(await exists(path.join(tempBase, '90001', 'keep.png'))).toBe(true);
+      expect(await exists(path.join(tempBase, String(standalonePageId), 'pasted.png'))).toBe(true);
     });
+  });
+
+  // Review r1 (security). `readKeyDir` counts only `entry.isFile()`, so for a
+  // directory holding ONLY subdirectories `files` is `[]` — which makes both
+  // safety checks in `judgeDirectoryOrphan` vacuous (`some(keep.has)` false,
+  // `every(aged)` vacuously true) and made the whole tree a `bytes: 0`
+  // `rm -rf` candidate, with the dry run reporting 0 B so a review of its
+  // output could not show what was about to be destroyed. That is exactly how
+  // the page-icon store was lost; `ATTACHMENT_ROOT_RESERVED_DIRNAMES` closed
+  // that instance BY NAME. These pin the structural close.
+  describe('nested directories are never judged', () => {
+    it('an aged pageless directory whose files sit one level deeper survives a live run', async () => {
+      await seedCorpus();
+      const buried = await writeAged('4242', 'space-DEV', 'important.bin');
+      await ageDirs(path.join('4242', 'space-DEV'), '4242');
+
+      const live = await runAttachmentSweep({ dryRun: false });
+
+      expect(live!.status).toBe('completed');
+      expect(await exists(buried)).toBe(true);
+      expect(await exists(path.join(tempBase, '4242'))).toBe(true);
+      // Reported rather than judged: no candidate names it, and the counter
+      // says it was left standing.
+      expect(live!.candidateSample.some((c) => c.key === '4242')).toBe(false);
+      expect(live!.stores!.confluence.nestedDirectories).toBe(1);
+      // Sanity: the ordinary flat orphan beside it still went.
+      expect(await exists(path.join(tempBase, '55555'))).toBe(false);
+    });
+
+    it('the delete-time re-check refuses a directory that gained a subdirectory since the listing', async () => {
+      await seedCorpus();
+      const dry = await runAttachmentSweep({ dryRun: true });
+      const candidate = dry!.candidateSample.find(
+        (c) => c.reason === 'orphan_directory' && c.key === '55555',
+      );
+      expect(candidate).toBeDefined();
+
+      // The tree changes between the listing and the delete.
+      const buried = await writeAged('55555', 'later', 'arrived.bin');
+      await ageDirs(path.join('55555', 'later'), '55555');
+
+      await deleteCandidates(
+        [candidate!],
+        await buildAttachmentKeepSets(),
+        () => undefined,
+        emptyDeletedTotals(),
+      );
+
+      expect(await exists(buried)).toBe(true);
+      expect(await exists(path.join(tempBase, '55555', 'old.png'))).toBe(true);
+    });
+  });
+
+  // Review r1: decision (e)'s "a directory must have been successfully
+  // readdir'd before any of its files can be judged" — and the counter that
+  // reports it — had no backend test at all. The two EACCES tests below
+  // exercise a failing `rm`, not a failing `readdir`.
+  describe('unreadable directories', () => {
+    it.skipIf(process.getuid?.() === 0)(
+      'counts an unreadable key directory, emits no candidate for it, and leaves it standing',
+      async () => {
+        await seedCorpus();
+        // A pageless, aged directory that would otherwise be a clean orphan.
+        await writeAged('77777', 'old.png');
+        await ageDirs('77777');
+        const sealed = path.join(tempBase, '77777');
+        await fs.chmod(sealed, 0o000);
+        try {
+          const live = await runAttachmentSweep({ dryRun: false });
+
+          expect(live!.status).toBe('completed');
+          expect(live!.stores!.confluence.unreadableDirectories).toBe(1);
+          expect(live!.candidateSample.some((c) => c.key === '77777')).toBe(false);
+          expect(await exists(sealed)).toBe(true);
+          // …and it is not counted as walked content either.
+          expect(await exists(path.join(tempBase, '55555'))).toBe(false);
+        } finally {
+          await fs.chmod(sealed, 0o700);
+        }
+      },
+    );
   });
 
   describe('live run', () => {

@@ -29,11 +29,14 @@ import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
  *    a one-sided failure into the empty state, or silently dropped a refused
  *    last run): a failed stats GET fails the figures block while a healthy
  *    last-run line stays, and vice versa.
- *  - **Everything at rest is neutral.** Storage figures, orphan candidates
- *    and the missing-rows count are MEASUREMENTS (the QualityScoreBadge
- *    argument). Amber appears only for a last run that did not complete —
- *    `failed`, or `refused` (a mis-pointed ATTACHMENTS_DIR the sweep declined
- *    to delete against), both of which need an operator to look.
+ *  - **Everything at rest is neutral.** Storage figures, orphan candidates,
+ *    the candidate list, the three walk-verdict counters (unreadable, nested,
+ *    grace-deferred) and the missing-rows count are MEASUREMENTS (the
+ *    QualityScoreBadge argument). Amber appears only where an operator has to
+ *    look: a last run that did not complete — `failed`, or `refused` (a
+ *    mis-pointed ATTACHMENTS_DIR the sweep declined to delete against) — and,
+ *    since review r1, a run that COMPLETED having stood one store down for
+ *    that same anomaly, which is the same fact at half the scope.
  *  - **Destroying files is the point of the live button**, so it is the
  *    filled destructive variant inside a confirm dialog that names what will
  *    be deleted and what never is — never a bare button.
@@ -265,6 +268,42 @@ export function AttachmentStorageCard() {
         )}
 
       {/*
+        Review r1: the third walk verdict. An attachment key directory is flat
+        by construction, so one holding a subdirectory is something else
+        wearing a key-shaped name and is never judged — the walk counts plain
+        files only, which would make the safety checks vacuous and the whole
+        tree a 0 B recursive delete. Muted, like its two siblings: a fact
+        about the walk, and the conservative verdict is the correct one.
+      */}
+      {stores && stores.confluence.nestedDirectories + stores.local.nestedDirectories > 0 && (
+        <p className="text-muted-foreground text-xs" data-testid="attachment-storage-nested">
+          {stores.confluence.nestedDirectories + stores.local.nestedDirectories === 1
+            ? '1 pageless directory holds sub-folders and was not judged'
+            : `${stores.confluence.nestedDirectories + stores.local.nestedDirectories} pageless directories hold sub-folders and were not judged`}{' '}
+          — attachment directories are flat, so the sweep never removes a nested tree it cannot
+          measure.
+        </p>
+      )}
+
+      {/*
+        Review r1: the THIRD counter the walk records and the only one no
+        surface rendered. A store whose entire orphan population is inside the
+        24-hour grace window reported "0 candidates" — indistinguishable from a
+        store with nothing to clean, and that is exactly the state an admin
+        lands in right after the bulk page delete that sends them here.
+        Rendering two of three verdicts and dropping the third is the half-fix
+        pattern; muted, and suppressed at 0, like its siblings.
+      */}
+      {stores && stores.confluence.graceSkipped + stores.local.graceSkipped > 0 && (
+        <p className="text-muted-foreground text-xs" data-testid="attachment-storage-grace">
+          {stores.confluence.graceSkipped + stores.local.graceSkipped === 1
+            ? '1 file or directory is orphaned but younger than 24 hours'
+            : `${stores.confluence.graceSkipped + stores.local.graceSkipped} files or directories are orphaned but younger than 24 hours`}{' '}
+          — they become candidates once they age out.
+        </p>
+      )}
+
+      {/*
         Fixer, external round: `keepProtectedDirectories` was counted, shipped
         on the wire and promised by the service comment, but no surface
         rendered it — so a pageless directory pinned forever by one colliding
@@ -308,6 +347,78 @@ export function AttachmentStorageCard() {
                 `, pruned ${lastRun.deleted.imageEmbeddingRows} image-index row${lastRun.deleted.imageEmbeddingRows === 1 ? '' : 's'}`}
             </>
           )}
+        </p>
+      )}
+
+      {/*
+        Review r1: dry-run-first is the safety premise of this whole feature
+        and the thing the confirm dialog instructs the operator to do — but
+        the candidate LIST was populated, persisted, served and rendered
+        nowhere, so "review the dry run" meant a number, and the only way to
+        see WHICH files a destructive run would remove was to curl an
+        authenticated admin route.
+
+        A disclosure rather than an always-open list: on a healthy instance it
+        is empty and this is a card in a settings panel, not a file browser.
+        The scroller is load-bearing — a 100-row sample would otherwise push
+        Dry run and Delete orphans off screen. Neutral throughout: this is a
+        measurement, and the destructive act has its own confirm.
+      */}
+      {lastRun && lastRun.candidateSample.length > 0 && (
+        <details className="text-xs" data-testid="attachment-sweep-candidates">
+          <summary className="text-muted-foreground hover:text-foreground cursor-pointer select-none">
+            Show the {lastRun.candidateSample.length} candidate
+            {lastRun.candidateSample.length === 1 ? '' : 's'}
+            {lastRun.candidatesTotal > lastRun.candidateSample.length &&
+              ` of ${lastRun.candidatesTotal}`}
+          </summary>
+          <ul
+            className="border-border mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border p-2"
+            data-testid="attachment-sweep-candidate-list"
+          >
+            {lastRun.candidateSample.map((c) => (
+              <li
+                key={`${c.store}:${c.key}:${c.filename ?? ''}`}
+                className="text-muted-foreground flex flex-wrap items-baseline gap-x-2"
+              >
+                <span className="text-foreground font-mono break-all">
+                  {c.store === 'local' ? 'local/' : ''}
+                  {c.key}
+                  {c.filename === null ? '/' : `/${c.filename}`}
+                </span>
+                <span>
+                  {c.reason === 'orphan_directory' ? 'whole directory' : 'single file'} ·{' '}
+                  {formatBytes(c.bytes)}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {lastRun.candidatesTotal > lastRun.candidateSample.length && (
+            <p className="text-muted-foreground mt-1">
+              Showing the first {lastRun.candidateSample.length} of {lastRun.candidatesTotal}.
+            </p>
+          )}
+        </details>
+      )}
+
+      {/*
+        A completed run can still carry a note (review r1): when exactly ONE
+        store is empty on disk while the database references it, that store
+        stands down and the sound one is swept — the run completed, but a
+        store was skipped for a reason that usually means a mis-mounted
+        ATTACHMENTS_DIR. Amber, because it needs an operator to look; the
+        sibling strip below covers runs that did not complete at all.
+      */}
+      {lastRun && lastRun.status === 'completed' && lastRun.note && (
+        <p
+          role="status"
+          className="text-warning inline-flex items-start gap-1.5 text-xs"
+          data-testid="attachment-sweep-partial-note"
+        >
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>
+            One store was left alone: {lastRun.note}. The other store was swept normally.
+          </span>
         </p>
       )}
 

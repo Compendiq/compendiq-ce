@@ -1159,8 +1159,11 @@ partial view), and **Dry run** is how you refresh them.
 1. Press **Dry run**. It walks both stores, measures them, and lists orphan
    candidates without touching a single file. On a large corpus this takes
    minutes; the card polls until it finishes.
-2. Review the candidate counts (and, in the API response
-   `GET /api/admin/attachments/sweep`, a bounded sample of candidates).
+2. Review the candidates. The card's **Show the N candidates** disclosure
+   lists them — store, key, filename, whole-directory vs single-file, and
+   bytes — up to a bounded sample (the heading says so when the run found more
+   than the sample holds). `GET /api/admin/attachments/sweep` returns the same
+   sample if you would rather script the review.
 3. Press **Delete orphans** and confirm. The live run re-walks and re-checks
    every candidate at delete time — it never trusts a stale dry-run list. When
    it finishes, the card's figures are the tree as it stands **after** the
@@ -1176,18 +1179,27 @@ image's URL per assistant turn) feed one global keep-set per store, because
 attachment URLs are copied verbatim between bodies. The keep-set outranks the directory
 verdict too: a pageless directory that still holds even one referenced
 filename is skipped whole and reported as *keep-protected* rather than
-deleted, so a referenced file is never removed at either level. Nothing younger than **24 hours** is ever
+deleted, so a referenced file is never removed at either level. A pageless
+directory that holds **sub-folders** is likewise never judged: attachment
+directories are flat by construction, so a nested tree under a key-shaped name
+is something the walk cannot measure, and the card reports it instead. Nothing younger than **24 hours** is ever
 a candidate (paste and sync both write files before the referencing row
-exists). Non-image cached attachments (PDFs and other lazily fetched files)
+exists); the card says how many candidates are waiting out that window, so a
+freshly-emptied store does not read as a clean one. Non-image cached attachments (PDFs and other lazily fetched files)
 are never touched. `local_attachments` rows whose file is missing on disk are
 **counted, never deleted** — a mis-mounted `ATTACHMENTS_DIR` must not wipe the
 metadata. Files the sweep deletes take their `page_image_embeddings` rows with
 them and the owning pages are re-queued for image indexing.
 
 **Refusals:** any run refuses when the attachments root is missing or
-unreadable, and a live run refuses when a store has zero files on disk while
-the database still references it — the signature of an unmounted volume.
-Nothing is ever deleted on the strength of a missing directory alone.
+unreadable, and a live run stands a store down when it has zero files on disk
+while the database still references it — the signature of an unmounted volume.
+That verdict is **per store**: with both stores anomalous the run refuses
+outright, and with only one the run completes, sweeps the sound store and
+names the skipped one in an amber note on the card (otherwise an instance
+whose re-fetchable Confluence cache is legitimately empty could never clear
+its local orphans, which are not re-fetchable). Nothing is ever deleted on the
+strength of a missing directory alone.
 
 **Bookkeeping:** the sweep is single-flight (worker lock
 `attachment-sweep`), manual-only (no schedule), admin-rate-limited, and every

@@ -600,6 +600,22 @@ interface WalkedDir {
   files: WalkedFile[];
   bytes: number;
   dirMtimeMs: number;
+  /**
+   * Whether the directory holds a SUBDIRECTORY (#1349 review r1).
+   *
+   * An attachment key directory is flat by construction — every writer puts
+   * files directly under it — so a nested tree here is something else wearing
+   * a key-shaped name. That matters because the two safety checks in
+   * {@link judgeDirectoryOrphan} both read `files`, which counts only plain
+   * files: for a directory holding nothing BUT subdirectories `files` is `[]`,
+   * so the keep-set intersection is false and `every(aged)` is VACUOUSLY true,
+   * and the whole tree is judged a `bytes: 0` orphan and `rm -rf`'d — with the
+   * dry run reporting 0 B, so a review of its output cannot show what is about
+   * to be destroyed. That is precisely how the page-icon store was lost, and
+   * `ATTACHMENT_ROOT_RESERVED_DIRNAMES` closed that instance BY NAME only.
+   * This closes the class: a directory we cannot measure is never judged.
+   */
+  hasSubdirectories: boolean;
 }
 
 function emptyStats(): AttachmentStoreSweepStats {
@@ -613,6 +629,7 @@ function emptyStats(): AttachmentStoreSweepStats {
     orphanFileBytes: 0,
     graceSkipped: 0,
     keepProtectedDirectories: 0,
+    nestedDirectories: 0,
     unreadableDirectories: 0,
   };
 }
@@ -646,7 +663,9 @@ async function readKeyDir(
   }
   const files: WalkedFile[] = [];
   let bytes = 0;
+  let hasSubdirectories = false;
   for (const entry of entries) {
+    if (entry.isDirectory() && !entry.name.startsWith('.')) hasSubdirectories = true;
     if (!entry.isFile() || entry.name.startsWith('.')) continue;
     try {
       const st = await fs.stat(path.join(dirPath, entry.name));
@@ -660,7 +679,7 @@ async function readKeyDir(
   stats.directories += 1;
   stats.files += files.length;
   stats.bytes += bytes;
-  return { key, files, bytes, dirMtimeMs: dirStat.mtimeMs };
+  return { key, files, bytes, dirMtimeMs: dirStat.mtimeMs, hasSubdirectories };
 }
 
 interface StoreWalkResult {
@@ -676,6 +695,16 @@ function judgeDirectoryOrphan(
   stats: AttachmentStoreSweepStats,
   candidates: AttachmentSweepCandidate[],
 ): void {
+  // A directory we cannot MEASURE is never judged (review r1). See
+  // `WalkedDir.hasSubdirectories`: `files` counts plain files only, so a
+  // nested tree makes both checks below vacuous and the whole thing an
+  // `rm -rf` candidate reported as 0 B. Structural, so a store whose author
+  // forgets `ATTACHMENT_ROOT_RESERVED_DIRNAMES` cannot repeat the page-icon
+  // loss. Counted, so the card can say it was left standing.
+  if (dir.hasSubdirectories) {
+    stats.nestedDirectories += 1;
+    return;
+  }
   // The keep-set outranks the directory verdict (fixer r1): a pageless
   // directory can still hold a file some OTHER body references by URL — a
   // template that handed the URL out, a page created from it — and deleting
@@ -915,8 +944,9 @@ export function emptyStatsAdjustments(): StoreStatsAdjustments {
  * a file that vanished between the walk and the delete is subtracted by
  * whoever removed it, and under-reporting a store's size is the harmless
  * direction — the figures are a measurement, not an accounting ledger.
- * `graceSkipped`, `keepProtectedDirectories` and `unreadableDirectories`
- * describe the WALK's verdicts and are carried through untouched.
+ * `graceSkipped`, `keepProtectedDirectories`, `nestedDirectories` and
+ * `unreadableDirectories` describe the WALK's verdicts and are carried
+ * through untouched.
  */
 function applyStatsAdjustment(
   stats: AttachmentStoreSweepStats,
@@ -1012,6 +1042,12 @@ export async function deleteCandidates(
         // Re-check the grace window over the directory's CURRENT contents.
         const recheck = await readKeyDir(dirPath, candidate.key, emptyStats());
         if (recheck === null) continue; // vanished or unreadable — do not judge
+        // Same structural refusal as the walk (review r1): the two checks
+        // below read `files`, which is `[]` for a directory holding only
+        // subdirectories, so both pass vacuously and the `rm -rf` takes a
+        // tree nothing here ever measured. Re-checked here rather than
+        // trusted from the listing — a subdirectory can land after the walk.
+        if (recheck.hasSubdirectories) continue;
         const aged = recheck.dirMtimeMs < cutoffMs && recheck.files.every((f) => f.mtimeMs < cutoffMs);
         if (!aged) continue;
         // Keep-set over the CURRENT contents (fixer r1): the walk already
@@ -1432,14 +1468,30 @@ async function executeSweep(
   // (e) Live-run anomaly: a store that is empty on disk while the database
   // still references it is a mis-pointed or unmounted ATTACHMENTS_DIR, not a
   // clean tree. The dry run reports the same figures; only deletion refuses.
-  const anomaly =
-    !dryRun && confluence.stats.files === 0 && keep.confluence.size > 0
-      ? 'confluence store has zero files while the database references attachments — refusing to delete'
-      : !dryRun && local.stats.files === 0 && (local.totalRows > 0 || keep.local.size > 0)
-        ? 'local store has zero files while the database references attachments — refusing to delete'
-        : null;
-  if (anomaly) {
-    const run = refused(anomaly);
+  //
+  // PER STORE, not per run (review r1). The two stores are walked separately
+  // and mount separately, and the note has always been worded per store —
+  // but the verdict was global and returned before the delete phase, so an
+  // instance whose Confluence cache is legitimately empty (downloads never
+  // succeeded, or an operator cleared the re-fetchable cache) could never run
+  // a live sweep at all, while its LOCAL orphans — which are not re-fetchable
+  // — accumulated with no way to remove them. Now the anomalous store's
+  // candidates are dropped and the sound store is swept; only BOTH anomalous
+  // is a whole-run refusal.
+  const anomalies: Partial<Record<'confluence' | 'local', string>> = {};
+  if (!dryRun && confluence.stats.files === 0 && keep.confluence.size > 0) {
+    anomalies.confluence =
+      'confluence store has zero files while the database references attachments — refusing to delete';
+  }
+  if (!dryRun && local.stats.files === 0 && (local.totalRows > 0 || keep.local.size > 0)) {
+    anomalies.local =
+      'local store has zero files while the database references attachments — refusing to delete';
+  }
+  const anomalyNotes = [anomalies.confluence, anomalies.local].filter(
+    (n): n is string => n !== undefined,
+  );
+  if (anomalyNotes.length === 2) {
+    const run = refused(anomalyNotes.join('; '));
     return { ...run, stores, missingLocalFiles: local.missingLocalFiles };
   }
 
@@ -1458,8 +1510,16 @@ async function executeSweep(
 
   walk.deleted = emptyDeletedTotals();
   walk.adjustments = emptyStatsAdjustments();
+  // One store may be standing down (see above). Its candidates never reach
+  // the delete loop; the run still REPORTS them, so `candidatesTotal` and the
+  // sample keep describing what the walk found, and the note says which store
+  // was left alone.
+  const deletable =
+    anomalyNotes.length === 0
+      ? candidates
+      : candidates.filter((c) => anomalies[c.store] === undefined);
   const deleted = await deleteCandidates(
-    candidates,
+    deletable,
     keep,
     assertNotAborted,
     walk.deleted,
@@ -1469,7 +1529,7 @@ async function executeSweep(
     dryRun,
     startedAt,
     status: 'completed',
-    note: null,
+    note: anomalyNotes.length === 1 ? anomalyNotes[0]! : null,
     // Post-delete: what is on disk now, not what the walk found — the audit
     // event carries the findings.
     stores: residualStores(walk),

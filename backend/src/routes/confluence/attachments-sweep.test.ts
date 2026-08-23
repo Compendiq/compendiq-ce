@@ -56,6 +56,7 @@ const STORE_STATS = {
   orphanFileBytes: 24,
   graceSkipped: 0,
   keepProtectedDirectories: 0,
+  nestedDirectories: 0,
   unreadableDirectories: 0,
 };
 

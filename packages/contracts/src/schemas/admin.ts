@@ -624,6 +624,16 @@ export const AttachmentStoreSweepStatsSchema = z.object({
    * Defaulted so records persisted before the field existed still parse.
    */
   keepProtectedDirectories: z.number().int().nonnegative().default(0),
+  /**
+   * Pageless directories skipped because they hold a SUBDIRECTORY (#1349
+   * review r1). An attachment key directory is flat by construction, so a
+   * nested tree under one is something else wearing a key-shaped name — and
+   * the walk counts only plain files, which would make the keep-set and
+   * grace-window checks vacuous and the whole tree a `bytes: 0` recursive
+   * delete. Structural, never judged, counted here.
+   * Defaulted so records persisted before the field existed still parse.
+   */
+  nestedDirectories: z.number().int().nonnegative().default(0),
   /** Directories whose readdir failed — never judged, reported instead. */
   unreadableDirectories: z.number().int().nonnegative(),
 });
@@ -656,15 +666,22 @@ export type AttachmentSweepDeleted = z.infer<typeof AttachmentSweepDeletedSchema
 /**
  * What the last sweep run (dry or live) did — the persisted record the admin
  * card reads. `refused` means the run declined to judge or delete anything
- * (unreadable root, or a live run against a store that is empty on disk while
- * the database still references it — a mis-pointed `ATTACHMENTS_DIR`).
+ * (an unreadable root, or a live run where BOTH stores are empty on disk while
+ * the database still references them — a mis-pointed `ATTACHMENTS_DIR`). When
+ * only one store is anomalous the run completes, sweeps the sound store and
+ * carries the reason in `note`.
  */
 export const AttachmentSweepRunSchema = z.object({
   /** ISO-8601 completion time. */
   at: z.string(),
   dryRun: z.boolean(),
   status: z.enum(['completed', 'refused', 'failed']),
-  /** Human-readable reason for `refused` / `failed`; null on `completed`. */
+  /**
+   * Human-readable reason for `refused` / `failed` — and, since #1349 review
+   * r1, for a `completed` live run that swept ONE store because the other was
+   * anomalous (empty on disk while the database references it). Null on an
+   * unqualified completion.
+   */
   note: z.string().nullable(),
   durationMs: z.number().int().nonnegative(),
   /** Per-store figures; null when the walk never completed. */

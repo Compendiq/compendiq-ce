@@ -38,6 +38,7 @@ const STORE_STATS = {
   orphanFileBytes: 2048,
   graceSkipped: 0,
   keepProtectedDirectories: 0,
+  nestedDirectories: 0,
   unreadableDirectories: 0,
 };
 
@@ -472,6 +473,158 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     await screen.findByTestId('attachment-storage-counters');
     expect(screen.queryByTestId('attachment-storage-unreadable')).not.toBeInTheDocument();
+  });
+
+  // Review r1: the third walk verdict. `nestedDirectories` is what keeps a
+  // directory holding sub-folders from being judged a 0 B orphan and `rm
+  // -rf`'d — the mechanism that cost the page-icon store. It must be visible
+  // for the same reason its two siblings are.
+  it('reports pageless directories that hold sub-folders, and nothing when there are none', async () => {
+    mockApi({
+      stats: {
+        ...STATS,
+        stores: {
+          confluence: { ...STORE_STATS, nestedDirectories: 1 },
+          local: { ...STORE_STATS, nestedDirectories: 0 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const note = await screen.findByTestId('attachment-storage-nested');
+    expect(note.textContent).toMatch(/1 pageless directory holds sub-folders/i);
+    expect(note.textContent).toMatch(/not judged/i);
+    expect(note.className).toContain('text-muted-foreground');
+    expect(note.className).not.toContain('text-warning');
+  });
+
+  it('no nested-directory line when every directory was flat', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+    await screen.findByTestId('attachment-storage-counters');
+    expect(screen.queryByTestId('attachment-storage-nested')).not.toBeInTheDocument();
+  });
+
+  // Review r1: a store whose entire orphan population is inside the 24-hour
+  // grace window reported "0 candidates" — indistinguishable from a store with
+  // nothing to clean, and that is exactly the state an admin lands in right
+  // after the bulk page delete that sends them to this card.
+  it('reports orphans deferred by the grace window, and nothing when there are none', async () => {
+    mockApi({
+      stats: {
+        ...STATS,
+        stores: {
+          confluence: { ...STORE_STATS, graceSkipped: 500 },
+          local: { ...STORE_STATS, graceSkipped: 0 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const note = await screen.findByTestId('attachment-storage-grace');
+    expect(note.textContent).toMatch(/500 files or directories are orphaned but younger than 24 hours/i);
+    expect(note.textContent).toMatch(/become candidates once they age out/i);
+    expect(note.className).toContain('text-muted-foreground');
+    expect(note.className).not.toContain('text-warning');
+  });
+
+  it('no grace line when nothing is waiting out the window', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+    await screen.findByTestId('attachment-storage-counters');
+    expect(screen.queryByTestId('attachment-storage-grace')).not.toBeInTheDocument();
+  });
+
+  // Review r1: "dry-run-first" is the safety premise of the feature and the
+  // confirm dialog's own instruction, but the candidate LIST was rendered
+  // nowhere — so reviewing a dry run meant reading a number, and seeing WHICH
+  // files a live run would destroy meant curling an admin route.
+  it('lists the dry run candidates behind a disclosure, with reason and size', async () => {
+    mockApi({
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          candidatesTotal: 2,
+          candidateSample: [
+            { store: 'confluence', key: '55555', filename: null, bytes: 4096, reason: 'orphan_directory' },
+            { store: 'local', key: '77', filename: 'stray.png', bytes: 1024, reason: 'orphan_file' },
+          ],
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const disclosure = await screen.findByTestId('attachment-sweep-candidates');
+    expect(disclosure.textContent).toMatch(/Show the 2 candidates/i);
+    const list = screen.getByTestId('attachment-sweep-candidate-list');
+    expect(list.textContent).toContain('55555/');
+    expect(list.textContent).toMatch(/whole directory/i);
+    expect(list.textContent).toContain('local/77/stray.png');
+    expect(list.textContent).toMatch(/single file/i);
+    expect(list.textContent).toContain('1.0 KB');
+    // A 100-row sample must never push the actions off screen.
+    expect(list.className).toContain('overflow-y-auto');
+  });
+
+  it('says the sample is bounded when the run found more candidates than it kept', async () => {
+    mockApi({
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          candidatesTotal: 940,
+          candidateSample: [
+            { store: 'confluence', key: '1', filename: 'a.png', bytes: 1, reason: 'orphan_file' },
+          ],
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const disclosure = await screen.findByTestId('attachment-sweep-candidates');
+    expect(disclosure.textContent).toMatch(/Showing the first 1 of 940/i);
+  });
+
+  it('renders no candidate disclosure when the last run found nothing', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+    await screen.findByTestId('attachment-sweep-last-run');
+    expect(screen.queryByTestId('attachment-sweep-candidates')).not.toBeInTheDocument();
+  });
+
+  // Review r1: the anomaly verdict is per store, so a run can COMPLETE having
+  // deliberately left one store alone. That is attention-worthy (it usually
+  // means a mis-mounted ATTACHMENTS_DIR), and a completed run used to render
+  // no note at all.
+  it('renders an amber note for a completed run that stood one store down', async () => {
+    mockApi({
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          dryRun: false,
+          note: 'confluence store has zero files while the database references attachments — refusing to delete',
+          deleted: { directories: 1, files: 2, bytes: 2048, imageEmbeddingRows: 0, pagesMarkedDirty: 0 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const note = await screen.findByTestId('attachment-sweep-partial-note');
+    expect(note.textContent).toMatch(/One store was left alone/i);
+    expect(note.textContent).toMatch(/confluence store has zero files/i);
+    expect(note.className).toContain('text-warning');
+    expect(note).toHaveAttribute('role', 'status');
+    // The ordinary completed line still reports what WAS deleted.
+    expect(screen.getByTestId('attachment-sweep-last-run').textContent).toMatch(/deleted/i);
+  });
+
+  it('renders no partial note for an unqualified completion', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+    await screen.findByTestId('attachment-sweep-last-run');
+    expect(screen.queryByTestId('attachment-sweep-partial-note')).not.toBeInTheDocument();
   });
 
   it('disables both actions while a sweep is running', async () => {

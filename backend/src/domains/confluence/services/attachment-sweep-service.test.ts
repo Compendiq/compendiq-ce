@@ -229,6 +229,23 @@ describe('collectAttachmentUrlReferences (#1349 keep-set feeder)', () => {
     expect(sets.confluence.has('my file.png here')).toBe(false);
   });
 
+  // Review r1: the two cases above name whitespace in their titles but are
+  // each satisfied by the `<`/`>` branch or by running off the lookback
+  // floor, so the whitespace half of the stop set passed with it deleted.
+  // Here the backward scan meets ONLY word characters before the space, so
+  // whitespace is the sole thing that can stop it short of the earlier quote.
+  it('whitespace alone stops the enclosing-quote scan — an earlier quote does not reach across it', () => {
+    const sets = emptySets();
+    collectAttachmentUrlReferences(
+      '<p>alt="x" /api/attachments/1/my file.png here" tail</p>',
+      sets,
+    );
+    expect(sets.confluence.has('my')).toBe(true);
+    // Without the whitespace branch the scan skips `x"`'s tail, finds the `"`
+    // opening `alt="x"`, and extends the name to the next quote.
+    expect(sets.confluence.has('my file.png here')).toBe(false);
+  });
+
   it('never emits a name that is not a plain basename', () => {
     const sets = emptySets();
     collectAttachmentUrlReferences('<img src="/api/attachments/1/..%2Fescape.png">', sets);
