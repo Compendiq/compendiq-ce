@@ -664,6 +664,47 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(await exists(path.join(tempBase, '55555'))).toBe(false);
     });
 
+    // Verification round — the THIRD instance of the same one-character class.
+    // r1 closed it for sub-folders, r2 for dot-named ones; both branches ask
+    // `entry.isDirectory()`, and a `Dirent` has more answers than two. A
+    // SYMLINK is neither `isFile()` nor `isDirectory()`, so it is skipped by
+    // the file branch, does not raise `hasSubdirectories`, and contributes
+    // nothing to `files` — the directory around it reports `files: []`, both
+    // safety checks go vacuous exactly as before, the dry run calls it 0 B and
+    // a live run removes it. The blast radius is smaller than r1's (`fs.rm`
+    // removes the link, never the target's bytes), which is why this is the
+    // instance that survived two rounds — but "reported as 0 B, destroyed
+    // anyway" is the reporting failure the whole guard exists to prevent, and
+    // the module's own rule is that a directory it cannot MEASURE is never
+    // judged. A symlink is unmeasured: `dir.files` never carries its name, so
+    // the keep-set cannot protect it even when a body references it.
+    it('a SYMLINK is not a plain file either — the directory around it is never judged', async () => {
+      await seedCorpus();
+      const target = await writeAged('link-target', 'real.bin');
+      const link = path.join(tempBase, '44439', 'shortcut.png');
+      await fs.mkdir(path.join(tempBase, '44439'), { recursive: true });
+      await fs.symlink(target, link);
+      await ageDirs('44439');
+
+      const dry = await runAttachmentSweep({ dryRun: true });
+      expect(dry!.status).toBe('completed');
+      expect(
+        dry!.candidateSample.some((c) => c.key === '44439'),
+        'a directory holding an unmeasurable entry is never a candidate',
+      ).toBe(false);
+      expect(dry!.stores!.confluence.nestedDirectories).toBe(1);
+
+      const live = await runAttachmentSweep({ dryRun: false });
+      expect(live!.status).toBe('completed');
+      // `lstat`, not `stat`: the question is whether the LINK survived, and
+      // `exists` follows it to the target, which a recursive delete never
+      // touches — so stat-following would pass against the unfixed code.
+      await expect(fs.lstat(link), 'the symlink itself must survive a live sweep').resolves.toBeDefined();
+      expect(await exists(path.join(tempBase, '44439'))).toBe(true);
+      // Sanity: the ordinary flat orphan beside it still went.
+      expect(await exists(path.join(tempBase, '55555'))).toBe(false);
+    });
+
     it('the delete-time re-check refuses a directory that gained a subdirectory since the listing', async () => {
       await seedCorpus();
       const dry = await runAttachmentSweep({ dryRun: true });

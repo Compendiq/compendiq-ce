@@ -625,12 +625,17 @@ export const AttachmentStoreSweepStatsSchema = z.object({
    */
   keepProtectedDirectories: z.number().int().nonnegative().default(0),
   /**
-   * Pageless directories skipped because they hold a SUBDIRECTORY (#1349
-   * review r1). An attachment key directory is flat by construction, so a
-   * nested tree under one is something else wearing a key-shaped name — and
-   * the walk counts only plain files, which would make the keep-set and
-   * grace-window checks vacuous and the whole tree a `bytes: 0` recursive
-   * delete. Structural, never judged, counted here.
+   * Pageless directories skipped because they hold an entry the walk could not
+   * MEASURE (#1349 review r1) — a subdirectory, or anything else that is not a
+   * plain file (a symlink, socket or device; verification round). An
+   * attachment key directory is flat by construction, so such an entry under
+   * one is something else wearing a key-shaped name — and the walk counts only
+   * plain files, which would make the keep-set and grace-window checks vacuous
+   * and the whole thing a `bytes: 0` recursive delete. Structural, never
+   * judged, counted here.
+   *
+   * The NAME is historical and kept deliberately: renaming it would orphan
+   * every persisted stats record. The card's copy says "sub-folders or links".
    * Defaulted so records persisted before the field existed still parse.
    */
   nestedDirectories: z.number().int().nonnegative().default(0),

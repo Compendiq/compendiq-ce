@@ -284,19 +284,24 @@ export function AttachmentStorageCard() {
 
       {/*
         Review r1: the third walk verdict. An attachment key directory is flat
-        by construction, so one holding a subdirectory is something else
-        wearing a key-shaped name and is never judged — the walk counts plain
-        files only, which would make the safety checks vacuous and the whole
-        tree a 0 B recursive delete. Muted, like its two siblings: a fact
-        about the walk, and the conservative verdict is the correct one.
+        by construction, so one holding anything but plain files is something
+        else wearing a key-shaped name and is never judged — the walk counts
+        plain files only, which would make the safety checks vacuous and the
+        whole thing a 0 B recursive delete. Muted, like its two siblings: a
+        fact about the walk, and the conservative verdict is the correct one.
+
+        The copy says "sub-folders or links", not "sub-folders" (verification
+        round): the backend counter now also covers symlinks and other
+        non-file entries, which are unmeasured for exactly the same reason,
+        and a line naming only sub-folders would send an operator looking for
+        a directory that is not there.
       */}
       {stores && stores.confluence.nestedDirectories + stores.local.nestedDirectories > 0 && (
         <p className="text-muted-foreground text-xs" data-testid="attachment-storage-nested">
           {stores.confluence.nestedDirectories + stores.local.nestedDirectories === 1
-            ? '1 pageless directory holds sub-folders and was not judged'
-            : `${stores.confluence.nestedDirectories + stores.local.nestedDirectories} pageless directories hold sub-folders and were not judged`}{' '}
-          — attachment directories are flat, so the sweep never removes a nested tree it cannot
-          measure.
+            ? '1 pageless directory holds sub-folders or links and was not judged'
+            : `${stores.confluence.nestedDirectories + stores.local.nestedDirectories} pageless directories hold sub-folders or links and were not judged`}{' '}
+          — attachment directories are flat, so the sweep never removes contents it cannot measure.
         </p>
       )}
 

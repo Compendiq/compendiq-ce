@@ -57,7 +57,10 @@
  *     bytes before the body save, and sync downloads a new page's attachments
  *     BEFORE the `pages` INSERT.
  * (d) Dot-files are skipped (#1169); `external-<hash>` cache files follow the
- *     same reference rules (no separate TTL).
+ *     same reference rules (no separate TTL). A directory-level candidate must
+ *     hold nothing but plain files — see `WalkedDir.hasUnmeasurableEntries`:
+ *     a subdirectory, a dot-directory or a symlink is unmeasured, its name
+ *     never reaches `files`, and both safety checks below then pass vacuously.
  * (e) **Root sanity**: any run refuses when the root is missing/unreadable; a
  *     LIVE run additionally refuses when a store has zero files on disk while
  *     the database still references it (anomaly — nothing is ever deleted on
@@ -601,24 +604,27 @@ interface WalkedDir {
   bytes: number;
   dirMtimeMs: number;
   /**
-   * Whether the directory holds a SUBDIRECTORY (#1349 review r1).
+   * Whether the directory holds an entry this walk could not MEASURE — a
+   * subdirectory (#1349 review r1), or anything else that is not a plain file
+   * (verification round: a symlink, socket or device).
    *
    * An attachment key directory is flat by construction — every writer puts
-   * files directly under it — so a nested tree here is something else wearing
+   * files directly under it — so anything else here is something else wearing
    * a key-shaped name. That matters because the two safety checks in
    * {@link judgeDirectoryOrphan} both read `files`, which counts only plain
-   * files: for a directory holding nothing BUT subdirectories `files` is `[]`,
+   * files: for a directory holding nothing BUT such entries `files` is `[]`,
    * so the keep-set intersection is false and `every(aged)` is VACUOUSLY true,
-   * and the whole tree is judged a `bytes: 0` orphan and `rm -rf`'d — with the
-   * dry run reporting 0 B, so a review of its output cannot show what is about
-   * to be destroyed. That is precisely how the page-icon store was lost, and
-   * `ATTACHMENT_ROOT_RESERVED_DIRNAMES` closed that instance BY NAME only.
+   * and the whole thing is judged a `bytes: 0` orphan and `rm -rf`'d — with
+   * the dry run reporting 0 B, so a review of its output cannot show what is
+   * about to be destroyed. That is precisely how the page-icon store was lost,
+   * and `ATTACHMENT_ROOT_RESERVED_DIRNAMES` closed that instance BY NAME only.
    * This closes the class: a directory we cannot measure is never judged.
    *
-   * ANY subdirectory counts, dot-named ones included (review r2) — see
-   * `readKeyDir`.
+   * The predicate is "not a plain file", never a list of the shapes seen so
+   * far — `readKeyDir` asked `isDirectory()` twice and missed dot-directories
+   * (r2) and then symlinks (verification round), one round per member.
    */
-  hasSubdirectories: boolean;
+  hasUnmeasurableEntries: boolean;
 }
 
 function emptyStats(): AttachmentStoreSweepStats {
@@ -666,31 +672,42 @@ async function readKeyDir(
   }
   const files: WalkedFile[] = [];
   let bytes = 0;
-  let hasSubdirectories = false;
+  let hasUnmeasurableEntries = false;
   for (const entry of entries) {
-    // No dot-exclusion here, deliberately (review r2). The dot-skip on the
-    // FILE branch below is #1169's debris rule — a `.DS_Store` is not content.
-    // A dot-DIRECTORY is not debris: it is a subtree this walk cannot measure,
-    // and the r1 guard exempting it left the rule one character short of the
-    // exact shape it exists for — a key directory holding only `.hidden/`
-    // reported `files: []`, both safety checks went vacuous, and the dry run
-    // described a recursive delete as 0 B. Counting it as nested is strictly
-    // conservative: the directory is reported and left standing.
-    if (entry.isDirectory()) hasSubdirectories = true;
-    if (!entry.isFile() || entry.name.startsWith('.')) continue;
-    try {
-      const st = await fs.stat(path.join(dirPath, entry.name));
-      files.push({ name: entry.name, size: st.size, mtimeMs: st.mtimeMs });
-      bytes += st.size;
-    } catch {
-      // Vanished between readdir and stat — files appearing/disappearing
-      // mid-walk is expected, not an error.
+    if (entry.isFile()) {
+      // #1169's debris rule, and the ONLY dot-exclusion in this loop: a
+      // `.DS_Store` is not content, so a directory holding nothing else stays
+      // judgeable. Deliberately not applied to the branch below — see there.
+      if (entry.name.startsWith('.')) continue;
+      try {
+        const st = await fs.stat(path.join(dirPath, entry.name));
+        files.push({ name: entry.name, size: st.size, mtimeMs: st.mtimeMs });
+        bytes += st.size;
+      } catch {
+        // Vanished between readdir and stat — files appearing/disappearing
+        // mid-walk is expected, not an error.
+      }
+      continue;
     }
+    // Anything that is NOT a plain file is unmeasured, and the predicate is
+    // written that way round on purpose (verification round). It asked
+    // `entry.isDirectory()` twice before, and a `Dirent` has more answers than
+    // two: r1 missed dot-directories, r2 still missed SYMLINKS, sockets and
+    // devices — all of which are skipped by the file branch, contribute no
+    // entry to `files`, and so leave a directory holding nothing else
+    // reporting `files: []`, both safety checks in `judgeDirectoryOrphan`
+    // vacuous, and the whole thing a `bytes: 0` candidate the dry run cannot
+    // warn about. A symlink's blast radius is smaller than a subtree's
+    // (`fs.rm` removes the link, never the target's bytes), which is how it
+    // survived two rounds — but the keep-set cannot protect it either, because
+    // its name never reaches `files`. Asking "is this a plain file I have
+    // measured?" closes the class instead of naming its members one per round.
+    hasUnmeasurableEntries = true;
   }
   stats.directories += 1;
   stats.files += files.length;
   stats.bytes += bytes;
-  return { key, files, bytes, dirMtimeMs: dirStat.mtimeMs, hasSubdirectories };
+  return { key, files, bytes, dirMtimeMs: dirStat.mtimeMs, hasUnmeasurableEntries };
 }
 
 interface StoreWalkResult {
@@ -707,12 +724,13 @@ function judgeDirectoryOrphan(
   candidates: AttachmentSweepCandidate[],
 ): void {
   // A directory we cannot MEASURE is never judged (review r1). See
-  // `WalkedDir.hasSubdirectories`: `files` counts plain files only, so a
-  // nested tree makes both checks below vacuous and the whole thing an
-  // `rm -rf` candidate reported as 0 B. Structural, so a store whose author
-  // forgets `ATTACHMENT_ROOT_RESERVED_DIRNAMES` cannot repeat the page-icon
-  // loss. Counted, so the card can say it was left standing.
-  if (dir.hasSubdirectories) {
+  // `WalkedDir.hasUnmeasurableEntries`: `files` counts plain files only, so an
+  // entry that is not one — a nested tree, a symlink — makes both checks below
+  // vacuous and the whole thing an `rm -rf` candidate reported as 0 B.
+  // Structural, so a store whose author forgets
+  // `ATTACHMENT_ROOT_RESERVED_DIRNAMES` cannot repeat the page-icon loss.
+  // Counted, so the card can say it was left standing.
+  if (dir.hasUnmeasurableEntries) {
     stats.nestedDirectories += 1;
     return;
   }
@@ -1077,10 +1095,10 @@ export async function deleteCandidates(
         if (recheck === null) continue; // vanished or unreadable — do not judge
         // Same structural refusal as the walk (review r1): the two checks
         // below read `files`, which is `[]` for a directory holding only
-        // subdirectories, so both pass vacuously and the `rm -rf` takes a
-        // tree nothing here ever measured. Re-checked here rather than
-        // trusted from the listing — a subdirectory can land after the walk.
-        if (recheck.hasSubdirectories) continue;
+        // entries that are not plain files, so both pass vacuously and the
+        // `rm -rf` takes something nothing here ever measured. Re-checked here
+        // rather than trusted from the listing — one can land after the walk.
+        if (recheck.hasUnmeasurableEntries) continue;
         const aged = recheck.dirMtimeMs < cutoffMs && recheck.files.every((f) => f.mtimeMs < cutoffMs);
         if (!aged) continue;
         // Keep-set over the CURRENT contents (fixer r1): the walk already

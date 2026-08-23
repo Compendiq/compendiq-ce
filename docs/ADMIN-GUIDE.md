@@ -1180,9 +1180,10 @@ attachment URLs are copied verbatim between bodies. The keep-set outranks the di
 verdict too: a pageless directory that still holds even one referenced
 filename is skipped whole and reported as *keep-protected* rather than
 deleted, so a referenced file is never removed at either level. A pageless
-directory that holds **sub-folders** is likewise never judged: attachment
-directories are flat by construction, so a nested tree under a key-shaped name
-is something the walk cannot measure, and the card reports it instead. Nothing younger than **24 hours** is ever
+directory that holds **sub-folders or links** is likewise never judged:
+attachment directories are flat by construction, so anything under a key-shaped
+name that is not a plain file — a nested tree, a symlink — is something the walk
+cannot measure, and the card reports it instead. Nothing younger than **24 hours** is ever
 a candidate (paste and sync both write files before the referencing row
 exists); the card says how many candidates are waiting out that window, so a
 freshly-emptied store does not read as a clean one. Non-image cached attachments (PDFs and other lazily fetched files)

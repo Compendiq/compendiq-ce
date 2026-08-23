@@ -507,7 +507,7 @@ describe('AttachmentStorageCard (#1349)', () => {
   // directory holding sub-folders from being judged a 0 B orphan and `rm
   // -rf`'d — the mechanism that cost the page-icon store. It must be visible
   // for the same reason its two siblings are.
-  it('reports pageless directories that hold sub-folders, and nothing when there are none', async () => {
+  it('reports pageless directories that hold sub-folders or links, and nothing when there are none', async () => {
     mockApi({
       stats: {
         ...STATS,
@@ -520,7 +520,7 @@ describe('AttachmentStorageCard (#1349)', () => {
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
     const note = await screen.findByTestId('attachment-storage-nested');
-    expect(note.textContent).toMatch(/1 pageless directory holds sub-folders/i);
+    expect(note.textContent).toMatch(/1 pageless directory holds sub-folders or links/i);
     expect(note.textContent).toMatch(/not judged/i);
     expect(note.className).toContain('text-muted-foreground');
     expect(note.className).not.toContain('text-warning');
