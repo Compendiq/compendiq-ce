@@ -1646,35 +1646,20 @@ describe('SidebarTreeNode memoization', () => {
     expect(screen.getByRole('complementary', { name: 'Page tree' })).toBeInTheDocument();
   });
 
-  it('keeps the current scope visible on the collapsed rail', () => {
-    // Collapsing dropped every trace of scope — not the space, not the open
-    // page, not the count — so the rail could not answer "which space am I in?"
-    // and expanding was the only way to find out.
+  it('keeps the collapsed rail focused on navigation without a space symbol', () => {
     useUiStore.setState({ treeSidebarCollapsed: true, treeSidebarSpaceKey: 'DEV' });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
 
-    const scope = screen.getByTestId('rail-space-scope');
-    expect(scope).toHaveAccessibleName(/Development/);
-
-    // It is also the way back: activating it expands the panel.
-    fireEvent.click(scope);
+    expect(screen.queryByTestId('rail-space-scope')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Expand sidebar'));
     expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
   });
 
-  // The scope explanation used to live only in `title` — invisible to a
-  // sighted keyboard user, who gets neither the mouse-hover tooltip nor a
-  // screen reader's aria-label announcement. A flyout now shows the same text
-  // on focus too, not just hover.
-  it('shows the scope explanation as a flyout, reachable by keyboard focus', () => {
+  it('does not render a scope flyout in the collapsed rail', () => {
     useUiStore.setState({ treeSidebarCollapsed: true, treeSidebarSpaceKey: 'DEV' });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
 
-    const flyout = screen.getByTestId('rail-space-scope-flyout');
-    expect(flyout).toHaveTextContent(/Development/);
-    // Hidden at rest, but present in the DOM and reachable — not display:none,
-    // which would also hide it from the accessibility tree.
-    expect(flyout.className).toContain('opacity-0');
-    expect(flyout.className).toContain('group-focus-within:opacity-100');
+    expect(screen.queryByTestId('rail-space-scope-flyout')).not.toBeInTheDocument();
   });
 
   it('announces the resize handle width with a unit', () => {

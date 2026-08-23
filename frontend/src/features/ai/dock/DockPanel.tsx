@@ -411,20 +411,6 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           </p>
         )}
 
-        {/* Per-question retrieval option, in the same slot as `/ai`'s so the
-            two Q&A composers read the same way. It stays above the box because
-            it modifies only the next knowledge question, not every selectable
-            action in the composer. */}
-        {selectedAction === 'ask' && (
-          <DeepSearchToggle
-            checked={deepSearch}
-            onChange={setDeepSearch}
-            disabled={isStreaming}
-            testId="ai-dock-deep-search"
-            className="mb-2"
-          />
-        )}
-
         {/* Sub-page context, for the two requests that carry it — `/llm/ask`
             and `/llm/improve` (`useDockActions`). Diagram and the create
             skills never send `includeSubPages`, so the control does not offer
@@ -462,7 +448,6 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             <span>Sub-pages</span>
           </label>
         )}
-
         {/* Suggested prompt chip when a create skill is active with empty input */}
         {isCreateAction && currentSkill?.suggestedPrompt && !input.trim() && (
           <button
@@ -489,16 +474,11 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           </p>
         )}
 
-        {/* flex-wrap so attached-source rows stack above the prompt inside the
-            same box. One Attach control receives both documents and images;
-            the shared router decides their path. An attachment belongs to what
-            you are about to send, so it lives in the thing you send from, not
-            in a band above it.
-            Document order is the only order here: no `order-*` on any child,
-            because that is what keeps the tab sequence matching what the eye
-            reads (WCAG 2.4.3 — see `composerRowClass`). Anything added below
-            lands where its markup sits, so put it where it should be read. */}
-        <div className="nm-composer flex-wrap" ref={composerBoxRef}>
+        {/* The composer reads as stacked rows: attachment cards (when present),
+            the full-width multiline prompt, then every action button. Keeping
+            the action row after the field makes both the visual and keyboard
+            order match (WCAG 2.4.3). */}
+        <div className="nm-composer flex-col items-stretch" ref={composerBoxRef}>
           <DocumentUploadZone
             variant="composer"
             onPick={(file) => handlePickFiles([file])}
@@ -525,11 +505,6 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             showTrigger={false}
             testIdPrefix="ai-dock-image"
           />
-          <DockAttachmentPicker
-            onPickFiles={handlePickFiles}
-            disabled={isStreaming || selectedAction === 'diagram' || isBusy}
-          />
-          <AssistantActionSelect actions={DOCK_ACTIONS} disabled={isStreaming || modelsError} className="self-end" />
           <textarea
             ref={composerRef}
             value={input}
@@ -559,40 +534,61 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                   : `${selectedAction} rewrite instructions`}
             // The composer wrapper owns the inset surface, border and focus
             // ring; resize-none because the auto-grow hook owns the height.
-            className="min-w-0 grow basis-40 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+            className="min-h-10 w-full min-w-0 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
             data-testid="ai-dock-input"
           />
-          {isStreaming ? (
-            <Button
-              type="button"
-              variant="destructive-ghost"
-              size="sm"
-              onClick={() => abortRef.current?.abort()}
-              aria-label="Stop response"
-              title="Stop response"
-              className="shrink-0 self-end h-8 px-2.5"
-              data-testid="ai-dock-stop"
-              leftIcon={<Square size={13} className="fill-current" aria-hidden />}
-            />
-          ) : (
-            <Button
-              type="button"
-              variant="primary"
-              size="sm"
-              onClick={() => void sendSelectedAction()}
-              disabled={
-                !model
-                || (selectedAction === 'ask' && !input.trim())
-                || (isCreateAction && !input.trim())
-                || (!isCreateAction && selectedAction !== 'ask' && !page)
-                || (selectedAction !== 'diagram' && isBusy)
-              }
-              aria-label={`Send with ${selectedAction}`}
-              className="shrink-0 self-end h-8 px-2.5"
-              data-testid="ai-dock-send"
-              leftIcon={<Send size={14} aria-hidden />}
-            />
-          )}
+          <div
+            className="flex w-full min-w-0 items-center gap-1"
+            data-testid="ai-dock-composer-actions"
+          >
+            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+              <DockAttachmentPicker
+                onPickFiles={handlePickFiles}
+                disabled={isStreaming || selectedAction === 'diagram' || isBusy}
+              />
+              <AssistantActionSelect actions={DOCK_ACTIONS} disabled={isStreaming || modelsError} />
+              {selectedAction === 'ask' && (
+                <DeepSearchToggle
+                  checked={deepSearch}
+                  onChange={setDeepSearch}
+                  disabled={isStreaming}
+                  testId="ai-dock-deep-search"
+                  className="shrink-0"
+                />
+              )}
+            </div>
+            {isStreaming ? (
+              <Button
+                type="button"
+                variant="destructive-ghost"
+                size="sm"
+                onClick={() => abortRef.current?.abort()}
+                aria-label="Stop response"
+                title="Stop response"
+                className="h-8 shrink-0 px-2.5"
+                data-testid="ai-dock-stop"
+                leftIcon={<Square size={13} className="fill-current" aria-hidden />}
+              />
+            ) : (
+              <Button
+                type="button"
+                variant="primary"
+                size="sm"
+                onClick={() => void sendSelectedAction()}
+                disabled={
+                  !model
+                  || (selectedAction === 'ask' && !input.trim())
+                  || (isCreateAction && !input.trim())
+                  || (!isCreateAction && selectedAction !== 'ask' && !page)
+                  || (selectedAction !== 'diagram' && isBusy)
+                }
+                aria-label={`Send with ${selectedAction}`}
+                className="h-8 shrink-0 px-2.5"
+                data-testid="ai-dock-send"
+                leftIcon={<Send size={14} aria-hidden />}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>

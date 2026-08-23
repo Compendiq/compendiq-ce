@@ -39,7 +39,7 @@ import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { getShortcutHint, formatKeysForPlatform } from '../../lib/shortcut-registry';
 import { isMac as detectMac } from '../../lib/platform';
 import { toast } from 'sonner';
-import { useUiStore } from '../../../stores/ui-store';
+import { MIN_ARTICLE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { useIsDockWideLayout, useIsInspectorWideLayout } from '../../hooks/use-media-query';
@@ -284,7 +284,8 @@ export function ArticleRightPane({
   const toggleSidebar = useUiStore((s) => s.toggleArticleSidebar);
   const laptopExpanded = useUiStore((s) => s.articleSidebarLaptopExpanded);
   const setLaptopExpanded = useUiStore((s) => s.setArticleSidebarLaptopExpanded);
-  const width = useUiStore((s) => s.articleSidebarWidth);
+  const storedWidth = useUiStore((s) => s.articleSidebarWidth);
+  const width = Math.max(MIN_ARTICLE_SIDEBAR_WIDTH, storedWidth);
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
   const reduceEffects = useReducedMotion();
 
@@ -951,7 +952,7 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          <div className="group relative flex h-12 w-full flex-col items-center justify-center">
+          <div className="group relative flex h-12 w-full flex-col items-center justify-center border-b border-border">
             <button
               onClick={handleExpandSidebar}
               className={railIconBtn}
@@ -973,8 +974,7 @@ export function ArticleRightPane({
               in edit mode: collapsing to write must not hide the map. */}
           {headings.length > 0 && (
             <>
-              <div className="my-1 h-px w-6 bg-border" />
-              <div className="group relative flex w-full justify-center">
+              <div className="group relative mt-1 flex w-full justify-center">
                 <button
                   ref={outlineTriggerRef}
                   onMouseEnter={() => {
@@ -1326,9 +1326,6 @@ export function ArticleRightPane({
                   <ListTree size={13} className="text-muted-foreground" />
                   Outline
                 </span>
-                <span className="text-[11px] tabular-nums text-muted-foreground">
-                  {headings.length} section{headings.length === 1 ? '' : 's'}
-                </span>
               </div>
               <p className="mt-0.5 text-[11px] text-muted-foreground">
                 Same as the Outline tab
@@ -1476,9 +1473,6 @@ export function ArticleRightPane({
         >
           <ListTree size={13} />
           Outline
-          {headings.length > 0 && (
-            <span className="tabular-nums text-[11px] opacity-65">{headings.length}</span>
-          )}
         </button>
         <button
           type="button"
@@ -1940,9 +1934,7 @@ export function ArticleRightPane({
           <div className="px-3 pb-2 pt-3">
             <div className="flex items-center justify-between">
               <div className="text-xs font-semibold text-foreground/85">On this page</div>
-              <span className="text-[11px] tabular-nums text-muted-foreground">
-                {headings.length} section{headings.length === 1 ? '' : 's'} · {Math.round(readingProgress)}%
-              </span>
+              <span className="text-[11px] tabular-nums text-muted-foreground">{Math.round(readingProgress)}%</span>
             </div>
             <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-foreground/8">
               <m.div
@@ -1996,7 +1988,7 @@ export function ArticleRightPane({
         role="separator"
         aria-label="Resize page sidebar"
         aria-orientation="vertical"
-        aria-valuemin={200}
+        aria-valuemin={MIN_ARTICLE_SIDEBAR_WIDTH}
         aria-valuemax={1200}
         aria-valuenow={width}
         tabIndex={0}

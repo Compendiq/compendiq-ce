@@ -575,9 +575,11 @@ describe('AiDock (#1126)', () => {
 
       expect(screen.getByTestId('ai-dock-include-subpages')).toBeInTheDocument();
       expectComposerFocusOrder(composerBox(), [
+        'ai-dock-input',
         'ai-dock-attach-button',
         'assistant-action-select',
-        'ai-dock-input',
+        'ai-dock-deep-search',
+        'ai-dock-deep-search-info-trigger',
         'ai-dock-send',
       ]);
     });

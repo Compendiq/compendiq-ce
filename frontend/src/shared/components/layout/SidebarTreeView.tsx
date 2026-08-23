@@ -24,7 +24,7 @@ import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
 import { useClickOutside } from '../../hooks/use-click-outside';
-import { useUiStore } from '../../../stores/ui-store';
+import { COLLAPSED_TREE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import { Button, IconButton } from '../Button';
 import { PageIcon } from '../page-icon/PageIcon';
@@ -734,8 +734,6 @@ export function SidebarTreeView({
     selectedSpaceOption?.source === 'local'
       ? getSpaceIcon(selectedSpaceOption.icon)
       : Globe;
-  const selectedSpaceLabel = selectedSpaceOption?.name ?? 'All Spaces';
-
   // Collapsed rail -- nav icons + expand toggle
   const collapsed = treeSidebarCollapsed || forceCollapsed;
 
@@ -753,67 +751,34 @@ export function SidebarTreeView({
           key="collapsed-rail"
           aria-label="Page tree"
           initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-          animate={{ width: 40, opacity: 1 }}
+          animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
           className="app-sidebar flex flex-col items-center border-r overflow-hidden"
         >
-          {/* Expand toggle */}
-          <button
-            onClick={() => {
-              if (forceCollapsed && !treeSidebarCollapsed) {
-                onForceExpand?.();
-              } else {
-                toggleTreeSidebar();
-              }
-            }}
-            className="mt-2 flex items-center rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-            aria-label="Expand sidebar"
-            title="Expand sidebar (,)"
-          >
-            {/* Shortcut in the tooltip, not glued to the icon — see the twin in
-                ArticleRightPane. A "," rendered as a bordered chip beside a
-                rail icon reads as stray punctuation, not a key. */}
-            <PanelLeft size={16} />
-          </button>
-
-          {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
-
-          {/* Current scope. Collapsing used to drop every trace of it — not the
-              space, not the open page, not the count — so the one question the
-              rail could not answer was "which space am I looking at?", and the
-              only way to find out was to expand. It is the selector's own glyph,
-              and it expands the panel, so it reads as scope AND acts as a way
-              back to changing it.
-
-              The explanation used to live only in `title` — invisible to a
-              sighted keyboard user, who gets neither the mouse-hover tooltip
-              nor a screen reader's aria-label announcement. `group` +
-              `group-focus-visible` shows the same text as a flyout on Tab
-              focus too, no new dependency, matching the flat/no-glass surface
-              rules (nm-card-elevated, the one real shadow) rather than
-              inventing a second tooltip system. */}
-          <div className="group relative mt-2 flex w-full flex-col items-center border-t border-border pt-2">
+          {/* Keep the collapsed control in the same 48px chrome row as the
+              expanded main-nav toolbar, so the divider stays on one baseline. */}
+          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center border-b">
             <button
               onClick={() => {
-                if (forceCollapsed && !treeSidebarCollapsed) onForceExpand?.();
-                else toggleTreeSidebar();
+                if (forceCollapsed && !treeSidebarCollapsed) {
+                  onForceExpand?.();
+                } else {
+                  toggleTreeSidebar();
+                }
               }}
-              data-testid="rail-space-scope"
-              className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary-ink transition-colors hover:bg-primary/20"
-              aria-label={`Scope: ${selectedSpaceLabel}. Expand sidebar to change.`}
-              title={selectedSpaceLabel}
+              className="flex items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+              aria-label="Expand sidebar"
+              title="Expand sidebar (,)"
             >
-              <SelectedSpaceGlyph size={14} aria-hidden="true" />
+              {/* Shortcut in the tooltip, not glued to the icon — see the twin in
+                  ArticleRightPane. A "," rendered as a bordered chip beside a
+                  rail icon reads as stray punctuation, not a key. */}
+              <PanelLeft size={16} />
             </button>
-            <span
-              role="tooltip"
-              data-testid="rail-space-scope-flyout"
-              className="pointer-events-none absolute left-full top-0 z-50 ml-2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-            >
-              {selectedSpaceLabel} · Expand to change
-            </span>
           </div>
+
+          {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
           <IconButton
             onClick={() => {
