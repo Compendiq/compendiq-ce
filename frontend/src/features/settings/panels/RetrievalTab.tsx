@@ -356,6 +356,27 @@ export function RetrievalTab() {
     queryFn: () => apiFetch('/analytics/confidence-distribution'),
   });
 
+  /**
+   * THREE states, not two (review r1) — the same `usePageTree` rule the
+   * settings query above already implements, applied to this one.
+   *
+   * react-query settles a failed REFETCH as `status: 'error'` while KEEPING
+   * `data`, and this panel's client sets `staleTime: 30_000` with the default
+   * `refetchOnWindowFocus`, so "alt-tab away, come back during a backend
+   * blip" is an ordinary path rather than a corner. Branching the readout on
+   * `isError` alone threw away a real 2,184-question measurement the panel
+   * was still holding and replaced it with "there is nothing measured to
+   * check this threshold against" — a sentence that is FALSE in exactly that
+   * state, since something was measured and only the re-read failed.
+   *
+   * So: `distributionLost` is the destructive case where the error IS the
+   * content, and `distributionStale` keeps the figures and marks them as the
+   * last ones the panel could get. Both notices stay muted — the missing
+   * thing is an auxiliary measurement, not a knob.
+   */
+  const distributionLost = distributionError && distribution === undefined;
+  const distributionStale = distributionError && distribution !== undefined;
+
   const saved: RetrievalValues = useMemo(() => {
     const out = { ...DEFAULTS };
     if (settings) {
@@ -869,11 +890,19 @@ export function RetrievalTab() {
       <Section
         title="Confidence refuse gate"
         // #1284 — the section names the readout, and states the one
-        // consequence a number on its own does not carry: a threshold above
-        // p50 refuses about half the questions measured on that basis. The
-        // logs and traces stay in the sentence, one rung down, because they
-        // are still where a single request's verdict is inspected.
-        description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces. Under each knob is the distribution this deployment has actually measured — a threshold above p50 refuses about half the questions measured on that basis."
+        // consequence a number on its own does not carry: where a threshold
+        // sits in the measured distribution IS its refusal rate. The gate
+        // refuses when `score < threshold` (llm-ask.ts), so a threshold AT a
+        // percentile refuses about that share — at p50 half, at p90 nine in
+        // ten. Review r1 corrected "above p50 refuses about half", which was
+        // off by a whole percentile: an operator reading it and setting the
+        // p90 figure would expect 50% refusals and get ~90%. Two points are
+        // named rather than one because the readout prints exactly those two,
+        // and a rule stated at one point does not tell anyone which way the
+        // other moves. The logs and traces stay in the sentence, one rung
+        // down, because they are still where a single request's verdict is
+        // inspected.
+        description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces. Under each knob is the distribution this deployment has actually measured — a threshold set at p50 refuses about half the questions measured on that basis, and one set at p90 refuses about nine in ten."
       >
         {/*
           #1284 review r2 — the recovery for a failed read is a control, and a
@@ -888,14 +917,28 @@ export function RetrievalTab() {
           missing thing is an auxiliary measurement, the panel's own knobs are
           intact, and #1284 keeps this whole readout off the status palette.
         */}
+        {/*
+          `role="status"` (review r1) — the panel's two other failure strips
+          both carry it, and without it this one told a screen-reader user
+          nothing at all: it appears silently, and a Retry that fails AGAIN
+          changes no other pixel on the page. The busy label is the second
+          half of that: it is a text change INSIDE the live region, so the
+          press and its outcome are each announced, which `aria-busy` alone
+          (a property, not content) does not reliably do.
+        */}
         {distributionError && (
           <div
+            role="status"
+            aria-busy={distributionFetching}
             className="flex flex-col items-start gap-2 text-xs text-muted-foreground"
             data-testid="retrieval-distribution-error"
           >
             <span id={DISTRIBUTION_ERROR_SENTENCE_ID}>
-              The measured confidence distribution could not be read, so neither threshold below has
-              a measurement beside it. Your unsaved edits on this page are untouched.
+              {distributionStale
+                ? 'The measured confidence distribution could not be re-read, so the figures below are'
+                  + ' the last ones this panel could get. Your unsaved edits on this page are untouched.'
+                : 'The measured confidence distribution could not be read, so neither threshold below'
+                  + ' has a measurement beside it. Your unsaved edits on this page are untouched.'}
             </span>
             <button
               type="button"
@@ -905,7 +948,7 @@ export function RetrievalTab() {
               className="nm-button-ghost shrink-0 text-xs"
               data-testid="retrieval-distribution-retry"
             >
-              Retry
+              {distributionFetching ? 'Retrying…' : 'Retry'}
             </button>
           </div>
         )}
@@ -944,7 +987,8 @@ export function RetrievalTab() {
             bucket={distribution?.similarity}
             windowDays={distribution?.windowDays ?? CONFIDENCE_WINDOW_DAYS_FALLBACK}
             isPending={distributionPending}
-            isError={distributionError}
+            isError={distributionLost}
+            staleRead={distributionStale}
             basisChanged={settings?.ragConfidenceCalibration?.similarity?.stale === true}
           />
         </NumberRow>
@@ -983,7 +1027,8 @@ export function RetrievalTab() {
             bucket={distribution?.rerank}
             windowDays={distribution?.windowDays ?? CONFIDENCE_WINDOW_DAYS_FALLBACK}
             isPending={distributionPending}
-            isError={distributionError}
+            isError={distributionLost}
+            staleRead={distributionStale}
             basisChanged={settings?.ragConfidenceCalibration?.rerank?.stale === true}
             // The empty rerank sample is the ORDINARY state under ADR-021 —
             // unassigned means the stage never runs — so name the cause
@@ -1431,10 +1476,13 @@ const DISTRIBUTION_ERROR_SENTENCE_ID = 'retrieval-distribution-error-sentence';
  * and a readout without a sample size invites exactly the tuning it should
  * prevent. Below {@link CONFIDENCE_SAMPLE_FLOOR} it says so in words.
  *
- * **A failed read is a failure, not an empty distribution.** `isError` gets
- * its own sentence: "nothing was measured" and "we could not look" send an
- * operator in opposite directions, and collapsing them is the `usePageTree`
- * defect ADR-010 pins.
+ * **A failed read is a failure, not an empty distribution** — and a failed
+ * RE-read is neither (review r1). `isError` here means the panel has nothing
+ * cached, and gets its own sentence, because "nothing was measured" and "we
+ * could not look" send an operator in opposite directions; that is the
+ * `usePageTree` defect ADR-010 pins. `staleRead` is the rule's third state:
+ * the figures survived, so they are still shown, with one clause saying they
+ * are the last ones the panel could get.
  *
  * **It renders inside the row's description**, so `aria-describedby` carries
  * it to touch, keyboard and screen readers — and so the #1114 calibration
@@ -1447,6 +1495,7 @@ function ConfidenceDistributionLine({
   windowDays,
   isPending,
   isError,
+  staleRead,
   basisChanged,
   emptyNote,
 }: {
@@ -1454,7 +1503,17 @@ function ConfidenceDistributionLine({
   bucket: ConfidenceDistributionBucket | undefined;
   windowDays: number;
   isPending: boolean;
+  /** The read failed and there is NOTHING cached — the error is the content. */
   isError: boolean;
+  /**
+   * The read failed but a previous one succeeded, so the figures below are
+   * real and merely not current (review r1). Kept separate from `isError`
+   * because the failure sentence claims "there is nothing measured to check
+   * this threshold against", which is false the moment a measurement is
+   * cached — and this is the state an ordinary focus-refetch during a backend
+   * blip lands in.
+   */
+  staleRead: boolean;
   /**
    * #1114's verdict for this basis, review r2. `search_analytics` records no
    * provider or model beside the score (migration 098 adds `confidence`,
@@ -1499,11 +1558,16 @@ function ConfidenceDistributionLine({
   if (isPending || !bucket) {
     return <p data-testid={testId}>Reading the measured distribution…</p>;
   }
+  // One clause, shared by both data branches: what is on screen is real, and
+  // is the last thing the panel could read. The Retry that would refresh it
+  // sits at the section top, where a control is legal.
+  const staleClause = staleRead ? ' The latest read failed, so this is the last measurement this panel could get.' : '';
   if (bucket.count === 0 || bucket.p50 === null || bucket.p90 === null) {
     return (
       <p data-testid={testId}>
         No assistant questions measured on this basis in the last {windowDays} days, so there is
         nothing to tune against yet.{emptyNote ? ` ${emptyNote}` : ''}
+        {staleClause}
       </p>
     );
   }
@@ -1513,6 +1577,7 @@ function ConfidenceDistributionLine({
       <span className="font-mono">{bucket.p50.toFixed(2)}</span>, p90{' '}
       <span className="font-mono">{bucket.p90.toFixed(2)}</span> across{' '}
       {bucket.count.toLocaleString()} assistant question{bucket.count === 1 ? '' : 's'}.
+      {staleClause}
       {bucket.count < CONFIDENCE_SAMPLE_FLOOR
         ? ' Too few to tune against — treat both figures as provisional.'
         : ''}

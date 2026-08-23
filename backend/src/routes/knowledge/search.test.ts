@@ -111,6 +111,31 @@ const makeSearchResult = (
   ...overrides,
 });
 
+/**
+ * #1284 — pair an INSERT's column list with its VALUES list by POSITION.
+ *
+ * A literal-column INSERT is the one shape a `toContain` assertion cannot
+ * guard: swap two adjacent column names and every substring the test looks
+ * for is still present, while every row lands in the wrong column. Returns
+ * `{ column: valueExpression }` so a test can assert the binding itself.
+ *
+ * Deliberately strict about arity — a column list and a VALUES list of
+ * different lengths is a malformed statement, not something to pair loosely.
+ */
+function insertBindings(sql: string, table: string): Record<string, string> {
+  const match = new RegExp(
+    `INSERT\\s+INTO\\s+${table}\\s*\\(([^)]*)\\)\\s*VALUES\\s*\\(([^)]*)\\)`,
+    'i',
+  ).exec(sql);
+  if (!match) throw new Error(`No INSERT INTO ${table} (...) VALUES (...) found in: ${sql}`);
+  const columns = match[1].split(',').map((c) => c.trim());
+  const values = match[2].split(',').map((v) => v.trim());
+  if (columns.length !== values.length) {
+    throw new Error(`INSERT INTO ${table} has ${columns.length} columns and ${values.length} values`);
+  }
+  return Object.fromEntries(columns.map((c, i) => [c, values[i]]));
+}
+
 describe('Search Routes', () => {
   let app: ReturnType<typeof Fastify>;
 
@@ -1428,8 +1453,15 @@ describe('Search Routes', () => {
       const [sql] = mockQueryFn.mock.calls.find(
         (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO search_analytics'),
       ) as [string, unknown[]];
-      expect(sql).toContain('surface');
-      expect(sql).toContain("'search'");
+      // The two literals sit side by side in the column list, so a substring
+      // assertion passes on a row that writes each into the OTHER column —
+      // `search_type = 'search'` corrupts the very column
+      // `/analytics/search-trends` groups by, and `surface = 'faceted'` is a
+      // label the #1284 readout never looks for. Assert the BINDING instead:
+      // column list and VALUES list, paired by position.
+      const bindings = insertBindings(sql, 'search_analytics');
+      expect(bindings.search_type).toBe("'faceted'");
+      expect(bindings.surface).toBe("'search'");
     });
   });
 

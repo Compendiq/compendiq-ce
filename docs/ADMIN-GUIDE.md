@@ -615,13 +615,19 @@ deployment (#1284).** Both bases are recorded per request on
 `search_analytics` (`confidence`, `confidence_basis`, `surface` — migration
 098), and Settings → AI Models → Retrieval shows the observed distribution
 under each threshold: `p50`, `p90` and the number of assistant questions the
-two were computed over, for the last 7 days. A threshold above `p50` refuses
-about half the questions measured on that basis, which is the consequence a
-bare number never states. The sample counts **assistant questions only** —
+two were computed over, for the last 7 days. The gate refuses when the score
+is **below** the threshold, so a threshold set **at** `p50` refuses about half
+the questions measured on that basis and one set at `p90` refuses about nine
+in ten — the consequence a bare number never states. The sample counts
+**assistant questions only** —
 `/llm/ask`, deep search included — because the gate is never consulted on a
 page search; and below 30 questions the line says outright that the figures
 are too few to tune against. If the readout says the distribution could not
-be read, that is a failed request, not an empty corpus. Per-request verdicts
+be read, that is a failed request, not an empty corpus — press **Retry** at
+the top of the section (never reload the page: that discards every unsaved
+change on the panel). If it says the distribution could not be *re*-read, the
+figures beside it are real and merely not current — they are the last ones the
+panel could fetch, and the same Retry refreshes them. Per-request verdicts
 are still logged and traced (`rag.confidence` / `rag.confidence_basis`) for
 inspecting one answer.
 

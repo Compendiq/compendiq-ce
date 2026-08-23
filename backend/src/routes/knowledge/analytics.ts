@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { KNOWLEDGE_GAP_PREDICATE_SQL, GAP_AVG_MAX_SCORE_SQL } from './_gap-predicate.js';
 import { z } from 'zod';
+import { ConfidenceDistributionSchema } from '@compendiq/contracts';
 import type {
   ConfidenceDistribution,
   ConfidenceDistributionBucket,
@@ -204,6 +205,14 @@ export async function analyticsRoutes(fastify: FastifyInstance) {
       similarity: buckets.similarity,
       rerank: buckets.rerank,
     };
-    return body;
+    // Parsed, not merely typed (review r1). The comments above and the schema
+    // itself promise "null, never NaN" and a non-negative integer count —
+    // claims a `ConfidenceDistribution` annotation cannot enforce, because
+    // `Number()` and `parseInt()` both answer NaN inside the `number` type and
+    // `JSON.stringify` then quietly ships it as `null`. That is the one lie
+    // this route must not tell: an operator reading `p50 null` concludes their
+    // assistant measured nothing. Parsing turns it into a 500 the logs show.
+    // Security §4 — a Zod schema on every API boundary, this one included.
+    return ConfidenceDistributionSchema.parse(body);
   });
 }
