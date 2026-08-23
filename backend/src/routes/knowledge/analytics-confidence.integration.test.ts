@@ -154,16 +154,29 @@ describe.skipIf(!dbAvailable)('GET /api/analytics/confidence-distribution (#1284
     expect(body.similarity.p50).toBeCloseTo(0.5, 5);
   });
 
-  it('excludes unmeasurable rows: basis none, and a null score on a real basis', async () => {
+  it('excludes unmeasurable rows by BASIS — including the healthy-empty 0', async () => {
     // basis 'none' belongs to no scale, and a null score is not a 0. Either
     // one admitted would drag both percentiles toward the floor.
     await seedRow(userId, { confidence: null, basis: 'none', surface: 'ask' });
     await seedRow(userId, { confidence: null, basis: 'similarity', surface: 'ask' });
+    // The row the header comments used to get wrong: `computeRetrievalConfidence`
+    // returns `{ score: 0, basis: 'none' }` for a HEALTHY EMPTY set — the
+    // ordinary `no_context` path, and by volume the COMMON 'none' case — so
+    // this row really lands with `confidence = 0`, NOT NULL. `confidence IS
+    // NOT NULL` therefore does not exclude it and never did; the basis
+    // predicate does. Anyone reaching for the score-only predicate on this
+    // column (a new report, a dashboard) gets a distribution floored by these
+    // zeros — which is why both the migration and this route now say the
+    // exclusion is by BASIS.
+    await seedRow(userId, { confidence: 0, basis: 'none', surface: 'ask' });
     await seedRow(userId, { confidence: 0.6, basis: 'similarity', surface: 'ask' });
 
     const body = await get();
     expect(body.similarity.count).toBe(1);
     expect(body.similarity.p50).toBeCloseTo(0.6, 5);
+    // "Appears in NEITHER readout" is the claim the rerank row's copy now
+    // makes on screen; assert it on the wire rather than only in prose.
+    expect(body.rerank).toEqual({ p50: null, p90: null, count: 0 });
   });
 
   it('answers nulls, never NaN, when nothing was measured', async () => {

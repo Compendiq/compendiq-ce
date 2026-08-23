@@ -149,10 +149,19 @@ export async function analyticsRoutes(fastify: FastifyInstance) {
    * scales are unrelated — one distribution over both would be a number with
    * no meaning on either knob.
    *
-   * **`confidence IS NOT NULL`.** A `none`-basis row, and any row whose
-   * verdict had no number, is excluded rather than counted as 0: an
-   * unmeasurable set is not a weak one, and admitting it would drag both
-   * percentiles toward the floor and make every threshold look generous.
+   * **The BASIS filter is what excludes the unmeasurable rows** — not
+   * `confidence IS NOT NULL`, and the difference is not academic.
+   * `computeRetrievalConfidence` answers `{ score: 0, basis: 'none' }` for a
+   * HEALTHY EMPTY set (the ordinary `no_context` path: "the knowledge base
+   * has nothing on this" is a measurement, not an absence), so those rows
+   * land on `search_analytics` with `confidence = 0`, not NULL. A predicate
+   * on the score alone would admit every one of them, drag both percentiles
+   * toward the floor and make every threshold look generous — an unmeasurable
+   * set is not a weak one, and an empty corpus is not a weak one either.
+   * `confidence_basis = ANY(...)` is the predicate that keeps them out. The
+   * `confidence IS NOT NULL` beside it guards `COUNT(*)`, which would
+   * otherwise count a row `percentile_cont` ignores; it is a backstop, never
+   * the exclusion.
    *
    * **A fixed 7-day window**, comfortably inside the default 90-day
    * `search_analytics` retention. A shorter configured retention simply

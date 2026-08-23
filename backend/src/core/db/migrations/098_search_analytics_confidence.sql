@@ -14,11 +14,23 @@
 -- columns are NULL, which means "not recorded" and not "0".
 --
 --   confidence       - the #1105 gate's score for this search, [0,1], as
---                      `computeRetrievalConfidence` returned it. NULL when the
---                      set carried no measurable signal (basis 'none' on a
---                      keyword-led set, or an outage), which is why the basis
---                      is its own column rather than being inferred from a
---                      number that may legitimately be absent.
+--                      `computeRetrievalConfidence` returned it. NULL when
+--                      that verdict carried no number at all: a keyword-led
+--                      set, an image-only set, a pinned exact-identifier head,
+--                      or an empty set whose retrieval health could not be
+--                      verified (an outage).
+--                      The exception is what makes the basis column
+--                      load-bearing: a HEALTHY EMPTY set — the ordinary
+--                      `no_context` path — scores 0 on basis 'none',
+--                      because "the knowledge base has nothing on this" is a
+--                      measurement rather than an absent one. So
+--                      `confidence IS NOT NULL` does NOT separate the
+--                      measurable rows from the unmeasurable ones, and
+--                      anything reading this column as a DISTRIBUTION must
+--                      filter on `confidence_basis` (see
+--                      routes/knowledge/analytics.ts) — never on the score
+--                      merely being present, which would floor both
+--                      percentiles with those zeros.
 --   confidence_basis - 'rerank' | 'similarity' | 'none'. The basis flips per
 --                      request (a rerank bypass measures that request on the
 --                      cosine scale), so the two thresholds are two

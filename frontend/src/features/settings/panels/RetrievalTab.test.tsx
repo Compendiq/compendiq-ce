@@ -2195,6 +2195,13 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     await waitFor(async () =>
       expect((await screen.findByTestId(rerankId)).textContent).toMatch(/rerank stage is disabled/i),
     );
+    // …and it must not overstate. With the stage off, the similarity basis is
+    // reached only for a VECTOR-LED set: a keyword-led, image-only or pinned
+    // result set scores basis `none` and is excluded from BOTH readouts. "so
+    // every question is measured on the similarity basis above" left an
+    // operator with a similarity count well below their question volume and
+    // nothing on the panel accounting for the gap.
+    expect((await screen.findByTestId(rerankId)).textContent).toMatch(/neither readout/i);
 
     vi.restoreAllMocks();
     mockApi({

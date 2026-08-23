@@ -629,7 +629,14 @@ The sample counts
 **assistant questions only** —
 `/llm/ask`, deep search included — because the gate is never consulted on a
 page search; and below 30 questions the line says outright that the figures
-are too few to tune against. If the readout says the distribution could not
+are too few to tune against. Do not expect the two counts to add up to the
+number of questions asked: a question the gate cannot score on either scale —
+keyword-led results, image-only results, or a pinned exact-identifier hit — is
+recorded with no score and appears in **neither** distribution. Nothing is
+hidden from you: neither threshold can act on those questions, because there
+is no number to compare (the honest refusals that do not consult a threshold —
+an empty knowledge base, an image-only match — are unaffected by these knobs
+and are described above). If the readout says the distribution could not
 be read, that is a failed request, not an empty corpus — press **Retry** at
 the top of the section (never reload the page: that discards every unsaved
 change on the panel). If it says the distribution could not be *re*-read, the

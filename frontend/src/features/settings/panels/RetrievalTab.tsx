@@ -1169,9 +1169,24 @@ export function RetrievalTab() {
             // when the panel really knows: `assignments === undefined` is a
             // query that has not answered, and `rerankActive` is false for it
             // too (the `usePageTree` three-state rule, one surface over).
+            //
+            // The second sentence is not padding (review, external round). "so
+            // every question is measured on the similarity basis above" is
+            // false: with the stage off, `computeRetrievalConfidence` reaches
+            // the similarity basis only for a VECTOR-LED set, and answers
+            // basis `none` for a keyword-led set, an image-only set, a pinned
+            // exact-identifier head and an empty one — rows the readout
+            // excludes by basis, so they appear in NEITHER count. Left
+            // unqualified, an operator with a few thousand assistant questions
+            // reads a similarity count materially below that and has nothing
+            // in the panel accounting for the gap.
             emptyNote={
               assignments && !rerankActive
-                ? 'The rerank stage is disabled on this deployment, so every question is measured on the similarity basis above.'
+                ? 'The rerank stage is disabled on this deployment, so every question that can be'
+                  + ' scored at all is scored on the similarity basis above. Questions the gate'
+                  + ' cannot score — keyword-led, image-only or pinned exact-identifier results —'
+                  + ' appear in neither readout, so the two counts do not add up to the number of'
+                  + ' questions asked.'
                 : undefined
             }
           />

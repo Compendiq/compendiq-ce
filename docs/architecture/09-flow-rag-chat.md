@@ -1292,10 +1292,16 @@ backfill, TEXT without a CHECK:
 
 - **`confidence`** — the #1105 gate's own verdict for this search, exactly as
   `computeRetrievalConfidence` returned it over the RETURNED set. `NULL` is a
-  real value: an unmeasurable set has no number, and recording 0 for one would
-  drag every percentile downstream toward the floor. Never derive it from
-  `max_score` (RRF fusion) or `rerank_score` (the reranker's own scale) — a
-  distribution published on the wrong scale is worse than none.
+  real value: a keyword-led set, an image-only set, a pinned exact-identifier
+  head and an empty set whose retrieval health could not be verified all carry
+  no number, and recording 0 for one would drag every percentile downstream
+  toward the floor. The one `none` verdict that DOES carry a number is the
+  **healthy empty set** — the ordinary `no_context` path — which scores `0`,
+  because "the knowledge base has nothing on this" is a measurement. So a
+  distribution over this column must be filtered by `confidence_basis`, never
+  by the score merely being present. Never derive it from `max_score` (RRF
+  fusion) or `rerank_score` (the reranker's own scale) — a distribution
+  published on the wrong scale is worse than none.
 - **`confidence_basis`** — `rerank` | `similarity` | `none`. Its own column
   because the basis flips per request and a `NULL` score alone cannot tell
   `none` from "not recorded".
@@ -1319,7 +1325,10 @@ on those paths.
 `routes/knowledge/analytics.ts`) answers `{ windowDays: 7, surface: 'ask',
 similarity: {p50, p90, count}, rerank: {p50, p90, count} }` —
 `percentile_cont(0.5|0.9) WITHIN GROUP (ORDER BY confidence)` grouped by basis
-over `surface = 'ask' AND confidence IS NOT NULL` inside a fixed 7-day window
+over `surface = 'ask'` and the two real bases (`confidence_basis = ANY
+('{similarity,rerank}')` is what excludes the unmeasurable rows, including the
+healthy-empty zeros; the `confidence IS NOT NULL` beside it only guards
+`COUNT(*)`) inside a fixed 7-day window
 (inside the default 90-day retention; a shorter configured retention simply
 shrinks the sample, which `count` makes visible). An empty sample answers
 nulls, never NaN and never 0. Settings → AI Models → Retrieval renders it as
