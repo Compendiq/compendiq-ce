@@ -158,12 +158,25 @@ function thinkingExtras(
   return { think: true, chat_template_kwargs: { enable_thinking: true } };
 }
 
+/**
+ * Inline completions have a tiny latency and token budget. On Qwen reasoning
+ * models, the default thinking pass can consume that whole budget before any
+ * visible continuation reaches `message.content`. Local OpenAI-compatible
+ * providers accept these template hints; strict OpenAI hosts must not receive
+ * them because they reject unknown fields.
+ */
+export function nonThinkingExtras(baseUrl: string): Record<string, unknown> {
+  if (isStrictOpenAiCompatibleHost(baseUrl)) return {};
+  return { think: false, chat_template_kwargs: { enable_thinking: false } };
+}
+
 // Exported for unit testing only — the wire-format assertions on
 // `streamChat`/`chat` cover the runtime path, but `thinkingExtras` itself
 // has enough branches (strict × non-reasoning, strict × reasoning, tolerant)
 // that direct table-driven tests are clearer than mocking three SSE servers.
 export const __test_only__ = {
   thinkingExtras,
+  nonThinkingExtras,
   isStrictOpenAiCompatibleHost,
   isOpenAiReasoningModel,
   setStreamErrorDetailTimeoutMs: (ms: number) => { streamErrorDetailTimeoutMs = ms; },

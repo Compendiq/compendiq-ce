@@ -14,6 +14,7 @@ import { withSpan } from '../../../telemetry.js';
 import {
   providerRequestInfra,
   LlmHttpError,
+  nonThinkingExtras,
   type ProviderConfig,
 } from './openai-compatible-client.js';
 
@@ -107,6 +108,7 @@ export async function requestInlineCompletion(
         max_tokens: input.maxTokens,
         stop: INLINE_COMPLETION_STOP,
         stream: false,
+        ...nonThinkingExtras(cfg.baseUrl),
       };
   const endpoint = strategy === 'fim' ? 'completions' : 'chat/completions';
   const deadline = AbortSignal.timeout(

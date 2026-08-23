@@ -1,3 +1,4 @@
+import type { ServerResponse } from 'node:http';
 import type { FastifyInstance } from 'fastify';
 import {
   InlineCompletionRequestSchema,
@@ -15,6 +16,23 @@ const INLINE_COMPLETION_RATE_LIMIT = {
 
 function sanitized(value: string | undefined): string | undefined {
   return value == null ? undefined : sanitizeLlmInput(value).sanitized;
+}
+
+/**
+ * Cancel upstream work only when the response connection disappears before we
+ * can finish it. `IncomingMessage` emits `close` after a normal request body
+ * is consumed too, which would abort every non-streaming completion as soon
+ * as Fastify has parsed it.
+ */
+export function abortOnPrematureResponseClose(
+  response: ServerResponse,
+  controller: AbortController,
+): () => void {
+  const onClose = () => {
+    if (!response.writableEnded) controller.abort();
+  };
+  response.once('close', onClose);
+  return () => response.removeListener('close', onClose);
 }
 
 async function recordAggregateUsage(
@@ -78,8 +96,7 @@ export async function llmInlineCompletionRoutes(fastify: FastifyInstance) {
       // signal goes straight into undici in inline-completion-client.ts — no
       // queue or abandoned provider request remains after a disconnect.
       const controller = new AbortController();
-      const onClose = () => controller.abort();
-      request.raw.on('close', onClose);
+      const removeDisconnectListener = abortOnPrematureResponseClose(reply.raw, controller);
       try {
         const result = await requestInlineCompletion(
           resolved.config,
@@ -97,7 +114,7 @@ export async function llmInlineCompletionRoutes(fastify: FastifyInstance) {
           usage: result.usage,
         });
       } finally {
-        request.raw.removeListener('close', onClose);
+        removeDisconnectListener();
       }
     },
   );
