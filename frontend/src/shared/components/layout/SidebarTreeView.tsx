@@ -148,7 +148,10 @@ const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
  * which is exactly the kind of theme-asymmetric failure that hides until
  * someone measures the specific composited value instead of the token.
  */
-const SECTION_LABEL = 'text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground';
+// Exported since #1361: the conversations pane renders recency headings in the
+// same rail and must not copy the string — SettingsSidebar copied it once and
+// drifted to a /80 opacity that failed contrast on Paper.
+export const SECTION_LABEL = 'text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground';
 
 export interface SidebarTreeNodeProps {
   node: TreeNode;
