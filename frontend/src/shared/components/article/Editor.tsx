@@ -665,7 +665,7 @@ function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
 
   const action = (keys: string, label: string) => (
     <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-      <kbd className="rounded border border-border-interactive bg-background px-1.5 py-0.5 font-sans text-[10px] font-semibold leading-none text-foreground shadow-sm">
+      <kbd className="rounded border border-border-interactive bg-background px-1.5 py-0.5 font-sans text-[11px] font-semibold leading-none text-foreground">
         {keys}
       </kbd>
       <span>{label}</span>
@@ -677,7 +677,7 @@ function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
       role="status"
       aria-label={ariaLabel}
       data-testid="inline-completion-hint"
-      className="pointer-events-none flex items-center gap-2 rounded-lg border border-border-interactive bg-card/95 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground shadow-md"
+      className="nm-card-elevated pointer-events-none flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground"
     >
       {action('Tab', mode === 'word' ? 'Accept word' : 'Accept')}
       {mode === 'full' && (
