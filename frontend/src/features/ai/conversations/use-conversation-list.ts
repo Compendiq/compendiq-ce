@@ -16,10 +16,33 @@ import { apiFetch, type ApiError } from '../../../shared/lib/api';
  * position invalidates the PREFIX `['llm','conversations']` — every ask that
  * carries or acquires a conversation id, the stale-404 recovery, rename and
  * delete — so one invalidation reaches this list and anything later work keys
- * beneath the same prefix (PR 3's pending-title poll) without either side
+ * beneath the same prefix (including the pending-title poll) without either side
  * naming the other.
  */
 export const CONVERSATIONS_LIST_KEY = ['llm', 'conversations', 'list'] as const;
+
+export const PENDING_TITLE_POLL_MS = 3_000;
+const PENDING_TITLE_WINDOW_MS = 60_000;
+
+/**
+ * Poll only while a newly-created row still carries its question fallback.
+ * Generated and user-renamed titles are terminal, and the 60-second ceiling
+ * prevents a failed soft-side completion from turning into permanent polling.
+ */
+export function pendingTitlePollInterval(
+  data: InfiniteData<ConversationListResponse> | undefined,
+  now = Date.now(),
+): number | false {
+  const hasPendingTitle = data?.pages.some((page) =>
+    page.items.some((row) => {
+      if (row.titleSource !== 'question') return false;
+      const createdAt = Date.parse(row.createdAt);
+      if (!Number.isFinite(createdAt)) return false;
+      const age = now - createdAt;
+      return age >= 0 && age < PENDING_TITLE_WINDOW_MS;
+    })) ?? false;
+  return hasPendingTitle ? PENDING_TITLE_POLL_MS : false;
+}
 
 export interface ConversationListResult {
   query: UseInfiniteQueryResult<InfiniteData<ConversationListResponse>, ApiError>;
@@ -46,6 +69,8 @@ export function useConversationList(): ConversationListResult {
     // The route answers `nextCursor: null` on the last page; TanStack reads
     // `undefined` as "no next page" and would take a null for a real page param.
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    refetchInterval: (currentQuery) =>
+      pendingTitlePollInterval(currentQuery.state.data),
     // A failed list is a FAILURE the pane renders (the three list states), not
     // something to hide behind three silent retries — the tree learned this.
     retry: false,

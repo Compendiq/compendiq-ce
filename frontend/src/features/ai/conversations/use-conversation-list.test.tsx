@@ -4,7 +4,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { ConversationListResponse, ConversationSummary } from '@compendiq/contracts';
 import { ApiError } from '../../../shared/lib/api';
-import { useConversationList, CONVERSATIONS_LIST_KEY } from './use-conversation-list';
+import {
+  CONVERSATIONS_LIST_KEY,
+  PENDING_TITLE_POLL_MS,
+  pendingTitlePollInterval,
+  useConversationList,
+} from './use-conversation-list';
 
 function summary(id: string, title: string): ConversationSummary {
   return {
@@ -134,5 +139,60 @@ describe('useConversationList', () => {
 
     await waitFor(() => expect(result.current.query.isError).toBe(true));
     expect(result.current.rows.map((r) => r.id)).toEqual(['a']);
+  });
+
+  describe('pending auto-title polling (#1361 PR 3)', () => {
+    const now = Date.parse('2026-08-23T12:00:00.000Z');
+
+    function infiniteData(items: ConversationSummary[]) {
+      return {
+        pages: [{ items, nextCursor: null }],
+        pageParams: [undefined],
+      };
+    }
+
+    it('polls every three seconds while a recent question-derived title is pending', () => {
+      const row = {
+        ...summary('a', 'Question-derived fallback'),
+        createdAt: '2026-08-23T11:59:30.000Z',
+      };
+      expect(pendingTitlePollInterval(infiniteData([row]), now)).toBe(PENDING_TITLE_POLL_MS);
+    });
+
+    it.each(['generated', 'user'] as const)('stops once titleSource becomes %s', (titleSource) => {
+      const row = {
+        ...summary('a', 'Finished title'),
+        titleSource,
+        createdAt: '2026-08-23T11:59:30.000Z',
+      };
+      expect(pendingTitlePollInterval(infiniteData([row]), now)).toBe(false);
+    });
+
+    it('stops after 60 seconds when generation soft-failed', () => {
+      const row = {
+        ...summary('a', 'Fallback stays'),
+        createdAt: '2026-08-23T11:59:00.000Z',
+      };
+      expect(pendingTitlePollInterval(infiniteData([row]), now)).toBe(false);
+    });
+
+    it('polls when any loaded page contains a pending row', () => {
+      const old = {
+        ...summary('a', 'Old fallback'),
+        createdAt: '2026-08-23T11:00:00.000Z',
+      };
+      const pending = {
+        ...summary('b', 'New fallback'),
+        createdAt: '2026-08-23T11:59:59.000Z',
+      };
+      const data = {
+        pages: [
+          { items: [old], nextCursor: 'next' },
+          { items: [pending], nextCursor: null },
+        ],
+        pageParams: [undefined, 'next'],
+      };
+      expect(pendingTitlePollInterval(data, now)).toBe(PENDING_TITLE_POLL_MS);
+    });
   });
 });

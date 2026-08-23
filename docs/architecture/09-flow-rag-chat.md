@@ -2002,8 +2002,16 @@ in order:
 - **Initial title** — the first question, whitespace-collapsed, cut on a word
   boundary at ≤ 80 chars with an ellipsis (`initialTitleFromQuestion`);
   `title_source = 'question'`. `PATCH /llm/conversations/:id { title }` sets
-  `'user'` and does not bump `updated_at` (it would re-bucket the row). Auto-title
-  (PR 3 of #1361) writes only while `title_source = 'question'`.
+  `'user'` and does not bump `updated_at` (it would re-bucket the row).
+- **Auto-title after the terminal frame.** A newly inserted conversation starts
+  one fire-and-forget completion through the existing `chat` assignment after
+  its streamed, cached, or refused response has completed. The question and
+  non-refused answer are bounded and passed through `sanitizeLlmInput`; refused
+  answers title from the question alone. `normalizeGeneratedTitle` reduces the
+  reply to one unquoted, unformatted line of at most 80 characters. The update
+  is a compare-and-set on `title_source = 'question'`, so a concurrent manual
+  rename (`'user'`) wins. Provider, timeout, parse, and database failures leave
+  the question-derived fallback in place and never fail or delay the answer.
 - **Replay budget (decision 10).** `selectReplayableHistory` replays the newest
   whole exchanges within `HISTORY_REPLAY_TOKEN_BUDGET` (4,000 tokens by
   `estimateTokens`, a constant — not an env var). Pairing is by role: an

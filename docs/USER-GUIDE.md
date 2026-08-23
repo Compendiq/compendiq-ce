@@ -116,7 +116,11 @@ The AI assistant can answer questions, improve content, and help with writing:
    be bookmarked and walked with the browser's Back and Forward buttons, and
    your next question continues it. Each row's `⋯` menu **renames** it in place
    (Enter commits, Escape cancels) or **deletes** it permanently. **New chat**
-   — in the top bar and at the top of the pane — starts an empty one.
+   — in the top bar and at the top of the pane — starts an empty one. After the
+   first completed answer, Compendiq generates a concise title in the question's
+   language without delaying the response. If that background step fails, the
+   first question remains the title; a title you rename manually is never
+   replaced later.
 5. Only Q&A is saved. Generate, the rewrite skills and Diagram are not.
    Questions you ask from the assistant beside an article are saved too and
    appear in the list tagged with the page they started on; continuing one from

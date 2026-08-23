@@ -4,7 +4,10 @@ import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver
 import { streamChat, type ChatMessage, type ChatContentPart } from '../../domains/llm/services/openai-compatible-client.js';
 import type { PersistedSource } from '@compendiq/contracts';
 import { toPersistedSources } from '../../domains/llm/services/persisted-source.js';
-import { initialTitleFromQuestion } from '../../domains/llm/services/conversation-title.js';
+import {
+  generateConversationTitle,
+  initialTitleFromQuestion,
+} from '../../domains/llm/services/conversation-title.js';
 import { contentToText } from '../../domains/llm/services/prompts.js';
 import { hybridSearch, buildRagContext, type RetrievalMeta } from '../../domains/llm/services/rag-service.js';
 // #1112: deep search's wrapper around hybridSearch. Its own module, not a
@@ -619,7 +622,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // answer. The row's `model` column is the THREAD's configured model, not
     // an attestation that it was invoked — a refusal writes it without a call.
     // Returns the id the final frame must carry (null when the row vanished
-    // under us) and whether this call INSERTed (PR 3's auto-title trigger).
+    // under us) and whether this call INSERTed (the auto-title trigger).
     const persistedSources = toPersistedSources(sources);
     const pageRefForInsert = async (): Promise<number | null> => {
       if (!body.pageId) return null;
@@ -667,6 +670,24 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       );
       convId = insertResult.rows[0]!.id;
       return { id: convId, inserted: true };
+    };
+
+    const startAutoTitle = (
+      saved: { id: string | null; inserted: boolean },
+      answer: string,
+      refused = false,
+    ): void => {
+      if (!saved.inserted || saved.id === null) return;
+      // #1361: the title is a side-completion, never part of answer
+      // latency. `generateConversationTitle` owns its catch, and the CAS it
+      // writes preserves a manual rename that lands while this is running.
+      void generateConversationTitle({
+        conversationId: saved.id,
+        userId,
+        question,
+        answer,
+        refused,
+      });
     };
 
     // ── Honest-refusal gate (#1105, widened by #1114's prerequisite) ─────
@@ -844,7 +865,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // stage is live — already did; those are the cost of measuring). No
       // llm_audit_log row is written, matching the cache-hit path: that log
       // attests model calls, and none happened.
-      await saveConversation(refusalText, { refused: true });
+      const saved = await saveConversation(refusalText, { refused: true });
       sendCachedSSE(
         reply,
         liveRefusalText,
@@ -865,6 +886,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         // Nothing was cached — the default `cached: true` would be a lie.
         { cached: false },
       );
+      startAutoTitle(saved, refusalText, true);
     };
 
     if (refusalReason !== null) {
@@ -1015,12 +1037,13 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       ragLockAcquired = lockAcquired;
 
       if (cached) {
-        await saveConversation(cached.content);
+        const saved = await saveConversation(cached.content);
 
         sendCachedSSE(reply, cached.content, {
           conversationId: convId ?? null,
           sources,
         });
+        startAutoTitle(saved, cached.content);
         return;
       }
     }
@@ -1130,7 +1153,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             await llmCache.setCachedResponse(ragCacheKey, fullAnswer);
           }
 
-          await saveConversation(fullAnswer);
+          const saved = await saveConversation(fullAnswer);
 
           emitLlmAudit({
             userId,
@@ -1158,6 +1181,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             sources,
             ...(historyTruncated ? { historyTruncated: true } : {}),
           })}\n\n`);
+          startAutoTitle(saved, fullAnswer);
         }
       } catch (err) {
         if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {

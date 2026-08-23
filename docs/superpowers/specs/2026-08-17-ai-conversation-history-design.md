@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-17
 **Issue:** #1361 (saved conversations in the `/ai` left pane — reopenable `/ai/c/:id`, replaces the page tree and page-click context on `/ai`)
-**Status:** Proposed — design of record for the three PRs in [Sequencing](#sequencing). PR 1 shipped (#1365, 2026-08-18); **amended 2026-08-18 and re-amended 2026-08-22** for dev drift before PR 2 — see the amendment block below, which supersedes four sentences of the body.
+**Status:** Implemented — design of record for the three slices in [Sequencing](#sequencing). PR 1 shipped (#1365, 2026-08-18), PR 2 shipped (#1430, 2026-08-23), and the auto-title slice completed the remaining scope; **amended 2026-08-18 and re-amended 2026-08-22** for dev drift before PR 2 — see the amendment block below, which supersedes four sentences of the body.
 **Verified against:** `origin/dev` `7c3a7bf8` (2026-08-17). Every `file:line` below was re-read at that commit; where the issue's own citations had drifted, this document carries the corrected anchor.
 
 > The fourteen decisions in the issue's table are the owner's (interview, 2026-08-17). This
@@ -1179,7 +1179,7 @@ different action sets), plus the new paragraph for the pane and the per-conversa
 `docs/architecture/README.md` — add a row for "a new route inside an existing feature or a
 provider's data model changing" → `04-frontend-structure.md`.
 
-### PR 3 — auto-title
+### PR 3 — auto-title (implemented)
 
 `generateConversationTitle` + `normalizeGeneratedTitle` in `conversation-title.ts`; the
 fire-and-forget call after the terminal frame on each of the three save paths when the save

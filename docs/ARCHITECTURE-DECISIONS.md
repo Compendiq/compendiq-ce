@@ -502,7 +502,7 @@ CREATE TABLE llm_conversations (
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   page_id    TEXT,                     -- never written; dropped by 094 (page_ref)
   model      TEXT NOT NULL,
-  title      TEXT,                     -- first question, trimmed; auto-title lands in #1361 PR 3
+  title      TEXT,                     -- question fallback; #1361 auto-title may replace it
   messages   JSONB NOT NULL DEFAULT '[]',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -2027,14 +2027,16 @@ ADR-021 is NOT amended with a new use case by #1361. Conversation persistence
 (`page_ref`, per-turn `sources`, atomic append, the `title_source` column, the
 keyset-paged list, `PATCH` rename, the history replay budget) is storage and
 routing, not an outbound model call. The one model call #1361 adds — the
-auto-title (PR 3) — resolves `resolveUsecase('chat')` deliberately, the #1112
+auto-title — resolves `resolveUsecase('chat')` deliberately, the #1112
 argument: a one-line title is a rewrite any chat model can do, and an eighth
 assignment (after `rerank`, #1104, `image_embedding`, #1115, and
 `inline_completion`, #1417) would be a ninth knob
 every operator must set before titles work at all.
 It runs after the answer's terminal frame, never in front of it, sanitises its
 inputs, constrains its output, and soft-fails to the word-boundary-trimmed
-question. Design of record: `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`.
+question. Its write compares `title_source = 'question'`, so a manual rename
+that lands while the completion runs is never overwritten. Design of record:
+`docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`.
 
 ## ADR-022: RAG retrieval honours per-user space permissions
 

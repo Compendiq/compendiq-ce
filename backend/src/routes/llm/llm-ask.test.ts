@@ -170,6 +170,15 @@ vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
 }));
 
+const mockGenerateConversationTitle = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../domains/llm/services/conversation-title.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../domains/llm/services/conversation-title.js')>();
+  return {
+    ...actual,
+    generateConversationTitle: (...args: unknown[]) => mockGenerateConversationTitle(...args),
+  };
+});
+
 // --- Mock: mcp-docs-client (external docs / web search sidecar) ---
 const mockMcpIsEnabled = vi.fn().mockResolvedValue(false);
 const mockMcpFetchDocumentation = vi.fn();
@@ -307,6 +316,7 @@ describe('POST /api/llm/ask', () => {
     // Reset to defaults after clearAllMocks
     mockGetCachedResponse.mockResolvedValue(null);
     mockSetCachedResponse.mockResolvedValue(undefined);
+    mockGenerateConversationTitle.mockResolvedValue(undefined);
     // #1105 gate default: OFF — individual tests raise it and this reset
     // keeps a raised threshold from leaking into later tests.
     mockConfidenceThreshold.mockResolvedValue(0);
@@ -1482,6 +1492,103 @@ describe('POST /api/llm/ask', () => {
 
     // conversationId should be set from the INSERT
     expect(finalEvent!.conversationId).toBe('test-conv-id');
+  });
+
+  describe('conversation auto-title (#1361 PR 3)', () => {
+    const neverResolves = new Promise<void>(() => {});
+
+    it('starts after a streamed first answer without delaying the completed response', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockBuildRagContext.mockReturnValue('[Source 1: grounded]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('A streamed answer.'));
+      mockGenerateConversationTitle.mockReturnValue(neverResolves);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'Name this conversation' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(parseSseBody(response.body)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ final: true, conversationId: 'test-conv-id' }),
+      ]));
+      expect(mockGenerateConversationTitle).toHaveBeenCalledWith({
+        conversationId: 'test-conv-id',
+        userId: 'test-user-123',
+        question: 'Name this conversation',
+        answer: 'A streamed answer.',
+        refused: false,
+      });
+    });
+
+    it('titles a new conversation created from an answer-cache hit', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockGetCachedResponse.mockResolvedValue({ content: 'A cached answer.' });
+      mockGenerateConversationTitle.mockReturnValue(neverResolves);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'Cached question' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(parseSseBody(response.body)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ final: true, conversationId: 'test-conv-id' }),
+      ]));
+      expect(mockGenerateConversationTitle).toHaveBeenCalledWith(expect.objectContaining({
+        conversationId: 'test-conv-id',
+        question: 'Cached question',
+        answer: 'A cached answer.',
+        refused: false,
+      }));
+    });
+
+    it('titles a newly persisted refusal from the question alone', async () => {
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockGenerateConversationTitle.mockReturnValue(neverResolves);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'Unanswerable question' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(parseSseBody(response.body)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ final: true, refused: true, conversationId: 'test-conv-id' }),
+      ]));
+      expect(mockGenerateConversationTitle).toHaveBeenCalledWith(expect.objectContaining({
+        conversationId: 'test-conv-id',
+        question: 'Unanswerable question',
+        refused: true,
+      }));
+    });
+
+    it('does not retitle an existing conversation on a follow-up', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [{ messages: [{ role: 'user', content: 'First question' }, { role: 'assistant', content: 'First answer' }] }] };
+        }
+        return { rows: [{ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }] };
+      });
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Follow-up answer.'));
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: {
+          question: 'Follow up',
+          conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
+    });
   });
 
   // ─── Score semantics (#1117) ─────────────────────────────────────────────
