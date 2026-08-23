@@ -378,10 +378,22 @@ export function AttachmentStorageCard() {
           trust — and rendering them here would defeat that decision one layer
           up. The remedy is the same one the empty state offers, minus its
           "no sweep has run" claim, which would be false here.
+
+          And it drops its OWN claim when the last-run GET is the thing that
+          failed (fixer, verification round). The two GETs fail independently
+          by decision (review r1), so `sweepError` beside a readable stats
+          record reporting `stores: null` is a reachable state — and there this
+          line's "the last run produced no figures" sat directly above
+          `attachment-sweep-status-error`'s "The last-run record could not be
+          read", one paragraph asserting as fact what the next says is unknown.
+          That is the card's own "a failure is reported, never inferred" rule
+          turned on its head. The MISSING measurement is certain either way;
+          what produced it is not, so only the certain half is stated.
         */
         <p className="text-muted-foreground text-xs" data-testid="attachment-storage-unmeasured">
-          No completed measurement yet — the last run produced no figures. Press Dry run to measure
-          both stores.
+          {sweepError
+            ? 'No completed measurement is on record. Press Dry run to measure both stores.'
+            : 'No completed measurement yet — the last run produced no figures. Press Dry run to measure both stores.'}
         </p>
       )}
 

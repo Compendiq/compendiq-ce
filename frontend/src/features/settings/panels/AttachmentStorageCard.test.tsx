@@ -329,6 +329,35 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(screen.getByTestId('attachment-sweep-last-run-problem')).toBeInTheDocument();
   });
 
+  /**
+   * Fixer, verification round: the same fifth state, reached with the LAST-RUN
+   * GET as the thing that failed. The two GETs fail independently by decision
+   * (review r1), so this is reachable — and the line above was written for the
+   * other way in, asserting "the last run produced no figures" directly above
+   * `attachment-sweep-status-error` saying that record could not be read. One
+   * paragraph stating as fact what the next one calls unknown is the card's own
+   * "a failure is reported, never inferred" rule inverted. The absent stats
+   * record is certain (that GET succeeded and answered `stores: null`); what
+   * produced it is not.
+   */
+  it('claims nothing about the last run when the last-run record is the unreadable one', async () => {
+    mockApi({
+      stats: { computedAt: null, running: false, stores: null, missingLocalFiles: null },
+      sweep: 'error',
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const line = await screen.findByTestId('attachment-storage-unmeasured');
+    expect(line.textContent).toMatch(/no completed measurement is on record/i);
+    expect(
+      line.textContent,
+      'the last-run record could not be read, so this line cannot report what the last run produced',
+    ).not.toMatch(/the last run produced/i);
+    // The remedy survives, and the failed read is still reported beside it.
+    expect(line.textContent).toMatch(/press dry run/i);
+    expect(screen.getByTestId('attachment-sweep-status-error')).toBeInTheDocument();
+  });
+
   it('renders no unmeasured line when the figures are there', async () => {
     mockApi({});
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
