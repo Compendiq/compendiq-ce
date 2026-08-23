@@ -17,15 +17,19 @@
  * these numbers says so.
  *
  * Run records reuse `retrieval_benchmark_runs` (091/092) with
- * `config.kind = 'shadow-compare'`: same status machine, same one-active
- * partial unique index (a compare and a production benchmark deliberately
- * exclude each other — both spend the shared LLM queue), same 30-minute
- * heartbeat recovery, which is why every per-query progress write also
- * touches `last_heartbeat_at`.
+ * `config.kind = 'shadow-compare'`, and the row lifecycle itself — insert,
+ * claim, progress + heartbeat, complete, fail, the stale sweep and the
+ * kind-guarded fetch — is `eval/benchmark-run-lifecycle.ts`, shared with the
+ * production benchmark. It is deliberately NOT a second copy of those five
+ * statements: the first cut was, and the copies diverged within one review
+ * round (the sweep failed comparisons with benchmark wording; the benchmark's
+ * fetch served comparisons).
  *
  * Never calls `enqueueReembedAll`, never writes `llm_usecase_assignments` or
- * `admin_settings`. Queries and titles are real user data: admin-only routes,
- * page ids + titles only in the result (no chunk text), nothing logged raw.
+ * `admin_settings`. Queries and titles are real user data: admin-only routes
+ * SCOPED TO THE ADMIN WHO STARTED THE RUN (the report's page titles were
+ * retrieved under that admin's own ACL), page ids + titles only in the result
+ * (no chunk text), nothing logged raw.
  */
 import { createHash } from 'node:crypto';
 import type { ShadowCompareRequest, ShadowCompareJudgementSide } from '@compendiq/contracts';
@@ -50,9 +54,17 @@ import {
   type AgreementSummary,
 } from '../eval/agreement-metrics.js';
 import {
-  getActiveProductionBenchmark,
-  ProductionBenchmarkAlreadyRunningError,
-} from '../eval/production-benchmark.js';
+  BenchmarkRunSlotBusyError,
+  claimBenchmarkRun,
+  completeBenchmarkRun,
+  failBenchmarkRun,
+  fetchBenchmarkRun,
+  insertBenchmarkRun,
+  latestBenchmarkRun,
+  readQueuedConfig,
+  recordBenchmarkProgress,
+  type BenchmarkRunRecord,
+} from '../eval/benchmark-run-lifecycle.js';
 import {
   meanReciprocalRank,
   pairedSignificance,
@@ -85,7 +97,17 @@ export interface ShadowCompareReport {
   kind: 'shadow-compare';
   generatedAt: string;
   topK: number;
+  /** Queries actually COMPARED — the denominator of every agreement figure. */
   queryCount: number;
+  /** Queries the sampler returned, compared + failed. */
+  sampledQueryCount: number;
+  /**
+   * Queries dropped because an embedding or retrieval call failed (a 429, an
+   * opened breaker, a queue timeout). Reported rather than fatal: throwing
+   * away 46 completed comparisons because query 47 hit a rate limit re-spends
+   * the whole N x 2 embedding budget for one transient failure.
+   */
+  failedQueries: number;
   live: { providerId: string; model: string };
   candidate: { providerId: string; model: string };
   agreement: AgreementSummary;
@@ -93,18 +115,7 @@ export interface ShadowCompareReport {
   queries: ShadowCompareQueryResult[];
 }
 
-export interface ShadowCompareRun {
-  id: string;
-  status: ShadowCompareStatus;
-  config: ShadowCompareConfig;
-  progressDone: number;
-  progressTotal: number;
-  result: ShadowCompareReport | null;
-  error: string | null;
-  createdAt: Date | string;
-  startedAt: Date | string | null;
-  completedAt: Date | string | null;
-}
+export type ShadowCompareRun = BenchmarkRunRecord<ShadowCompareConfig, ShadowCompareReport>;
 
 /**
  * The migration moved out from under a running comparison — a swap, abort or
@@ -113,72 +124,88 @@ export interface ShadowCompareRun {
  */
 export class ShadowCompareWindowError extends Error {}
 
+/**
+ * Too many queries failed for the remainder to describe the two models.
+ * App-authored and echoed to the admin, like the window errors.
+ */
+export class ShadowCompareUnusableError extends Error {}
+
+/** The Mode 2 refusals, as TYPES. The route maps them by `instanceof`: a
+ *  regex over English prose turns a copy edit into a 500 (r-external). */
+export class CompareRunNotFoundError extends Error {
+  constructor() {
+    super('Comparison run not found');
+  }
+}
+export class CompareRunIncompleteError extends Error {
+  constructor() {
+    super('Comparison run has not completed — judgements attach to a finished run');
+  }
+}
+export class UnknownCompareQueryError extends Error {
+  constructor() {
+    super('Unknown query id for this comparison run');
+  }
+}
+
 const WINDOW_CLOSED_MSG =
   'The shadow migration is not in the ready window — the comparison needs a fully backfilled candidate column';
 const WINDOW_MOVED_MSG =
   'The shadow migration changed while the comparison ran (swap, abort or rollback) — start a new comparison from the current migration';
 const NO_QUERIES_MSG = 'No production queries were available in the selected period';
 
-interface CompareRunRow {
-  id: string;
-  status: ShadowCompareStatus;
-  config: ShadowCompareConfig;
-  progress_done: number;
-  progress_total: number;
-  result: ShadowCompareReport | null;
-  error: string | null;
-  created_at: Date | string;
-  started_at: Date | string | null;
-  completed_at: Date | string | null;
-}
+/**
+ * Above this share of failed queries the remainder is not a comparison of the
+ * two models but a sample of whichever queries happened to get through, so
+ * the run fails instead of publishing it. Below it the run completes and
+ * `failedQueries` is stated on the report and on the card.
+ */
+const MAX_FAILED_QUERY_SHARE = 0.5;
 
 export async function createShadowCompareRun(
   requestedBy: string,
   config: ShadowCompareConfig,
 ): Promise<string> {
-  try {
-    const result = await query<{ id: string }>(
-      `INSERT INTO retrieval_benchmark_runs (requested_by, status, config)
-       VALUES ($1, 'queued', $2::jsonb)
-       RETURNING id`,
-      [requestedBy, JSON.stringify(config)],
-    );
-    return result.rows[0]!.id;
-  } catch (err) {
-    // The 091 one-active partial unique index is the cross-request guard,
-    // shared with the production benchmark on purpose: both runs spend the
-    // same LLM queue, so one at a time is the point, not a limitation.
-    if ((err as { code?: unknown })?.code === '23505') {
-      const active = await getActiveProductionBenchmark();
-      if (active) throw new ProductionBenchmarkAlreadyRunningError(active.id, active.kind);
-    }
-    throw err;
-  }
+  // The 091 one-active partial unique index is the cross-request guard,
+  // shared with the production benchmark on purpose: both runs spend the same
+  // LLM queue, so one at a time is the point, not a limitation.
+  return insertBenchmarkRun(requestedBy, config);
 }
 
-/** Null for an unknown id AND for a run of another kind — the compare routes
- *  must not leak (or poll) production-benchmark runs through this surface. */
-export async function getShadowCompareRun(id: string): Promise<ShadowCompareRun | null> {
-  const result = await query<CompareRunRow>(
-    `SELECT id, status, config, progress_done, progress_total, result, error,
-            created_at, started_at, completed_at
-     FROM retrieval_benchmark_runs WHERE id = $1`,
-    [id],
+export { BenchmarkRunSlotBusyError };
+
+/**
+ * Null for an unknown id, for a run of another kind (the compare surface must
+ * not serve or poll production-benchmark runs) AND for another admin's run:
+ * the report's page titles came out of `visiblePagesPredicate` scoped to the
+ * admin who started it, private standalone pages included, so an unscoped
+ * read hands admin B titles only admin A can see.
+ */
+export async function getShadowCompareRun(
+  id: string,
+  requestedBy: string,
+): Promise<ShadowCompareRun | null> {
+  return fetchBenchmarkRun<ShadowCompareConfig, ShadowCompareReport>(
+    id,
+    'shadow-compare',
+    requestedBy,
   );
-  const row = result.rows[0];
-  if (!row || (row.config as { kind?: string })?.kind !== 'shadow-compare') return null;
-  return {
-    id: row.id,
-    status: row.status,
-    config: row.config,
-    progressDone: row.progress_done,
-    progressTotal: row.progress_total,
-    result: row.result,
-    error: row.error,
-    createdAt: row.created_at,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-  };
+}
+
+/**
+ * This admin's most recent comparison, in any status. The card's `runId` is
+ * plain component state, so a tab switch, a route change or a reload loses
+ * it — and with no way back the finished report, its disagreement list and
+ * the whole Mode 2 workflow (twenty judgements across sittings) would be
+ * unreachable while the slot the run holds refuses a replacement.
+ */
+export async function getLatestShadowCompareRun(
+  requestedBy: string,
+): Promise<ShadowCompareRun | null> {
+  return latestBenchmarkRun<ShadowCompareConfig, ShadowCompareReport>(
+    'shadow-compare',
+    requestedBy,
+  );
 }
 
 /**
@@ -190,48 +217,21 @@ export async function getShadowCompareRun(id: string): Promise<ShadowCompareRun 
  */
 export async function runShadowCompare(id: string, adminUserId: string): Promise<void> {
   try {
-    const row = await query<Pick<CompareRunRow, 'config' | 'status'>>(
-      `SELECT config, status FROM retrieval_benchmark_runs WHERE id = $1`,
-      [id],
-    );
-    const config = row.rows[0]?.config;
-    if (!config || config.kind !== 'shadow-compare' || row.rows[0]?.status !== 'queued') return;
+    const config = await readQueuedConfig<ShadowCompareConfig>(id);
+    if (!config || config.kind !== 'shadow-compare') return;
 
-    const claimed = await query(
-      `UPDATE retrieval_benchmark_runs
-       SET status = 'running', started_at = NOW(), progress_done = 0,
-           progress_total = $2, error = NULL, last_heartbeat_at = NOW()
-       WHERE id = $1 AND status = 'queued'`,
-      [id, config.limit],
-    );
-    if (claimed.rowCount !== 1) return;
+    if (!(await claimBenchmarkRun(id, config.limit))) return;
 
     const report = await executeShadowCompare(config, adminUserId, async (done, total) => {
-      await query(
-        `UPDATE retrieval_benchmark_runs
-         SET progress_done = $2, progress_total = $3, last_heartbeat_at = NOW()
-         WHERE id = $1`,
-        [id, done, total],
-      );
+      await recordBenchmarkProgress(id, done, total);
     });
 
-    await query(
-      `UPDATE retrieval_benchmark_runs
-       SET status = 'completed', progress_done = progress_total,
-           result = $2::jsonb, completed_at = NOW(), last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [id, JSON.stringify(report)],
-    );
+    await completeBenchmarkRun(id, report);
   } catch (err) {
     // Counts only — the sampled queries are real user data and must not
     // reach the log through an error object's context.
     logger.error({ err, compareRunId: id }, 'Shadow embedding comparison failed');
-    await query(
-      `UPDATE retrieval_benchmark_runs
-       SET status = 'failed', error = $2, completed_at = NOW(), last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [id, publicErrorMessage(err)],
-    ).catch((updateErr) =>
+    await failBenchmarkRun(id, publicErrorMessage(err)).catch((updateErr) =>
       logger.error({ err: updateErr, compareRunId: id }, 'Failed to persist comparison failure'),
     );
   }
@@ -264,6 +264,7 @@ async function executeShadowCompare(
 
   const rows: ShadowCompareQueryResult[] = [];
   let done = 0;
+  let failed = 0;
   for (const text of queries) {
     // Re-read the migration fingerprint per query: a swap/abort/rollback
     // landing mid-run must become a clean failure, and catching it here is
@@ -309,13 +310,23 @@ async function executeShadowCompare(
       ) {
         throw new ShadowCompareWindowError(WINDOW_MOVED_MSG);
       }
-      throw err;
+      // Anything else — a 429, an opened breaker, a shared-queue timeout —
+      // costs THIS query, not the run. The comparisons already computed are
+      // N x 2 provider calls that would otherwise be spent again.
+      failed++;
+      logger.warn(
+        { err, failedQueries: failed, comparedQueries: rows.length },
+        'Shadow comparison skipped a query after a retrieval failure',
+      );
+      done++;
+      await onProgress(done, queries.length);
+      continue;
     }
 
     const livePages = topPages(liveResults, config.topK);
     const candidatePages = topPages(candidateResults, config.topK);
     rows.push({
-      id: `query-${done + 1}`,
+      id: `query-${rows.length + 1}`,
       query: text,
       live: livePages,
       candidate: candidatePages,
@@ -327,11 +338,19 @@ async function executeShadowCompare(
     await onProgress(done, queries.length);
   }
 
+  if (failed > queries.length * MAX_FAILED_QUERY_SHARE) {
+    throw new ShadowCompareUnusableError(
+      `${failed} of ${queries.length} queries could not be embedded or retrieved, so the remainder does not describe the two models. Check the provider and try again.`,
+    );
+  }
+
   return {
     kind: 'shadow-compare',
     generatedAt: new Date().toISOString(),
     topK: config.topK,
     queryCount: rows.length,
+    sampledQueryCount: queries.length,
+    failedQueries: failed,
     live: { providerId: live.config.providerId, model: live.model },
     candidate: { providerId: target.cfg.providerId, model: target.model },
     agreement: summarizeAgreement(
@@ -356,7 +375,9 @@ function topPages(results: SearchResult[], topK: number): ComparedPages {
 }
 
 function publicErrorMessage(err: unknown): string {
-  if (err instanceof ShadowCompareWindowError) return err.message;
+  if (err instanceof ShadowCompareWindowError || err instanceof ShadowCompareUnusableError) {
+    return err.message;
+  }
   if (err instanceof Error && err.message === NO_QUERIES_MSG) return err.message;
   return 'The comparison could not complete. Check the provider and embedding configuration, then try again.';
 }
@@ -365,15 +386,20 @@ function publicErrorMessage(err: unknown): string {
 //
 // Where Mode 1 shows a disagreement, the admin can record which side
 // answered better. Judgements live in `embedding_compare_judgements` (099),
-// keyed by (normalised query hash, live model, candidate model) — NOT by
-// run — so the fixture accumulates across runs and even across migrations of
-// the same pair, and re-judging a query replaces its row instead of stacking
-// votes.
+// keyed by (normalised query hash, live PAIR, candidate PAIR) — NOT by run —
+// so the fixture accumulates across runs and even across migrations of the
+// same pair, and re-judging a query replaces its row instead of stacking
+// votes. The PROVIDER is half of each key: "the same model name behind a
+// different provider" is a different index, so pooling those judgements would
+// score one migration's evidence into another migration's verdict.
 
 /**
- * No p-value is quoted below this many judgements for the pair. McNemar is
- * exact at any N, but a p over a handful of clicks reads as a verdict the
- * evidence cannot carry — the issue's own bar.
+ * No p-value is quoted below this many SCORED judgements for the pair.
+ * McNemar is exact at any N, but a p over a handful of clicks reads as a
+ * verdict the evidence cannot carry — the issue's own bar. Counted over the
+ * live/candidate picks the test actually consumes, never over every stored
+ * row: fourteen ties plus six picks is six clicks, and gating on twenty would
+ * publish "significant, favouring the candidate" from them.
  */
 export const MIN_JUDGEMENTS_FOR_P = 20;
 
@@ -386,6 +412,8 @@ const JUDGEMENT_SCORE_DEPTH = 20;
 export interface JudgedVerdict {
   /** Every judgement recorded for this model pair, all four sides. */
   judgementCount: number;
+  /** The 'live'/'candidate' picks — the only ones the p-value is computed from. */
+  scoredJudgementCount: number;
   liveBetter: number;
   candidateBetter: number;
   both: number;
@@ -393,8 +421,8 @@ export interface JudgedVerdict {
   /**
    * Sign test over the scored judgements ('live'/'candidate' picks only —
    * 'both' and 'neither' are declared ties). `pValue` is withheld (null,
-   * significant false, direction 'none') below MIN_JUDGEMENTS_FOR_P. Null
-   * when nothing has been scored at all.
+   * significant false, direction 'none') below MIN_JUDGEMENTS_FOR_P SCORED
+   * judgements. Null when nothing has been scored at all.
    */
   mcnemar: {
     wins: number;
@@ -427,16 +455,17 @@ export async function recordShadowCompareJudgement(
   side: ShadowCompareJudgementSide,
   judgedBy: string,
 ): Promise<ShadowCompareJudgementsView> {
-  const { run, report } = await completedCompareRun(runId);
+  const report = await completedCompareReport(runId, judgedBy);
   const row = report.queries.find((item) => item.id === queryId);
-  if (!row) throw new Error('Unknown query id for this comparison run');
+  if (!row) throw new UnknownCompareQueryError();
   await query(
     `INSERT INTO embedding_compare_judgements
        (query_hash, query_text, live_provider_id, live_model, candidate_provider_id, candidate_model,
         judged_side, live_page_ids, candidate_page_ids, judged_by)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     ON CONFLICT (query_hash, live_model, candidate_model)
-     DO UPDATE SET judged_side = EXCLUDED.judged_side,
+     ON CONFLICT (query_hash, live_provider_id, live_model, candidate_provider_id, candidate_model)
+     DO UPDATE SET query_text = EXCLUDED.query_text,
+                   judged_side = EXCLUDED.judged_side,
                    live_page_ids = EXCLUDED.live_page_ids,
                    candidate_page_ids = EXCLUDED.candidate_page_ids,
                    judged_by = EXCLUDED.judged_by,
@@ -454,23 +483,24 @@ export async function recordShadowCompareJudgement(
       judgedBy,
     ],
   );
-  return judgementsForReport(run.id, report);
+  return judgementsForReport(report);
 }
 
-export async function getShadowCompareJudgements(runId: string): Promise<ShadowCompareJudgementsView> {
-  const { run, report } = await completedCompareRun(runId);
-  return judgementsForReport(run.id, report);
-}
-
-async function completedCompareRun(
+export async function getShadowCompareJudgements(
   runId: string,
-): Promise<{ run: ShadowCompareRun; report: ShadowCompareReport }> {
-  const run = await getShadowCompareRun(runId);
-  if (!run) throw new Error('Comparison run not found');
-  if (run.status !== 'completed' || !run.result) {
-    throw new Error('Comparison run has not completed — judgements attach to a finished run');
-  }
-  return { run, report: run.result };
+  requestedBy: string,
+): Promise<ShadowCompareJudgementsView> {
+  return judgementsForReport(await completedCompareReport(runId, requestedBy));
+}
+
+async function completedCompareReport(
+  runId: string,
+  requestedBy: string,
+): Promise<ShadowCompareReport> {
+  const run = await getShadowCompareRun(runId, requestedBy);
+  if (!run) throw new CompareRunNotFoundError();
+  if (run.status !== 'completed' || !run.result) throw new CompareRunIncompleteError();
+  return run.result;
 }
 
 interface JudgementRow {
@@ -481,14 +511,17 @@ interface JudgementRow {
 }
 
 async function judgementsForReport(
-  _runId: string,
   report: ShadowCompareReport,
 ): Promise<ShadowCompareJudgementsView> {
+  // Both PAIRS, not both model names: 099's identity is the provider beside
+  // the model, and reading by name alone would pool a different provider's
+  // migration into this verdict — page-id arrays from a different index.
   const stored = await query<JudgementRow>(
     `SELECT query_hash, judged_side, live_page_ids, candidate_page_ids
      FROM embedding_compare_judgements
-     WHERE live_model = $1 AND candidate_model = $2`,
-    [report.live.model, report.candidate.model],
+     WHERE live_provider_id = $1 AND live_model = $2
+       AND candidate_provider_id = $3 AND candidate_model = $4`,
+    [report.live.providerId, report.live.model, report.candidate.providerId, report.candidate.model],
   );
   const byHash = new Map(stored.rows.map((row) => [row.query_hash, row]));
   const judgements: Record<string, ShadowCompareJudgementSide> = {};
@@ -515,10 +548,30 @@ function computeJudgedVerdict(rows: JudgementRow[]): JudgedVerdict {
   const baseline: QueryRun[] = [];
   const candidate: QueryRun[] = [];
   for (const row of rows) {
-    if (row.judged_side === 'live') liveBetter++;
-    else if (row.judged_side === 'candidate') candidateBetter++;
-    else if (row.judged_side === 'both') both++;
-    else neither++;
+    // Exhaustive by construction — the 099 CHECK constraint admits exactly
+    // these four. An `else neither++` tail would silently count a fifth side
+    // as a tie, which is the one bucket that changes no number and therefore
+    // hides the bug (r-external).
+    switch (row.judged_side) {
+      case 'live':
+        liveBetter++;
+        break;
+      case 'candidate':
+        candidateBetter++;
+        break;
+      case 'both':
+        both++;
+        break;
+      case 'neither':
+        neither++;
+        break;
+      default:
+        logger.warn(
+          { judgedSide: row.judged_side },
+          'Ignoring an embedding_compare_judgements row with an unrecognised side',
+        );
+        continue;
+    }
     if (row.judged_side !== 'live' && row.judged_side !== 'candidate') continue;
     const expectedTop =
       row.judged_side === 'live' ? row.live_page_ids[0] : row.candidate_page_ids[0];
@@ -532,14 +585,18 @@ function computeJudgedVerdict(rows: JudgementRow[]): JudgedVerdict {
     });
   }
 
-  const scored = baseline.length > 0;
+  const scoredCount = baseline.length;
+  const scored = scoredCount > 0;
   const significance = scored
     ? pairedSignificance(baseline, candidate, (run) => recallAtK([run], JUDGEMENT_SCORE_DEPTH))
     : null;
-  const n = rows.length;
-  const quoteP = significance !== null && n >= MIN_JUDGEMENTS_FOR_P;
+  // The floor counts the SCORED rows, never every stored row: ties consume no
+  // McNemar cell, so gating on the total would quote a p computed from six
+  // picks the moment fourteen ties sit beside them (r-external).
+  const quoteP = significance !== null && scoredCount >= MIN_JUDGEMENTS_FOR_P;
   return {
-    judgementCount: n,
+    judgementCount: rows.length,
+    scoredJudgementCount: scoredCount,
     liveBetter,
     candidateBetter,
     both,

@@ -107,6 +107,7 @@ const COMPLETED_RESULT = {
 
 const EMPTY_VERDICT = {
   judgementCount: 0,
+  scoredJudgementCount: 0,
   liveBetter: 0,
   candidateBetter: 0,
   both: 0,
@@ -124,13 +125,18 @@ function mockApi(opts: {
   judgements?: Record<string, string>;
   verdict?: object;
   judgementResponse?: object;
+  /** Successive judgement POST responses, in order. */
+  judgementResponses?: object[];
   /** When set, the judgement POST does not answer until this resolves —
    *  holds the mutation pending so the in-flight UI state can be asserted. */
   judgementGate?: Promise<void>;
   /** Every status poll answers HTTP 500 (the POST still 202s). */
   pollError?: boolean;
+  /** What `GET …/compare` (no id) answers — the card's re-attachment lookup. */
+  latestRun?: Partial<Run> | null;
 }) {
   let polls = 0;
+  let posts = 0;
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
     const method = init?.method ?? 'GET';
@@ -142,9 +148,12 @@ function mockApi(opts: {
       });
     }
     if (url.includes('/judgements')) {
-      if (method === 'POST' && opts.judgementResponse) {
+      if (method === 'POST' && (opts.judgementResponse || opts.judgementResponses)) {
         if (opts.judgementGate) await opts.judgementGate;
-        return new Response(JSON.stringify(opts.judgementResponse), {
+        const body =
+          opts.judgementResponses?.[Math.min(posts++, opts.judgementResponses.length - 1)] ??
+          opts.judgementResponse;
+        return new Response(JSON.stringify(body), {
           headers: { 'Content-Type': 'application/json' },
         });
       }
@@ -166,6 +175,22 @@ function mockApi(opts: {
         ...override,
       };
       return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.endsWith('/compare') && method === 'GET') {
+      const run = opts.latestRun
+        ? {
+            id: 'run-1',
+            status: 'completed' as const,
+            progressDone: 3,
+            progressTotal: 3,
+            error: null,
+            result: COMPLETED_RESULT,
+            ...opts.latestRun,
+          }
+        : null;
+      return new Response(JSON.stringify({ run }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
     if (url.includes('/compare') && method === 'POST') {
       return new Response(JSON.stringify({ runId: 'run-1', status: 'queued' }), {
@@ -373,14 +398,13 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(screen.getByTestId('shadow-compare-verdict')).toHaveTextContent(/1 judgement/i);
   });
 
-  it('a pending pick never disables the judgement buttons — focus survives the POST and re-entry is guarded instead', async () => {
+  it('a pending pick never disables the judgement buttons — focus survives the POST', async () => {
     // In Chromium, disabling the focused element drops focus to <body>;
     // `disabled={judging}` would make a keyboard admin re-Tab from the top
-    // of the panel after every one of the ~20 picks the verdict needs. The
-    // buttons therefore stay enabled (aria-disabled while pending) and the
-    // click handler no-ops instead. jsdom does not blur on disable, so the
-    // falsifiable property here is the ABSENCE of `disabled` — plus the
-    // no-second-POST guard that replaces it.
+    // of the panel after every one of the ~20 picks the verdict needs. jsdom
+    // does not blur on disable, so the falsifiable property here is the
+    // ABSENCE of `disabled` — and that the row announces itself as busy
+    // rather than unavailable, since every click is still recorded.
     const capture: Array<{ url: string; method: string; body?: string }> = [];
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -391,7 +415,7 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
       judgementGate: gate,
       judgementResponse: {
         judgements: { 'query-1': 'candidate' },
-        verdict: { ...EMPTY_VERDICT, judgementCount: 1, candidateBetter: 1 },
+        verdict: { ...EMPTY_VERDICT, judgementCount: 1, scoredJudgementCount: 1, candidateBetter: 1 },
       },
     });
     renderSection();
@@ -404,35 +428,33 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
 
     candidateBtn.focus();
     fireEvent.click(candidateBtn);
-    await waitFor(() => expect(candidateBtn).toHaveAttribute('aria-disabled', 'true'));
+    await waitFor(() => expect(group).toHaveAttribute('aria-busy', 'true'));
     for (const name of ['Live', 'Candidate', 'Neither', 'Both']) {
       expect(within(group).getByRole('button', { name })).not.toBeDisabled();
     }
     expect(candidateBtn).toHaveFocus();
+    // The pick reads back immediately, before the round trip: what the admin
+    // sees always matches what they clicked.
+    expect(candidateBtn).toHaveAttribute('aria-pressed', 'true');
 
-    // Re-entry is guarded in the handler: a second pick while the first is
-    // in flight posts nothing. Flush timers/microtasks before counting —
-    // TanStack starts the mutation's fetch asynchronously, so a synchronous
-    // count would pass even with the guard deleted.
+    // A REPEAT of the pick already showing changes nothing — the double-click.
     expect(judgementPosts()).toBe(1);
-    fireEvent.click(within(group).getByRole('button', { name: 'Live' }));
+    fireEvent.click(candidateBtn);
     await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
     expect(judgementPosts()).toBe(1);
 
     release();
-    await waitFor(() => expect(candidateBtn).toHaveAttribute('aria-pressed', 'true'));
-    expect(candidateBtn).not.toHaveAttribute('aria-disabled');
-    // …and once resolved, the next pick posts again.
+    await waitFor(() => expect(group).not.toHaveAttribute('aria-busy'));
+    expect(candidateBtn).toHaveAttribute('aria-pressed', 'true');
+    // …and a change of mind still posts.
     fireEvent.click(within(group).getByRole('button', { name: 'Live' }));
     await waitFor(() => expect(judgementPosts()).toBe(2));
   });
 
-  it('two picks landing before React re-renders post once — the re-entry gate is synchronous (r3)', async () => {
-    // The test above interposes a `waitFor` between the two clicks, which
-    // flushes a re-render — so a guard reading the RENDERED `judge.isPending`
-    // passes it while still double-POSTing on a real double-click, where both
-    // activations run before TanStack's async pending notification lands.
-    // The gate must therefore be a ref set synchronously in the handler.
+  it('two identical picks landing before React re-renders post once — the gate is synchronous (r3)', async () => {
+    // A real double-click runs both activations before TanStack's async
+    // pending notification lands, so a guard reading a RENDERED value would
+    // still double-POST. The gate must be synchronous.
     const capture: Array<{ url: string; method: string; body?: string }> = [];
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -443,7 +465,7 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
       judgementGate: gate,
       judgementResponse: {
         judgements: { 'query-1': 'candidate' },
-        verdict: { ...EMPTY_VERDICT, judgementCount: 1, candidateBetter: 1 },
+        verdict: { ...EMPTY_VERDICT, judgementCount: 1, scoredJudgementCount: 1, candidateBetter: 1 },
       },
     });
     renderSection();
@@ -452,15 +474,75 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     const group = within(rows[0]!).getByRole('group', { name: /how to configure sync/ });
     const candidateBtn = within(group).getByRole('button', { name: 'Candidate' });
 
-    // Back-to-back, no interleaved flush: a double-click, or two buttons in
-    // one frame.
     fireEvent.click(candidateBtn);
-    fireEvent.click(within(group).getByRole('button', { name: 'Live' }));
+    fireEvent.click(candidateBtn);
     await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
     expect(capture.filter((c) => c.method === 'POST' && c.url.includes('/judgements'))).toHaveLength(1);
 
     release();
     await waitFor(() => expect(candidateBtn).toHaveAttribute('aria-pressed', 'true'));
+  });
+
+  it('a deliberate pick on ANOTHER row mid-save is recorded, not silently dropped', async () => {
+    // One shared in-flight flag guarding every row meant the second of two
+    // deliberate picks vanished with no feedback at all: the admin believes
+    // twenty rows are judged, the table holds fewer, and the verdict's N can
+    // never be reconciled with what they clicked. Writes are serialised (two
+    // concurrent POSTs race in the cache), but the click is QUEUED.
+    const capture: Array<{ url: string; method: string; body?: string }> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockApi({
+      capture,
+      judgementGate: gate,
+      judgementResponses: [
+        {
+          judgements: { 'query-1': 'candidate' },
+          verdict: { ...EMPTY_VERDICT, judgementCount: 1, scoredJudgementCount: 1, candidateBetter: 1 },
+        },
+        {
+          judgements: { 'query-1': 'candidate', 'query-2': 'live' },
+          verdict: {
+            ...EMPTY_VERDICT,
+            judgementCount: 2,
+            scoredJudgementCount: 2,
+            candidateBetter: 1,
+            liveBetter: 1,
+          },
+        },
+      ],
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const rows = await screen.findAllByTestId('shadow-compare-disagreement');
+    const first = within(rows[0]!).getByRole('group', { name: /how to configure sync/ });
+    const second = within(rows[1]!).getByRole('group', { name: /reset password/ });
+    const judgementPosts = () =>
+      capture.filter((c) => c.method === 'POST' && c.url.includes('/judgements'));
+
+    fireEvent.click(within(first).getByRole('button', { name: 'Candidate' }));
+    await waitFor(() => expect(first).toHaveAttribute('aria-busy', 'true'));
+
+    // The second row's pick lands while the first is still saving.
+    fireEvent.click(within(second).getByRole('button', { name: 'Live' }));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
+    // Serialised: still one POST in flight…
+    expect(judgementPosts()).toHaveLength(1);
+    // …but the pick is already visible, so nothing looks lost.
+    expect(within(second).getByRole('button', { name: 'Live' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    release();
+    // …and it is genuinely sent once the first write settles.
+    await waitFor(() => expect(judgementPosts()).toHaveLength(2));
+    expect(judgementPosts()[1]!.body).toBe(JSON.stringify({ queryId: 'query-2', side: 'live' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('shadow-compare-verdict')).toHaveTextContent(/2 judgements/i),
+    );
   });
 
   it('renders stored judgements as pressed on load, and names N-of-20 instead of quoting a premature p', async () => {
@@ -469,6 +551,7 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
       verdict: {
         ...EMPTY_VERDICT,
         judgementCount: 5,
+        scoredJudgementCount: 5,
         liveBetter: 3,
         candidateBetter: 2,
         mcnemar: { wins: 2, losses: 3, pValue: null, significant: false, direction: 'none' },
@@ -485,7 +568,7 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(verdict).toMatch(/5 judgements/i);
     expect(verdict).toMatch(/candidate better on 2/i);
     expect(verdict).toMatch(/live better on 3/i);
-    expect(verdict).toMatch(/5 of 20 judgements/i);
+    expect(verdict).toMatch(/5 of 20 live-or-candidate picks/i);
     expect(verdict).not.toMatch(/p =/);
   });
 
@@ -510,6 +593,84 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(verdict).toHaveTextContent(/24 judgements/i);
     expect(verdict).toHaveTextContent(/p = 0.002/);
     expect(verdict).toHaveTextContent(/favouring the candidate/i);
+  });
+
+  it('re-attaches to this admin\'s latest comparison on mount, without a start', async () => {
+    // The run id is component state and a comparison outlives a tab switch,
+    // a route change and a reload. With no lookup the finished report, its
+    // disagreement list and the whole Mode 2 workflow are unreachable while
+    // the run still holds the one-active slot against a replacement.
+    const capture: Array<{ url: string; method: string; body?: string }> = [];
+    mockApi({ capture, latestRun: { id: 'run-1', status: 'completed' } });
+    renderSection();
+
+    expect(await screen.findByTestId('shadow-compare-result')).toBeInTheDocument();
+    expect(capture.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('a number field can be cleared and retyped — clamping happens on blur, not per keystroke', async () => {
+    // `value || min` treated a cleared field (Number('') === 0) as "use the
+    // minimum" and rewrote it, so backspacing 50 → '' gave 1 and typing 25
+    // after it gave 125 → clamped to 100, the opposite of the intent.
+    const capture: Array<{ url: string; method: string; body?: string }> = [];
+    mockApi({ capture });
+    renderSection();
+    const queries = screen.getByTestId('shadow-compare-limit') as HTMLInputElement;
+
+    fireEvent.change(queries, { target: { value: '' } });
+    expect(queries.value).toBe('');
+    fireEvent.change(queries, { target: { value: '2' } });
+    fireEvent.change(queries, { target: { value: '25' } });
+    expect(queries.value).toBe('25');
+
+    // Out of range is still corrected — at the boundary, not under the caret.
+    fireEvent.change(queries, { target: { value: '400' } });
+    fireEvent.blur(queries);
+    expect(queries.value).toBe('100');
+
+    // An empty field at submit falls back to the minimum rather than 0.
+    fireEvent.change(queries, { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await waitFor(() => {
+      const post = capture.find((c) => c.method === 'POST');
+      expect(post?.body).toBe(JSON.stringify({ days: 30, limit: 1, topK: 10 }));
+    });
+  });
+
+  it('states how many sampled queries were skipped, so the denominator is never silently thinned', async () => {
+    mockApi({
+      run: {
+        result: { ...COMPLETED_RESULT, sampledQueryCount: 8, failedQueries: 3 },
+      },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const note = await screen.findByTestId('shadow-compare-failed-queries');
+    expect(note).toHaveTextContent(/3 of 8 sampled queries were skipped/i);
+    // Neutral: a coverage measurement, not a warning state.
+    expect(note.className).not.toMatch(/warning|destructive/);
+  });
+
+  it('counts the SCORED picks against the p-value floor, not every stored judgement', async () => {
+    // 20 stored judgements of which six are picks: the server withholds the
+    // p, and "20 of 20" beside a withheld p reads as a server bug.
+    mockApi({
+      verdict: {
+        ...EMPTY_VERDICT,
+        judgementCount: 20,
+        scoredJudgementCount: 6,
+        candidateBetter: 6,
+        both: 14,
+        mcnemar: { wins: 6, losses: 0, pValue: null, significant: false, direction: 'none' },
+      },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-result');
+    const verdict = await screen.findByTestId('shadow-compare-verdict');
+    expect(verdict).toHaveTextContent(/6 of 20 live-or-candidate picks/i);
+    expect(verdict).not.toHaveTextContent(/20 of 20/);
+    expect(verdict).not.toHaveTextContent(/p =/);
   });
 
   it('a failed run is an amber status strip carrying the server sentence', async () => {

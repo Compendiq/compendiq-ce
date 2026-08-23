@@ -8,8 +8,13 @@
 -- llm_providers, no FK to retrieval_benchmark_runs), so the SECOND model
 -- change is cheaper to evaluate than the first.
 --
--- One judgement per (normalised query, live model, candidate model): judging
--- the same query again replaces the verdict rather than stacking votes.
+-- One judgement per (normalised query, live PAIR, candidate PAIR): judging
+-- the same query again replaces the verdict rather than stacking votes. The
+-- PROVIDER is half of each key, not decoration — "the same model name behind
+-- a different provider" is a different index producing different page ids, so
+-- keying on the names alone would pool one migration's judgements into a
+-- later migration's verdict, and would collapse both sides onto one row when
+-- a model is re-hosted (live_model = candidate_model).
 -- Page-id arrays record what was ON SCREEN when the human judged — they are
 -- historical evidence, deliberately not FK-checked against pages that may be
 -- deleted later. `query_text` is real user data: it stays inside the
@@ -31,9 +36,9 @@ CREATE TABLE embedding_compare_judgements (
   -- The fixture outlives its author.
   judged_by UUID REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (query_hash, live_model, candidate_model)
+  UNIQUE (query_hash, live_provider_id, live_model, candidate_provider_id, candidate_model)
 );
 
--- The verdict reads every judgement for one model pair.
+-- The verdict reads every judgement for one live/candidate pair.
 CREATE INDEX embedding_compare_judgements_pair_idx
-  ON embedding_compare_judgements (live_model, candidate_model);
+  ON embedding_compare_judgements (live_provider_id, live_model, candidate_provider_id, candidate_model);

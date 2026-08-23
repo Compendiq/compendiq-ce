@@ -188,15 +188,27 @@ differs), embeds each query once per model with the #1114 instruction prefix
 applied per model, and retrieves top-K pages from `embedding` and
 `embedding_next` through `vectorSearch`'s allow-listed `column` option — the
 same SQL, ACL predicate and `ef_search` discipline as the live probe, never a
-sibling function. Run records reuse `retrieval_benchmark_runs` with
-`config.kind = 'shadow-compare'` (heartbeats included), so a comparison and a
-production benchmark exclude each other on the 091 one-active index. Mode 2
-judgements persist in `embedding_compare_judgements` (migration 099) and the
-verdict is computed from `eval/metrics.ts` (`pairedSignificance`,
-`recallAtK`, `meanReciprocalRank`) — never re-derived. The admin surface is
-four more routes on `routes/llm/llm-embedding-shadow.ts`
-(`POST/GET …/compare`, `POST/GET …/compare/:id/judgements`), all
-`requireAdmin`, results carrying page ids and titles only.
+sibling function. The shadow arm additionally excludes `embedding_next IS
+NULL` (that column is nullable by construction, and `1 - null` is 1 in JS —
+an unfilled page would enter the candidate top-K as a perfect match). A
+transient embedding or retrieval failure costs its own query, not the run:
+the query is skipped, counted on the report as `failedQueries`, and only a
+majority of failures fails the whole comparison.
+
+Run records reuse `retrieval_benchmark_runs` with
+`config.kind = 'shadow-compare'`, through the SHARED
+`eval/benchmark-run-lifecycle.ts` — insert, claim, progress + heartbeat,
+complete, fail, the kind-aware stale sweep and the kind-guarded fetch, one
+copy for both kinds. A comparison and a production benchmark exclude each
+other on the 091 one-active index. Mode 2 judgements persist in
+`embedding_compare_judgements` (migration 099), keyed by provider AND model on
+each side, and the verdict is computed from `eval/metrics.ts`
+(`pairedSignificance`, `recallAtK`, `meanReciprocalRank`) — never re-derived;
+the p-value floor counts the live/candidate PICKS, not ties. The admin surface
+is five more routes on `routes/llm/llm-embedding-shadow.ts`
+(`POST …/compare`, `GET …/compare` for the latest run, `GET …/compare/:id`,
+`POST/GET …/compare/:id/judgements`), all `requireAdmin`, all scoped to the
+admin who started the run, results carrying page ids and titles only.
 
 ## The image-embedding leg (#1115 P1–P4)
 

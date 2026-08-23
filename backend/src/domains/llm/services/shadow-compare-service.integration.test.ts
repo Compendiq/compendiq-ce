@@ -130,6 +130,7 @@ function installEmbeddingMock(): void {
 const {
   createShadowCompareRun,
   getShadowCompareRun,
+  getLatestShadowCompareRun,
   runShadowCompare,
   recordShadowCompareJudgement,
   getShadowCompareJudgements,
@@ -138,7 +139,10 @@ const {
 const { startShadowMigration, runShadowBackfillJob, getShadowMigrationStatus } = await import(
   './shadow-migration-service.js'
 );
-const { getActiveProductionBenchmark } = await import('../eval/production-benchmark.js');
+const { getActiveProductionBenchmark, getProductionBenchmarkRun } = await import(
+  '../eval/production-benchmark.js'
+);
+const { recoverStaleBenchmarkRuns } = await import('../eval/benchmark-run-lifecycle.js');
 const { sampleAnalyticsQueries } = await import('../eval/analytics-query-sampler.js');
 
 const dbAvailable = await isDbAvailable();
@@ -349,7 +353,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       // the run was still mid-loop.
       expect(heartbeatFreshMidRun).toBe(true);
 
-      const run = await getShadowCompareRun(runId);
+      const run = await getShadowCompareRun(runId, ADMIN);
       expect(run?.status).toBe('completed');
       expect(run?.progressDone).toBe(3);
       expect(run?.progressTotal).toBe(3);
@@ -409,7 +413,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
         topK: 3,
       });
       await runShadowCompare(runId, ADMIN);
-      expect((await getShadowCompareRun(runId))?.status).toBe('completed');
+      expect((await getShadowCompareRun(runId, ADMIN))?.status).toBe('completed');
 
       const queryCalls = generateEmbeddingMock.mock.calls.filter(
         (call) => typeof call[2] === 'string',
@@ -435,7 +439,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       });
       await runShadowCompare(runId, ADMIN);
 
-      const run = await getShadowCompareRun(runId);
+      const run = await getShadowCompareRun(runId, ADMIN);
       expect(run?.status).toBe('completed');
       expect(run?.result?.queries[0]?.candidate.pageIds.length).toBeGreaterThan(0);
     });
@@ -449,7 +453,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
         topK: 3,
       });
       await runShadowCompare(runId, ADMIN);
-      const run = await getShadowCompareRun(runId);
+      const run = await getShadowCompareRun(runId, ADMIN);
       expect(run?.status).toBe('failed');
       expect(run?.error).toMatch(/not in the ready window/i);
     });
@@ -470,7 +474,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       });
       await runShadowCompare(runId, ADMIN);
 
-      const run = await getShadowCompareRun(runId);
+      const run = await getShadowCompareRun(runId, ADMIN);
       expect(run?.status).toBe('failed');
       expect(run?.error).toMatch(/changed while the comparison ran/i);
       expect(run?.error).not.toMatch(/42703|column/i);
@@ -498,7 +502,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       });
       await runShadowCompare(runId, ADMIN);
 
-      const run = await getShadowCompareRun(runId);
+      const run = await getShadowCompareRun(runId, ADMIN);
       expect(run?.status).toBe('failed');
       expect(run?.error).toMatch(/changed while the comparison ran/i);
       // The first query completed; the guard fired BETWEEN queries, at the
@@ -513,6 +517,117 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       expect(column.rowCount).toBe(1);
     });
 
+    it('never admits a page whose embedding_next is NULL — a null distance is not a perfect match', async () => {
+      // `embedding_next` is nullable by construction and the dual-write
+      // deliberately leaves it NULL when the candidate provider fails on a
+      // page edited mid-migration. `NULL <=> $2` is NULL, and `1 - null` is
+      // 1 in JS: unguarded, the unfilled page enters the candidate top-K as
+      // its BEST hit and inflates every agreement figure computed from it.
+      const [a, b, c] = await seedReadyMigration();
+      await seedAnalytics([['how to configure sync', 1]]);
+      // The row goes NULL *during* the run — a page edited mid-migration
+      // whose candidate-side dual-write failed. Nothing re-checks the
+      // straggler count per query (only the migration fingerprint does), so
+      // the run carries on and this row is what it retrieves against.
+      const innerEmbedImpl = generateEmbeddingMock.getMockImplementation()!;
+      generateEmbeddingMock.mockImplementation(async (cfg, model, input) => {
+        const vectors = await innerEmbedImpl(cfg, model, input);
+        if (model === SHADOW_MODEL && !Array.isArray(input)) {
+          // Clear the candidate vector of the page the candidate ranks FIRST.
+          await query(`UPDATE page_embeddings SET embedding_next = NULL WHERE page_id = $1`, [b]);
+        }
+        return vectors;
+      });
+
+      const runId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 10,
+      });
+      await runShadowCompare(runId, ADMIN);
+
+      const run = await getShadowCompareRun(runId, ADMIN);
+      expect(run?.status).toBe('completed');
+      const row = run!.result!.queries[0]!;
+      expect(row.candidate.pageIds).not.toContain(b);
+      // The remaining candidate ranking is intact, and the live side — whose
+      // column is untouched — still sees every page.
+      expect(row.candidate.pageIds).toEqual([c, a]);
+      expect(row.live.pageIds).toEqual([a, b, c]);
+    });
+
+    it('skips a query whose embedding call fails, keeps the work already done, and says how many', async () => {
+      // A 429, an opened breaker or a shared-queue timeout at query 2 of 3
+      // must not throw away query 1: the run has already spent N x 2 provider
+      // calls, and re-running re-spends the whole budget.
+      const [a, b, c] = await seedReadyMigration();
+      await seedAnalytics([
+        ['how to configure sync', 3],
+        ['reset password', 2],
+        ['export pdf', 1],
+      ]);
+      const innerEmbedImpl = generateEmbeddingMock.getMockImplementation()!;
+      generateEmbeddingMock.mockImplementation(async (cfg, model, input) => {
+        if (!Array.isArray(input) && input === 'reset password') {
+          throw new Error('429 Too Many Requests');
+        }
+        return innerEmbedImpl(cfg, model, input);
+      });
+
+      const runId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      await runShadowCompare(runId, ADMIN);
+
+      const run = await getShadowCompareRun(runId, ADMIN);
+      expect(run?.status).toBe('completed');
+      const report = run!.result!;
+      expect(report.failedQueries).toBe(1);
+      expect(report.sampledQueryCount).toBe(3);
+      expect(report.queryCount).toBe(2);
+      expect(report.queries.map((row) => row.query)).toEqual([
+        'how to configure sync',
+        'export pdf',
+      ]);
+      // The surviving rows are real comparisons, and their ids stay dense so
+      // a judgement can address every rendered row.
+      expect(report.queries.map((row) => row.id)).toEqual(['query-1', 'query-2']);
+      expect(report.queries[0]!.live.pageIds).toEqual([a, b, c]);
+      expect(report.agreement.queryCount).toBe(2);
+      // Progress still reaches the sampled total, so the card does not hang
+      // at 2/3 on a completed run.
+      expect(run?.progressDone).toBe(3);
+    });
+
+    it('fails the run when most queries fail — a thinned sample is not a comparison', async () => {
+      await seedReadyMigration();
+      await seedAnalytics([
+        ['how to configure sync', 3],
+        ['reset password', 2],
+        ['export pdf', 1],
+      ]);
+      generateEmbeddingMock.mockImplementation(async (_cfg, _model, input) => {
+        if (!Array.isArray(input)) throw new Error('503 provider unavailable');
+        return [basis(8, 0)];
+      });
+
+      const runId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      await runShadowCompare(runId, ADMIN);
+
+      const run = await getShadowCompareRun(runId, ADMIN);
+      expect(run?.status).toBe('failed');
+      expect(run?.error).toMatch(/3 of 3 queries could not be embedded/i);
+    });
+
     it('fails cleanly with no analytics queries in the window', async () => {
       await seedReadyMigration();
       const runId = await createShadowCompareRun(ADMIN, {
@@ -522,7 +637,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
         topK: 3,
       });
       await runShadowCompare(runId, ADMIN);
-      const run = await getShadowCompareRun(runId);
+      const run = await getShadowCompareRun(runId, ADMIN);
       expect(run?.status).toBe('failed');
       expect(run?.error).toBe('No production queries were available in the selected period');
     });
@@ -553,7 +668,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       await seedAnalytics([['how to configure sync', 1]]);
       const first = await createShadowCompareRun(ADMIN, { kind: 'shadow-compare', days: 30, limit: 50, topK: 3 });
       await runShadowCompare(first, ADMIN);
-      expect((await getShadowCompareRun(first))?.status).toBe('completed');
+      expect((await getShadowCompareRun(first, ADMIN))?.status).toBe('completed');
       await expect(
         createShadowCompareRun(ADMIN, { kind: 'shadow-compare', days: 30, limit: 50, topK: 3 }),
       ).resolves.toBeTruthy();
@@ -566,7 +681,99 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
          RETURNING id`,
         [ADMIN],
       );
-      expect(await getShadowCompareRun(foreign.rows[0]!.id)).toBeNull();
+      expect(await getShadowCompareRun(foreign.rows[0]!.id, ADMIN)).toBeNull();
+    });
+
+    it('the benchmark surface answers null for a COMPARE run — the kind guard is symmetric', async () => {
+      // Without this the benchmark GET serves a comparison (sampled
+      // production query text included) to `BenchmarkSummary`, which
+      // dereferences `report.baseline` and blanks the Retrieval panel. The
+      // benchmark's own 409 hands out `runId: active.id`, which is a compare
+      // run's id whenever a comparison holds the shared slot.
+      const compareId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 10,
+      });
+      expect(await getProductionBenchmarkRun(compareId)).toBeNull();
+      expect((await getShadowCompareRun(compareId, ADMIN))?.id).toBe(compareId);
+    });
+
+    it('the stale sweep fails a comparison with COMPARISON wording, and a benchmark with the benchmark one', async () => {
+      // One sweep, two kinds. Telling an admin whose comparison was killed by
+      // a pod restart to "start a new benchmark" names a run they never
+      // started, on a different tab.
+      const compareId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 10,
+      });
+      await query(
+        `UPDATE retrieval_benchmark_runs SET last_heartbeat_at = NOW() - INTERVAL '2 hours'`,
+      );
+      await recoverStaleBenchmarkRuns();
+      const stale = await getShadowCompareRun(compareId, ADMIN);
+      expect(stale?.status).toBe('failed');
+      expect(stale?.error).toMatch(/comparison worker stopped/i);
+      expect(stale?.error).not.toMatch(/benchmark/i);
+
+      const benchId = await query<{ id: string }>(
+        `INSERT INTO retrieval_benchmark_runs (requested_by, status, config, last_heartbeat_at)
+         VALUES ($1, 'running', '{"source":"recent-queries","days":30,"limit":25,"topK":5}'::jsonb,
+                 NOW() - INTERVAL '2 hours')
+         RETURNING id`,
+        [ADMIN],
+      );
+      await recoverStaleBenchmarkRuns();
+      const staleBench = await getProductionBenchmarkRun(benchId.rows[0]!.id);
+      expect(staleBench?.status).toBe('failed');
+      expect(staleBench?.error).toMatch(/benchmark worker stopped/i);
+    });
+  });
+
+  describe('reading a run back', () => {
+    it('is scoped to the admin who started it — a report carries titles from THAT admin\'s ACL', async () => {
+      // `Secret D` is visible only to its owner, so a report started by an
+      // admin who can see it must not be readable by another admin, who has
+      // no other route to those titles and keeps none of the run's context.
+      const runId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 10,
+      });
+      await query(
+        `INSERT INTO users (id, username, email, role, password_hash)
+         VALUES ($1::uuid, 'admin2', 'admin2@t', 'admin', 'x') ON CONFLICT (id) DO NOTHING`,
+        ['aaaaaaaa-1260-4000-8000-000000000009'],
+      );
+      expect((await getShadowCompareRun(runId, ADMIN))?.id).toBe(runId);
+      expect(await getShadowCompareRun(runId, 'aaaaaaaa-1260-4000-8000-000000000009')).toBeNull();
+      await expect(
+        getShadowCompareJudgements(runId, 'aaaaaaaa-1260-4000-8000-000000000009'),
+      ).rejects.toThrow(/not found/i);
+    });
+
+    it('finds this admin\'s most recent comparison after the card lost its run id', async () => {
+      expect(await getLatestShadowCompareRun(ADMIN)).toBeNull();
+      const runId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 10,
+      });
+      expect((await getLatestShadowCompareRun(ADMIN))?.id).toBe(runId);
+      // Not another admin's, and not a production benchmark.
+      expect(await getLatestShadowCompareRun(OTHER_USER)).toBeNull();
+      await query(`DELETE FROM retrieval_benchmark_runs`);
+      await query(
+        `INSERT INTO retrieval_benchmark_runs (requested_by, status, config)
+         VALUES ($1, 'completed', '{"source":"recent-queries","days":30,"limit":25,"topK":5}'::jsonb)`,
+        [ADMIN],
+      );
+      expect(await getLatestShadowCompareRun(ADMIN)).toBeNull();
     });
   });
 
@@ -585,7 +792,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
         topK: 3,
       });
       await runShadowCompare(runId, ADMIN);
-      expect((await getShadowCompareRun(runId))?.status).toBe('completed');
+      expect((await getShadowCompareRun(runId, ADMIN))?.status).toBe('completed');
       return runId;
     }
 
@@ -608,7 +815,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       expect(again.verdict.liveBetter).toBe(1);
       expect(again.verdict.candidateBetter).toBe(0);
 
-      const got = await getShadowCompareJudgements(runId);
+      const got = await getShadowCompareJudgements(runId, ADMIN);
       expect(got.judgements).toEqual({ 'query-1': 'live' });
     });
 
@@ -664,7 +871,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
         );
       }
 
-      const { verdict } = await getShadowCompareJudgements(runId);
+      const { verdict } = await getShadowCompareJudgements(runId, ADMIN);
       expect(verdict.judgementCount).toBe(MIN_JUDGEMENTS_FOR_P);
       expect(verdict.candidateBetter).toBe(MIN_JUDGEMENTS_FOR_P);
       expect(verdict.mcnemar).not.toBeNull();
@@ -678,6 +885,71 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       expect(verdict.recall?.candidate).toBe(1);
       expect(verdict.recall?.live).toBeCloseTo(3 / 20, 12);
       expect(verdict.mrr?.candidate).toBeGreaterThan(0);
+    });
+
+    it('counts SCORED picks against the floor — ties must not unlock a p over six clicks', async () => {
+      // 14 'both' + 6 'candidate' is 20 stored judgements and six real picks.
+      // Gated on the stored total, McNemar sees 6 wins / 0 losses and the
+      // panel publishes "p = 0.031 — significant, favouring the candidate"
+      // from six clicks, which is exactly the verdict the floor exists to
+      // withhold.
+      const runId = await completedRun();
+      const insert = async (i: number, side: string) => {
+        await query(
+          `INSERT INTO embedding_compare_judgements
+             (query_hash, query_text, live_provider_id, live_model, candidate_provider_id, candidate_model,
+              judged_side, live_page_ids, candidate_page_ids, judged_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, ARRAY[101,102], ARRAY[201,202], $8)`,
+          [
+            `tie-${i}`,
+            `earlier query ${i}`,
+            liveProviderId,
+            LIVE_MODEL,
+            shadowProviderId,
+            SHADOW_MODEL,
+            side,
+            ADMIN,
+          ],
+        );
+      };
+      for (let i = 0; i < 14; i++) await insert(i, 'both');
+      for (let i = 14; i < 20; i++) await insert(i, 'candidate');
+
+      const { verdict } = await getShadowCompareJudgements(runId, ADMIN);
+      expect(verdict.judgementCount).toBe(20);
+      expect(verdict.scoredJudgementCount).toBe(6);
+      expect(verdict.mcnemar).not.toBeNull();
+      expect(verdict.mcnemar!.wins).toBe(6);
+      expect(verdict.mcnemar!.losses).toBe(0);
+      expect(verdict.mcnemar!.pValue).toBeNull();
+      expect(verdict.mcnemar!.significant).toBe(false);
+      expect(verdict.mcnemar!.direction).toBe('none');
+    });
+
+    it('a second provider behind the same model names keeps its own verdict', async () => {
+      // Re-hosting `qwen3-embedding:4b` behind another provider is a
+      // different index: its judgements record different page-id arrays, and
+      // pooling them into the earlier migration's verdict scores one
+      // migration's evidence against another's.
+      const runId = await completedRun();
+      await recordShadowCompareJudgement(runId, 'query-1', 'candidate', ADMIN);
+      const otherProvider = await query<{ id: string }>(
+        `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, is_default)
+         VALUES ('shadow-prov-2','http://shadow2/v1','none',true,false) RETURNING id`,
+      );
+      await query(
+        `INSERT INTO embedding_compare_judgements
+           (query_hash, query_text, live_provider_id, live_model, candidate_provider_id, candidate_model,
+            judged_side, live_page_ids, candidate_page_ids, judged_by)
+         VALUES ('other-pair', 'a query from the other migration', $1, $2, $3, $4,
+                 'live', ARRAY[301], ARRAY[302], $5)`,
+        [liveProviderId, LIVE_MODEL, otherProvider.rows[0]!.id, SHADOW_MODEL, ADMIN],
+      );
+
+      const { verdict } = await getShadowCompareJudgements(runId, ADMIN);
+      expect(verdict.judgementCount).toBe(1);
+      expect(verdict.candidateBetter).toBe(1);
+      expect(verdict.liveBetter).toBe(0);
     });
   });
 });

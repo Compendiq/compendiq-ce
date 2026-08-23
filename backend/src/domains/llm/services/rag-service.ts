@@ -388,6 +388,18 @@ export async function vectorSearch(
       // the SQL string (#1260).
       const column: VectorSearchColumn =
         opts?.column === 'embedding_next' ? 'embedding_next' : 'embedding';
+      // `embedding_next` is ADD COLUMN with no NOT NULL, and the shadow
+      // dual-write deliberately leaves it NULL when the candidate provider
+      // fails on a page edited mid-migration. `NULL <=> $2` is NULL, which
+      // sorts NULLS LAST but is still RETURNED whenever the visible chunk set
+      // is smaller than the fan-out limit — and `1 - null` is 1 in JS, i.e. a
+      // perfect match. So an unfilled page would enter the candidate top-K as
+      // its best hit and inflate every #1260 agreement figure computed from
+      // it. Excluded in SQL rather than dropped after mapping so the rows
+      // never consume the fetch budget either. The live column is NOT NULL
+      // on every migrated instance, so its clause stays byte-identical.
+      const nullVectorGuard =
+        column === 'embedding_next' ? ' AND pe.embedding_next IS NOT NULL' : '';
       const vecSpaces = await getUserAccessibleSpaces(userId);
       // Use the dedicated vector pool so long-running similarity queries
       // do not starve the main pool used by CRUD routes.
@@ -432,7 +444,7 @@ export async function vectorSearch(
            FROM page_embeddings pe
            JOIN pages cp ON pe.page_id = cp.id
            WHERE ${visiblePagesPredicate(1, 4)}
-           AND cp.deleted_at IS NULL${spaceKey ? ' AND cp.space_key = $5' : ''}
+           AND cp.deleted_at IS NULL${nullVectorGuard}${spaceKey ? ' AND cp.space_key = $5' : ''}
            ORDER BY pe.${column} <=> $2
            LIMIT $3`,
           spaceKey
@@ -446,18 +458,27 @@ export async function vectorSearch(
         // unit tests pin. `limit` distinct pages, fan-out bounded to chunks
         // ranking above the last admitted page's entry.
         const mapped = truncateAtDistinctPages(
-          result.rows.map((row) => ({
-            pageId: row.page_id,
-            confluenceId: row.confluence_id,
-            chunkText: row.chunk_text,
-            chunkIndex: row.chunk_index,
-            pageTitle: row.metadata.page_title,
-            sectionTitle: row.metadata.section_title,
-            spaceKey: row.metadata.space_key,
-            score: 1 - row.distance, // Convert distance to similarity
-            vectorScore: 1 - row.distance,
-            keywordRank: null,
-          })),
+          result.rows
+            // Belt-and-braces behind the SQL guard above, and it reaches one
+            // case the guard deliberately does not: between a #1116 swap and
+            // its cleanup the LIVE column is nullable too (the swap drops the
+            // renamed column's NOT NULL), so a chunk the post-swap dual-write
+            // could not fill would otherwise score `1 - null` = 1 — a perfect
+            // match — on the ordinary chat path. A JS filter costs nothing and
+            // leaves every query plan untouched.
+            .filter((row) => row.distance !== null && row.distance !== undefined)
+            .map((row) => ({
+              pageId: row.page_id,
+              confluenceId: row.confluence_id,
+              chunkText: row.chunk_text,
+              chunkIndex: row.chunk_index,
+              pageTitle: row.metadata.page_title,
+              sectionTitle: row.metadata.section_title,
+              spaceKey: row.metadata.space_key,
+              score: 1 - row.distance, // Convert distance to similarity
+              vectorScore: 1 - row.distance,
+              keywordRank: null,
+            })),
           Number(limit),
         );
         // `rag.hits` counts kept CHUNK rows (post-truncation, up to ~fanout x

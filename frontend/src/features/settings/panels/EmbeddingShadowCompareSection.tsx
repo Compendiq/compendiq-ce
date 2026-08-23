@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react';
+import { useCallback, useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
@@ -19,6 +19,14 @@ import { apiFetch } from '../../../shared/lib/api';
  * poll matches the card's own 5s cadence: this section and the card's
  * status poll are two requests per interval against the 20/min admin rate
  * limit, so polling faster would starve the card's own controls.
+ *
+ * The run id is NOT only component state. A tab switch, a route change or a
+ * reload unmounts this section, and a comparison outlives all three: without
+ * a way back the report, its disagreement list and the whole Mode 2 workflow
+ * (twenty judgements across sittings) would be unreachable while the run
+ * itself still held the one-active slot against a replacement. So the section
+ * asks the server for this admin's most recent comparison on mount and
+ * re-attaches to it.
  */
 
 interface Props {
@@ -44,6 +52,9 @@ interface CompareQueryRow {
 interface CompareReport {
   topK: number;
   queryCount: number;
+  /** Both absent on a report written before per-query failure tolerance. */
+  sampledQueryCount?: number;
+  failedQueries?: number;
   live: { providerId: string; model: string };
   candidate: { providerId: string; model: string };
   agreement: {
@@ -70,6 +81,8 @@ type JudgementSide = 'live' | 'candidate' | 'neither' | 'both';
 
 interface JudgedVerdict {
   judgementCount: number;
+  /** The live/candidate picks — the only ones a p-value can come from. */
+  scoredJudgementCount?: number;
   liveBetter: number;
   candidateBetter: number;
   both: number;
@@ -94,16 +107,36 @@ interface JudgementsView {
 const inputClass =
   'w-20 rounded-md border border-border-interactive bg-background/50 px-2 py-1.5 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring';
 
+/**
+ * `Number.isFinite`, never a truthiness test: `value || min` treats a cleared
+ * field (Number('') === 0) as "use the minimum" and REWRITES the input to it,
+ * so the field can never be emptied to retype — backspacing 50 → '' gave 1,
+ * and typing 25 after it gave 125 → clamped to the maximum, the opposite of
+ * what was typed.
+ */
 function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value || min));
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
 }
 
 export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
   const queryClient = useQueryClient();
-  const [days, setDays] = useState(30);
-  const [limit, setLimit] = useState(50);
-  const [topK, setTopK] = useState(10);
-  const [runId, setRunId] = useState<string | null>(null);
+  // The fields hold the RAW string while the admin types; clamping happens on
+  // blur and at submit, so a half-typed or empty field is never rewritten
+  // under the caret.
+  const [days, setDays] = useState('30');
+  const [limit, setLimit] = useState('50');
+  const [topK, setTopK] = useState('10');
+  const [startedRunId, setStartedRunId] = useState<string | null>(null);
+
+  // This admin's most recent comparison — the re-attachment path after an
+  // unmount. One lookup per mount; a run started in this session wins over it.
+  const { data: latest } = useQuery<{ run: CompareRun | null }>({
+    queryKey: ['shadow-compare-latest'],
+    queryFn: () => apiFetch('/admin/embedding/shadow-migration/compare'),
+    staleTime: Infinity,
+  });
+  const runId = startedRunId ?? latest?.run?.id ?? null;
 
   const {
     data: run,
@@ -129,37 +162,81 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
     enabled: runId !== null && run?.status === 'completed',
   });
 
-  // The synchronous half of the judgement re-entry gate. `judge.isPending`
-  // is a RENDERED value — TanStack notifies asynchronously, so two clicks
-  // landing before React re-renders (a double-click, or two buttons in one
-  // frame) both see it false and would fire two POSTs (r3). The ref flips in
-  // the same tick as the first activation; the rendered flag stays what
-  // `aria-disabled` announces.
-  const judgeInFlight = useRef(false);
+  // Judgement writes are SERIALISED, never dropped. One POST is in flight at
+  // a time (two concurrent writes race in `setQueryData` and one view can
+  // erase the other's row from the table), but a deliberate pick on another
+  // row while one is saving is QUEUED rather than silently discarded — the
+  // admin is working down twenty rows, and a swallowed click leaves them
+  // believing a judgement exists that the verdict's N will never show. The
+  // queue is keyed by queryId, so a change of mind about one row replaces its
+  // pending write instead of stacking a second one.
+  const queued = useRef(new Map<string, JudgementSide>());
+  const inFlight = useRef<{ queryId: string; side: JudgementSide } | null>(null);
+  // The pick is shown pressed the instant it is made, before the round trip,
+  // so what the admin sees always matches what they clicked.
+  const [optimistic, setOptimistic] = useState<Record<string, JudgementSide>>({});
+
+  // `pump` is created before the mutation it drives (the mutation's own
+  // `onSettled` drains the queue), so it reaches `mutate` through a ref
+  // rather than closing over a binding declared below it.
+  const mutateRef = useRef<(vars: { queryId: string; side: JudgementSide }) => void>(() => {});
+  const pump = useCallback(() => {
+    if (inFlight.current) return;
+    const next = queued.current.entries().next();
+    if (next.done) return;
+    const [queryId, side] = next.value;
+    queued.current.delete(queryId);
+    inFlight.current = { queryId, side };
+    mutateRef.current({ queryId, side });
+  }, []);
+
   const judge = useMutation({
     mutationFn: ({ queryId, side }: { queryId: string; side: JudgementSide }) =>
       apiFetch<JudgementsView>(`/admin/embedding/shadow-migration/compare/${runId}/judgements`, {
         method: 'POST',
         body: JSON.stringify({ queryId, side }),
       }),
-    onSuccess: (view) => {
+    onSuccess: (view, variables) => {
       queryClient.setQueryData(['shadow-compare-judgements', runId], view);
+      setOptimistic((prev) => {
+        // Keep the overlay when a newer pick for the same row is still queued
+        // — dropping it would flash the row back to the superseded side.
+        if (queued.current.has(variables.queryId)) return prev;
+        if (view.judgements[variables.queryId] !== variables.side) return prev;
+        const next = { ...prev };
+        delete next[variables.queryId];
+        return next;
+      });
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : 'Could not record the judgement'),
+    onError: (err, variables) => {
+      setOptimistic((prev) => {
+        if (queued.current.has(variables.queryId)) return prev;
+        const next = { ...prev };
+        delete next[variables.queryId];
+        return next;
+      });
+      toast.error(err instanceof Error ? err.message : 'Could not record the judgement');
+    },
     onSettled: () => {
-      judgeInFlight.current = false;
+      inFlight.current = null;
+      pump();
     },
   });
+  mutateRef.current = judge.mutate;
 
   const start = useMutation({
     mutationFn: () =>
       apiFetch<{ runId: string }>('/admin/embedding/shadow-migration/compare', {
         method: 'POST',
-        body: JSON.stringify({ days, limit, topK }),
+        body: JSON.stringify({
+          days: clamp(Number(days), 1, 90),
+          limit: clamp(Number(limit), 1, 100),
+          topK: clamp(Number(topK), 1, 20),
+        }),
       }),
     onSuccess: (data) => {
-      setRunId(data.runId);
+      setStartedRunId(data.runId);
+      setOptimistic({});
       toast.success('Comparison started');
     },
     onError: (err) =>
@@ -171,6 +248,19 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
   // live server-side, so Run stays disabled (a retry would just 409 with the
   // "comparison already running" toast) and the strip says what is unknown.
   const pollUnavailable = runId !== null && pollFailed;
+
+  const storedJudgements = judgementView?.judgements ?? {};
+  const judgedSide = (queryId: string): JudgementSide | undefined =>
+    optimistic[queryId] ?? storedJudgements[queryId];
+
+  const onJudge = (queryId: string, side: JudgementSide) => {
+    // A repeat of the side already shown for this row changes nothing — this
+    // is the double-click, and the same-frame case the ref pair closes.
+    if (judgedSide(queryId) === side && !queued.current.has(queryId)) return;
+    setOptimistic((prev) => ({ ...prev, [queryId]: side }));
+    queued.current.set(queryId, side);
+    pump();
+  };
 
   return (
     <div className="mt-3 space-y-2 border-t border-border pt-3" data-testid="shadow-compare-section">
@@ -190,7 +280,8 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
             min={1}
             max={90}
             value={days}
-            onChange={(event) => setDays(clamp(Number(event.target.value), 1, 90))}
+            onChange={(event) => setDays(event.target.value)}
+            onBlur={() => setDays(String(clamp(Number(days), 1, 90)))}
             className={inputClass}
             data-testid="shadow-compare-days"
           />
@@ -202,7 +293,8 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
             min={1}
             max={100}
             value={limit}
-            onChange={(event) => setLimit(clamp(Number(event.target.value), 1, 100))}
+            onChange={(event) => setLimit(event.target.value)}
+            onBlur={() => setLimit(String(clamp(Number(limit), 1, 100)))}
             className={inputClass}
             data-testid="shadow-compare-limit"
           />
@@ -214,7 +306,8 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
             min={1}
             max={20}
             value={topK}
-            onChange={(event) => setTopK(clamp(Number(event.target.value), 1, 20))}
+            onChange={(event) => setTopK(event.target.value)}
+            onBlur={() => setTopK(String(clamp(Number(topK), 1, 20)))}
             className={inputClass}
             data-testid="shadow-compare-topk"
           />
@@ -264,14 +357,10 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
       {run?.status === 'completed' && run.result && (
         <CompareResult
           report={run.result}
-          judgements={judgementView?.judgements ?? {}}
+          judgedSide={judgedSide}
+          savingQueryId={judge.isPending ? (judge.variables?.queryId ?? null) : null}
           verdict={judgementView?.verdict ?? null}
-          judging={judge.isPending}
-          onJudge={(queryId, side) => {
-            if (judgeInFlight.current) return;
-            judgeInFlight.current = true;
-            judge.mutate({ queryId, side });
-          }}
+          onJudge={onJudge}
         />
       )}
     </div>
@@ -280,15 +369,15 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
 
 function CompareResult({
   report,
-  judgements,
+  judgedSide,
+  savingQueryId,
   verdict,
-  judging,
   onJudge,
 }: {
   report: CompareReport;
-  judgements: Record<string, JudgementSide>;
+  judgedSide: (queryId: string) => JudgementSide | undefined;
+  savingQueryId: string | null;
   verdict: JudgedVerdict | null;
-  judging: boolean;
   onJudge: (queryId: string, side: JudgementSide) => void;
 }) {
   // ANY difference between the lists counts — head moved, sets differ, or the
@@ -299,12 +388,23 @@ function CompareResult({
   const disagreements = report.queries.filter(
     (row) => row.top1Changed || row.jaccard < 1 || row.rbo < 1,
   );
+  const failed = report.failedQueries ?? 0;
   return (
     <div className="space-y-2" data-testid="shadow-compare-result">
       <p className="text-xs font-medium text-foreground" data-testid="shadow-compare-basis">
         Agreement between {report.live.model} (live) and {report.candidate.model} (candidate) on{' '}
         {report.queryCount} real queries — how much results would move, not which model is better.
       </p>
+      {failed > 0 && (
+        // A measurement about the run's own coverage, so it is neutral like
+        // the figures beside it — but it must be stated, or the denominator
+        // silently shrinks and nobody knows the sample was thinned.
+        <p className="text-xs text-muted-foreground" data-testid="shadow-compare-failed-queries">
+          {failed} of {report.sampledQueryCount ?? report.queryCount + failed} sampled{' '}
+          {failed === 1 ? 'query was' : 'queries were'} skipped after an embedding or retrieval
+          failure, and {failed === 1 ? 'is' : 'are'} not in the figures below.
+        </p>
+      )}
       <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
         <CompareMetric
           label="Top result changed"
@@ -349,8 +449,8 @@ function CompareResult({
               </div>
               <JudgementRow
                 query={row.query}
-                judged={judgements[row.id]}
-                judging={judging}
+                judged={judgedSide(row.id)}
+                saving={savingQueryId === row.id}
                 onJudge={(side) => onJudge(row.id, side)}
               />
             </li>
@@ -378,6 +478,11 @@ function VerdictLine({ verdict }: { verdict: JudgedVerdict }) {
   }
   const n = verdict.judgementCount;
   const p = verdict.mcnemar?.pValue;
+  // The countdown counts the SCORED picks, because that is what the server's
+  // floor counts: quoting "24 of 20" beside a withheld p (24 judgements, six
+  // of them picks) would read as a server bug rather than as the floor doing
+  // its job.
+  const scored = verdict.scoredJudgementCount ?? n;
   return (
     <p className="text-xs text-muted-foreground" data-testid="shadow-compare-verdict">
       <span className="font-medium text-foreground">
@@ -399,7 +504,7 @@ function VerdictLine({ verdict }: { verdict: JudgedVerdict }) {
             // nothing, so no amount of further ties reaches a p — counting
             // down "N of 20" here would misstate why no p is shown.
             'No live or candidate picks yet — ties alone cannot produce a p-value.'
-          : `${n} of ${verdict.minJudgementsForP} judgements before a p-value is quoted.`}
+          : `${scored} of ${verdict.minJudgementsForP} live-or-candidate picks before a p-value is quoted.`}
     </p>
   );
 }
@@ -407,12 +512,12 @@ function VerdictLine({ verdict }: { verdict: JudgedVerdict }) {
 function JudgementRow({
   query,
   judged,
-  judging,
+  saving,
   onJudge,
 }: {
   query: string;
   judged: JudgementSide | undefined;
-  judging: boolean;
+  saving: boolean;
   onJudge: (side: JudgementSide) => void;
 }) {
   const captionId = useId();
@@ -426,6 +531,10 @@ function JudgementRow({
     <div
       role="group"
       aria-label={`Which answered better: ${query}`}
+      // The row is saving, not unavailable: every button stays operable and
+      // every click is recorded, so this announces work in progress rather
+      // than claiming the control cannot be used.
+      aria-busy={saving || undefined}
       className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2"
     >
       <span id={captionId} className="text-xs text-muted-foreground">
@@ -437,21 +546,17 @@ function JudgementRow({
           type="button"
           className="nm-button-ghost"
           aria-pressed={judged === side}
-          // Never `disabled` while the POST is in flight: Chromium drops
-          // focus to <body> when the focused element is disabled, so a
-          // keyboard admin judging twenty rows would re-Tab from the top of
-          // the panel after every single pick (WCAG 2.4.3 — the same focus
-          // drop the sibling card's cancelCleanupRef engineers around).
-          // Re-entry is guarded instead: this render-time check catches the
-          // ordinary case, and the parent's `judgeInFlight` ref closes the
-          // same-frame window where `judging` is still stale (r3).
-          // `aria-disabled` announces the momentary unavailability without
-          // removing focusability.
-          aria-disabled={judging || undefined}
-          onClick={() => {
-            if (judging) return;
-            onJudge(side);
-          }}
+          // The visible caption is what these four bare labels mean; without
+          // it "Live" is the whole accessible name of twenty buttons.
+          aria-describedby={captionId}
+          // Never `disabled`, and never a no-op: Chromium drops focus to
+          // <body> when the focused element is disabled, so a keyboard admin
+          // judging twenty rows would re-Tab from the top of the panel after
+          // every single pick (WCAG 2.4.3 — the same focus drop the sibling
+          // card's cancelCleanupRef engineers around). Writes are serialised
+          // and queued in the parent instead, so a deliberate pick on another
+          // row mid-save is accepted rather than silently dropped.
+          onClick={() => onJudge(side)}
         >
           {label}
         </button>

@@ -106,12 +106,16 @@ committing. The shadow card's **Compare on real queries** section (or
   this move?", which is often enough to decide.
 - **Mode 2 — judge the disagreements.** Each disagreement row offers
   Live / Candidate / Neither / Both. Judgements persist in
-  `embedding_compare_judgements` keyed by (query, live model, candidate
-  model) — they survive the run, the migration, even the provider row — so
-  the fixture accumulates and the SECOND evaluation of a pair starts warm.
-  The verdict quotes Recall/MRR per side and an exact McNemar p **only once
-  N ≥ 20 judgements** exist for the pair; below that it says how many are
-  still needed rather than dressing a handful of clicks as statistics.
+  `embedding_compare_judgements` keyed by (query, live provider+model,
+  candidate provider+model) — they survive the run, the migration, even the
+  provider row — so the fixture accumulates and the SECOND evaluation of a
+  pair starts warm. Re-hosting the same model behind a different provider is
+  a different pair on purpose: it is a different index, and its judgements
+  belong to their own verdict. The verdict quotes Recall/MRR per side and an
+  exact McNemar p **only once 20 LIVE-OR-CANDIDATE PICKS** exist for the pair;
+  `Neither` and `Both` are declared ties, count toward nothing, and do not
+  bring the p forward. Below the floor the line says how many picks are still
+  needed rather than dressing a handful of clicks as statistics.
 - **Gates and failure modes.** The run 409s outside `ready` (no migration,
   backfilling, swapped) — comparing a partially backfilled column measures
   the backfill, not the model. One run at a time, **shared with the Retrieval
@@ -119,7 +123,16 @@ committing. The shadow card's **Compare on real queries** section (or
   "already running". A swap/abort/rollback landing mid-run fails the run
   cleanly with a message naming the migration change; just start a new
   comparison from the new state. A worker killed mid-run is recovered by the
-  same 30-minute heartbeat sweep the benchmark uses.
+  same 30-minute heartbeat sweep the benchmark uses — and the sweep words the
+  failure as a comparison, so a row reading "start a new benchmark" is a
+  benchmark's, not yours. A one-off provider hiccup (a 429, an opened
+  breaker) costs only its own query: the run carries on and the report says
+  how many of the sampled queries were skipped. Only a majority of failures
+  fails the run. **The comparison is yours alone** — the card, the poll and
+  the judgement routes serve the admin who started the run, because the
+  report's page titles were retrieved under that admin's own visibility. If
+  you leave the tab and come back, the card re-attaches to your latest
+  comparison by itself; there is nothing to write down.
 - **Cost.** `limit × 2` embedding calls through the shared LLM queue
   (`LLM_CONCURRENCY`, default 4) plus two kNN probes per query — same class
   of load as a small backfill slice; answers may be slower while it runs.

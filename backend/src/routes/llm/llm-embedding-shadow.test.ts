@@ -43,13 +43,34 @@ vi.mock('../../core/services/rate-limit-service.js', () => ({
 const compareSvc = vi.hoisted(() => ({
   create: vi.fn(),
   get: vi.fn(),
+  latest: vi.fn(async () => null),
   run: vi.fn(async () => undefined),
   judge: vi.fn(),
   judgements: vi.fn(),
 }));
+// The three refusal classes stand in for the service's own: the route maps
+// them by TYPE (a regex over English prose turns a copy edit into a 500), and
+// the module boundary is where this test mocks. TypeScript ties the names to
+// the real ones; the service throwing them is pinned by the integration test.
 vi.mock('../../domains/llm/services/shadow-compare-service.js', () => ({
+  CompareRunNotFoundError: class CompareRunNotFoundError extends Error {
+    constructor() {
+      super('Comparison run not found');
+    }
+  },
+  CompareRunIncompleteError: class CompareRunIncompleteError extends Error {
+    constructor() {
+      super('Comparison run has not completed — judgements attach to a finished run');
+    }
+  },
+  UnknownCompareQueryError: class UnknownCompareQueryError extends Error {
+    constructor() {
+      super('Unknown query id for this comparison run');
+    }
+  },
   createShadowCompareRun: (...a: unknown[]) => compareSvc.create(...a),
   getShadowCompareRun: (...a: unknown[]) => compareSvc.get(...a),
+  getLatestShadowCompareRun: (...a: unknown[]) => compareSvc.latest(...(a as [])),
   runShadowCompare: (...a: unknown[]) => compareSvc.run(...a),
   recordShadowCompareJudgement: (...a: unknown[]) => compareSvc.judge(...a),
   getShadowCompareJudgements: (...a: unknown[]) => compareSvc.judgements(...a),
@@ -58,9 +79,9 @@ vi.mock('../../domains/llm/services/shadow-compare-service.js', () => ({
 const benchmarkGuard = vi.hoisted(() => ({
   active: vi.fn(async (): Promise<{ id: string; kind: string | null } | null> => null),
 }));
-vi.mock('../../domains/llm/eval/production-benchmark.js', () => ({
-  getActiveProductionBenchmark: (...a: unknown[]) => benchmarkGuard.active(...(a as [])),
-  ProductionBenchmarkAlreadyRunningError: class ProductionBenchmarkAlreadyRunningError extends Error {
+vi.mock('../../domains/llm/eval/benchmark-run-lifecycle.js', () => ({
+  activeBenchmarkRun: (...a: unknown[]) => benchmarkGuard.active(...(a as [])),
+  BenchmarkRunSlotBusyError: class BenchmarkRunSlotBusyError extends Error {
     constructor(
       public readonly activeRunId: string,
       public readonly kind: string | null = null,
@@ -375,8 +396,12 @@ describe('#1116 shadow-migration routes', () => {
     benchmarkGuard.active.mockResolvedValue({ id: 'bench-1', kind: null });
     const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
     expect(res.statusCode).toBe(409);
-    expect(res.json()).toMatchObject({ error: 'benchmark_in_progress', runId: 'bench-1' });
+    expect(res.json()).toMatchObject({ error: 'benchmark_in_progress' });
     expect(res.json().message).toMatch(/production retrieval benchmark is already running/i);
+    // No runId: it names a PRODUCTION BENCHMARK run, and this card would poll
+    // it on the compare surface, where the kind guard 404s every request
+    // while the card believed it had re-attached.
+    expect(res.json().runId).toBeUndefined();
     expect(compareSvc.create).not.toHaveBeenCalled();
   });
 
@@ -398,18 +423,19 @@ describe('#1116 shadow-migration routes', () => {
   it('compare: a create losing the unique-index race is the same 409, not a masked 500', async () => {
     svc.status.mockResolvedValue(READY_STATUS);
     benchmarkGuard.active.mockResolvedValue(null);
-    const { ProductionBenchmarkAlreadyRunningError } = await import('../../domains/llm/eval/production-benchmark.js');
-    compareSvc.create.mockRejectedValue(new ProductionBenchmarkAlreadyRunningError('bench-2'));
+    const { BenchmarkRunSlotBusyError } = await import('../../domains/llm/eval/benchmark-run-lifecycle.js');
+    compareSvc.create.mockRejectedValue(new BenchmarkRunSlotBusyError('bench-2'));
     const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
     expect(res.statusCode).toBe(409);
-    expect(res.json()).toMatchObject({ error: 'benchmark_in_progress', runId: 'bench-2' });
+    expect(res.json()).toMatchObject({ error: 'benchmark_in_progress' });
+    expect(res.json().runId).toBeUndefined();
   });
 
   it('compare: the race 409 is worded by the winning run\'s kind too (r3)', async () => {
     svc.status.mockResolvedValue(READY_STATUS);
     benchmarkGuard.active.mockResolvedValue(null);
-    const { ProductionBenchmarkAlreadyRunningError } = await import('../../domains/llm/eval/production-benchmark.js');
-    compareSvc.create.mockRejectedValue(new ProductionBenchmarkAlreadyRunningError('cmp-2', 'shadow-compare'));
+    const { BenchmarkRunSlotBusyError } = await import('../../domains/llm/eval/benchmark-run-lifecycle.js');
+    compareSvc.create.mockRejectedValue(new BenchmarkRunSlotBusyError('cmp-2', 'shadow-compare'));
     const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({ error: 'benchmark_in_progress', runId: 'cmp-2' });
@@ -460,21 +486,75 @@ describe('#1116 shadow-migration routes', () => {
     expect(res.json()).toEqual(view);
   });
 
-  it('judgements: the service refusals map onto 404/409/422, never masked 500s', async () => {
-    for (const [message, code] of [
-      ['Comparison run not found', 404],
-      ['Comparison run has not completed — judgements attach to a finished run', 409],
-      ['Unknown query id for this comparison run', 422],
+  it('judgements: the service refusals map onto 404/409/422 BY TYPE, never masked 500s', async () => {
+    const {
+      CompareRunNotFoundError,
+      CompareRunIncompleteError,
+      UnknownCompareQueryError,
+    } = await import('../../domains/llm/services/shadow-compare-service.js');
+    for (const [Refusal, code] of [
+      [CompareRunNotFoundError, 404],
+      [CompareRunIncompleteError, 409],
+      [UnknownCompareQueryError, 422],
     ] as const) {
-      compareSvc.judge.mockRejectedValue(new Error(message));
+      const err = new Refusal();
+      compareSvc.judge.mockRejectedValue(err);
       const res = await app.inject({
         method: 'POST',
         url: '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009/judgements',
         payload: { queryId: 'query-1', side: 'live' },
       });
-      expect(res.statusCode, message).toBe(code);
-      expect(res.json().error, message).toBe(message);
+      expect(res.statusCode, err.message).toBe(code);
+      expect(res.json().error, err.message).toBe(err.message);
     }
+
+    // The mapping is by type, so re-wording a refusal cannot silently drop it
+    // to a 500 — the failure a regex over English prose has.
+    class Reworded extends CompareRunIncompleteError {
+      constructor() {
+        super();
+        this.message = 'That comparison is still running — judgements attach once it finishes.';
+      }
+    }
+    compareSvc.judge.mockRejectedValue(new Reworded());
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009/judgements',
+      payload: { queryId: 'query-1', side: 'live' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/still running/i);
+  });
+
+  it('compare: the latest-run lookup answers this admin\'s most recent comparison', async () => {
+    // The card re-attaches through this after an unmount; without it a run
+    // that outlives a tab switch is unreachable while still holding the slot.
+    compareSvc.latest.mockResolvedValue({
+      id: 'run-9',
+      status: 'completed',
+      progressDone: 3,
+      progressTotal: 3,
+      result: null,
+      error: null,
+    } as never);
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/admin/embedding/shadow-migration/compare',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().run).toMatchObject({ id: 'run-9', status: 'completed' });
+    expect(compareSvc.latest).toHaveBeenCalledWith('test-admin');
+  });
+
+  it('compare poll and judgements are scoped to the requesting admin', async () => {
+    // The persisted report carries page titles retrieved under the starting
+    // admin's ACL, private standalone pages included.
+    compareSvc.get.mockResolvedValue(null);
+    compareSvc.judgements.mockResolvedValue({ judgements: {}, verdict: null });
+    await app.inject({ method: 'GET', url: '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009' });
+    expect(compareSvc.get).toHaveBeenCalledWith('2c0c8a92-98a8-4f8c-a6a1-000000000009', 'test-admin');
+    await app.inject({ method: 'GET', url: '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009/judgements' });
+    expect(compareSvc.judgements).toHaveBeenCalledWith('2c0c8a92-98a8-4f8c-a6a1-000000000009', 'test-admin');
   });
 
   it('judgements: an unknown side is a 400, before the service is reached', async () => {

@@ -13,14 +13,19 @@ import {
 import {
   createShadowCompareRun,
   getShadowCompareRun,
+  getLatestShadowCompareRun,
   runShadowCompare,
   recordShadowCompareJudgement,
   getShadowCompareJudgements,
+  CompareRunNotFoundError,
+  CompareRunIncompleteError,
+  UnknownCompareQueryError,
 } from '../../domains/llm/services/shadow-compare-service.js';
 import {
-  getActiveProductionBenchmark,
-  ProductionBenchmarkAlreadyRunningError,
-} from '../../domains/llm/eval/production-benchmark.js';
+  activeBenchmarkRun,
+  BenchmarkRunSlotBusyError,
+  type BenchmarkRunKind,
+} from '../../domains/llm/eval/benchmark-run-lifecycle.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
@@ -46,7 +51,7 @@ const StartBodySchema = z.object({
  * config carries no kind). The benchmark POST keeps its own sentence in both
  * directions per the #1260 owner decision.
  */
-function slotBusyMessage(kind: string | null): string {
+function slotBusyMessage(kind: BenchmarkRunKind): string {
   return kind === 'shadow-compare'
     ? 'A comparison is already running — wait for it to finish before starting another'
     : 'A production retrieval benchmark is already running';
@@ -231,12 +236,17 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
       // benchmark" there names a run that does not exist. The `error` token
       // stays `benchmark_in_progress` — it is the machine-readable name of
       // the shared slot, not of the holder.
-      const active = await getActiveProductionBenchmark();
+      const active = await activeBenchmarkRun();
       if (active) {
         return reply.code(409).send({
           error: 'benchmark_in_progress',
           message: slotBusyMessage(active.kind),
-          runId: active.id,
+          // Only ever a COMPARE run's id here: the card polls this id on the
+          // compare surface, and handing it a production benchmark's id would
+          // make every poll 404 (the kind guard) while the card believed it
+          // had re-attached. The compare kind is also the only one this card
+          // could legitimately adopt.
+          ...(active.kind === 'shadow-compare' ? { runId: active.id } : {}),
         });
       }
 
@@ -244,11 +254,11 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
       try {
         runId = await createShadowCompareRun(request.userId, { kind: 'shadow-compare', ...body });
       } catch (err) {
-        if (err instanceof ProductionBenchmarkAlreadyRunningError) {
+        if (err instanceof BenchmarkRunSlotBusyError) {
           return reply.code(409).send({
             error: 'benchmark_in_progress',
             message: slotBusyMessage(err.kind),
-            runId: err.activeRunId,
+            ...(err.kind === 'shadow-compare' ? { runId: err.activeRunId } : {}),
           });
         }
         throw err;
@@ -271,27 +281,43 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
     },
   );
 
+  // GET /admin/embedding/shadow-migration/compare — THIS admin's most recent
+  // comparison, in any status, or `{ run: null }`. The card's runId is plain
+  // component state: a tab switch, a route change or a reload loses it, and
+  // without this lookup the finished report, its disagreement list and the
+  // whole Mode 2 workflow become unreachable while the run itself still holds
+  // the one-active slot against a replacement.
+  fastify.get(
+    '/admin/embedding/shadow-migration/compare',
+    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
+    async (request) => {
+      return { run: await getLatestShadowCompareRun(request.userId) };
+    },
+  );
+
   // GET /admin/embedding/shadow-migration/compare/:id — poll status/result.
-  // 404 for an unknown id AND for a run of another kind, so this surface
-  // cannot serve (or be used to poll) production-benchmark runs.
+  // 404 for an unknown id, for a run of another kind (so this surface cannot
+  // serve or poll production-benchmark runs) and for ANOTHER ADMIN's run: the
+  // persisted report carries page titles retrieved under the starting admin's
+  // own ACL, private standalone pages included.
   fastify.get(
     '/admin/embedding/shadow-migration/compare/:id',
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async (request, reply) => {
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-      const run = await getShadowCompareRun(id);
+      const run = await getShadowCompareRun(id, request.userId);
       if (!run) return reply.code(404).send({ error: 'not_found', message: 'Comparison run not found' });
       return run;
     },
   );
 
-  // The Mode 2 judgement refusals, app-authored in the service and mapped
-  // here — the same discipline as `mapError` above.
+  // The Mode 2 judgement refusals. Mapped by TYPE, never by a regex over the
+  // message: matching English prose makes a copy edit silently turn a 409
+  // into an unhandled 500.
   function mapJudgementError(err: unknown): { statusCode: number; message: string } | null {
-    const message = err instanceof Error ? err.message : '';
-    if (/Comparison run not found/i.test(message)) return { statusCode: 404, message };
-    if (/has not completed/i.test(message)) return { statusCode: 409, message };
-    if (/Unknown query id/i.test(message)) return { statusCode: 422, message };
+    if (err instanceof CompareRunNotFoundError) return { statusCode: 404, message: err.message };
+    if (err instanceof CompareRunIncompleteError) return { statusCode: 409, message: err.message };
+    if (err instanceof UnknownCompareQueryError) return { statusCode: 422, message: err.message };
     return null;
   }
 
@@ -326,7 +352,7 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
       try {
-        return await getShadowCompareJudgements(id);
+        return await getShadowCompareJudgements(id, request.userId);
       } catch (err) {
         const mapped = mapJudgementError(err);
         if (mapped) return reply.code(mapped.statusCode).send({ error: mapped.message, statusCode: mapped.statusCode });

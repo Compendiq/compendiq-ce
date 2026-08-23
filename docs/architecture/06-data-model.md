@@ -159,7 +159,7 @@ erDiagram
         uuid id PK
         text query_hash "sha256 of LOWER(TRIM(query)) — respellings converge"
         text query_text
-        text live_provider_id "by NAME, no FK — must outlive the provider row"
+        text live_provider_id "by VALUE, no FK — must outlive the provider row"
         text live_model
         text candidate_provider_id
         text candidate_model
@@ -370,21 +370,35 @@ together, which matters most for #1114's query-side prefix.
 
 - **User ownership is pervasive.** Almost every table carries `user_id`
   (UUID, FK → `users.id`) — Compendiq is multi-tenant at the user level.
-- **`retrieval_benchmark_runs` is shared by two run kinds (#1260).** The
-  production benchmark writes its config as-is; the shadow comparison marks
-  its rows `config.kind = 'shadow-compare'` and reads them back through its
-  own accessor, which answers null for any other kind. The 091 one-active
-  partial unique index is deliberately NOT scoped by kind: both runs spend
-  the shared LLM queue, so one at a time is the point, and the 092 heartbeat
-  recovery covers both.
+- **`retrieval_benchmark_runs` is shared by two run kinds (#1260), and ONE
+  module owns its lifecycle.** The production benchmark writes its config
+  as-is; the shadow comparison marks its rows `config.kind = 'shadow-compare'`.
+  Insert, claim, progress + heartbeat, complete, fail, the stale sweep and the
+  fetch all live in `domains/llm/eval/benchmark-run-lifecycle.ts`, and the
+  fetch takes the expected `kind` as a REQUIRED argument — each surface answers
+  null for the other's rows, in both directions. That symmetry is not
+  decoration: a compare report has no `baseline`, so serving one through the
+  benchmark GET throws in `BenchmarkSummary` and blanks the Retrieval panel,
+  and it carries sampled production query text. The stale sweep is likewise
+  kind-aware, because failing a comparison with "start a new benchmark" names
+  a run its admin never started. A compare run is additionally scoped to
+  `requested_by` on read: its report carries page titles retrieved under that
+  admin's own ACL (`visiblePagesPredicate` admits their private standalone
+  pages). The 091 one-active partial unique index is deliberately NOT scoped
+  by kind: both runs spend the shared LLM queue, so one at a time is the
+  point, and the 092 heartbeat recovery covers both.
 - **`embedding_compare_judgements` is the accumulating fixture (#1260 Mode
-  2).** One row per (normalised query hash, live model, candidate model),
-  models by NAME with no FK to `llm_providers` and no FK to the run — a
-  judgement must survive the run, the migration and the provider row that
-  produced it, which is what makes the second evaluation of the same pair
-  cheaper than the first. Re-judging replaces the row (upsert on the unique
-  key); the page-id arrays record what was on screen when the human judged
-  and are deliberately not FK-checked against `pages`.
+  2).** One row per (normalised query hash, live PAIR, candidate PAIR) —
+  provider id AND model on each side, because the same model name behind a
+  different provider is a different index whose page-id arrays must not be
+  pooled into the earlier migration's verdict, and because re-hosting one
+  model would otherwise collapse both sides onto one row. Both are recorded by
+  VALUE, with no FK to `llm_providers` and no FK to the run: a judgement must
+  survive the run, the migration and the provider row that produced it, which
+  is what makes the second evaluation of the same pair cheaper than the first.
+  Re-judging replaces the row (upsert on the unique key); the page-id arrays
+  record what was on screen when the human judged and are deliberately not
+  FK-checked against `pages`.
 - **pgvector — the column type is dimension-driven, not one model's shape.**
   `page_embeddings.embedding` always carries a *declared* width — 006 shipped
   `vector(768)`, 048 re-typed it to `vector(1024)` — but the schema does not

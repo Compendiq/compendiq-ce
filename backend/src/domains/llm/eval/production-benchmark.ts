@@ -8,8 +8,24 @@
  * settings, or records synthetic analytics rows.
  */
 import type { RetrievalBenchmarkQuery, RetrievalBenchmarkRequest } from '@compendiq/contracts';
-import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
+// One run-row lifecycle, shared with the #1260 shadow comparison: the two
+// kinds hold ONE slot between them, and two private copies of these five
+// statements is exactly how the stale sweep started reporting a comparison as
+// a benchmark and the fetch started serving one kind's report to the other's
+// renderer.
+import {
+  BenchmarkRunSlotBusyError,
+  activeBenchmarkRun,
+  claimBenchmarkRun,
+  completeBenchmarkRun,
+  failBenchmarkRun,
+  fetchBenchmarkRun,
+  insertBenchmarkRun,
+  readQueuedConfig,
+  recordBenchmarkProgress,
+  type BenchmarkRunKind,
+} from './benchmark-run-lifecycle.js';
 import {
   hybridSearch,
   type SearchResult,
@@ -87,40 +103,14 @@ export interface ProductionBenchmarkReport {
   queries: ProductionBenchmarkQueryResult[];
 }
 
-interface BenchmarkRunRow {
-  id: string;
-  status: ProductionBenchmarkStatus;
-  config: RetrievalBenchmarkRequest;
-  progress_done: number;
-  progress_total: number;
-  result: ProductionBenchmarkReport | null;
-  error: string | null;
-  created_at: Date | string;
-  started_at: Date | string | null;
-  completed_at: Date | string | null;
-}
-
-export class ProductionBenchmarkAlreadyRunningError extends Error {
-  constructor(
-    public readonly activeRunId: string,
-    /**
-     * `config->>'kind'` of the run holding the one-active slot — null for a
-     * plain production benchmark, whose config carries no kind. The slot is
-     * shared with the #1260 shadow comparison, and the compare route words
-     * its 409 by what is actually running: toasting "a production retrieval
-     * benchmark is already running" for the admin's own comparison names a
-     * run that does not exist (r3). The message here stays the benchmark
-     * sentence — it is what the benchmark POST answers, per the #1260 owner
-     * decision that the benchmark direction keeps its wording.
-     */
-    public readonly kind: string | null = null,
-  ) {
-    super('A production retrieval benchmark is already running');
-  }
-}
-
-const STALE_BENCHMARK_AFTER = '30 minutes';
-const STALE_BENCHMARK_ERROR = 'The benchmark worker stopped before the run completed. Start a new benchmark.';
+/**
+ * Re-exported under its historical name: the slot is SHARED with the #1260
+ * shadow comparison, so the error is the lifecycle module's, and `kind` names
+ * the holder. The default message stays the benchmark sentence — it is what
+ * the benchmark POST answers, per the #1260 owner decision that the benchmark
+ * direction keeps its wording; the compare route words its own 409 by `kind`.
+ */
+export { BenchmarkRunSlotBusyError as ProductionBenchmarkAlreadyRunningError };
 
 /**
  * The run holding the shared one-active slot, if any. Deliberately NOT
@@ -130,68 +120,26 @@ const STALE_BENCHMARK_ERROR = 'The benchmark worker stopped before the run compl
  */
 export async function getActiveProductionBenchmark(): Promise<{
   id: string;
-  kind: string | null;
+  kind: BenchmarkRunKind;
 } | null> {
-  await recoverStaleProductionBenchmarks();
-  const result = await query<{ id: string; kind: string | null }>(
-    `SELECT id, config->>'kind' AS kind FROM retrieval_benchmark_runs
-     WHERE status IN ('queued', 'running')
-     ORDER BY created_at ASC
-     LIMIT 1`,
-  );
-  return result.rows[0] ?? null;
-}
-
-async function recoverStaleProductionBenchmarks(): Promise<void> {
-  const result = await query<{ id: string }>(
-    `UPDATE retrieval_benchmark_runs
-     SET status = 'failed', error = $1, completed_at = NOW(), last_heartbeat_at = NOW()
-     WHERE status IN ('queued', 'running')
-       AND last_heartbeat_at < NOW() - $2::interval
-     RETURNING id`,
-    [STALE_BENCHMARK_ERROR, STALE_BENCHMARK_AFTER],
-  );
-  if (result.rows.length > 0) {
-    logger.warn(
-      { benchmarkRunIds: result.rows.map((row) => row.id) },
-      'Recovered abandoned production retrieval benchmark runs',
-    );
-  }
+  return activeBenchmarkRun();
 }
 
 export async function createProductionBenchmarkRun(
   requestedBy: string,
   config: RetrievalBenchmarkRequest,
 ): Promise<string> {
-  try {
-    const result = await query<{ id: string }>(
-      `INSERT INTO retrieval_benchmark_runs (requested_by, status, config)
-       VALUES ($1, 'queued', $2::jsonb)
-       RETURNING id`,
-      [requestedBy, JSON.stringify(config)],
-    );
-    return result.rows[0]!.id;
-  } catch (err) {
-    // The partial unique index is the cross-request/replica guard. Keep the
-    // route's response stable and do not expose a database constraint name.
-    if (isUniqueActiveRunError(err)) {
-      const active = await getActiveProductionBenchmark();
-      if (active) throw new ProductionBenchmarkAlreadyRunningError(active.id, active.kind);
-    }
-    throw err;
-  }
+  return insertBenchmarkRun(requestedBy, config);
 }
 
+/**
+ * A production-benchmark run and NOTHING else. The kind argument is what
+ * stops this surface serving a shadow comparison — whose report has no
+ * `baseline`, so `BenchmarkSummary` throws on it and blanks the Retrieval
+ * panel — and whose `queries[]` carries sampled production query text.
+ */
 export async function getProductionBenchmarkRun(id: string): Promise<ProductionBenchmarkRun | null> {
-  const result = await query<BenchmarkRunRow>(
-    `SELECT id, status, config, progress_done, progress_total, result, error,
-            created_at, started_at, completed_at
-     FROM retrieval_benchmark_runs WHERE id = $1`,
-    [id],
-  );
-  const row = result.rows[0];
-  if (!row) return null;
-  return toPublicRun(row);
+  return fetchBenchmarkRun<RetrievalBenchmarkRequest, ProductionBenchmarkReport>(id, null);
 }
 
 export async function runProductionBenchmark(id: string, userId: string): Promise<void> {
@@ -199,58 +147,32 @@ export async function runProductionBenchmark(id: string, userId: string): Promis
     // Keep the claim path inside the failure handler. If the process dies
     // after insertion but before this transition, the heartbeat recovery in
     // getActiveProductionBenchmark() will release the queued row later.
-    const row = await query<Pick<BenchmarkRunRow, 'config' | 'status'>>(
-      `SELECT config, status FROM retrieval_benchmark_runs WHERE id = $1`,
-      [id],
-    );
-    const config = row.rows[0]?.config;
-    if (!config || row.rows[0]?.status !== 'queued') return;
+    const config = await readQueuedConfig<RetrievalBenchmarkRequest>(id);
+    if (!config) return;
 
-    const claimed = await query(
-      `UPDATE retrieval_benchmark_runs
-       SET status = 'running', started_at = NOW(), progress_done = 0,
-           progress_total = $2, error = NULL, last_heartbeat_at = NOW()
-       WHERE id = $1 AND status = 'queued'`,
-      [id, config.source === 'custom' ? config.queries?.length ?? 0 : config.limit],
+    const claimed = await claimBenchmarkRun(
+      id,
+      config.source === 'custom' ? config.queries?.length ?? 0 : config.limit,
     );
-    if (claimed.rowCount !== 1) return;
+    if (!claimed) return;
 
     const queries = await resolveBenchmarkQueries(config);
-    await query(
-      `UPDATE retrieval_benchmark_runs
-       SET progress_total = $2, last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [id, queries.length],
-    );
+    await recordBenchmarkProgress(id, 0, queries.length);
 
     if (queries.length === 0) {
       throw new Error('No production queries were available in the selected period');
     }
 
     const report = await executeBenchmark(queries, userId, config, async (done) => {
-      await query(
-        `UPDATE retrieval_benchmark_runs
-         SET progress_done = $2, last_heartbeat_at = NOW()
-         WHERE id = $1`,
-        [id, done],
-      );
+      await recordBenchmarkProgress(id, done);
     });
 
-    await query(
-      `UPDATE retrieval_benchmark_runs
-       SET status = 'completed', progress_done = progress_total,
-           result = $2::jsonb, completed_at = NOW(), last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [id, JSON.stringify(report)],
-    );
+    await completeBenchmarkRun(id, report);
   } catch (err) {
     logger.error({ err, benchmarkRunId: id }, 'Production retrieval benchmark failed');
-    await query(
-      `UPDATE retrieval_benchmark_runs
-       SET status = 'failed', error = $2, completed_at = NOW(), last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [id, publicErrorMessage(err)],
-    ).catch((updateErr) => logger.error({ err: updateErr, benchmarkRunId: id }, 'Failed to persist benchmark failure'));
+    await failBenchmarkRun(id, publicErrorMessage(err)).catch((updateErr) =>
+      logger.error({ err: updateErr, benchmarkRunId: id }, 'Failed to persist benchmark failure'),
+    );
   }
 }
 
@@ -408,21 +330,6 @@ function summarizeVariant(
   };
 }
 
-function toPublicRun(row: BenchmarkRunRow): ProductionBenchmarkRun {
-  return {
-    id: row.id,
-    status: row.status,
-    config: row.config,
-    progressDone: row.progress_done,
-    progressTotal: row.progress_total,
-    result: row.result,
-    error: row.error,
-    createdAt: row.created_at,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-  };
-}
-
 function recallAtK(runs: Array<{ retrieved: number[]; expected: number[] }>, k: number): number {
   if (runs.length === 0) return 0;
   return runs.reduce((sum, run) => {
@@ -455,10 +362,6 @@ function sameIds(a: Set<number>, b: Set<number>): boolean {
 
 function intersectionSize(a: Set<number>, b: Set<number>): number {
   return [...a].filter((id) => b.has(id)).length;
-}
-
-function isUniqueActiveRunError(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: unknown }).code === '23505';
 }
 
 function publicErrorMessage(err: unknown): string {

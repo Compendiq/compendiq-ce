@@ -100,12 +100,31 @@ real queries** (#1260): `shadow-compare-service.ts` samples the most frequent
 `search_analytics` queries, embeds each once per model (prefix per model),
 retrieves top-K from `embedding` and `embedding_next` through `vectorSearch`'s
 allow-listed `column` option, and reports AGREEMENT (top-1 change rate,
-Jaccard, RBO) plus per-query disagreements — never presented as quality; Mode
-2 judgements accumulate in `embedding_compare_judgements` (099) and quote a
-McNemar p only from 20 judgements. Runs reuse `retrieval_benchmark_runs`
+Jaccard, RBO) plus per-query disagreements — never presented as quality. The
+shadow arm excludes `embedding_next IS NULL`: that column is nullable by
+construction (the dual-write leaves it NULL when the candidate provider fails
+on a page edited mid-migration), `NULL <=> $2` is NULL, and `1 - null` is 1 in
+JS — an unfilled page would enter the candidate top-K as a PERFECT MATCH and
+inflate every figure computed from it. A transient failure costs its own query
+(`failedQueries` on the report), never the 46 comparisons already paid for;
+only a majority of failures fails the run. Mode 2 judgements accumulate in
+`embedding_compare_judgements` (099) keyed by **provider AND model on each
+side** — the same name behind a different provider is a different index — and
+quote a McNemar p only from 20 **live-or-candidate PICKS**, never from a total
+that ties inflate (fourteen ties plus six picks published `p = 0.031` from six
+clicks). Runs reuse `retrieval_benchmark_runs`
 (`config.kind = 'shadow-compare'`), so a comparison and the production
-benchmark exclude each other — deliberately, both spend the shared LLM queue.
-Lifecycle step 3b in `docs/runbooks/shadow-reembed.md`.
+benchmark exclude each other — deliberately, both spend the shared LLM queue —
+and the whole row lifecycle is ONE module, `eval/benchmark-run-lifecycle.ts`:
+the two private copies diverged inside a single review round, the stale sweep
+failing comparisons with "start a new benchmark" and the benchmark's own
+`GET /:id` serving compare runs to a renderer that dereferences
+`report.baseline`. Its fetch takes the expected `kind` as a REQUIRED argument
+in both directions, and a compare run is additionally scoped to
+`requested_by` — the report's titles came out of that admin's ACL. `GET …/compare`
+(no id) answers this admin's latest run, because the card's `runId` is
+component state and a comparison outlives a tab switch. Lifecycle step 3b in
+`docs/runbooks/shadow-reembed.md`.
 There is no separate model-comparison harness — #1113 was closed without one.
 
 **A run states which FTS configuration it measured, and the default is
