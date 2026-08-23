@@ -228,12 +228,17 @@ differs), embeds each query once per model with the #1114 instruction prefix
 applied per model, and retrieves top-K pages from `embedding` and
 `embedding_next` through `vectorSearch`'s allow-listed `column` option — the
 same SQL, ACL predicate and `ef_search` discipline as the live probe, never a
-sibling function. The shadow arm additionally excludes `embedding_next IS
-NULL` (that column is nullable by construction, and `1 - null` is 1 in JS —
-an unfilled page would enter the candidate top-K as a perfect match). A
-transient embedding or retrieval failure costs its own query, not the run:
-the query is skipped, counted on the report as `failedQueries`, and only a
-majority of failures fails the whole comparison.
+sibling function. An unfilled candidate row must never enter the top-K —
+`embedding_next` is nullable by construction, `NULL <=> $2` is NULL, and
+`1 - null` is 1 in JS, i.e. a perfect match that would inflate every figure
+computed from it. What guarantees that is the `distance !== null` filter in
+JS, which also covers the LIVE column between a swap and its cleanup; the
+shadow arm's `AND embedding_next IS NOT NULL` is a NARROWING beside it (ASC
+ordering puts NULLs last, so such a row cannot displace a scored one under
+the LIMIT), not the guarantee. A transient embedding or retrieval failure
+costs its own query, not the run: the query is skipped, counted on the report
+as `failedQueries`, and only a majority of failures fails the whole
+comparison.
 
 Run records reuse `retrieval_benchmark_runs` with
 `config.kind = 'shadow-compare'`, through the SHARED
