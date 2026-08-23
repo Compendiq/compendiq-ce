@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { AlertTriangle, Loader2, Search, Trash2 } from 'lucide-react';
 import type {
   AttachmentStorageStats,
   AttachmentStoreSweepStats,
+  AttachmentSweepRun,
   AttachmentSweepStatus,
   AttachmentSweepTriggerResponse,
 } from '@compendiq/contracts';
@@ -28,7 +29,14 @@ import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
  *    so EACH one's failure stands alone (review r1: `&&`-ing them collapsed
  *    a one-sided failure into the empty state, or silently dropped a refused
  *    last run): a failed stats GET fails the figures block while a healthy
- *    last-run line stays, and vice versa.
+ *    last-run line stays, and vice versa. Every consumer of the figures reads
+ *    ONE derived `figures` value (review r2) — guarding the counters and
+ *    leaving the four walk-verdict lines on `stores &&` put four stale numbers
+ *    directly under "The storage figures could not be read", because TanStack
+ *    retains `data` through a failed refetch. And the ladder has FIVE states,
+ *    not four: a first run that refused, failed or stood a store down leaves
+ *    no stats record beside a real last run, which used to render nothing at
+ *    all.
  *  - **"Candidate" is a claim about pending work**, so the last-run line and
  *    the disclosure say it only for a DRY run. After a live run the same list
  *    is what the walk FOUND — most of it destroyed, some of it (a store stood
@@ -103,6 +111,27 @@ function orphanSummary(stats: AttachmentStoreSweepStats): string | null {
   return `${parts.join(', ')} (${formatBytes(bytes)})`;
 }
 
+/**
+ * One sentence for the polite announcer — see `runAnnouncement` below.
+ *
+ * Deliberately not the visible line's markup: what a screen-reader user needs
+ * is the VERDICT of the run they just watched, not the same spans re-read.
+ */
+function announceRun(run: AttachmentSweepRun): string {
+  const subject = run.dryRun ? 'dry run' : 'sweep';
+  if (run.status !== 'completed') {
+    const verb = run.status === 'refused' ? 'refused to proceed' : 'failed';
+    return `The ${subject} ${verb}${run.note ? `: ${run.note}` : ''}.`;
+  }
+  const stoodDown = run.note ? ` One store was left alone: ${run.note}.` : '';
+  if (run.dryRun) {
+    return `Dry run finished — ${run.candidatesTotal} candidate${run.candidatesTotal === 1 ? '' : 's'}.${stoodDown}`;
+  }
+  if (!run.deleted) return `Sweep finished — nothing was deleted.${stoodDown}`;
+  const { files, directories, bytes } = run.deleted;
+  return `Sweep finished — deleted ${files} file${files === 1 ? '' : 's'} and ${directories} director${directories === 1 ? 'y' : 'ies'} (${formatBytes(bytes)}).${stoodDown}`;
+}
+
 export function AttachmentStorageCard() {
   const qc = useQueryClient();
   const [kickedAt, setKickedAt] = useState<number | null>(null);
@@ -128,6 +157,28 @@ export function AttachmentStorageCard() {
     refetchInterval: (q) => pollWhile(q.state.data?.running),
   });
 
+  /**
+   * The card's ONE polite announcer (review r2).
+   *
+   * It is rendered unconditionally and starts EMPTY, because a live region
+   * that is INSERTED into the DOM carrying text is announced on insertion:
+   * with `role="status"` on the conditionally-rendered last-run line, opening
+   * Settings → Spaces & Sync read out "Last dry run 3 days ago · 3 candidates"
+   * for a run the user did not start and nothing that had just happened — on
+   * every visit, and on the two amber strips too.
+   *
+   * `watchedFrom` is what makes it a report on THIS session's run rather than
+   * on the record: `undefined` means nothing is being watched, and it is armed
+   * only when the operator kicks a run or a payload reports one already in
+   * flight. It holds the `at` of the run on screen when the watch began, so
+   * the refetch that lands the SAME record announces nothing and only a new
+   * run's verdict is read. Nothing is lost by the narrowing: the queries do
+   * not poll at all unless kicked or a lock is reported, so a run this card
+   * did not watch is one it could not have announced anyway.
+   */
+  const [runAnnouncement, setRunAnnouncement] = useState('');
+  const watchedFrom = useRef<string | null | undefined>(undefined);
+
   const trigger = useMutation({
     mutationFn: (dryRun: boolean) =>
       apiFetch<AttachmentSweepTriggerResponse>('/admin/attachments/sweep', {
@@ -145,6 +196,14 @@ export function AttachmentStorageCard() {
             ? 'Dry run started — figures update here when the walk finishes.'
             : 'Deleting orphans — the run re-checks every candidate before removing it.',
         );
+      }
+      // Arm the announcer for the run this press started (or joined), from the
+      // record on screen right now — see `watchedFrom`. A kick with Redis
+      // unreachable never reports `running`, so waiting for the flag would
+      // leave that path silent. Read from the cache rather than the render's
+      // `lastRun`, which is derived further down.
+      if (watchedFrom.current === undefined) {
+        watchedFrom.current = qc.getQueryData<AttachmentSweepStatus>(SWEEP_QUERY_KEY)?.lastRun?.at ?? null;
       }
       setKickedAt(Date.now());
       void qc.invalidateQueries({ queryKey: STATS_QUERY_KEY });
@@ -167,9 +226,36 @@ export function AttachmentStorageCard() {
   const bothQueriesFailed = statsError && sweepError;
   const lastRun = sweep.data?.lastRun ?? null;
   const stores = stats.data?.stores ?? null;
+  /**
+   * ONE derived value that every figure consumer reads (review r2).
+   *
+   * The counters block honoured `!statsError` because it sits inside the
+   * ladder below, and the missing-rows line spelled the guard out — but the
+   * four walk-verdict lines were gated on `stores &&` alone. TanStack retains
+   * `data` through a failed REFETCH, which is the ordinary poll-failure shape
+   * on a card that polls two admin routes every 5s while a sweep runs, so
+   * "The storage figures could not be read" rendered directly above four
+   * figures derived from that same record — one of them reading "…the figures
+   * above cover only what the walk could see" with no figures above it.
+   * Guarding five of six consumers is the half-fix pattern this card's own
+   * comments keep naming.
+   */
+  const figures = !isPending && !statsError ? stores : null;
   // "No run yet" is a claim BOTH records support — a failed read of either
   // one must never be reported as an empty history.
   const noRunYet = !isPending && !statsError && !sweepError && stores === null && lastRun === null;
+
+  // The watch itself — see `runAnnouncement` above for what it is for.
+  useEffect(() => {
+    if (running) {
+      if (watchedFrom.current === undefined) watchedFrom.current = lastRun?.at ?? null;
+      return;
+    }
+    if (watchedFrom.current === undefined) return;
+    if (!lastRun || lastRun.at === watchedFrom.current) return;
+    watchedFrom.current = undefined;
+    setRunAnnouncement(announceRun(lastRun));
+  }, [running, lastRun]);
   // The actions stay live on a failed READ — Dry run is the remedy that
   // refreshes the very record the failed GET could not deliver. Only the
   // pending paint (nothing known yet) and a running sweep disable them.
@@ -192,6 +278,16 @@ export function AttachmentStorageCard() {
         restating it one line below is the same label twice at two casings.
         The running chip keeps the row.
       */}
+      {/*
+        Always in the DOM, empty until this card has WATCHED a run finish —
+        see `runAnnouncement`. A live region inserted with its text already in
+        it is announced on insertion, which is how the conditionally-rendered
+        strips below read out a days-old run on every visit to this tab.
+      */}
+      <p className="sr-only" role="status" data-testid="attachment-sweep-announcement">
+        {runAnnouncement}
+      </p>
+
       {running && (
         <div className="flex flex-wrap items-center justify-end gap-2">
           <span
@@ -219,7 +315,7 @@ export function AttachmentStorageCard() {
           No sweep has run yet — press Dry run to measure both stores and list orphan candidates
           without touching any files.
         </p>
-      ) : stores ? (
+      ) : figures ? (
         <>
         <dl
           className="text-muted-foreground grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2"
@@ -228,24 +324,24 @@ export function AttachmentStorageCard() {
           <div className="space-y-0.5">
             <dt className="text-foreground font-medium">Confluence cache</dt>
             <dd data-testid="attachment-storage-confluence-bytes">
-              <span className="text-foreground font-mono">{formatBytes(stores.confluence.bytes)}</span>{' '}
-              · {countPhrase(stores.confluence.files, stores.confluence.directories)}
+              <span className="text-foreground font-mono">{formatBytes(figures.confluence.bytes)}</span>{' '}
+              · {countPhrase(figures.confluence.files, figures.confluence.directories)}
             </dd>
-            {orphanSummary(stores.confluence) && (
+            {orphanSummary(figures.confluence) && (
               <dd data-testid="attachment-storage-confluence-orphans">
-                Candidates: {orphanSummary(stores.confluence)}
+                Candidates: {orphanSummary(figures.confluence)}
               </dd>
             )}
           </div>
           <div className="space-y-0.5">
             <dt className="text-foreground font-medium">Local store</dt>
             <dd data-testid="attachment-storage-local-bytes">
-              <span className="text-foreground font-mono">{formatBytes(stores.local.bytes)}</span>{' '}
-              · {countPhrase(stores.local.files, stores.local.directories)}
+              <span className="text-foreground font-mono">{formatBytes(figures.local.bytes)}</span>{' '}
+              · {countPhrase(figures.local.files, figures.local.directories)}
             </dd>
-            {orphanSummary(stores.local) && (
+            {orphanSummary(figures.local) && (
               <dd data-testid="attachment-storage-local-orphans">
-                Candidates: {orphanSummary(stores.local)}
+                Candidates: {orphanSummary(figures.local)}
               </dd>
             )}
           </div>
@@ -264,7 +360,30 @@ export function AttachmentStorageCard() {
           </p>
         )}
         </>
-      ) : null}
+      ) : (
+        /*
+          The ladder's FIFTH state (review r2), which used to render `null`.
+          `attachment_storage_stats` is written only by a CLEAN completed walk,
+          while the last-run record is written by every run — so a first sweep
+          that refuses (the mis-pointed ATTACHMENTS_DIR this feature's refusal
+          exists for), fails, or stands one store down leaves `stores: null`
+          beside a non-null `lastRun`, `noRunYet` false (it needs both records
+          empty) and therefore NO figure state at all: no counters, no pending,
+          no error, no empty line. The storage block went silently blank on
+          exactly the operator path the card was written for.
+
+          It states the absence rather than falling back to `lastRun.stores`:
+          the backend withholds those figures from the reference record on
+          purpose — they are the zeroed walk of a store it had just declined to
+          trust — and rendering them here would defeat that decision one layer
+          up. The remedy is the same one the empty state offers, minus its
+          "no sweep has run" claim, which would be false here.
+        */
+        <p className="text-muted-foreground text-xs" data-testid="attachment-storage-unmeasured">
+          No completed measurement yet — the last run produced no figures. Press Dry run to measure
+          both stores.
+        </p>
+      )}
 
       {/*
         Review r2: an unjudged directory is REPORTED instead of judged
@@ -272,12 +391,12 @@ export function AttachmentStorageCard() {
         clean figures as a complete one. Muted, not amber: a fact about the
         last run that qualifies the figures above, not a state.
       */}
-      {stores &&
-        stores.confluence.unreadableDirectories + stores.local.unreadableDirectories > 0 && (
+      {figures &&
+        figures.confluence.unreadableDirectories + figures.local.unreadableDirectories > 0 && (
           <p className="text-muted-foreground text-xs" data-testid="attachment-storage-unreadable">
-            {stores.confluence.unreadableDirectories + stores.local.unreadableDirectories === 1
+            {figures.confluence.unreadableDirectories + figures.local.unreadableDirectories === 1
               ? '1 directory could not be read and was not judged'
-              : `${stores.confluence.unreadableDirectories + stores.local.unreadableDirectories} directories could not be read and were not judged`}{' '}
+              : `${figures.confluence.unreadableDirectories + figures.local.unreadableDirectories} directories could not be read and were not judged`}{' '}
             — the figures above cover only what the walk could see.
           </p>
         )}
@@ -296,11 +415,11 @@ export function AttachmentStorageCard() {
         and a line naming only sub-folders would send an operator looking for
         a directory that is not there.
       */}
-      {stores && stores.confluence.nestedDirectories + stores.local.nestedDirectories > 0 && (
+      {figures && figures.confluence.nestedDirectories + figures.local.nestedDirectories > 0 && (
         <p className="text-muted-foreground text-xs" data-testid="attachment-storage-nested">
-          {stores.confluence.nestedDirectories + stores.local.nestedDirectories === 1
+          {figures.confluence.nestedDirectories + figures.local.nestedDirectories === 1
             ? '1 pageless directory holds sub-folders or links and was not judged'
-            : `${stores.confluence.nestedDirectories + stores.local.nestedDirectories} pageless directories hold sub-folders or links and were not judged`}{' '}
+            : `${figures.confluence.nestedDirectories + figures.local.nestedDirectories} pageless directories hold sub-folders or links and were not judged`}{' '}
           — attachment directories are flat, so the sweep never removes contents it cannot measure.
         </p>
       )}
@@ -314,11 +433,11 @@ export function AttachmentStorageCard() {
         Rendering two of three verdicts and dropping the third is the half-fix
         pattern; muted, and suppressed at 0, like its siblings.
       */}
-      {stores && stores.confluence.graceSkipped + stores.local.graceSkipped > 0 && (
+      {figures && figures.confluence.graceSkipped + figures.local.graceSkipped > 0 && (
         <p className="text-muted-foreground text-xs" data-testid="attachment-storage-grace">
-          {stores.confluence.graceSkipped + stores.local.graceSkipped === 1
+          {figures.confluence.graceSkipped + figures.local.graceSkipped === 1
             ? '1 file or directory is orphaned but younger than 24 hours'
-            : `${stores.confluence.graceSkipped + stores.local.graceSkipped} files or directories are orphaned but younger than 24 hours`}{' '}
+            : `${figures.confluence.graceSkipped + figures.local.graceSkipped} files or directories are orphaned but younger than 24 hours`}{' '}
           — they become candidates once they age out.
         </p>
       )}
@@ -332,17 +451,17 @@ export function AttachmentStorageCard() {
         nothing. Muted, not amber: it is a fact about the last walk, and the
         conservative verdict is the correct one.
       */}
-      {stores &&
-        stores.confluence.keepProtectedDirectories + stores.local.keepProtectedDirectories > 0 && (
+      {figures &&
+        figures.confluence.keepProtectedDirectories + figures.local.keepProtectedDirectories > 0 && (
           <p className="text-muted-foreground text-xs" data-testid="attachment-storage-keep-protected">
-            {stores.confluence.keepProtectedDirectories + stores.local.keepProtectedDirectories === 1
+            {figures.confluence.keepProtectedDirectories + figures.local.keepProtectedDirectories === 1
               ? '1 pageless directory was left standing because a file inside it is still referenced'
-              : `${stores.confluence.keepProtectedDirectories + stores.local.keepProtectedDirectories} pageless directories were left standing because a file inside each is still referenced`}{' '}
+              : `${figures.confluence.keepProtectedDirectories + figures.local.keepProtectedDirectories} pageless directories were left standing because a file inside each is still referenced`}{' '}
             — a referenced filename is kept everywhere, so the directory around it is never removed.
           </p>
         )}
 
-      {!isPending && !statsError && (stats.data?.missingLocalFiles ?? 0) > 0 && (
+      {figures !== null && (stats.data?.missingLocalFiles ?? 0) > 0 && (
         <p className="text-muted-foreground text-xs" data-testid="attachment-storage-missing-rows">
           {stats.data!.missingLocalFiles} local attachment record
           {stats.data!.missingLocalFiles === 1 ? ' points' : 's point'} at a file that is not on
@@ -351,12 +470,12 @@ export function AttachmentStorageCard() {
       )}
 
       {/*
-        `role="status"` (review r2): the only two live regions on this card
-        were the amber strips, which render only for a run that did NOT
-        complete — so a screen-reader user was told a destructive run had
-        started and never told it finished or what it removed. Polite, not an
-        alert: a completed run is a verdict worth hearing, not interrupting for
-        (the refusal-strip recipe).
+        A destructive run's OUTCOME reaches assistive tech through the card's
+        one polite announcer at the top, NOT from a `role="status"` here
+        (review r2, revising r2's own first cut): this line is conditionally
+        rendered, so marking it live announced the historical record the
+        instant the GET resolved — a screen-reader user opening this tab was
+        read "Last dry run 3 days ago" for a run they did not start.
 
         "candidate" is a claim about PENDING work, so it is made only for a dry
         run. After a live run these are what the walk FOUND — most of them
@@ -367,11 +486,7 @@ export function AttachmentStorageCard() {
         again" — the exact failure the post-delete figures were added to stop.
       */}
       {lastRun && lastRun.status === 'completed' && (
-        <p
-          role="status"
-          className="text-muted-foreground text-xs"
-          data-testid="attachment-sweep-last-run"
-        >
+        <p className="text-muted-foreground text-xs" data-testid="attachment-sweep-last-run">
           Last {lastRun.dryRun ? 'dry run' : 'sweep'} {formatRelativeTime(lastRun.at)} ·{' '}
           <span className="text-foreground font-mono">{lastRun.candidatesTotal}</span>{' '}
           {lastRun.dryRun ? `candidate${lastRun.candidatesTotal === 1 ? '' : 's'}` : 'found'}
@@ -485,7 +600,6 @@ export function AttachmentStorageCard() {
       */}
       {lastRun && lastRun.status === 'completed' && lastRun.note && (
         <p
-          role="status"
           className="text-warning inline-flex items-start gap-1.5 text-xs"
           data-testid="attachment-sweep-partial-note"
         >
@@ -497,10 +611,15 @@ export function AttachmentStorageCard() {
       )}
 
       {/*
-        Amber only here: a run that did not complete needs an operator to
-        look — an unreadable root or a store that is empty while the database
-        references it (the mis-mount refusal). role="status" so the verdict
-        reaches assistive tech without interrupting (the failed-save recipe).
+        Amber is spent on the strips around this one: a run that did not
+        complete needs an operator to look — an unreadable root, or a store
+        empty while the database references it (the mis-mount refusal). None of
+        them is a live region of its own, because all three are conditionally
+        rendered and a live region inserted WITH its text is announced on
+        insertion: the verdict of a run this card watched is announced once,
+        politely, by the announcer at the top, and a days-old failure is not
+        re-read on every visit to the tab (review r2). This paragraph itself is
+        the failed-READ case, and stays the destructive treatment.
       */}
       {!isPending && sweepError && !bothQueriesFailed && (
         <p className="text-destructive text-xs" data-testid="attachment-sweep-status-error">
@@ -522,7 +641,6 @@ export function AttachmentStorageCard() {
       */}
       {lastRun && lastRun.status !== 'completed' && (
         <p
-          role="status"
           className="text-warning inline-flex items-start gap-1.5 text-xs"
           data-testid="attachment-sweep-last-run-problem"
         >

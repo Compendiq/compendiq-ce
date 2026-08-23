@@ -68,6 +68,10 @@ interface FetchPlan {
   stats?: AttachmentStorageStats | 'error';
   sweep?: AttachmentSweepStatus | 'error';
   post?: { started: boolean; alreadyRunning: boolean } | 'error';
+  /** What the sweep GET answers once a POST has been seen (the finished run). */
+  sweepAfterPost?: AttachmentSweepStatus;
+  /** Fail the SECOND stats GET onward — the ordinary failed-refetch shape. */
+  statsFailsAfterFirst?: boolean;
 }
 
 let postedBodies: unknown[] = [];
@@ -84,18 +88,24 @@ const KICK_WARMUP_MS_UNDER_TEST = 20_000;
 
 function mockApi(plan: FetchPlan): void {
   postedBodies = [];
+  let statsGets = 0;
+  let postSeen = false;
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
     if (url.endsWith('/admin/attachments/stats')) {
+      statsGets += 1;
+      if (plan.statsFailsAfterFirst && statsGets > 1) return json({ message: 'boom' }, 500);
       return plan.stats === 'error' ? json({ message: 'boom' }, 500) : json(plan.stats ?? STATS);
     }
     if (url.endsWith('/admin/attachments/sweep') && (init?.method ?? 'GET') === 'GET') {
+      if (postSeen && plan.sweepAfterPost) return json(plan.sweepAfterPost);
       return plan.sweep === 'error' ? json({ message: 'boom' }, 500) : json(plan.sweep ?? SWEEP);
     }
     if (url.endsWith('/admin/attachments/sweep') && init?.method === 'POST') {
       postedBodies.push(JSON.parse(String(init?.body)));
+      postSeen = true;
       return plan.post === 'error'
         ? json({ message: 'boom' }, 500)
         : json(plan.post ?? { started: true, alreadyRunning: false }, 202);
@@ -225,6 +235,105 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(screen.queryByTestId('attachment-storage-empty')).not.toBeInTheDocument();
     // The sweep GET answered, so its half of the card still renders.
     expect(screen.getByTestId('attachment-sweep-last-run')).toBeInTheDocument();
+  });
+
+  /**
+   * Review r2. TanStack retains `data` through a failed REFETCH, which is the
+   * ordinary poll-failure shape on a card that polls two admin routes every
+   * 5s. The counters block and the missing-rows line were guarded on
+   * `!statsError`; the four walk-verdict lines were gated on `stores &&`
+   * alone — so "The storage figures could not be read" rendered directly above
+   * four stale figures derived from that same record, one of them reading
+   * "…the figures above cover only what the walk could see" with nothing above
+   * it. Every consumer now reads one derived `figures` value.
+   */
+  it('a failed stats refetch takes the walk verdicts with it, not just the counters', async () => {
+    mockApi({
+      statsFailsAfterFirst: true,
+      stats: {
+        ...STATS,
+        stores: {
+          confluence: {
+            ...STORE_STATS,
+            unreadableDirectories: 10,
+            nestedDirectories: 4,
+            graceSkipped: 8,
+            keepProtectedDirectories: 6,
+          },
+          local: STORE_STATS,
+        },
+      },
+    });
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={qc}>
+        <AttachmentStorageCard />
+      </QueryClientProvider>,
+    );
+
+    // First paint: the record read cleanly and all four verdicts render.
+    await screen.findByTestId('attachment-storage-unreadable');
+    expect(screen.getByTestId('attachment-storage-nested')).toBeInTheDocument();
+
+    // …then the poll fails while the cached record is retained.
+    await qc.refetchQueries({ queryKey: ['admin', 'attachment-storage-stats'] });
+
+    await screen.findByTestId('attachment-storage-error');
+    for (const id of [
+      'attachment-storage-counters',
+      'attachment-storage-measured-at',
+      'attachment-storage-missing-rows',
+      'attachment-storage-unreadable',
+      'attachment-storage-nested',
+      'attachment-storage-grace',
+      'attachment-storage-keep-protected',
+    ]) {
+      expect(screen.queryByTestId(id), `${id} must not survive a failed stats read`).not.toBeInTheDocument();
+    }
+  });
+
+  /**
+   * Review r2: the ladder's fifth state. `attachment_storage_stats` is written
+   * only by a CLEAN completed walk while the last-run record is written by
+   * every run, so a first sweep that refuses — the mis-pointed ATTACHMENTS_DIR
+   * this feature's refusal exists for — fails, or stands one store down leaves
+   * `stores: null` beside a non-null `lastRun`. `noRunYet` needs BOTH records
+   * empty, so the empty state was suppressed and the ladder's tail rendered
+   * `null`: no counters, no pending, no error, no empty line, and no statement
+   * that nothing had ever been measured.
+   */
+  it('says so when there is a last run but no measurement, instead of rendering nothing', async () => {
+    mockApi({
+      stats: { computedAt: null, running: false, stores: null, missingLocalFiles: null },
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          status: 'refused',
+          note: 'attachments root missing or unreadable',
+          stores: null,
+          candidatesTotal: 0,
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const line = await screen.findByTestId('attachment-storage-unmeasured');
+    expect(line.textContent).toMatch(/no completed measurement yet/i);
+    // Not the empty state — a sweep HAS run, it just produced no figures.
+    expect(screen.queryByTestId('attachment-storage-empty')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('attachment-storage-counters')).not.toBeInTheDocument();
+    // The run's own verdict still renders beside it.
+    expect(screen.getByTestId('attachment-sweep-last-run-problem')).toBeInTheDocument();
+  });
+
+  it('renders no unmeasured line when the figures are there', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+    await screen.findByTestId('attachment-storage-counters');
+    expect(screen.queryByTestId('attachment-storage-unmeasured')).not.toBeInTheDocument();
   });
 
   it('a failed sweep GET is a failure beside healthy storage figures — a refused run must not vanish silently', async () => {
@@ -359,7 +468,8 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     const strip = await screen.findByTestId('attachment-sweep-last-run-problem');
     expect(strip.textContent).toMatch(/attachments root missing/i);
-    expect(strip.getAttribute('role')).toBe('status');
+    // Not a live region — see the announcer cells below.
+    expect(strip.getAttribute('role')).toBeNull();
     expect(strip.className).toContain('text-warning');
     // A refusal runs before the delete phase, so this claim is always true.
     expect(strip.textContent).toMatch(/no files were deleted/i);
@@ -810,7 +920,9 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(note.textContent).toMatch(/One store was left alone/i);
     expect(note.textContent).toMatch(/confluence store has zero files/i);
     expect(note.className).toContain('text-warning');
-    expect(note).toHaveAttribute('role', 'status');
+    // Not a live region of its own — the card's one announcer speaks for a run
+    // it watched, so opening the tab does not re-read a days-old stand-down.
+    expect(note).not.toHaveAttribute('role');
     // The ordinary completed line still reports what WAS deleted.
     expect(screen.getByTestId('attachment-sweep-last-run').textContent).toMatch(/deleted/i);
   });
@@ -827,20 +939,65 @@ describe('AttachmentStorageCard (#1349)', () => {
    * ("figures update here when the walk finishes"), and the 5s poll then swaps
    * the running chip for the verdict silently — so a screen-reader user who
    * pressed Delete orphans was told the run STARTED and never told it finished
-   * or what it removed. The two existing live regions are both amber strips
-   * that render only for a run that did not complete or that stood a store
-   * down; the ordinary success path had none.
-   *
-   * `role="status"` (polite), not an alert: a completed run is a verdict worth
-   * hearing, not worth interrupting for — the refusal-strip recipe.
+   * or what it removed. That was r2's finding; putting `role="status"` on the
+   * conditionally-rendered last-run line was its first cut, and it announced
+   * the HISTORICAL record instead: a live region inserted into the DOM
+   * carrying text is announced on insertion, so merely opening this tab read
+   * out a run from three days ago. The three strips are therefore plain text
+   * and the card carries ONE always-mounted, initially EMPTY polite region
+   * that speaks only for a run this card watched.
    */
-  it('announces a completed run politely, and marks the card busy while one is in flight', async () => {
+  it('announces nothing on mount — the record is history, not an event', async () => {
     mockApi({});
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
     const lastRun = await screen.findByTestId('attachment-sweep-last-run');
-    expect(lastRun).toHaveAttribute('role', 'status');
+    // The live region exists from the first paint (that is what stops the
+    // insertion announcement) and is empty…
+    expect(screen.getByTestId('attachment-sweep-announcement')).toHaveAttribute('role', 'status');
+    expect(screen.getByTestId('attachment-sweep-announcement').textContent).toBe('');
+    // …and none of the conditional strips is a live region of its own.
+    expect(lastRun).not.toHaveAttribute('role');
     expect(screen.getByTestId('attachment-storage-card')).toHaveAttribute('aria-busy', 'false');
+  });
+
+  it('does not announce a days-old failed run just because the tab was opened', async () => {
+    mockApi({
+      sweep: {
+        running: false,
+        lastRun: { ...COMPLETED_RUN, status: 'refused', note: 'attachments root missing or unreadable' },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const strip = await screen.findByTestId('attachment-sweep-last-run-problem');
+    expect(strip).not.toHaveAttribute('role');
+    expect(screen.getByTestId('attachment-sweep-announcement').textContent).toBe('');
+  });
+
+  it('announces the verdict of a run it watched', async () => {
+    mockApi({
+      sweepAfterPost: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          at: new Date(Date.now() + 1000).toISOString(),
+          dryRun: false,
+          candidatesTotal: 2,
+          deleted: { files: 2, directories: 1, bytes: 2048, imageEmbeddingRows: 0, pagesMarkedDirty: 1 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await waitFor(() => expect(screen.getByTestId('attachment-sweep-dry-run')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('attachment-sweep-dry-run'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('attachment-sweep-announcement').textContent).toMatch(
+        /Sweep finished — deleted 2 files and 1 directory/,
+      ),
+    );
   });
 
   it('marks the card busy while a sweep is running', async () => {
