@@ -636,9 +636,12 @@ search that returned nothing at all — is recorded on basis `none` and appears
 in **neither** distribution. On a thin corpus that last case is the largest
 part of the gap. Nothing is hidden from you: neither threshold can act on
 those questions, because neither scale carries a number for them (the honest
-refusals that do not consult a threshold — an empty knowledge base, an
-image-only match — are unaffected by these knobs and are described above). If the readout says the distribution could not
-be read, that is a failed request, not an empty corpus — press **Retry** at
+refusals that consult no threshold at all — an empty knowledge base, an
+embedding outage, an image-only match — are unaffected by these knobs; the
+four refusal reasons are enumerated in
+`docs/architecture/09-flow-rag-chat.md`). If the readout says the
+distribution could not be read, that is a failed request, not an empty
+corpus — press **Retry** at
 the top of the section (never reload the page: that discards every unsaved
 change on the panel). If it says the distribution could not be *re*-read, the
 figures beside it are real and merely not current — they are the last ones the
@@ -646,11 +649,12 @@ panel could fetch, and the same Retry refreshes them. Per-request verdicts
 are still logged and traced (`rag.confidence` / `rag.confidence_basis`) for
 inspecting one answer.
 
-**An empty result set belongs to no basis and refuses when EITHER knob is
-raised** — "no grounding at all" is below any positive bar. On a rerank
-deployment, note the corollary: with only the similarity knob raised,
-steady-state (fully reranked) requests are gated by the rerank knob, which
-is still 0 — raise **both** knobs for full coverage.
+**An empty result set belongs to no basis, and neither knob decides it** — it
+is refused *ungated*, ahead of any threshold comparison (`no_context`,
+#1105), so raising or lowering either number changes nothing for it. What the
+knobs can leave uncovered is a whole *basis*: on a rerank deployment with only
+the similarity knob raised, steady-state (fully reranked) requests are gated
+by the rerank knob, which is still 0 — raise **both** knobs for full coverage.
 
 Each is a plain decimal in [0, 1) — `0.35`, not `1`, `0,35` or `35%`
 (rejected loudly in the logs, gate stays off); 0, an absent row, or an
