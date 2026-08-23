@@ -1,13 +1,15 @@
 /**
  * #1349 — remove a hard-deleted standalone page's attachment directories.
  *
- * A standalone page's bytes can sit in TWO places, both keyed by its numeric
+ * A standalone page's bytes can sit in THREE places, all keyed by its numeric
  * PK: pasted images land in the Confluence-style tree under
  * `<ATTACHMENTS_DIR>/<pk>/` (the paste route keys standalone pages by PK —
  * `pages-crud.ts`'s writer), and draw.io saves / relocated attachments in the
- * local store under `<ATTACHMENTS_DIR>/local/<pk>/`. The row deletes remove
- * `local_attachments` rows via CASCADE but never files, so before this every
- * standalone hard delete and every trash purge leaked both directories.
+ * local store under `<ATTACHMENTS_DIR>/local/<pk>/`, and an uploaded page mark
+ * in the page-icon store under `<ATTACHMENTS_DIR>/page-icons/<pk>/`. The row
+ * deletes remove `local_attachments` rows via CASCADE but never files, so
+ * before this every standalone hard delete and every trash purge leaked all
+ * three directories.
  *
  * **The Confluence-style tree's keyspace is SHARED.** Confluence DC ids are
  * numeric and sit inside `pages.id`'s range, and both kinds of page cache into
@@ -36,6 +38,7 @@ import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { attachmentCacheDir, removeCachedAttachmentDirectory } from './attachment-store.js';
 import { removeLocalAttachmentDirectory } from './local-attachment-service.js';
+import { deletePageIconImage } from './page-icon-store.js';
 
 /**
  * The `EXISTS` below asks whether a Confluence page owns the key RIGHT NOW,
@@ -66,6 +69,27 @@ export async function cleanupStandalonePageAttachmentDirs(pageId: number): Promi
     logger.warn(
       { err, pageId },
       'standalone-attachment-cleanup: could not remove local attachment directory (orphaned files only — DB is consistent)',
+    );
+  }
+
+  // The page-icon store (#1349 review r1). `page-icons/<pk>/` is the THIRD
+  // store under this root, and until now nothing but `PUT`/`DELETE
+  // /pages/:id/icon` ever removed from it — so a hard-deleted or purged page's
+  // uploaded mark stayed on disk forever, and the sweep is structurally
+  // forbidden from reaching it (`ATTACHMENT_ROOT_RESERVED_DIRNAMES`, which is
+  // the correct call: an `rm -rf` there is unrecoverable, since migrations
+  // 095/096 persist only the sha). Unlike the Confluence-style tree this
+  // keyspace is NOT shared — the directory is keyed by `pages.id` alone, so
+  // the row that just went is its only possible owner — and unlike that tree
+  // there is no write-before-INSERT race to wait out: the icon route writes
+  // only for a page that already exists. So it needs neither the ownership
+  // EXISTS nor the grace window, only the same best-effort contract.
+  try {
+    await deletePageIconImage(pageId);
+  } catch (err) {
+    logger.warn(
+      { err, pageId },
+      'standalone-attachment-cleanup: could not remove page icon directory (orphaned files only — DB is consistent)',
     );
   }
 

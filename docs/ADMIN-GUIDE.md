@@ -1143,8 +1143,15 @@ rows in `local_attachments`). Sync and page deletes clean their own pages;
 everything else is covered by the observability card and the sweep shipped in
 #1349. A third entry, `page-icons/<page id>/<sha>.<ext>`, is a **separate
 store** for uploaded page marks: it is reserved by name, never walked and never
-swept — those files are the only copy, so there is nothing to reconcile them
-against.
+swept. Those files *are* reconcilable — for `icon_kind = 'image'` the page row's
+`icon_value` is the sha that names the file — but they are deliberately out of
+scope for #1349, because they are the only copy of an uploaded mark and a wrong
+verdict there is unrecoverable rather than a re-fetch. Removal is therefore
+event-driven: unsetting or replacing an icon deletes the old file, and since
+#1349 deleting a **standalone** page permanently (hard delete or trash purge)
+removes its icon directory alongside its attachment directories. A Confluence
+page deleted from Compendiq does not yet clear its mark — a known, bounded
+leak of one small file per such page, which no sweep will collect.
 
 **Where:** Settings → Knowledge → Spaces & Sync → **Sync schedule**, in the
 **Attachment storage** card (admin only; the wrapper opens on its Spaces tab,

@@ -225,6 +225,28 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       expect(await exists(path.join(tempBase, 'local', String(pageId)))).toBe(false);
     });
 
+    // Review r1: the THIRD store under this root. Nothing but the icon route
+    // itself ever removed from `page-icons/<pk>/`, and the sweep is
+    // structurally forbidden from reaching it (it is a reserved name), so a
+    // hard-deleted page's uploaded mark stayed on disk forever. The keyspace
+    // is `pages.id` alone — no shared-key ambiguity, no write-before-INSERT
+    // race — so it is removed unconditionally, like the local store.
+    it('removes the uploaded page icon too', async () => {
+      const userId = await seedUser();
+      const pageId = await seedStandalonePage(userId);
+      const icon = await writeFileAt('page-icons', String(pageId), `${'a'.repeat(64)}.png`);
+      // A neighbour's mark, to pin that the removal is keyed and not a sweep
+      // of the store.
+      const neighbour = await writeFileAt('page-icons', String(pageId + 1), `${'b'.repeat(64)}.png`);
+      await query('DELETE FROM pages WHERE id = $1', [pageId]);
+
+      await cleanupStandalonePageAttachmentDirs(pageId);
+
+      expect(await exists(icon), "a hard-deleted page's icon must not be left on disk").toBe(false);
+      expect(await exists(path.join(tempBase, 'page-icons', String(pageId)))).toBe(false);
+      expect(await exists(neighbour), 'another page’s mark is untouched').toBe(true);
+    });
+
     it('never throws — a filesystem problem is logged, not fatal', async () => {
       // No page rows, no directories at all: both removals are ENOENT no-ops.
       await expect(cleanupStandalonePageAttachmentDirs(999_999)).resolves.toBeUndefined();
@@ -239,6 +261,8 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       await writeFileAt(String(expired), 'pasted.png');
       await writeFileAt('local', String(expired), 'diagram.png');
       await writeFileAt(String(fresh), 'keep.png');
+      const expiredIcon = await writeFileAt('page-icons', String(expired), `${'a'.repeat(64)}.png`);
+      const freshIcon = await writeFileAt('page-icons', String(fresh), `${'b'.repeat(64)}.png`);
       await ageDir(String(expired));
 
       const purged = await purgeExpiredStandalonePages();
@@ -246,6 +270,10 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       expect(purged).toBe(1);
       expect(await exists(path.join(tempBase, String(expired)))).toBe(false);
       expect(await exists(path.join(tempBase, 'local', String(expired)))).toBe(false);
+      expect(await exists(expiredIcon), 'a purged page’s icon goes with it').toBe(false);
+      expect(await exists(freshIcon), 'a page still inside its trash window keeps its icon').toBe(
+        true,
+      );
       // The page still inside its trash window keeps its files.
       expect(await exists(path.join(tempBase, String(fresh), 'keep.png'))).toBe(true);
     });

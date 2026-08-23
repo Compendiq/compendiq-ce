@@ -494,7 +494,9 @@ together, which matters most for #1114's query-side prefix.
   Confluence ids) and `local/<page_id>/<file>` (the local store, whose metadata
   rows are `local_attachments`). Three intake paths write and only page-scoped
   cleanups delete; `local_attachments`' CASCADE removes rows, never files. The
-  standalone hard-delete and trash purge now remove both directories
+  standalone hard-delete and trash purge now remove both directories, plus the
+  page's `page-icons/<pk>/` mark, which nothing but the icon route itself ever
+  removed and which no sweep will ever collect
   (`core/services/standalone-attachment-cleanup.ts`) — but `<pk>/` only when no
   page claims `confluence_id = <pk>` AND the directory is older than a 5-minute
   grace window, because deleting a shared-keyspace directory can evict a live
