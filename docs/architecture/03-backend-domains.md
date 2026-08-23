@@ -12,14 +12,14 @@ flowchart LR
         direction TB
         rF["foundation<br/>health, auth, settings,<br/>admin, admin-embedding-locks,<br/>rbac, notifications, setup"]
         rC["confluence<br/>spaces, sync, attachments"]
-        rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>embeddings, embedding-shadow, models,<br/>admin, pdf, prepare-image"]
+        rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>inline-completion, embeddings,<br/>embedding-shadow, models,<br/>admin, pdf, prepare-image"]
         rK["knowledge<br/>pages CRUD, relocate, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, export/import"]
     end
 
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>inline-completion-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service"]
     end
 
@@ -136,6 +136,46 @@ as an L-size change to route registration, out of scope for a lint fix).
 `boundaries/no-unknown` (which flags an unresolvable *dependency target*,
 not an unmapped source file) stays off — `@compendiq/contracts` resolves
 outside `src/` and would be pure noise.
+
+## Inline completion (#1417)
+
+`routes/llm/llm-inline-completion.ts` is the authenticated, permission-checked
+HTTP boundary for TipTap ghost text. It validates a small request contract,
+sanitizes prefix, suffix, title, space key, and language independently, and
+returns `204` when the `inline_completion` use case is unassigned. Unlike chat
+and background jobs, the route does not emit a content-bearing LLM audit row;
+it records only fixed-field aggregate counts in Redis.
+
+`domains/llm/services/inline-completion-client.ts` is intentionally separate
+from `openai-compatible-client.ts`. It keeps provider authentication, TLS,
+OpenTelemetry, and the per-provider circuit breaker, but its undici request
+bypasses the general LLM queue so a short editor completion cannot wait behind
+a long generation. The request's disconnect signal is passed directly to
+undici. Recognized coder models use a FIM prompt on `/completions`; other
+models use `/chat/completions`. Both paths share the bounded-token, one-line
+normalizer.
+
+```mermaid
+sequenceDiagram
+    participant E as TipTap editor
+    participant R as POST /api/llm/inline-completion
+    participant P as Explicit provider assignment
+    participant M as Model endpoint
+    E->>R: bounded prefix/suffix + AbortSignal lifetime
+    R->>P: resolveInlineCompletionUsecase()
+    alt unassigned
+        P-->>R: null
+        R-->>E: 204 (ghost text off)
+    else assigned
+        P-->>R: provider + model
+        R->>M: direct FIM or chat request
+        M-->>R: short continuation
+        R-->>E: sanitized one-line response
+    end
+```
+
+This introduces no domain-boundary edge: the route still composes
+`routes/llm → domains/llm + core`, and the client remains `llm → core`.
 
 ## Image input (#1154)
 

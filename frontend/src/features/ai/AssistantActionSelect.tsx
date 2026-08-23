@@ -22,12 +22,15 @@ import {
   type ImprovementType,
 } from './improvement-types';
 import { CREATE_SKILLS, type CreateSkillId } from './create-skills';
+import { type AssistantAction, type CreateSkillAction } from './assistant-actions';
 import { cn } from '../../shared/lib/cn';
 import { Button } from '../../shared/components/Button';
 import { SkillsIcon } from '../../shared/components/SkillsIcon';
 
-export type CreateSkillAction = 'create-spec' | 'create-guide' | 'create-notes' | 'create-postmortem' | 'create-custom';
-export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate' | CreateSkillAction;
+// Both types moved to the leaf module (#1361) so `AiContext` can read the
+// allow-lists without closing an import cycle through this component.
+// Re-exported here for the callers that already import them from this path.
+export type { AssistantAction, CreateSkillAction };
 
 interface ActionDefinition {
   id: AssistantAction;
@@ -66,7 +69,10 @@ const IMPROVEMENT_ACTIONS: ActionDefinition[] = IMPROVEMENT_TYPES.map((type) => 
   Icon: IMPROVEMENT_ICONS[type],
 }));
 
-const CREATE_SKILL_ACTIONS: ActionDefinition[] = CREATE_SKILLS.map((skill) => ({
+// Renamed from CREATE_SKILL_ACTIONS (#1361): `assistant-actions.ts` now exports
+// that name for the list of create-skill IDS, which is what a surface's
+// allow-list carries. These are the menu's rendered definitions.
+const CREATE_SKILL_DEFINITIONS: ActionDefinition[] = CREATE_SKILLS.map((skill) => ({
   id: `create-${skill.id}` as CreateSkillAction,
   label: skill.shortName,
   description: skill.description,
@@ -151,24 +157,33 @@ function ActionItem({ action, selected, onSelect }: {
 }
 
 export function AssistantActionSelect({
-  includeGenerate = false,
+  actions,
   disabled = false,
   className,
 }: {
-  includeGenerate?: boolean;
+  /**
+   * The allow-list this surface offers — `AI_HOME_ACTIONS` on `/ai`,
+   * `DOCK_ACTIONS` in the article dock (#1361). It replaced a boolean
+   * `includeGenerate`, which could only ever describe one of the several
+   * differences between the surfaces, and which said nothing at all about the
+   * five create skills #1401 added to both.
+   */
+  actions: readonly AssistantAction[];
   disabled?: boolean;
   className?: string;
 }) {
   const { mode, setMode, improvementType, setImprovementType, createSkill, setCreateSkill } = useAiContext();
   const selected = resolveAssistantAction(mode, improvementType, createSkill);
-  const definitions = [
-    CHAT_ACTION,
-    ...IMPROVEMENT_ACTIONS,
-    ...CREATE_SKILL_ACTIONS,
-    DIAGRAM_ACTION,
-    ...(includeGenerate ? [GENERATE_ACTION] : []),
-  ];
-  const current = definitions.find((action) => action.id === selected) ?? CHAT_ACTION;
+  // A selection this surface does not offer reads as Q&A rather than as a
+  // trigger naming an action Send cannot run — the same fallback the old
+  // `includeGenerate` form applied to Generate, generalised.
+  const available = actions.includes(selected) ? selected : 'ask';
+  const chatActions = actions.includes('ask') ? [CHAT_ACTION] : [];
+  const rewriteActions = IMPROVEMENT_ACTIONS.filter((action) => actions.includes(action.id));
+  const createActions = [...CREATE_SKILL_DEFINITIONS, DIAGRAM_ACTION, GENERATE_ACTION]
+    .filter((action) => actions.includes(action.id));
+  const definitions = [...chatActions, ...rewriteActions, ...createActions];
+  const current = definitions.find((action) => action.id === available) ?? CHAT_ACTION;
   const { Icon } = current;
 
   const selectAction = (action: AssistantAction) => {
@@ -201,29 +216,46 @@ export function AssistantActionSelect({
           collisionPadding={8}
           className="nm-card-elevated z-50 max-h-[min(32rem,var(--radix-dropdown-menu-content-available-height))] w-80 overflow-y-auto p-1.5"
         >
-          <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
-            Assistant chat
-          </DropdownMenu.Label>
-          <ActionItem action={CHAT_ACTION} selected={selected === 'ask'} onSelect={selectAction} />
+          {chatActions.length > 0 && (
+            <>
+              <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
+                Assistant chat
+              </DropdownMenu.Label>
+              {chatActions.map((action) => (
+                <ActionItem key={action.id} action={action} selected={available === action.id} onSelect={selectAction} />
+              ))}
+            </>
+          )}
 
-          <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
-          <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
-            Rewrite skills
-          </DropdownMenu.Label>
-          {IMPROVEMENT_ACTIONS.map((action) => (
-            <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
-          ))}
+          {/* A section header with no items under it is worse than a shorter
+              menu, so each group — and the rule above it — renders only when
+              this surface's allow-list carries something for it. */}
+          {rewriteActions.length > 0 && (
+            <>
+              <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
+              <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
+                Rewrite skills
+              </DropdownMenu.Label>
+              {rewriteActions.map((action) => (
+                <ActionItem key={action.id} action={action} selected={available === action.id} onSelect={selectAction} />
+              ))}
+            </>
+          )}
 
-          <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
-          <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
-            Create skills
-          </DropdownMenu.Label>
-          {CREATE_SKILL_ACTIONS.map((action) => (
-            <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
-          ))}
-          <ActionItem action={DIAGRAM_ACTION} selected={selected === 'diagram'} onSelect={selectAction} />
-          {includeGenerate && (
-            <ActionItem action={GENERATE_ACTION} selected={selected === 'generate'} onSelect={selectAction} />
+          {createActions.length > 0 && (
+            <>
+              <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
+              {/* Both shipped surfaces carry the create skills, so this reads
+                  "Create skills" exactly as dev does today; the fallback is for
+                  a surface that offers only Diagram and/or Generate, where that
+                  label would name items it does not contain. */}
+              <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
+                {createActions.some((action) => action.id.startsWith('create-')) ? 'Create skills' : 'Create'}
+              </DropdownMenu.Label>
+              {createActions.map((action) => (
+                <ActionItem key={action.id} action={action} selected={available === action.id} onSelect={selectAction} />
+              ))}
+            </>
           )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>

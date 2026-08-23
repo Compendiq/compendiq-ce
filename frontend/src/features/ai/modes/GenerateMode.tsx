@@ -3,6 +3,7 @@ import { AlertTriangle, Send, Loader2, Save, Search, ChevronDown, X, FolderOpen,
 import { useQuery } from '@tanstack/react-query';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { AssistantActionSelect } from '../AssistantActionSelect';
+import { AI_HOME_ACTIONS } from '../assistant-actions';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
@@ -541,7 +542,7 @@ function GenerateModeInputContent() {
             isPreparing={attachments.isPreparing}
             disabled={isStreaming}
           />
-          <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
+          <AssistantActionSelect actions={AI_HOME_ACTIONS} disabled={isStreaming} className="self-end" />
           <textarea
             ref={promptRef}
             value={input}

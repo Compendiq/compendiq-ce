@@ -26,6 +26,14 @@ export const CustomPromptsSchema = z.object(
 ).strict().default({});
 export type CustomPrompts = Partial<Record<CustomPromptKey, string>>;
 
+export const InlineCompletionDelaySchema = z.enum([
+  'fast',
+  'balanced',
+  'deliberate',
+  'manual',
+]);
+export type InlineCompletionDelay = z.infer<typeof InlineCompletionDelaySchema>;
+
 export const UserSettingsSchema = z.object({
   confluenceUrl: z.string().url().nullable(),
   confluencePat: z.string().nullable(), // Only sent on update, never returned
@@ -34,6 +42,9 @@ export const UserSettingsSchema = z.object({
   syncIntervalMin: z.number().int().min(1).max(1440),
   showSpaceHomeContent: z.boolean(),
   customPrompts: CustomPromptsSchema.optional(),
+  inlineCompletionEnabled: z.boolean(),
+  inlineCompletionDelay: InlineCompletionDelaySchema,
+  inlineCompletionCodeOnly: z.boolean(),
 });
 
 export const UpdateSettingsSchema = z.object({
@@ -44,6 +55,9 @@ export const UpdateSettingsSchema = z.object({
   syncIntervalMin: z.number().int().min(1).max(1440).optional(),
   showSpaceHomeContent: z.boolean().optional(),
   customPrompts: CustomPromptsSchema.optional(),
+  inlineCompletionEnabled: z.boolean().optional(),
+  inlineCompletionDelay: InlineCompletionDelaySchema.optional(),
+  inlineCompletionCodeOnly: z.boolean().optional(),
   // #771: true → record dismissal of the Confluence-PAT onboarding banner
   // (server stores NOW() in user_settings.confluence_pat_prompt_dismissed_at);
   // false → clear the dismissal so the banner can reappear.
@@ -59,6 +73,9 @@ export const SettingsResponseSchema = z.object({
   confluenceConnected: z.boolean(),
   showSpaceHomeContent: z.boolean(),
   customPrompts: CustomPromptsSchema,
+  inlineCompletionEnabled: z.boolean(),
+  inlineCompletionDelay: InlineCompletionDelaySchema,
+  inlineCompletionCodeOnly: z.boolean(),
   // #771: whether the user dismissed the Confluence-PAT onboarding banner.
   // Derived server-side from confluence_pat_prompt_dismissed_at IS NOT NULL —
   // the timestamp itself is never exposed.

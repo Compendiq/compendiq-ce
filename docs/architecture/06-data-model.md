@@ -58,6 +58,9 @@ erDiagram
         text theme
         int sync_interval_min
         timestamptz confluence_pat_prompt_dismissed_at "PAT onboarding banner dismissed (#771)"
+        bool inline_completion_enabled "personal ghost-text preference (#1417)"
+        text inline_completion_delay "fast | balanced | deliberate | manual (#1417)"
+        bool inline_completion_code_only "suppress suggestions outside code blocks (#1417)"
     }
 
     pages {
@@ -275,7 +278,7 @@ erDiagram
     }
 
     llm_usecase_assignments {
-        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank"
+        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank|image_embedding|inline_completion"
         uuid provider_id FK
         text model "nullable; null = inherit provider default"
         timestamptz updated_at
@@ -311,6 +314,18 @@ erDiagram
 
 `llm_conversations` carries `llm_conversations_user_updated_idx (user_id,
 updated_at DESC, id DESC)` for the keyset-paged list (migration 094).
+
+`inline_completion` is one of three non-inheriting use cases, alongside
+`rerank` and `image_embedding`. Its seeded assignment has null provider/model,
+which means the feature is disabled until an administrator explicitly assigns
+both a usable provider and model. The personal `user_settings` fields only
+control when an already-assigned feature may run; they cannot select or
+override a provider.
+
+Inline-completion prompts and completions are intentionally absent from
+`llm_audit_log`. The feature writes only aggregate request and token counters to
+fixed Redis hash fields; no user, page, prefix, suffix, or completion is part of
+those keys or values.
 
 **`chunk_text` is what gets embedded, verbatim (#1108).** Prefixing the page
 title and section into the embedded text was tried, measured, and **not

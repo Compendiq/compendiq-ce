@@ -48,6 +48,16 @@ function makeAssignments(): UsecaseAssignments {
       model: null,
       resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
     },
+    image_embedding: {
+      providerId: null,
+      model: null,
+      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+    },
+    inline_completion: {
+      providerId: null,
+      model: null,
+      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+    },
   };
 }
 

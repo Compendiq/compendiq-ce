@@ -620,13 +620,53 @@ cosine):
   normalisation makes scores only loosely comparable across requests (the
   backend logs `Rerank scores were raw logits` whenever that regime
   applied). Prefer a calibrated reranker if you intend to gate on this
-  basis; tune conservatively from your own logs either way.
+  basis; tune conservatively from your own observed distribution either way.
 
-**An empty result set belongs to no basis and refuses when EITHER knob is
-raised** — "no grounding at all" is below any positive bar. On a rerank
-deployment, note the corollary: with only the similarity knob raised,
-steady-state (fully reranked) requests are gated by the rerank knob, which
-is still 0 — raise **both** knobs for full coverage.
+**Pick each number from the line under the control, not from another
+deployment (#1284).** Both bases are recorded per request on
+`search_analytics` (`confidence`, `confidence_basis`, `surface` — migration
+098), and Settings → AI Models → Retrieval shows the observed distribution
+under each threshold: `p50`, `p90` and the number of assistant questions the
+two were computed over, for the last 7 days. The gate refuses when the score
+is **below** the threshold, so a threshold set **at** `p50` puts about half
+the questions measured on that basis below the bar and one set at `p90` about
+nine in ten — the consequence a bare number never states. Read that as a
+**ceiling on refusals, not the rate**: the gate stands down entirely for a
+turn that is grounded some other way — an assembled sub-page tree, an
+attached document, web results, or an earlier answer in the same conversation
+— and those turns are recorded in the sample all the same, because the
+analytics row is written during retrieval, before the refusal decision. On a
+multi-turn assistant the observed refusal rate at `p50` is well under half.
+The sample counts
+**assistant questions only** —
+`/llm/ask`, deep search included — because the gate is never consulted on a
+page search; and below 30 questions the line says outright that the figures
+are too few to tune against. Do not expect the two counts to add up to the
+number of questions asked: a question that belongs to **neither basis** —
+keyword-led results, image-only results, a pinned exact-identifier hit, or a
+search that returned nothing at all — is recorded on basis `none` and appears
+in **neither** distribution. On a thin corpus that last case is the largest
+part of the gap. Nothing is hidden from you: neither threshold can act on
+those questions, because neither scale carries a number for them (the honest
+refusals that consult no threshold at all — an empty knowledge base, an
+embedding outage, an image-only match — are unaffected by these knobs; the
+four refusal reasons are enumerated in
+`docs/architecture/09-flow-rag-chat.md`). If the readout says the
+distribution could not be read, that is a failed request, not an empty
+corpus — press **Retry** at
+the top of the section (never reload the page: that discards every unsaved
+change on the panel). If it says the distribution could not be *re*-read, the
+figures beside it are real and merely not current — they are the last ones the
+panel could fetch, and the same Retry refreshes them. Per-request verdicts
+are still logged and traced (`rag.confidence` / `rag.confidence_basis`) for
+inspecting one answer.
+
+**An empty result set belongs to no basis, and neither knob decides it** — it
+is refused *ungated*, ahead of any threshold comparison (`no_context`,
+#1105), so raising or lowering either number changes nothing for it. What the
+knobs can leave uncovered is a whole *basis*: on a rerank deployment with only
+the similarity knob raised, steady-state (fully reranked) requests are gated
+by the rerank knob, which is still 0 — raise **both** knobs for full coverage.
 
 Each is a plain decimal in [0, 1) — `0.35`, not `1`, `0,35` or `35%`
 (rejected loudly in the logs, gate stays off); 0, an absent row, or an
@@ -651,7 +691,13 @@ once they diverge, naming the old model, the live one and which scale moved.
 **Nothing rewrites the threshold** — a shadow swap, its rollback and a direct
 use-case re-assignment all log a warning naming both models and leave the
 number exactly as you set it. Clear the notice by re-tuning the threshold
-from your own logged `rag.confidence` values on the new model, or by pressing
+against the observed distribution shown under the control (#1284 — the old
+advice was to grep your own logs). **That distribution is not filtered to the
+new model**: `search_analytics` records the score and its basis but no
+provider or model, so for up to seven days after a model change the window
+still contains questions scored on the previous scale, and the readout says so
+while the notice above it stands. Re-tune once the window has turned over, or
+tune conservatively and revisit. You can also clear the notice by pressing
 **Keep &lt;value&gt;** on the notice itself, which records the number you
 already have against the live model. That button is the only way an untouched
 threshold gets re-recorded: the panel's Save sends only knobs you actually
@@ -711,6 +757,37 @@ retrieval confidence` log line carries `healthCaveat`
 standing down and why. **The right values are deployment-specific** —
 start from your logged confidence values, not from a number someone else
 used.
+
+### AI inline completion (`Settings → AI Models` and `Personal → Editor`)
+
+Inline completion displays a short, one-line continuation as ghost text in the
+article editor. It is opt-in at the deployment level: under **Settings → AI
+Models → LLM providers**, assign the **Inline completion** row to a dedicated
+provider and model. Leaving the row at **Disabled (no inline suggestions)** is
+the server-wide off switch; it never inherits the default provider.
+
+Choose a small, fast model. Editor requests are frequent, bypass the general
+LLM queue, and are limited to 48 output tokens by the product. FIM-capable coder
+models (for example Qwen Coder, DeepSeek Coder, StarCoder, Codestral, or
+CodeGemma families) use their fill-in-the-middle path; other OpenAI-compatible
+models use chat completion. A provider shared with other use cases also shares
+its circuit breaker, so a separate provider row gives stronger failure
+isolation.
+
+Each user controls the feature under **Settings → Personal → Editor**:
+
+- **Show inline suggestions** enables or disables ghost text for that user.
+- **Suggestion delay** chooses 300 ms, 500 ms, 800 ms, or manual-only requests.
+- **Code blocks only** suppresses suggestions in prose.
+
+In the editor, Tab accepts the whole suggestion, Alt+] on macOS or Ctrl+] on
+other platforms accepts one word, Escape dismisses it, and Alt+\ or
+Cmd+Shift+Space requests one manually. Automatic suggestions are also
+suppressed during IME composition, in tables, and on coarse-pointer devices.
+
+No prompt or completion content is written to the LLM audit log. Monitoring is
+limited to aggregate request and token counters in Redis under
+`metrics:llm:inline_completion`.
 
 ### Image retrieval (`Settings → AI Models`)
 

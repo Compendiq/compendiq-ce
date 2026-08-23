@@ -939,11 +939,29 @@ export type DegradedReason =
   | 'embedding_failed'
   | 'image_leg_unavailable';
 
-import { computeRetrievalConfidence, type RetrievalHealthCaveat } from './retrieval-confidence.js';
+import {
+  computeRetrievalConfidence,
+  type RetrievalConfidence,
+  type RetrievalHealthCaveat,
+} from './retrieval-confidence.js';
 import { assembleSiblingWindow } from './sibling-assembly.js';
 import { detectIdentifiers, type DetectedIdentifier } from './identifier-shortcircuit.js';
 import { selectDiverse } from './mmr.js';
 import { applyRankingPrior } from './ranking-prior.js';
+
+/**
+ * Which product surface produced a `search_analytics` row (#1284, migration
+ * 098). It is set by the CALLER because only the caller knows: `hybridSearch`
+ * is one function behind `/llm/ask`, `/api/search` and the benchmark harness
+ * alike.
+ *
+ * It exists because the confidence readout on Settings → AI Models → Retrieval must
+ * measure what the refuse gate actually sees. The gate runs on `/llm/ask`
+ * only, so a page search — which never consults a threshold — would otherwise
+ * dilute the distribution an operator tunes the gate against. Absent means
+ * unknown (every pre-#1284 row), never "ask".
+ */
+export type SearchSurface = 'ask' | 'search';
 
 /** Observability fields added by migration 088 (#1117 stage 2). */
 export interface SearchAnalyticsExtras {
@@ -957,6 +975,28 @@ export interface SearchAnalyticsExtras {
   degradedReason?: DegradedReason | null;
   /** Measured coverage at query time, [0,1] — recorded degraded or not. */
   embeddingCoverage?: number | null;
+  /**
+   * #1284 (migration 098) — the #1105 refuse gate's own verdict for this
+   * search, exactly as {@link computeRetrievalConfidence} returned it on the
+   * RETURNED set. `null` is a real value here: an unmeasurable set (basis
+   * `none`, or an outage) has no number, and recording 0 instead would drag
+   * every percentile the Retrieval panel shows toward the floor.
+   *
+   * Never derive it from `maxScore` or `rerankScore`: those are the RRF
+   * fusion value and the reranker's own scale, and a distribution published
+   * on the wrong scale is worse than none.
+   */
+  confidence?: number | null;
+  /**
+   * The basis that verdict was measured on — `'rerank' | 'similarity' |
+   * 'none'`. Its own column because the basis FLIPS per request (a rerank
+   * bypass measures that request on the cosine scale), so the two thresholds
+   * describe two distributions that must never be merged, and because a
+   * `null` score is not enough to tell `none` from "not recorded".
+   */
+  confidenceBasis?: RetrievalConfidence['basis'] | null;
+  /** #1284 — which surface asked. See {@link SearchSurface}. */
+  surface?: SearchSurface | null;
 }
 
 /**
@@ -1062,8 +1102,9 @@ export async function recordSearchAnalytics(
     await query(
       `INSERT INTO search_analytics
          (user_id, query, result_count, max_score, search_type,
-          rerank_score, degraded_reason, embedding_coverage)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          rerank_score, degraded_reason, embedding_coverage,
+          confidence, confidence_basis, surface)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         userId,
         queryText,
@@ -1073,6 +1114,9 @@ export async function recordSearchAnalytics(
         extras.rerankScore ?? null,
         extras.degradedReason ?? null,
         extras.embeddingCoverage ?? null,
+        extras.confidence ?? null,
+        extras.confidenceBasis ?? null,
+        extras.surface ?? null,
       ],
     );
   } catch (err) {
@@ -1221,6 +1265,15 @@ export interface HybridSearchOptions {
    * the merged set instead.
    */
   recordAnalytics?: boolean;
+  /**
+   * #1284 — which surface this search serves, stamped onto the
+   * `search_analytics` row. Undefined means unknown, and the confidence
+   * readout on Settings → AI Models → Retrieval reads `'ask'` rows only, so an internal
+   * caller that declares nothing (the benchmark harness, a future consumer)
+   * cannot silently join the distribution an operator tunes the refuse gate
+   * against. See {@link SearchSurface}.
+   */
+  surface?: SearchSurface;
   /**
    * #1351 — scope retrieval to one Confluence space: both fused legs
    * (vector + keyword, threaded straight through to
@@ -2342,17 +2395,6 @@ async function hybridSearchInner(
   // pins keep their fused score and stay in the sample.
   const scoreRows = topResults.filter((r) => r.pinned === undefined || r.vectorScore !== null || r.keywordRank !== null);
   const maxScore = scoreRows.length > 0 ? Math.max(...scoreRows.map((r) => r.score)) : null;
-  // #1112: a deep-search leg suppresses this row — see
-  // HybridSearchOptions.recordAnalytics. The wrapper records one row for the
-  // merged set, so one user gesture stays one row and no model-invented
-  // paraphrase is ever filed as a user query.
-  if (opts?.recordAnalytics !== false) {
-    trackSearchAnalytics(userId, question, topResults.length, maxScore, searchTypeFinal, {
-      ...analyticsExtras,
-      rerankScore: rerankMax,
-    });
-  }
-
   // Retrieval confidence on the trace (#1268 review: the docs promised
   // "logs/traces" and only the log existed). Computed here with the same
   // health caveat the route's gate uses, so the two can never disagree.
@@ -2374,6 +2416,28 @@ async function hybridSearchInner(
     span?.setAttribute('rag.confidence', confidence.score);
   }
   span?.setAttribute('rag.confidence_basis', confidence.basis);
+
+  // #1112: a deep-search leg suppresses this row — see
+  // HybridSearchOptions.recordAnalytics. The wrapper records one row for the
+  // merged set, so one user gesture stays one row and no model-invented
+  // paraphrase is ever filed as a user query.
+  //
+  // #1284: the write sits BELOW the confidence computation on purpose. It
+  // used to run first, and the verdict was then only ever a span attribute —
+  // so the panel that tells operators to tune against their own
+  // `rag.confidence` values had no column to read. The row now carries the
+  // SAME object the trace does, computed once from the same `topResults` and
+  // the same health caveat the route's gate re-derives, so the recorded
+  // number cannot drift from the number the gate compared.
+  if (opts?.recordAnalytics !== false) {
+    trackSearchAnalytics(userId, question, topResults.length, maxScore, searchTypeFinal, {
+      ...analyticsExtras,
+      rerankScore: rerankMax,
+      confidence: confidence.score,
+      confidenceBasis: confidence.basis,
+      surface: opts?.surface ?? null,
+    });
+  }
 
   // Guarded: the callback is a caller-supplied observer running mid-request;
   // a throwing consumer must not turn a completed retrieval into a 500 with

@@ -426,6 +426,9 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
         theme: 'glass-dark',
         sync_interval_min: 15,
         show_space_home_content: true,
+        inline_completion_enabled: false,
+        inline_completion_delay: 'deliberate',
+        inline_completion_code_only: true,
       }],
     });
     // getUserAccessibleSpaces is mocked to return ['DEV', 'DOCS']
@@ -437,6 +440,11 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(body.selectedSpaces).toEqual(['DEV', 'DOCS']);
     expect(body.confluenceUrl).toBe('https://confluence.example.com');
     expect(body.confluenceConnected).toBe(true);
+    expect(body).toMatchObject({
+      inlineCompletionEnabled: false,
+      inlineCompletionDelay: 'deliberate',
+      inlineCompletionCodeOnly: true,
+    });
   });
 
   it('GET /settings/sync-overview returns sync overview payload', async () => {
@@ -499,6 +507,34 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     const body = JSON.parse(response.body);
     expect(body.selectedSpaces).toEqual([]);
     expect(body.theme).toBe('glass-dark');
+    expect(body).toMatchObject({
+      inlineCompletionEnabled: true,
+      inlineCompletionDelay: 'balanced',
+      inlineCompletionCodeOnly: false,
+    });
+  });
+
+  it('PUT /settings persists all inline-completion preferences parameterized', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        inlineCompletionEnabled: false,
+        inlineCompletionDelay: 'manual',
+        inlineCompletionCodeOnly: true,
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    const update = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE user_settings SET'),
+    );
+    // CustomPromptsSchema carries its established `{}` default, so the shared
+    // PUT parser writes it first even when omitted from the wire body.
+    expect(update?.[0]).toContain('inline_completion_enabled = $2');
+    expect(update?.[0]).toContain('inline_completion_delay = $3');
+    expect(update?.[0]).toContain('inline_completion_code_only = $4');
+    expect(update?.[1]).toEqual(['{}', false, 'manual', true, 'test-user-id']);
   });
 
   it('PUT /settings does not mark pages dirty when only unrelated user settings change', async () => {

@@ -51,7 +51,10 @@ function improveButton(): HTMLButtonElement {
   return screen.getByRole('button', { name: /Improve Page|Loading models/i }) as HTMLButtonElement;
 }
 
-function createWrapper(initialEntries = ['/ai?pageId=page-1&mode=improve']) {
+// #1361: a document comes from the article route now — `/ai?pageId=` resolves
+// to no page. Improve is a page-scoped action, so its tests mount where the
+// page is.
+function createWrapper(initialEntries = ['/pages/page-1?mode=improve']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });

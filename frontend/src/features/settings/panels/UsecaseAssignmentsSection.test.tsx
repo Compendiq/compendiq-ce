@@ -66,6 +66,11 @@ function makeAssignments(): UsecaseAssignments {
       model: null,
       resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
     },
+    inline_completion: {
+      providerId: null,
+      model: null,
+      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+    },
   };
 }
 
@@ -104,7 +109,7 @@ describe('UsecaseAssignmentsSection', () => {
     expect(screen.getByLabelText('rerank-info')).toBeTruthy();
   });
 
-  it('renders all 5 use-cases including embedding', () => {
+  it('renders every contract-defined use case', () => {
     const Wrapper = createWrapper();
     render(
       <UsecaseAssignmentsSection
@@ -122,6 +127,25 @@ describe('UsecaseAssignmentsSection', () => {
     expect(screen.getByText('Quality worker')).toBeTruthy();
     expect(screen.getByText('Auto-tag')).toBeTruthy();
     expect(screen.getByText('Embedding')).toBeTruthy();
+    expect(screen.getByText('Inline completion')).toBeTruthy();
+  });
+
+  it('renders inline completion as explicitly disabled with a fast-model warning', () => {
+    const Wrapper = createWrapper();
+    render(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
+        onChange={() => {}}
+      />,
+      { wrapper: Wrapper },
+    );
+    const select = screen.getByTestId('usecase-inline_completion-provider') as HTMLSelectElement;
+    expect(select.options[0]!.text).toBe('Disabled (no inline suggestions)');
+    expect(screen.getByLabelText('inline-completion-info')).toHaveAttribute('title', expect.stringContaining('small, fast model'));
   });
 
   it('provider dropdown shows Inherit + all providers', () => {

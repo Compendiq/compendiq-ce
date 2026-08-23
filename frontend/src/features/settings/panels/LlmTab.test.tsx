@@ -100,6 +100,11 @@ const assignments = {
     model: 'Qwen/Qwen3-VL-Embedding-2B',
     resolved: { providerId: providerB.id, providerName: 'OpenAI', model: 'Qwen/Qwen3-VL-Embedding-2B' },
   },
+  inline_completion: {
+    providerId: null,
+    model: null,
+    resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+  },
 };
 
 /** #1115 — the last record a re-probe wrote, so GET reflects it (see below). */

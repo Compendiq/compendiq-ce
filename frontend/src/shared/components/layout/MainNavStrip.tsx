@@ -4,11 +4,18 @@ import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/cn';
 
 /**
- * The "Pages / AI / Graph" strip that appears at the top of every left
- * sidebar — `SidebarTreeView` on `/`, `/pages/*`, `/ai`, and
+ * The "Pages / AI / Graph" strip. It renders in two places: the chassis-level
+ * `MainNavChassisRail`, which owns it at desktop widths, and — when a sidebar
+ * is passed `embedMainNav` — the top of that sidebar, which is how the mobile
+ * drawer gets it. The sidebars are `SidebarTreeView` on `/` and `/pages/*`,
+ * `AiConversationsSidebar` on `/ai` and `/ai/c/:id` (#1361), and
  * `SettingsSidebar` on `/settings/*`. Extracted into one component so the
- * two sidebars can't drift in order or in styling. The visual order here
+ * three sidebars can't drift in order or in styling. The visual order here
  * is the source of truth.
+ *
+ * `isActive` is plain `startsWith` for the AI pill, so `/ai` and
+ * `/ai/c/<id>` both light it: a reopened conversation is still the AI tab,
+ * and no code change was needed for the per-conversation route.
  *
  * Keyboard shortcuts (g p / g a / g g) are owned by `AppLayout` and stay
  * tied to the mnemonic letter, not to the display order — so reordering

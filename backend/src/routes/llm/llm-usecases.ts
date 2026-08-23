@@ -13,6 +13,7 @@ import {
   resolveUsecase,
   resolveRerankUsecase,
   resolveImageEmbeddingUsecase,
+  resolveInlineCompletionUsecase,
   resolveConfidenceBasisPair,
   loadProviderConfig,
   type ConfidenceBasisResolution,
@@ -46,19 +47,24 @@ const ADMIN_LIMIT = {
   config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
 };
 
-const USECASES: readonly LlmUsecase[] = [
-  'chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank', 'image_embedding',
-] as const;
+const USECASES: readonly LlmUsecase[] = [...LlmUsecaseSchema.options];
 
 /**
- * The two ADR-021 use cases that never inherit the default provider. Spelled
+ * The ADR-021 use cases that never inherit the default provider. Spelled
  * once, so the three places that special-case them (`GET /llm/usecase-default`,
  * the admin grid, and the resolver behind both) cannot disagree.
  */
-const NON_INHERITING: ReadonlySet<LlmUsecase> = new Set<LlmUsecase>(['rerank', 'image_embedding']);
+const NON_INHERITING: ReadonlySet<LlmUsecase> = new Set<LlmUsecase>([
+  'rerank',
+  'image_embedding',
+  'inline_completion',
+]);
 
 function resolveNonInheriting(usecase: LlmUsecase) {
-  return usecase === 'rerank' ? resolveRerankUsecase() : resolveImageEmbeddingUsecase();
+  if (usecase === 'rerank') return resolveRerankUsecase();
+  if (usecase === 'image_embedding') return resolveImageEmbeddingUsecase();
+  if (usecase === 'inline_completion') return resolveInlineCompletionUsecase();
+  throw new Error(`${usecase} is not a non-inheriting use case`);
 }
 
 /** #1184 — shared by the capability read and the manual re-probe. */
@@ -153,11 +159,10 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
     const { usecase } = z.object({ usecase: LlmUsecaseSchema }).parse(req.query);
     let resolved;
     try {
-      // Rerank never inherits the default provider — unassigned means the
-      // stage is disabled (#1104), which this route reports as 404 rather
-      // than pretending the default provider serves /v1/rerank. #1115's
-      // `image_embedding` is the same rule; `resolveUsecase` throws for both,
-      // so this branch is what keeps the route from 500ing on them.
+      // Three specialized use cases never inherit the default provider:
+      // rerank (#1104), image embedding (#1115), and inline completion
+      // (#1417). This branch reports an unassigned row as 404 instead of
+      // pretending the default provider can serve that traffic.
       resolved = NON_INHERITING.has(usecase)
         ? await resolveNonInheriting(usecase)
         : await resolveUsecase(usecase);
@@ -190,7 +195,7 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
     });
   });
 
-  // GET /admin/llm-usecases — return all 5 use-cases with raw + resolved values.
+  // GET /admin/llm-usecases — return every contract-defined use case.
   fastify.get(
     '/admin/llm-usecases',
     { preHandler: fastify.requireAdmin, ...ADMIN_LIMIT },
@@ -201,10 +206,9 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       const raw = new Map(rawRows.rows.map(r => [r.usecase, r]));
       const out: Record<string, unknown> = {};
       for (const u of USECASES) {
-        // Rerank and image embedding never fall back to the default provider —
-        // unassigned means the stage is DISABLED (#1104, #1115), and showing
-        // the default here would imply it serves that traffic. The empty
-        // sentinel renders as "unset" in the settings grid.
+        // Specialized non-inheriting use cases stay disabled when unassigned;
+        // showing the default here would imply it serves that traffic. The
+        // empty sentinel renders as "unset" in the settings grid.
         const resolved = NON_INHERITING.has(u)
           ? await resolveNonInheriting(u).catch(() => null)
           : await resolveUsecase(u).catch(() => null);
