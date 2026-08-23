@@ -152,8 +152,17 @@ export async function resolveImageEmbeddingUsecase(): Promise<Resolved | null> {
 }
 
 /**
- * Shared body of the two ADR-021 use cases that NEVER inherit. One function
- * rather than two, so a future third cannot quietly gain a fallback that the
+ * #1417: inline completion is opt-in. Its high request frequency and strict
+ * latency/token budget make silently inheriting the default chat provider an
+ * unsafe operational surprise, so an unassigned row means ghost text is off.
+ */
+export async function resolveInlineCompletionUsecase(): Promise<Resolved | null> {
+  return resolveExplicitOnlyUsecase('inline_completion');
+}
+
+/**
+ * Shared body of the three ADR-021 use cases that NEVER inherit. One function
+ * rather than three, so a future fourth cannot quietly gain a fallback that the
  * others refuse — the `usecase` is the only difference between them.
  *
  * A model must resolve too: an assignment without a model falls back to the
@@ -161,7 +170,7 @@ export async function resolveImageEmbeddingUsecase(): Promise<Resolved | null> {
  * rather than posting an empty model name at a non-OpenAI-shaped endpoint.
  */
 async function resolveExplicitOnlyUsecase(
-  usecase: 'rerank' | 'image_embedding',
+  usecase: 'rerank' | 'image_embedding' | 'inline_completion',
 ): Promise<Resolved | null> {
   const rows = await query<ResolveRow>(
     `SELECT
@@ -205,6 +214,11 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   if (usecase === 'image_embedding') {
     throw new Error(
       "resolveUsecase must not resolve 'image_embedding' — use resolveImageEmbeddingUsecase (unassigned = image leg disabled)",
+    );
+  }
+  if (usecase === 'inline_completion') {
+    throw new Error(
+      "resolveUsecase must not resolve 'inline_completion' — use resolveInlineCompletionUsecase (unassigned = ghost text disabled)",
     );
   }
   // Enterprise override: when org LLM policy is enabled, EE returns the

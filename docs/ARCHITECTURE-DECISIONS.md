@@ -1811,6 +1811,10 @@ Until this ADR the app supported exactly two LLM backends selected by the `LLM_P
 
 **Per-use-case assignments**: The new `llm_usecase_assignments` table maps each of `chat | summary | quality | auto_tag | embedding` to a `(provider_id, model)` pair. Either field can be `NULL` to inherit from the provider's default or the globally-default provider. The resolver (`llm-provider-resolver.ts`) combines both inheritance paths in a single cached lookup.
 
+That five-item list records the original migration. Later amendments add
+`rerank`, `image_embedding`, and `inline_completion`; all three are explicitly
+assigned and never inherit the globally-default provider.
+
 **Unified client**: `openai-compatible-client.ts` replaces both `ollama-service.ts` and `openai-service.ts`. It queues requests (`LLM_CONCURRENCY`) and wraps calls in per-provider circuit breakers. Rate-limit and retry behavior is per-provider, not per-call-site.
 
 **Embedding dimension safety**: Changing the embedding model to one that returns a different vector length is a destructive operation gated by the `/admin/embedding/probe` + `/admin/embedding/reembed {newDimensions}` flow with a two-step confirmation banner in the UI. The reembed transaction picks a column type + index strategy from the requested dimension count (pgvector 0.8 caps: HNSW on `vector` ≤ 2000 dims; HNSW on `halfvec` ≤ 4000 dims):
@@ -1987,6 +1991,36 @@ the provider's body, which stays on
 probed: the leg simply goes off, and the index is left in place so re-assigning
 the same pair costs nothing.
 
+### #1417 — the `inline_completion` use case
+
+ADR-021 gains an **eighth** use case, `inline_completion`. It follows the
+non-inheriting rule established by `rerank` and `image_embedding`: an
+unassigned row means ghost text is off. High-frequency typing traffic must not
+silently land on an operator's default chat model, so neither the global
+default nor Enterprise chat-policy overrides apply. The admin assignment row
+warns operators to choose a dedicated small, fast model.
+
+**This path is latency-specialized, not a new provider protocol.**
+`POST /api/llm/inline-completion` authenticates the user, requires
+`llm:query`, rate-limits the route, validates bounded context, and sanitizes
+each prompt field. It then calls the assigned provider directly through
+undici, retaining the shared provider authentication, TLS policy, tracing, and
+circuit breaker but deliberately bypassing the general LLM queue. The browser
+disconnect signal reaches undici, so stale cursor requests do not keep using a
+provider slot. FIM-capable coder models receive
+`<PRE>prefix<SUF>suffix<MID>` on `/completions`; other models receive a short
+continuation instruction on `/chat/completions`. Output is capped at 64 tokens
+(48 by default), one line, with stop sequences for newline and code fences.
+
+**Content observability is deliberately absent.** Inline prompts and
+completions are not written to `llm_audit_log`; only fixed-field aggregate
+request/token counters are incremented in Redis, best-effort and off the
+response path. Personal settings in `user_settings` control enabled state,
+delay (`fast | balanced | deliberate | manual`), and code-block-only mode.
+The TipTap plugin owns the transient suggestion and abort controller; it
+suppresses requests during IME composition, in tables, and on coarse pointers,
+and accepts insertions as one undoable transaction.
+
 ### #1361 — conversation persistence adds no use case
 
 ADR-021 is NOT amended with a new use case by #1361. Conversation persistence
@@ -1995,7 +2029,8 @@ keyset-paged list, `PATCH` rename, the history replay budget) is storage and
 routing, not an outbound model call. The one model call #1361 adds — the
 auto-title (PR 3) — resolves `resolveUsecase('chat')` deliberately, the #1112
 argument: a one-line title is a rewrite any chat model can do, and an eighth
-assignment (after `rerank`, #1104, and `image_embedding`, #1115) would be a knob
+assignment (after `rerank`, #1104, `image_embedding`, #1115, and
+`inline_completion`, #1417) would be a ninth knob
 every operator must set before titles work at all.
 It runs after the answer's terminal frame, never in front of it, sanitises its
 inputs, constrains its output, and soft-fails to the word-boundary-trimmed

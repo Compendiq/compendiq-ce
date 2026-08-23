@@ -171,6 +171,34 @@ export const AnalyzeQualityRequestSchema = z.object({
   thinking: z.boolean().optional(),
 });
 
+/**
+ * #1417 — bounded editor context for one inline continuation. The frontend
+ * deliberately sends text around the cursor, never the full document, and the
+ * server keeps the ceilings here so every caller receives the same guard.
+ */
+export const InlineCompletionRequestSchema = z.object({
+  pageId: z.number().int().positive().optional(),
+  spaceKey: z.string().max(255).optional(),
+  title: z.string().max(500).optional(),
+  prefix: z.string().max(8_000),
+  suffix: z.string().max(2_000).optional(),
+  language: z.string().max(50).optional(),
+  maxTokens: z.number().int().min(1).max(64).default(48),
+});
+
+export const InlineCompletionResponseSchema = z.object({
+  completion: z.string(),
+  model: z.string(),
+  provider: z.string(),
+  usage: z.object({
+    promptTokens: z.number().int().nonnegative().optional(),
+    completionTokens: z.number().int().nonnegative().optional(),
+  }).optional(),
+});
+
+export type InlineCompletionRequest = z.infer<typeof InlineCompletionRequestSchema>;
+export type InlineCompletionResponse = z.infer<typeof InlineCompletionResponseSchema>;
+
 export const ForceEmbedTreeRequestSchema = z.object({
   pageId: z.string().min(1),
 });

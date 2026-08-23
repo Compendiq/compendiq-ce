@@ -700,6 +700,37 @@ standing down and why. **The right values are deployment-specific** —
 start from your logged confidence values, not from a number someone else
 used.
 
+### AI inline completion (`Settings → AI Models` and `Personal → Editor`)
+
+Inline completion displays a short, one-line continuation as ghost text in the
+article editor. It is opt-in at the deployment level: under **Settings → AI
+Models → LLM providers**, assign the **Inline completion** row to a dedicated
+provider and model. Leaving the row at **Disabled (no inline suggestions)** is
+the server-wide off switch; it never inherits the default provider.
+
+Choose a small, fast model. Editor requests are frequent, bypass the general
+LLM queue, and are limited to 48 output tokens by the product. FIM-capable coder
+models (for example Qwen Coder, DeepSeek Coder, StarCoder, Codestral, or
+CodeGemma families) use their fill-in-the-middle path; other OpenAI-compatible
+models use chat completion. A provider shared with other use cases also shares
+its circuit breaker, so a separate provider row gives stronger failure
+isolation.
+
+Each user controls the feature under **Settings → Personal → Editor**:
+
+- **Show inline suggestions** enables or disables ghost text for that user.
+- **Suggestion delay** chooses 300 ms, 500 ms, 800 ms, or manual-only requests.
+- **Code blocks only** suppresses suggestions in prose.
+
+In the editor, Tab accepts the whole suggestion, Alt+] on macOS or Ctrl+] on
+other platforms accepts one word, Escape dismisses it, and Alt+\ or
+Cmd+Shift+Space requests one manually. Automatic suggestions are also
+suppressed during IME composition, in tables, and on coarse-pointer devices.
+
+No prompt or completion content is written to the LLM audit log. Monitoring is
+limited to aggregate request and token counters in Redis under
+`metrics:llm:inline_completion`.
+
 ### Image retrieval (`Settings → AI Models`)
 
 Pictures in your pages — architecture diagrams, screenshots, flowcharts — are
