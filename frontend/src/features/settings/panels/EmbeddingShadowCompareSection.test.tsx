@@ -427,6 +427,42 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     await waitFor(() => expect(judgementPosts()).toBe(2));
   });
 
+  it('two picks landing before React re-renders post once — the re-entry gate is synchronous (r3)', async () => {
+    // The test above interposes a `waitFor` between the two clicks, which
+    // flushes a re-render — so a guard reading the RENDERED `judge.isPending`
+    // passes it while still double-POSTing on a real double-click, where both
+    // activations run before TanStack's async pending notification lands.
+    // The gate must therefore be a ref set synchronously in the handler.
+    const capture: Array<{ url: string; method: string; body?: string }> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockApi({
+      capture,
+      judgementGate: gate,
+      judgementResponse: {
+        judgements: { 'query-1': 'candidate' },
+        verdict: { ...EMPTY_VERDICT, judgementCount: 1, candidateBetter: 1 },
+      },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const rows = await screen.findAllByTestId('shadow-compare-disagreement');
+    const group = within(rows[0]!).getByRole('group', { name: /how to configure sync/ });
+    const candidateBtn = within(group).getByRole('button', { name: 'Candidate' });
+
+    // Back-to-back, no interleaved flush: a double-click, or two buttons in
+    // one frame.
+    fireEvent.click(candidateBtn);
+    fireEvent.click(within(group).getByRole('button', { name: 'Live' }));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
+    expect(capture.filter((c) => c.method === 'POST' && c.url.includes('/judgements'))).toHaveLength(1);
+
+    release();
+    await waitFor(() => expect(candidateBtn).toHaveAttribute('aria-pressed', 'true'));
+  });
+
   it('renders stored judgements as pressed on load, and names N-of-20 instead of quoting a premature p', async () => {
     mockApi({
       judgements: { 'query-2': 'live' },

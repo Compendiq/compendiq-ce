@@ -56,12 +56,15 @@ vi.mock('../../domains/llm/services/shadow-compare-service.js', () => ({
 }));
 
 const benchmarkGuard = vi.hoisted(() => ({
-  active: vi.fn(async (): Promise<{ id: string } | null> => null),
+  active: vi.fn(async (): Promise<{ id: string; kind: string | null } | null> => null),
 }));
 vi.mock('../../domains/llm/eval/production-benchmark.js', () => ({
   getActiveProductionBenchmark: (...a: unknown[]) => benchmarkGuard.active(...(a as [])),
   ProductionBenchmarkAlreadyRunningError: class ProductionBenchmarkAlreadyRunningError extends Error {
-    constructor(public readonly activeRunId: string) {
+    constructor(
+      public readonly activeRunId: string,
+      public readonly kind: string | null = null,
+    ) {
       super('A production retrieval benchmark is already running');
     }
   },
@@ -369,10 +372,26 @@ describe('#1116 shadow-migration routes', () => {
 
   it('compare: 409 while a production benchmark (or another compare) holds the one-active slot', async () => {
     svc.status.mockResolvedValue(READY_STATUS);
-    benchmarkGuard.active.mockResolvedValue({ id: 'bench-1' });
+    benchmarkGuard.active.mockResolvedValue({ id: 'bench-1', kind: null });
     const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({ error: 'benchmark_in_progress', runId: 'bench-1' });
+    expect(res.json().message).toMatch(/production retrieval benchmark is already running/i);
+    expect(compareSvc.create).not.toHaveBeenCalled();
+  });
+
+  it('compare: the 409 names a comparison when the slot holder IS one, never a benchmark that does not exist (r3)', async () => {
+    // Reachable without any race: the card's runId is plain useState, so an
+    // admin who switches tabs mid-run and comes back gets this 409 — and its
+    // message is toasted verbatim. Naming a "production retrieval benchmark"
+    // there points at a run that does not exist.
+    svc.status.mockResolvedValue(READY_STATUS);
+    benchmarkGuard.active.mockResolvedValue({ id: 'cmp-1', kind: 'shadow-compare' });
+    const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: 'benchmark_in_progress', runId: 'cmp-1' });
+    expect(res.json().message).toMatch(/comparison is already running/i);
+    expect(res.json().message).not.toMatch(/benchmark/i);
     expect(compareSvc.create).not.toHaveBeenCalled();
   });
 
@@ -384,6 +403,18 @@ describe('#1116 shadow-migration routes', () => {
     const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({ error: 'benchmark_in_progress', runId: 'bench-2' });
+  });
+
+  it('compare: the race 409 is worded by the winning run\'s kind too (r3)', async () => {
+    svc.status.mockResolvedValue(READY_STATUS);
+    benchmarkGuard.active.mockResolvedValue(null);
+    const { ProductionBenchmarkAlreadyRunningError } = await import('../../domains/llm/eval/production-benchmark.js');
+    compareSvc.create.mockRejectedValue(new ProductionBenchmarkAlreadyRunningError('cmp-2', 'shadow-compare'));
+    const res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/compare', payload: {} });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: 'benchmark_in_progress', runId: 'cmp-2' });
+    expect(res.json().message).toMatch(/comparison is already running/i);
+    expect(res.json().message).not.toMatch(/benchmark/i);
   });
 
   it('compare poll: returns the run, 404 for an unknown or foreign-kind id', async () => {

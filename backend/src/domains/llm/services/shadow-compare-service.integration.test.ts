@@ -540,8 +540,12 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
         createShadowCompareRun(ADMIN, { kind: 'shadow-compare', days: 30, limit: 50, topK: 10 }),
       ).rejects.toThrow(/already running/i);
       // The production benchmark's own 409 guard sees the compare run — the
-      // two deliberately share the slot, and both cards say so.
-      expect((await getActiveProductionBenchmark())?.id).toBe(runId);
+      // two deliberately share the slot, and both cards say so. It also
+      // reports the holder's KIND off the real config row, so the compare
+      // route can word its 409 as a comparison rather than a benchmark (r3).
+      const active = await getActiveProductionBenchmark();
+      expect(active?.id).toBe(runId);
+      expect(active?.kind).toBe('shadow-compare');
     });
 
     it('a completed run frees the slot for the next one', async () => {

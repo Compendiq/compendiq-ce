@@ -38,6 +38,21 @@ const StartBodySchema = z.object({
 });
 
 /**
+ * The human sentence for a 409 on the shared one-active run slot, worded by
+ * the holder's `config->>'kind'` (r3). A `shadow-compare` run is the admin's
+ * own comparison — most reachably one whose runId a remounted card lost —
+ * and the toast repeats this verbatim, so it must not name a benchmark
+ * nobody started. `null`/unknown kinds are production benchmarks (their
+ * config carries no kind). The benchmark POST keeps its own sentence in both
+ * directions per the #1260 owner decision.
+ */
+function slotBusyMessage(kind: string | null): string {
+  return kind === 'shadow-compare'
+    ? 'A comparison is already running — wait for it to finish before starting another'
+    : 'A production retrieval benchmark is already running';
+}
+
+/**
  * #1116 — non-destructive re-embed lifecycle. All admin-only. The service
  * throws typed-by-message errors; this layer maps them onto status codes and
  * never invents its own state transitions. Error messages here are app-
@@ -209,11 +224,18 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
       // One run at a time, SHARED with the production retrieval benchmark:
       // both spend the same LLM queue and the 091 partial unique index below
       // is the cross-replica guard. Both cards' copy states the sharing.
+      // The 409 is worded by the HOLDER's kind (r3): the card's runId is
+      // plain useState, so an admin who switches tabs mid-run and returns
+      // reaches this with their own comparison holding the slot — and the
+      // sentence is toasted verbatim, so naming a "production retrieval
+      // benchmark" there names a run that does not exist. The `error` token
+      // stays `benchmark_in_progress` — it is the machine-readable name of
+      // the shared slot, not of the holder.
       const active = await getActiveProductionBenchmark();
       if (active) {
         return reply.code(409).send({
           error: 'benchmark_in_progress',
-          message: 'A production retrieval benchmark is already running',
+          message: slotBusyMessage(active.kind),
           runId: active.id,
         });
       }
@@ -225,7 +247,7 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
         if (err instanceof ProductionBenchmarkAlreadyRunningError) {
           return reply.code(409).send({
             error: 'benchmark_in_progress',
-            message: err.message,
+            message: slotBusyMessage(err.kind),
             runId: err.activeRunId,
           });
         }

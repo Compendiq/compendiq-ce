@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
@@ -129,6 +129,13 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
     enabled: runId !== null && run?.status === 'completed',
   });
 
+  // The synchronous half of the judgement re-entry gate. `judge.isPending`
+  // is a RENDERED value — TanStack notifies asynchronously, so two clicks
+  // landing before React re-renders (a double-click, or two buttons in one
+  // frame) both see it false and would fire two POSTs (r3). The ref flips in
+  // the same tick as the first activation; the rendered flag stays what
+  // `aria-disabled` announces.
+  const judgeInFlight = useRef(false);
   const judge = useMutation({
     mutationFn: ({ queryId, side }: { queryId: string; side: JudgementSide }) =>
       apiFetch<JudgementsView>(`/admin/embedding/shadow-migration/compare/${runId}/judgements`, {
@@ -140,6 +147,9 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
     },
     onError: (err) =>
       toast.error(err instanceof Error ? err.message : 'Could not record the judgement'),
+    onSettled: () => {
+      judgeInFlight.current = false;
+    },
   });
 
   const start = useMutation({
@@ -158,8 +168,8 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
 
   const running = run?.status === 'queued' || run?.status === 'running';
   // A failed poll is a failure, not an idle section: a 202'd run may still be
-  // live server-side, so Run stays disabled (a retry would 409 with the
-  // misleading "already running" toast) and the strip says what is unknown.
+  // live server-side, so Run stays disabled (a retry would just 409 with the
+  // "comparison already running" toast) and the strip says what is unknown.
   const pollUnavailable = runId !== null && pollFailed;
 
   return (
@@ -257,7 +267,11 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
           judgements={judgementView?.judgements ?? {}}
           verdict={judgementView?.verdict ?? null}
           judging={judge.isPending}
-          onJudge={(queryId, side) => judge.mutate({ queryId, side })}
+          onJudge={(queryId, side) => {
+            if (judgeInFlight.current) return;
+            judgeInFlight.current = true;
+            judge.mutate({ queryId, side });
+          }}
         />
       )}
     </div>
@@ -428,8 +442,11 @@ function JudgementRow({
           // keyboard admin judging twenty rows would re-Tab from the top of
           // the panel after every single pick (WCAG 2.4.3 — the same focus
           // drop the sibling card's cancelCleanupRef engineers around).
-          // Re-entry is guarded in the handler; `aria-disabled` announces
-          // the momentary unavailability without removing focusability.
+          // Re-entry is guarded instead: this render-time check catches the
+          // ordinary case, and the parent's `judgeInFlight` ref closes the
+          // same-frame window where `judging` is still stale (r3).
+          // `aria-disabled` announces the momentary unavailability without
+          // removing focusability.
           aria-disabled={judging || undefined}
           onClick={() => {
             if (judging) return;

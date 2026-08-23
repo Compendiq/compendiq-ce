@@ -101,7 +101,20 @@ interface BenchmarkRunRow {
 }
 
 export class ProductionBenchmarkAlreadyRunningError extends Error {
-  constructor(public readonly activeRunId: string) {
+  constructor(
+    public readonly activeRunId: string,
+    /**
+     * `config->>'kind'` of the run holding the one-active slot — null for a
+     * plain production benchmark, whose config carries no kind. The slot is
+     * shared with the #1260 shadow comparison, and the compare route words
+     * its 409 by what is actually running: toasting "a production retrieval
+     * benchmark is already running" for the admin's own comparison names a
+     * run that does not exist (r3). The message here stays the benchmark
+     * sentence — it is what the benchmark POST answers, per the #1260 owner
+     * decision that the benchmark direction keeps its wording.
+     */
+    public readonly kind: string | null = null,
+  ) {
     super('A production retrieval benchmark is already running');
   }
 }
@@ -109,10 +122,19 @@ export class ProductionBenchmarkAlreadyRunningError extends Error {
 const STALE_BENCHMARK_AFTER = '30 minutes';
 const STALE_BENCHMARK_ERROR = 'The benchmark worker stopped before the run completed. Start a new benchmark.';
 
-export async function getActiveProductionBenchmark(): Promise<{ id: string } | null> {
+/**
+ * The run holding the shared one-active slot, if any. Deliberately NOT
+ * scoped by kind — a #1260 shadow comparison and the production benchmark
+ * exclude each other because both spend the shared LLM queue — but `kind`
+ * is reported so each route can name what is actually running in its 409.
+ */
+export async function getActiveProductionBenchmark(): Promise<{
+  id: string;
+  kind: string | null;
+} | null> {
   await recoverStaleProductionBenchmarks();
-  const result = await query<{ id: string }>(
-    `SELECT id FROM retrieval_benchmark_runs
+  const result = await query<{ id: string; kind: string | null }>(
+    `SELECT id, config->>'kind' AS kind FROM retrieval_benchmark_runs
      WHERE status IN ('queued', 'running')
      ORDER BY created_at ASC
      LIMIT 1`,
@@ -154,7 +176,7 @@ export async function createProductionBenchmarkRun(
     // route's response stable and do not expose a database constraint name.
     if (isUniqueActiveRunError(err)) {
       const active = await getActiveProductionBenchmark();
-      if (active) throw new ProductionBenchmarkAlreadyRunningError(active.id);
+      if (active) throw new ProductionBenchmarkAlreadyRunningError(active.id, active.kind);
     }
     throw err;
   }

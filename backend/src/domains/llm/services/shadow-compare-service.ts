@@ -150,7 +150,7 @@ export async function createShadowCompareRun(
     // same LLM queue, so one at a time is the point, not a limitation.
     if ((err as { code?: unknown })?.code === '23505') {
       const active = await getActiveProductionBenchmark();
-      if (active) throw new ProductionBenchmarkAlreadyRunningError(active.id);
+      if (active) throw new ProductionBenchmarkAlreadyRunningError(active.id, active.kind);
     }
     throw err;
   }
