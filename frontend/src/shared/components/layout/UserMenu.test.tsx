@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { UserMenu } from './UserMenu';
 
 const mockLogoutApi = vi.fn().mockResolvedValue(undefined);
+const mockApiFetch = vi.fn();
 const mockNavigate = vi.fn();
 
 vi.mock('react-router-dom', async () => {
@@ -35,19 +37,33 @@ vi.mock('../../../stores/keyboard-shortcuts-store', () => ({
 
 vi.mock('../../lib/api', () => ({
   logoutApi: (...args: unknown[]) => mockLogoutApi(...args),
+  // #1402: "Getting Started Guide" reopens the checklist through
+  // `PUT /settings`. Network boundary only.
+  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+}));
+
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 function renderUserMenu() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return render(
-    <MemoryRouter>
-      <UserMenu />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <UserMenu />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
 describe('UserMenu', () => {
   beforeEach(() => {
     mockLogoutApi.mockClear();
+    mockApiFetch.mockReset();
+    mockApiFetch.mockResolvedValue({});
     mockNavigate.mockClear();
     mockOpenShortcuts.mockClear();
     // Default to a non-admin signed-in user; admin tests opt in.
@@ -134,6 +150,43 @@ describe('UserMenu', () => {
     });
   });
 
+
+  /**
+   * #1402: the checklist is dismissible, so it needs a way back. The User Menu
+   * is where "Keyboard Shortcuts" already lives, and it is the only always-
+   * available surface on every route.
+   */
+  describe('Getting Started Guide', () => {
+    async function openMenu() {
+      renderUserMenu();
+      const trigger = screen.getByRole('button', { name: 'testuser menu' });
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+      await vi.waitFor(() => expect(trigger).toHaveAttribute('data-state', 'open'));
+    }
+
+    it('offers the item between Keyboard Shortcuts and Sign out', async () => {
+      await openMenu();
+      const labels = screen.getAllByRole('menuitem').map((item) => item.textContent?.trim());
+      expect(labels).toContain('Getting Started Guide');
+      expect(labels.indexOf('Getting Started Guide')).toBeGreaterThan(
+        labels.findIndex((l) => l?.startsWith('Keyboard Shortcuts')),
+      );
+      expect(labels.indexOf('Getting Started Guide')).toBeLessThan(labels.indexOf('Sign out'));
+    });
+
+    it('reopens the checklist and takes the user to the overview it lives on', async () => {
+      await openMenu();
+      fireEvent.click(screen.getByText('Getting Started Guide'));
+
+      await waitFor(() =>
+        expect(mockApiFetch).toHaveBeenCalledWith('/settings', {
+          method: 'PUT',
+          body: JSON.stringify({ onboardingState: { dismissed: false } }),
+        }),
+      );
+      expect(mockNavigate).toHaveBeenCalledWith('/');
+    });
+  });
 
   it('asks before signing out, and only then calls logoutApi', async () => {
     renderUserMenu();

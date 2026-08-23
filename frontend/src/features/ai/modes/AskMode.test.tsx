@@ -1242,4 +1242,66 @@ describe('AskMode', () => {
       expect(note.className).toContain('text-muted-foreground');
     });
   });
+
+  /**
+   * #1402, milestone 3. There are two independent `/llm/ask` send paths — this
+   * composer and the dock's `use-dock-actions` — with no shared function to
+   * hook once, so both mark the milestone and both are tested. Miss one and
+   * half of users never get credit for asking their first question.
+   */
+  describe('onboarding milestone: first AI question (#1402)', () => {
+    function settingsPuts() {
+      return apiFetchMock.mock.calls.filter(
+        ([path, init]: [string, { method?: string } | undefined]) =>
+          path === '/settings' && init?.method === 'PUT',
+      );
+    }
+
+    function settleModels() {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
+    }
+
+    async function ask() {
+      render(<AskModeInput />, { wrapper: createWrapper() });
+      fireEvent.change(screen.getByPlaceholderText('Ask a question...'), { target: { value: 'q' } });
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    }
+
+    it('records the milestone once an answer completes', async () => {
+      settleModels();
+      streamSSEMock.mockImplementation(async function* fakeStream() {
+        yield { content: 'Answer' };
+        yield { final: true, conversationId: 'c-1', sources: [], done: true };
+      });
+
+      await ask();
+
+      await waitFor(() => expect(settingsPuts()).toHaveLength(1));
+      expect(JSON.parse((settingsPuts()[0]![1] as { body: string }).body)).toEqual({
+        onboardingState: { firstAiQueryMade: true },
+      });
+    });
+
+    it('records nothing when the stream fails — an error is not a first answer', async () => {
+      settleModels();
+      streamSSEMock.mockImplementation(async function* fakeStream() {
+        yield { error: 'model unavailable' };
+      });
+
+      await ask();
+
+      await waitFor(() => expect(toastErrorMock).toHaveBeenCalled());
+      expect(settingsPuts()).toEqual([]);
+    });
+  });
 });

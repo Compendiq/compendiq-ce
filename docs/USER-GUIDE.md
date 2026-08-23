@@ -12,6 +12,25 @@ This guide covers day-to-day usage of Compendiq for knowledge base management, A
 2. **Register an account.** The first user automatically receives the admin role.
 3. **Configure your Confluence connection** (optional): go to **Settings** and enter your Confluence Data Center URL and Personal Access Token (PAT).
 
+### The Getting Started checklist
+
+The Pages overview carries a short **Getting started** checklist for as long as
+you have steps outstanding. It tracks five milestones and ticks each one off by
+itself as you do it — there is nothing to mark complete by hand:
+
+1. Connect your Confluence account
+2. Choose the spaces to sync
+3. Ask your first question
+4. Learn the keyboard shortcuts
+5. Create or edit a page
+
+Each outstanding step carries a button that takes you straight to it. The
+checklist never blocks the page list, and **Dismiss guide** hides it for good.
+Once every step is done it retires itself.
+
+To bring it back at any time — finished or dismissed — open the account menu in
+the top right and choose **Getting Started Guide**.
+
 ### Creating a Confluence PAT
 
 To connect Compendiq to your Confluence Data Center instance:

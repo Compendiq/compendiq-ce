@@ -36,6 +36,7 @@ import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
+import { OnboardingChecklistCard } from '../onboarding/OnboardingChecklistCard';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { FIND_LABEL, FIND_PLACEHOLDER, LIBRARY_HEADING, SEARCH_MODE_DESCRIPTIONS, SEARCH_MODE_LABELS } from './pages-find';
 
@@ -1056,6 +1057,12 @@ export function PagesPage() {
           </div>
         </div>
       </HeaderHost>
+
+      {/* #1402: the Getting Started checklist. A sibling block, not a wrapper:
+          it sits above discovery and the tree and never replaces any of their
+          loading / failed / failed-with-cache / empty states. It renders
+          nothing once the user dismisses it. */}
+      <OnboardingChecklistCard />
 
       {/* Pins are the Library's quickest return path, so keep them in the
           first viewport above discovery controls. Active queries still hide

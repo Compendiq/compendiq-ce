@@ -26,6 +26,7 @@ flowchart TB
         fSpaces["spaces/<br/>settings · new"]
         fAI["ai/<br/>AiAssistantPage (/ai and /ai/c/:id — no-document home)<br/>conversations/ AiConversationsSidebar · ConversationList · ConversationRow (#1361)<br/>ai-routes.ts (shared/lib) · assistant-actions.ts<br/>dock/ DockPanel · DockDiffCard (#1126)<br/>tab inside ArticleRightPane; mobile inspector sheet below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
         fGraph["graph/"]
+        fOnboarding["onboarding/<br/>OnboardingChecklistCard (#1402)<br/>rendered by pages/PagesPage above the tree"]
         fSettings["settings/<br/>LoginPage · user + admin"]
         fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)<br/>analytics/ (AnalyticsPage)"]
     end
@@ -37,7 +38,7 @@ flowchart TB
         direction LR
         sEnt["enterprise/<br/>context · loader · types · hook"]
         sComp["components/<br/>layout · article · diagrams · effects ·<br/>banners (TrialBanner) · feedback ·<br/>badges/ VisionBadge (#1154) ·<br/>upload/ DocumentUploadZone (#1131) ·<br/>ImageAttachZone · composer-row (#1154)"]
-        sHooks["hooks/<br/>useSessionInit · useTokenRefreshTimer ·<br/>useThemeEffect · useSetupStatus ·<br/>useAttachments · usePrepareImage (#1154)"]
+        sHooks["hooks/<br/>useSessionInit · useTokenRefreshTimer ·<br/>useThemeEffect · useSetupStatus ·<br/>useAttachments · usePrepareImage (#1154) ·<br/>useOnboarding / useOnboardingActions (#1402)"]
         sLib["lib/ (api client, utils)<br/>downscale-image (#1154)"]
     end
 
@@ -60,7 +61,7 @@ flowchart TB
     classDef sh fill:#fff4e5,stroke:#e5a23c
     classDef st fill:#f5eafd,stroke:#9b59b6
     class providers,qp,rp,ep,shell prov
-    class features,fAuth,fPages,fSpaces,fAI,fGraph,fSettings,fAdmin feat
+    class features,fAuth,fPages,fSpaces,fAI,fGraph,fOnboarding,fSettings,fAdmin feat
     class shared,sEnt,sComp,sHooks,sLib sh
     class stores,zAuth,zTheme,zUI,zAV,zDock,zCmd,zKb st
 ```
@@ -400,6 +401,46 @@ sequenceDiagram
   [`03-backend-domains.md`](./03-backend-domains.md),
   `backend/src/domains/knowledge/services/page-relocate-service.ts`. Design of
   record: `docs/superpowers/specs/2026-07-29-relocate-dialog-design.md`.
+
+## Getting Started checklist (#1402)
+
+`features/onboarding/OnboardingChecklistCard` is a dismissible five-step
+checklist that `PagesPage` renders as a sibling block between the Library
+header and the search toolbar. It is **additive chrome**: it never wraps,
+gates or replaces the page tree's loading, failed, failed-with-cache or empty
+states, and it renders nothing at all — not a collapsed sliver — once
+dismissed.
+
+There is **no `stores/onboarding-store.ts`**. The state is the `['settings']`
+TanStack Query cache, read through `shared/hooks/use-onboarding.ts`:
+
+| Step | Source | Where it is recorded |
+|---|---|---|
+| Connect your Confluence account | computed `hasConfluencePat` | — |
+| Choose the spaces to sync | computed `selectedSpaces.length > 0` | — |
+| Ask your first question | stored `firstAiQueryMade` | `AskMode` **and** `dock/use-dock-actions`, in `runStream`'s success-only `onComplete` |
+| Learn the keyboard shortcuts | stored `shortcutsModalViewed` | `KeyboardShortcutsModal`, on open |
+| Create or edit a page | stored `pageCreatedOrEdited` | `useCreatePage().onSuccess`, `useUpdatePage().onSettled` on the no-error path |
+
+Two of the five are **computed, never persisted** — a stored `patConfigured`
+would drift the moment a user disconnected their PAT (phase 1's reasoning, in
+`packages/contracts/src/schemas/settings.ts`). The three stored flags are
+partial-patched one key at a time and merged server-side.
+
+There are **two independent `/llm/ask` send paths** and no shared send
+function, so both are wired; missing one would leave half of users without
+credit for the milestone.
+
+Every one of these writes is **silent** — `useUpdateSettings({ silent })`
+skips the "Settings saved" toast, and `{ silentErrors }` additionally
+suppresses the failure toast for background auto-marks nobody asked for. Every
+pre-existing Settings-panel Save keeps its confirmation.
+
+When all five are true, `useOnboarding({ trackCompletion: true })` — mounted by
+the card and nowhere else — writes `completedAt` and `dismissed: true` once and
+never again. The card holds a neutral completion line on screen for the rest of
+that mount, and **User Menu → Getting Started Guide** brings the finished list
+back at any time by clearing `dismissed`.
 
 ## Enterprise gating
 

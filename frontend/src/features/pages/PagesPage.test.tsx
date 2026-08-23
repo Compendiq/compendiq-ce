@@ -2970,4 +2970,48 @@ describe('PagesPage filter persistence (#1124)', () => {
       });
     });
   });
+
+});
+
+/**
+ * #1402: the Getting Started checklist is additive chrome above the tree, a
+ * sibling block between the header and the discovery controls. It must never
+ * stand in front of the page list or replace any of its own states — phase 3
+ * owns the empty-state copy, not this card.
+ */
+describe('PagesPage — Getting Started checklist (#1402)', () => {
+  let restoreRects: () => void;
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+    restoreRects = installVirtualizerRectShim();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    restoreRects();
+  });
+
+  it('sits between the Library header and the search toolbar', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    const card = await screen.findByTestId('onboarding-checklist');
+    const toolbar = screen.getByTestId('library-filter-panel');
+    expect(card.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      screen.getByTestId('new-page-button').compareDocumentPosition(card) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('leaves the page list itself untouched', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    await screen.findByTestId('onboarding-checklist');
+    // The list still arrives, and the card is not inside it.
+    expect(await screen.findByText('Test Page')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('onboarding-checklist').contains(screen.getByText('Test Page')),
+    ).toBe(false);
+  });
 });

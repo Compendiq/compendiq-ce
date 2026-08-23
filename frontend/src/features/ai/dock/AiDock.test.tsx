@@ -10,6 +10,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
+import { toast } from 'sonner';
 import { AiProvider, useAiContext } from '../AiContext';
 import { DockPanel } from './DockPanel';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
@@ -770,5 +771,48 @@ describe('AiDock (#1126)', () => {
 
     await screen.findByText('Answer');
     expect(screen.queryByTestId('ai-dock-history-truncated')).not.toBeInTheDocument();
+  });
+
+  /**
+   * #1402, milestone 3 — the dock half. `/ai`'s AskMode posts `/llm/ask` from
+   * its own handler and this hook posts its own; there is no shared function
+   * to hook once, so the milestone is marked in both and asserted in both.
+   */
+  describe('onboarding milestone: first AI question (#1402)', () => {
+    function settingsPuts() {
+      return apiFetchMock.mock.calls.filter(
+        ([path, init]: [string, { method?: string } | undefined]) =>
+          path === '/settings' && init?.method === 'PUT',
+      );
+    }
+
+    it('records the milestone once the dock answer completes', async () => {
+      streamSSEMock.mockImplementation(() => sse({ content: 'Answer' }, { final: true, sources: [], done: true }));
+
+      renderDock();
+      await openAndSettle();
+      fireEvent.change(composer(), { target: { value: 'first question' } });
+      fireEvent.click(screen.getByTestId('ai-dock-send'));
+
+      await screen.findByText('Answer');
+      await waitFor(() => expect(settingsPuts()).toHaveLength(1));
+      expect(JSON.parse((settingsPuts()[0]![1] as { body: string }).body)).toEqual({
+        onboardingState: { firstAiQueryMade: true },
+      });
+    });
+
+    it('records nothing when the dock stream fails', async () => {
+      streamSSEMock.mockImplementation(() => sse({ error: 'model unavailable' }));
+
+      renderDock();
+      await openAndSettle();
+      fireEvent.change(composer(), { target: { value: 'first question' } });
+      fireEvent.click(screen.getByTestId('ai-dock-send'));
+
+      // The failure toast is what runStream raises instead of completing, so
+      // it is the settled-and-failed signal.
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('model unavailable'));
+      expect(settingsPuts()).toEqual([]);
+    });
   });
 });

@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { PageIcon, SettablePageIcon } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
+import { useOnboardingActions } from './use-onboarding';
 
 export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
 export type QualityStatus = 'pending' | 'analyzing' | 'analyzed' | 'failed' | 'skipped';
@@ -206,6 +207,10 @@ export function usePage(id: string | undefined) {
 
 export function useCreatePage() {
   const queryClient = useQueryClient();
+  // #1402: the Getting Started checklist's "Create or edit a page" milestone.
+  // Hooked here rather than at the New Page form because every creation path —
+  // the form, a template, a Markdown import — lands on this mutation.
+  const { markComplete } = useOnboardingActions();
   return useMutation({
     mutationFn: (data: { spaceKey: string; title: string; bodyHtml: string; parentId?: string; pageType?: PageType; source?: string }) =>
       apiFetch<{ id: string; title: string; version: number }>('/pages', {
@@ -215,12 +220,14 @@ export function useCreatePage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pages'] });
       queryClient.invalidateQueries({ queryKey: ['spaces'] });
+      markComplete('pageCreatedOrEdited');
     },
   });
 }
 
 export function useUpdatePage() {
   const queryClient = useQueryClient();
+  const { markComplete } = useOnboardingActions();
   return useMutation({
     mutationFn: ({ id, ...data }: { id: string; title: string; bodyHtml: string; version?: number }) =>
       apiFetch<{ id: string; title: string; version: number }>(`/pages/${id}`, {
@@ -240,9 +247,13 @@ export function useUpdatePage() {
         queryClient.setQueryData(['pages', variables.id], context.previous);
       }
     },
-    onSettled: (_data, _err, variables) => {
+    onSettled: (_data, err, variables) => {
       queryClient.invalidateQueries({ queryKey: ['pages', variables.id] });
       queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+      // The no-error path only: `onSettled` also runs after `onError` rolled
+      // the optimistic edit back, and a save that did not land is not a
+      // milestone (#1402).
+      if (!err) markComplete('pageCreatedOrEdited');
     },
   });
 }

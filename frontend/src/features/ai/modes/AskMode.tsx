@@ -17,6 +17,7 @@ import { PROMPT_MAX_LENGTH } from './prompt-limits';
 import { buildAskPrompts } from './ask-example-prompts';
 import { usePages, usePageFilterOptions, isZeroEmbeddings } from '../../../shared/hooks/use-pages';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
+import { useOnboardingActions } from '../../../shared/hooks/use-onboarding';
 import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 interface McpDocsSettings {
@@ -66,6 +67,9 @@ function AskModeInputContent() {
   const handlePickFiles = useCallback((files: readonly File[]) => {
     void pickFiles(files);
   }, [pickFiles]);
+
+  // #1402: "Ask your first AI question", recorded silently on the answer.
+  const { markComplete } = useOnboardingActions();
 
   // The one boundary a remount does not cover. Opening another conversation —
   // or starting a new one — swaps the thread under a composer that stays
@@ -205,7 +209,13 @@ function AskModeInputContent() {
         return true;
       },
       onComplete: () => {
-        // Sources are attached by runStream automatically
+        // Sources are attached by runStream automatically.
+        //
+        // #1402, milestone 3. `onComplete` fires on runStream's normal path
+        // only — an abort, a thrown request error and an in-band SSE error
+        // frame all return before it — so this is the success signal. The dock
+        // has its own `/llm/ask` call and marks the same milestone itself.
+        markComplete('firstAiQueryMade');
       },
     });
 
@@ -215,7 +225,7 @@ function AskModeInputContent() {
   }, [
     input, model, isStreaming, isBusy, conversationId, pageId, includeSubPages, thinkingMode,
     deepSearch, documents, image, externalUrls, setInput, setMessages, removeImage, runStream,
-    threadLoadState,
+    threadLoadState, markComplete,
   ]);
 
   const handleSubmit = () => handleAsk();
