@@ -286,6 +286,65 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(keep.confluence.has('orphan.png')).toBe(false);
       expect(keep.confluence.has('untracked.png')).toBe(false);
     });
+
+    // Review, external round: since #1361 `toPersistedSources` copies an image
+    // source's `attachmentUrl` into `llm_conversations.messages`, and
+    // `GET /llm/conversations/:id` renders the thumbnail back from it — so a
+    // file whose only surviving reference is a saved answer was an orphan.
+    it('keeps a filename referenced only by a persisted AI conversation turn (#1361)', async () => {
+      const userId = await seedUser('chatter');
+      await query(
+        `INSERT INTO llm_conversations (user_id, model, title, messages)
+         VALUES ($1, 'test-model', 'T', $2::jsonb)`,
+        [
+          userId,
+          JSON.stringify([
+            { role: 'user', content: 'what is this?' },
+            {
+              role: 'assistant',
+              content: 'a diagram',
+              sources: [
+                {
+                  kind: 'image',
+                  title: 'Arch',
+                  attachmentUrl: '/api/attachments/90001/answer-cited.png',
+                },
+                {
+                  kind: 'image',
+                  title: 'Local',
+                  attachmentUrl: '/api/local-attachments/7/answer-local.png',
+                },
+              ],
+            },
+          ]),
+        ],
+      );
+
+      const keep = await buildAttachmentKeepSets();
+      expect(keep.confluence.has('answer-cited.png')).toBe(true);
+      expect(keep.local.has('answer-local.png')).toBe(true);
+    });
+
+    // Review, external round: the UUID-keyed sources moved from
+    // `id::text > $1 ORDER BY id::text` (unindexable, a full scan per batch)
+    // to a native `id > $1::uuid`. The cursor is still carried as text, so a
+    // corpus past one batch is what proves the pagination still terminates
+    // AND still reaches the last row.
+    it('paginates the UUID-keyed sources past one batch without losing a reference', async () => {
+      const { confPageId } = await seedCorpus();
+      // KEEP_SET_BATCH is 200; 250 rows forces a second and third page.
+      await query(
+        `INSERT INTO page_versions (page_id, version_number, title, body_html)
+         SELECT $1, 100 + g, 'bulk', '<p><img src="/api/attachments/90001/bulk-' || g || '.png"></p>'
+           FROM generate_series(1, 250) g`,
+        [confPageId],
+      );
+
+      const keep = await buildAttachmentKeepSets();
+      expect(keep.confluence.has('bulk-1.png')).toBe(true);
+      expect(keep.confluence.has('bulk-250.png')).toBe(true);
+      expect([...keep.confluence].filter((n) => n.startsWith('bulk-'))).toHaveLength(250);
+    });
   });
 
   describe('dry run', () => {

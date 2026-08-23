@@ -1141,7 +1141,10 @@ keyspace is shared with Confluence ids) and the local store
 `local/<page id>/<file>` (draw.io saves and relocated pages, with metadata
 rows in `local_attachments`). Sync and page deletes clean their own pages;
 everything else is covered by the observability card and the sweep shipped in
-#1349.
+#1349. A third entry, `page-icons/<page id>/<sha>.<ext>`, is a **separate
+store** for uploaded page marks: it is reserved by name, never walked and never
+swept — those files are the only copy, so there is nothing to reconcile them
+against.
 
 **Where:** Settings → Knowledge → Spaces & Sync → **Sync schedule**, in the
 **Attachment storage** card (admin only; the wrapper opens on its Spaces tab,
@@ -1159,15 +1162,18 @@ partial view), and **Dry run** is how you refresh them.
 2. Review the candidate counts (and, in the API response
    `GET /api/admin/attachments/sweep`, a bounded sample of candidates).
 3. Press **Delete orphans** and confirm. The live run re-walks and re-checks
-   every candidate at delete time — it never trusts a stale dry-run list.
+   every candidate at delete time — it never trusts a stale dry-run list. When
+   it finishes, the card's figures are the tree as it stands **after** the
+   delete, so what it just removed no longer shows as a candidate.
 
 **What is deleted:** only files that (a) sit in a directory whose key matches
 no page row at all — including soft-deleted/trashed pages and folders, which
 all count as owners — or (b) are image-like files referenced by **no body
 text anywhere**: every page's `body_html`, draft and storage format (live and
-trashed), every retained version, every pending sync version, every template
-and every comment feed one global keep-set per store, because attachment URLs
-are copied verbatim between bodies. The keep-set outranks the directory
+trashed), every retained version, every pending sync version, every template,
+every comment and every saved AI conversation (#1361 persists a matched
+image's URL per assistant turn) feed one global keep-set per store, because
+attachment URLs are copied verbatim between bodies. The keep-set outranks the directory
 verdict too: a pageless directory that still holds even one referenced
 filename is skipped whole and reported as *keep-protected* rather than
 deleted, so a referenced file is never removed at either level. Nothing younger than **24 hours** is ever

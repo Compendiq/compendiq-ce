@@ -56,7 +56,15 @@ const SWEEP_QUERY_KEY = ['admin', 'attachment-sweep'] as const;
 
 /** ≥5s — the admin rate limit is 20/min per route and two routes poll. */
 const POLL_MS = 5_000;
-/** Poll floor after a kick, until the payload reports the lock. */
+/**
+ * Poll floor after a kick, until the payload reports the lock.
+ *
+ * The trigger takes the lock inside the request now, so the ordinary case is
+ * covered by the POST's own answer — but the window is not gone: with Redis
+ * unreachable `isWorkerLocked` cannot report a lock at all, so `running` never
+ * flips and the interval would never arm. Twenty seconds of polling is what
+ * still fetches the finished record on that path.
+ */
 const KICK_WARMUP_MS = 20_000;
 
 function formatBytes(bytes: number): string {
@@ -66,6 +74,11 @@ function formatBytes(bytes: number): string {
   const mb = kb / 1024;
   if (mb < 1024) return `${mb.toFixed(1)} MB`;
   return `${(mb / 1024).toFixed(1)} GB`;
+}
+
+/** `1 file in 1 directory` / `3 files in 2 directories`. */
+function countPhrase(files: number, directories: number): string {
+  return `${files} file${files === 1 ? '' : 's'} in ${directories} director${directories === 1 ? 'y' : 'ies'}`;
 }
 
 function orphanSummary(stats: AttachmentStoreSweepStats): string | null {
@@ -136,6 +149,13 @@ export function AttachmentStorageCard() {
   // Each GET's failure stands alone — see the header comment (review r1).
   const statsError = stats.isError;
   const sweepError = sweep.isError;
+  // …but when BOTH are down, two paragraphs both saying "could not be read"
+  // is one fact told twice (fixer, external round). The admin routes share a
+  // backend, so the pair failing together is the ORDINARY outage shape, not an
+  // edge case. One sentence, on the stats paragraph, and the sweep one stands
+  // down — it exists to say a refused run would not show, which is already
+  // implied when nothing at all could be read.
+  const bothQueriesFailed = statsError && sweepError;
   const lastRun = sweep.data?.lastRun ?? null;
   const stores = stats.data?.stores ?? null;
   // "No run yet" is a claim BOTH records support — a failed read of either
@@ -148,9 +168,14 @@ export function AttachmentStorageCard() {
 
   return (
     <div className="nm-card space-y-3 p-3 text-sm" data-testid="attachment-storage-card">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="font-medium">Attachment storage</h3>
-        {running && (
+      {/*
+        No heading of its own (fixer, external round): the section this card
+        sits in already carries `Attachment Storage` as its h2, and an h3
+        restating it one line below is the same label twice at two casings.
+        The running chip keeps the row.
+      */}
+      {running && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <span
             data-testid="attachment-sweep-running"
             className="text-muted-foreground inline-flex items-center gap-1.5 text-xs"
@@ -158,13 +183,14 @@ export function AttachmentStorageCard() {
             <Loader2 size={12} className="animate-spin" aria-hidden="true" />
             Sweeping…
           </span>
-        )}
-      </div>
+        </div>
+      )}
 
       {statsError ? (
         <p className="text-destructive text-xs" data-testid="attachment-storage-error">
-          The storage figures could not be read. The files on disk are unaffected — retry, or run a
-          dry run to rebuild the record.
+          {bothQueriesFailed
+            ? 'The storage record could not be read. The files on disk are unaffected — retry, or run a dry run to rebuild it.'
+            : 'The storage figures could not be read. The files on disk are unaffected — retry, or run a dry run to rebuild the record.'}
         </p>
       ) : isPending ? (
         <p className="text-muted-foreground text-xs" data-testid="attachment-storage-pending">
@@ -185,7 +211,7 @@ export function AttachmentStorageCard() {
             <dt className="text-foreground font-medium">Confluence cache</dt>
             <dd data-testid="attachment-storage-confluence-bytes">
               <span className="text-foreground font-mono">{formatBytes(stores.confluence.bytes)}</span>{' '}
-              · {stores.confluence.files} files in {stores.confluence.directories} directories
+              · {countPhrase(stores.confluence.files, stores.confluence.directories)}
             </dd>
             {orphanSummary(stores.confluence) && (
               <dd data-testid="attachment-storage-confluence-orphans">
@@ -197,7 +223,7 @@ export function AttachmentStorageCard() {
             <dt className="text-foreground font-medium">Local store</dt>
             <dd data-testid="attachment-storage-local-bytes">
               <span className="text-foreground font-mono">{formatBytes(stores.local.bytes)}</span>{' '}
-              · {stores.local.files} files in {stores.local.directories} directories
+              · {countPhrase(stores.local.files, stores.local.directories)}
             </dd>
             {orphanSummary(stores.local) && (
               <dd data-testid="attachment-storage-local-orphans">
@@ -238,6 +264,25 @@ export function AttachmentStorageCard() {
           </p>
         )}
 
+      {/*
+        Fixer, external round: `keepProtectedDirectories` was counted, shipped
+        on the wire and promised by the service comment, but no surface
+        rendered it — so a pageless directory pinned forever by one colliding
+        common filename (`image.png` in a template) looked like a directory the
+        sweep simply had not got to, and pressing Delete orphans again changed
+        nothing. Muted, not amber: it is a fact about the last walk, and the
+        conservative verdict is the correct one.
+      */}
+      {stores &&
+        stores.confluence.keepProtectedDirectories + stores.local.keepProtectedDirectories > 0 && (
+          <p className="text-muted-foreground text-xs" data-testid="attachment-storage-keep-protected">
+            {stores.confluence.keepProtectedDirectories + stores.local.keepProtectedDirectories === 1
+              ? '1 pageless directory was left standing because a file inside it is still referenced'
+              : `${stores.confluence.keepProtectedDirectories + stores.local.keepProtectedDirectories} pageless directories were left standing because a file inside each is still referenced`}{' '}
+            — a referenced filename is kept everywhere, so the directory around it is never removed.
+          </p>
+        )}
+
       {!isPending && !statsError && (stats.data?.missingLocalFiles ?? 0) > 0 && (
         <p className="text-muted-foreground text-xs" data-testid="attachment-storage-missing-rows">
           {stats.data!.missingLocalFiles} local attachment record
@@ -272,7 +317,7 @@ export function AttachmentStorageCard() {
         references it (the mis-mount refusal). role="status" so the verdict
         reaches assistive tech without interrupting (the failed-save recipe).
       */}
-      {!isPending && sweepError && (
+      {!isPending && sweepError && !bothQueriesFailed && (
         <p className="text-destructive text-xs" data-testid="attachment-sweep-status-error">
           The last-run record could not be read — a refused or failed sweep would not show here.
           Retry, or run a dry run to rewrite it.
@@ -310,16 +355,25 @@ export function AttachmentStorageCard() {
         </p>
       )}
 
+      {/*
+        Both controls carry the panel's own 34px box (fixer, external round):
+        the `px-2.5 py-1 text-xs` overrides measured 26px and 24px beside 34px
+        siblings — two rungs below every other action on Spaces & Sync, and 2px
+        out of line with each other, because `nm-action-destructive` supplies
+        colour and no border while `nm-button-ghost` puts one outside its box.
+        The `border border-transparent` on the destructive one is arithmetic,
+        not decoration (ADR-010's Cancel-button note).
+      */}
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           data-testid="attachment-sweep-dry-run"
-          className="nm-button-ghost px-2.5 py-1 text-xs"
+          className="nm-button-ghost"
           disabled={actionsDisabled}
           onClick={() => trigger.mutate(true)}
           aria-describedby="attachment-sweep-note"
         >
-          <Search size={12} aria-hidden="true" />
+          <Search size={14} aria-hidden="true" />
           Dry run
         </button>
         <button
@@ -329,26 +383,26 @@ export function AttachmentStorageCard() {
           // callsite's job (review r2) — without inline-flex, preflight's
           // `svg { display: block }` stacks the icon on its own line, and the
           // hover fill needs the radius (the ProviderListSection precedent).
-          className="nm-action-destructive inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs"
+          className="nm-action-destructive inline-flex items-center justify-center gap-1.5 rounded-md border border-transparent px-3 py-1.5 text-sm"
           disabled={actionsDisabled}
           onClick={() => setConfirmDeleteOpen(true)}
           aria-describedby="attachment-sweep-note"
         >
-          <Trash2 size={12} aria-hidden="true" />
+          <Trash2 size={14} aria-hidden="true" />
           Delete orphans
         </button>
       </div>
 
       <p id="attachment-sweep-note" className="text-muted-foreground text-xs" data-testid="attachment-sweep-note">
         Dry run walks both stores and lists candidates without touching disk. Delete orphans removes
-        only files no page, draft, version, template or comment references, older than 24 hours,
-        re-checked at delete time; matching image-index rows are pruned with them.
+        only files no page, draft, version, template, comment or saved AI answer references, older
+        than 24 hours, re-checked at delete time; matching image-index rows are pruned with them.
       </p>
 
       <ConfirmDialog
         open={confirmDeleteOpen}
         title="Delete orphaned attachment files?"
-        description="This permanently removes files that no page, draft, retained version, pending sync version, template or comment references and that are older than 24 hours. Every candidate is re-checked at delete time, matching image-index rows are pruned, and affected pages are re-queued for image indexing. Files referenced anywhere are never touched. This cannot be undone — run a dry run first if you have not."
+        description="This permanently removes files that no page, draft, retained version, pending sync version, template, comment or saved AI answer references and that are older than 24 hours. Every candidate is re-checked at delete time, matching image-index rows are pruned, and affected pages are re-queued for image indexing. Files referenced anywhere are never touched. Uploaded page icons are a separate store and are never swept. This cannot be undone — run a dry run first if you have not."
         confirmLabel="Delete orphans"
         destructive
         onConfirm={() => {

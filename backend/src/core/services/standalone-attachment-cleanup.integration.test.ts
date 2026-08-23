@@ -42,6 +42,17 @@ async function writeFileAt(...segments: string[]): Promise<string> {
   return filePath;
 }
 
+/**
+ * Age a directory past the Confluence-tree grace window (5 min, see
+ * `CACHE_DIR_GRACE_MS`). Every test whose subject is the REMOVAL calls this:
+ * a directory written milliseconds ago is inside the first-sync race window
+ * by construction and is deliberately left to the sweep.
+ */
+async function ageDir(...segments: string[]): Promise<void> {
+  const when = new Date(Date.now() - 60 * 60 * 1000);
+  await fs.utimes(path.join(tempBase, ...segments), when, when);
+}
+
 async function exists(p: string): Promise<boolean> {
   try {
     await fs.stat(p);
@@ -140,11 +151,30 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       const pageId = await seedStandalonePage(userId);
       await writeFileAt(String(pageId), 'pasted.png');
       await writeFileAt('local', String(pageId), 'diagram.png');
+      await ageDir(String(pageId));
       await query('DELETE FROM pages WHERE id = $1', [pageId]);
 
       await cleanupStandalonePageAttachmentDirs(pageId);
 
       expect(await exists(path.join(tempBase, String(pageId)))).toBe(false);
+      expect(await exists(path.join(tempBase, 'local', String(pageId)))).toBe(false);
+    });
+
+    // #1349 review: the ownership EXISTS asks who claims the key RIGHT NOW,
+    // and a first sync downloads `<confluence_id>/` BEFORE the `pages` INSERT
+    // — so inside that window the answer is "nobody" and a colliding
+    // standalone hard delete would evict a Confluence page's fresh cache. The
+    // local store has no such ambiguity and is removed either way.
+    it('leaves a JUST-WRITTEN Confluence-tree directory to the sweep (first-sync race)', async () => {
+      const userId = await seedUser();
+      const pageId = await seedStandalonePage(userId);
+      const young = await writeFileAt(String(pageId), 'just-downloaded.png');
+      await writeFileAt('local', String(pageId), 'diagram.png');
+      await query('DELETE FROM pages WHERE id = $1', [pageId]);
+
+      await cleanupStandalonePageAttachmentDirs(pageId);
+
+      expect(await exists(young)).toBe(true);
       expect(await exists(path.join(tempBase, 'local', String(pageId)))).toBe(false);
     });
 
@@ -178,6 +208,7 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       await writeFileAt(String(expired), 'pasted.png');
       await writeFileAt('local', String(expired), 'diagram.png');
       await writeFileAt(String(fresh), 'keep.png');
+      await ageDir(String(expired));
 
       const purged = await purgeExpiredStandalonePages();
 

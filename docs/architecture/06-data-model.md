@@ -496,20 +496,26 @@ together, which matters most for #1114's query-side prefix.
   cleanups delete; `local_attachments`' CASCADE removes rows, never files. The
   standalone hard-delete and trash purge now remove both directories
   (`core/services/standalone-attachment-cleanup.ts`) — but `<pk>/` only when no
-  page claims `confluence_id = <pk>`, because deleting a shared-keyspace
-  directory can evict a live Confluence page's whole cache. Everything else is
+  page claims `confluence_id = <pk>` AND the directory is older than a 5-minute
+  grace window, because deleting a shared-keyspace directory can evict a live
+  Confluence page's whole cache, and during a FIRST sync the claim does not
+  exist yet (attachments are downloaded before the `pages` INSERT). Everything else is
   the admin-triggered, dry-run-first orphan sweep
   (`domains/confluence/services/attachment-sweep-service.ts`, surfaced on
   Settings → Knowledge → Spaces & Sync → Sync schedule): the two stores are walked separately
-  (the reserved `local/` entry matches the Confluence tree's key pattern, so a
-  naive walk lists the whole local store as one orphan), a directory is
+  and the RESERVED root entries are skipped by name
+  (`ATTACHMENT_ROOT_RESERVED_DIRNAMES` — `local/` and the page-icon store
+  `page-icons/`; both match the Confluence tree's key pattern, so a naive walk
+  lists a whole other store as one orphan and a live run deletes it), a directory is
   orphaned only when NO page row — trashed included — claims its key AND none
   of its files carries a kept filename (the keep-set outranks the directory
   verdict; a keep-intersecting pageless directory is skipped whole and
   counted as keep-protected), and a
   file only against a GLOBAL per-store keep-set fed from every body text in
   the system (pages `body_html`/`draft_body_html`/`body_storage` live and
-  trashed, `page_versions`, `pending_sync_versions`, `templates`, `comments`),
+  trashed, `page_versions`, `pending_sync_versions`, `templates`, `comments`,
+  and `llm_conversations.messages` — #1361 persists a matched image's
+  `attachmentUrl` per assistant turn),
   because attachment URLs are copied verbatim between bodies. A 24h mtime
   grace window covers sync/paste races (both write files before the row that
   references them), only image-like files are per-file candidates in the

@@ -87,6 +87,32 @@ describe('SyncTab', () => {
       expect(await screen.findByTestId('attachment-storage-section')).toBeInTheDocument();
     });
 
+    // Fixer, external round: `if (isError) return <ErrorState/>` sat ABOVE
+    // the section, so a backend outage removed the card entirely — and the
+    // card's whole "a failed stats fetch is a failure, not zero bytes"
+    // contract was unreachable on exactly the failure it was written for.
+    // The overview's fetch says nothing about the storage record's.
+    it('survives a failed sync-overview fetch — the card has its own queries and its own failure copy', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as URL).toString();
+        if (url.endsWith('/settings/sync-overview')) {
+          return new Response(JSON.stringify({ message: 'boom' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      render(<SyncTab />, { wrapper: createWrapper() });
+
+      await screen.findByTestId('sync-tab-error');
+      expect(screen.getByTestId('attachment-storage-section')).toBeInTheDocument();
+      expect(screen.getByTestId('attachment-storage-card')).toBeInTheDocument();
+    });
+
     it('is absent for a non-admin', async () => {
       useAuthStore.getState().setAuth('test-token', {
         id: '2',

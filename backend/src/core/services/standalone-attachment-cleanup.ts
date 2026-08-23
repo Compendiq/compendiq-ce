@@ -31,10 +31,32 @@
  * callers and core may not import a domain (`backend/eslint.config.js`).
  */
 
+import fs from 'node:fs/promises';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
-import { removeCachedAttachmentDirectory } from './attachment-store.js';
+import { attachmentCacheDir, removeCachedAttachmentDirectory } from './attachment-store.js';
 import { removeLocalAttachmentDirectory } from './local-attachment-service.js';
+
+/**
+ * The `EXISTS` below asks whether a Confluence page owns the key RIGHT NOW,
+ * and during a first sync the answer is "not yet": attachments are downloaded
+ * into `<confluence_id>/` BEFORE the `pages` INSERT. Hard-deleting a
+ * standalone page whose numeric PK equals that Confluence id inside that
+ * window would delete the freshly downloaded cache (#1349 review).
+ *
+ * **FIVE MINUTES, deliberately not the sweep's 24 hours.** The two guards
+ * answer different questions. The sweep judges directories nobody claims, so
+ * its window must cover the whole "bytes exist before the row does" span at
+ * its most generous. This one runs when a page really has just been destroyed
+ * and its directory is by construction that page's own — so a 24h window would
+ * leak the common case (paste an image, delete the page an hour later) on
+ * every hard delete, which is the very leak this module exists to close.
+ * The sync race it needs to cover is per-page and measured in seconds; five
+ * minutes clears it with room to spare. And the leak it does admit is
+ * self-healing: a pageless directory younger than five minutes becomes an
+ * ordinary directory-level sweep candidate a day later.
+ */
+const CACHE_DIR_GRACE_MS = 5 * 60 * 1000;
 
 export async function cleanupStandalonePageAttachmentDirs(pageId: number): Promise<void> {
   // The local store first: unambiguous ownership, so nothing to check.
@@ -58,6 +80,25 @@ export async function cleanupStandalonePageAttachmentDirs(pageId: number): Promi
       logger.info(
         { pageId },
         'standalone-attachment-cleanup: a Confluence page owns this attachment key — leaving the directory to the orphan sweep',
+      );
+      return;
+    }
+    // …and only when the directory has aged past the first-sync race window
+    // (see CACHE_DIR_GRACE_MS). ENOENT means nothing to remove; any other stat
+    // failure means we cannot establish the age, and "unknown" resolves to
+    // leaving it alone — the same discipline the sweep applies to a directory
+    // it could not read.
+    let dirStat;
+    try {
+      dirStat = await fs.stat(attachmentCacheDir(key));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      return;
+    }
+    if (Date.now() - dirStat.mtimeMs < CACHE_DIR_GRACE_MS) {
+      logger.info(
+        { pageId },
+        'standalone-attachment-cleanup: cache directory is younger than the grace window — leaving it to the orphan sweep',
       );
       return;
     }

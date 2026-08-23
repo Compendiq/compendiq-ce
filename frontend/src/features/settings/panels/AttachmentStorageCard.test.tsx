@@ -133,6 +133,67 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(screen.queryByText(/0 B/)).not.toBeInTheDocument();
   });
 
+  // Fixer, external round: the two admin GETs share a backend, so both failing
+  // is the ORDINARY outage shape — two paragraphs each saying "could not be
+  // read" is one fact told twice.
+  it('states a total outage once, not twice', async () => {
+    mockApi({ stats: 'error', sweep: 'error' });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-error');
+    expect(screen.queryByTestId('attachment-sweep-status-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('attachment-storage-error').textContent).toMatch(
+      /storage record could not be read/i,
+    );
+  });
+
+  // Fixer, external round: counted, on the wire and promised by the service
+  // comment, but no surface rendered it — so one colliding common filename
+  // pinned a whole pageless directory with no on-screen hint at all.
+  it('reports directories the keep-set protected', async () => {
+    mockApi({
+      stats: {
+        ...STATS,
+        stores: {
+          confluence: { ...STORE_STATS, keepProtectedDirectories: 2 },
+          local: { ...STORE_STATS, keepProtectedDirectories: 0 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const note = await screen.findByTestId('attachment-storage-keep-protected');
+    expect(note.textContent).toMatch(/2 pageless directories were left standing/i);
+  });
+
+  it('does not claim protected directories when there are none', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+    await screen.findByTestId('attachment-storage-counters');
+    expect(screen.queryByTestId('attachment-storage-keep-protected')).not.toBeInTheDocument();
+  });
+
+  it('agrees with itself on number — never "1 files in 1 directories"', async () => {
+    mockApi({
+      stats: {
+        ...STATS,
+        stores: {
+          confluence: { ...STORE_STATS, files: 1, directories: 1 },
+          local: { ...STORE_STATS, files: 2, directories: 3 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-counters');
+    expect(screen.getByTestId('attachment-storage-confluence-bytes').textContent).toContain(
+      '1 file in 1 directory',
+    );
+    expect(screen.getByTestId('attachment-storage-local-bytes').textContent).toContain(
+      '2 files in 3 directories',
+    );
+  });
+
   // Review r1: `stats.isError && sweep.isError` needed BOTH GETs down before
   // any failure showed — a one-sided failure (each route has its own
   // rate-limit counter and `retry: false`) collapsed into the empty state or

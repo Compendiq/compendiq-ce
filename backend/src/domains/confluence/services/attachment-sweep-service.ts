@@ -38,7 +38,9 @@
  *     from every `pages.body_html` / `draft_body_html` / `body_storage`
  *     (live AND trashed), every `page_versions.body_html`, every
  *     `pending_sync_versions.body_html`/`body_storage`, every
- *     `templates.body_html` and every `comments.body_html` — collecting BOTH
+ *     `templates.body_html`, every `comments.body_html` and every
+ *     `llm_conversations.messages` (#1361 persists an image source's
+ *     `attachmentUrl` per assistant turn) — collecting BOTH
  *     `img[src]` and `a[href]`-style references via a raw-string regex
  *     (strictly more inclusive than an attribute parse), plus
  *     `getExpectedAttachmentFilenames` over storage format. In the Confluence
@@ -377,6 +379,19 @@ export function collectAttachmentUrlReferences(
   }
 }
 
+/**
+ * Keyset start for a UUID primary key (`page_versions`, `pending_sync_versions`).
+ *
+ * The cursor is carried in JS as `id::text`, but the COMPARISON is native
+ * (`id > $1::uuid`) so the primary-key index can serve it (review, external
+ * round). `WHERE id::text > $1 ORDER BY id::text` was correct — canonical
+ * lowercase UUID text sorts the same as the uuid type — and unusable by any
+ * index, so every 200-row batch was a full-table scan plus a top-N sort:
+ * O(N²/200) per sweep over the two largest body tables in the system.
+ * `gen_random_uuid()` never yields the nil UUID, so excluding it is free.
+ */
+const UUID_CURSOR_START = '00000000-0000-0000-0000-000000000000';
+
 /** Keyset-paginated read so concurrent inserts/deletes cannot shift a window. */
 async function forEachBatch<T extends { __cursor: string | number }>(
   sqlFor: (cursor: string | number | null) => { sql: string; params: unknown[] },
@@ -441,10 +456,10 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
   await forEachBatch<VersionRow>(
     (cursor) => ({
       sql: `SELECT id::text AS __cursor, body_html
-              FROM page_versions WHERE id::text > $1 ORDER BY id::text LIMIT ${KEEP_SET_BATCH}`,
-      params: [cursor ?? ''],
+              FROM page_versions WHERE id > $1::uuid ORDER BY id LIMIT ${KEEP_SET_BATCH}`,
+      params: [cursor ?? UUID_CURSOR_START],
     }),
-    '',
+    UUID_CURSOR_START,
     (rows) => {
       for (const row of rows) collectAttachmentUrlReferences(row.body_html, keep);
     },
@@ -461,10 +476,10 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
       sql: `SELECT psv.id::text AS __cursor, psv.body_html, psv.body_storage, p.space_key
               FROM pending_sync_versions psv
               LEFT JOIN pages p ON p.id = psv.page_id
-             WHERE psv.id::text > $1 ORDER BY psv.id::text LIMIT ${KEEP_SET_BATCH}`,
-      params: [cursor ?? ''],
+             WHERE psv.id > $1::uuid ORDER BY psv.id LIMIT ${KEEP_SET_BATCH}`,
+      params: [cursor ?? UUID_CURSOR_START],
     }),
-    '',
+    UUID_CURSOR_START,
     (rows) => {
       for (const row of rows) {
         collectAttachmentUrlReferences(row.body_html, keep);
@@ -475,6 +490,29 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
           }
         }
       }
+    },
+  );
+
+  // Persisted AI answers (#1361, added in the external review round). Since
+  // that PR `toPersistedSources` copies an image source's `attachmentUrl`
+  // verbatim into `llm_conversations.messages`, and `GET
+  // /llm/conversations/:id` renders the thumbnail back from it — so a file
+  // whose only surviving reference is a saved answer was judged an orphan and
+  // swept, and reopening the thread showed a broken picture. The jsonb is
+  // cast to TEXT and run through the same raw-string collector: the URLs sit
+  // inside it verbatim (JSON escapes no forward slash), so no shape knowledge
+  // and no per-row parse is needed, and a future field carrying an attachment
+  // URL is covered without a change here.
+  type ConversationRow = { __cursor: string; messages_text: string | null };
+  await forEachBatch<ConversationRow>(
+    (cursor) => ({
+      sql: `SELECT id::text AS __cursor, messages::text AS messages_text
+              FROM llm_conversations WHERE id > $1::uuid ORDER BY id LIMIT ${KEEP_SET_BATCH}`,
+      params: [cursor ?? UUID_CURSOR_START],
+    }),
+    UUID_CURSOR_START,
+    (rows) => {
+      for (const row of rows) collectAttachmentUrlReferences(row.messages_text, keep);
     },
   );
 
@@ -1047,14 +1085,19 @@ export async function deleteCandidates(
     }
   } finally {
     // Owners of files that WERE deleted are re-queued even when a later
-    // candidate threw — and the flush itself must not mask that error, so
-    // each page's failure is logged and the loop continues.
+    // candidate threw — and the flush itself must not mask that error, so a
+    // page that could not be marked is counted out and the loop continues.
+    //
+    // `markPageImagesDirty` swallows its own query error (a sync must not die
+    // on the way to raising a flag), so the `try`/`catch` this used to wrap it
+    // in was dead code AND the counter incremented on a failed UPDATE (#1349
+    // review). It now reports whether the statement ran; the flag IS the
+    // queue, so over-reporting hides the backlog an operator would look for.
     for (const pageId of dirtyPages) {
-      try {
-        await markPageImagesDirty(pageId);
+      if (await markPageImagesDirty(pageId)) {
         totals.pagesMarkedDirty += 1;
-      } catch (err) {
-        logger.warn({ err, pageId }, 'attachment-sweep: failed to mark a page image-dirty');
+      } else {
+        logger.warn({ pageId }, 'attachment-sweep: failed to mark a page image-dirty');
       }
     }
   }
@@ -1149,11 +1192,20 @@ function shapeRun(input: RunShapeInput): AttachmentSweepRun {
  * both be answered `started: true` while the loser's `null` return vanished
  * into the fire-and-forget (review, external round). One SET NX; the TTL is
  * this module's, so the route cannot pick a different bound than the runner
- * refreshes against. Mirrors `acquireWorkerLock`'s single-node fallback: a
- * token (never `null`) when Redis is absent or errored.
+ * refreshes against.
+ *
+ * **`failClosed`** (review, external round): `acquireWorkerLock` degrades to
+ * local execution on a Redis ERROR, handing every caller a token. That is
+ * right for the idempotent workers it was written for and wrong here — this
+ * is the degrade's first DESTRUCTIVE consumer, and a blip during two
+ * concurrent Delete-orphans presses would run two delete loops over the same
+ * tree, with the refresh guard's own `.catch` unable to notice because Redis
+ * is still erroring. `null` answers `alreadyRunning`, the card says so, and
+ * pressing again is the remedy. Redis being ABSENT (a single-node deployment)
+ * still returns a token — that is a configuration, not a failure.
  */
 export async function acquireAttachmentSweepLock(): Promise<string | null> {
-  return acquireWorkerLock(ATTACHMENT_SWEEP_WORKER_LOCK, LOCK_TTL_SECONDS);
+  return acquireWorkerLock(ATTACHMENT_SWEEP_WORKER_LOCK, LOCK_TTL_SECONDS, { failClosed: true });
 }
 
 /**
@@ -1178,7 +1230,8 @@ export async function runAttachmentSweep(opts: {
   token?: string;
   triggeredBy?: string | null;
 }): Promise<AttachmentSweepRun | null> {
-  const token = opts.token ?? (await acquireWorkerLock(ATTACHMENT_SWEEP_WORKER_LOCK, LOCK_TTL_SECONDS));
+  // `failClosed` for the same reason `acquireAttachmentSweepLock` uses it.
+  const token = opts.token ?? (await acquireAttachmentSweepLock());
   if (!token) return null;
 
   let lockLost = false;
