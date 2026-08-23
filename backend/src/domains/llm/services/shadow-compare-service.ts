@@ -235,27 +235,30 @@ export async function getShadowCompareRun(
  * one surface the feature exists to produce swap go/no-go evidence on. A run
  * whose config carries NO stamp is treated as not-this-migration for the same
  * reason: unknown provenance is not evidence.
+ *
+ * That check is a PREDICATE of the query, never a filter over its one row
+ * (r2). Applied afterwards it discarded the completed comparison of the pair
+ * that is live now whenever any newer run named another candidate — an
+ * operator who tries X, tries Y, and comes back to X loses X's report, its
+ * disagreement list and the N x 2 embedding calls that produced them, while
+ * the card says there is nothing to re-attach to.
  */
 export async function getLatestShadowCompareRun(
   requestedBy: string,
 ): Promise<ShadowCompareRun | null> {
-  const run = await latestBenchmarkRun<ShadowCompareConfig, ShadowCompareReport>(
-    'shadow-compare',
-    requestedBy,
-  );
-  if (!run) return null;
   const target = await getActiveShadowTarget();
   const live: ComparePair | null = target
     ? { providerId: target.cfg.providerId, model: target.model }
     : null;
-  return samePair(run.config?.candidate ?? null, live) ? run : null;
-}
-
-/** Both absent is a match (no migration, and a run started without one); one
- *  absent is not. */
-function samePair(a: ComparePair | null, b: ComparePair | null): boolean {
-  if (!a || !b) return !a && !b;
-  return a.providerId === b.providerId && a.model === b.model;
+  // `config @> {"candidate": …}` — containment, so the stamp must be PRESENT
+  // and equal (or present and null when no migration is active). A row with
+  // no stamp at all matches neither, which is the documented reading of
+  // unknown provenance.
+  return latestBenchmarkRun<ShadowCompareConfig, ShadowCompareReport>(
+    'shadow-compare',
+    requestedBy,
+    { candidate: live },
+  );
 }
 
 /**

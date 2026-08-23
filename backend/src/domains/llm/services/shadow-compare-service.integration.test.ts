@@ -147,6 +147,14 @@ const {
   recordShadowCompareJudgement,
   getShadowCompareJudgements,
   MIN_JUDGEMENTS_FOR_P,
+  // The Mode 2 refusals as TYPES. The route maps them with `instanceof`, so
+  // asserting only their English message here leaves that seam untested: a
+  // plain `new Error('<same words>')` kept every message regex green while
+  // `mapJudgementError` fell through to null and Fastify answered 500 where
+  // the surface needs 404/409/422 (r2).
+  CompareRunNotFoundError,
+  CompareRunIncompleteError,
+  UnknownCompareQueryError,
 } = await import('./shadow-compare-service.js');
 const { startShadowMigration, runShadowBackfillJob, getShadowMigrationStatus } = await import(
   './shadow-migration-service.js'
@@ -848,7 +856,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       expect(await getShadowCompareRun(runId, 'aaaaaaaa-1260-4000-8000-000000000009')).toBeNull();
       await expect(
         getShadowCompareJudgements(runId, 'aaaaaaaa-1260-4000-8000-000000000009'),
-      ).rejects.toThrow(/not found/i);
+      ).rejects.toBeInstanceOf(CompareRunNotFoundError);
     });
 
     it('finds this admin\'s most recent comparison after the card lost its run id', async () => {
@@ -903,6 +911,43 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       });
       expect((await getLatestShadowCompareRun(ADMIN))?.id).toBe(newRun);
       expect((await getShadowCompareRun(oldRun, ADMIN))?.id).toBe(oldRun);
+    });
+
+    it('re-attaches the newest run OF THE LIVE PAIR, not merely the newest run', async () => {
+      // The pair check must be part of the SELECT, not a filter applied after
+      // `LIMIT 1` (r2). An admin who flip-flops the candidate — start against
+      // X, abort, start against Y, abort, come back to X — otherwise loses the
+      // completed comparison of X: the newest row names Y, the filter discards
+      // it, and the card offers to re-spend N x 2 embedding calls on a
+      // comparison that is sitting finished in the table.
+      await seedReadyMigration();
+      await seedAnalytics([['how to configure sync', 1]]);
+      const runAgainstX = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      await runShadowCompare(runAgainstX, ADMIN);
+      expect((await getShadowCompareRun(runAgainstX, ADMIN))?.status).toBe('completed');
+
+      // A newer comparison against a DIFFERENT candidate…
+      await simulateAbort();
+      await startShadowMigration({ providerId: shadowProviderId, model: 'some-other-embed:1b' });
+      const runAgainstY = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      expect((await getLatestShadowCompareRun(ADMIN))?.id).toBe(runAgainstY);
+
+      // …and back to X. The completed comparison of the pair that is live now
+      // is still the evidence this card exists to show, even though Y's row is
+      // the newest one this admin owns.
+      await simulateAbort();
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      expect((await getLatestShadowCompareRun(ADMIN))?.id).toBe(runAgainstX);
     });
 
     it('never re-attaches a run started against the same model behind a DIFFERENT provider', async () => {
@@ -975,15 +1020,27 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
         limit: 50,
         topK: 3,
       });
+      // Asserted by TYPE as well as by wording: the route decides 404 / 409 /
+      // 422 with `instanceof`, so a refusal that keeps the sentence and loses
+      // the class is a 500 on a surface whose whole job is a clean refusal.
+      await expect(
+        recordShadowCompareJudgement(queued, 'query-1', 'live', ADMIN),
+      ).rejects.toBeInstanceOf(CompareRunIncompleteError);
       await expect(recordShadowCompareJudgement(queued, 'query-1', 'live', ADMIN)).rejects.toThrow(
         /not completed/i,
       );
       // Free the slot, complete a run, then a bogus query id.
       await query(`DELETE FROM retrieval_benchmark_runs`);
       const runId = await completedRun();
+      await expect(
+        recordShadowCompareJudgement(runId, 'query-99', 'live', ADMIN),
+      ).rejects.toBeInstanceOf(UnknownCompareQueryError);
       await expect(recordShadowCompareJudgement(runId, 'query-99', 'live', ADMIN)).rejects.toThrow(
         /unknown query/i,
       );
+      await expect(
+        recordShadowCompareJudgement('2c0c8a92-98a8-4f8c-a6a1-00000000dead', 'query-1', 'live', ADMIN),
+      ).rejects.toBeInstanceOf(CompareRunNotFoundError);
       await expect(recordShadowCompareJudgement('2c0c8a92-98a8-4f8c-a6a1-00000000dead', 'query-1', 'live', ADMIN)).rejects.toThrow(
         /not found/i,
       );

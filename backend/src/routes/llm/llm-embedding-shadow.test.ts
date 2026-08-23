@@ -102,6 +102,16 @@ const { ShadowProbeError } = await import('../../domains/llm/services/shadow-mig
 
 let isAdmin = true;
 
+/**
+ * Every route the plugin declares, collected from Fastify itself (r2). The
+ * admin-gate test used to enumerate them by hand and had already missed one —
+ * `GET …/compare`, the latest-run lookup, which serves real production query
+ * text and page titles: deleting its `preHandler` left the whole suite green.
+ * A hand-written list cannot fail for the route it does not mention, so the
+ * list is derived and a new route is gated by default or the test names it.
+ */
+const declaredRoutes: Array<{ method: string; url: string }> = [];
+
 describe('#1116 shadow-migration routes', () => {
   let app: ReturnType<typeof Fastify>;
 
@@ -128,6 +138,16 @@ describe('#1116 shadow-migration routes', () => {
         const err = new Error('admin required') as Error & { statusCode: number };
         err.statusCode = 403;
         throw err;
+      }
+    });
+    app.addHook('onRoute', (route) => {
+      const methods = Array.isArray(route.method) ? route.method : [route.method];
+      for (const method of methods) {
+        // HEAD is Fastify's own free companion to every GET, and it shares
+        // that GET's preHandler chain; listing it doubles the loop for no
+        // extra coverage.
+        if (method === 'HEAD') continue;
+        declaredRoutes.push({ method, url: route.url });
       }
     });
     await app.register(llmEmbeddingShadowRoutes, { prefix: '/api' });
@@ -569,30 +589,30 @@ describe('#1116 shadow-migration routes', () => {
 
   it('every route is admin-gated', async () => {
     isAdmin = false;
-    for (const [method, url] of [
-      ['POST', '/api/admin/embedding/shadow-migration'],
-      ['GET', '/api/admin/embedding/shadow-migration'],
-      ['POST', '/api/admin/embedding/shadow-migration/swap'],
-      ['POST', '/api/admin/embedding/shadow-migration/rollback'],
-      ['POST', '/api/admin/embedding/shadow-migration/cleanup'],
-      ['POST', '/api/admin/embedding/shadow-migration/backfill'],
-      ['POST', '/api/admin/embedding/shadow-migration/compare'],
-      ['GET', '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009'],
-      ['POST', '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009/judgements'],
-      ['GET', '/api/admin/embedding/shadow-migration/compare/2c0c8a92-98a8-4f8c-a6a1-000000000009/judgements'],
-    ] as const) {
+    const urls = declaredRoutes.map((route) => route.url);
+    // The derivation itself has to be load-bearing: an `onRoute` hook that
+    // silently collected nothing would make the loop below pass vacuously.
+    expect(urls).toContain('/api/admin/embedding/shadow-migration');
+    expect(urls).toContain('/api/admin/embedding/shadow-migration/compare');
+    expect(urls).toContain('/api/admin/embedding/shadow-migration/compare/:id');
+    expect(declaredRoutes.length).toBeGreaterThanOrEqual(11);
+
+    for (const { method, url } of declaredRoutes) {
       const res = await app.inject({
-        method,
-        url,
-        ...(method === 'POST' && url.endsWith('shadow-migration')
+        method: method as 'GET',
+        url: url.replace(':id', '2c0c8a92-98a8-4f8c-a6a1-000000000009'),
+        ...(method === 'POST'
           ? { payload: { providerId: '2c0c8a92-98a8-4f8c-a6a1-000000000001', model: 'm' } }
           : {}),
       });
-      expect(res.statusCode).toBe(403);
+      expect(res.statusCode, `${method} ${url}`).toBe(403);
     }
     expect(svc.start).not.toHaveBeenCalled();
     expect(svc.swap).not.toHaveBeenCalled();
     expect(compareSvc.create).not.toHaveBeenCalled();
     expect(compareSvc.get).not.toHaveBeenCalled();
+    expect(compareSvc.latest).not.toHaveBeenCalled();
+    expect(compareSvc.judge).not.toHaveBeenCalled();
+    expect(compareSvc.judgements).not.toHaveBeenCalled();
   });
 });

@@ -201,21 +201,32 @@ export async function fetchBenchmarkRun<TConfig, TReport>(
  * The newest run of one kind started by this admin, whatever its status —
  * how a card that lost its `runId` (a tab switch, a reload) re-attaches to
  * its own in-flight run and to its finished report.
+ *
+ * `configContains` narrows the candidate set BEFORE the ordering, as a jsonb
+ * containment predicate on `config` (a bind parameter — never interpolated).
+ * That placement is the point (r2): a caller that filtered the single newest
+ * row in JS instead discarded a perfectly good run whenever a NEWER run of the
+ * same kind failed the filter, and the surface then re-spends the provider
+ * calls that produced the report it already had.
  */
 export async function latestBenchmarkRun<TConfig, TReport>(
   kind: BenchmarkRunKind,
   requestedBy: string,
+  configContains?: Record<string, unknown>,
 ): Promise<BenchmarkRunRecord<TConfig, TReport> | null> {
   await recoverStaleBenchmarkRuns();
+  const params: unknown[] = [requestedBy];
+  if (configContains !== undefined) params.push(JSON.stringify(configContains));
   const result = await query<RunRow<TConfig, TReport>>(
     `SELECT id, status, config, progress_done, progress_total, result, error,
             created_at, started_at, completed_at
      FROM retrieval_benchmark_runs
      WHERE requested_by = $1
        AND ${kind === null ? "config->>'kind' IS NULL" : "config->>'kind' = 'shadow-compare'"}
+       ${configContains === undefined ? '' : 'AND config @> $2::jsonb'}
      ORDER BY created_at DESC
      LIMIT 1`,
-    [requestedBy],
+    params,
   );
   const row = result.rows[0];
   if (!row) return null;
