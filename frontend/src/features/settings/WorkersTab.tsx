@@ -151,8 +151,14 @@ function useEmbeddingRunAction() {
       const total = result.total ?? 0;
       const completed = result.completed ?? 0;
       const failed = result.failed ?? 0;
+      const processed = completed + failed;
+      const remaining = Math.max(0, total - processed);
       if (total === 0) {
         toast.info('No pending pages to embed.');
+      } else if (remaining > 0) {
+        toast.warning(
+          `Embedding stopped early: ${processed} of ${total} processed; ${remaining} ${remaining === 1 ? 'page remains' : 'pages remain'} pending. Try again after the embedding provider recovers.`,
+        );
       } else if (failed > 0) {
         toast.warning(`Embedding finished: ${completed} completed, ${failed} failed.`);
       } else {
