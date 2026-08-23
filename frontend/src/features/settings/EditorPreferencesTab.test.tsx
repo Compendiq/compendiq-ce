@@ -17,6 +17,13 @@ const settings: SettingsResponse = {
   inlineCompletionDelay: 'balanced',
   inlineCompletionMode: 'full',
   inlineCompletionCodeOnly: false,
+  onboardingState: {
+    firstAiQueryMade: false,
+    shortcutsModalViewed: false,
+    pageCreatedOrEdited: false,
+    dismissed: false,
+    completedAt: null,
+  },
 };
 
 describe('EditorPreferencesTab (#1417)', () => {
