@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, type Ref } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -349,7 +349,6 @@ export function RetrievalTab() {
     data: distribution,
     isPending: distributionPending,
     isError: distributionError,
-    isFetching: distributionFetching,
     refetch: refetchDistribution,
   } = useQuery<ConfidenceDistribution>({
     queryKey: ['confidence-distribution'],
@@ -400,8 +399,53 @@ export function RetrievalTab() {
    * standing empty.
    */
   const [retryInFlight, setRetryInFlight] = useState(false);
-  /** A read is out — whether this control started it or a window-focus refetch did. */
-  const distributionBusy = distributionFetching || retryInFlight;
+
+  /**
+   * The busy state is `retryInFlight` ALONE, never `isFetching` (review r3).
+   *
+   * This client leaves `refetchOnWindowFocus` at its v5 default with
+   * `staleTime: 30_000`, so alt-tabbing back into the stale strip starts a
+   * read nobody pressed anything for. Folding `isFetching` in relabelled the
+   * button `Retrying…` and stood it down for that read — a system event
+   * reported as the user's own action, inside a `role="status"` region that
+   * then announces it as one. Everything the button says is about the request
+   * this control started; a background re-read is the strip's own business
+   * and changes no control.
+   */
+
+  /**
+   * Where focus goes when the strip the user pressed disappears BENEATH it
+   * (review r3). The r2 fix kept the button mounted through its own request
+   * and stopped there, which left the ORDINARY outcome — the retry succeeds,
+   * the strip's condition resolves, the button is removed — dropping focus to
+   * `<body>` in the ~30-stop panel the r2 comment calls unacceptable one
+   * branch over. Success is the more common instance of that case, not a
+   * rarer one.
+   *
+   * So a successful retry hands focus to the measurement it produced: the
+   * similarity readout, the first thing on screen that changed. It is a `<p>`
+   * with `tabIndex={-1}`, so it is programmatically focusable without adding a
+   * tab stop, and it stays prose — the description sweep bans operable
+   * elements from these regions, and a paragraph is not one.
+   *
+   * Two guards keep it from being a focus THEFT. The effect only runs for a
+   * retry this control started, and only when the unmount really dropped
+   * focus: if `activeElement` is anything but `<body>`, the user moved on
+   * during the request (it can be seconds — `query-client.ts` retries a
+   * non-4xx twice with backoff) and their caret is left where they put it.
+   */
+  const [restoreFocusAfterRetry, setRestoreFocusAfterRetry] = useState(false);
+  const distributionReadoutRef = useRef<HTMLParagraphElement | null>(null);
+  useEffect(() => {
+    if (!restoreFocusAfterRetry) return;
+    // The strip is still up (the retry failed, or is still out) — the button
+    // the user pressed is still under their focus, which is where it belongs.
+    if (distributionError || retryInFlight) return;
+    setRestoreFocusAfterRetry(false);
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    distributionReadoutRef.current?.focus();
+  }, [restoreFocusAfterRetry, distributionError, retryInFlight]);
 
   const saved: RetrievalValues = useMemo(() => {
     const out = { ...DEFAULTS };
@@ -975,8 +1019,8 @@ export function RetrievalTab() {
           that was already announced. The two mechanisms cancelled: the
           property silenced the content change it was paired with, while the
           comment above it claimed both were announced. One region, one
-          mechanism — the content IS the announcement. The button's own
-          `disabled` + label carry the busy state where a busy state belongs.
+          mechanism — the content IS the announcement. The button's own label
+          carries the busy state where a busy state belongs.
         */}
         {(distributionError || retryInFlight) && (
           <div
@@ -991,18 +1035,51 @@ export function RetrievalTab() {
                 : 'The measured confidence distribution could not be read, so neither threshold below'
                   + ' has a measurement beside it. Your unsaved edits on this page are untouched.'}
             </span>
+            {/*
+              `aria-disabled`, NEVER `disabled` (review r3) — the whole point
+              of the r2 machinery above is that this control keeps the focus
+              of the user who pressed it, and a genuinely disabled element
+              cannot: per the HTML focus fixup rule a control that stops being
+              focusable is blurred, so every browser drops focus to `<body>`
+              here, and `nm-button-ghost`'s `:disabled` rule adds
+              `pointer-events: none` on top. jsdom implements none of that —
+              it leaves `activeElement` on a disabled button — so the test
+              beside this one asserted focus retention and `toBeDisabled()` in
+              the same block, a pair that cannot both hold in a browser. The
+              handler is the refusal instead, since `aria-disabled` blocks no
+              events (the `AuthPanel` SSO-retry precedent, same shape).
+
+              And no `aria-busy` on it either: this button sits INSIDE the
+              `role="status"` region, and busy on an element withholds updates
+              from its subtree — which is r2's silenced-announcement defect
+              moved down one node. The label change IS the announcement.
+            */}
             <button
               type="button"
               onClick={() => {
+                // The refusal `aria-disabled` cannot perform. Belt-and-braces
+                // over react-query's own in-flight dedupe rather than a
+                // second mechanism: the point is that the contract lives here
+                // and not in whether `refetch` happens to coalesce.
+                if (retryInFlight) return;
                 setRetryInFlight(true);
-                void refetchDistribution().finally(() => setRetryInFlight(false));
+                setRestoreFocusAfterRetry(true);
+                void refetchDistribution()
+                  .then(
+                    // A retry that fails again leaves the strip up with the
+                    // button still under the user's focus; only a success
+                    // takes it away, and only then does focus need rehoming.
+                    (result) => setRestoreFocusAfterRetry(!result.isError),
+                    () => setRestoreFocusAfterRetry(false),
+                  )
+                  .finally(() => setRetryInFlight(false));
               }}
-              disabled={distributionBusy}
+              aria-disabled={retryInFlight || undefined}
               aria-describedby={DISTRIBUTION_ERROR_SENTENCE_ID}
-              className="nm-button-ghost shrink-0 text-xs"
+              className="nm-button-ghost shrink-0 text-xs aria-disabled:cursor-default aria-disabled:opacity-45"
               data-testid="retrieval-distribution-retry"
             >
-              {distributionBusy ? 'Retrying…' : 'Retry'}
+              {retryInFlight ? 'Retrying…' : 'Retry'}
             </button>
           </div>
         )}
@@ -1038,6 +1115,8 @@ export function RetrievalTab() {
           </p>
           <ConfidenceDistributionLine
             fieldKey="ragConfidenceThreshold"
+            // Where a successful Retry puts focus — see `restoreFocusAfterRetry`.
+            readoutRef={distributionReadoutRef}
             bucket={distribution?.similarity}
             windowDays={distribution?.windowDays ?? CONFIDENCE_WINDOW_DAYS_FALLBACK}
             isPending={distributionPending}
@@ -1545,6 +1624,7 @@ const DISTRIBUTION_ERROR_SENTENCE_ID = 'retrieval-distribution-error-sentence';
  */
 function ConfidenceDistributionLine({
   fieldKey,
+  readoutRef,
   bucket,
   windowDays,
   isPending,
@@ -1554,6 +1634,15 @@ function ConfidenceDistributionLine({
   emptyNote,
 }: {
   fieldKey: CalibrationFieldKey;
+  /**
+   * Review r3 — the focus target for a successful Retry, on the ONE row that
+   * takes it. Passing it is what makes the paragraph `tabIndex={-1}`: a row
+   * nobody focuses stays a plain `<p>`, and the focusable one is still prose,
+   * so the panel's description sweep (which bans `button`/`a`/`input`/
+   * `select`/`textarea` from these regions) is unaffected and the tab order
+   * gains nothing.
+   */
+  readoutRef?: Ref<HTMLParagraphElement>;
   bucket: ConfidenceDistributionBucket | undefined;
   windowDays: number;
   isPending: boolean;
@@ -1600,9 +1689,16 @@ function ConfidenceDistributionLine({
   emptyNote?: string;
 }) {
   const testId = `retrieval-${fieldKey}-distribution`;
+  // One set of props for all four branches, so the focus target survives
+  // whichever one is on screen when the retry settles.
+  const readoutProps = {
+    'data-testid': testId,
+    ref: readoutRef,
+    tabIndex: readoutRef ? -1 : undefined,
+  };
   if (isError) {
     return (
-      <p data-testid={testId}>
+      <p {...readoutProps}>
         The measured distribution could not be read, so there is nothing measured to check this
         threshold against. Use <strong className="font-medium">Retry</strong> at the top of this
         section.
@@ -1610,7 +1706,7 @@ function ConfidenceDistributionLine({
     );
   }
   if (isPending || !bucket) {
-    return <p data-testid={testId}>Reading the measured distribution…</p>;
+    return <p {...readoutProps}>Reading the measured distribution…</p>;
   }
   // One clause, shared by both data branches: what is on screen is real, and
   // is the last thing the panel could read. The Retry that would refresh it
@@ -1618,7 +1714,7 @@ function ConfidenceDistributionLine({
   const staleClause = staleRead ? ' The latest read failed, so this is the last measurement this panel could get.' : '';
   if (bucket.count === 0 || bucket.p50 === null || bucket.p90 === null) {
     return (
-      <p data-testid={testId}>
+      <p {...readoutProps}>
         No assistant questions measured on this basis in the last {windowDays} days, so there is
         nothing to tune against yet.{emptyNote ? ` ${emptyNote}` : ''}
         {staleClause}
@@ -1626,7 +1722,7 @@ function ConfidenceDistributionLine({
     );
   }
   return (
-    <p data-testid={testId}>
+    <p {...readoutProps}>
       Measured over the last {windowDays} days: p50{' '}
       <span className="font-mono">{bucket.p50.toFixed(2)}</span>, p90{' '}
       <span className="font-mono">{bucket.p90.toFixed(2)}</span> across{' '}

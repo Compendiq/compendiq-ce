@@ -2456,7 +2456,26 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     // The same element, still in the tree, still holding focus.
     expect(screen.getByTestId('retrieval-distribution-retry')).toBe(retry);
     expect(document.activeElement).toBe(retry);
-    expect(retry).toBeDisabled();
+    // Review r3 — `aria-disabled`, and the assertion above is only meaningful
+    // WITH it. A native `disabled` is blurred by the browser under the HTML
+    // focus fixup rule (and `nm-button-ghost`'s `:disabled` adds
+    // `pointer-events: none`), so `activeElement` would be `<body>` in Chrome,
+    // Firefox and Safari for the whole multi-second window — the exact defect
+    // this test's own r2 comment says the strip exists to prevent. jsdom
+    // implements none of that: it leaves focus on a disabled button, so the
+    // r2 cut asserted focus retention and `toBeDisabled()` in this same block,
+    // a pair that cannot both hold in a browser.
+    expect(retry).not.toBeDisabled();
+    expect(retry).toHaveAttribute('aria-disabled', 'true');
+    // `aria-disabled` blocks no events, so pressing it again while the read is
+    // out must be inert. (Honest note: react-query dedupes an in-flight
+    // refetch, so this assertion also holds without the handler's own guard —
+    // the guard is there so the contract does not depend on that, and the
+    // mutation-checked half of this test is the attribute above.)
+    const during = attempts;
+    fireEvent.click(retry);
+    expect(attempts).toBe(during);
+    expect(screen.getByTestId('retrieval-distribution-retry')).toBe(retry);
     expect(screen.getByTestId('retrieval-distribution-error')).toBeInTheDocument();
 
     await act(async () => {
@@ -2467,7 +2486,160 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     await waitFor(() =>
       expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/^Retry$/),
     );
+    expect(retry).not.toHaveAttribute('aria-disabled');
     expect(document.activeElement).toBe(retry);
+  });
+
+  it('hands focus to the measurement when the Retry SUCCEEDS and the strip goes away', async () => {
+    // Review r3 — the ordinary outcome of pressing Retry, and the half the r2
+    // fix left standing. On success `distributionError` and `retryInFlight`
+    // both clear in the same settle, so the strip — and the button the user
+    // activated — is removed with focus on it, and focus falls to `<body>` in
+    // the ~30-tab-stop panel the r2 comment calls unacceptable one branch
+    // over. Success is the MORE common instance of that case.
+    let fail = true;
+    mockApi({
+      confidenceDistribution: () => (fail ? 'error' : defaultConfidenceDistribution),
+    });
+    renderTab();
+    await ready();
+
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    retry.focus();
+    expect(document.activeElement).toBe(retry);
+
+    fail = false;
+    fireEvent.click(retry);
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toContain('0.41'),
+    );
+    expect(screen.queryByTestId('retrieval-distribution-retry')).toBeNull();
+
+    // Focus lands on the measurement the press produced, not on `<body>`.
+    const readout = screen.getByTestId(similarityId);
+    await waitFor(() => expect(document.activeElement).toBe(readout));
+    // And it is still prose: `tabIndex={-1}` is programmatically focusable
+    // without adding a tab stop, so the description region it sits inside
+    // gains nothing operable.
+    expect(readout.tagName).toBe('P');
+    expect(readout.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('does NOT steal focus when the user moved on during the retry', async () => {
+    // The other half of the rule above. `query-client.ts` retries a non-4xx
+    // twice with backoff, so the window is seconds long and the operator can
+    // legitimately be typing in a knob at the far end of the panel by the time
+    // it settles. Focus is rehomed only when the unmount really dropped it.
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let attempts = 0;
+    mockApi({
+      confidenceDistribution: async () => {
+        attempts += 1;
+        if (attempts === 1) return 'error';
+        await held;
+        return defaultConfidenceDistribution;
+      },
+    });
+    renderTab();
+    await ready();
+
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    retry.focus();
+    fireEvent.click(retry);
+    await waitFor(() =>
+      expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/retrying/i),
+    );
+
+    // The operator goes back to work while the read is out.
+    const elsewhere = input('ragFetchWidth');
+    elsewhere.focus();
+    expect(document.activeElement).toBe(elsewhere);
+
+    await act(async () => {
+      release!();
+      await held;
+    });
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toContain('0.41'),
+    );
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  it('never reports a BACKGROUND re-read as a retry the user started', async () => {
+    // Review r3 — this client leaves `refetchOnWindowFocus` at its v5 default
+    // with `staleTime: 30_000`, so alt-tabbing back into the stale strip
+    // starts a read nobody pressed anything for. Folding `isFetching` into the
+    // busy state relabelled the button `Retrying…` and stood it down for that
+    // read — a system event announced as the user's own action inside a
+    // `role="status"` region, and (with a native `disabled`) a focus drop for
+    // a request they never made.
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let attempts = 0;
+    mockApi({
+      confidenceDistribution: async () => {
+        attempts += 1;
+        if (attempts === 1) return defaultConfidenceDistribution;
+        if (attempts > 2) await held;
+        return 'error';
+      },
+    });
+    const { queryClient } = renderTab();
+    await ready();
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toContain('0.41'),
+    );
+
+    // Read 2 fails over the cached figures — the stale strip appears.
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['confidence-distribution'] });
+    });
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    retry.focus();
+
+    // Read 3 is a BACKGROUND refetch — no click — and is held open.
+    void queryClient.refetchQueries({ queryKey: ['confidence-distribution'] });
+    await waitFor(() => expect(attempts).toBeGreaterThan(2));
+
+    expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/^Retry$/);
+    expect(retry).not.toHaveAttribute('aria-disabled');
+    expect(retry).not.toBeDisabled();
+    expect(document.activeElement).toBe(retry);
+
+    await act(async () => {
+      release!();
+      await held;
+    });
+  });
+
+  it('states the window the SERVER measured, not the one the panel assumes', async () => {
+    // Review r3 — every fixture carried the same 7 as the fallback constant,
+    // so the whole suite stayed green with the wire value ignored and the
+    // constant hardcoded at both call sites. The window is a server fact (the
+    // endpoint's `windowDays`), and the follow-up this PR proposes is a
+    // bounded `days` parameter — at which point a panel printing "last 7
+    // days" beside a 30-day sample would be a lie nothing could fail on.
+    mockApi({
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        windowDays: 14,
+        rerank: { p50: null, p90: null, count: 0 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    // The figures branch and the empty branch both print the server's window.
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toMatch(/last 14 days/i),
+    );
+    expect((await screen.findByTestId(similarityId)).textContent).not.toMatch(/last 7 days/i);
+    expect((await screen.findByTestId(rerankId)).textContent).toMatch(/last 14 days/i);
   });
 
   it('places the percentile AT the threshold, and calls it a ceiling on refusals', async () => {
