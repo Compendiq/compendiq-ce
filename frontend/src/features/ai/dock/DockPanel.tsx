@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, PanelRightClose, Paperclip, Send, Sparkles, Square, X } from 'lucide-react';
+import { AlertTriangle, Network, PanelRightClose, Paperclip, Send, Sparkles, Square, X } from 'lucide-react';
 import { SUPPORTED_DOCUMENT_FORMATS, SUPPORTED_IMAGE_FORMATS } from '@compendiq/contracts';
 import { useAiContext, type Message } from '../AiContext';
 import { StreamingMessage } from '../StreamingMessage';
@@ -95,10 +95,11 @@ function DockAttachmentPicker({
  */
 export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void; variant?: 'column' | 'sheet' | 'tab' }) {
   const {
-    page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
+    page, pageId, pageHasChildren, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, streamingThreadId, activeThreadId, input, setInput, modelsError,
     refetchModels, model, chatVision, chatVisionModel, mode, setMode, improvementType,
     createSkill, setCreateSkill, abortRef, historyTruncated,
+    includeSubPages, setIncludeSubPages,
   } = useAiContext();
 
   // #1361: the streaming buffer and both busy flags are provider-wide, and this
@@ -422,6 +423,44 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             testId="ai-dock-deep-search"
             className="mb-2"
           />
+        )}
+
+        {/* Sub-page context, for the two requests that carry it — `/llm/ask`
+            and `/llm/improve` (`useDockActions`). Diagram and the create
+            skills never send `includeSubPages`, so the control does not offer
+            it for them. `/ai` lost its own "+ Sub-pages" chip when the page
+            scope left that route (#1361) — the dock is now the only surface
+            with a page to widen the context of, so it is the only place this
+            can live. Unlike Deep search, `includeSubPages` is `AiContext`
+            provider state (see `useDockActions`'s comment on `deepSearch`) —
+            it is not cleared per question or per page, by design predating
+            this control. */}
+        {page && pageHasChildren && selectedAction !== 'diagram' && !isCreateAction && (
+          <label
+            className={cn(
+              'mb-2 flex h-7 w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border border-transparent px-2 text-xs select-none transition-colors duration-100 ease-out',
+              'focus-within:outline-none focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1',
+              includeSubPages
+                ? 'bg-primary/15 text-primary font-medium hover:bg-primary/20'
+                : 'bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground active:bg-secondary',
+              isStreaming
+                ? 'cursor-not-allowed opacity-45 pointer-events-none'
+                : 'cursor-pointer',
+            )}
+            title="Include this page's sub-pages in the AI context"
+          >
+            <input
+              type="checkbox"
+              checked={includeSubPages}
+              disabled={isStreaming}
+              onChange={(e) => setIncludeSubPages(e.target.checked)}
+              className="sr-only"
+              aria-label="Include sub-pages in the AI context"
+              data-testid="ai-dock-include-subpages"
+            />
+            <Network size={12} aria-hidden />
+            <span>Sub-pages</span>
+          </label>
         )}
 
         {/* Suggested prompt chip when a create skill is active with empty input */}

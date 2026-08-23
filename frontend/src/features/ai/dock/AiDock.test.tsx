@@ -13,6 +13,7 @@ import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiProvider, useAiContext } from '../AiContext';
 import { DockPanel } from './DockPanel';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
+import { expectComposerFocusOrder } from '../../../test-utils';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -124,6 +125,10 @@ async function selectDockAction(action: 'ask' | 'grammar' | 'structure' | 'clari
 
 function composer(): HTMLTextAreaElement {
   return screen.getByTestId('ai-dock-input');
+}
+
+function composerBox(): HTMLElement {
+  return composer().closest('.nm-composer') as HTMLElement;
 }
 
 describe('AiDock (#1126)', () => {
@@ -450,6 +455,131 @@ describe('AiDock (#1126)', () => {
       expect(screen.getByTestId('ai-dock-deep-search')).not.toBeChecked();
       expect(local).not.toHaveBeenCalled();
       expect(session).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Sub-pages context (#1361 owner ruling, 2026-08-23)
+  // -------------------------------------------------------------------------
+  //
+  // `/ai`'s own "+ Sub-pages" chip went with the page scope PR 2 retired from
+  // that route, and it was the app's only writer of `includeSubPages` — every
+  // `/llm/ask` and `/llm/improve` request has been shipping the default
+  // `false` since. The dock still has a page to widen the context of, so the
+  // capability is restored here. `includeSubPages` is `AiContext` provider
+  // state, not panel-local: unlike Deep search it is not cleared per question
+  // or per page (see `useDockActions`'s comment on why `deepSearch` could not
+  // live there), so this suite does not assert a reset — there isn't one.
+  describe('sub-pages', () => {
+    /** The fixture page grown a child, so the toggle has something to offer. */
+    function pageWithChildren() {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/pages/page-1') return Promise.resolve({ ...PAGE, hasChildren: true });
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        if (path.startsWith('/llm/usecase-default')) return Promise.resolve({ model: 'llama3' });
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        if (path === '/embeddings/status') return Promise.resolve({ total: 1, embedded: 1, isProcessing: false });
+        return Promise.resolve({});
+      });
+    }
+
+    it('does not render for a leaf page', async () => {
+      // Default beforeEach fixture: PAGE.hasChildren is false.
+      renderDock();
+      await openAndSettle();
+
+      expect(screen.queryByTestId('ai-dock-include-subpages')).not.toBeInTheDocument();
+    });
+
+    it('renders, off by default, once the page has children', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      expect(screen.getByTestId('ai-dock-include-subpages')).not.toBeChecked();
+    });
+
+    // Diagram and the create skills never send `includeSubPages`
+    // (`useDockActions`), so offering the control there would describe an
+    // option the request does not carry.
+    it('is not offered for Diagram, which does not send includeSubPages', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      await selectDockAction('diagram');
+      expect(screen.queryByTestId('ai-dock-include-subpages')).not.toBeInTheDocument();
+    });
+
+    it('toggling it changes what the next ask sends', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      fireEvent.click(screen.getByTestId('ai-dock-include-subpages'));
+      expect(screen.getByTestId('ai-dock-include-subpages')).toBeChecked();
+
+      fireEvent.change(composer(), { target: { value: 'what changed across sub-pages?' } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/ask',
+          expect.objectContaining({ includeSubPages: true }),
+          expect.anything(),
+        );
+      });
+    });
+
+    it('also reaches the rewrite request, which sends includeSubPages too', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      fireEvent.click(screen.getByTestId('ai-dock-include-subpages'));
+      await selectDockAction('grammar');
+      fireEvent.click(screen.getByTestId('ai-dock-send'));
+
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/improve',
+          expect.objectContaining({ includeSubPages: true }),
+          expect.anything(),
+        );
+      });
+    });
+
+    it('is a native, focusable, non-disabled checkbox — reachable by keyboard', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      const toggle = screen.getByTestId('ai-dock-include-subpages');
+      expect(toggle.tagName).toBe('INPUT');
+      expect(toggle).toHaveAttribute('type', 'checkbox');
+      expect(toggle).not.toHaveAttribute('tabindex', '-1');
+      expect(toggle).not.toBeDisabled();
+      expect(toggle).toHaveAccessibleName('Include sub-pages in the AI context');
+
+      toggle.focus();
+      expect(toggle).toHaveFocus();
+    });
+
+    // It sits above `.nm-composer`, so it must never appear inside the box
+    // `expectComposerFocusOrder` walks — that is what keeps the toggle's own
+    // Tab stop from perturbing the sequence #1154 pinned.
+    it('leaves the composer box focus order exactly as #1154 pinned it', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      expect(screen.getByTestId('ai-dock-include-subpages')).toBeInTheDocument();
+      expectComposerFocusOrder(composerBox(), [
+        'ai-dock-attach-button',
+        'assistant-action-select',
+        'ai-dock-input',
+        'ai-dock-send',
+      ]);
     });
   });
 
