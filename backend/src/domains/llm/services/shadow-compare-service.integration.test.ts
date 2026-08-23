@@ -43,6 +43,10 @@ const mockState = vi.hoisted(() => ({
    *  STATE row (a swap immediately rolled back), leaving both columns and
    *  the index standing — only the loop-top fingerprint check can see it. */
   rewriteStateAfterCandidateQueryEmbed: false,
+  /** When set, the shadow-model QUERY embed drops the shadow COLUMN and
+   *  leaves the state row alone: a 42703 with the migration still standing,
+   *  which is a schema fault rather than a transient provider failure. */
+  dropShadowColumnAfterCandidateQueryEmbed: false,
 }));
 
 // Page → candidate basis index, keyed off the chunk text the backfill embeds.
@@ -121,6 +125,14 @@ function installEmbeddingMock(): void {
         mockState.rewriteStateAfterCandidateQueryEmbed
       ) {
         await simulateLifecycleRewrite();
+      }
+      if (
+        model === SHADOW_MODEL &&
+        !Array.isArray(input) &&
+        mockState.dropShadowColumnAfterCandidateQueryEmbed
+      ) {
+        await query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw_next`);
+        await query(`ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_next`);
       }
       return vectors;
     },
@@ -257,6 +269,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
     mockState.shadowDims = 8;
     mockState.abortAfterCandidateQueryEmbed = false;
     mockState.rewriteStateAfterCandidateQueryEmbed = false;
+    mockState.dropShadowColumnAfterCandidateQueryEmbed = false;
     generateEmbeddingMock.mockReset();
     installEmbeddingMock();
     getJobStatusMock.mockResolvedValue(null);
@@ -628,6 +641,88 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       expect(run?.error).toMatch(/3 of 3 queries could not be embedded/i);
     });
 
+    it('draws the publishable line at half the sample: 2 of 4 completes, 3 of 4 fails', async () => {
+      // The cut itself, not merely its existence. The other two cases (1 of 3
+      // completes, 3 of 3 fails) hold for every share in [1/3, 1), so the one
+      // number deciding when a thinned sample stops being evidence for a
+      // production swap could drift to 0.95 with the suite green. The counts
+      // here are deliberately hand-written rather than derived from the
+      // constant: bracketing it is the whole point.
+      await seedReadyMigration();
+      await seedAnalytics([
+        ['how to configure sync', 4],
+        ['reset password', 3],
+        ['export pdf', 2],
+        ['permissions model', 1],
+      ]);
+      const innerEmbedImpl = generateEmbeddingMock.getMockImplementation()!;
+      let failing: string[] = ['export pdf', 'permissions model'];
+      generateEmbeddingMock.mockImplementation(async (cfg, model, input) => {
+        if (!Array.isArray(input) && failing.some((text) => input === text)) {
+          throw new Error('429 Too Many Requests');
+        }
+        return innerEmbedImpl(cfg, model, input);
+      });
+
+      const half = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      await runShadowCompare(half, ADMIN);
+      const halfRun = await getShadowCompareRun(half, ADMIN);
+      expect(halfRun?.status).toBe('completed');
+      expect(halfRun?.result?.failedQueries).toBe(2);
+      expect(halfRun?.result?.sampledQueryCount).toBe(4);
+
+      failing = ['export pdf', 'permissions model', 'reset password'];
+      const majority = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      await runShadowCompare(majority, ADMIN);
+      const majorityRun = await getShadowCompareRun(majority, ADMIN);
+      expect(majorityRun?.status).toBe('failed');
+      expect(majorityRun?.error).toMatch(/3 of 4 queries could not be embedded/i);
+    });
+
+    it('a 42703 with the migration STILL STANDING stops the run instead of blaming the provider', async () => {
+      // The first cut's comment said this branch stayed "the bug it would
+      // be"; the code fell through to the skipped-query path, so every query
+      // raised the same schema fault, the run tripped the failed-share
+      // ceiling, and the admin was told to check the provider about a missing
+      // column.
+      await seedReadyMigration();
+      await seedAnalytics([
+        ['how to configure sync', 3],
+        ['reset password', 2],
+        ['export pdf', 1],
+      ]);
+      // The column disappears DURING the run (after the phase gate, after the
+      // loop-top fingerprint check) with the migration state row LEFT INTACT,
+      // so the fingerprint is unchanged and only the 42703 itself is evidence.
+      mockState.dropShadowColumnAfterCandidateQueryEmbed = true;
+
+      const runId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      await runShadowCompare(runId, ADMIN);
+
+      const run = await getShadowCompareRun(runId, ADMIN);
+      expect(run?.status).toBe('failed');
+      expect(run?.error).toMatch(/column the comparison reads is missing/i);
+      expect(run?.error).not.toMatch(/check the provider/i);
+      // Stopped at the FIRST query rather than spending the whole sample on
+      // an error no retry can clear.
+      expect(run?.progressDone).toBe(0);
+    });
+
     it('fails cleanly with no analytics queries in the window', async () => {
       await seedReadyMigration();
       const runId = await createShadowCompareRun(ADMIN, {
@@ -773,6 +868,60 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
          VALUES ($1, 'completed', '{"source":"recent-queries","days":30,"limit":25,"topK":5}'::jsonb)`,
         [ADMIN],
       );
+      expect(await getLatestShadowCompareRun(ADMIN)).toBeNull();
+    });
+
+    it('never re-attaches a comparison run against a DIFFERENT candidate model', async () => {
+      // Run rows outlive the migration that produced them. Without the
+      // candidate stamp, an aborted migration's report is adopted into the
+      // NEXT migration's card: the old candidate's page lists under a heading
+      // naming the new one, with live judgement controls beside them — on the
+      // one surface the feature exists to produce swap go/no-go evidence on.
+      await seedReadyMigration();
+      await seedAnalytics([['how to configure sync', 1]]);
+      const oldRun = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      await runShadowCompare(oldRun, ADMIN);
+      expect((await getLatestShadowCompareRun(ADMIN))?.id).toBe(oldRun);
+
+      // Abort that migration and start a second one against another model.
+      await simulateAbort();
+      await startShadowMigration({ providerId: shadowProviderId, model: 'some-other-embed:1b' });
+      expect(await getLatestShadowCompareRun(ADMIN)).toBeNull();
+
+      // A run started under the NEW migration is adopted again, and the run
+      // itself stays readable by id — only the "latest" adoption is scoped.
+      const newRun = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      expect((await getLatestShadowCompareRun(ADMIN))?.id).toBe(newRun);
+      expect((await getShadowCompareRun(oldRun, ADMIN))?.id).toBe(oldRun);
+    });
+
+    it('never re-attaches a run started against the same model behind a DIFFERENT provider', async () => {
+      // 099 keys judgements by provider AND model; the adoption must use the
+      // same identity, or two providers' indexes are pooled into one card.
+      await seedReadyMigration();
+      const runId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      expect((await getLatestShadowCompareRun(ADMIN))?.id).toBe(runId);
+      await simulateAbort();
+      const other = await query<{ id: string }>(
+        `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, is_default)
+         VALUES ('shadow-prov-2','http://shadow2/v1','none',true,false) RETURNING id`,
+      );
+      await startShadowMigration({ providerId: other.rows[0]!.id, model: SHADOW_MODEL });
       expect(await getLatestShadowCompareRun(ADMIN)).toBeNull();
     });
   });

@@ -84,7 +84,10 @@ describe('production retrieval benchmark admin routes', () => {
   });
 
   it('does not start a second run while one is active', async () => {
-    mockActive.mockResolvedValue({ id: '22222222-2222-4222-8222-222222222222' });
+    // `kind: null` is the production benchmark — its own id, so the card may
+    // adopt it. (The real `getActiveProductionBenchmark` always reports the
+    // holder's kind; the fixture says so too.)
+    mockActive.mockResolvedValue({ id: '22222222-2222-4222-8222-222222222222', kind: null });
 
     const response = await app.inject({
       method: 'POST',
@@ -96,6 +99,30 @@ describe('production retrieval benchmark admin routes', () => {
     expect(response.json()).toMatchObject({ error: 'benchmark_in_progress', runId: '22222222-2222-4222-8222-222222222222' });
     expect(mockCreate).not.toHaveBeenCalled();
     expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('withholds the run id when a #1260 shadow COMPARISON holds the shared slot', async () => {
+    // The slot is shared by design, but `GET /admin/retrieval-benchmark/:id`
+    // is kind-guarded and 404s a comparison's id, so handing it back would
+    // let this card adopt an id its own poll refuses. The message is
+    // deliberately unchanged (the #1260 owner decision keeps the benchmark's
+    // wording in both directions); only the id is withheld.
+    mockActive.mockResolvedValue({
+      id: '33333333-3333-4333-8333-333333333333',
+      kind: 'shadow-compare',
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/retrieval-benchmark',
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(409);
+    const body = response.json();
+    expect(body.error).toBe('benchmark_in_progress');
+    expect(body.message).toMatch(/already running/i);
+    expect(body).not.toHaveProperty('runId');
   });
 
   it('returns a persisted run for polling', async () => {

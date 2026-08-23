@@ -312,6 +312,51 @@ describe.skipIf(!dbAvailable)('rag-service integration — space permission enfo
       expect(scoped[0]!.spaceKey).toBe('DEV');
     });
 
+    it('vectorSearch drops a chunk whose vector is NULL — `1 - null` is a perfect match in JS (#1260)', async () => {
+      // The LIVE column is nullable between a #1116 swap and its cleanup: the
+      // swap renames `embedding_next` (never NOT NULL) onto `embedding` and
+      // drops NOT NULL from the renamed-away column, so a chunk the post-swap
+      // dual-write could not fill returns `distance = NULL`, and `1 - null` is
+      // 1 in JS — a perfect similarity feeding `vectorScore` and
+      // `computeRetrievalConfidence` on the ordinary chat path. The shadow
+      // column has its own SQL guard; this is the case only the JS filter
+      // reaches, because the live column carries no such clause.
+      //
+      // The HNSW index is dropped for the duration because the PLAN decides
+      // whether the filter is reached at all: an index scan never returns a
+      // row the index does not contain, so with `idx_page_embeddings_hnsw` in
+      // place the NULL row is invisible to JS and this test would pass with
+      // the filter deleted. Without a usable index — an instance whose build
+      // failed, a candidate wider than the 4000-dim HNSW ceiling, or any plan
+      // the planner costs towards a scan — the row comes back with
+      // `distance = NULL`, and the filter is the only thing between it and a
+      // 1.0 similarity. Making the two plans agree is the point.
+      await query(`ALTER TABLE page_embeddings ALTER COLUMN embedding DROP NOT NULL`);
+      await query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
+      try {
+        const unfilled = await seedSpaceWithPage({
+          userId: user,
+          spaceKey: 'DEV',
+          pageTitle: 'Unfilled after the swap',
+          bodyText: 'postgres page whose vector never landed',
+          vec: fakeVec(21),
+        });
+        await query(`UPDATE page_embeddings SET embedding = NULL WHERE page_id = $1`, [unfilled]);
+
+        const hits = await vectorSearch(user, fakeVec(21), 10);
+        expect(hits.map((hit) => hit.pageId)).not.toContain(unfilled);
+        expect(hits.length).toBe(2);
+      } finally {
+        await query(`DELETE FROM page_embeddings WHERE embedding IS NULL`);
+        await query(`ALTER TABLE page_embeddings ALTER COLUMN embedding SET NOT NULL`);
+        await query(
+          `CREATE INDEX IF NOT EXISTS idx_page_embeddings_hnsw
+           ON page_embeddings USING hnsw (embedding vector_cosine_ops)
+           WITH (m = 16, ef_construction = 200)`,
+        );
+      }
+    });
+
     it('keywordSearch(spaceKey) returns only the scoped space', async () => {
       const unscoped = await keywordSearch(user, 'postgres', 10);
       expect(unscoped.length).toBe(2);

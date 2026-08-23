@@ -74,8 +74,26 @@ import {
 
 export type ShadowCompareStatus = 'queued' | 'running' | 'completed' | 'failed';
 
+/** Provider AND model, like 099's judgement key: the same model name behind a
+ *  different provider is a different index. */
+export interface ComparePair {
+  providerId: string;
+  model: string;
+}
+
 export interface ShadowCompareConfig extends ShadowCompareRequest {
   kind: 'shadow-compare';
+  /**
+   * The candidate pair this run was started against, stamped at creation
+   * (r1). `retrieval_benchmark_runs` rows outlive the migration that produced
+   * them, so without it "this admin's latest comparison" re-attaches an
+   * ABORTED migration's report — against a different candidate model — into
+   * the current migration's card, under a heading naming the current
+   * candidate, with live judgement controls beside it. Null when no migration
+   * was active at creation (the route refuses that case; the service does
+   * not, and the shadow card only renders inside the `ready` window).
+   */
+  candidate: ComparePair | null;
 }
 
 interface ComparedPages {
@@ -153,6 +171,8 @@ const WINDOW_CLOSED_MSG =
 const WINDOW_MOVED_MSG =
   'The shadow migration changed while the comparison ran (swap, abort or rollback) — start a new comparison from the current migration';
 const NO_QUERIES_MSG = 'No production queries were available in the selected period';
+const SCHEMA_FAULT_MSG =
+  'A column the comparison reads is missing while the shadow migration still reports as active — the comparison was stopped rather than counted as a provider failure. Check the shadow migration state.';
 
 /**
  * Above this share of failed queries the remainder is not a comparison of the
@@ -164,12 +184,19 @@ const MAX_FAILED_QUERY_SHARE = 0.5;
 
 export async function createShadowCompareRun(
   requestedBy: string,
-  config: ShadowCompareConfig,
+  config: Omit<ShadowCompareConfig, 'candidate'>,
 ): Promise<string> {
+  // Stamp the candidate pair the run is started against, so a later
+  // re-attachment can tell this migration's evidence from an earlier one's.
+  const target = await getActiveShadowTarget();
+  const stamped: ShadowCompareConfig = {
+    ...config,
+    candidate: target ? { providerId: target.cfg.providerId, model: target.model } : null,
+  };
   // The 091 one-active partial unique index is the cross-request guard,
   // shared with the production benchmark on purpose: both runs spend the same
   // LLM queue, so one at a time is the point, not a limitation.
-  return insertBenchmarkRun(requestedBy, config);
+  return insertBenchmarkRun(requestedBy, stamped);
 }
 
 export { BenchmarkRunSlotBusyError };
@@ -193,19 +220,42 @@ export async function getShadowCompareRun(
 }
 
 /**
- * This admin's most recent comparison, in any status. The card's `runId` is
- * plain component state, so a tab switch, a route change or a reload loses
- * it — and with no way back the finished report, its disagreement list and
- * the whole Mode 2 workflow (twenty judgements across sittings) would be
- * unreachable while the slot the run holds refuses a replacement.
+ * This admin's most recent comparison **of the migration that is live now**,
+ * in any status. The card's `runId` is plain component state, so a tab switch,
+ * a route change or a reload loses it — and with no way back the finished
+ * report, its disagreement list and the whole Mode 2 workflow (twenty
+ * judgements across sittings) would be unreachable while the slot the run
+ * holds refuses a replacement.
+ *
+ * The candidate-pair check is what keeps that re-attachment honest (r1). Run
+ * rows outlive the migration that produced them, so an aborted migration
+ * against candidate X would otherwise be adopted into candidate Y's card:
+ * X's page lists rendered under a heading naming Y, with live judgement
+ * controls writing into X's fixture, and nothing on screen saying so — on the
+ * one surface the feature exists to produce swap go/no-go evidence on. A run
+ * whose config carries NO stamp is treated as not-this-migration for the same
+ * reason: unknown provenance is not evidence.
  */
 export async function getLatestShadowCompareRun(
   requestedBy: string,
 ): Promise<ShadowCompareRun | null> {
-  return latestBenchmarkRun<ShadowCompareConfig, ShadowCompareReport>(
+  const run = await latestBenchmarkRun<ShadowCompareConfig, ShadowCompareReport>(
     'shadow-compare',
     requestedBy,
   );
+  if (!run) return null;
+  const target = await getActiveShadowTarget();
+  const live: ComparePair | null = target
+    ? { providerId: target.cfg.providerId, model: target.model }
+    : null;
+  return samePair(run.config?.candidate ?? null, live) ? run : null;
+}
+
+/** Both absent is a match (no migration, and a run started without one); one
+ *  absent is not. */
+function samePair(a: ComparePair | null, b: ComparePair | null): boolean {
+  if (!a || !b) return !a && !b;
+  return a.providerId === b.providerId && a.model === b.model;
 }
 
 /**
@@ -301,14 +351,19 @@ async function executeShadowCompare(
         column: 'embedding_next',
       });
     } catch (err) {
-      // 42703 = undefined column: an abort dropped `embedding_next` after
-      // this run's fingerprint check. Confirm against the state row so a
-      // 42703 with the migration still standing stays the bug it would be.
-      if (
-        (err as { code?: string })?.code === '42703' &&
-        shadowStateFingerprint(await getShadowMigrationState()) !== fingerprint
-      ) {
-        throw new ShadowCompareWindowError(WINDOW_MOVED_MSG);
+      // 42703 = undefined column, and it ends the run either way (r1). With
+      // the migration moved it is the abort that dropped `embedding_next`;
+      // with the migration still standing it is a schema fault, which is not
+      // transient, cannot be retried away, and would otherwise be counted as
+      // a skipped query — every remaining query then raising the same 42703
+      // until the run failed telling the admin to "check the provider" about
+      // a missing column. The first cut's comment claimed this branch already
+      // did that; only the fingerprint-changed half of it did.
+      if ((err as { code?: string })?.code === '42703') {
+        if (shadowStateFingerprint(await getShadowMigrationState()) !== fingerprint) {
+          throw new ShadowCompareWindowError(WINDOW_MOVED_MSG);
+        }
+        throw new ShadowCompareUnusableError(SCHEMA_FAULT_MSG);
       }
       // Anything else — a 429, an opened breaker, a shared-queue timeout —
       // costs THIS query, not the run. The comparisons already computed are

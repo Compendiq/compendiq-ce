@@ -61,8 +61,15 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
     if (active) {
       return reply.code(409).send({
         error: 'benchmark_in_progress',
+        // The sentence stays as it is in both directions, per the #1260 owner
+        // decision (both cards' copy states that the slot is shared).
         message: 'A production retrieval benchmark is already running',
-        runId: active.id,
+        // …but the ID does not: the slot is shared with the #1260 shadow
+        // comparison, and `GET /admin/retrieval-benchmark/:id` is kind-guarded
+        // and 404s a compare run's id. Handing it back would let this card
+        // adopt an id its own poll refuses (r1) — the mirror of the guard the
+        // compare route already applies.
+        ...(active.kind === null ? { runId: active.id } : {}),
       });
     }
 
@@ -74,7 +81,8 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
         return reply.code(409).send({
           error: 'benchmark_in_progress',
           message: err.message,
-          runId: err.activeRunId,
+          // Same kind guard as above: only ever a benchmark's own id.
+          ...(err.kind === null ? { runId: err.activeRunId } : {}),
         });
       }
       throw err;
