@@ -154,7 +154,14 @@ describe.skipIf(!dbAvailable)('GET /api/analytics/confidence-distribution (#1284
     expect(body.similarity.p50).toBeCloseTo(0.5, 5);
   });
 
-  it('excludes unmeasurable rows by BASIS — including the healthy-empty 0', async () => {
+  // The NAME is a claim about the route's ANSWER, not about which of its two
+  // mechanisms produced it (review, external round). Re-verified by mutation
+  // at this head: deleting `AND confidence_basis = ANY($3::text[])` from the
+  // SQL leaves all 8 tests in this file green, because `GROUP BY
+  // confidence_basis` isolates the 'none' rows and the bucket mapping then
+  // drops their group. A title saying "by BASIS" would be asserting the half
+  // no test here can falsify — see the block comment inside.
+  it('answers no bucket for unmeasurable rows — including the healthy-empty 0', async () => {
     // basis 'none' belongs to no scale, and a null score is not a 0. Either
     // one admitted would drag both percentiles toward the floor.
     await seedRow(userId, { confidence: null, basis: 'none', surface: 'ask' });

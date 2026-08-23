@@ -435,7 +435,7 @@ export function RetrievalTab() {
    * non-4xx twice with backoff) and their caret is left where they put it.
    */
   const [restoreFocusAfterRetry, setRestoreFocusAfterRetry] = useState(false);
-  const distributionReadoutRef = useRef<HTMLParagraphElement | null>(null);
+  const distributionReadoutRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!restoreFocusAfterRetry) return;
     // The strip is still up (the retry failed, or is still out) — the button
@@ -1197,13 +1197,23 @@ export function RetrievalTab() {
             // unqualified, an operator with a few thousand assistant questions
             // reads a similarity count materially below that and has nothing
             // in the panel accounting for the gap.
+            //
+            // The criterion is stated as "belongs to neither basis" rather
+            // than as a list of three (review, external round). The formula
+            // has FOUR `none` outcomes and the omitted one — an empty result
+            // set, which scores 0 on basis `none` when retrieval was healthy
+            // and null under a caveat — is the LARGEST residue on a thin
+            // corpus, i.e. exactly the deployment reading this note. A closed
+            // list that reads as exhaustive and is not accounts for less of
+            // the gap than it appears to.
             emptyNote={
               assignments && !rerankActive
                 ? 'The rerank stage is disabled on this deployment, so every question that can be'
-                  + ' scored at all is scored on the similarity basis above. Questions the gate'
-                  + ' cannot score — keyword-led, image-only or pinned exact-identifier results —'
-                  + ' appear in neither readout, so the two counts do not add up to the number of'
-                  + ' questions asked.'
+                  + ' scored at all is scored on the similarity basis above. Questions that belong'
+                  + ' to neither basis — keyword-led, image-only or pinned exact-identifier'
+                  + ' results, and questions the knowledge base had nothing for — appear in'
+                  + ' neither readout, so the two counts do not add up to the number of questions'
+                  + ' asked.'
                 : undefined
             }
           />
@@ -1667,7 +1677,7 @@ function distributionDescriptionId(fieldKey: CalibrationFieldKey): string {
  * are the last ones the panel could get.
  *
  * **It IS the row's description** — the input's `aria-describedby` points at
- * this paragraph by id ({@link distributionDescriptionId}), so the measurement
+ * this region by id ({@link distributionDescriptionId}), so the measurement
  * reaches touch, keyboard and screen readers rather than the eye alone. It
  * renders inside the row's help block, which is what keeps the #1114
  * calibration strip the immediately-preceding sibling of the control it is
@@ -1689,13 +1699,13 @@ function ConfidenceDistributionLine({
   fieldKey: CalibrationFieldKey;
   /**
    * Review r3 — the focus target for a successful Retry, on the ONE row that
-   * takes it. Passing it is what makes the paragraph `tabIndex={-1}`: a row
-   * nobody focuses stays a plain `<p>`, and the focusable one is still prose,
-   * so the panel's description sweep (which bans `button`/`a`/`input`/
-   * `select`/`textarea` from these regions) is unaffected and the tab order
-   * gains nothing.
+   * takes it. Passing it is what makes the readout region `tabIndex={-1}`: a
+   * row nobody focuses stays out of the tab order entirely, and the focusable
+   * one holds nothing but paragraphs, so the panel's description sweep (which
+   * bans `button`/`a`/`input`/`select`/`textarea` from these regions) is
+   * unaffected and the tab order gains nothing.
    */
-  readoutRef?: Ref<HTMLParagraphElement>;
+  readoutRef?: Ref<HTMLDivElement>;
   bucket: ConfidenceDistributionBucket | undefined;
   windowDays: number;
   isPending: boolean;
@@ -1744,54 +1754,86 @@ function ConfidenceDistributionLine({
   const testId = `retrieval-${fieldKey}-distribution`;
   // One set of props for all four branches, so the focus target survives
   // whichever one is on screen when the retry settles — and so the input's
-  // description resolves to a paragraph that always exists, whichever branch
-  // is on screen.
+  // description resolves to a region that always exists, whichever branch is
+  // on screen.
+  //
+  // It is a REGION, not a single paragraph (review, external round). Every
+  // caveat used to be appended to the measurement's own sentence, so a stale
+  // read on an eleven-question sample with #1114's verdict stale rendered as
+  // one undifferentiated ~290-character run of 12px muted text with the two
+  // numbers the operator came for buried at its head. Siblings are still
+  // prose and a description flattens across children identically, so the
+  // accessibility contract is unchanged and only the scanning is fixed.
+  //
+  // `nm-focus-ring` is index.css's standalone `:focus-visible` mechanic for a
+  // surface that wants the Steel ring without a button recipe, and this is
+  // the one thing #1284 makes focusable: measured in Chromium, the readout
+  // that a successful Retry lands focus on painted the UA default 1px
+  // `rgb(0, 95, 204)` outline across its full ~865px width at 1440. The
+  // resting rule is a transparent outline, so it costs the unfocusable row
+  // nothing.
   const readoutProps = {
     id: distributionDescriptionId(fieldKey),
     'data-testid': testId,
     ref: readoutRef,
     tabIndex: readoutRef ? -1 : undefined,
+    className: 'space-y-1.5 nm-focus-ring',
   };
   if (isError) {
     return (
-      <p {...readoutProps}>
-        The measured distribution could not be read, so there is nothing measured to check this
-        threshold against. Use <strong className="font-medium">Retry</strong> at the top of this
-        section.
-      </p>
+      <div {...readoutProps}>
+        <p>
+          The measured distribution could not be read, so there is nothing measured to check this
+          threshold against. Use <strong className="font-medium">Retry</strong> at the top of this
+          section.
+        </p>
+      </div>
     );
   }
   if (isPending || !bucket) {
-    return <p {...readoutProps}>Reading the measured distribution…</p>;
+    return (
+      <div {...readoutProps}>
+        <p>Reading the measured distribution…</p>
+      </div>
+    );
   }
   // One clause, shared by both data branches: what is on screen is real, and
   // is the last thing the panel could read. The Retry that would refresh it
   // sits at the section top, where a control is legal.
-  const staleClause = staleRead ? ' The latest read failed, so this is the last measurement this panel could get.' : '';
+  const staleClause = staleRead ? (
+    <p>The latest read failed, so this is the last measurement this panel could get.</p>
+  ) : null;
   if (bucket.count === 0 || bucket.p50 === null || bucket.p90 === null) {
     return (
-      <p {...readoutProps}>
-        No assistant questions measured on this basis in the last {windowDays} days, so there is
-        nothing to tune against yet.{emptyNote ? ` ${emptyNote}` : ''}
+      <div {...readoutProps}>
+        <p>
+          No assistant questions measured on this basis in the last {windowDays} days, so there is
+          nothing to tune against yet.
+        </p>
+        {emptyNote ? <p>{emptyNote}</p> : null}
         {staleClause}
-      </p>
+      </div>
     );
   }
   return (
-    <p {...readoutProps}>
-      Measured over the last {windowDays} days: p50{' '}
-      <span className="font-mono">{bucket.p50.toFixed(2)}</span>, p90{' '}
-      <span className="font-mono">{bucket.p90.toFixed(2)}</span> across{' '}
-      {bucket.count.toLocaleString()} assistant question{bucket.count === 1 ? '' : 's'}.
+    <div {...readoutProps}>
+      <p>
+        Measured over the last {windowDays} days: p50{' '}
+        <span className="font-mono">{bucket.p50.toFixed(2)}</span>, p90{' '}
+        <span className="font-mono">{bucket.p90.toFixed(2)}</span> across{' '}
+        {bucket.count.toLocaleString()} assistant question{bucket.count === 1 ? '' : 's'}.
+      </p>
       {staleClause}
-      {bucket.count < CONFIDENCE_SAMPLE_FLOOR
-        ? ' Too few to tune against — treat both figures as provisional.'
-        : ''}
-      {basisChanged
-        ? ` No model is recorded beside a measured question, so this window can span both scales`
-          + ` — it is comparable again once ${windowDays} days have passed since the change.`
-        : ''}
-    </p>
+      {bucket.count < CONFIDENCE_SAMPLE_FLOOR ? (
+        <p>Too few to tune against — treat both figures as provisional.</p>
+      ) : null}
+      {basisChanged ? (
+        <p>
+          No model is recorded beside a measured question, so this window can span both scales — it
+          is comparable again once {windowDays} days have passed since the change.
+        </p>
+      ) : null}
+    </div>
   );
 }
 

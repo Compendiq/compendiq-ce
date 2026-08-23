@@ -2166,6 +2166,46 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     expect((await screen.findByTestId(rerankId)).textContent).not.toMatch(/too few/i);
   });
 
+  it('keeps each caveat out of the measurement sentence', async () => {
+    // Review, external round. Every caveat used to be appended to the
+    // measurement's own sentence, so the worst reachable case — a small
+    // sample with #1114's verdict stale, plus a failed re-read — rendered as
+    // one undifferentiated ~290-character run of 12px muted text with the two
+    // numbers the operator came for buried at its head. Siblings are still
+    // prose and a description flattens across children identically, so the
+    // wiring above is unaffected and only the scanning changes.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: {
+          similarity: {
+            providerId: 'p1', model: 'bge-m3', setAt: '2026-01-01T00:00:00.000Z',
+            stale: true, liveModel: 'Qwen3-Embedding-4B', liveResolved: true,
+          },
+          rerank: null,
+        },
+      },
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        similarity: { p50: 0.4, p90: 0.8, count: 11 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    await waitFor(() => expect(similarity.textContent).toMatch(/span both scales/i));
+
+    const paragraphs = Array.from(similarity.querySelectorAll('p'));
+    expect(paragraphs.length).toBeGreaterThanOrEqual(3);
+    const measurement = paragraphs.find((p) => /p50/.test(p.textContent ?? ''));
+    expect(measurement, 'no paragraph carries the measurement').toBeDefined();
+    // The numbers stand alone; each caveat is its own line to scan past.
+    expect(measurement!.textContent).not.toMatch(/too few/i);
+    expect(measurement!.textContent).not.toMatch(/span both scales/i);
+  });
+
   it('says nothing was measured rather than showing an empty distribution', async () => {
     mockApi({
       confidenceDistribution: {
@@ -2202,6 +2242,15 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     // operator with a similarity count well below their question volume and
     // nothing on the panel accounting for the gap.
     expect((await screen.findByTestId(rerankId)).textContent).toMatch(/neither readout/i);
+    // Review, external round — and the list must not read as exhaustive while
+    // omitting the largest residue on a thin corpus. `computeRetrievalConfidence`
+    // has FOUR `none` outcomes: the three named plus an EMPTY result set,
+    // which scores 0 on basis `none` when retrieval was healthy (the ordinary
+    // `no_context` path) and null under a health caveat. Naming three of four
+    // accounts for less of the gap than the sentence appears to.
+    expect((await screen.findByTestId(rerankId)).textContent).toMatch(
+      /knowledge base had nothing for/i,
+    );
 
     vi.restoreAllMocks();
     mockApi({
@@ -2527,9 +2576,17 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     await waitFor(() => expect(document.activeElement).toBe(readout));
     // And it is still prose: `tabIndex={-1}` is programmatically focusable
     // without adding a tab stop, so the description region it sits inside
-    // gains nothing operable.
-    expect(readout.tagName).toBe('P');
+    // gains nothing operable. (The element is the readout REGION rather than
+    // a single `<p>` since the caveats were split into siblings — the claim
+    // was never the tag name, it was that nothing here is operable.)
+    expect(readout.querySelectorAll('button, a, input, select, textarea')).toHaveLength(0);
     expect(readout.getAttribute('tabindex')).toBe('-1');
+    // Review, external round — and it shows that focus in the project's own
+    // colour. Measured in Chromium, the focused readout painted the UA
+    // default 1px `rgb(0, 95, 204)` outline across its full width;
+    // `nm-focus-ring` is index.css's standalone `:focus-visible` mechanic for
+    // a surface that wants the Steel ring without a button recipe.
+    expect(readout.className).toMatch(/(^|\s)nm-focus-ring(\s|$)/);
   });
 
   it('does NOT steal focus when the user moved on during the retry', async () => {
