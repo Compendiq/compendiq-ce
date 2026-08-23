@@ -516,8 +516,10 @@ together, which matters most for #1114's query-side prefix.
   `pages.id` alone, so the same removal rides every other HARD delete too —
   the Confluence delete route (single and bulk), sync's 30-day
   `purgeDeletedPages` and `unsyncSpace`, through
-  `discardPageIconForDeletedPage` — and never a soft delete, which is
-  restorable. `<pk>/` in the shared tree, by contrast, is removed only when no
+  `discardPageIconForDeletedPage` — each of them behind its own COMMITTED row
+  delete (`DELETE … RETURNING id`), never on a cleanup transaction's rollback
+  branch, where the page still exists and the mark is its only copy. And never
+  a soft delete, which is restorable. `<pk>/` in the shared tree, by contrast, is removed only when no
   page claims `confluence_id = <pk>` AND the directory is older than a 5-minute
   grace window, because deleting a shared-keyspace directory can evict a live
   Confluence page's whole cache, and during a FIRST sync the claim does not

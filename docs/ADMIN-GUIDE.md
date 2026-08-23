@@ -1232,6 +1232,11 @@ alone and no other page can own it, while the attachment directories follow the
 per-store rules stated further down — and a Confluence page that is
 hard-deleted (singly or in bulk), purged from the trash after its 30-day
 window, or removed with its space by **Unsync** does the same.
+"Unconditionally" is about *ownership*, not timing: each of those removals runs
+only once the row-deleting transaction has committed. If that local cleanup
+fails after the page is already gone in Confluence — the row survives, hidden
+and soft-deleted, for the 30-day trash purge to collect — the mark stays on
+disk with it and goes when the purge removes the row.
 A *soft* delete deliberately does not: a trashed page is restorable and its
 mark is its own content, not a re-fetchable cache.
 

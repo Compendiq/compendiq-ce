@@ -191,7 +191,16 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       ],
       rowCount: 2,
     });
-    mockTxQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
+    // `DELETE FROM pages … RETURNING id` answers with the rows it actually
+    // destroyed, and since #1349 fixer r1 the icon pass keys off exactly that
+    // — so the stub has to model the RETURNING, not hand back an empty set.
+    mockTxQueryFn.mockImplementation((sql: unknown, params?: unknown[]) => {
+      if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql) && /RETURNING/i.test(sql)) {
+        const ids = (params?.[0] as number[] | undefined) ?? [];
+        return Promise.resolve({ rows: ids.map((id) => ({ id })), rowCount: ids.length });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
   });
 
   describe('POST /api/pages/bulk/delete', () => {
@@ -367,6 +376,36 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(discardPageIconForDeletedPage).toHaveBeenCalledWith(2);
       // Never the `confluence_id` the attachment cache is keyed by.
       expect(discardPageIconForDeletedPage).not.toHaveBeenCalledWith('page-1');
+    });
+
+    /**
+     * Fixer r1 — …and only for the ids the COMMIT actually destroyed. The
+     * cleanup transaction's catch does not rethrow (#766), so a rolled-back
+     * bulk cleanup used to fall through into the icon pass and `rm -rf` the
+     * marks of pages whose rows all survived (soft-deleted, restorable). Real
+     * Postgres + a real BEFORE DELETE trigger cover the same branch in
+     * `pages-crud-delete-atomicity.integration.test.ts`.
+     */
+    it('keeps every icon when the bulk cleanup transaction rolled back', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence' }, { id: 2, confluence_id: 'page-2', source: 'confluence' }],
+        rowCount: 2,
+      });
+      mockTxQueryFn.mockImplementation((sql: unknown) => {
+        if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql)) {
+          return Promise.reject(new Error('simulated post-upstream DB failure'));
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['page-1', 'page-2'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(discardPageIconForDeletedPage).not.toHaveBeenCalled();
     });
 
     it('should delete mixed standalone and Confluence pages in one request', async () => {

@@ -252,8 +252,14 @@ visibly:
    the page upstream).
 3. **On upstream success or 404** — finish the hard local cleanup
    (`pinned_pages` + `pages`; embeddings/versions cascade via FK) inside **one**
-   `BEGIN…COMMIT` on a dedicated pool client. Attachment files are cleaned
-   best-effort after commit (filesystem can't join the transaction).
+   `BEGIN…COMMIT` on a dedicated pool client, deleting `RETURNING id`.
+   Filesystem work follows, best-effort (it can't join the transaction), and
+   the two stores follow **different** rules there: the attachment **cache** is
+   cleaned either way (re-fetchable from Confluence, so orphaned files are the
+   acceptable cost of a rollback), while the uploaded page **icon** is
+   discarded only for the ids the COMMIT actually returned — see the unsync
+   section below for why. That branch matters because step 3's `catch`
+   deliberately does not re-throw.
 4. **On upstream failure (non-404)** — clear the soft-delete (only if this
    request set it) and surface the error: **neither side changed**.
 
@@ -546,9 +552,17 @@ Key properties:
   migration 095 persists only `icon_kind`/`icon_value` and the bytes have no
   second copy — deleting them ahead of the transaction would leave a ROLLBACK
   restoring every page row with `icon_kind = 'image'` pointing at nothing. Best
-  effort and never fatal, like the cache cleanup. `purgeDeletedPages` removes
-  the same directory for each expired soft-deleted page, there after its own
-  committed `DELETE … RETURNING id, confluence_id`.
+  effort and never fatal, like the cache cleanup. **All four call sites obey
+  that one rule**: `purgeDeletedPages` removes the same directory for each
+  expired soft-deleted page after its own committed `DELETE … RETURNING id,
+  confluence_id`, and so do the user-initiated delete routes — single and bulk
+  — over the ids their cleanup transaction returned. Those two are where the
+  rule earns its keep: their `catch` logs and does **not** re-throw (the
+  upstream delete already happened, so the request still succeeds), so a
+  rolled-back cleanup leaves every row alive and soft-deleted with
+  `icon_kind = 'image'` intact, and a discard on that branch would destroy the
+  only copy of a live page's mark. Left alone it converges — the 30-day purge
+  collects it after a delete that did commit.
 - **Shadow dual-write (#1116)** — while a zero-downtime embedding-model change
   is backfilling, `embedPage` embeds each page's chunks with **both** models and
   writes `embedding` + `embedding_next` in the same insert (a shadow-provider

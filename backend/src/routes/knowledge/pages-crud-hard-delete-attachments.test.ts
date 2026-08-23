@@ -70,7 +70,23 @@ vi.mock('../../core/services/page-icon-store.js', () => ({
 }));
 
 const mockQueryFn = vi.fn();
-const mockTxQueryFn = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
+/**
+ * The transaction client. `DELETE FROM pages … RETURNING id` answers with the
+ * row it destroyed, and since fixer r1 the icon discard keys off exactly that
+ * — so the default has to model the RETURNING rather than hand back an empty
+ * set. `rejectPageDelete()` below flips it to the rollback branch.
+ */
+const mockTxQueryFn = vi.fn();
+function resetTxQuery(): void {
+  mockTxQueryFn.mockImplementation((sql: unknown, params?: unknown[]) => {
+    if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql) && /RETURNING/i.test(sql)) {
+      const id = params?.[0] as number | undefined;
+      return Promise.resolve({ rows: id === undefined ? [] : [{ id }], rowCount: id === undefined ? 0 : 1 });
+    }
+    return Promise.resolve({ rows: [], rowCount: 0 });
+  });
+}
+resetTxQuery();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
   getPool: vi.fn().mockReturnValue({
@@ -115,6 +131,7 @@ describe('#1349 standalone hard delete cleans attachment directories', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetTxQuery();
     mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
   });
 
@@ -189,6 +206,32 @@ describe('#1349 standalone hard delete cleans attachment directories', () => {
       expect(mockDiscardPageIcon).toHaveBeenCalledTimes(1);
       // The NUMERIC id, never the confluence_id the cache is keyed by.
       expect(mockDiscardPageIcon).toHaveBeenCalledWith(77);
+    });
+
+    /**
+     * Fixer r1 — and ONLY when the row really went. The cleanup transaction's
+     * catch deliberately does not rethrow (#766: the upstream delete already
+     * happened, so the request still succeeds), so before this fix a rolled-back
+     * transaction fell straight through into the discard: the row survived,
+     * soft-deleted and restorable, while its mark — the only copy of those bytes
+     * — was `rm -rf`'d. The same branch against real Postgres, a real BEFORE
+     * DELETE trigger and real files is in
+     * `pages-crud-delete-atomicity.integration.test.ts`.
+     */
+    it('keeps the icon when the cleanup transaction rolled back — the row is still there', async () => {
+      stubConfluencePageLoad();
+      mockTxQueryFn.mockImplementation((sql: unknown) => {
+        if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql)) {
+          return Promise.reject(new Error('simulated post-upstream DB failure'));
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      });
+
+      const response = await app.inject({ method: 'DELETE', url: '/api/pages/77' });
+
+      // The user-visible outcome still succeeds (#766) — but the mark stays.
+      expect(response.statusCode).toBe(200);
+      expect(mockDiscardPageIcon).not.toHaveBeenCalled();
     });
   });
 });
