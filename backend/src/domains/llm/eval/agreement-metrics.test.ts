@@ -104,16 +104,38 @@ describe('agreement-metrics (#1260)', () => {
         { live: [1, 2], candidate: [1, 2] }, // agrees
         { live: [1, 2], candidate: [2, 1] }, // same set, head changed
         { live: [1, 2], candidate: [3, 4] }, // disjoint
+        { live: [1, 2], candidate: [1, 3] }, // head agrees, sets differ
+        { live: [1, 2, 3], candidate: [1, 3, 2] }, // same set, below-head reorder
       ];
       const s = summarizeAgreement(rows);
-      expect(s.queryCount).toBe(3);
+      expect(s.queryCount).toBe(5);
       expect(s.top1ChangedQueries).toBe(2);
-      expect(s.top1ChangeRate).toBeCloseTo(2 / 3, 12);
-      expect(s.meanJaccard).toBeCloseTo((1 + 1 + 0) / 3, 12);
-      expect(s.meanRbo).toBeCloseTo((1 + 0.9 / 1.9 + 0) / 3, 12);
-      // Disagreement = the head moved OR the sets differ — the second row
-      // disagrees on rank alone and must still be listed.
-      expect(s.disagreementCount).toBe(2);
+      expect(s.top1ChangeRate).toBeCloseTo(2 / 5, 12);
+      expect(s.meanJaccard).toBeCloseTo((1 + 1 + 0 + 1 / 3 + 1) / 5, 12);
+      expect(s.meanRbo).toBeCloseTo((1 + 0.9 / 1.9 + 0 + 1.45 / 1.9 + 2.26 / 2.71) / 5, 12);
+      // Disagreement = ANY difference between the lists: head moved, sets
+      // differ, or the same set in a different order — rows 2-5 all count,
+      // or the list under-reports movement.
+      expect(s.disagreementCount).toBe(4);
+    });
+
+    it('counts a head-stable set change as a disagreement', () => {
+      // Live [1,2] vs candidate [1,3]: top-1 unchanged, but the tail moved —
+      // a common real shape that must reach the judgeable list.
+      const s = summarizeAgreement([{ live: [1, 2], candidate: [1, 3] }]);
+      expect(s.top1ChangedQueries).toBe(0);
+      expect(s.disagreementCount).toBe(1);
+    });
+
+    it('counts a same-set reorder below the head as a disagreement', () => {
+      // Live [1,2,3] vs candidate [1,3,2]: identical sets, identical head,
+      // real rank movement (rbo < 1). Missing it makes the UI claim "same
+      // pages in the same order" under an RBO chip reading < 1.00.
+      const s = summarizeAgreement([{ live: [1, 2, 3], candidate: [1, 3, 2] }]);
+      expect(s.top1ChangedQueries).toBe(0);
+      expect(s.meanJaccard).toBe(1);
+      expect(s.meanRbo).toBeLessThan(1);
+      expect(s.disagreementCount).toBe(1);
     });
 
     it('handles an empty run without dividing by zero', () => {

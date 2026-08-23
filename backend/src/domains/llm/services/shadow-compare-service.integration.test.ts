@@ -287,7 +287,44 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
         limit: 50,
         topK: 3,
       });
+
+      // Observe the 092 heartbeat DURING the run, not after it: the claim and
+      // completion writes both touch `last_heartbeat_at` seconds apart, so a
+      // post-run freshness SELECT cannot tell per-batch renewal from none.
+      // Back-date the row on the FIRST query's candidate embed; by a LATER
+      // query's embed only the intervening per-query progress write can have
+      // repaired it. Without per-batch heartbeats the captured value stays two
+      // hours stale and `recoverStaleProductionBenchmarks` would mark a long
+      // run failed mid-flight, freeing the one-active slot under the worker.
+      const innerEmbedImpl = generateEmbeddingMock.getMockImplementation()!;
+      let candidateQueryEmbeds = 0;
+      let heartbeatFreshMidRun: boolean | null = null;
+      generateEmbeddingMock.mockImplementation(async (cfg, model, input) => {
+        if (model === SHADOW_MODEL && !Array.isArray(input)) {
+          candidateQueryEmbeds++;
+          if (candidateQueryEmbeds === 1) {
+            await query(
+              `UPDATE retrieval_benchmark_runs
+               SET last_heartbeat_at = NOW() - INTERVAL '2 hours' WHERE id = $1`,
+              [runId],
+            );
+          } else if (candidateQueryEmbeds === 2) {
+            const seen = await query<{ fresh: boolean }>(
+              `SELECT last_heartbeat_at > NOW() - INTERVAL '1 minute' AS fresh
+               FROM retrieval_benchmark_runs WHERE id = $1`,
+              [runId],
+            );
+            heartbeatFreshMidRun = seen.rows[0]?.fresh ?? null;
+          }
+        }
+        return innerEmbedImpl(cfg, model, input);
+      });
+
       await runShadowCompare(runId, ADMIN);
+
+      // The per-query progress write renewed the back-dated heartbeat while
+      // the run was still mid-loop.
+      expect(heartbeatFreshMidRun).toBe(true);
 
       const run = await getShadowCompareRun(runId);
       expect(run?.status).toBe('completed');

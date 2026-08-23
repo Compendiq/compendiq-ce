@@ -98,8 +98,12 @@ export interface AgreementSummary {
   top1ChangeRate: number;
   meanJaccard: number;
   meanRbo: number;
-  /** Queries whose head moved OR whose sets differ — rank-only disagreements
-   *  (same set, different order) count, or the list under-reports movement. */
+  /** Queries whose lists differ in ANY way — head moved, sets differ, or the
+   *  same set in a different order (rbo < 1, e.g. [1,2,3] vs [1,3,2]) — or
+   *  the list under-reports movement and the "full agreement" empty state
+   *  contradicts an RBO chip reading < 1. For duplicate-free lists rbo < 1
+   *  alone covers all three; the explicit OR keeps the rule readable and
+   *  robust to float accumulation. */
   disagreementCount: number;
 }
 
@@ -111,10 +115,11 @@ export function summarizeAgreement(pairs: AgreementPair[]): AgreementSummary {
   for (const pair of pairs) {
     const headMoved = top1Changed(pair.live, pair.candidate);
     const jaccard = jaccardOverlap(pair.live, pair.candidate);
+    const rbo = rankBiasedOverlap(pair.live, pair.candidate);
     if (headMoved) top1ChangedQueries++;
-    if (headMoved || jaccard < 1) disagreementCount++;
+    if (headMoved || jaccard < 1 || rbo < 1) disagreementCount++;
     jaccardTotal += jaccard;
-    rboTotal += rankBiasedOverlap(pair.live, pair.candidate);
+    rboTotal += rbo;
   }
   const n = pairs.length;
   return {

@@ -105,7 +105,11 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
   const [topK, setTopK] = useState(10);
   const [runId, setRunId] = useState<string | null>(null);
 
-  const { data: run } = useQuery<CompareRun>({
+  const {
+    data: run,
+    isError: pollFailed,
+    refetch: refetchRun,
+  } = useQuery<CompareRun>({
     queryKey: ['shadow-compare', runId],
     queryFn: () => apiFetch(`/admin/embedding/shadow-migration/compare/${runId}`),
     enabled: runId !== null,
@@ -153,6 +157,10 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
   });
 
   const running = run?.status === 'queued' || run?.status === 'running';
+  // A failed poll is a failure, not an idle section: a 202'd run may still be
+  // live server-side, so Run stays disabled (a retry would 409 with the
+  // misleading "already running" toast) and the strip says what is unknown.
+  const pollUnavailable = runId !== null && pollFailed;
 
   return (
     <div className="mt-3 space-y-2 border-t border-border pt-3" data-testid="shadow-compare-section">
@@ -204,7 +212,7 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
         <button
           type="button"
           onClick={() => start.mutate()}
-          disabled={start.isPending || running}
+          disabled={start.isPending || running || pollUnavailable}
           className="nm-button-primary"
           data-testid="shadow-compare-start"
         >
@@ -212,6 +220,22 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
         </button>
       </div>
 
+      {pollUnavailable && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs"
+          data-testid="shadow-compare-poll-error"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+          <p>
+            The comparison was started, but its status could not be fetched — it may still be
+            running.{' '}
+            <button type="button" className="underline" onClick={() => void refetchRun()}>
+              Check again
+            </button>
+          </p>
+        </div>
+      )}
       {run && running && (
         <p className="text-xs text-muted-foreground" data-testid="shadow-compare-progress">
           Comparison {run.status} · {run.progressDone}/{run.progressTotal || '?'} queries
@@ -253,9 +277,14 @@ function CompareResult({
   judging: boolean;
   onJudge: (queryId: string, side: JudgementSide) => void;
 }) {
-  // Rank-only disagreements (same set, different order) count: the head
-  // moving IS the movement an admin needs to read.
-  const disagreements = report.queries.filter((row) => row.top1Changed || row.jaccard < 1);
+  // ANY difference between the lists counts — head moved, sets differ, or the
+  // same set in a different order (rbo < 1, which only RBO can see): drop a
+  // disjunct and the list under-reports movement while the "full agreement"
+  // sentence contradicts an RBO chip reading < 1.00. Mirrors
+  // `summarizeAgreement`'s predicate; the two must stay in lockstep.
+  const disagreements = report.queries.filter(
+    (row) => row.top1Changed || row.jaccard < 1 || row.rbo < 1,
+  );
   return (
     <div className="space-y-2" data-testid="shadow-compare-result">
       <p className="text-xs font-medium text-foreground" data-testid="shadow-compare-basis">
@@ -277,7 +306,13 @@ function CompareResult({
           value={`${report.agreement.disagreementCount}/${report.queryCount}`}
         />
       </div>
-      {verdict && <VerdictLine verdict={verdict} />}
+      {/* The zero-judgement prompt says "pick the better side on a
+          disagreement below" — suppressed when no disagreement rows render,
+          or it points at controls that do not exist. A pair with judgements
+          accumulated from earlier runs keeps its verdict either way. */}
+      {verdict && (verdict.judgementCount > 0 || disagreements.length > 0) && (
+        <VerdictLine verdict={verdict} />
+      )}
       {disagreements.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           Both models returned the same pages in the same order for every sampled query.
@@ -345,7 +380,12 @@ function VerdictLine({ verdict }: { verdict: JudgedVerdict }) {
                 : ' — significant, favouring the live model'
               : ' — not significant'
           }.`
-        : `${n} of ${verdict.minJudgementsForP} judgements before a p-value is quoted.`}
+        : verdict.mcnemar === null
+          ? // All recorded judgements are 'both'/'neither': the server scored
+            // nothing, so no amount of further ties reaches a p — counting
+            // down "N of 20" here would misstate why no p is shown.
+            'No live or candidate picks yet — ties alone cannot produce a p-value.'
+          : `${n} of ${verdict.minJudgementsForP} judgements before a p-value is quoted.`}
     </p>
   );
 }

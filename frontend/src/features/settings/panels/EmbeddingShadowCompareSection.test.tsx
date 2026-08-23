@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { EmbeddingShadowCompareSection } from './EmbeddingShadowCompareSection';
 import { useAuthStore } from '../../../stores/auth-store';
@@ -39,16 +39,16 @@ const COMPLETED_RESULT = {
   kind: 'shadow-compare',
   generatedAt: '2026-08-22T10:00:00.000Z',
   topK: 10,
-  queryCount: 3,
+  queryCount: 5,
   live: { providerId: 'p1', model: 'bge-m3' },
   candidate: { providerId: 'p2', model: 'qwen3-embedding:4b' },
   agreement: {
-    queryCount: 3,
+    queryCount: 5,
     top1ChangedQueries: 1,
-    top1ChangeRate: 1 / 3,
+    top1ChangeRate: 1 / 5,
     meanJaccard: 0.8,
     meanRbo: 0.74,
-    disagreementCount: 2,
+    disagreementCount: 4,
   },
   queries: [
     {
@@ -80,6 +80,28 @@ const COMPLETED_RESULT = {
       live: { pageIds: [6], pages: [{ pageId: 6, title: 'Exporting', spaceKey: null }] },
       candidate: { pageIds: [6], pages: [{ pageId: 6, title: 'Exporting', spaceKey: null }] },
     },
+    {
+      // Head agrees, sets differ (jaccard < 1): dropping the jaccard disjunct
+      // from the list filter must lose exactly this row.
+      id: 'query-4',
+      query: 'permissions model',
+      top1Changed: false,
+      jaccard: 1 / 3,
+      rbo: 0.7,
+      live: { pageIds: [7, 8], pages: [{ pageId: 7, title: 'RBAC', spaceKey: null }, { pageId: 8, title: 'Roles', spaceKey: null }] },
+      candidate: { pageIds: [7, 9], pages: [{ pageId: 7, title: 'RBAC', spaceKey: null }, { pageId: 9, title: 'Groups', spaceKey: null }] },
+    },
+    {
+      // Same set, same head, below-head reorder (rbo < 1 alone): the movement
+      // only RBO can see, which must still reach the judgeable list.
+      id: 'query-5',
+      query: 'backup schedule',
+      top1Changed: false,
+      jaccard: 1,
+      rbo: 0.95,
+      live: { pageIds: [10, 11, 12], pages: [{ pageId: 10, title: 'Backups', spaceKey: null }, { pageId: 11, title: 'Cron', spaceKey: null }, { pageId: 12, title: 'Restore', spaceKey: null }] },
+      candidate: { pageIds: [10, 12, 11], pages: [{ pageId: 10, title: 'Backups', spaceKey: null }, { pageId: 12, title: 'Restore', spaceKey: null }, { pageId: 11, title: 'Cron', spaceKey: null }] },
+    },
   ],
 };
 
@@ -102,12 +124,20 @@ function mockApi(opts: {
   judgements?: Record<string, string>;
   verdict?: object;
   judgementResponse?: object;
+  /** Every status poll answers HTTP 500 (the POST still 202s). */
+  pollError?: boolean;
 }) {
   let polls = 0;
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
     const method = init?.method ?? 'GET';
     opts.capture?.push({ url, method, body: typeof init?.body === 'string' ? init.body : undefined });
+    if (opts.pollError && url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) {
+      return new Response(JSON.stringify({ message: 'boom' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     if (url.includes('/judgements')) {
       if (method === 'POST' && opts.judgementResponse) {
         return new Response(JSON.stringify(opts.judgementResponse), {
@@ -203,16 +233,19 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(basis).toContain('bge-m3');
     expect(basis).toContain('qwen3-embedding:4b');
 
-    expect(within(result).getByText(/1\/3 queries/)).toBeInTheDocument();
+    expect(within(result).getByText(/1\/5 queries/)).toBeInTheDocument();
 
-    // Two disagreement rows (query-2 disagrees on rank alone and must be
-    // listed); the fully agreeing query-3 is not.
+    // Four disagreement rows — every way two lists can differ is listed
+    // (head moved, rank-only head swap, head-stable set change, below-head
+    // reorder that only RBO sees); the fully agreeing query-3 is not.
     const rows = within(result).getAllByTestId('shadow-compare-disagreement');
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(4);
     expect(rows[0]).toHaveTextContent('how to configure sync');
     expect(rows[0]).toHaveTextContent('Sync setup');
     expect(rows[0]).toHaveTextContent('Sync troubleshooting');
     expect(rows[1]).toHaveTextContent('reset password');
+    expect(rows[2]).toHaveTextContent('permissions model');
+    expect(rows[3]).toHaveTextContent('backup schedule');
     expect(result).not.toHaveTextContent('export pdf');
 
     // Both sides name their model, so the two lists cannot be read swapped.
@@ -236,6 +269,71 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     const result = await screen.findByTestId('shadow-compare-result');
     expect(within(result).getByText(/same pages/i)).toBeInTheDocument();
     expect(within(result).queryAllByTestId('shadow-compare-disagreement')).toHaveLength(0);
+    // With nothing judged and nothing to judge, no verdict line prompts the
+    // user to "pick the better side on a disagreement below" — there is none.
+    // Flush the judgements query first, or its zero-judgement prompt would be
+    // asserted absent before it ever had the chance to render.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(within(result).queryByTestId('shadow-compare-verdict')).toBeNull();
+  });
+
+  it('keeps the judged verdict visible on a fully agreeing run when the pair carries earlier judgements', async () => {
+    mockApi({
+      run: {
+        result: {
+          ...COMPLETED_RESULT,
+          agreement: { ...COMPLETED_RESULT.agreement, top1ChangedQueries: 0, disagreementCount: 0 },
+          queries: [COMPLETED_RESULT.queries[2]],
+          queryCount: 1,
+        },
+      },
+      verdict: { ...EMPTY_VERDICT, judgementCount: 5, liveBetter: 3, candidateBetter: 2 },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-result');
+    const verdict = await screen.findByTestId('shadow-compare-verdict');
+    expect(verdict).toHaveTextContent(/5 judgements/i);
+  });
+
+  it('states that ties cannot produce a p-value instead of counting down past the floor', async () => {
+    // 25 judgements, all 'both'/'neither': the server scores nothing and
+    // sends mcnemar null. "25 of 20 judgements before a p-value is quoted"
+    // is nonsense — the real reason is that ties carry no discordant pairs.
+    mockApi({
+      verdict: { ...EMPTY_VERDICT, judgementCount: 25, both: 20, neither: 5 },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-result');
+    const verdict = await screen.findByTestId('shadow-compare-verdict');
+    expect(verdict).toHaveTextContent(/ties alone cannot produce a p-value/i);
+    expect(verdict).not.toHaveTextContent(/25 of 20/);
+    expect(verdict).not.toHaveTextContent(/p =/);
+  });
+
+  it('a failed status poll is reported, not rendered as the idle state', async () => {
+    const capture: Array<{ url: string; method: string; body?: string }> = [];
+    mockApi({ capture, pollError: true });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+
+    // The run started (202) but its status cannot be read: the section must
+    // say so rather than showing no progress, no error and a re-enabled Run
+    // — which would present a live server-side run as if nothing happened.
+    const strip = await screen.findByTestId('shadow-compare-poll-error');
+    expect(strip).toHaveAttribute('role', 'status');
+    expect(strip.className).toMatch(/warning/);
+    expect(strip).toHaveTextContent(/could not be fetched/i);
+    expect(screen.getByTestId('shadow-compare-start')).toBeDisabled();
+    expect(screen.queryByTestId('shadow-compare-progress')).toBeNull();
+
+    // The strip offers an explicit re-poll.
+    const before = capture.filter((c) => c.method === 'GET' && c.url.includes('/compare/')).length;
+    fireEvent.click(within(strip).getByRole('button', { name: /check again/i }));
+    await waitFor(() =>
+      expect(capture.filter((c) => c.method === 'GET' && c.url.includes('/compare/')).length).toBeGreaterThan(before),
+    );
   });
 
   it('each disagreement offers the four judgement sides; a pick posts and renders pressed from the response (Mode 2)', async () => {
