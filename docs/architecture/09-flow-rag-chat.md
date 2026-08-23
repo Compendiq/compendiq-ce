@@ -1287,6 +1287,49 @@ backfilled (on pre-088 rows NULL means "not recorded", not "healthy"):
   recorded degraded or not, so the destructive re-embed window (#1116) is
   visible in analytics after the fact.
 
+Migration **098 (#1284)** added three more, on the same terms — nullable, no
+backfill, TEXT without a CHECK:
+
+- **`confidence`** — the #1105 gate's own verdict for this search, exactly as
+  `computeRetrievalConfidence` returned it over the RETURNED set. `NULL` is a
+  real value: an unmeasurable set has no number, and recording 0 for one would
+  drag every percentile downstream toward the floor. Never derive it from
+  `max_score` (RRF fusion) or `rerank_score` (the reranker's own scale) — a
+  distribution published on the wrong scale is worse than none.
+- **`confidence_basis`** — `rerank` | `similarity` | `none`. Its own column
+  because the basis flips per request and a `NULL` score alone cannot tell
+  `none` from "not recorded".
+- **`surface`** — `ask` | `search`. The gate is evaluated on `/llm/ask` only,
+  so page-search rows are labelled and excluded from the readout below rather
+  than diluting the sample an operator tunes the refusal policy against.
+  `NULL` (every pre-098 row) is unknown, and unknown is never read as `ask`.
+
+Both hybrid writers record the verdict: `hybridSearchInner` computes it once —
+above the analytics write, from the same `topResults` and the same health
+caveat the span attributes carry — and `multi-query-search.ts` computes it over
+the MERGED set with the original leg's caveat. `/llm/ask` passes
+`surface: 'ask'` and re-derives the same verdict for the gate from the same
+inputs, so the recorded number is the number the gate compared.
+`/api/search`'s hybrid branch passes `surface: 'search'`; its `semantic` /
+`keyword` rows and `POST /search/log`'s `faceted` rows carry
+`surface = 'search'` with no confidence at all, because no basis is computed
+on those paths.
+
+**`GET /api/analytics/confidence-distribution`** (`requireAdmin`, in
+`routes/knowledge/analytics.ts`) answers `{ windowDays: 7, surface: 'ask',
+similarity: {p50, p90, count}, rerank: {p50, p90, count} }` —
+`percentile_cont(0.5|0.9) WITHIN GROUP (ORDER BY confidence)` grouped by basis
+over `surface = 'ask' AND confidence IS NOT NULL` inside a fixed 7-day window
+(inside the default 90-day retention; a shorter configured retention simply
+shrinks the sample, which `count` makes visible). An empty sample answers
+nulls, never NaN and never 0. Settings → AI Models → Retrieval renders it as
+one muted line under each threshold — a MEASUREMENT, so neutral per ADR-010 —
+with the count always visible, a small-sample caveat below 30 questions, an
+explicit "nothing measured" state, and a failure sentence when the read
+itself fails (a failed read is not evidence that nothing was measured). No new
+index: `idx_search_analytics_created` bounds the scan and nothing has measured
+a need for a partial one.
+
 **The coverage probe** (`getEmbeddingCoverage`) counts ground truth from
 `page_embeddings` — deliberately not `pages.embedding_status`, which a failed
 run can leave stale — over what `embedPage` will actually embed: non-deleted,

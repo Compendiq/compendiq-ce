@@ -43,6 +43,10 @@ const {
   PARAPHRASE_COUNT,
 } = await import('./multi-query-search.js');
 const { RAG_RERANK_CANDIDATES_DEFAULT } = await import('../../../core/services/admin-settings-service.js');
+// The formula's own leaf module (#1268): rag-service is stubbed above, so the
+// verdict this suite compares against has to come from where the wrapper
+// imports it — not from the stub.
+const { computeRetrievalConfidence } = await import('./retrieval-confidence.js');
 
 function row(pageId: number, over: Partial<SearchResult> = {}): SearchResult {
   return {
@@ -482,6 +486,48 @@ describe('multiQuerySearch (#1112)', () => {
       9,
     );
     expect(extras).toMatchObject({ rerankScore: 0.71, degradedReason: null, embeddingCoverage: 1 });
+  });
+
+  /**
+   * #1284 — deep search is the second `search_analytics` writer, and it must
+   * record the same verdict the route's gate computes. The gate runs
+   * `computeRetrievalConfidence` over the MERGED set with the ORIGINAL leg's
+   * health caveat, so this row does too.
+   */
+  it('records the merged set\'s confidence, its basis and the caller\'s surface (#1284)', async () => {
+    mockChat.mockResolvedValue('first rewrite\nsecond rewrite');
+    mockHybridSearch.mockImplementation(async (_u: string, _q: string, _k: number, _c: unknown, opts: { onRetrievalMeta?: (m: unknown) => void }) => {
+      opts?.onRetrievalMeta?.({
+        degradedReason: null, healthCaveat: null, searchType: 'hybrid',
+        embeddingCoverage: 1, aclEmptied: false,
+      });
+      return [row(1, { vectorScore: 0.83 })];
+    });
+
+    const merged = await multiQuerySearch('u1', 'the user question', 5, undefined, {
+      ...optsIn,
+      surface: 'ask',
+    });
+
+    const [, , , , , extras] = mockTrackSearchAnalytics.mock.calls[0]!;
+    expect(computeRetrievalConfidence(merged, null)).toEqual({ score: 0.83, basis: 'similarity' });
+    expect(extras).toMatchObject({ confidence: 0.83, confidenceBasis: 'similarity', surface: 'ask' });
+  });
+
+  it('records basis none with a NULL score when the merged set is unmeasurable (#1284)', async () => {
+    mockChat.mockResolvedValue('first rewrite\nsecond rewrite');
+    mockHybridSearch.mockImplementation(async (_u: string, _q: string, _k: number, _c: unknown, opts: { onRetrievalMeta?: (m: unknown) => void }) => {
+      opts?.onRetrievalMeta?.({
+        degradedReason: 'embedding_failed', healthCaveat: 'embedding_failed', searchType: 'keyword_fallback',
+        embeddingCoverage: 1, aclEmptied: false,
+      });
+      return [row(1, { vectorScore: null, keywordRank: 0.5 })];
+    });
+
+    await multiQuerySearch('u1', 'the user question', 5, undefined, { ...optsIn, surface: 'ask' });
+
+    const [, , , , , extras] = mockTrackSearchAnalytics.mock.calls[0]!;
+    expect(extras).toMatchObject({ confidence: null, confidenceBasis: 'none' });
   });
 
   it('does not file analytics when an internal replay opts out', async () => {

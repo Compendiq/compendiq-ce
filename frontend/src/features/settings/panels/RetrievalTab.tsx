@@ -5,6 +5,8 @@ import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import type {
   ConfidenceCalibration,
+  ConfidenceDistribution,
+  ConfidenceDistributionBucket,
   FtsLanguage,
   RagConfidenceCalibration,
   UpdateAdminSettingsResult,
@@ -330,6 +332,26 @@ export function RetrievalTab() {
   const { data: assignments } = useQuery<UsecaseAssignments>({
     queryKey: ['llm-usecases'],
     queryFn: () => apiFetch('/admin/llm-usecases'),
+  });
+
+  /**
+   * #1284 — the observed `rag.confidence` distribution, per basis. Its own
+   * endpoint rather than a field on `/admin/settings`: that route is a
+   * settings document, and this is a measurement of what the deployment has
+   * been doing.
+   *
+   * Consumed with `isPending`/`isError` (review-proofing the `usePageTree`
+   * rule): a failed read renders as a failure sentence under each threshold,
+   * never as "nothing was measured" — which would tell an operator their
+   * assistant has had no questions when in fact the panel could not look.
+   */
+  const {
+    data: distribution,
+    isPending: distributionPending,
+    isError: distributionError,
+  } = useQuery<ConfidenceDistribution>({
+    queryKey: ['confidence-distribution'],
+    queryFn: () => apiFetch('/analytics/confidence-distribution'),
   });
 
   const saved: RetrievalValues = useMemo(() => {
@@ -844,7 +866,12 @@ export function RetrievalTab() {
       {/* ── Confidence gate ─────────────────────────────────────────────── */}
       <Section
         title="Confidence refuse gate"
-        description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces."
+        // #1284 — the section names the readout, and states the one
+        // consequence a number on its own does not carry: a threshold above
+        // p50 refuses about half the questions measured on that basis. The
+        // logs and traces stay in the sentence, one rung down, because they
+        // are still where a single request's verdict is inspected.
+        description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces. Under each knob is the distribution this deployment has actually measured — a threshold above p50 refuses about half the questions measured on that basis."
       >
         {/*
           #1114 — above the control, and keyed off `saved`, not `values`: the
@@ -869,10 +896,17 @@ export function RetrievalTab() {
         >
           <p>
             Basis: max cosine similarity of the best chunk, 0–1. The embedding model moves this
-            scale, so there is no universal value — read your own logged{' '}
-            <code className="font-mono">rag.confidence</code> values before picking one. 0 turns the
-            gate off.
+            scale, so there is no universal value — pick one against the measured distribution
+            below, not a number from another deployment. The same value is logged and traced per
+            request as <code className="font-mono">rag.confidence</code>. 0 turns the gate off.
           </p>
+          <ConfidenceDistributionLine
+            fieldKey="ragConfidenceThreshold"
+            bucket={distribution?.similarity}
+            windowDays={distribution?.windowDays ?? CONFIDENCE_WINDOW_DAYS_FALLBACK}
+            isPending={distributionPending}
+            isError={distributionError}
+          />
         </NumberRow>
 
         <CalibrationNotice
@@ -901,6 +935,24 @@ export function RetrievalTab() {
             The two bases are separate knobs because the basis flips per request: a rerank bypass
             measures that request on the cosine scale. Raise both for full coverage.
           </p>
+          <ConfidenceDistributionLine
+            fieldKey="ragConfidenceThresholdRerank"
+            bucket={distribution?.rerank}
+            windowDays={distribution?.windowDays ?? CONFIDENCE_WINDOW_DAYS_FALLBACK}
+            isPending={distributionPending}
+            isError={distributionError}
+            // The empty rerank sample is the ORDINARY state under ADR-021 —
+            // unassigned means the stage never runs — so name the cause
+            // rather than leave a permanent blank reading as a defect. Only
+            // when the panel really knows: `assignments === undefined` is a
+            // query that has not answered, and `rerankActive` is false for it
+            // too (the `usePageTree` three-state rule, one surface over).
+            emptyNote={
+              assignments && !rerankActive
+                ? 'The rerank stage is disabled on this deployment, so every question is measured on the similarity basis above.'
+                : undefined
+            }
+          />
         </NumberRow>
       </Section>
 
@@ -1291,6 +1343,109 @@ function Section({
 }
 
 /**
+ * Below this many measured questions the two percentiles are noise, and the
+ * readout says so rather than letting an operator tune against them. A round
+ * number, not a derived one: the honest statement is "this sample is small",
+ * and dressing it as a confidence interval would imply a rigour the figure
+ * does not have.
+ */
+const CONFIDENCE_SAMPLE_FLOOR = 30;
+
+/**
+ * The window the readout names while the request is still in flight or has
+ * failed. The server owns the real number and sends it on every answer; this
+ * only exists so the sentence is never "the last undefined days".
+ */
+const CONFIDENCE_WINDOW_DAYS_FALLBACK = 7;
+
+/**
+ * #1284 — the confidence distribution this deployment has actually produced,
+ * under the threshold it is used to set.
+ *
+ * The panel's own copy says there is no universal value here, because the
+ * embedding model moves the cosine scale and the reranker's normalisation
+ * moves the relevance one. Until now its only advice was to go and read
+ * logged `rag.confidence` values — a question the product already had the
+ * data for, asked of an operator with a grep.
+ *
+ * Four things about this line are deliberate.
+ *
+ * **It is a MEASUREMENT, so it is neutral** (ADR-010): muted body text, no
+ * status hue, no chip. Amber is attention and Steel is action, and this is
+ * neither — it is the same de-colouring argument `QualityScoreBadge` and
+ * `ConfidenceBadge` settled, reached on a settings surface.
+ *
+ * **The count is never optional.** A p90 over eleven questions is not a p90,
+ * and a readout without a sample size invites exactly the tuning it should
+ * prevent. Below {@link CONFIDENCE_SAMPLE_FLOOR} it says so in words.
+ *
+ * **A failed read is a failure, not an empty distribution.** `isError` gets
+ * its own sentence: "nothing was measured" and "we could not look" send an
+ * operator in opposite directions, and collapsing them is the `usePageTree`
+ * defect ADR-010 pins.
+ *
+ * **It renders inside the row's description**, so `aria-describedby` carries
+ * it to touch, keyboard and screen readers — and so the #1114 calibration
+ * strip stays the immediately-preceding sibling of the control it is about.
+ * It is prose only for the same reason: a description flattens to one string.
+ */
+function ConfidenceDistributionLine({
+  fieldKey,
+  bucket,
+  windowDays,
+  isPending,
+  isError,
+  emptyNote,
+}: {
+  fieldKey: CalibrationFieldKey;
+  bucket: ConfidenceDistributionBucket | undefined;
+  windowDays: number;
+  isPending: boolean;
+  isError: boolean;
+  /**
+   * Why this basis has no sample, when the panel already knows. The reachable
+   * case is the ordinary one: with no rerank assignment the stage never runs,
+   * so the rerank basis is empty forever and "nothing to tune against yet"
+   * reads as a defect rather than as a consequence of the deployment. Prose
+   * only, and no link — the wayfinding to LLM providers already sits on the
+   * rerank pool row, and this string lands inside an `aria-describedby`
+   * region that flattens to one line.
+   */
+  emptyNote?: string;
+}) {
+  const testId = `retrieval-${fieldKey}-distribution`;
+  if (isError) {
+    return (
+      <p data-testid={testId}>
+        The measured distribution could not be read. Reload this page to try again.
+      </p>
+    );
+  }
+  if (isPending || !bucket) {
+    return <p data-testid={testId}>Reading the measured distribution…</p>;
+  }
+  if (bucket.count === 0 || bucket.p50 === null || bucket.p90 === null) {
+    return (
+      <p data-testid={testId}>
+        No assistant questions measured on this basis in the last {windowDays} days, so there is
+        nothing to tune against yet.{emptyNote ? ` ${emptyNote}` : ''}
+      </p>
+    );
+  }
+  return (
+    <p data-testid={testId}>
+      Measured over the last {windowDays} days: p50{' '}
+      <span className="font-mono">{bucket.p50.toFixed(2)}</span>, p90{' '}
+      <span className="font-mono">{bucket.p90.toFixed(2)}</span> across{' '}
+      {bucket.count.toLocaleString()} assistant question{bucket.count === 1 ? '' : 's'}.
+      {bucket.count < CONFIDENCE_SAMPLE_FLOOR
+        ? ' Too few to tune against — treat both figures as provisional.'
+        : ''}
+    </p>
+  );
+}
+
+/**
  * #1114 — what a confidence threshold was tuned against, when that no longer
  * matches what is running.
  *
@@ -1555,13 +1710,24 @@ function NumberRow({
             onKeyDown={(e) => {
               if (e.key === 'Enter') commit();
             }}
+            // #1284 — the help block under a knob carries the part of the
+            // decision the number cannot: what the value means, and here,
+            // what this deployment has actually measured. Printed beside the
+            // input it was reachable by eye only; wired here it reaches
+            // touch, keyboard and screen readers too (ADR-010's
+            // `DeepSearchToggle` precedent). The region is PROSE ONLY — a
+            // description flattens to one string, so an operable control or a
+            // wayfinding link belongs beside it, never inside.
+            aria-describedby={children ? `${field.key}-help` : undefined}
             className="w-24 rounded-md border border-border-interactive bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-45"
             data-testid={`retrieval-${field.key}`}
           />
           {field.unit && <span className="w-24 text-xs text-muted-foreground">{field.unit}</span>}
         </div>
       </div>
-      <div className="space-y-1.5 text-xs text-muted-foreground">{children}</div>
+      <div id={`${field.key}-help`} className="space-y-1.5 text-xs text-muted-foreground">
+        {children}
+      </div>
       {value !== defaultValue && (
         <button
           type="button"

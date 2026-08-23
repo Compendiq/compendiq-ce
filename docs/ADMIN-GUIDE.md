@@ -608,7 +608,22 @@ cosine):
   normalisation makes scores only loosely comparable across requests (the
   backend logs `Rerank scores were raw logits` whenever that regime
   applied). Prefer a calibrated reranker if you intend to gate on this
-  basis; tune conservatively from your own logs either way.
+  basis; tune conservatively from your own observed distribution either way.
+
+**Pick each number from the line under the control, not from another
+deployment (#1284).** Both bases are recorded per request on
+`search_analytics` (`confidence`, `confidence_basis`, `surface` — migration
+098), and Settings → AI Models → Retrieval shows the observed distribution
+under each threshold: `p50`, `p90` and the number of assistant questions the
+two were computed over, for the last 7 days. A threshold above `p50` refuses
+about half the questions measured on that basis, which is the consequence a
+bare number never states. The sample counts **assistant questions only** —
+`/llm/ask`, deep search included — because the gate is never consulted on a
+page search; and below 30 questions the line says outright that the figures
+are too few to tune against. If the readout says the distribution could not
+be read, that is a failed request, not an empty corpus. Per-request verdicts
+are still logged and traced (`rag.confidence` / `rag.confidence_basis`) for
+inspecting one answer.
 
 **An empty result set belongs to no basis and refuses when EITHER knob is
 raised** — "no grounding at all" is below any positive bar. On a rerank
@@ -639,7 +654,8 @@ once they diverge, naming the old model, the live one and which scale moved.
 **Nothing rewrites the threshold** — a shadow swap, its rollback and a direct
 use-case re-assignment all log a warning naming both models and leave the
 number exactly as you set it. Clear the notice by re-tuning the threshold
-from your own logged `rag.confidence` values on the new model, or by pressing
+against the observed distribution shown under the control on the new model
+(#1284 — the old advice was to grep your own logs), or by pressing
 **Keep &lt;value&gt;** on the notice itself, which records the number you
 already have against the live model. That button is the only way an untouched
 threshold gets re-recorded: the panel's Save sends only knobs you actually

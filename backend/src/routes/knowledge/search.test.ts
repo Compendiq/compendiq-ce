@@ -697,7 +697,7 @@ describe('Search Routes', () => {
         'test',
         10,
         { embeddedPages: 3, totalPages: 3, coverage: 1 },
-        { spaceKey: undefined },
+        { spaceKey: undefined, surface: 'search' },
       );
       const body = response.json();
       expect(body.mode).toBe('hybrid');
@@ -723,7 +723,7 @@ describe('Search Routes', () => {
         'test',
         10,
         { embeddedPages: 3, totalPages: 3, coverage: 1 },
-        { spaceKey: 'DEV' },
+        { spaceKey: 'DEV', surface: 'search' },
       );
     });
 
@@ -894,7 +894,7 @@ describe('Search Routes', () => {
         expect.any(Number),
         null,
         'keyword',
-        { degradedReason: 'no_embeddings', embeddingCoverage: 0 },
+        { degradedReason: 'no_embeddings', embeddingCoverage: 0, surface: 'search' },
       );
     });
 
@@ -913,7 +913,7 @@ describe('Search Routes', () => {
         'test',
         10,
         { embeddedPages: 3, totalPages: 3, coverage: 1 },
-        { spaceKey: undefined },
+        { spaceKey: undefined, surface: 'search' },
       );
     });
 
@@ -933,7 +933,7 @@ describe('Search Routes', () => {
         1,
         expect.any(Number),
         'semantic',
-        { degradedReason: 'partial_embeddings', embeddingCoverage: 0.5 },
+        { degradedReason: 'partial_embeddings', embeddingCoverage: 0.5, surface: 'search' },
       );
     });
 
@@ -1215,6 +1215,51 @@ describe('Search Routes', () => {
       expect(calledQuery).toBe('analytics-test');
       expect(calledType).toBe('semantic');
     });
+
+    /**
+     * #1284 — page search is a different surface from the assistant, and the
+     * refuse gate is never consulted here. Its rows say so, so the Retrieval
+     * panel's confidence readout can filter them out rather than average a
+     * distribution the gate never saw.
+     */
+    it('#1284: a semantic row is stamped surface=search and carries no confidence', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockProviderGenerateEmbedding.mockResolvedValue([[new Array(768).fill(0.1)]]);
+      mockVectorSearch.mockResolvedValue([]);
+
+      await app.inject({ method: 'GET', url: '/api/search?q=analytics-test&mode=semantic' });
+
+      const extras = mockRecordAnalytics.mock.calls[0]![5] as Record<string, unknown>;
+      expect(extras.surface).toBe('search');
+      // No basis is computed on this path at all — recording one would be an
+      // invention, and recording a 0 would be a lie about a measurement.
+      expect(extras.confidence ?? null).toBeNull();
+      expect(extras.confidenceBasis ?? null).toBeNull();
+    });
+
+    it('#1284: a keyword row is stamped surface=search too', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/api/search?q=analytics-test&mode=keyword' });
+
+      const call = mockRecordAnalytics.mock.calls.find(
+        (c: unknown[]) => c[4] === 'keyword',
+      ) as unknown[] | undefined;
+      expect(call).toBeDefined();
+      const extras = call![5] as Record<string, unknown>;
+      expect(extras.surface).toBe('search');
+      expect(extras.confidenceBasis ?? null).toBeNull();
+    });
+
+    it('#1284: hybrid mode declares the search surface to hybridSearch', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockHybridSearch.mockResolvedValue([]);
+
+      await app.inject({ method: 'GET', url: '/api/search?q=test&mode=hybrid' });
+
+      const opts = mockHybridSearch.mock.calls[0]![4] as { surface?: string };
+      expect(opts.surface).toBe('search');
+    });
   });
 
   describe('GET /api/search — includeFacets parameter', () => {
@@ -1369,6 +1414,22 @@ describe('Search Routes', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+
+    it('#1284: stamps the faceted row with the search surface', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 });
+
+      await app.inject({
+        method: 'POST',
+        url: '/api/search/log',
+        payload: { query: 'kubernetes deployment', resultCount: 0 },
+      });
+
+      const [sql] = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO search_analytics'),
+      ) as [string, unknown[]];
+      expect(sql).toContain('surface');
+      expect(sql).toContain("'search'");
     });
   });
 

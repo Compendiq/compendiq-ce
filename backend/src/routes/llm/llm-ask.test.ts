@@ -391,6 +391,25 @@ describe('POST /api/llm/ask', () => {
     expect(model).toBe('m');
   });
 
+  it('declares the ask surface on retrieval, so the recorded confidence is the gate\'s own (#1284)', async () => {
+    // The Retrieval panel's readout measures the distribution the refuse
+    // gate really sees. The gate runs here and nowhere else, so this is the
+    // only caller that may stamp a row as 'ask' — a page search never
+    // consults a threshold and must not dilute the sample.
+    mockHybridSearch.mockResolvedValue([groundedResult]);
+    mockBuildRagContext.mockReturnValue('[Source 1: grounded]');
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('An answer.'));
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/ask',
+      payload: { question: 'What is the deployment process?' },
+    });
+
+    const opts = mockHybridSearch.mock.calls[0]![4] as { surface?: string };
+    expect(opts.surface).toBe('ask');
+  });
+
   describe('attached reference text', () => {
     function streamedMessages(): Array<{ role: string; content: string }> {
       expect(mockStreamChatClient).toHaveBeenCalledTimes(1);
@@ -2638,7 +2657,7 @@ describe('POST /api/llm/ask', () => {
       'How do I reset my password?',
       5,
       undefined,
-      { rerank: true, assembleContext: true, pinIdentifiers: true, onRetrievalMeta: expect.any(Function) },
+      { rerank: true, surface: 'ask', assembleContext: true, pinIdentifiers: true, onRetrievalMeta: expect.any(Function) },
     );
   });
 
@@ -2667,7 +2686,7 @@ describe('POST /api/llm/ask', () => {
       'how do I restart the ingest worker',
       5,
       undefined,
-      { rerank: true, assembleContext: true, pinIdentifiers: true, onRetrievalMeta: expect.any(Function) },
+      { rerank: true, surface: 'ask', assembleContext: true, pinIdentifiers: true, onRetrievalMeta: expect.any(Function) },
     );
     // The reformulation completion is the ONLY extra model call deep search
     // adds, so its absence is the whole "byte-identical" claim.

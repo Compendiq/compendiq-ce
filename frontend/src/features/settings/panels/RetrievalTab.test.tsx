@@ -66,6 +66,19 @@ function assignedImageEmbedding() {
   };
 }
 
+/**
+ * #1284 — `GET /analytics/confidence-distribution`, the observed
+ * `rag.confidence` distribution the Retrieval panel shows beside each
+ * threshold. Default: a healthy sample on both bases, so no other test in
+ * this file renders the small-sample or empty copy by accident.
+ */
+const defaultConfidenceDistribution = {
+  windowDays: 7,
+  surface: 'ask',
+  similarity: { p50: 0.41, p90: 0.63, count: 2184 },
+  rerank: { p50: 0.22, p90: 0.58, count: 1190 },
+};
+
 interface MockOptions {
   settings?: Record<string, unknown>;
   rerank?: ReturnType<typeof unassignedRerank>;
@@ -85,6 +98,13 @@ interface MockOptions {
    * silent, which is what a server predating the field looks like.
    */
   putResult?: (body: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * #1284 — the distribution payload, or `'error'` to fail the request. A
+   * failed read must render as a failure sentence, never as an empty
+   * distribution: "no questions measured" and "we could not look" are
+   * different facts and lead an operator to different actions.
+   */
+  confidenceDistribution?: Record<string, unknown> | 'error';
 }
 
 /** Captures every PUT body so a test can assert what was actually sent. */
@@ -94,6 +114,7 @@ function mockApi({
   imageEmbedding = unassignedRerank(),
   afterPut,
   putResult,
+  confidenceDistribution = defaultConfidenceDistribution,
 }: MockOptions = {}) {
   const puts: Record<string, unknown>[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -102,6 +123,10 @@ function mockApi({
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
+    if (url.includes('/analytics/confidence-distribution')) {
+      if (confidenceDistribution === 'error') return new Response('boom', { status: 500 });
+      return json(confidenceDistribution);
+    }
     if (url.includes('/admin/llm-usecases')) {
       const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
       return json({
@@ -2071,5 +2096,181 @@ describe('RetrievalTab — images shown to the model (#1115 P4)', () => {
     const helper = screen.getByText(/Text-only chat models never receive images/i);
     const link = within(helper).getByRole('link', { name: /LLM providers/i });
     expect(link.getAttribute('href')).toContain('?sub=llm');
+  });
+});
+
+/**
+ * #1284 — the observed confidence distribution, beside each threshold.
+ *
+ * The panel used to tell operators there is no universal value and then send
+ * them to their own log files to find one. This is that number, on screen,
+ * per basis, with the sample size — because a p90 computed over eleven
+ * questions is not worth tuning against and a readout without a count hides
+ * that.
+ */
+describe('RetrievalTab — observed confidence distribution (#1284)', () => {
+  const similarityId = 'retrieval-ragConfidenceThreshold-distribution';
+  const rerankId = 'retrieval-ragConfidenceThresholdRerank-distribution';
+
+  it('shows p50, p90 and the sample size for each basis', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toMatch(/last 7 days/i);
+    expect(similarity.textContent).toContain('0.41');
+    expect(similarity.textContent).toContain('0.63');
+    // Grouped, because four digits unseparated read as a version number.
+    expect(similarity.textContent).toMatch(/2,184/);
+
+    const rerank = await screen.findByTestId(rerankId);
+    expect(rerank.textContent).toContain('0.22');
+    expect(rerank.textContent).toContain('0.58');
+    expect(rerank.textContent).toMatch(/1,190/);
+  });
+
+  it('names the surface it measured — assistant questions, not page searches', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toMatch(/assistant question/i);
+  });
+
+  it('caveats a sample too small to tune against', async () => {
+    mockApi({
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        similarity: { p50: 0.4, p90: 0.8, count: 11 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toMatch(/11/);
+    expect(similarity.textContent).toMatch(/too few/i);
+    // The other basis has a real sample and must not inherit the caveat.
+    expect((await screen.findByTestId(rerankId)).textContent).not.toMatch(/too few/i);
+  });
+
+  it('says nothing was measured rather than showing an empty distribution', async () => {
+    mockApi({
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        similarity: { p50: null, p90: null, count: 0 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toMatch(/no assistant questions/i);
+    expect(similarity.textContent).not.toMatch(/p50/);
+  });
+
+  it('names why the rerank basis is empty when the stage is off, and not when it is on', async () => {
+    // ADR-021: unassigned means the stage never runs, so this sample is
+    // empty forever. Left unexplained it reads as a defect.
+    mockApi({
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        rerank: { p50: null, p90: null, count: 0 },
+      },
+    });
+    renderTab();
+    await ready();
+    await waitFor(async () =>
+      expect((await screen.findByTestId(rerankId)).textContent).toMatch(/rerank stage is disabled/i),
+    );
+
+    vi.restoreAllMocks();
+    mockApi({
+      rerank: assignedRerank(),
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        rerank: { p50: null, p90: null, count: 0 },
+      },
+    });
+    const second = renderTab();
+    await waitFor(() =>
+      expect(within(second.container).getByTestId(rerankId).textContent).not.toMatch(
+        /rerank stage is disabled/i,
+      ),
+    );
+  });
+
+  it('reports a failed read as a failure, never as an empty distribution', async () => {
+    // The #1119 / usePageTree rule on a settings surface: a request that did
+    // not answer is not evidence that nothing was measured, and the two send
+    // an operator in opposite directions.
+    mockApi({ confidenceDistribution: 'error' });
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toMatch(/could not be read/i);
+    expect(similarity.textContent).not.toMatch(/no assistant questions/i);
+    expect(similarity.textContent).not.toMatch(/p50/);
+  });
+
+  it('is wired to the input it is about, and is prose the description can carry', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+
+    const control = input('ragConfidenceThreshold');
+    const describedBy = control.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    const region = document.getElementById(describedBy!);
+    expect(region).not.toBeNull();
+    await waitFor(() => expect(region!.textContent).toContain('0.41'));
+    // A description flattens to one string, so nothing operable may live in
+    // it (the rule #1285 states for this panel's rows).
+    expect(region!.querySelectorAll('button, a, input, select, textarea')).toHaveLength(0);
+  });
+
+  it('does not displace the calibration strip from directly above its control', async () => {
+    // The readout lives INSIDE the row, under the help text. Placed between
+    // the strip and the row it would break the adjacency the #1114 strip
+    // depends on — the assertion that a strip parked elsewhere in the panel
+    // is not "above the control it is about".
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: {
+          similarity: {
+            providerId: 'p1', model: 'bge-m3', setAt: '2026-01-01T00:00:00.000Z',
+            stale: true, liveModel: 'Qwen3-Embedding-4B', liveResolved: true,
+          },
+          rerank: null,
+        },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const strip = await screen.findByTestId('retrieval-ragConfidenceThreshold-calibration-stale');
+    const row = input('ragConfidenceThreshold').closest('div.space-y-1\\.5');
+    expect(row!.previousElementSibling).toBe(strip);
+    expect(within(row as HTMLElement).getByTestId(similarityId)).toBeInTheDocument();
+  });
+
+  it('reads the measurement, never the draft in the field', async () => {
+    // The distribution describes what the deployment DID; typing a new
+    // threshold cannot change it, and a readout that moved with the field
+    // would be a mirror rather than evidence.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragConfidenceThreshold').value).toBe('0'));
+
+    type('ragConfidenceThreshold', '0.9');
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toContain('0.41');
+    expect(similarity.textContent).toContain('2,184');
   });
 });
