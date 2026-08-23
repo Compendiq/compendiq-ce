@@ -234,7 +234,9 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
 
     for (const usecase of expected) {
       await query(
-        `INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ($1, NULL, 'm')`,
+        `INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+         VALUES ($1, NULL, 'm')
+         ON CONFLICT (usecase) DO NOTHING`,
         [usecase],
       );
     }
