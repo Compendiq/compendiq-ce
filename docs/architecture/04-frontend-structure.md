@@ -167,6 +167,45 @@ flowchart LR
   that existed only to keep a pending seed from firing at whatever document
   loaded next. Every request now starts at a chip or the composer.
 
+## Article-editor inline completion (#1417)
+
+`InlineCompletionExtension` is a TipTap/ProseMirror extension mounted by the
+shared `Editor`. Its plugin state is the single owner of the active suggestion,
+document range, loading state, and request abort controller. Suggestions render
+as `Decoration.widget` ghost text (`aria-hidden`) rather than document content,
+so a response cannot alter the article until the user accepts it. Accepting is
+one undoable transaction; dismissing or receiving stale text changes nothing.
+
+The extension sends roughly 800 tokens before and 200 after the cursor after a
+personal debounce. Tab accepts all, Alt+] on macOS or Ctrl+] elsewhere accepts
+one word, Escape dismisses, and Alt+\ or Cmd+Shift+Space requests manually.
+Ordinary Tab behavior is preserved when there is no suggestion. Automatic
+requests are suppressed during IME composition, inside tables, on coarse
+pointers, and outside code blocks when **Code blocks only** is enabled.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant T as TipTap plugin
+    participant API as /api/llm/inline-completion
+    U->>T: pause or manual shortcut
+    T->>T: clear ghost + abort stale request
+    T->>API: bounded editor context
+    API-->>T: 204 or short completion
+    T-->>U: widget ghost text + shortcut hint
+    alt accept
+        U->>T: Tab / word shortcut
+        T->>T: insert one undoable transaction
+    else dismiss or type
+        U->>T: Escape / document change
+        T->>T: remove widget + abort
+    end
+```
+
+Personal controls live at **Settings → Personal → Editor**. The frontend also
+checks the authenticated use-case-default endpoint; an unassigned admin model
+therefore disables requests even when the user's preference remains enabled.
+
 ## Composer attachments (#1131 documents, #1154 images)
 
 The three AI composer surfaces — `/ai` Generate, `/ai` Improve and the dock's

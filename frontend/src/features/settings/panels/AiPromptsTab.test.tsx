@@ -25,6 +25,9 @@ describe('AiPromptsTab', () => {
     showSpaceHomeContent: true,
     customPrompts: {},
     confluencePatPromptDismissed: false,
+    inlineCompletionEnabled: true,
+    inlineCompletionDelay: 'balanced',
+    inlineCompletionCodeOnly: false,
   };
 
   beforeEach(() => {

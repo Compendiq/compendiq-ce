@@ -27,8 +27,16 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       show_space_home_content: boolean;
       custom_prompts: Record<string, string>;
       confluence_pat_prompt_dismissed_at: Date | null;
+      inline_completion_enabled: boolean;
+      inline_completion_delay: 'fast' | 'balanced' | 'deliberate' | 'manual';
+      inline_completion_code_only: boolean;
     }>(
-      'SELECT confluence_url, confluence_pat, theme, sync_interval_min, show_space_home_content, custom_prompts, confluence_pat_prompt_dismissed_at FROM user_settings WHERE user_id = $1',
+      `SELECT confluence_url, confluence_pat, theme, sync_interval_min,
+              show_space_home_content, custom_prompts,
+              confluence_pat_prompt_dismissed_at,
+              inline_completion_enabled, inline_completion_delay,
+              inline_completion_code_only
+         FROM user_settings WHERE user_id = $1`,
       [request.userId],
     );
     // #721: Use explicit editor assignments rather than getUserAccessibleSpaces
@@ -50,6 +58,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         showSpaceHomeContent: true,
         customPrompts: {},
         confluencePatPromptDismissed: false,
+        inlineCompletionEnabled: true,
+        inlineCompletionDelay: 'balanced',
+        inlineCompletionCodeOnly: false,
       };
     }
 
@@ -65,6 +76,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       customPrompts: row.custom_prompts ?? {},
       // #771: boolean only — the dismissal timestamp stays server-side.
       confluencePatPromptDismissed: !!row.confluence_pat_prompt_dismissed_at,
+      inlineCompletionEnabled: row.inline_completion_enabled,
+      inlineCompletionDelay: row.inline_completion_delay,
+      inlineCompletionCodeOnly: row.inline_completion_code_only,
     };
   });
 
@@ -157,6 +171,21 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.customPrompts !== undefined) {
       updates.push(`custom_prompts = $${paramIdx++}`);
       values.push(JSON.stringify(body.customPrompts));
+    }
+
+    if (body.inlineCompletionEnabled !== undefined) {
+      updates.push(`inline_completion_enabled = $${paramIdx++}`);
+      values.push(body.inlineCompletionEnabled);
+    }
+
+    if (body.inlineCompletionDelay !== undefined) {
+      updates.push(`inline_completion_delay = $${paramIdx++}`);
+      values.push(body.inlineCompletionDelay);
+    }
+
+    if (body.inlineCompletionCodeOnly !== undefined) {
+      updates.push(`inline_completion_code_only = $${paramIdx++}`);
+      values.push(body.inlineCompletionCodeOnly);
     }
 
     // #771: dismissal of the Confluence-PAT onboarding banner. The client

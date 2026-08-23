@@ -71,6 +71,8 @@ import {
   syncTableLayoutAttributes,
 } from './table-cell-selection';
 import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar-primitives';
+import { InlineCompletionExtension } from './InlineCompletionExtension';
+import type { InlineCompletionDelay } from '@compendiq/contracts';
 
 export function EditorContextToolbars({
   editor,
@@ -332,6 +334,16 @@ interface EditorProps {
   pageId?: string;
   /** Callback to trigger a server-side save (used by vim :w command). */
   onSave?: () => void;
+  /** #1417: resolved availability, personal controls, and page prompt metadata. */
+  inlineCompletion?: {
+    available: boolean;
+    enabled: boolean;
+    delay: InlineCompletionDelay;
+    codeOnly: boolean;
+    title?: string;
+    spaceKey?: string;
+    language?: string;
+  };
 }
 
 export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
@@ -635,7 +647,14 @@ function defaultVimDisplayState(): VimState {
   return { mode: 'normal', pendingKeys: '', countPrefix: '', register: '', commandBuffer: null };
 }
 
-export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave }: EditorProps) {
+const INLINE_COMPLETION_DELAYS: Record<InlineCompletionDelay, number | null> = {
+  fast: 300,
+  balanced: 500,
+  deliberate: 800,
+  manual: null,
+};
+
+export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, inlineCompletion }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // draftKey of a debounced draft awaiting write, so unmount can flush it
@@ -650,6 +669,12 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   // Keep onSave in a ref so the VimExtension closure always sees the latest callback
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
+  // Extension options are created with the TipTap instance. Read live props
+  // through a ref so settings/assignment queries can settle without remounting
+  // the editor and losing the current selection or unsaved document.
+  const inlineCompletionRef = useRef(inlineCompletion);
+  inlineCompletionRef.current = inlineCompletion;
+  const [inlineSuggestionActive, setInlineSuggestionActive] = useState(false);
 
   const [headerNumbering, setHeaderNumbering] = useState(() =>
     localStorage.getItem('editor-header-numbering') === 'true'
@@ -795,6 +820,27 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       SearchAndReplaceExtension,
       BlockShortcutsExtension,
       SlashCommandExtension,
+      InlineCompletionExtension.configure({
+        enabled: () => {
+          const config = inlineCompletionRef.current;
+          return editable && !!config?.available && config.enabled;
+        },
+        delayMs: () => {
+          const config = inlineCompletionRef.current;
+          return config ? INLINE_COMPLETION_DELAYS[config.delay] : null;
+        },
+        codeOnly: () => inlineCompletionRef.current?.codeOnly ?? false,
+        pageId: pageId && /^\d+$/.test(pageId) ? Number(pageId) : undefined,
+        getMetadata: () => ({
+          pageId: pageIdRef.current && /^\d+$/.test(pageIdRef.current)
+            ? Number(pageIdRef.current)
+            : undefined,
+          title: inlineCompletionRef.current?.title,
+          spaceKey: inlineCompletionRef.current?.spaceKey,
+          language: inlineCompletionRef.current?.language,
+        }),
+        onSuggestionStateChange: setInlineSuggestionActive,
+      }),
       ...(vimEnabled ? [VimExtension.configure({
         onStateChange: setVimDisplayState,
         onSave: () => {
@@ -936,6 +982,19 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
         )}
       />
+      {inlineSuggestionActive && (
+        <div
+          role="status"
+          aria-label="AI inline suggestion available"
+          data-testid="inline-completion-hint"
+          className={cn(
+            'pointer-events-none absolute right-2 z-10 rounded-md border border-border-interactive bg-card px-2 py-1 text-[11px] font-medium text-muted-foreground',
+            vimEnabled ? 'bottom-9' : 'bottom-2',
+          )}
+        >
+          [Tab] Accept · [Alt+]] Word · [Esc] Dismiss
+        </div>
+      )}
       {vimEnabled && editable && <VimModeIndicator vimState={vimDisplayState} />}
     </div>
   );

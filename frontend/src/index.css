@@ -25,6 +25,19 @@
 @import "@fontsource/source-serif-4/400.css";
 @import "@fontsource/source-serif-4/700.css";
 
+/* #1417 — TipTap widget decoration. It inherits prose/code typography and is
+   hidden twice on coarse pointers (request gate + CSS) so touch users never
+   get a non-actionable ghost affordance. */
+.cq-inline-completion-ghost {
+  white-space: pre;
+}
+
+@media (pointer: coarse) {
+  .cq-inline-completion-ghost {
+    display: none;
+  }
+}
+
 /* OpenDyslexic Alta is not distributed through @fontsource. Keep the files in
    the application itself so air-gapped deployments make no font request to a
    third-party CDN. The license and attribution live beside the assets. */

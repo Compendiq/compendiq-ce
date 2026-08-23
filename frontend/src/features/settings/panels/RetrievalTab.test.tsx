@@ -109,6 +109,7 @@ function mockApi({
         // #1115 P3 — unassigned by default, the ordinary state for a
         // non-inheriting use case with no VL model behind it.
         image_embedding: imageEmbedding,
+        inline_completion: row,
       });
     }
     if (url.includes('/admin/retrieval-benchmark')) {
