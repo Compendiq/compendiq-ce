@@ -446,12 +446,24 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(await exists(path.join(tempBase, 'local', '123', 'x.png'))).toBe(true);
     });
 
+    // Verification round: this cell could not fail. It aged only the FILE, so
+    // the directory's own mtime was `Date.now()` and `judgeDirectoryOrphan`
+    // took the grace branch before the key filter mattered — deleting the
+    // `PAGE_ID_PATTERN` test from the walk left it green. And a DRY run
+    // deletes nothing by construction, so the survival assertion asserted the
+    // dry run rather than the guard. Aged directory + LIVE run: the key filter
+    // is now the only thing standing between `weird name!/` and an `rm -rf`.
     it('skips keys that do not match PAGE_ID_PATTERN — nothing outside the root is ever judged', async () => {
       await writeAged('weird name!', 'x.png');
-      const run = await runAttachmentSweep({ dryRun: true });
+      await ageDirs('weird name!');
+      const run = await runAttachmentSweep({ dryRun: false });
       expect(run!.status).toBe('completed');
       expect(run!.candidateSample.find((c) => c.key === 'weird name!')).toBeUndefined();
-      expect(await exists(path.join(tempBase, 'weird name!', 'x.png'))).toBe(true);
+      expect(
+        await exists(path.join(tempBase, 'weird name!', 'x.png')),
+        'a key the allow-list refuses is never judged, so a live run cannot touch it',
+      ).toBe(true);
+      expect(await exists(path.join(tempBase, 'weird name!'))).toBe(true);
     });
   });
 
@@ -593,10 +605,31 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
     it('an empty local store stands that store down and still sweeps the Confluence tree', async () => {
       const { standalonePageId } = await seedCorpus();
       await fs.rm(path.join(tempBase, 'local'), { recursive: true, force: true });
+      // Verification round — the LOCAL half of the stand-down was unpinned for
+      // exactly the reason r2 fixed on the Confluence side one test up:
+      // emptied outright the store contributes NO candidate, so a filter that
+      // stops standing the local store down (`c.store === 'local' ||
+      // anomalies[c.store] === undefined`) left the whole suite green. An
+      // aged, pageless, EMPTY key directory is the reachable shape — it holds
+      // no files, so `files === 0` and the anomaly still fires, yet
+      // `judgeDirectoryOrphan` still names it an `orphan_directory`
+      // (`[].every(aged)` is vacuously true). A suspected mis-mount must
+      // report it and delete nothing.
+      await fs.mkdir(path.join(tempBase, 'local', '77777'), { recursive: true });
+      await ageDirs('local', path.join('local', '77777'));
 
       const live = await runAttachmentSweep({ dryRun: false });
       expect(live!.status).toBe('completed');
       expect(live!.note).toMatch(/^local store/);
+      // Reported but not deleted, both halves.
+      expect(
+        live!.candidateSample.some((c) => c.store === 'local' && c.key === '77777'),
+        'a stood-down store’s candidates are still reported',
+      ).toBe(true);
+      expect(
+        await exists(path.join(tempBase, 'local', '77777')),
+        'a stood-down store must lose nothing to the delete loop',
+      ).toBe(true);
       // The mirror of the case above: this run stood a store down, so it is
       // not the clean measurement the stats record publishes.
       expect(await readAttachmentStorageStatsRecord()).toBeNull();
