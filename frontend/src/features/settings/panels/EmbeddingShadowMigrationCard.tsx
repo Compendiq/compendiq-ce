@@ -142,7 +142,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     setCompareRunning(false);
     setEndedNotice(true);
     toast.warning(
-      'The comparison in progress ended — the shadow migration changed underneath it. Start a new comparison from the current migration.',
+      'The comparison in progress ended — the migration changed underneath it. Start a new comparison from the current migration.',
     );
   }, []);
   // Through a ref so an inline arrow prop cannot re-fire the effect each render.
@@ -334,7 +334,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
       data-testid="shadow-compare-ended"
     >
       <p className="flex-1">
-        The comparison in progress ended — the shadow migration changed underneath it. Start a new
+        The comparison in progress ended — the migration changed underneath it. Start a new
         comparison from the current migration.
       </p>
       <button type="button" className="shrink-0 underline" onClick={() => setEndedNotice(false)}>
