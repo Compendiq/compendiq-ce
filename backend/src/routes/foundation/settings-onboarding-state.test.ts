@@ -200,4 +200,41 @@ describe.skipIf(!dbAvailable)('Onboarding checklist state — real-Postgres roun
     });
     expect(get.json().onboardingState).toMatchObject({ dismissed: true });
   });
+
+  // #1402 (review r1): the row-ensure INSERT added for the no-pre-existing-row
+  // case above unconditionally targets user_settings.user_id -> users(id).
+  // auth.ts caches liveness for USER_SECURITY_CACHE_TTL_MS (30s), so a PUT
+  // arriving inside that window for a user hard-deleted moments earlier still
+  // passes auth, reaches this route, and the INSERT violates the FK — a 500,
+  // where the pre-#1402 route (no row-ensure) returned a 200 no-op. This must
+  // stay a 200 no-op, not a regression into a logged 500.
+  it('PUT for a user deleted after auth caches them as live does not 500 on the FK violation (#1402 review r1)', async () => {
+    const { token, userId } = await createUser('onboarding_deleted_user');
+
+    // Warm the #737 cached-liveness check (USER_SECURITY_CACHE_TTL_MS = 30s)
+    // so the PUT below is authenticated from cache, not a fresh DB lookup.
+    const warmGet = await app.inject({
+      method: 'GET',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(warmGet.statusCode).toBe(200);
+
+    // CASCADE removes the user_settings row created above (createUser inserts
+    // one directly), reproducing the "row genuinely gone, cache still says
+    // live" window the reviewer's probe exercises.
+    await query('DELETE FROM users WHERE id = $1', [userId]);
+
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { onboardingState: { dismissed: true } },
+    });
+
+    expect(put.statusCode).toBe(200);
+
+    const row = await query('SELECT 1 FROM user_settings WHERE user_id = $1', [userId]);
+    expect(row.rows).toHaveLength(0);
+  });
 });
