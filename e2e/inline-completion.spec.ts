@@ -33,6 +33,7 @@ test.describe('AI inline completion (#1417)', () => {
           confluencePatPromptDismissed: false,
           inlineCompletionEnabled: true,
           inlineCompletionDelay: 'fast',
+          inlineCompletionMode: 'full',
           inlineCompletionCodeOnly: false,
         }),
       });

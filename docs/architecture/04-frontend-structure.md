@@ -189,8 +189,11 @@ so a response cannot alter the article until the user accepts it. Accepting is
 one undoable transaction; dismissing or receiving stale text changes nothing.
 
 The extension sends roughly 800 tokens before and 200 after the cursor after a
-personal debounce. Tab accepts all, Alt+] on macOS or Ctrl+] elsewhere accepts
-one word, Escape dismisses, and Alt+\ or Cmd+Shift+Space requests manually.
+personal debounce. Its persisted default mode either requests and displays one
+word (8 output tokens) or a full one-line suggestion (48 output tokens). Tab
+accepts the visible completion; in full mode, Option+] on macOS or Ctrl+]
+elsewhere accepts one word. Escape dismisses, and Option+\ or
+Command+Shift+Space on macOS (Alt+\ elsewhere) requests manually.
 Ordinary Tab behavior is preserved when there is no suggestion. Automatic
 requests are suppressed during IME composition, inside tables, on coarse
 pointers, and outside code blocks when **Code blocks only** is enabled.

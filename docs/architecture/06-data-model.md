@@ -59,6 +59,7 @@ erDiagram
         timestamptz confluence_pat_prompt_dismissed_at "PAT onboarding banner dismissed (#771)"
         bool inline_completion_enabled "personal ghost-text preference (#1417)"
         text inline_completion_delay "fast | balanced | deliberate | manual (#1417)"
+        text inline_completion_mode "word | full (personal default)"
         bool inline_completion_code_only "suppress suggestions outside code blocks (#1417)"
     }
 
