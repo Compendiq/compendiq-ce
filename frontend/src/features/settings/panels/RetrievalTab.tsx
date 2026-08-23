@@ -172,6 +172,30 @@ function focusKnobBeforeNoticeClears(fieldId: string): void {
   document.getElementById(fieldId)?.focus();
 }
 
+/**
+ * The other half of that contract, and the half a `disabled` attribute breaks
+ * (verification round).
+ *
+ * Each of the three remedies below inerts ITSELF while its write is in flight.
+ * Spelled `disabled`, that runs the HTML unfocusing steps on the element the
+ * operator is standing on: every real browser blurs it to `<body>` the moment
+ * the press lands, and it leaves the tab order too. So the handoff above was
+ * only ever true on the outcomes that CLEAR the notice — on `unresolved`,
+ * `failed` and both `onError` paths the notice deliberately stays, the button
+ * stays with it, and the operator who has to press it again was already on
+ * `<body>` with the next Tab restarting from the top of the document. The
+ * panel's own test could not see it: jsdom does not implement the unfocusing
+ * steps, so `document.activeElement` stayed on the disabled button there.
+ *
+ * `aria-disabled` states the same thing to assistive tech without touching
+ * focus or the tab order — the recipe `AuthPanel`'s SSO re-check and
+ * `AskMode`'s example chips already use here, for this same reason. It blocks
+ * no events, so every one of these handlers must return early on its own
+ * pending flag; a `disabled` attribute is what must never come back.
+ */
+const PENDING_REMEDY_CLASS =
+  'aria-disabled:cursor-not-allowed aria-disabled:opacity-45 aria-disabled:hover:bg-transparent';
+
 const DEFAULTS: RetrievalValues = {
   ftsLanguage: 'simple',
   ragFetchWidth: 10,
@@ -512,7 +536,11 @@ export function RetrievalTab() {
       // move before it: on the one outcome that clears the notice the button
       // is about to be unmounted from under the operator's caret (WCAG 2.4.3,
       // see `focusKnobBeforeNoticeClears`). On `unresolved` / `failed` the
-      // notice — and its button — deliberately stay, so focus stays too.
+      // notice — and its button — deliberately stay, so focus stays too, which
+      // holds only because the button reports itself inert with
+      // `aria-disabled` (see `PENDING_REMEDY_CLASS`): the `disabled` attribute
+      // it used to carry blurs the pressed element to `<body>` in every real
+      // browser, and the same is true of both `onError` paths below.
       // `result` is in hand from the mutation itself; nothing below the await
       // contributes to it, so this is a pure reordering of the same read.
       const { basis, basisNoun } = CONFIDENCE_BASIS_COPY[key];
@@ -599,6 +627,14 @@ export function RetrievalTab() {
       toast.error(err instanceof Error ? err.message : 'Failed to save the index search depth');
     },
   });
+
+  /**
+   * A write is in flight over one of the panel's one-key remedies, so they all
+   * report themselves unavailable — `aria-disabled`, never `disabled`, and
+   * every handler guards on this itself (see `PENDING_REMEDY_CLASS`).
+   */
+  const keepPending = keepMutation.isPending || mutation.isPending;
+  const efSearchPinPending = pinEfSearchMutation.isPending || mutation.isPending;
 
   function set<K extends keyof RetrievalValues>(key: K, value: RetrievalValues[K]) {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -976,10 +1012,15 @@ export function RetrievalTab() {
             */}
             <button
               type="button"
-              onClick={() => pinEfSearchMutation.mutate(saved.ragEfSearch)}
-              disabled={pinEfSearchMutation.isPending || mutation.isPending}
+              onClick={() => {
+                // `aria-disabled` blocks no events, so the guard is the handler
+                // (see `PENDING_REMEDY_CLASS`).
+                if (efSearchPinPending) return;
+                pinEfSearchMutation.mutate(saved.ragEfSearch);
+              }}
+              aria-disabled={efSearchPinPending || undefined}
               aria-describedby={EF_SEARCH_ENV_NOTE_ID}
-              className="nm-button-ghost shrink-0 text-xs"
+              className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
               data-testid="retrieval-ef-search-env-pin"
             >
               Keep {saved.ragEfSearch}
@@ -1072,7 +1113,7 @@ export function RetrievalTab() {
           supported={settings?.ragConfidenceCalibration !== undefined}
           calibration={settings?.ragConfidenceCalibration?.similarity ?? null}
           onKeep={() => handleKeepCalibration('ragConfidenceThreshold')}
-          keepDisabled={keepMutation.isPending || mutation.isPending}
+          keepPending={keepPending}
         />
         <NumberRow
           field={FIELDS.ragConfidenceThreshold}
@@ -1095,7 +1136,7 @@ export function RetrievalTab() {
           supported={settings?.ragConfidenceCalibration !== undefined}
           calibration={settings?.ragConfidenceCalibration?.rerank ?? null}
           onKeep={() => handleKeepCalibration('ragConfidenceThresholdRerank')}
-          keepDisabled={keepMutation.isPending || mutation.isPending}
+          keepPending={keepPending}
         />
         <NumberRow
           field={FIELDS.ragConfidenceThresholdRerank}
@@ -1601,7 +1642,7 @@ function CalibrationNotice({
   supported,
   calibration,
   onKeep,
-  keepDisabled,
+  keepPending,
 }: {
   fieldKey: keyof typeof CONFIDENCE_BASIS_COPY;
   label: string;
@@ -1609,8 +1650,14 @@ function CalibrationNotice({
   supported: boolean;
   calibration: ConfidenceCalibration | null;
   onKeep: () => void;
-  keepDisabled: boolean;
+  keepPending: boolean;
 }) {
+  // `aria-disabled` blocks no events, so the inert state is enforced here
+  // rather than by the attribute (see `PENDING_REMEDY_CLASS`).
+  const keep = () => {
+    if (keepPending) return;
+    onKeep();
+  };
   if (value <= 0 || !supported) return null;
 
   if (!calibration) {
@@ -1626,10 +1673,10 @@ function CalibrationNotice({
         </span>
         <button
           type="button"
-          onClick={onKeep}
-          disabled={keepDisabled}
+          onClick={keep}
+          aria-disabled={keepPending || undefined}
           aria-describedby={unknownSentenceId}
-          className="nm-button-ghost shrink-0 text-xs"
+          className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
           data-testid={`retrieval-${fieldKey}-calibration-record`}
         >
           Record {value}
@@ -1714,10 +1761,10 @@ function CalibrationNotice({
         */}
         <button
           type="button"
-          onClick={onKeep}
-          disabled={keepDisabled}
+          onClick={keep}
+          aria-disabled={keepPending || undefined}
           aria-describedby={sentenceId}
-          className="nm-button-ghost shrink-0 text-xs"
+          className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
           data-testid={`retrieval-${fieldKey}-calibration-keep`}
         >
           Keep {value}

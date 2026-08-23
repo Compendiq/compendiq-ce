@@ -85,6 +85,13 @@ interface MockOptions {
    * silent, which is what a server predating the field looks like.
    */
   putResult?: (body: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * #1285 verification round — holds every PUT open so a test can inspect the
+   * panel WHILE a one-key remedy is in flight. That window is the only place
+   * the pending treatment is observable, and it is where the `disabled`
+   * attribute used to blur the pressed button to `<body>`.
+   */
+  holdPut?: Promise<unknown>;
 }
 
 /** Captures every PUT body so a test can assert what was actually sent. */
@@ -94,6 +101,7 @@ function mockApi({
   imageEmbedding = unassignedRerank(),
   afterPut,
   putResult,
+  holdPut,
 }: MockOptions = {}) {
   const puts: Record<string, unknown>[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -132,6 +140,7 @@ function mockApi({
       if (method === 'PUT') {
         const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
         puts.push(body);
+        if (holdPut) await holdPut;
         afterPut?.(body, settings);
         return json({ message: 'Admin settings updated', ...(putResult?.(body) ?? {}) });
       }
@@ -1975,6 +1984,80 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
       'the strip is still standing, so the caret stays on the control that is still the remedy',
     ).toBe(screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-keep'));
   });
+
+  /**
+   * #1285 verification round — the assertion above was only half true, and the
+   * half it missed is the one jsdom cannot see.
+   *
+   * `Keep` inerted itself with the `disabled` ATTRIBUTE while its write was in
+   * flight. Setting `disabled` on the focused element runs the HTML unfocusing
+   * steps: every real browser blurs it to `<body>` the moment the press lands
+   * and drops it from the tab order — so on `unresolved`, on `failed` and on
+   * both `onError` paths, where the strip and its button deliberately survive,
+   * the operator who has to press it again was already back at the top of the
+   * document. jsdom implements none of that (probed: `activeElement` stays on
+   * a button that has just been disabled), which is exactly why the test above
+   * passed against the broken source.
+   *
+   * So the pending state is asserted on the ATTRIBUTES, which jsdom does model
+   * faithfully and which a revert falsifies immediately. It is the recipe
+   * `AuthPanel`'s SSO re-check and `AskMode`'s example chips already use, and
+   * it costs a handler guard, because `aria-disabled` blocks no events.
+   */
+  it('reports a Keep in flight with aria-disabled, never the focus-dropping attribute', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const puts = mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+      putResult: recorded('Qwen3-Embedding-4B'),
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({ similarity: freshSimilarity });
+      },
+      holdPut: held,
+    });
+    renderTab();
+    await ready();
+
+    const keep = within(await screen.findByTestId(stripId)).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-keep',
+    );
+    keep.focus();
+    fireEvent.click(keep);
+    await waitFor(() => expect(puts).toHaveLength(1));
+
+    expect(keep).toHaveAttribute('aria-disabled', 'true');
+    expect(
+      keep,
+      'the `disabled` attribute blurs the pressed button to <body> in a real browser',
+    ).not.toBeDisabled();
+    // Focusable is the point of the whole treatment: an operator who has to
+    // press this again after an abstain is still standing on it.
+    expect(document.activeElement).toBe(keep);
+
+    // `aria-disabled` blocks no events, so inertness has to be the handler's
+    // job — without that guard this second press queues a second PUT.
+    await act(async () => {
+      fireEvent.click(keep);
+      // The mock records the body before it blocks, so a queued second write
+      // is visible after one turn of the event loop — asserting synchronously
+      // would pass against a missing guard.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(puts).toHaveLength(1);
+
+    await act(async () => {
+      release();
+      await held;
+    });
+    await waitFor(() => expect(screen.queryByTestId(stripId)).not.toBeInTheDocument());
+  });
 });
 
 describe('RetrievalTab — image retrieval (#1115 P3)', () => {
@@ -2555,6 +2638,53 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
       document.activeElement,
       'the button unmounts itself — move focus to the knob it was about, never leave it on <body>',
     ).toBe(input('ragEfSearch'));
+  });
+
+  it('reports a pin in flight with aria-disabled, never the focus-dropping attribute', async () => {
+    // The third of the panel's self-unmounting remedies, held to the same rule
+    // as the two calibration ones (see their guard for the mechanism): its
+    // `onError` path leaves the note and this button standing, and a `disabled`
+    // attribute would already have moved the operator to `<body>` by then.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const puts = mockApi({
+      settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true },
+      afterPut: (body, settings) => {
+        if ('ragEfSearch' in body) settings.ragEfSearchFromEnv = false;
+      },
+      holdPut: held,
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    const pin = screen.getByTestId('retrieval-ef-search-env-pin');
+    pin.focus();
+    fireEvent.click(pin);
+    await waitFor(() => expect(puts).toHaveLength(1));
+
+    expect(pin).toHaveAttribute('aria-disabled', 'true');
+    expect(
+      pin,
+      'the `disabled` attribute blurs the pressed button to <body> in a real browser',
+    ).not.toBeDisabled();
+    expect(document.activeElement).toBe(pin);
+
+    await act(async () => {
+      fireEvent.click(pin);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(puts).toHaveLength(1);
+
+    await act(async () => {
+      release();
+      await held;
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId('retrieval-ef-search-env-note')).not.toBeInTheDocument(),
+    );
   });
 
   it('states that fuzzy title matching is fixed, where the keyword index is configured', async () => {
