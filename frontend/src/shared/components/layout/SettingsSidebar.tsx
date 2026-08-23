@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { m, useReducedMotion } from 'framer-motion';
 import { PanelLeftClose, PanelLeft } from 'lucide-react';
-import { useUiStore } from '../../../stores/ui-store';
+import { COLLAPSED_TREE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useEnterprise } from '../../enterprise/use-enterprise';
 import { ShortcutHint } from '../ShortcutHint';
@@ -51,19 +51,21 @@ export function SettingsSidebar({
         key="settings-sidebar-collapsed"
         data-testid="settings-sidebar"
         initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-        animate={{ width: 40, opacity: 1 }}
+        animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
         transition={reduceEffects ? { duration: 0 } : sidebarSpring}
         className="app-sidebar flex flex-col items-center border-r overflow-hidden"
       >
-        <button
-          onClick={toggleTreeSidebar}
-          className="mt-2 flex items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-          aria-label="Expand sidebar"
-          title="Expand sidebar (,)"
-        >
-          <PanelLeft size={16} />
-          <ShortcutHint shortcutId="toggle-sidebar" />
-        </button>
+        <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center border-b">
+          <button
+            onClick={toggleTreeSidebar}
+            className="flex items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            aria-label="Expand sidebar"
+            title="Expand sidebar (,)"
+          >
+            <PanelLeft size={16} />
+            <ShortcutHint shortcutId="toggle-sidebar" />
+          </button>
+        </div>
 
         {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
       </m.div>

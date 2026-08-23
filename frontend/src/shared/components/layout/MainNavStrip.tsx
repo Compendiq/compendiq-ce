@@ -160,7 +160,7 @@ export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
 }
 
 /**
- * Vertical icon-only nav for the collapsed 40 px rail. Same order, same
+ * Vertical icon-only nav for the collapsed 44 px rail. Same order, same
  * active-state styling, no labels. Kept for the mobile drawer; desktop
  * destinations live on MainNavChassisRail.
  */
