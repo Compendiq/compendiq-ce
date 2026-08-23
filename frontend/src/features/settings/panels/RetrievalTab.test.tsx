@@ -2335,16 +2335,24 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
 
     const strip = await screen.findByTestId('retrieval-distribution-error');
     expect(strip).toHaveAttribute('role', 'status');
-    expect(strip).toHaveAttribute('aria-busy', 'false');
+    // Review r2 — and it must NEVER carry one. `aria-busy="true"` on a live
+    // region withholds updates to that region until it clears, so pairing it
+    // with the `Retry` → `Retrying…` swap silenced the very announcement the
+    // swap exists to produce. The busy state lives on the button instead.
+    expect(strip).not.toHaveAttribute('aria-busy');
     const retry = await screen.findByTestId('retrieval-distribution-retry');
     expect(retry.textContent).toMatch(/^Retry$/);
 
     const before = attempts;
     fireEvent.click(retry);
-    // A repeated failure re-enters the live region, so it is announced again.
-    // (With nothing cached react-query drops back to `pending` for the retry,
-    // which unmounts the strip; it is the RETURN that carries the outcome.)
+    // The region NEVER leaves the DOM (review r2), so the press and the
+    // repeated failure both land as content changes inside one live region —
+    // `Retry` → `Retrying…` → `Retry`. The r1 cut let the strip unmount here
+    // and called the RETURN the announcement, which meant a screen-reader
+    // user got nothing at all until the request settled, and a sighted
+    // keyboard user lost focus to `<body>` in between.
     await waitFor(() => expect(attempts).toBeGreaterThan(before));
+    expect(screen.getByTestId('retrieval-distribution-error')).toBe(strip);
     await waitFor(() =>
       expect(screen.getByTestId('retrieval-distribution-error')).toHaveAttribute('role', 'status'),
     );
@@ -2382,7 +2390,7 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
       await queryClient.refetchQueries({ queryKey: ['confidence-distribution'] });
     });
     const strip = await screen.findByTestId('retrieval-distribution-error');
-    expect(strip).toHaveAttribute('aria-busy', 'false');
+    expect(strip).not.toHaveAttribute('aria-busy');
     expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/^Retry$/);
 
     // Read 3 is held open, so the in-flight state is observable rather than raced.
@@ -2390,7 +2398,7 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     await waitFor(() =>
       expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/retrying/i),
     );
-    expect(screen.getByTestId('retrieval-distribution-error')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByTestId('retrieval-distribution-error')).not.toHaveAttribute('aria-busy');
     // The figures are still on screen while it is out — the retry is not a
     // reason to hide a measurement the panel already has.
     expect(screen.getByTestId(similarityId).textContent).toContain('0.41');
@@ -2404,20 +2412,93 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     );
   });
 
-  it('states the refusal rate AT a percentile, not above it', async () => {
+  it('keeps the Retry mounted, focused and busy through a retry with NOTHING cached', async () => {
+    // Review r2 — the branch where the busy affordance was unreachable, and
+    // the default failure state (a first load against a backend that has not
+    // run migration 098, or an erroring endpoint).
+    //
+    // react-query's `fetchState` spreads `...data === undefined && { error:
+    // null, status: 'pending' }`, so a refetch of an errored query with NO
+    // cached data drops back to `pending`: `isError` goes false and the whole
+    // `{distributionError && (…)}` strip unmounted UNDER THE USER'S FOCUS the
+    // instant they pressed it. Focus fell to `<body>` in a panel with ~30 tab
+    // stops, the `Retrying…`/`disabled` state added in r1 could never render
+    // here, and nothing in a live region reported the press. Production holds
+    // that window open for seconds — `query-client.ts` retries a 500 twice
+    // more with exponential backoff.
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let attempts = 0;
+    mockApi({
+      confidenceDistribution: async () => {
+        attempts += 1;
+        // Read 2 (the user's Retry) is held open, so the in-flight state is
+        // observable rather than raced.
+        if (attempts > 1) await held;
+        return 'error';
+      },
+    });
+    renderTab();
+    await ready();
+
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    retry.focus();
+    expect(document.activeElement).toBe(retry);
+    // Nothing is cached — this is the `distributionLost` branch, not `stale`.
+    expect((await screen.findByTestId(similarityId)).textContent).toMatch(/could not be read/i);
+
+    fireEvent.click(retry);
+    await waitFor(() =>
+      expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/retrying/i),
+    );
+    // The same element, still in the tree, still holding focus.
+    expect(screen.getByTestId('retrieval-distribution-retry')).toBe(retry);
+    expect(document.activeElement).toBe(retry);
+    expect(retry).toBeDisabled();
+    expect(screen.getByTestId('retrieval-distribution-error')).toBeInTheDocument();
+
+    await act(async () => {
+      release!();
+      await held;
+    });
+    // It fails again: the control comes back to rest without ever having moved.
+    await waitFor(() =>
+      expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/^Retry$/),
+    );
+    expect(document.activeElement).toBe(retry);
+  });
+
+  it('places the percentile AT the threshold, and calls it a ceiling on refusals', async () => {
     // Review r1 — the gate refuses when `score < threshold` (llm-ask.ts), so a
-    // threshold set at p50 refuses about half and one at p90 about nine in ten.
-    // The shipped copy said "a threshold above p50 refuses about half", which
-    // is off by a whole percentile: an operator setting the p90 figure this
-    // readout prints would expect 50% refusals and get roughly 90%.
+    // threshold set at p50 puts about half the sample below the bar and one at
+    // p90 about nine in ten. The first cut said "a threshold above p50 refuses
+    // about half", which is off by a whole percentile: an operator setting the
+    // p90 figure this readout prints would expect 50% and get roughly 90%.
+    //
+    // Review r2 — and "below the bar" is not "refused". `llm-ask.ts` computes
+    // `otherGrounding` and short-circuits `refusalReason` to null BEFORE the
+    // threshold comparison, so a turn with a sub-page tree, an attached
+    // document, web results or a substantive prior turn is answered at any
+    // threshold — while its analytics row, written during retrieval, is in
+    // the sample regardless. `hasSubstantiveHistory` makes that every
+    // follow-up turn in a conversation, so the copy must not sell the
+    // percentile as the refusal rate.
     mockApi();
     renderTab();
     await ready();
 
     const description = screen.getByText(/Under each knob is the distribution/i);
-    expect(description.textContent).toMatch(/set at p50 refuses about half/i);
-    expect(description.textContent).toMatch(/p90 refuses about nine in ten/i);
+    expect(description.textContent).toMatch(/set at p50 puts about half/i);
+    expect(description.textContent).toMatch(/below the bar/i);
+    expect(description.textContent).toMatch(/p90.{0,30}nine in ten/i);
     expect(description.textContent).not.toMatch(/above p50/i);
+    // The qualification itself, and at least one of the ways a turn earns it.
+    expect(description.textContent).toMatch(/ceiling on refusals/i);
+    expect(description.textContent).toMatch(/sub-page tree|attached document|earlier answer/i);
+    // It must never state the percentile AS the rate.
+    expect(description.textContent).not.toMatch(/p50 refuses about half/i);
   });
 
   it('says the window can span two scales while the basis model has changed', async () => {

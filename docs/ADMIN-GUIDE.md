@@ -616,9 +616,16 @@ deployment (#1284).** Both bases are recorded per request on
 098), and Settings → AI Models → Retrieval shows the observed distribution
 under each threshold: `p50`, `p90` and the number of assistant questions the
 two were computed over, for the last 7 days. The gate refuses when the score
-is **below** the threshold, so a threshold set **at** `p50` refuses about half
-the questions measured on that basis and one set at `p90` refuses about nine
-in ten — the consequence a bare number never states. The sample counts
+is **below** the threshold, so a threshold set **at** `p50` puts about half
+the questions measured on that basis below the bar and one set at `p90` about
+nine in ten — the consequence a bare number never states. Read that as a
+**ceiling on refusals, not the rate**: the gate stands down entirely for a
+turn that is grounded some other way — an assembled sub-page tree, an
+attached document, web results, or an earlier answer in the same conversation
+— and those turns are recorded in the sample all the same, because the
+analytics row is written during retrieval, before the refusal decision. On a
+multi-turn assistant the observed refusal rate at `p50` is well under half.
+The sample counts
 **assistant questions only** —
 `/llm/ask`, deep search included — because the gate is never consulted on a
 page search; and below 30 questions the line says outright that the figures

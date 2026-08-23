@@ -377,6 +377,32 @@ export function RetrievalTab() {
   const distributionLost = distributionError && distribution === undefined;
   const distributionStale = distributionError && distribution !== undefined;
 
+  /**
+   * A retry this section's own control started (review r2). It exists for ONE
+   * reason: to keep the strip — and with it the button the user just pressed —
+   * mounted for the duration of that request.
+   *
+   * react-query's `fetchState` spreads `...data === undefined && { error:
+   * null, status: 'pending' }`, so refetching an errored query with NOTHING
+   * cached drops back to `pending`. `isError` goes false, the
+   * `{distributionError && (…)}` strip unmounts, and the control the user
+   * activated disappears out from under their focus — which then falls to
+   * `<body>` in a panel with ~30 tab stops and is never restored, because the
+   * strip that returns on a repeated failure is a fresh element. It also made
+   * the `Retrying…`/`disabled` state unreachable in exactly the branch where
+   * a failed read is most likely: a first load against a backend that has not
+   * run migration 098. The `distributionStale` branch keeps `data`, so it
+   * keeps `status: 'error'` and never had the problem — which is why the
+   * first cut's own test only ever exercised the half that worked.
+   *
+   * The window is not one tick: `query-client.ts` retries a non-4xx failure
+   * twice more with exponential backoff, so this is seconds of the section
+   * standing empty.
+   */
+  const [retryInFlight, setRetryInFlight] = useState(false);
+  /** A read is out — whether this control started it or a window-focus refetch did. */
+  const distributionBusy = distributionFetching || retryInFlight;
+
   const saved: RetrievalValues = useMemo(() => {
     const out = { ...DEFAULTS };
     if (settings) {
@@ -902,7 +928,21 @@ export function RetrievalTab() {
         // other moves. The logs and traces stay in the sentence, one rung
         // down, because they are still where a single request's verdict is
         // inspected.
-        description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces. Under each knob is the distribution this deployment has actually measured — a threshold set at p50 refuses about half the questions measured on that basis, and one set at p90 refuses about nine in ten."
+        //
+        // Review r2 — the percentile is an UPPER BOUND on refusals, not the
+        // rate. `llm-ask.ts` computes `otherGrounding` and short-circuits
+        // `refusalReason` to null BEFORE the threshold comparison is reached,
+        // so a turn carrying a sub-page tree, an attached document, web
+        // results or a substantive prior turn is answered at any threshold —
+        // and `hasSubstantiveHistory` is true for every follow-up in a
+        // conversation. The analytics row is written during retrieval,
+        // before that decision, so those turns ARE in the p50/p90 sample.
+        // On a multi-turn assistant the real refusal rate at p50 is well
+        // below half. The first cut of this sentence was already corrected
+        // once for the neighbouring error ("above p50" → "at p50"), which is
+        // why the residual overstatement is worth naming rather than
+        // rounding off.
+        description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces. Under each knob is the distribution this deployment has actually measured — a threshold set at p50 puts about half the questions measured on that basis below the bar, and one set at p90 about nine in ten. That is a ceiling on refusals rather than the rate: a question grounded some other way — a sub-page tree, an attached document, or an earlier answer in the same conversation — is answered without the gate being consulted."
       >
         {/*
           #1284 review r2 — the recovery for a failed read is a control, and a
@@ -921,15 +961,26 @@ export function RetrievalTab() {
           `role="status"` (review r1) — the panel's two other failure strips
           both carry it, and without it this one told a screen-reader user
           nothing at all: it appears silently, and a Retry that fails AGAIN
-          changes no other pixel on the page. The busy label is the second
-          half of that: it is a text change INSIDE the live region, so the
-          press and its outcome are each announced, which `aria-busy` alone
-          (a property, not content) does not reliably do.
+          changes no other pixel on the page. The `Retry` → `Retrying…` swap
+          is the second half of that: it is a text change INSIDE the live
+          region, so the press is announced, and the swap BACK on a repeated
+          failure announces the outcome.
+
+          It carries NO `aria-busy` (review r2), and that is the whole point.
+          The r1 cut set `aria-busy={distributionFetching}` on this same
+          element, which per ARIA 1.2 tells assistive technology to WITHHOLD
+          updates to the region until busy clears — so the "Retrying…" text
+          change was emitted precisely while announcements were suppressed,
+          and by the time busy cleared the content had returned to the string
+          that was already announced. The two mechanisms cancelled: the
+          property silenced the content change it was paired with, while the
+          comment above it claimed both were announced. One region, one
+          mechanism — the content IS the announcement. The button's own
+          `disabled` + label carry the busy state where a busy state belongs.
         */}
-        {distributionError && (
+        {(distributionError || retryInFlight) && (
           <div
             role="status"
-            aria-busy={distributionFetching}
             className="flex flex-col items-start gap-2 text-xs text-muted-foreground"
             data-testid="retrieval-distribution-error"
           >
@@ -942,13 +993,16 @@ export function RetrievalTab() {
             </span>
             <button
               type="button"
-              onClick={() => void refetchDistribution()}
-              disabled={distributionFetching}
+              onClick={() => {
+                setRetryInFlight(true);
+                void refetchDistribution().finally(() => setRetryInFlight(false));
+              }}
+              disabled={distributionBusy}
               aria-describedby={DISTRIBUTION_ERROR_SENTENCE_ID}
               className="nm-button-ghost shrink-0 text-xs"
               data-testid="retrieval-distribution-retry"
             >
-              {distributionFetching ? 'Retrying…' : 'Retry'}
+              {distributionBusy ? 'Retrying…' : 'Retry'}
             </button>
           </div>
         )}
