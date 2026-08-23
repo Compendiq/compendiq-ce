@@ -36,7 +36,7 @@ interface UiState {
   setVimModeEnabled: (enabled: boolean) => void;
 }
 
-export const COLLAPSED_TREE_SIDEBAR_WIDTH = 44;
+export const COLLAPSED_TREE_SIDEBAR_WIDTH = 40;
 
 export const MIN_ARTICLE_SIDEBAR_WIDTH = 300;
 

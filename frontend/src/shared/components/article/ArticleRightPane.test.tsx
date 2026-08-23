@@ -691,6 +691,12 @@ describe('ArticleRightPane', () => {
       expect(screen.getByTestId('article-details-rail-btn').className).not.toMatch(/text-action/);
     });
 
+    it('aligns the collapsed rail divider with the expanded toolbar row', () => {
+      renderRail();
+      const chrome = screen.getByTestId('article-right-pane-rail').querySelector('.h-12');
+      expect(chrome).toHaveClass('h-12', 'border-b', 'border-border');
+    });
+
     it('keeps Expand and the current view first-class and parks pin and maintenance behind More', () => {
       renderRail();
 

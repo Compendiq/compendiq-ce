@@ -952,7 +952,7 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          <div className="group relative flex h-12 w-full flex-col items-center justify-center">
+          <div className="group relative flex h-12 w-full flex-col items-center justify-center border-b border-border">
             <button
               onClick={handleExpandSidebar}
               className={railIconBtn}
@@ -974,8 +974,7 @@ export function ArticleRightPane({
               in edit mode: collapsing to write must not hide the map. */}
           {headings.length > 0 && (
             <>
-              <div className="my-1 h-px w-6 bg-border" />
-              <div className="group relative flex w-full justify-center">
+              <div className="group relative mt-1 flex w-full justify-center">
                 <button
                   ref={outlineTriggerRef}
                   onMouseEnter={() => {
