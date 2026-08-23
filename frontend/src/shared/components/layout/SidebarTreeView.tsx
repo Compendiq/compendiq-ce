@@ -743,8 +743,6 @@ export function SidebarTreeView({
     selectedSpaceOption?.source === 'local'
       ? getSpaceIcon(selectedSpaceOption.icon)
       : Globe;
-  const selectedSpaceLabel = selectedSpaceOption?.name ?? 'All Spaces';
-
   // Collapsed rail -- nav icons + expand toggle
   const collapsed = treeSidebarCollapsed || forceCollapsed;
 

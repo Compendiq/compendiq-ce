@@ -97,7 +97,7 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
 
 /**
  * App destinations on the grey chassis, left of the workspace card.
- * Column width is `--app-nav-rail-width` (header height + 20px), flush with
+ * Column width is `--app-nav-rail-width` (header height + 30px), flush with
  * the workspace — no gutter between this rail and the article. Labels stay
  * visible so this is not an icon-only rail (WCAG 2.5.3). Keyboard shortcuts
  * (g p / g a / g g) remain on AppLayout.
@@ -121,8 +121,8 @@ export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
             aria-label={ariaLabel}
             aria-current={active ? 'page' : undefined}
             className={cn(
-              // Strip is `--app-nav-rail-width` (64px). px-1 on the nav is 4px
-              // on both sides; each 40px control remains centred with 8px of
+              // Strip is `--app-nav-rail-width` (74px). px-1 on the nav is 4px
+              // on both sides; each 40px control remains centred with 13px of
               // breathing room on either side. No button background on select/hover;
               // marked by the left indicator line at the chassis margin (-left-2).
               'group relative box-border flex h-10 w-10 shrink-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0 py-1 text-center text-xs font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',

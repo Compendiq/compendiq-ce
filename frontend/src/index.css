@@ -703,10 +703,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 :root {
   --app-inset: 0px;
   --app-header-height: 2.75rem;
-  /* Pages / AI / Graph chassis column: 20px wider than the header band (64px
+  /* Pages / AI / Graph chassis column: 30px wider than the header band (74px
      at the compact 44px header), giving the labelled destinations breathing
      room outside their controls after the rail's padding. */
-  --app-nav-rail-width: calc(var(--app-header-height) + 20px);
+  --app-nav-rail-width: calc(var(--app-header-height) + 30px);
   --app-shell-radius: 0px;
   --app-shell-border-width: 0px;
   --app-rail-gap: 0px;

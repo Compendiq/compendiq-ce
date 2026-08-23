@@ -410,6 +410,8 @@ describe('dock composer focus order (#1154)', () => {
       'ai-dock-input',
       'ai-dock-attach-button',
       'assistant-action-select',
+      'ai-dock-deep-search',
+      'ai-dock-deep-search-info-trigger',
       'ai-dock-send',
     ]);
   });
