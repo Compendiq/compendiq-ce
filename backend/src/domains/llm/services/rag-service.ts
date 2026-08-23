@@ -2341,10 +2341,6 @@ async function hybridSearchInner(
   // pins keep their fused score and stay in the sample.
   const scoreRows = topResults.filter((r) => r.pinned === undefined || r.vectorScore !== null || r.keywordRank !== null);
   const maxScore = scoreRows.length > 0 ? Math.max(...scoreRows.map((r) => r.score)) : null;
-  // #1112: a deep-search leg suppresses this row — see
-  // HybridSearchOptions.recordAnalytics. The wrapper records one row for the
-  // merged set, so one user gesture stays one row and no model-invented
-  // paraphrase is ever filed as a user query.
   // Retrieval confidence on the trace (#1268 review: the docs promised
   // "logs/traces" and only the log existed). Computed here with the same
   // health caveat the route's gate uses, so the two can never disagree.
