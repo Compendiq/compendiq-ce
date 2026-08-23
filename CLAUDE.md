@@ -127,10 +127,21 @@ component state and a comparison outlives a tab switch — but only a run whose
 config carries the candidate PAIR that is live now: run rows outlive the
 migration that produced them, so an aborted migration's report was otherwise
 adopted into the next migration's card, under a heading naming the new
-candidate, with live judgement controls beside it. The card's half of that is
-`refetchOnMount: 'always'` plus a cache seed at start; `staleTime: Infinity`
-alone served the first mount's `{run: null}` back to the second one, so the
-re-attachment worked only across a full reload. A 42703 while the migration
+candidate, with live judgement controls beside it. That pair check is a
+PREDICATE of the query (`config @> $2::jsonb`, a bind parameter), never a
+filter over its one row: applied after `ORDER BY created_at DESC LIMIT 1` it
+discarded the completed comparison of the pair that is live NOW whenever any
+newer run named another candidate, so an operator who tries X, tries Y and
+comes back to X loses X's report and re-spends its N x 2 embedding calls. The
+card's half of that is `refetchOnMount: 'always'` plus a cache seed at start;
+`staleTime: Infinity` alone served the first mount's `{run: null}` back to the
+second one, so the re-attachment worked only across a full reload. The judged
+verdict renders **Recall and MRR beside the p and withheld with it** — both
+come off the same scored picks, so quoting them under a withheld p publishes
+the quality half of a verdict the server declined to state; the surface is a
+labelled `region` with a real heading, because a completed run puts four
+judgement buttons per disagreeing query above the assignments grid, its Save
+and the runtime-limits card in tab order. A 42703 while the migration
 still reports active is a SCHEMA fault, not a provider one — it ends the run at
 the first query instead of being counted as a skipped query and reported as
 "check the provider" once the failed-share ceiling (**half** the sample; pinned

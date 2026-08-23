@@ -212,7 +212,7 @@ function mockApi(opts: {
 }
 
 describe('EmbeddingShadowCompareSection (#1260)', () => {
-  it('states at rest that this measures agreement on the vector leg, and that the run slot is shared', () => {
+  it('states at rest that this measures agreement on the vector leg, that the run slot is shared, and what a run costs', () => {
     mockApi({});
     renderSection();
     expect(screen.getByText(/Compare on real queries/i)).toBeInTheDocument();
@@ -220,6 +220,29 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(copy).toMatch(/vector leg only/i);
     expect(copy).toMatch(/not.*quality/i);
     expect(copy).toMatch(/production retrieval benchmark/i);
+    // The run's real cost, on the screen the operator is standing on: two
+    // embedding calls per query through the queue that embeds live questions,
+    // at a Queries field defaulting to 50. The sibling card one phase earlier
+    // says exactly this about the backfill, and the runbook says it about the
+    // comparison — omitting it here left the one surface that starts the run
+    // silent about what it spends.
+    expect(copy).toMatch(/two embedding calls per query/i);
+    expect(copy).toMatch(/slower/i);
+  });
+
+  it('is a labelled region with a heading, so it can be reached and skipped', () => {
+    // The longest interactive block on the tab — a completed run renders four
+    // judgement buttons per disagreeing query, up to the 100-query cap — and
+    // it sits ABOVE the use-case assignments, their Save and the runtime
+    // limits card in both tab order and reading order. Without a heading or a
+    // landmark there is no way to jump to it or past it (WCAG 1.3.1).
+    mockApi({});
+    renderSection();
+    const heading = screen.getByRole('heading', { name: /Compare on real queries/i });
+    expect(heading).toBeInTheDocument();
+    const region = screen.getByRole('region', { name: /Compare on real queries/i });
+    expect(region).toContainElement(heading);
+    expect(region).toContainElement(screen.getByTestId('shadow-compare-start'));
   });
 
   it('starts a run with the chosen knobs and renders progress from the poll', async () => {
@@ -652,6 +675,41 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(verdict).toHaveTextContent(/24 judgements/i);
     expect(verdict).toHaveTextContent(/p = 0.002/);
     expect(verdict).toHaveTextContent(/favouring the candidate/i);
+    // Recall and MRR are the two most legible quality numbers this surface
+    // has, the backend computes and ships both, and the runbook's go/no-go
+    // step promises them beside the p — they were on the wire and rendered
+    // nowhere (r2).
+    const metrics = screen.getByTestId('shadow-compare-verdict-metrics');
+    expect(metrics).toHaveTextContent(/recall/i);
+    expect(metrics).toHaveTextContent(/0\.40/);
+    expect(metrics).toHaveTextContent(/0\.95/);
+    expect(metrics).toHaveTextContent(/MRR/);
+    expect(metrics).toHaveTextContent(/0\.35/);
+    expect(metrics).toHaveTextContent(/0\.90/);
+    // A measurement, so neutral — never a status hue.
+    expect(metrics.className).not.toMatch(/warning|destructive|success|primary/);
+  });
+
+  it('withholds Recall and MRR below the p-value floor, exactly as it withholds the p', async () => {
+    // Both come from the same scored picks. Quoting them under a withheld p
+    // would publish the quality half of a verdict the server has declined to
+    // state, on the surface a swap decision is made from.
+    mockApi({
+      verdict: {
+        ...EMPTY_VERDICT,
+        judgementCount: 5,
+        scoredJudgementCount: 5,
+        candidateBetter: 5,
+        mcnemar: { wins: 5, losses: 0, pValue: null, significant: false, direction: 'none' },
+        recall: { live: 0.4, candidate: 0.95 },
+        mrr: { live: 0.35, candidate: 0.9 },
+      },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-result');
+    await screen.findByTestId('shadow-compare-verdict');
+    expect(screen.queryByTestId('shadow-compare-verdict-metrics')).toBeNull();
   });
 
   it('re-attaches to this admin\'s latest comparison on mount, without a start', async () => {

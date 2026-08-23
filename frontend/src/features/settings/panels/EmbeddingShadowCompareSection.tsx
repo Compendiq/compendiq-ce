@@ -128,6 +128,7 @@ function clamp(value: number, min: number, max: number): number {
 
 export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
   const queryClient = useQueryClient();
+  const titleId = useId();
   // The fields hold the RAW string while the admin types; clamping happens on
   // blur and at submit, so a half-typed or empty field is never rewritten
   // under the caret.
@@ -309,14 +310,29 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
   };
 
   return (
-    <div className="mt-3 space-y-2 border-t border-border pt-3" data-testid="shadow-compare-section">
-      <p className="text-sm font-medium">Compare on real queries</p>
+    // A REGION with a real heading, not a bare div with a <p> for a title
+    // (r2). This is the longest interactive block on the tab — a completed run
+    // renders four judgement buttons per disagreeing query, up to the
+    // hundred-query cap — and it sits above the use-case assignments, their
+    // Save and the runtime-limits card in both tab order and reading order.
+    // Every sibling settings block already does this (`ProviderListSection`,
+    // the Retrieval tab's benchmark section this one is modelled on).
+    <section
+      aria-labelledby={titleId}
+      className="mt-3 space-y-2 border-t border-border pt-3"
+      data-testid="shadow-compare-section"
+    >
+      <h3 id={titleId} className="text-sm font-semibold">
+        Compare on real queries
+      </h3>
       <p className="text-xs text-muted-foreground" data-testid="shadow-compare-intro">
         Runs this deployment's most frequent recorded searches against the live index and the{' '}
         <b>{candidateModel}</b> shadow, and lists the queries where the two disagree. This measures
         agreement on the vector leg only — not answer quality, and not what users see after keyword
-        fusion and rerank. It shares its single run slot with the production retrieval benchmark on
-        the Retrieval tab; while either runs, the other reports &ldquo;already running&rdquo;.
+        fusion and rerank. Each run makes two embedding calls per query through the same queue that
+        embeds live questions, so answers may be slower while it runs. It shares its single run slot
+        with the production retrieval benchmark on the Retrieval tab; while either runs, the other
+        reports &ldquo;already running&rdquo;.
       </p>
       <div className="flex flex-wrap items-end gap-3">
         <label className="space-y-1 text-xs text-muted-foreground">
@@ -437,7 +453,7 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
           onJudge={onJudge}
         />
       )}
-    </div>
+    </section>
   );
 }
 
@@ -595,29 +611,54 @@ function VerdictLine({ verdict }: { verdict: JudgedVerdict }) {
   // of them picks) would read as a server bug rather than as the floor doing
   // its job.
   const scored = verdict.scoredJudgementCount ?? n;
+  const quotesP = p !== null && p !== undefined && verdict.mcnemar !== null;
   return (
-    <p className="text-xs text-muted-foreground" data-testid="shadow-compare-verdict">
-      <span className="font-medium text-foreground">
-        Judged: {n} {n === 1 ? 'judgement' : 'judgements'} for this model pair
-      </span>{' '}
-      — candidate better on {verdict.candidateBetter}, live better on {verdict.liveBetter}
-      {verdict.both > 0 ? `, both good on ${verdict.both}` : ''}
-      {verdict.neither > 0 ? `, neither on ${verdict.neither}` : ''}.{' '}
-      {p !== null && p !== undefined && verdict.mcnemar
-        ? `McNemar p = ${p < 0.001 ? '< 0.001' : p.toFixed(3)}${
-            verdict.mcnemar.significant
-              ? verdict.mcnemar.direction === 'improvement'
-                ? ' — significant, favouring the candidate'
-                : ' — significant, favouring the live model'
-              : ' — not significant'
-          }.`
-        : verdict.mcnemar === null
-          ? // All recorded judgements are 'both'/'neither': the server scored
-            // nothing, so no amount of further ties reaches a p — counting
-            // down "N of 20" here would misstate why no p is shown.
-            'No live or candidate picks yet — ties alone cannot produce a p-value.'
-          : `${scored} of ${verdict.minJudgementsForP} live-or-candidate picks before a p-value is quoted.`}
-    </p>
+    <>
+      <p className="text-xs text-muted-foreground" data-testid="shadow-compare-verdict">
+        <span className="font-medium text-foreground">
+          Judged: {n} {n === 1 ? 'judgement' : 'judgements'} for this model pair
+        </span>{' '}
+        — candidate better on {verdict.candidateBetter}, live better on {verdict.liveBetter}
+        {verdict.both > 0 ? `, both good on ${verdict.both}` : ''}
+        {verdict.neither > 0 ? `, neither on ${verdict.neither}` : ''}.{' '}
+        {quotesP && verdict.mcnemar
+          ? `McNemar p = ${p < 0.001 ? '< 0.001' : p.toFixed(3)}${
+              verdict.mcnemar.significant
+                ? verdict.mcnemar.direction === 'improvement'
+                  ? ' — significant, favouring the candidate'
+                  : ' — significant, favouring the live model'
+                : ' — not significant'
+            }.`
+          : verdict.mcnemar === null
+            ? // All recorded judgements are 'both'/'neither': the server scored
+              // nothing, so no amount of further ties reaches a p — counting
+              // down "N of 20" here would misstate why no p is shown.
+              'No live or candidate picks yet — ties alone cannot produce a p-value.'
+            : `${scored} of ${verdict.minJudgementsForP} live-or-candidate picks before a p-value is quoted.`}
+      </p>
+      {/* The two quality figures the judgements actually buy. They come off
+          the same scored picks as the p, so they appear with it and are
+          withheld with it (r2) — publishing the quality half of a verdict the
+          server has declined to state is the failure the floor exists to
+          prevent. Both are computed against the judged-better side's TOP page
+          rather than a labelled fixture, so the label says which page it
+          means; NEUTRAL, because these are measurements, not states. */}
+      {quotesP && verdict.recall && verdict.mrr && (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid="shadow-compare-verdict-metrics"
+        >
+          Recall of the judged page:{' '}
+          <span className="font-medium text-foreground">
+            live {verdict.recall.live.toFixed(2)} → candidate {verdict.recall.candidate.toFixed(2)}
+          </span>{' '}
+          · MRR:{' '}
+          <span className="font-medium text-foreground">
+            live {verdict.mrr.live.toFixed(2)} → candidate {verdict.mrr.candidate.toFixed(2)}
+          </span>
+        </p>
+      )}
+    </>
   );
 }
 
