@@ -9,7 +9,7 @@
  * last run that did not complete.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AttachmentStorageStats, AttachmentSweepRun, AttachmentSweepStatus } from '@compendiq/contracts';
 import { AttachmentStorageCard } from './AttachmentStorageCard';
@@ -18,6 +18,23 @@ import { toast } from 'sonner';
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), message: vi.fn() },
 }));
+
+/**
+ * Flush the announcer's publish tick before asserting the polite region is
+ * EMPTY (fixer, external round 2). The card publishes in TWO commits — the
+ * watch effect stores a pending sentence, a second effect empties the region
+ * and refills it from `setTimeout(…, 0)` — so a bare assertion right after
+ * the first paint reads the region during the window BEFORE any sentence
+ * could have been written. Both mount tests below then passed with the
+ * `watchedFrom` narrowing deleted (mutation: announce `lastRun` whenever one
+ * exists — the exact defect r2 fixed), i.e. they measured a scheduling
+ * accident, not the guard. With this flush that mutation makes both fail.
+ */
+async function flushAnnouncerPublish() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
 
 function createWrapper() {
   const qc = new QueryClient({
@@ -1043,8 +1060,10 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     const lastRun = await screen.findByTestId('attachment-sweep-last-run');
     // The live region exists from the first paint (that is what stops the
-    // insertion announcement) and is empty…
+    // insertion announcement) and is empty — asserted AFTER the publish tick,
+    // so silence is the guard's doing and not the clock's.
     expect(screen.getByTestId('attachment-sweep-announcement')).toHaveAttribute('role', 'status');
+    await flushAnnouncerPublish();
     expect(screen.getByTestId('attachment-sweep-announcement').textContent).toBe('');
     // …and none of the conditional strips is a live region of its own.
     expect(lastRun).not.toHaveAttribute('role');
@@ -1062,6 +1081,7 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     const strip = await screen.findByTestId('attachment-sweep-last-run-problem');
     expect(strip).not.toHaveAttribute('role');
+    await flushAnnouncerPublish();
     expect(screen.getByTestId('attachment-sweep-announcement').textContent).toBe('');
   });
 
