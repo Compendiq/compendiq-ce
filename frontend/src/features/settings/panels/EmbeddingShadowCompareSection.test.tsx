@@ -18,7 +18,11 @@ function renderSection(props: { onRunInFlightChange?: (runId: string | null) => 
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <EmbeddingShadowCompareSection candidateModel="qwen3-embedding:4b" {...props} />
+      <EmbeddingShadowCompareSection
+        candidateModel="qwen3-embedding:4b"
+        candidateKey="qwen3-embedding:4b@2026-08-20T09:00:00.000Z"
+        {...props}
+      />
     </QueryClientProvider>,
   );
 }
@@ -870,7 +874,10 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     const shared = createQueryClient();
     const ui = (
       <QueryClientProvider client={shared}>
-        <EmbeddingShadowCompareSection candidateModel="qwen3-embedding:4b" />
+        <EmbeddingShadowCompareSection
+          candidateModel="qwen3-embedding:4b"
+          candidateKey="qwen3-embedding:4b@2026-08-20T09:00:00.000Z"
+        />
       </QueryClientProvider>
     );
     const first = render(ui);
@@ -1332,10 +1339,24 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     const chosen = within(group).getByRole('radio', { name: 'Candidate' });
     const sibling = within(group).getByRole('radio', { name: 'Live' });
     expect(chosen.querySelector('svg')).not.toBeNull();
-    expect(sibling.querySelector('svg')).toBeNull();
+    expect(chosen.querySelector('svg')!.getAttribute('class')).not.toMatch(/\binvisible\b/);
+    // The slot is RESERVED, never mounted on selection (r1). Mounted, the
+    // glyph's 12px box plus the group's 4px gap entered the layout on every
+    // pick, widening that segment by ~16px — about a third of it — and sliding
+    // its right-hand siblings out from under the pointer, on a workflow whose
+    // whole point is twenty picks and changes of mind. `visibility: hidden`
+    // holds the box in all five states (nothing chosen, and each of the four)
+    // while keeping the glyph out of the accessibility tree and out of
+    // `forced-colors` painting. jsdom performs no layout, so what is pinned is
+    // the mechanism: the element exists on every segment and only the chosen
+    // one paints it.
+    expect(sibling.querySelector('svg')).not.toBeNull();
+    expect(sibling.querySelector('svg')!.getAttribute('class')).toMatch(/\binvisible\b/);
     // The glyph is decoration for a state `aria-checked` already carries, so
-    // it must not be announced a second time.
+    // it must not be announced a second time — on either side, since the
+    // hidden one is still in the DOM.
     expect(chosen.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    expect(sibling.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
     // The chosen radio is also the group's single tab stop.
     expect(chosen).toHaveAttribute('tabindex', '0');
     expect(sibling).toHaveAttribute('tabindex', '-1');
@@ -1496,7 +1517,10 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     });
     render(
       <QueryClientProvider client={shared}>
-        <EmbeddingShadowCompareSection candidateModel="qwen3-embedding:4b" />
+        <EmbeddingShadowCompareSection
+          candidateModel="qwen3-embedding:4b"
+          candidateKey="qwen3-embedding:4b@2026-08-20T09:00:00.000Z"
+        />
       </QueryClientProvider>,
     );
     fireEvent.click(await screen.findByTestId('shadow-compare-start'));
@@ -1572,7 +1596,7 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     const shared = createQueryClient();
     const first = render(
       <QueryClientProvider client={shared}>
-        <EmbeddingShadowCompareSection candidateModel="model-a" />
+        <EmbeddingShadowCompareSection candidateModel="model-a" candidateKey="model-a@t1" />
       </QueryClientProvider>,
     );
     fireEvent.click(await screen.findByTestId('shadow-compare-start'));
@@ -1587,12 +1611,80 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     holdLatest = true;
     render(
       <QueryClientProvider client={shared}>
-        <EmbeddingShadowCompareSection candidateModel="model-b" />
+        <EmbeddingShadowCompareSection candidateModel="model-b" candidateKey="model-b@t2" />
       </QueryClientProvider>,
     );
     expect(await screen.findByTestId('shadow-compare-intro')).toHaveTextContent('model-b');
     // Nothing of A's run may render inside B's card — not its report, not its
     // judgement controls.
+    expect(screen.queryByTestId('shadow-compare-result')).toBeNull();
+    expect(screen.queryByTestId('shadow-compare-basis')).toBeNull();
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+  });
+
+  it('does not adopt it across the SAME model name behind a different provider either (r1)', async () => {
+    // The server's re-attachment predicate carries the whole candidate PAIR
+    // (`config @> {"candidate":{providerId,model}}`), so the model name alone
+    // is one dimension short of it: re-host the same model behind a second
+    // provider and the client key collides while the server's does not. The
+    // key is therefore the migration's identity — model AND the window it
+    // belongs to — which is strictly finer than the pair and can only ever
+    // miss, never mis-serve.
+    let holdLatest = false;
+    const neverResolves = new Promise<void>(() => {});
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/judgements')) return json({ judgements: {}, verdict: EMPTY_VERDICT });
+      if (url.includes('/compare/') && method === 'GET') {
+        return json({
+          id: 'run-a',
+          status: 'completed',
+          progressDone: 3,
+          progressTotal: 3,
+          error: null,
+          result: COMPLETED_RESULT,
+        });
+      }
+      if (url.endsWith('/compare') && method === 'GET') {
+        if (holdLatest) await neverResolves;
+        return json({ run: null });
+      }
+      if (url.includes('/compare') && method === 'POST') return json({ runId: 'run-a' }, 202);
+      return json({});
+    });
+
+    const shared = createQueryClient();
+    const first = render(
+      <QueryClientProvider client={shared}>
+        <EmbeddingShadowCompareSection
+          candidateModel="qwen3-embedding:4b"
+          candidateKey="qwen3-embedding:4b@2026-08-20T09:00:00.000Z"
+        />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+    await waitFor(() =>
+      expect(screen.getByTestId('shadow-compare-basis')).toHaveTextContent(
+        COMPLETED_RESULT.candidate.model,
+      ),
+    );
+    first.unmount();
+
+    // Same model NAME, second provider, second migration — the server answers
+    // `{run: null}`, but only after a round trip.
+    holdLatest = true;
+    render(
+      <QueryClientProvider client={shared}>
+        <EmbeddingShadowCompareSection
+          candidateModel="qwen3-embedding:4b"
+          candidateKey="qwen3-embedding:4b@2026-08-21T09:00:00.000Z"
+        />
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId('shadow-compare-intro');
     expect(screen.queryByTestId('shadow-compare-result')).toBeNull();
     expect(screen.queryByTestId('shadow-compare-basis')).toBeNull();
     expect(screen.queryAllByRole('radio')).toHaveLength(0);

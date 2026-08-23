@@ -43,6 +43,20 @@ interface Props {
   /** The migration's candidate model — names the shadow side before a report exists. */
   candidateModel: string;
   /**
+   * Identity of the migration this section belongs to, for the re-attachment
+   * cache key. NOT the model name (r1): the server's predicate carries the
+   * whole candidate PAIR (`config @> {"candidate":{providerId,model}}`), and
+   * the same model name re-hosted behind a second provider is a different
+   * index to it — so a name-only key collides where the server's does not,
+   * and a remount inside gcTime rendered the previous migration's report and
+   * its live judgement radios under the current migration's heading. The card
+   * builds it from the model AND the migration's `startedAt`, which is
+   * strictly finer than the pair (`providerId` is not on the status wire) and
+   * therefore safe in the one direction that matters: a finer key can only
+   * miss the cache — the server still serves the run — never mis-serve it.
+   */
+  candidateKey: string;
+  /**
    * Reports the id of a comparison that is still queued or running, and `null`
    * the moment it settles. The card needs it because this whole section lives
    * inside the `ready` branch: a swap or an abort re-renders the card into
@@ -217,7 +231,11 @@ function useNoticeRetry(
   return { retryInFlight, onRetry };
 }
 
-export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightChange }: Props) {
+export function EmbeddingShadowCompareSection({
+  candidateModel,
+  candidateKey,
+  onRunInFlightChange,
+}: Props) {
   const queryClient = useQueryClient();
   const titleId = useId();
   const pollErrorSentenceId = useId();
@@ -257,7 +275,7 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
     isError: latestFailed,
     refetch: refetchLatest,
   } = useQuery<{ run: CompareRun | null }>({
-    queryKey: ['shadow-compare-latest', candidateModel],
+    queryKey: ['shadow-compare-latest', candidateKey],
     queryFn: () => apiFetch('/admin/embedding/shadow-migration/compare'),
     staleTime: Infinity,
     refetchOnMount: 'always',
@@ -391,7 +409,7 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
       // Seed the lookup this section re-attaches through, or the cached
       // `{ run: null }` from this mount is what the next one reads back.
       queryClient.setQueryData<{ run: CompareRun | null }>(
-        ['shadow-compare-latest', candidateModel],
+        ['shadow-compare-latest', candidateKey],
         { run: seeded },
       );
       // And seed the RUN itself, or the section renders as idle for the whole
@@ -1182,8 +1200,18 @@ function JudgementRow({
                   every token above, the same argument that put a segment meter
                   on `QualityScoreBadge`. `aria-hidden`, because `aria-checked`
                   already carries the state and the glyph would otherwise be
-                  announced twice. */}
-              {chosen && <Check className="h-3 w-3" aria-hidden="true" />}
+                  announced twice.
+
+                  The slot is RESERVED, not mounted on selection (r1). Mounted
+                  conditionally, the glyph's 12px box plus this group's 4px
+                  `gap-1` entered the layout on every pick: choosing `Live`
+                  grew its segment by ~16px — about a third of it — and pushed
+                  `Candidate`/`Neither`/`Both` right, out from under the
+                  pointer, on a surface built for twenty picks and changes of
+                  mind. `invisible` is `visibility: hidden`: it holds the box
+                  in all five states while staying out of the accessibility
+                  tree and out of `forced-colors` painting. */}
+              <Check className={cn('h-3 w-3', !chosen && 'invisible')} aria-hidden="true" />
               {label}
             </button>
           );

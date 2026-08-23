@@ -754,8 +754,71 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
 
     // It is dismissible, or it stands at rest forever on a card the admin
     // still has to finish using.
+    const dismiss = screen.getByRole('button', { name: /dismiss/i });
+    dismiss.focus();
+    fireEvent.click(dismiss);
+    expect(screen.queryByTestId('shadow-compare-ended')).toBeNull();
+    // …and dismissing does not drop the keyboard admin to <body> in a ~30-stop
+    // settings panel (WCAG 2.4.3, r1). This is the fourth self-removing
+    // control on the surface: the cleanup confirm rehomes to Cancel and the
+    // section's four notices rehome to their prose — a Dismiss that unmounts
+    // itself under the pressed finger has the same defect and needs the same
+    // treatment. Focus lands on the branch's own phase prose, which is what
+    // the admin is reading now that the notice is gone.
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement?.textContent).toMatch(/is live/i);
+    vi.useRealTimers();
+  });
+
+  it('leaves focus alone when the admin moved on before dismissing (r1)', async () => {
+    // The guard `useNoticeRetry` carries, on the card's own self-removing
+    // control: rehoming is for a dismiss that really did orphan the caret, not
+    // a licence to yank it away from whatever the admin reached for next.
+    const migration = {
+      phase: 'ready' as const,
+      model: 'qwen3-embedding:4b',
+      dimensions: 2560,
+      totalPages: 40,
+      backfilledPages: 40,
+      stragglerPages: 0,
+      indexed: true,
+      indexReady: true,
+      startedAt: '2026-08-06T10:00:00.000Z',
+    };
+    let phase: 'ready' | 'swapped' = 'ready';
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) {
+        return json({ id: 'run-1', status: 'running', progressDone: 7, progressTotal: 16, error: null, result: null });
+      }
+      if (url.endsWith('/compare') && method === 'POST') return json({ runId: 'run-1' }, 202);
+      if (url.endsWith('/compare') && method === 'GET') return json({ run: null });
+      if (url.includes('/judgements')) return json({ judgements: {}, verdict: null });
+      if (url.includes('/shadow-migration') && method === 'GET') {
+        return json({ active: true, migration: { ...migration, phase } });
+      }
+      return json({});
+    });
+    renderCard(null);
+
+    fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-progress');
+    phase = 'swapped';
+    await vi.advanceTimersByTimeAsync(6_000);
+    await screen.findByTestId('shadow-compare-ended');
+
+    // Focus is on a control the admin chose, and the notice is dismissed by
+    // pointer — jsdom's `click` moves no focus, exactly as a mouse dismiss
+    // leaves a caret parked elsewhere. Nothing was orphaned, so nothing moves.
+    const rollback = screen.getByRole('button', { name: /roll back/i });
+    rollback.focus();
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
     expect(screen.queryByTestId('shadow-compare-ended')).toBeNull();
+    expect(document.activeElement).toBe(rollback);
     vi.useRealTimers();
   });
 

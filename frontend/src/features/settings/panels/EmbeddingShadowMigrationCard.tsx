@@ -93,6 +93,15 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cancelCleanupRef = useRef<HTMLButtonElement | null>(null);
   /**
+   * The phase paragraph of whichever branch is rendered — exactly one is, so
+   * one ref is enough. It is the landing spot when the ending notice's Dismiss
+   * removes itself from under the admin's focus, the "nearest surviving prose"
+   * rule the compare section's notices already follow.
+   */
+  const phaseProseRef = useRef<HTMLParagraphElement | null>(null);
+  /** Set by that Dismiss alone, so no other removal can move the caret. */
+  const rehomeAfterDismiss = useRef(false);
+  /**
    * The id of a #1260 comparison this admin started that is still running, as
    * reported up by the compare section (r3). It lives HERE, not there, because
    * every lifecycle action below ends such a run server-side AND unmounts the
@@ -227,6 +236,19 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     if (confirmingCleanup) cancelCleanupRef.current?.focus();
   }, [confirmingCleanup]);
 
+  useEffect(() => {
+    // The ending notice's Dismiss unmounts itself, so the caret it held falls
+    // to <body>. Guarded the two ways `useNoticeRetry` guards its own rehome:
+    // only for a dismiss THIS control started, and only if focus really was
+    // orphaned — an admin who reached for Roll back mid-click keeps it.
+    if (endedNotice) return;
+    if (!rehomeAfterDismiss.current) return;
+    rehomeAfterDismiss.current = false;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    phaseProseRef.current?.focus();
+  }, [endedNotice]);
+
   const migration = status?.active ? status.migration : null;
 
   useEffect(() => {
@@ -256,9 +278,23 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
    * the `ready` branch keeps exactly one poller (the section's) and this adds
    * no request there.
    */
+  /**
+   * The identity both halves key their re-attachment cache on — the model AND
+   * the migration window it belongs to, never the bare model name (r1). The
+   * server re-attaches on the whole candidate PAIR
+   * (`config @> {"candidate":{providerId,model}}`), and `providerId` is not on
+   * the status wire, so a name-only key was one dimension short of the
+   * predicate it mirrors: the same model re-hosted behind a second provider
+   * collided on the client while the server refused, and a remount inside the
+   * five-minute gcTime rendered the previous migration's report — and its live
+   * judgement radios — under the current migration's heading. `startedAt` is
+   * strictly FINER than the pair, which is the safe direction: it can only
+   * miss the cache and pay one round trip, never serve the wrong run.
+   */
+  const compareCacheKey = migration ? `${migration.model}@${migration.startedAt}` : '';
   const compareLookupActive = migration?.phase === 'backfilling';
   const { data: compareLatest } = useQuery<{ run: CompareRunSummary | null }>({
-    queryKey: ['shadow-compare-latest', migration?.model ?? ''],
+    queryKey: ['shadow-compare-latest', compareCacheKey],
     queryFn: () => apiFetch('/admin/embedding/shadow-migration/compare'),
     enabled: compareLookupActive,
     // The card's own cadence; two admin-rate-limited polls never share a
@@ -337,7 +373,20 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
         The comparison in progress ended — the migration changed underneath it. Start a new
         comparison from the current migration.
       </p>
-      <button type="button" className="shrink-0 underline" onClick={() => setEndedNotice(false)}>
+      <button
+        type="button"
+        className="shrink-0 underline"
+        onClick={() => {
+          // Dismissing unmounts the button that had focus, dropping it to
+          // <body> in a ~30-stop settings panel (WCAG 2.4.3) — the same defect
+          // `cancelCleanupRef` above and the section's `useNoticeRetry` both
+          // exist to prevent, on the fourth self-removing control of this
+          // surface. Rehoming happens in the effect below, because the element
+          // only leaves the DOM on the commit this `setState` schedules.
+          rehomeAfterDismiss.current = true;
+          setEndedNotice(false);
+        }}
+      >
         Dismiss
       </button>
     </div>
@@ -349,7 +398,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
       // the embedding pipeline, and Steel is its reserved hue (ADR-010). It
       // used to be the informational indigo, which names no state.
       <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
-        <p>
+        <p ref={phaseProseRef} tabIndex={-1}>
           Embedding model change detected (<b>{pending.model}</b>). The zero-downtime path
           backfills the new vectors in the background — search keeps serving the current
           index until you swap, and the swap is reversible until cleanup.
@@ -373,7 +422,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   if (migration.phase === 'aborting') {
     return (
       <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
-        <p>
+        <p ref={phaseProseRef} tabIndex={-1}>
           A previous abort did not finish — the shadow columns may still exist.
           Retry to complete it; nothing else can start until it does.
         </p>
@@ -408,7 +457,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
 
     return (
       <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
-        <p>
+        <p ref={phaseProseRef} tabIndex={-1}>
           {/*
             "Search is unaffected" was half true, and this is the surface where
             the other half shows up (#1114). Correctness really is untouched —
@@ -496,7 +545,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   if (migration.phase === 'ready') {
     return (
       <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
-        <p>
+        <p ref={phaseProseRef} tabIndex={-1}>
           Backfill complete — <b>{migration.totalPages}</b> pages carry <b>{migration.model}</b>{' '}
           vectors
           {migration.indexed ? (
@@ -531,6 +580,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
             vectors exist on the same rows, and the backfill is complete. */}
         <EmbeddingShadowCompareSection
           candidateModel={migration.model}
+          candidateKey={compareCacheKey}
           onRunInFlightChange={onCompareRunInFlightChange}
         />
         {endedStrip}
@@ -541,7 +591,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   // swapped
   return (
     <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
-      <p>
+      <p ref={phaseProseRef} tabIndex={-1}>
         <b>{migration.model}</b> is live. Validate search quality, then clean up — or roll back
         to the previous model. Cleanup <b>deletes the old vectors</b> and ends the rollback
         window.

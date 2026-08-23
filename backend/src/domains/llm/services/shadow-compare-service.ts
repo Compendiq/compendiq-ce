@@ -74,7 +74,7 @@ import {
 
 export type ShadowCompareStatus = 'queued' | 'running' | 'completed' | 'failed';
 
-/** Provider AND model, like 100's judgement key: the same model name behind a
+/** Provider AND model, like 101's judgement key: the same model name behind a
  *  different provider is a different index. */
 export interface ComparePair {
   providerId: string;
@@ -592,7 +592,7 @@ interface JudgementRow {
 async function judgementsForReport(
   report: ShadowCompareReport,
 ): Promise<ShadowCompareJudgementsView> {
-  // Both PAIRS, not both model names: 100's identity is the provider beside
+  // Both PAIRS, not both model names: 101's identity is the provider beside
   // the model, and reading by name alone would pool a different provider's
   // migration into this verdict — page-id arrays from a different index.
   const stored = await query<JudgementRow>(
@@ -627,7 +627,7 @@ function computeJudgedVerdict(rows: JudgementRow[]): JudgedVerdict {
   const baseline: QueryRun[] = [];
   const candidate: QueryRun[] = [];
   for (const row of rows) {
-    // Exhaustive by construction — the 100 CHECK constraint admits exactly
+    // Exhaustive by construction — the 101 CHECK constraint admits exactly
     // these four. An `else neither++` tail would silently count a fifth side
     // as a tie, which is the one bucket that changes no number and therefore
     // hides the bug (r-external).

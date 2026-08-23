@@ -971,7 +971,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
     });
 
     it('never re-attaches a run started against the same model behind a DIFFERENT provider', async () => {
-      // 100 keys judgements by provider AND model; the adoption must use the
+      // 101 keys judgements by provider AND model; the adoption must use the
       // same identity, or two providers' indexes are pooled into one card.
       await seedReadyMigration();
       const runId = await createShadowCompareRun(ADMIN, {
