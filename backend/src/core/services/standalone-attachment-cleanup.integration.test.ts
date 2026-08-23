@@ -133,13 +133,21 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
     // against the page-icon data loss ("so a future walker that forgets cannot
     // repeat it") — both names pass the Confluence tree's key pattern, so
     // without this the only thing guarding two whole stores was prose.
+    // Review r2: this used to iterate `ATTACHMENT_ROOT_RESERVED_DIRNAMES`
+    // itself, so it asserted nothing about WHICH names are in it — shrinking
+    // the set to `{local}` (i.e. reverting the page-icon data-loss fix) merely
+    // deleted an iteration and the test stayed green. The names are pinned by
+    // literal, and each is called by literal, so the refusal is exercised
+    // whatever the set happens to contain.
     it('removeCachedAttachmentDirectory refuses the reserved store names', async () => {
       await writeFileAt('local', '77', 'diagram.png');
       await writeFileAt('page-icons', 'brand', 'mark.png');
 
-      for (const reserved of ATTACHMENT_ROOT_RESERVED_DIRNAMES) {
-        await expect(removeCachedAttachmentDirectory(reserved)).rejects.toThrow(/reserved/i);
-      }
+      expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('local')).toBe(true);
+      expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('page-icons')).toBe(true);
+
+      await expect(removeCachedAttachmentDirectory('local')).rejects.toThrow(/reserved/i);
+      await expect(removeCachedAttachmentDirectory('page-icons')).rejects.toThrow(/reserved/i);
 
       // …and the refusal really is what kept the bytes: both stores intact.
       expect(await exists(path.join(tempBase, 'local', '77', 'diagram.png'))).toBe(true);

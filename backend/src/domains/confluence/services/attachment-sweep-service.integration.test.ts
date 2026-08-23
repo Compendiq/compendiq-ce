@@ -523,10 +523,30 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
         if (entry === 'local') continue;
         await fs.rm(path.join(tempBase, entry), { recursive: true, force: true });
       }
+      // Review r2: the stood-down store must contribute a REAL candidate, or
+      // the filter that stands it down is unfalsifiable — emptied outright it
+      // produces none, and `deletable = candidates` left this whole suite
+      // green. An aged, pageless, EMPTY directory is the reachable shape: it
+      // holds no files, so the store still reads `files === 0` and the anomaly
+      // still fires, yet `judgeDirectoryOrphan` still names it an
+      // `orphan_directory` (`[].every(aged)` is vacuously true). A suspected
+      // mis-mount must not delete it.
+      await fs.mkdir(path.join(tempBase, '55555'), { recursive: true });
+      await ageDirs('55555');
 
       const live = await runAttachmentSweep({ dryRun: false });
       expect(live!.status).toBe('completed');
       expect(live!.note).toMatch(/^confluence store/);
+      // Reported but not deleted: the run still says what the walk found…
+      expect(
+        live!.candidateSample.some((c) => c.store === 'confluence' && c.key === '55555'),
+        'a stood-down store’s candidates are still reported',
+      ).toBe(true);
+      // …and the directory is still standing.
+      expect(
+        await exists(path.join(tempBase, '55555')),
+        'a stood-down store must lose nothing to the delete loop',
+      ).toBe(true);
       // The sound store really was swept: its aged untracked orphan is gone…
       expect(await exists(path.join(tempBase, 'local', String(localPageId), 'untracked.png'))).toBe(
         false,
@@ -580,6 +600,34 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       // says it was left standing.
       expect(live!.candidateSample.some((c) => c.key === '4242')).toBe(false);
       expect(live!.stores!.confluence.nestedDirectories).toBe(1);
+      // Sanity: the ordinary flat orphan beside it still went.
+      expect(await exists(path.join(tempBase, '55555'))).toBe(false);
+    });
+
+    // Review r2. The r1 guard read `entry.isDirectory() && !entry.name.startsWith('.')`,
+    // so a DOT-directory did not count as a subdirectory — the one shape the
+    // rule exists for, one character away. A key directory holding only
+    // `.hidden/` reported `files: []`, both safety checks went vacuous, the dry
+    // run described it as 0 B and a live run `rm -rf`'d the tree inside it.
+    // "A directory we cannot MEASURE is never judged" — and a dot-subdirectory
+    // is exactly as unmeasured as any other (the dot-skip on the FILE branch is
+    // the separate #1169 debris rule and stays).
+    it('a DOT-named subdirectory is a subdirectory too — the directory is never judged', async () => {
+      await seedCorpus();
+      const hidden = await writeAged('44440', '.hidden', 'secret.bin');
+      await ageDirs(path.join('44440', '.hidden'), '44440');
+
+      const dry = await runAttachmentSweep({ dryRun: true });
+      expect(dry!.status).toBe('completed');
+      // Not listed — and in particular not listed as the 0 B orphan the old
+      // walk reported, which is what made the dry run unable to warn.
+      expect(dry!.candidateSample.some((c) => c.key === '44440')).toBe(false);
+      expect(dry!.stores!.confluence.nestedDirectories).toBe(1);
+
+      const live = await runAttachmentSweep({ dryRun: false });
+      expect(live!.status).toBe('completed');
+      expect(await exists(hidden), 'a dot-subdirectory must survive a live sweep').toBe(true);
+      expect(await exists(path.join(tempBase, '44440'))).toBe(true);
       // Sanity: the ordinary flat orphan beside it still went.
       expect(await exists(path.join(tempBase, '55555'))).toBe(false);
     });
@@ -751,6 +799,32 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(run!.candidateSample.some((c) => c.key === 'page-icons')).toBe(false);
       const dry = await runAttachmentSweep({ dryRun: true });
       expect(dry!.stores!.confluence.orphanDirectories).toBe(0);
+    });
+
+    // Review r2 — the test above could not FAIL. Its fixture is
+    // `page-icons/<pageId>/<sha>.png`, a NESTED tree, so the later
+    // `hasSubdirectories` refusal answers for it and the reservation is never
+    // reached: dropping `page-icons` from `ATTACHMENT_ROOT_RESERVED_DIRNAMES`
+    // left the whole suite green. A FLAT fixture takes `hasSubdirectories` out
+    // of the picture, so the store survives only because the walk's name filter
+    // skipped it — which is the thing under test. Not hypothetical: the store's
+    // layout is an implementation detail of `page-icon-store.ts`, and a
+    // content-addressed flat one (`page-icons/<sha>.<ext>`) would restore the
+    // exact permanent loss commit 3057bd0f fixed.
+    it('never judges a FLAT page-icon store either — the name filter, not the nested-tree guard', async () => {
+      await seedCorpus();
+      const sha = 'b'.repeat(64);
+      const icon = await writeAged('page-icons', `${sha}.png`);
+      await ageDirs('page-icons');
+
+      const run = await runAttachmentSweep({ dryRun: false });
+
+      expect(run!.status).toBe('completed');
+      expect(await exists(icon), 'a flat page-icon store must survive a live sweep').toBe(true);
+      expect(run!.candidateSample.some((c) => c.key === 'page-icons')).toBe(false);
+      // Never even walked: not counted as one of the Confluence tree's
+      // directories, and not counted as an unjudged nested one either.
+      expect(run!.stores!.confluence.nestedDirectories).toBe(0);
     });
 
     // Fixer, external round: the record the card polls must describe the tree

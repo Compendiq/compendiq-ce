@@ -614,6 +614,9 @@ interface WalkedDir {
    * to be destroyed. That is precisely how the page-icon store was lost, and
    * `ATTACHMENT_ROOT_RESERVED_DIRNAMES` closed that instance BY NAME only.
    * This closes the class: a directory we cannot measure is never judged.
+   *
+   * ANY subdirectory counts, dot-named ones included (review r2) — see
+   * `readKeyDir`.
    */
   hasSubdirectories: boolean;
 }
@@ -665,7 +668,15 @@ async function readKeyDir(
   let bytes = 0;
   let hasSubdirectories = false;
   for (const entry of entries) {
-    if (entry.isDirectory() && !entry.name.startsWith('.')) hasSubdirectories = true;
+    // No dot-exclusion here, deliberately (review r2). The dot-skip on the
+    // FILE branch below is #1169's debris rule — a `.DS_Store` is not content.
+    // A dot-DIRECTORY is not debris: it is a subtree this walk cannot measure,
+    // and the r1 guard exempting it left the rule one character short of the
+    // exact shape it exists for — a key directory holding only `.hidden/`
+    // reported `files: []`, both safety checks went vacuous, and the dry run
+    // described a recursive delete as 0 B. Counting it as nested is strictly
+    // conservative: the directory is reported and left standing.
+    if (entry.isDirectory()) hasSubdirectories = true;
     if (!entry.isFile() || entry.name.startsWith('.')) continue;
     try {
       const st = await fs.stat(path.join(dirPath, entry.name));
