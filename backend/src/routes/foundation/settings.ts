@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { request as undiciRequest } from 'undici';
-import { UpdateSettingsSchema, TestConfluenceSchema } from '@compendiq/contracts';
+import { UpdateSettingsSchema, TestConfluenceSchema, OnboardingStateSchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
@@ -30,12 +30,13 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       inline_completion_enabled: boolean;
       inline_completion_delay: 'fast' | 'balanced' | 'deliberate' | 'manual';
       inline_completion_code_only: boolean;
+      onboarding_state: Record<string, unknown> | null;
     }>(
       `SELECT confluence_url, confluence_pat, theme, sync_interval_min,
               show_space_home_content, custom_prompts,
               confluence_pat_prompt_dismissed_at,
               inline_completion_enabled, inline_completion_delay,
-              inline_completion_code_only
+              inline_completion_code_only, onboarding_state
          FROM user_settings WHERE user_id = $1`,
       [request.userId],
     );
@@ -61,6 +62,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         inlineCompletionEnabled: true,
         inlineCompletionDelay: 'balanced',
         inlineCompletionCodeOnly: false,
+        // #1402: same empty-object-in, fully-defaulted-out pattern as below —
+        // a brand new row has never had any onboarding activity recorded.
+        onboardingState: OnboardingStateSchema.parse({}),
       };
     }
 
@@ -79,6 +83,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       inlineCompletionEnabled: row.inline_completion_enabled,
       inlineCompletionDelay: row.inline_completion_delay,
       inlineCompletionCodeOnly: row.inline_completion_code_only,
+      // #1402: always fully defaulted — a row that predates this migration (or
+      // predates a given flag being added) still returns every key.
+      onboardingState: OnboardingStateSchema.parse(row.onboarding_state ?? {}),
     };
   });
 
@@ -186,6 +193,17 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.inlineCompletionCodeOnly !== undefined) {
       updates.push(`inline_completion_code_only = $${paramIdx++}`);
       values.push(body.inlineCompletionCodeOnly);
+    }
+
+    // #1402: PARTIAL, top-level MERGE — never a bare assignment. A client sends
+    // one key (e.g. { firstAiQueryMade: true }) to flip exactly that flag;
+    // `onboarding_state || $n::jsonb` (Postgres JSONB merge) means sibling keys
+    // set by an earlier PUT survive. Do NOT copy custom_prompts' full-replace
+    // pattern here — that would silently clear every other onboarding flag on
+    // the next unrelated PATCH.
+    if (body.onboardingState !== undefined) {
+      updates.push(`onboarding_state = onboarding_state || $${paramIdx++}::jsonb`);
+      values.push(JSON.stringify(body.onboardingState));
     }
 
     // #771: dismissal of the Confluence-PAT onboarding banner. The client

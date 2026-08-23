@@ -60,6 +60,7 @@ erDiagram
         bool inline_completion_enabled "personal ghost-text preference (#1417)"
         text inline_completion_delay "fast | balanced | deliberate | manual (#1417)"
         bool inline_completion_code_only "suppress suggestions outside code blocks (#1417)"
+        jsonb onboarding_state "checklist flags, merge-not-overwrite on write (#1402)"
     }
 
     pages {

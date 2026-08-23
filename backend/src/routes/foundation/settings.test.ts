@@ -815,6 +815,139 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
   });
 
+  it('GET /settings returns a fully-defaulted onboardingState for a row that predates onboarding activity (#1402)', async () => {
+    // The stored row carries no onboarding_state at all (predates migration 100),
+    // so the driver returns undefined/null for that column — GET must still answer
+    // the full Zod-defaulted shape rather than propagating that absence.
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        confluence_url: null,
+        confluence_pat: null,
+        theme: 'glass-dark',
+        sync_interval_min: 15,
+        show_space_home_content: true,
+        inline_completion_enabled: true,
+        inline_completion_delay: 'balanced',
+        inline_completion_code_only: false,
+        onboarding_state: null,
+      }],
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/settings' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.onboardingState).toEqual({
+      firstAiQueryMade: false,
+      shortcutsModalViewed: false,
+      pageCreatedOrEdited: false,
+      dismissed: false,
+      completedAt: null,
+    });
+  });
+
+  it('GET /settings returns a fully-defaulted onboardingState when no row exists at all (#1402)', async () => {
+    mockGetSelectedSyncSpaces.mockResolvedValueOnce([]);
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // no user_settings row
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // INSERT default row
+
+    const response = await app.inject({ method: 'GET', url: '/api/settings' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.onboardingState).toEqual({
+      firstAiQueryMade: false,
+      shortcutsModalViewed: false,
+      pageCreatedOrEdited: false,
+      dismissed: false,
+      completedAt: null,
+    });
+  });
+
+  it('PUT /settings merges onboardingState at the top level rather than overwriting it (#1402)', async () => {
+    // This is the test a reviewer will try hardest to break by reverting the
+    // merge operator (`onboarding_state || $n::jsonb`) to a plain assignment
+    // (`onboarding_state = $n::jsonb`) — that mutation must turn this red.
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { onboardingState: { firstAiQueryMade: true } },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const updateCalls = mockQuery.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE user_settings SET'),
+    );
+    expect(updateCalls).toHaveLength(1);
+    const [sql, values] = updateCalls[0]!;
+    // The SQL fragment must contain the merge operator against the existing
+    // column — a bare `onboarding_state = $n::jsonb` reproduces custom_prompts'
+    // overwrite bug for this column.
+    expect(sql).toMatch(/onboarding_state\s*=\s*onboarding_state\s*\|\|\s*\$\d+::jsonb/);
+    expect(values).toContain(JSON.stringify({ firstAiQueryMade: true }));
+  });
+
+  it('PUT /settings twice with different single-key onboardingState patches both survive in the next GET (#1402)', async () => {
+    // End-to-end proof of merge-not-overwrite at the route layer: two
+    // sequential single-key PUTs, then a GET showing both flags true.
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE #1
+    const first = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { onboardingState: { firstAiQueryMade: true } },
+    });
+    expect(first.statusCode).toBe(200);
+
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE #2
+    const second = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { onboardingState: { shortcutsModalViewed: true } },
+    });
+    expect(second.statusCode).toBe(200);
+
+    // Simulate the DB now holding the merged result of both UPDATEs.
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        confluence_url: null,
+        confluence_pat: null,
+        theme: 'glass-dark',
+        sync_interval_min: 15,
+        show_space_home_content: true,
+        inline_completion_enabled: true,
+        inline_completion_delay: 'balanced',
+        inline_completion_code_only: false,
+        onboarding_state: { firstAiQueryMade: true, shortcutsModalViewed: true },
+      }],
+    });
+    const getResponse = await app.inject({ method: 'GET', url: '/api/settings' });
+    const body = JSON.parse(getResponse.body);
+    expect(body.onboardingState).toMatchObject({
+      firstAiQueryMade: true,
+      shortcutsModalViewed: true,
+    });
+  });
+
+  it('PUT /settings without onboardingState does not touch onboarding_state (#1402)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { theme: 'polar-slate' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const updateCalls = mockQuery.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE user_settings SET'),
+    );
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0]![0]).not.toContain('onboarding_state');
+  });
+
   it('GET /settings returns only explicitly-selected spaces, not all admin-accessible spaces (#721)', async () => {
     // Simulate an admin who has access to two spaces via RBAC (ENG+OPS),
     // but has only explicitly selected ENG (i.e. getSelectedSyncSpaces==['ENG']).
