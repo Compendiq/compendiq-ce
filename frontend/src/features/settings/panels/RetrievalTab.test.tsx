@@ -2232,6 +2232,59 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     expect(region!.querySelectorAll('button, a, input, select, textarea')).toHaveLength(0);
   });
 
+  it('leaves no description on the panel carrying an operable control', async () => {
+    // Review r1 — the assertion above certifies the ONE row that complies.
+    // The rule is about `aria-describedby` itself, not about this feature, so
+    // it is swept over every wired control the panel renders: the first cut
+    // pointed all eleven `NumberRow`s at their help block, three of which
+    // carry a wayfinding `<Link>` or the `Use measured value` button, and a
+    // flattened description announces those as prose with no way to act.
+    mockApi();
+    renderTab();
+    await ready();
+
+    const offenders: string[] = [];
+    for (const el of Array.from(document.querySelectorAll('[aria-describedby]'))) {
+      for (const id of (el.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)) {
+        const region = document.getElementById(id);
+        for (const operable of Array.from(
+          region?.querySelectorAll('button, a, input, select, textarea') ?? [],
+        )) {
+          offenders.push(`${id} -> ${operable.tagName}:${operable.textContent?.trim()}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('is neutral and muted — a measurement never borrows a status hue', async () => {
+    // Review r1 — ADR-010 reserves amber for attention and Steel for action,
+    // and this is neither: it is the `QualityScoreBadge` de-colouring
+    // argument on a settings surface. The CLAUDE.md paragraph #1284 wrote
+    // says so; without this the rule is prose nothing can fail on, the gap
+    // `workspace-themes.test.ts` closes for the quality badge by parsing its
+    // classes.
+    mockApi({
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        // The small-sample branch is the one most likely to reach for amber.
+        similarity: { p50: 0.4, p90: 0.8, count: 11 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const banned = /\b(text-warning|text-primary|text-destructive|text-info|bg-warning|border-warning|status-)/;
+    for (const testId of [similarityId, rerankId]) {
+      const line = await screen.findByTestId(testId);
+      for (const el of [line, ...Array.from(line.querySelectorAll('*'))]) {
+        expect(el.className, `${testId}: ${el.className}`).not.toMatch(banned);
+      }
+      // Muted body text, inherited from the row's help block.
+      expect(line.closest('.text-muted-foreground')).not.toBeNull();
+    }
+  });
+
   it('does not displace the calibration strip from directly above its control', async () => {
     // The readout lives INSIDE the row, under the help text. Placed between
     // the strip and the row it would break the adjacency the #1114 strip

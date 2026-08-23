@@ -893,6 +893,9 @@ export function RetrievalTab() {
           value={values.ragConfidenceThreshold}
           onChange={(v) => set('ragConfidenceThreshold', v)}
           defaultValue={DEFAULTS.ragConfidenceThreshold}
+          // Prose only, so it can be the input's description — the measured
+          // distribution is the reason to reach for this knob at all.
+          describedByHelp
         >
           <p>
             Basis: max cosine similarity of the best chunk, 0–1. The embedding model moves this
@@ -923,6 +926,9 @@ export function RetrievalTab() {
           value={values.ragConfidenceThresholdRerank}
           onChange={(v) => set('ragConfidenceThresholdRerank', v)}
           defaultValue={DEFAULTS.ragConfidenceThresholdRerank}
+          // Prose only — the `emptyNote` below deliberately carries no link
+          // for exactly this reason.
+          describedByHelp
         >
           <p>
             Basis: max reranker relevance, 0–1, used only when the rerank stage scored every
@@ -1662,6 +1668,7 @@ function NumberRow({
   onChange,
   defaultValue,
   disabled,
+  describedByHelp,
   children,
 }: {
   field: NumericField;
@@ -1669,6 +1676,25 @@ function NumberRow({
   onChange: (value: number) => void;
   defaultValue: number;
   disabled?: boolean;
+  /**
+   * #1284 — point the input's `aria-describedby` at this row's help block.
+   *
+   * **Opt-in, never panel-wide** (review r1). A description flattens to one
+   * string, so the region it names must be PROSE ONLY: three of this panel's
+   * rows carry an operable child inside their help — the two wayfinding
+   * `<Link>`s to LLM providers and `Use measured value` — and wiring those
+   * announces a link and a button as description text with no way to act on
+   * them, then repeats them on the next tab stop. The blanket form of this
+   * prop shipped in the first cut of #1284 and did exactly that.
+   *
+   * So a row opts in only once its help is prose, which today is the two
+   * confidence thresholds — the rows whose description carries the measured
+   * distribution the operator is tuning against. `RetrievalTab.test.tsx`
+   * sweeps every `[aria-describedby]` the panel renders and fails on any
+   * region holding something operable, so the rule is enforced for all rows
+   * rather than spot-checked on one.
+   */
+  describedByHelp?: boolean;
   children?: React.ReactNode;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
@@ -1715,10 +1741,10 @@ function NumberRow({
             // what this deployment has actually measured. Printed beside the
             // input it was reachable by eye only; wired here it reaches
             // touch, keyboard and screen readers too (ADR-010's
-            // `DeepSearchToggle` precedent). The region is PROSE ONLY — a
-            // description flattens to one string, so an operable control or a
-            // wayfinding link belongs beside it, never inside.
-            aria-describedby={children ? `${field.key}-help` : undefined}
+            // `DeepSearchToggle` precedent). Per-row, never panel-wide — see
+            // `describedByHelp`: the region is PROSE ONLY, and three rows on
+            // this panel carry a link or a button in their help.
+            aria-describedby={describedByHelp && children ? `${field.key}-help` : undefined}
             className="w-24 rounded-md border border-border-interactive bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-45"
             data-testid={`retrieval-${field.key}`}
           />
