@@ -1299,13 +1299,15 @@ a large one does not silently under-report its size.
 
 **The keep-set rule belongs to the sweep, not to the delete routes.** A
 permanent page delete removes that page's directories directly (that is the
-leak the sweep does not have to converge), and that removal is decided by
-ownership and age alone — it consults no keep-set. So if you copy editor HTML
-containing an image out of one standalone page into another and then
-permanently delete the *source* page, the copy loses its picture. Nothing in
-the product duplicates pages, so this needs a deliberate copy/paste between
-two pages to reach; if you rely on that pattern, re-upload the image into the
-page that keeps it rather than pasting its URL.
+leak the sweep does not have to converge), and that removal consults no
+keep-set: `local/<pk>/` and `page-icons/<pk>/` go unconditionally, and
+`<pk>/` in the shared Confluence-style tree goes only when no page claims
+that `confluence_id` and the directory has aged past a 5-minute grace. So if
+you copy editor HTML containing an image out of one standalone page into
+another and then permanently delete the *source* page, the copy loses its
+picture. Nothing in the product duplicates pages, so this needs a deliberate
+copy/paste between two pages to reach; if you rely on that pattern, re-upload
+the image into the page that keeps it rather than pasting its URL.
 
 **Refusals:** any run refuses when the attachments root is missing or
 unreadable, and a live run stands a store down when it has zero files on disk
