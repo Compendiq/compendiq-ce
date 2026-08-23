@@ -79,7 +79,7 @@ describe('inline-completion-client (#1417)', () => {
     });
   });
 
-  it('uses instructional chat for standard endpoints and includes metadata', async () => {
+  it('uses non-thinking instructional chat for standard endpoints and includes metadata', async () => {
     json({ choices: [{ message: { content: ' access token.' } }] });
     const result = await requestInlineCompletion(cfg(), 'gpt-5-mini', {
       pageId: 42,
@@ -92,7 +92,13 @@ describe('inline-completion-client (#1417)', () => {
     }, new AbortController().signal);
 
     expect(lastPath).toBe('/v1/chat/completions');
-    expect(lastBody).toMatchObject({ model: 'gpt-5-mini', max_tokens: 32, stop: [...INLINE_COMPLETION_STOP] });
+    expect(lastBody).toMatchObject({
+      model: 'gpt-5-mini',
+      max_tokens: 32,
+      stop: [...INLINE_COMPLETION_STOP],
+      think: false,
+      chat_template_kwargs: { enable_thinking: false },
+    });
     expect(JSON.stringify(lastBody)).toContain('Title: PAT rotation');
     expect(JSON.stringify(lastBody)).toContain('<PREFIX>');
     expect(result.completion).toBe(' access token.');

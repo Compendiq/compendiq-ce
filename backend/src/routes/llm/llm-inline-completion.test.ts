@@ -1,5 +1,7 @@
 import { createServer, type Server } from 'node:http';
+import { EventEmitter } from 'node:events';
 import type { AddressInfo } from 'node:net';
+import type { ServerResponse } from 'node:http';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import rateLimit from '@fastify/rate-limit';
@@ -11,7 +13,10 @@ import {
   truncateAllTables,
 } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
-import { llmInlineCompletionRoutes } from './llm-inline-completion.js';
+import {
+  abortOnPrematureResponseClose,
+  llmInlineCompletionRoutes,
+} from './llm-inline-completion.js';
 
 const dbAvailable = await isDbAvailable();
 const hIncrBy = vi.fn(async () => 1);
@@ -19,6 +24,32 @@ let providerServer: Server;
 let providerBaseUrl: string;
 let providerBody: Record<string, unknown> = {};
 let canQuery = true;
+
+function responseThatCloses(writableEnded: boolean): ServerResponse {
+  return Object.assign(new EventEmitter(), { writableEnded }) as unknown as ServerResponse;
+}
+
+describe('abortOnPrematureResponseClose', () => {
+  it('does not cancel a completion when its request body completes normally', () => {
+    const controller = new AbortController();
+    const response = responseThatCloses(true);
+    abortOnPrematureResponseClose(response, controller);
+
+    response.emit('close');
+
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  it('cancels a completion when the client closes before the response ends', () => {
+    const controller = new AbortController();
+    const response = responseThatCloses(false);
+    abortOnPrematureResponseClose(response, controller);
+
+    response.emit('close');
+
+    expect(controller.signal.aborted).toBe(true);
+  });
+});
 
 describe.skipIf(!dbAvailable)('POST /api/llm/inline-completion (#1417)', () => {
   const app = Fastify({ logger: false });
