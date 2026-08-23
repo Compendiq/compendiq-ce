@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../shared/lib/api';
+import { cn } from '../../../shared/lib/cn';
 
 /**
  * #1260 — "Compare on real queries", inside the shadow card's `ready` branch.
@@ -14,11 +15,15 @@ import { apiFetch } from '../../../shared/lib/api';
  * labels the run cannot say which side is right, only how much retrieval
  * would move.
  *
- * A disagreement is a measurement, so the whole surface stays neutral;
- * amber appears only on a FAILED run (the failed-save strip recipe). The
- * poll matches the card's own 5s cadence: this section and the card's
- * status poll are two requests per interval against the 20/min admin rate
- * limit, so polling faster would starve the card's own controls.
+ * A disagreement is a measurement, so the whole surface stays neutral; amber
+ * appears only on a run that failed UNDER THIS ADMIN'S HAND (the failed-save
+ * strip recipe). A failure adopted from an earlier sitting says the same
+ * sentence quietly — it would otherwise re-render its strip on every fresh
+ * mount until another comparison replaced it, and standing amber at rest is
+ * how the reserved colour stops meaning anything. The poll matches the card's
+ * own 5s cadence: this section and the card's status poll are two requests per
+ * interval against the 20/min admin rate limit, so polling faster would starve
+ * the card's own controls.
  *
  * The run id is NOT only component state. A tab switch, a route change or a
  * reload unmounts this section, and a comparison outlives all three: without
@@ -26,7 +31,9 @@ import { apiFetch } from '../../../shared/lib/api';
  * (twenty judgements across sittings) would be unreachable while the run
  * itself still held the one-active slot against a replacement. So the section
  * asks the server for this admin's most recent comparison on mount and
- * re-attaches to it.
+ * re-attaches to it — and the server answers only a run recorded against the
+ * candidate pair that is live NOW, so an aborted migration's report can never
+ * be presented inside the current migration's card.
  */
 
 interface Props {
@@ -129,14 +136,34 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
   const [topK, setTopK] = useState('10');
   const [startedRunId, setStartedRunId] = useState<string | null>(null);
 
-  // This admin's most recent comparison — the re-attachment path after an
-  // unmount. One lookup per mount; a run started in this session wins over it.
-  const { data: latest } = useQuery<{ run: CompareRun | null }>({
+  // This admin's most recent comparison OF THE LIVE MIGRATION (the server
+  // refuses a run recorded against another candidate pair) — the
+  // re-attachment path after an unmount. A run started in this session wins
+  // over it.
+  //
+  // `refetchOnMount: 'always'` is what makes that work for the two cases the
+  // module header names (r1). The section unmounts on a Settings sub-tab
+  // switch, the app's QueryClient keeps an unobserved entry for five minutes,
+  // and `staleTime: Infinity` alone suppressed the refetch — so the FIRST
+  // mount's `{ run: null }` was served to the second one, showing no run, no
+  // progress and an enabled Run button that then 409s. Only a full reload (a
+  // new QueryClient) recovered. `start.onSuccess` seeds the same entry, so
+  // the remount re-attaches from cache without a round trip first.
+  const {
+    data: latest,
+    isError: latestFailed,
+    refetch: refetchLatest,
+  } = useQuery<{ run: CompareRun | null }>({
     queryKey: ['shadow-compare-latest'],
     queryFn: () => apiFetch('/admin/embedding/shadow-migration/compare'),
     staleTime: Infinity,
+    refetchOnMount: 'always',
   });
   const runId = startedRunId ?? latest?.run?.id ?? null;
+  /** A run this session started, as opposed to one adopted on mount. The two
+   *  get different treatment when something goes wrong: an in-session failure
+   *  is news, a week-old one is history. */
+  const startedHere = startedRunId !== null;
 
   const {
     data: run,
@@ -237,6 +264,18 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
     onSuccess: (data) => {
       setStartedRunId(data.runId);
       setOptimistic({});
+      // Seed the lookup this section re-attaches through, or the cached
+      // `{ run: null }` from this mount is what the next one reads back.
+      queryClient.setQueryData<{ run: CompareRun | null }>(['shadow-compare-latest'], {
+        run: {
+          id: data.runId,
+          status: 'queued',
+          progressDone: 0,
+          progressTotal: 0,
+          result: null,
+          error: null,
+        },
+      });
       toast.success('Comparison started');
     },
     onError: (err) =>
@@ -244,10 +283,17 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
   });
 
   const running = run?.status === 'queued' || run?.status === 'running';
-  // A failed poll is a failure, not an idle section: a 202'd run may still be
-  // live server-side, so Run stays disabled (a retry would just 409 with the
-  // "comparison already running" toast) and the strip says what is unknown.
-  const pollUnavailable = runId !== null && pollFailed;
+  // A failed poll is a failure, not an idle section — but WHICH failure
+  // depends on whose run it is (r1). A run this session 202'd may still be
+  // live server-side, so Run stays disabled (a retry would just 409) and the
+  // strip says what is unknown. A poll that fails on a run merely ADOPTED on
+  // mount says nothing about the slot: that run may have finished last week,
+  // and disabling the section's only action under "it may still be running"
+  // leaves the admin unable to start a comparison at all. The server's own
+  // 409 is the authority on the shared slot, so that case reports what could
+  // not be loaded and leaves Run available.
+  const pollUnavailable = startedHere && pollFailed;
+  const adoptedRunUnreadable = !startedHere && runId !== null && pollFailed;
 
   const storedJudgements = judgementView?.judgements ?? {};
   const judgedSide = (queryId: string): JudgementSide | undefined =>
@@ -339,21 +385,49 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
           </p>
         </div>
       )}
+      {latestFailed && (
+        // A failed lookup is a failure, not "there is no earlier comparison":
+        // absence would silently hide a finished report, its disagreement list
+        // and an accumulated Mode 2 workflow, and a re-run costs another N x 2
+        // provider calls. Muted rather than amber — nothing is wrong with the
+        // migration, and this notice can appear on any mount.
+        <MutedNotice testId="shadow-compare-latest-error" onRetry={() => void refetchLatest()}>
+          Could not check whether an earlier comparison exists.
+        </MutedNotice>
+      )}
+      {adoptedRunUnreadable && (
+        <MutedNotice testId="shadow-compare-adopted-error" onRetry={() => void refetchRun()}>
+          The last comparison could not be loaded.
+        </MutedNotice>
+      )}
       {run && running && (
         <p className="text-xs text-muted-foreground" data-testid="shadow-compare-progress">
           Comparison {run.status} · {run.progressDone}/{run.progressTotal || '?'} queries
         </p>
       )}
-      {run?.status === 'failed' && (
-        <div
-          role="status"
-          className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs"
-          data-testid="shadow-compare-error"
-        >
-          <AlertTriangle className="h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
-          <p>{run.error ?? 'The comparison failed.'}</p>
-        </div>
-      )}
+      {run?.status === 'failed' &&
+        (startedHere ? (
+          <div
+            role="status"
+            className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs"
+            data-testid="shadow-compare-error"
+          >
+            <AlertTriangle className="h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+            <p>{run.error ?? 'The comparison failed.'}</p>
+          </div>
+        ) : (
+          // The same failure ADOPTED on mount is history, not news, and it
+          // re-renders on every fresh mount until another comparison replaces
+          // it. Standing amber at rest is what teaches an admin to ignore
+          // amber, so the adopted case states the same sentence quietly
+          // (r1); the run that failed under this admin's hand keeps the strip.
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid="shadow-compare-error-adopted"
+          >
+            Last comparison: {run.error ?? 'it failed.'}
+          </p>
+        ))}
       {run?.status === 'completed' && run.result && (
         <CompareResult
           report={run.result}
@@ -364,6 +438,28 @@ export function EmbeddingShadowCompareSection({ candidateModel }: Props) {
         />
       )}
     </div>
+  );
+}
+
+/** A quiet "could not be read" line with the one action that can fix it.
+ *  Muted, not amber: this is a failed READ of history, not a degraded
+ *  migration, and it can appear on any mount. */
+function MutedNotice({
+  testId,
+  onRetry,
+  children,
+}: {
+  testId: string;
+  onRetry: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <p role="status" className="text-xs text-muted-foreground" data-testid={testId}>
+      {children}{' '}
+      <button type="button" className="underline" onClick={onRetry}>
+        Check again
+      </button>
+    </p>
   );
 }
 
@@ -389,6 +485,11 @@ function CompareResult({
     (row) => row.top1Changed || row.jaccard < 1 || row.rbo < 1,
   );
   const failed = report.failedQueries ?? 0;
+  const sampled = report.sampledQueryCount ?? report.queryCount + failed;
+  const failedShare = sampled > 0 ? failed / sampled : 0;
+  /** A fifth of the sample gone is where "annotated" stops being enough and
+   *  the coverage of the figures has to read as part of the claim. */
+  const heavilyThinned = failedShare >= 0.2;
   return (
     <div className="space-y-2" data-testid="shadow-compare-result">
       <p className="text-xs font-medium text-foreground" data-testid="shadow-compare-basis">
@@ -396,13 +497,24 @@ function CompareResult({
         {report.queryCount} real queries — how much results would move, not which model is better.
       </p>
       {failed > 0 && (
-        // A measurement about the run's own coverage, so it is neutral like
-        // the figures beside it — but it must be stated, or the denominator
-        // silently shrinks and nobody knows the sample was thinned.
-        <p className="text-xs text-muted-foreground" data-testid="shadow-compare-failed-queries">
-          {failed} of {report.sampledQueryCount ?? report.queryCount + failed} sampled{' '}
-          {failed === 1 ? 'query was' : 'queries were'} skipped after an embedding or retrieval
-          failure, and {failed === 1 ? 'is' : 'are'} not in the figures below.
+        // A measurement about the run's own coverage, so it stays NEUTRAL like
+        // the figures beside it (amber is reserved for a failed run — the lane
+        // decision) — but it must be stated, or the denominator silently
+        // shrinks and nobody knows the sample was thinned. The run may skip up
+        // to half its sample, so the treatment is proportional to the claim
+        // (r1): past a fifth skipped the sentence takes foreground weight and
+        // quotes the share, because "25 of 50" read with the same emphasis as
+        // "1 of 50" on a surface whose output is swap go/no-go evidence.
+        <p
+          className={cn(
+            'text-xs',
+            heavilyThinned ? 'font-medium text-foreground' : 'text-muted-foreground',
+          )}
+          data-testid="shadow-compare-failed-queries"
+        >
+          {failed} of {sampled} sampled {failed === 1 ? 'query was' : 'queries were'} skipped after
+          an embedding or retrieval failure ({Math.round(failedShare * 100)}%), and{' '}
+          {failed === 1 ? 'is' : 'are'} not in the figures below.
         </p>
       )}
       <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
@@ -528,39 +640,59 @@ function JudgementRow({
     { side: 'both', label: 'Both' },
   ];
   return (
-    <div
-      role="group"
-      aria-label={`Which answered better: ${query}`}
-      // The row is saving, not unavailable: every button stays operable and
-      // every click is recorded, so this announces work in progress rather
-      // than claiming the control cannot be used.
-      aria-busy={saving || undefined}
-      className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2"
-    >
+    <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
       <span id={captionId} className="text-xs text-muted-foreground">
         Which answered better?
       </span>
-      {sides.map(({ side, label }) => (
-        <button
-          key={side}
-          type="button"
-          className="nm-button-ghost"
-          aria-pressed={judged === side}
-          // The visible caption is what these four bare labels mean; without
-          // it "Live" is the whole accessible name of twenty buttons.
-          aria-describedby={captionId}
-          // Never `disabled`, and never a no-op: Chromium drops focus to
-          // <body> when the focused element is disabled, so a keyboard admin
-          // judging twenty rows would re-Tab from the top of the panel after
-          // every single pick (WCAG 2.4.3 — the same focus drop the sibling
-          // card's cancelCleanupRef engineers around). Writes are serialised
-          // and queued in the parent instead, so a deliberate pick on another
-          // row mid-save is accepted rather than silently dropped.
-          onClick={() => onJudge(side)}
-        >
-          {label}
-        </button>
-      ))}
+      {/* The segmented recipe, not a pressed `nm-button-ghost` (r1). A ghost
+          button already carries `--color-border-interactive` and the
+          foreground ink at REST, so a pressed rule adding both changed
+          nothing, and its only real delta — `background: transparent` to
+          `--color-background`, over the row's own `bg-background/40` — measured
+          1.03:1 in Graphite and 1.02:1 in Paper, with the two states byte
+          identical on hover and indistinguishable under `forced-colors`. The
+          only feedback that a judgement registered was therefore invisible.
+          This is what CLAUDE.md means by "selected is the neutral pressed
+          recipe": `NewPagePage`'s track — a `bg-muted` ground, unselected
+          siblings borderless and muted, the chosen one `nm-pill-active` (card
+          fill + a 1px border + weight 500 + foreground ink). The border and
+          the weight are signals the resting state does not already have, and
+          both survive `forced-colors`. Still neutral, never Steel: four
+          toggles lighting up the accent read as four primary buttons. */}
+      <div
+        role="group"
+        aria-label={`Which answered better: ${query}`}
+        // The row is saving, not unavailable: every button stays operable and
+        // every click is recorded, so this announces work in progress rather
+        // than claiming the control cannot be used.
+        aria-busy={saving || undefined}
+        className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+      >
+        {sides.map(({ side, label }) => (
+          <button
+            key={side}
+            type="button"
+            className={cn(
+              'rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+              judged === side ? 'nm-pill-active' : 'text-muted-foreground hover:text-foreground',
+            )}
+            aria-pressed={judged === side}
+            // The visible caption is what these four bare labels mean; without
+            // it "Live" is the whole accessible name of twenty buttons.
+            aria-describedby={captionId}
+            // Never `disabled`, and never a no-op: Chromium drops focus to
+            // <body> when the focused element is disabled, so a keyboard admin
+            // judging twenty rows would re-Tab from the top of the panel after
+            // every single pick (WCAG 2.4.3 — the same focus drop the sibling
+            // card's cancelCleanupRef engineers around). Writes are serialised
+            // and queued in the parent instead, so a deliberate pick on another
+            // row mid-save is accepted rather than silently dropped.
+            onClick={() => onJudge(side)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

@@ -1579,23 +1579,17 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   color: var(--color-foreground);
 }
 
-/* #1260 — the shadow comparison's judgement choices (Live / Candidate /
-   Neither / Both) are `nm-button-ghost` toggles carrying `aria-pressed`, and
-   without this rule the chosen one rendered identically to its neighbours —
-   the exact invisible-pressed-state defect the icon-button rule above exists
-   to prevent. Same neutral recipe (never Steel: four toggles lighting up the
-   accent read as four primary buttons), same plain-CSS placement rules: not
-   nested in the `@utility`, and after the media-query blocks. */
-.nm-button-ghost[aria-pressed='true'] {
-  background-color: var(--color-background);
-  border-color: var(--color-border-interactive);
-  color: var(--color-foreground);
-}
-
-.nm-button-ghost[aria-pressed='true']:hover {
-  background-color: var(--color-accent);
-  color: var(--color-foreground);
-}
+/* #1260 — there is deliberately NO `.nm-button-ghost[aria-pressed='true']`
+   recipe here. The icon-button rule above transplants badly onto a ghost
+   button: `nm-button-ghost` already carries `--color-border-interactive` and
+   `--color-foreground` at REST, so both of those declarations are no-ops
+   there, and the only surviving delta — `transparent` to
+   `--color-background` — measures 1.03:1 in Graphite and 1.02:1 in Paper on
+   the surface the shadow comparison's judgement rows sit on, is byte
+   identical to the unpressed state on hover, and disappears entirely under
+   `forced-colors`. A mutually exclusive choice takes the segmented recipe
+   instead (`bg-muted` track + `nm-pill-active`), which is what CLAUDE.md
+   names for "selected"; see `EmbeddingShadowCompareSection`. */
 
 /* ===========================
    SKELETON LOADER

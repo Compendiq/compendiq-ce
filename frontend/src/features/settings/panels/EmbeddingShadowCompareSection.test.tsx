@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { EmbeddingShadowCompareSection } from './EmbeddingShadowCompareSection';
+import { createQueryClient } from '../../../shared/lib/query-client';
 import { useAuthStore } from '../../../stores/auth-store';
 
 // #1260 — the "Compare on real queries" section inside the shadow card's
@@ -134,6 +135,8 @@ function mockApi(opts: {
   pollError?: boolean;
   /** What `GET …/compare` (no id) answers — the card's re-attachment lookup. */
   latestRun?: Partial<Run> | null;
+  /** The re-attachment lookup answers HTTP 500. */
+  latestError?: boolean;
 }) {
   let polls = 0;
   let posts = 0;
@@ -175,6 +178,12 @@ function mockApi(opts: {
         ...override,
       };
       return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.endsWith('/compare') && method === 'GET' && opts.latestError) {
+      return new Response(JSON.stringify({ message: 'boom' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
     if (url.endsWith('/compare') && method === 'GET') {
       const run = opts.latestRun
@@ -396,6 +405,56 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(within(group).getByRole('button', { name: 'Live' })).toHaveAttribute('aria-pressed', 'false');
     // The verdict updates from the same response.
     expect(screen.getByTestId('shadow-compare-verdict')).toHaveTextContent(/1 judgement/i);
+
+    // …and the pick is VISIBLY the chosen one, not merely `aria-pressed`. A
+    // pressed `nm-button-ghost` changed only its fill, over a ground it
+    // matched to 1.03:1, identically on hover and invisibly under
+    // `forced-colors` — so the one signal that a judgement registered could
+    // not be seen. jsdom measures no colour, so what is pinned here is that
+    // the chosen side wears the design system's named selected recipe and its
+    // siblings do not.
+    const chosen = within(group).getByRole('button', { name: 'Candidate' });
+    const sibling = within(group).getByRole('button', { name: 'Live' });
+    expect(chosen.className).toMatch(/nm-pill-active/);
+    expect(sibling.className).not.toMatch(/nm-pill-active/);
+    expect(chosen.className).not.toBe(sibling.className);
+  });
+
+  it('wires the four bare labels to the visible caption that explains them', async () => {
+    // Without it "Live" is the entire accessible name of twenty buttons.
+    mockApi({});
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const rows = await screen.findAllByTestId('shadow-compare-disagreement');
+    const row = rows[0]!;
+    const caption = within(row).getByText('Which answered better?');
+    expect(caption.id).toBeTruthy();
+    for (const name of ['Live', 'Candidate', 'Neither', 'Both']) {
+      expect(within(row).getByRole('button', { name })).toHaveAttribute(
+        'aria-describedby',
+        caption.id,
+      );
+    }
+    // The group's own name still carries the query, so the twenty groups are
+    // tellable apart.
+    expect(
+      within(row).getByRole('group', { name: /how to configure sync/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('a heavily thinned sample states its share with more weight than a clean run\'s note', async () => {
+    // The run may skip up to half its sample and still publish. At 2% the
+    // neutral one-liner is right; at 44% the coverage is part of the claim,
+    // and it read with exactly the same emphasis. Neutral either way — amber
+    // stays reserved for a failed run.
+    mockApi({ run: { result: { ...COMPLETED_RESULT, sampledQueryCount: 50, failedQueries: 22 } } });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const note = await screen.findByTestId('shadow-compare-failed-queries');
+    expect(note).toHaveTextContent(/22 of 50 sampled queries were skipped/i);
+    expect(note).toHaveTextContent(/44%/);
+    expect(note.className).toMatch(/font-medium/);
+    expect(note.className).not.toMatch(/warning|destructive/);
   });
 
   it('a pending pick never disables the judgement buttons — focus survives the POST', async () => {
@@ -640,14 +699,16 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
   it('states how many sampled queries were skipped, so the denominator is never silently thinned', async () => {
     mockApi({
       run: {
-        result: { ...COMPLETED_RESULT, sampledQueryCount: 8, failedQueries: 3 },
+        result: { ...COMPLETED_RESULT, sampledQueryCount: 50, failedQueries: 1 },
       },
     });
     renderSection();
     fireEvent.click(screen.getByTestId('shadow-compare-start'));
     const note = await screen.findByTestId('shadow-compare-failed-queries');
-    expect(note).toHaveTextContent(/3 of 8 sampled queries were skipped/i);
-    // Neutral: a coverage measurement, not a warning state.
+    expect(note).toHaveTextContent(/1 of 50 sampled query was skipped/i);
+    // Neutral AND quiet at a small share: a coverage measurement, not a
+    // warning state, and not competing with the figures it qualifies.
+    expect(note.className).toMatch(/muted-foreground/);
     expect(note.className).not.toMatch(/warning|destructive/);
   });
 
@@ -671,6 +732,118 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(verdict).toHaveTextContent(/6 of 20 live-or-candidate picks/i);
     expect(verdict).not.toHaveTextContent(/20 of 20/);
     expect(verdict).not.toHaveTextContent(/p =/);
+  });
+
+  it('keeps a started run across an unmount and remount on the APP\'s QueryClient', async () => {
+    // The section unmounts on a Settings sub-tab switch (SubTabs renders only
+    // the active tab). The app client keeps an unobserved entry for five
+    // minutes and `staleTime: Infinity` suppressed the refetch, so the first
+    // mount's `{ run: null }` was served back to the second one: no run, no
+    // progress, no Mode 2 workflow, and a re-enabled Run that then 409s. Only
+    // a full reload recovered. `renderSection()` builds a FRESH client per
+    // render and cannot see this, so this case shares one client on purpose.
+    let latestCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/compare') && method === 'GET') {
+        latestCalls += 1;
+        return new Response(JSON.stringify({ run: null }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/compare') && method === 'POST') {
+        return new Response(JSON.stringify({ runId: 'run-1', status: 'queued' }), {
+          status: 202,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) {
+        return new Response(
+          JSON.stringify({
+            id: 'run-1',
+            status: 'running',
+            progressDone: 2,
+            progressTotal: 5,
+            error: null,
+            result: null,
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    const shared = createQueryClient();
+    const ui = (
+      <QueryClientProvider client={shared}>
+        <EmbeddingShadowCompareSection candidateModel="qwen3-embedding:4b" />
+      </QueryClientProvider>
+    );
+    const first = render(ui);
+    await waitFor(() => expect(latestCalls).toBe(1));
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    expect(await screen.findByTestId('shadow-compare-progress')).toHaveTextContent('2/5');
+
+    first.unmount();
+    render(ui);
+
+    expect(await screen.findByTestId('shadow-compare-progress')).toHaveTextContent('2/5');
+    expect(screen.getByTestId('shadow-compare-start')).toBeDisabled();
+    // …and the lookup is re-asked, so a run started in another tab is found
+    // too rather than being masked by an infinitely fresh cache entry.
+    await waitFor(() => expect(latestCalls).toBe(2));
+  });
+
+  it('reports a failed re-attachment lookup instead of reading it as "no earlier comparison"', async () => {
+    // Absence would silently hide a finished report, its disagreement list and
+    // an accumulated Mode 2 workflow — and a re-run costs another N x 2
+    // provider calls. Muted, not amber: nothing is wrong with the migration.
+    mockApi({ latestError: true });
+    renderSection();
+    const notice = await screen.findByTestId('shadow-compare-latest-error');
+    expect(notice).toHaveAttribute('role', 'status');
+    expect(notice.className).not.toMatch(/warning|destructive/);
+    expect(notice).toHaveTextContent(/could not check/i);
+    expect(screen.getByTestId('shadow-compare-start')).not.toBeDisabled();
+  });
+
+  it('a poll failure on a run ADOPTED on mount leaves Run available', async () => {
+    // `pollUnavailable` used to fire for any runId, so one transient 500 on a
+    // comparison that finished last week disabled the section's only action
+    // under copy claiming "it may still be running".
+    mockApi({ latestRun: { id: 'old-run', status: 'completed' }, pollError: true });
+    renderSection();
+    const notice = await screen.findByTestId('shadow-compare-adopted-error');
+    expect(notice).toHaveTextContent(/could not be loaded/i);
+    expect(notice.className).not.toMatch(/warning|destructive/);
+    expect(screen.queryByTestId('shadow-compare-poll-error')).toBeNull();
+    expect(screen.getByTestId('shadow-compare-start')).not.toBeDisabled();
+  });
+
+  it('a comparison that failed in an EARLIER sitting is stated quietly, never in standing amber', async () => {
+    // Adopted on every fresh mount, this strip would stand in amber until the
+    // admin happened to start another comparison — the permanent-banner
+    // pattern ADR-010 rules against.
+    mockApi({
+      latestRun: {
+        id: 'old-run',
+        status: 'failed',
+        result: null,
+        error: 'The comparison worker stopped before the run completed. Start a new comparison.',
+      },
+      run: {
+        status: 'failed',
+        result: null,
+        error: 'The comparison worker stopped before the run completed. Start a new comparison.',
+      },
+    });
+    renderSection();
+    const quiet = await screen.findByTestId('shadow-compare-error-adopted');
+    expect(quiet).toHaveTextContent(/worker stopped/i);
+    expect(quiet.className).toMatch(/muted-foreground/);
+    expect(quiet.className).not.toMatch(/warning/);
+    expect(screen.queryByTestId('shadow-compare-error')).toBeNull();
   });
 
   it('a failed run is an amber status strip carrying the server sentence', async () => {
