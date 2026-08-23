@@ -1119,4 +1119,80 @@ describe('AskMode', () => {
       });
     });
   });
+
+  // #1361 decision 10, made visible. `selectReplayableHistory` replays only the
+  // whole exchanges that fit the model's budget, so a long conversation quietly
+  // stops carrying its own beginning; the flag rides each ask's final frame and
+  // `GET /llm/conversations/:id`. Both /llm/ask surfaces render it.
+  describe('history-truncated note', () => {
+    const NOTE = 'Older messages in this conversation are no longer sent to the model.';
+
+    function settleModels() {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
+    }
+
+    it('is absent until the server says the history was clipped', async () => {
+      settleModels();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+      // Type so the composer settles into its enabled state (the button also
+      // gates on `input.trim()`) — that settling is what proves the model
+      // fetch has resolved, before asserting the note's absence.
+      fireEvent.change(screen.getByPlaceholderText('Ask a question...'), { target: { value: 'q' } });
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled(),
+      );
+      expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
+    });
+
+    it('appears above the composer once an answer reports it', async () => {
+      settleModels();
+      streamSSEMock.mockImplementation(async function* fakeStream() {
+        yield { content: 'Answer' };
+        yield { final: true, conversationId: 'c-1', historyTruncated: true, sources: [], done: true };
+      });
+
+      render(<AskModeInput />, { wrapper: createWrapper() });
+      fireEvent.change(screen.getByPlaceholderText('Ask a question...'), {
+        target: { value: 'and then?' },
+      });
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+      const note = await screen.findByTestId('ask-history-truncated');
+      expect(note).toHaveTextContent(NOTE);
+    });
+
+    it('is muted prose, never a live region', async () => {
+      // It is a standing fact about the thread, not an event. In a live region
+      // it would be announced again on every re-render the composer does while
+      // the user types.
+      settleModels();
+      streamSSEMock.mockImplementation(async function* fakeStream() {
+        yield { content: 'Answer' };
+        yield { final: true, conversationId: 'c-1', historyTruncated: true, sources: [], done: true };
+      });
+
+      render(<AskModeInput />, { wrapper: createWrapper() });
+      fireEvent.change(screen.getByPlaceholderText('Ask a question...'), { target: { value: 'q' } });
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+      const note = await screen.findByTestId('ask-history-truncated');
+      expect(note).not.toHaveAttribute('role');
+      expect(note).not.toHaveAttribute('aria-live');
+      expect(note.className).toContain('text-[11px]');
+      expect(note.className).toContain('text-muted-foreground');
+    });
+  });
 });

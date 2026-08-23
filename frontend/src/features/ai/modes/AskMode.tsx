@@ -39,7 +39,7 @@ function AskModeInputContent() {
   const {
     input, setInput, isStreaming, model, conversationId, pageId,
     includeSubPages, thinkingMode, setMessages, runStream,
-    chatVision, chatVisionModel,
+    chatVision, chatVisionModel, historyTruncated,
     activeThreadId, composerFocusRequest, threadLoadState,
   } = useAiContext();
 
@@ -299,6 +299,23 @@ function AskModeInputContent() {
         className="mb-2"
         variant="inline"
       />
+
+      {/* #1361, decision 10 made visible. The backend replays whole exchanges
+          only while they fit the model's budget, so a long conversation quietly
+          stops carrying its own beginning; the reader is told rather than left
+          to infer it from an answer that has forgotten something.
+
+          Muted 11px prose and deliberately NOT a live region: it is a standing
+          fact about the thread, not an event, and a live region would announce
+          it again on every re-render this composer does while the user types.
+          `DockPanel` renders the same line — both surfaces post /llm/ask, and
+          the same mechanism on one of two is the divergence CLAUDE.md's refusal
+          note warns about. */}
+      {historyTruncated && (
+        <p className="mb-2 text-[11px] text-muted-foreground" data-testid="ask-history-truncated">
+          Older messages in this conversation are no longer sent to the model.
+        </p>
+      )}
 
       {/* Main input row */}
       <div className="nm-composer flex-wrap">

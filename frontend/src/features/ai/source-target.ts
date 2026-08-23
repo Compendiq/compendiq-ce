@@ -23,6 +23,17 @@ function parseAbsolute(value: string | null | undefined): URL | null {
 }
 
 /**
+ * What an inert citation says when the page behind it is gone (#1361).
+ *
+ * One string in one module because two surfaces render it — the numbered chip
+ * and the source card — and a copy in each is how they drift. It names the
+ * READER's access rather than the page's existence ("no longer available to
+ * you"), because the read side cannot tell a trashed page from one whose
+ * permissions changed, and must not leak which it was.
+ */
+export const UNAVAILABLE_SOURCE_TITLE = 'This page is no longer available to you';
+
+/**
  * Resolves the navigation target for an AI source citation.
  *
  * Precedence, and why:
@@ -50,6 +61,13 @@ function parseAbsolute(value: string | null | undefined): URL | null {
  * `Web`.
  */
 export function resolveSourceTarget(source: Source): SourceTarget {
+  // 0. The read side already looked (#1361). A persisted source keeps its
+  //    `pageId` and its `url`, so this has to be checked BEFORE both — routing
+  //    either would send the reader at a page the server has just reported as
+  //    gone, and for an image source it would re-probe an ACL that has already
+  //    answered.
+  if (source.unavailable === true) return { kind: 'none' };
+
   const absolute = parseAbsolute(source.url) ?? parseAbsolute(source.confluenceId);
   if (absolute) {
     // Only http(s) is ever opened. A `javascript:` / `data:` / `file:` source

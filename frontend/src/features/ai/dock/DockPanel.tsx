@@ -98,7 +98,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, streamingThreadId, activeThreadId, input, setInput, modelsError,
     refetchModels, model, chatVision, chatVisionModel, mode, setMode, improvementType,
-    createSkill, setCreateSkill, abortRef,
+    createSkill, setCreateSkill, abortRef, historyTruncated,
   } = useAiContext();
 
   // #1361: the streaming buffer and both busy flags are provider-wide, and this
@@ -439,6 +439,15 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             <Sparkles size={12} className="shrink-0 text-primary" aria-hidden />
             <span className="truncate">Suggestion: <span className="italic">{currentSkill.suggestedPrompt}</span></span>
           </button>
+        )}
+
+        {/* The same line `AskModeInput` renders, for the same reason (#1361):
+            both surfaces post /llm/ask against the same budgeted history. Muted
+            prose, not a live region — a standing fact about the thread. */}
+        {historyTruncated && (
+          <p className="mb-2 text-[11px] text-muted-foreground" data-testid="ai-dock-history-truncated">
+            Older messages in this conversation are no longer sent to the model.
+          </p>
         )}
 
         {/* flex-wrap so attached-source rows stack above the prompt inside the

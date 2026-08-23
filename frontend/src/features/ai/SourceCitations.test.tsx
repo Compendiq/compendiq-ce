@@ -322,4 +322,53 @@ describe('SourceCitations', () => {
       expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
     });
   });
+
+  describe('unavailable sources (#1361)', () => {
+    it('renders an inert card naming the reader’s access', () => {
+      render(
+        <SourceCitations sources={[{ pageTitle: 'Secret Runbook', spaceKey: 'OPS', pageId: 42, unavailable: true }]} />,
+        { wrapper: Wrapper },
+      );
+      fireEvent.click(screen.getByText('Sources (1)'));
+
+      const card = screen.getByTestId('source-card-1');
+      expect(card.tagName).toBe('DIV');
+      expect(card).toHaveAttribute('title', 'This page is no longer available to you');
+      expect(screen.getByText('Secret Runbook')).toBeInTheDocument();
+      fireEvent.click(card);
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    it('does not re-probe the attachment ACL the read side already answered', async () => {
+      // `CitationChips` gets this by construction (it gates its thumbnail on
+      // `target.kind === 'internal'`); this card gated only on `isImageSource`,
+      // so an unavailable image source fetched the full attachment on every
+      // reopen of a thread the reader can no longer see the page for.
+      const fetchMock = vi.fn(async () =>
+        ({ ok: true, status: 200, blob: async () => new Blob(['x']) } as unknown as Response));
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(
+        <SourceCitations
+          sources={[{
+            kind: 'image',
+            pageTitle: 'Secret Runbook',
+            spaceKey: 'OPS',
+            pageId: 42,
+            attachmentUrl: '/api/attachments/42/diagram.png',
+            similarity: null,
+            unavailable: true,
+          }]}
+        />,
+        { wrapper: Wrapper },
+      );
+      fireEvent.click(screen.getByText('Sources (1)'));
+
+      expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+      // Still a complete citation: the category label and the title survive.
+      expect(screen.getByTestId('source-image-label')).toBeInTheDocument();
+    });
+  });
 });

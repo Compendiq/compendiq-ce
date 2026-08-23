@@ -610,4 +610,33 @@ describe('AiDock (#1126)', () => {
 
     await act(async () => { release(); await Promise.resolve(); });
   });
+
+  // The same mechanism on the second /llm/ask surface (#1361). One of two is
+  // the divergence CLAUDE.md's refusal note warns about.
+  it('renders the history-truncated note when an answer reports it', async () => {
+    streamSSEMock.mockImplementation(() =>
+      sse({ content: 'Answer' }, { final: true, conversationId: 'c-1', historyTruncated: true, sources: [], done: true }));
+
+    renderDock();
+    await openAndSettle();
+    fireEvent.change(composer(), { target: { value: 'and then?' } });
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
+
+    const note = await screen.findByTestId('ai-dock-history-truncated');
+    expect(note).toHaveTextContent('Older messages in this conversation are no longer sent to the model.');
+    expect(note).not.toHaveAttribute('role');
+    expect(note).not.toHaveAttribute('aria-live');
+  });
+
+  it('does not render the note when the answer does not report it', async () => {
+    streamSSEMock.mockImplementation(() => sse({ content: 'Answer' }, { final: true, sources: [], done: true }));
+
+    renderDock();
+    await openAndSettle();
+    fireEvent.change(composer(), { target: { value: 'first question' } });
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
+
+    await screen.findByText('Answer');
+    expect(screen.queryByTestId('ai-dock-history-truncated')).not.toBeInTheDocument();
+  });
 });

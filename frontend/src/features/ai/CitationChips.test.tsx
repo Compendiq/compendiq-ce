@@ -294,4 +294,46 @@ describe('CitationChips', () => {
         .toHaveAttribute('aria-label', 'Turbine assembly — image');
     });
   });
+
+  // #1361: a reopened answer can cite a page the reader has since lost. The
+  // number stays — the answer text refers to it — but nothing about it is
+  // operable, and the title says why.
+  describe('unavailable sources', () => {
+    it('renders an inert chip naming the reader’s access, not the page', () => {
+      render(
+        <CitationChips sources={[{ pageTitle: 'Secret Runbook', pageId: 42, unavailable: true }]} />,
+        { wrapper: Wrapper },
+      );
+      const chip = screen.getByTestId('citation-chip-1');
+      expect(chip.tagName).toBe('SPAN');
+      expect(chip).toHaveTextContent('1');
+      expect(chip).toHaveAttribute('title', 'This page is no longer available to you');
+      fireEvent.click(chip);
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    it('issues no attachment fetch for an unavailable image source', async () => {
+      const fetchMock = vi.fn(async () =>
+        ({ ok: true, status: 200, blob: async () => new Blob(['x']) } as unknown as Response));
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(
+        <CitationChips
+          sources={[{
+            kind: 'image',
+            pageTitle: 'Secret Runbook',
+            pageId: 42,
+            attachmentUrl: '/api/attachments/42/diagram.png',
+            similarity: null,
+            unavailable: true,
+          }]}
+        />,
+        { wrapper: Wrapper },
+      );
+
+      expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
 });
