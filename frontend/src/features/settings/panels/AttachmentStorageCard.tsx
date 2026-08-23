@@ -430,8 +430,24 @@ export function AttachmentStorageCard() {
               </>
             )}
           </summary>
+          {/*
+            The scroller is a TAB STOP with a name (review r1, WCAG 2.1.1 /
+            axe `scrollable-region-focusable`). `max-h-56` shows about ten of
+            up to `CANDIDATE_SAMPLE_MAX` = 100 rows, every descendant is a
+            `<span>`, and Chromium and WebKit do not make a scroll container
+            focusable on their own — so a keyboard user reached the
+            `<summary>`, opened the list, and had no way to scroll it: arrow
+            keys moved the page instead. That is the one in-product path to
+            WHICH files a live run destroys, which the confirm dialog tells
+            the operator to read first. The implicit `list` role is kept (a
+            screen reader announcing "list, 100 items" is the useful part) and
+            named, because a focusable region with no name announces nothing.
+            The ring is the sibling `<summary>` recipe two lines up.
+          */}
           <ul
-            className="border-border mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border p-2"
+            tabIndex={0}
+            aria-label="Orphan candidates"
+            className="border-border focus-visible:ring-ring mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border p-2 focus-visible:ring-2 focus-visible:outline-none"
             data-testid="attachment-sweep-candidate-list"
           >
             {lastRun.candidateSample.map((c) => (
@@ -567,16 +583,29 @@ export function AttachmentStorageCard() {
         </button>
       </div>
 
+      {/*
+        The one sentence that names what Delete orphans does and what it costs,
+        wired to both controls with `aria-describedby` (the DeepSearchToggle
+        rule: a caveat lives on screen at rest, not in a `title`). Its second
+        half is the one an operator would otherwise get wrong: "no page
+        references it" reads as "nothing on a live page", and the sweep really
+        does remove a cached image sitting under a live Confluence page that no
+        body embeds (review r1). Pinned by `AttachmentStorageCard.test.tsx`, or
+        deleting the paragraph outright left every cell green while both
+        buttons kept pointing `aria-describedby` at a dead id.
+      */}
       <p id="attachment-sweep-note" className="text-muted-foreground text-xs" data-testid="attachment-sweep-note">
         Dry run walks both stores and lists candidates without touching disk. Delete orphans removes
         only files no page, draft, version, template, comment or saved AI answer references, older
-        than 24 hours, re-checked at delete time; matching image-index rows are pruned with them.
+        than 24 hours, re-checked at delete time; matching image-index rows are pruned with them. A
+        cached Confluence image that no page body embeds counts as unreferenced and is removed —
+        Confluence re-serves it the next time it is viewed.
       </p>
 
       <ConfirmDialog
         open={confirmDeleteOpen}
         title="Delete orphaned attachment files?"
-        description="This permanently removes files that no page, draft, retained version, pending sync version, template, comment or saved AI answer references and that are older than 24 hours. Every candidate is re-checked at delete time, matching image-index rows are pruned, and affected pages are re-queued for image indexing. Files referenced anywhere are never touched. Uploaded page icons are a separate store and are never swept. This cannot be undone — run a dry run first if you have not."
+        description="This permanently removes files that no page, draft, retained version, pending sync version, template, comment or saved AI answer references and that are older than 24 hours. Every candidate is re-checked at delete time, matching image-index rows are pruned, and affected pages are re-queued for image indexing. Files referenced anywhere are never touched. Cached Confluence images that no page body embeds are removed too — they are re-fetched from Confluence the next time they are viewed. Uploaded page icons are a separate store and are never swept. This cannot be undone — run a dry run first if you have not."
         confirmLabel="Delete orphans"
         destructive
         onConfirm={() => {

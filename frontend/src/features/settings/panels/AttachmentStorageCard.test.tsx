@@ -277,6 +277,61 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(postedBodies).toEqual([]);
   });
 
+  /**
+   * Review r1. The paragraph that names what Delete orphans does and what it
+   * costs was completely unpinned: replacing it with a comment left all 41
+   * cells green while both buttons kept `aria-describedby` pointing at an id
+   * that no longer existed. CLAUDE.md's DeepSearchToggle precedent is explicit
+   * — a cost caveat is visible at rest, wired to the control, and the tests
+   * fail when it stops being either.
+   */
+  it('the cost caveat is on screen and describes both controls', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-counters');
+    const note = screen.getByTestId('attachment-sweep-note');
+    expect(note.id).toBeTruthy();
+    for (const testId of ['attachment-sweep-dry-run', 'attachment-sweep-delete']) {
+      expect(
+        screen.getByTestId(testId).getAttribute('aria-describedby'),
+        `${testId} must be described by the caveat`,
+      ).toBe(note.id);
+    }
+    // What it must still say: the 24h floor, the delete-time re-check, and
+    // the blast radius an operator would otherwise read backwards.
+    expect(note.textContent).toMatch(/24 hours/i);
+    expect(note.textContent).toMatch(/re-checked at delete time/i);
+    expect(note.textContent, 'the live-page cache case must be named').toMatch(
+      /cached Confluence image/i,
+    );
+  });
+
+  /**
+   * Review r1. The sweep DOES delete images attached to a live Confluence page
+   * that no body embeds (`walkConfluenceTree` emits `orphan_file` for a known
+   * key's unreferenced image-like files). The ADMIN-GUIDE says so; the last
+   * surface before the irreversible act framed deletion as limited to files
+   * nothing references at all, which an operator reads as "nothing on a live
+   * page" — the opposite. Recoverable (Confluence re-serves the bytes), but
+   * this is the sentence whose job is to name the cost.
+   */
+  it('the confirm dialog names the cached-Confluence-image case', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-counters');
+    fireEvent.click(screen.getByTestId('attachment-sweep-delete'));
+
+    const dialog = await screen.findByTestId('confirm-dialog-confirm');
+    const text = dialog.closest('[role="dialog"]')?.textContent ?? document.body.textContent ?? '';
+    expect(text).toMatch(/cached Confluence images that no page body embeds are removed too/i);
+    expect(text).toMatch(/re-fetched from Confluence/i);
+    // The claims it already made must still be there.
+    expect(text).toMatch(/cannot be undone/i);
+    expect(text).toMatch(/page icons/i);
+  });
+
   it('an already-running trigger reports neutrally, not as success', async () => {
     mockApi({ post: { started: false, alreadyRunning: true } });
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
@@ -593,6 +648,43 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(list.textContent).toContain('1.0 KB');
     // A 100-row sample must never push the actions off screen.
     expect(list.className).toContain('overflow-y-auto');
+  });
+
+  /**
+   * Review r1 (WCAG 2.1.1, axe `scrollable-region-focusable`). The scroller
+   * above holds about ten of up to 100 rows and every descendant is a
+   * `<span>`, so with no `tabindex` there is no keyboard path past row ten in
+   * Chromium or WebKit — on the one surface that says WHICH files a live run
+   * will destroy, and which the confirm dialog instructs the operator to
+   * read. The name matters as much as the stop: a focusable region with no
+   * accessible name announces nothing when focus lands on it.
+   */
+  it('the candidate scroller is a keyboard-reachable, named region', async () => {
+    mockApi({
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          candidatesTotal: 1,
+          candidateSample: [
+            { store: 'confluence', key: '55555', filename: null, bytes: 4096, reason: 'orphan_directory' },
+          ],
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const list = await screen.findByTestId('attachment-sweep-candidate-list');
+    expect(list.getAttribute('tabindex'), 'a scroll container must be reachable by keyboard').toBe(
+      '0',
+    );
+    expect(
+      list.getAttribute('aria-label') ?? list.getAttribute('aria-labelledby'),
+      'a focusable region needs an accessible name',
+    ).toBeTruthy();
+    // The same ring recipe the disclosure summary carries — the UA outline is
+    // the fallback this card's siblings already refuse.
+    expect(list.className).toContain('focus-visible:ring-2');
   });
 
   it('says the sample is bounded when the run found more candidates than it kept', async () => {
