@@ -1226,9 +1226,12 @@ scope for #1349, because they are the only copy of an uploaded mark and a wrong
 verdict there is unrecoverable rather than a re-fetch. Removal is therefore
 event-driven, and since #1349 **every** permanent delete performs it: unsetting
 or replacing an icon deletes the old file, a standalone hard delete or trash
-purge removes the icon directory alongside the attachment directories, and a
-Confluence page that is hard-deleted (singly or in bulk), purged from the trash
-after its 30-day window, or removed with its space by **Unsync** does the same.
+purge removes the icon directory beside that page's attachment directories —
+the icon *unconditionally*, because `page-icons/<pk>/` is keyed by `pages.id`
+alone and no other page can own it, while the attachment directories follow the
+per-store rules stated further down — and a Confluence page that is
+hard-deleted (singly or in bulk), purged from the trash after its 30-day
+window, or removed with its space by **Unsync** does the same.
 A *soft* delete deliberately does not: a trashed page is restorable and its
 mark is its own content, not a re-fetchable cache.
 
