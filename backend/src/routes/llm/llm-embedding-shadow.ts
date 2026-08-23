@@ -24,7 +24,10 @@ import {
 import {
   activeBenchmarkRun,
   BenchmarkRunSlotBusyError,
-  type BenchmarkRunKind,
+  // Worded by the holder's kind, and shared with the benchmark route (r3):
+  // a route may not import another route, so the sentence lives beside the
+  // rest of the run lifecycle.
+  slotBusyMessage,
 } from '../../domains/llm/eval/benchmark-run-lifecycle.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
@@ -41,21 +44,6 @@ const StartBodySchema = z.object({
   providerId: z.string().uuid(),
   model: z.string().trim().min(1).max(200),
 });
-
-/**
- * The human sentence for a 409 on the shared one-active run slot, worded by
- * the holder's `config->>'kind'` (r3). A `shadow-compare` run is the admin's
- * own comparison — most reachably one whose runId a remounted card lost —
- * and the toast repeats this verbatim, so it must not name a benchmark
- * nobody started. `null`/unknown kinds are production benchmarks (their
- * config carries no kind). The benchmark POST keeps its own sentence in both
- * directions per the #1260 owner decision.
- */
-function slotBusyMessage(kind: BenchmarkRunKind): string {
-  return kind === 'shadow-compare'
-    ? 'A comparison is already running — wait for it to finish before starting another'
-    : 'A production retrieval benchmark is already running';
-}
 
 /**
  * #1116 — non-destructive re-embed lifecycle. All admin-only. The service

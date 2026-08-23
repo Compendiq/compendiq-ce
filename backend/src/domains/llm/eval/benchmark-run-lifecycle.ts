@@ -73,6 +73,26 @@ export function staleRunError(kind: BenchmarkRunKind): string {
   return kind === 'shadow-compare' ? STALE_RUN_ERROR['shadow-compare'] : STALE_RUN_ERROR.benchmark;
 }
 
+/**
+ * The 409 both routes send when the shared slot is taken, worded by the kind
+ * of the run that actually HOLDS it — never by the route that was asked.
+ *
+ * It lives here, beside `staleRunError`, because both routes need it and a
+ * route may not import another route (the `routes/llm` boundary). It used to
+ * live in the compare route alone, so the exclusion was honest in one
+ * direction and false in the other: a benchmark refused by a running
+ * comparison was told "A production retrieval benchmark is already running" —
+ * a run that did not exist, on the one surface an operator consults to find
+ * out what is holding the slot. That the exclusion itself is acceptable, and
+ * stated in both cards' copy, is the #1260 owner decision; wording it wrongly
+ * is not part of that decision.
+ */
+export function slotBusyMessage(kind: BenchmarkRunKind): string {
+  return kind === 'shadow-compare'
+    ? 'A shadow model comparison is already running — wait for it to finish before starting another run'
+    : 'A production retrieval benchmark is already running';
+}
+
 interface RunRow<TConfig, TReport> {
   id: string;
   status: BenchmarkRunStatus;

@@ -620,8 +620,11 @@ function CompareResult({
                 className="rounded-md border border-border bg-background/40 p-3"
                 data-testid="shadow-compare-disagreement"
               >
-                <p className="break-words text-xs font-medium text-foreground">{row.query}</p>
-                <div className="mt-2 grid gap-3 text-xs sm:grid-cols-2">
+                {/* The row's SUBJECT, one step up from the twenty titles under
+                    it (r3). At the same 12px as its own content only weight
+                    and ink separated the question from the answers. */}
+                <p className="break-words text-[13px] font-medium text-foreground">{row.query}</p>
+                <div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
                   <ResultSide
                     label={`Live · ${report.live.model}`}
                     pages={row.live.pages}

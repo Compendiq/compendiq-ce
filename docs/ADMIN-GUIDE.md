@@ -475,9 +475,10 @@ migration card once a #1116 candidate column is fully backfilled and scores
 that candidate against the live embedding model on the same real queries
 (agreement first, and a judged Recall/MRR/McNemar verdict once 20 side-by-side
 picks exist). Both spend the same LLM queue, so while either runs the other
-answers 409 "already running" — a benchmark refused for a reason the Retrieval
-tab cannot see is usually a comparison holding the slot, and vice versa. The
-comparison's own lifecycle step is 3b in `docs/runbooks/shadow-reembed.md`.
+answers 409 "already running" — **and the message names the run that is
+actually holding the slot**, so a benchmark refused by a comparison says so
+rather than reporting a benchmark nobody started. The comparison's own
+lifecycle step is 3b in `docs/runbooks/shadow-reembed.md`.
 
 ### Keyword index language (`fts_language`)
 

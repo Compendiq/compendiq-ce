@@ -79,17 +79,21 @@ vi.mock('../../domains/llm/services/shadow-compare-service.js', () => ({
 const benchmarkGuard = vi.hoisted(() => ({
   active: vi.fn(async (): Promise<{ id: string; kind: string | null } | null> => null),
 }));
-vi.mock('../../domains/llm/eval/benchmark-run-lifecycle.js', () => ({
-  activeBenchmarkRun: (...a: unknown[]) => benchmarkGuard.active(...(a as [])),
-  BenchmarkRunSlotBusyError: class BenchmarkRunSlotBusyError extends Error {
-    constructor(
-      public readonly activeRunId: string,
-      public readonly kind: string | null = null,
-    ) {
-      super('A production retrieval benchmark is already running');
-    }
-  },
-}));
+vi.mock('../../domains/llm/eval/benchmark-run-lifecycle.js', async () => {
+  // Only `activeBenchmarkRun` is stubbed — the slot query is the one thing
+  // here that touches the database. Everything else is the REAL module (r3):
+  // the hand-written stand-ins were a class the route's `instanceof` could
+  // not have distinguished from the real one, and a `slotBusyMessage` that
+  // simply did not exist, so the sentence the route sends was never once
+  // exercised in the suite that pins its wording.
+  const actual = await vi.importActual<
+    typeof import('../../domains/llm/eval/benchmark-run-lifecycle.js')
+  >('../../domains/llm/eval/benchmark-run-lifecycle.js');
+  return {
+    ...actual,
+    activeBenchmarkRun: (...a: unknown[]) => benchmarkGuard.active(...(a as [])),
+  };
+});
 
 const auditMock = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../core/services/audit-service.js', () => ({

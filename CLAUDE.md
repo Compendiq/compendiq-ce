@@ -115,7 +115,17 @@ that ties inflate (fourteen ties plus six picks published `p = 0.031` from six
 clicks). Runs reuse `retrieval_benchmark_runs`
 (`config.kind = 'shadow-compare'`), so a comparison and the production
 benchmark exclude each other — deliberately, both spend the shared LLM queue —
-and the whole row lifecycle is ONE module, `eval/benchmark-run-lifecycle.ts`:
+**and BOTH 409s are worded by the run that HOLDS the slot** (`slotBusyMessage`,
+beside `staleRunError`; a route may not import another route). The exclusion is
+the owner decision and both cards' copy states it; telling an operator refused
+by a comparison that "a production retrieval benchmark is already running" is
+not part of that decision, and it named a run that does not exist on the one
+surface consulted to find out what is holding the slot. Both route suites
+`importActual` that module rather than hand-writing a stand-in: the previous
+factories defined a `class extends Error {}` the route's `instanceof` could not
+have distinguished from the real one, and a `slotBusyMessage` that did not
+exist at all — so the sentence never once ran in the suite pinning its wording.
+The whole row lifecycle is ONE module, `eval/benchmark-run-lifecycle.ts`:
 the two private copies diverged inside a single review round, the stale sweep
 failing comparisons with "start a new benchmark" and the benchmark's own
 `GET /:id` serving compare runs to a renderer that dereferences

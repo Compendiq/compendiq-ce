@@ -26,13 +26,24 @@ vi.mock('../../core/utils/logger.js', () => ({ logger: { error: vi.fn(), info: v
 vi.mock('../../domains/llm/services/llm-cache.js', () => ({
   LlmCache: class { clearAll = vi.fn().mockResolvedValue(0); },
 }));
-vi.mock('../../domains/llm/eval/production-benchmark.js', () => ({
-  createProductionBenchmarkRun: mockCreate,
-  getActiveProductionBenchmark: mockActive,
-  getProductionBenchmarkRun: mockGet,
-  runProductionBenchmark: mockRun,
-  ProductionBenchmarkAlreadyRunningError: class extends Error {},
-}));
+vi.mock('../../domains/llm/eval/production-benchmark.js', async () => {
+  // The REAL class, not a local stand-in (r3). The route maps this 409 by
+  // `instanceof`, so a factory-defined `class extends Error {}` tested the
+  // test's own type: the production module re-exports
+  // `BenchmarkRunSlotBusyError`, and a throw of the real one would have been
+  // rethrown as a 500 while the suite stayed green. It also carries the `kind`
+  // the wording now reads.
+  const lifecycle = await vi.importActual<
+    typeof import('../../domains/llm/eval/benchmark-run-lifecycle.js')
+  >('../../domains/llm/eval/benchmark-run-lifecycle.js');
+  return {
+    createProductionBenchmarkRun: mockCreate,
+    getActiveProductionBenchmark: mockActive,
+    getProductionBenchmarkRun: mockGet,
+    runProductionBenchmark: mockRun,
+    ProductionBenchmarkAlreadyRunningError: lifecycle.BenchmarkRunSlotBusyError,
+  };
+});
 
 import { llmAdminRoutes } from './llm-admin.js';
 
@@ -121,8 +132,49 @@ describe('production retrieval benchmark admin routes', () => {
     expect(response.statusCode).toBe(409);
     const body = response.json();
     expect(body.error).toBe('benchmark_in_progress');
-    expect(body.message).toMatch(/already running/i);
+    // Worded by the HOLDER, not by the route that was asked (r3). The fixed
+    // sentence told the operator a production benchmark was running when the
+    // slot was held by a #1260 comparison — a run that does not exist, on the
+    // one surface consulted to find out what is holding the slot, and toasted
+    // verbatim by the Retrieval tab.
+    expect(body.message).toMatch(/comparison is already running/i);
+    expect(body.message).not.toMatch(/production retrieval benchmark/i);
     expect(body).not.toHaveProperty('runId');
+  });
+
+  it('a benchmark holding the slot keeps the benchmark sentence', async () => {
+    // The other half of the same rule: the holder's kind decides, so the
+    // ordinary case must be untouched by the fix above.
+    mockActive.mockResolvedValue({ id: '44444444-4444-4444-8444-444444444444', kind: null });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/retrieval-benchmark',
+      payload: {},
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().message).toMatch(/production retrieval benchmark is already running/i);
+  });
+
+  it('a create losing the unique-index race to a COMPARISON is worded by the winner too', async () => {
+    // `ProductionBenchmarkAlreadyRunningError.message` is the class's fixed
+    // benchmark sentence, so echoing `err.message` re-introduced the same lie
+    // one layer down, on the path that only fires under a real race.
+    mockActive.mockResolvedValue(null);
+    const { BenchmarkRunSlotBusyError } = await import(
+      '../../domains/llm/eval/benchmark-run-lifecycle.js'
+    );
+    mockCreate.mockRejectedValue(
+      new BenchmarkRunSlotBusyError('55555555-5555-4555-8555-555555555555', 'shadow-compare'),
+    );
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/retrieval-benchmark',
+      payload: {},
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().message).toMatch(/comparison is already running/i);
+    expect(response.json().message).not.toMatch(/production retrieval benchmark/i);
+    expect(response.json()).not.toHaveProperty('runId');
   });
 
   it('returns a persisted run for polling', async () => {

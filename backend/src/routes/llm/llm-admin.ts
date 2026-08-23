@@ -14,6 +14,7 @@ import {
   ProductionBenchmarkAlreadyRunningError,
   runProductionBenchmark,
 } from '../../domains/llm/eval/production-benchmark.js';
+import { slotBusyMessage } from '../../domains/llm/eval/benchmark-run-lifecycle.js';
 
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
@@ -61,10 +62,16 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
     if (active) {
       return reply.code(409).send({
         error: 'benchmark_in_progress',
-        // The sentence stays as it is in both directions, per the #1260 owner
-        // decision (both cards' copy states that the slot is shared).
-        message: 'A production retrieval benchmark is already running',
-        // …but the ID does not: the slot is shared with the #1260 shadow
+        // Worded by the run that HOLDS the slot, never by the route that was
+        // asked (r3). The slot is shared with the #1260 shadow comparison, so
+        // the fixed sentence told an operator refused by a running comparison
+        // that "a production retrieval benchmark is already running" — a run
+        // that did not exist, on the surface they consult to find out what is
+        // holding it, and toasted verbatim by the Retrieval tab. That the
+        // exclusion itself is acceptable and stated in both cards' copy is the
+        // #1260 owner decision; wording it wrongly is not part of it.
+        message: slotBusyMessage(active.kind),
+        // The ID is withheld for the mirror-image reason: the #1260 shadow
         // comparison, and `GET /admin/retrieval-benchmark/:id` is kind-guarded
         // and 404s a compare run's id. Handing it back would let this card
         // adopt an id its own poll refuses (r1) — the mirror of the guard the
@@ -80,7 +87,9 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
       if (err instanceof ProductionBenchmarkAlreadyRunningError) {
         return reply.code(409).send({
           error: 'benchmark_in_progress',
-          message: err.message,
+          // Same holder-worded sentence as above: the race's winner may be a
+          // comparison, and `err.message` is the class's fixed benchmark one.
+          message: slotBusyMessage(err.kind),
           // Same kind guard as above: only ever a benchmark's own id.
           ...(err.kind === null ? { runId: err.activeRunId } : {}),
         });
