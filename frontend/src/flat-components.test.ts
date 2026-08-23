@@ -167,18 +167,105 @@ function callsites(
  * so it rendered nothing while reading as live code. A guard whose pattern is
  * narrower than the rule it enforces certifies exactly the call sites nobody
  * would have written by accident.
+ *
+ * KNOWN GAP, unchanged by this file's history and deliberately not closed here:
+ * this is still the pre-v4 named scale, so Tailwind 4's own spellings — `shadow-xs`,
+ * `shadow-2xs`, a coloured `shadow-cyan-400/40`, the CSS-variable shorthand
+ * `shadow-(--shadow-overlay)` — do not match at all. Widening it is not a
+ * one-line edit: `shadow-xs` alone is live on four real call sites today
+ * (`NotesInspectorPanel` ×3, `EditorSlashMenu` ×1), so the pattern and those
+ * components have to move together, in a change that is about the components.
  */
 const SHADOW_UTILITY = /\b(drop-)?shadow(-(sm|md|lg|xl|2xl|inner))?(-\[|(?=["'\s]|$))/;
 
 /**
- * A class list is lowercase utility tokens. Prose carries capitals and sentence
- * punctuation — but an arbitrary value (`bg-[var(--Foo)]`, `w-[calc(100%-1.5rem)]`)
- * and a `${}` placeholder both carry them too, so blank those first. Otherwise a
- * real class list could disguise itself as a sentence and buy the exemption below.
+ * Tailwind utilities that carry no `-`, `:` or `/`, so token shape alone cannot
+ * tell them from an English word. Everything in this tree's real class lists is
+ * here (harvested from every `className` literal under `src/`), plus the rest of
+ * the dash-free scale, plus this repo's own `skeleton` / `prose`.
  */
-function readsAsProse(body: string): boolean {
-  const classish = body.replace(/\$\{[^{}]*\}/g, ' ').replace(/\[[^\]]*\]/g, ' ');
-  return /[A-Z]/.test(classish) || /[.,;!?—–]/.test(classish);
+const BARE_UTILITIES = new Set([
+  'absolute',
+  'antialiased',
+  'block',
+  'blur',
+  'border',
+  'capitalize',
+  'collapse',
+  'columns',
+  'container',
+  'contents',
+  'filter',
+  'fixed',
+  'flex',
+  'grayscale',
+  'grid',
+  'group',
+  'grow',
+  'hidden',
+  'inline',
+  'invert',
+  'invisible',
+  'isolate',
+  'italic',
+  'lowercase',
+  'ordinal',
+  'outline',
+  'overline',
+  'peer',
+  'prose',
+  'relative',
+  'resize',
+  'ring',
+  'rounded',
+  'sepia',
+  'shadow',
+  'shrink',
+  'skeleton',
+  'static',
+  'sticky',
+  'table',
+  'transform',
+  'transition',
+  'truncate',
+  'underline',
+  'uppercase',
+  'visible',
+]);
+
+const CLASS_TOKEN = /^-?[a-z0-9][a-z0-9:_./%!@&<>~+*(),#-]*$/;
+
+/**
+ * True when the body is a run of Tailwind-shaped tokens rather than a sentence.
+ *
+ * This discriminates on TOKEN SHAPE, and that is the whole point. The first
+ * version of this exemption tested the WHOLE STRING for sentence punctuation —
+ * and Tailwind's fractional spacing scale (`p-1.5`, `gap-2.5`, `py-0.5`) puts a
+ * `.` in roughly 900 of this tree's real class lists, so a bare `shadow` dropped
+ * into any of them read as prose and walked straight through the sweep. Verified
+ * by mutation before this rewrite: `p-1.5 shadow` on a live component left the
+ * guard green.
+ *
+ * Arbitrary values (`shadow-[var(--shadow-overlay)]`, `[scrollbar-gutter:stable]`)
+ * and `${}` placeholders collapse to a dashed stand-in first: their innards carry
+ * capitals, dots and parens that say nothing about the enclosing token's shape.
+ *
+ * Tailwind-shaped = lowercase, drawn from the utility charset, and either
+ * carrying a `-` / `:` / `/` or naming one of `BARE_UTILITIES`. The residual
+ * trade-off is deliberate and one-directional: a dash-free utility missing from
+ * that set makes its class list read as prose, which can only ever forgive a
+ * bare `shadow` standing beside it. It can never red-light English — the failure
+ * mode that gets a guard deleted.
+ */
+function isClassList(body: string): boolean {
+  const tokens = body
+    .replace(/\$\{[^{}]*\}/g, 'x-x')
+    .replace(/\[[^\]]*\]/g, 'x-x')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length === 0) return false;
+  return tokens.every((t) => CLASS_TOKEN.test(t) && (/[-:/]/.test(t) || BARE_UTILITIES.has(t)));
 }
 
 /**
@@ -192,7 +279,7 @@ function readsAsProse(body: string): boolean {
  * attribute. A guard that red-lights English is a guard people delete.
  *
  * So the AMBIGUOUS bare form (`shadow` / `drop-shadow`, no suffix) is permitted
- * inside prose, and only there. Every unambiguous spelling — `shadow-lg`,
+ * outside a class list, and only there. Every unambiguous spelling — `shadow-lg`,
  * `shadow-[…]`, `drop-shadow-md` — stays matched everywhere, prose included,
  * because none of those is a word anyone writes by accident.
  *
@@ -207,7 +294,7 @@ function shadowIsPermitted(body: string): boolean {
     const rest = body.slice(m.index);
     if (/^shadow-\[var\(--shadow-overlay\)\]/.test(rest)) continue;
     const bare = !m[2] && m[4] !== '-[';
-    if (bare && readsAsProse(body)) continue;
+    if (bare && !isClassList(body)) continue;
     return false;
   }
   return true;
@@ -221,6 +308,18 @@ describe('the component layer is as flat as the token layer', () => {
 
     expect(offends('shadow')).toBe(true);
     expect(offends('flex shadow rounded-md')).toBe(true);
+    // Tailwind's fractional scale puts a `.` in ~900 of this tree's class lists.
+    // A discriminator that reads the string's punctuation instead of its tokens
+    // hands every one of them the bare-`shadow` exemption; these pin that shut.
+    expect(offends('flex rounded-md p-1.5 shadow')).toBe(true);
+    expect(offends('mt-0.5 flex shadow')).toBe(true);
+    expect(offends('rounded-full shadow bg-success/15 px-2 py-0.5 font-medium')).toBe(true);
+    expect(offends('space-y-1.5 drop-shadow')).toBe(true);
+    expect(offends('w-20 rounded-md border px-2 py-1.5 shadow text-sm')).toBe(true);
+    // Capitals inside an arbitrary value are not a sentence either.
+    expect(offends('shadow w-[calc(100%-1.5rem)] bg-[var(--Foo)]')).toBe(true);
+    // `${}` spans are placeholders, not prose.
+    expect(offends('flex ${tone} gap-1.5 shadow')).toBe(true);
     expect(offends('nm-card shadow-lg p-3')).toBe(true);
     expect(offends('hover:drop-shadow-md')).toBe(true);
     expect(offends('shadow-[0_0_8px_#22d3ee]')).toBe(true);
@@ -231,6 +330,9 @@ describe('the component layer is as flat as the token layer', () => {
       offends('The comparison in progress ended — the shadow migration changed underneath it.'),
     ).toBe(false);
     expect(offends('Start a shadow migration first.')).toBe(false);
+    // …and it stays prose with neither a capital nor a full stop to lean on:
+    // the words themselves are not utility-shaped.
+    expect(offends('the shadow migration changed underneath it')).toBe(false);
 
     // …but prose buys no exemption for an actual utility sitting in it.
     expect(offends('Applies the shadow-lg class. Do not.')).toBe(true);
