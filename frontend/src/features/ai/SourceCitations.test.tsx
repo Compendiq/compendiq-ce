@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { SourceCitations, type Source } from './SourceCitations';
+import { installIntersectionObserverStub } from '../../test-utils';
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -204,10 +205,21 @@ describe('SourceCitations', () => {
       similarity: null,
     };
 
+    // #1361: the thumbnail waits for its sentinel to intersect. jsdom never
+    // lays anything out, so the test drives the observer itself.
+    let observer: ReturnType<typeof installIntersectionObserverStub>;
     beforeEach(() => {
+      observer = installIntersectionObserverStub();
       vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:thumb');
       vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     });
+
+    /** Bring every mounted thumbnail into view. */
+    async function scrollIntoView() {
+      await act(async () => {
+        observer.intersectAll();
+      });
+    }
 
     function mockAttachmentFetch(ok = true) {
       const fetchMock = vi.fn(async () =>
@@ -223,6 +235,7 @@ describe('SourceCitations', () => {
       const fetchMock = mockAttachmentFetch();
       render(<SourceCitations sources={[imageSource]} />, { wrapper: Wrapper });
       fireEvent.click(screen.getByText('Sources (1)'));
+      await scrollIntoView();
 
       // The picture is fetched through the authenticated route, not set as a
       // bare `src` (which would 401).
@@ -245,6 +258,7 @@ describe('SourceCitations', () => {
       mockAttachmentFetch(false);
       render(<SourceCitations sources={[imageSource]} />, { wrapper: Wrapper });
       fireEvent.click(screen.getByText('Sources (1)'));
+      await scrollIntoView();
 
       await waitFor(() =>
         expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument(),
@@ -263,7 +277,7 @@ describe('SourceCitations', () => {
       expect(screen.queryByTestId('source-image-file')).not.toBeInTheDocument();
     });
 
-    it('names the picture, so two hits on one page are distinguishable (review r1)', () => {
+    it('names the picture, so two hits on one page are distinguishable (review r1)', async () => {
       // One page contributes up to `MAX_IMAGE_HITS_PER_PAGE` (3) entries, and
       // the title, the space and the destination are identical on all of them
       // — with the thumbnail decorative by design, these cards were three
@@ -279,6 +293,7 @@ describe('SourceCitations', () => {
         { wrapper: Wrapper },
       );
       fireEvent.click(screen.getByText('Sources (2)'));
+      await scrollIntoView();
 
       expect(screen.getAllByTestId('source-image-file').map((n) => n.textContent))
         .toEqual(['turbine.png', 'rotor detail.png']);
@@ -288,13 +303,14 @@ describe('SourceCitations', () => {
       expect(new Set(names).size).toBe(2);
     });
 
-    it('keeps the category label alone when the URL carries no filename', () => {
+    it('keeps the category label alone when the URL carries no filename', async () => {
       mockAttachmentFetch();
       render(
         <SourceCitations sources={[{ ...imageSource, attachmentUrl: '/api/attachments/77/' }]} />,
         { wrapper: Wrapper },
       );
       fireEvent.click(screen.getByText('Sources (1)'));
+      await scrollIntoView();
       expect(screen.getByTestId('source-image-label')).toHaveTextContent('Image');
       expect(screen.queryByTestId('source-image-file')).not.toBeInTheDocument();
     });
@@ -344,6 +360,11 @@ describe('SourceCitations', () => {
       // `target.kind === 'internal'`); this card gated only on `isImageSource`,
       // so an unavailable image source fetched the full attachment on every
       // reopen of a thread the reader can no longer see the page for.
+      // Bring any mounted thumbnail into view: without this, the viewport gate
+      // (not the `target.kind` check this test is pinning) would be why
+      // nothing fetched, and this would stay green with Task 16's guard
+      // reverted.
+      const observer = installIntersectionObserverStub();
       const fetchMock = vi.fn(async () =>
         ({ ok: true, status: 200, blob: async () => new Blob(['x']) } as unknown as Response));
       vi.stubGlobal('fetch', fetchMock);
@@ -363,6 +384,9 @@ describe('SourceCitations', () => {
         { wrapper: Wrapper },
       );
       fireEvent.click(screen.getByText('Sources (1)'));
+      await act(async () => {
+        observer.intersectAll();
+      });
 
       expect(screen.queryByTestId('source-thumbnail')).not.toBeInTheDocument();
       await Promise.resolve();
