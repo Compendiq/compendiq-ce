@@ -961,6 +961,17 @@ export async function processDirtyPages(
     logger.info({ userId, dirtyPages: totalDirty }, 'Processing dirty pages for embedding');
 
     if (totalDirty === 0) {
+      // SSE consumers need a terminal event even when there is no work. Without
+      // it the Workers UI sees only the initial "started" event, the stream
+      // closes, and the action appears to have silently done nothing.
+      onProgress?.({
+        type: 'complete',
+        total: 0,
+        completed: 0,
+        failed: 0,
+        percentage: 100,
+        errors: [],
+      });
       return { processed: 0, errors: 0 };
     }
 

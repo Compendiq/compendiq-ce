@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { Play, RotateCcw, AlertTriangle, CheckCircle, Clock, Loader2 } from 'lucide-react';
 import { m, useReducedMotion } from 'framer-motion';
 import { apiFetch } from '../../shared/lib/api';
+import { streamSSE } from '../../shared/lib/sse';
 import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button } from '../../shared/components/Button';
@@ -24,6 +25,17 @@ interface NormalizedStatus {
   lastRunAt: string | null;
   intervalMinutes: number;
   model: string;
+}
+
+interface EmbeddingRunProgress {
+  type: 'started' | 'progress' | 'complete' | 'waiting' | 'paused' | 'error';
+  total?: number;
+  completed?: number;
+  failed?: number;
+  percentage?: number;
+  currentPage?: string;
+  reason?: string;
+  error?: string;
 }
 
 type StatusNormalizer = (data: Record<string, unknown>) => NormalizedStatus;
@@ -103,6 +115,62 @@ function useWorkerAction(endpoint: string, successMsg: string) {
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Action failed'),
   });
+}
+
+/**
+ * Keep the manual embedding action attached to the request that does the work.
+ * The old `/llm/embedding-run-now` endpoint returned before lock acquisition,
+ * so a failed or skipped start looked exactly like success and the button
+ * immediately fell back to Idle. `/embeddings/process` streams authoritative
+ * start/progress/error/completion events and keeps the mutation pending for the
+ * real lifetime of the run.
+ */
+function useEmbeddingRunAction() {
+  const queryClient = useQueryClient();
+  const [progress, setProgress] = useState<EmbeddingRunProgress | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      setProgress({ type: 'started' });
+      let completion: EmbeddingRunProgress | null = null;
+
+      for await (const event of streamSSE<EmbeddingRunProgress>('/embeddings/process', {})) {
+        if (event.type === 'error') {
+          throw new Error(event.error ?? 'Embedding processing failed');
+        }
+        setProgress(event);
+        if (event.type === 'complete') completion = event;
+      }
+
+      if (!completion) {
+        throw new Error('Embedding stream ended before completion');
+      }
+      return completion;
+    },
+    onSuccess: (result) => {
+      const total = result.total ?? 0;
+      const completed = result.completed ?? 0;
+      const failed = result.failed ?? 0;
+      if (total === 0) {
+        toast.info('No pending pages to embed.');
+      } else if (failed > 0) {
+        toast.warning(`Embedding finished: ${completed} completed, ${failed} failed.`);
+      } else {
+        toast.success(`Embedding complete — ${completed} ${completed === 1 ? 'page' : 'pages'} processed.`);
+      }
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Embedding processing failed');
+    },
+    onSettled: () => {
+      setProgress(null);
+      queryClient.invalidateQueries({ queryKey: ['worker-status', 'embedding'] });
+      queryClient.invalidateQueries({ queryKey: ['embeddings'] });
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+    },
+  });
+
+  return { mutation, progress };
 }
 
 // ---------------------------------------------------------------------------
@@ -234,14 +302,29 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
   normalize: StatusNormalizer;
 }) {
   const { data: status, isLoading } = useWorkerStatus(statusKey, statusEndpoint, normalize);
-  const runNow = useWorkerAction(runEndpoint, `${title} batch triggered`);
+  const requestRunNow = useWorkerAction(runEndpoint, `${title} batch triggered`);
+  const embeddingRun = useEmbeddingRunAction();
+  const usesEmbeddingStream = statusKey === 'embedding';
+  const runNow = usesEmbeddingStream ? embeddingRun.mutation : requestRunNow;
   const rescan = useWorkerAction(rescanEndpoint, `${title} rescan started`);
   const resetFailed = useWorkerAction(resetFailedEndpoint ?? '', 'Failed items reset to pending');
   const hasResetFailed = !!resetFailedEndpoint;
   // Rescan-all guard (ConfirmDialog replaces native confirm()).
   const [confirmRescanOpen, setConfirmRescanOpen] = useState(false);
 
-  const workerState = status ? deriveWorkerState(status) : 'idle';
+  const workerState = runNow.isPending
+    ? 'running'
+    : status
+      ? deriveWorkerState(status)
+      : 'idle';
+
+  const embeddingProgress = usesEmbeddingStream ? embeddingRun.progress : null;
+  const processed = (embeddingProgress?.completed ?? 0) + (embeddingProgress?.failed ?? 0);
+  const progressLabel = embeddingProgress?.type === 'waiting' || embeddingProgress?.type === 'paused'
+    ? embeddingProgress.reason
+    : embeddingProgress?.total !== undefined
+      ? `${processed} of ${embeddingProgress.total} pending pages processed`
+      : 'Starting embedding worker…';
 
   return (
     <div className="nm-card p-4 space-y-3" data-testid={`worker-card-${statusKey}`}>
@@ -335,6 +418,18 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
           </div>
         </>
       ) : null}
+
+      {usesEmbeddingStream && runNow.isPending && (
+        <div
+          className="flex min-w-0 items-center gap-2 text-xs text-status-embedding"
+          role="status"
+          aria-live="polite"
+          data-testid="embedding-run-progress"
+        >
+          <Loader2 size={12} className="shrink-0 animate-spin" aria-hidden="true" />
+          <span className="min-w-0 break-words">{progressLabel}</span>
+        </div>
+      )}
 
       {/* Rescan-all guard. No destructive styling: everything the rescan
           clears is recomputed automatically by the background worker. */}

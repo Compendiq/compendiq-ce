@@ -277,6 +277,61 @@ describe('WorkersTab', () => {
     });
   });
 
+  it('streams embedding progress and stays visibly running until completion', async () => {
+    fetchSpy.mockRestore();
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+
+    const embeddingFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+      if (path.includes('/api/llm/quality-status')) {
+        return new Response(JSON.stringify(qualityStatus), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (path.includes('/api/llm/summary-status')) {
+        return new Response(JSON.stringify(summaryStatus), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (path.includes('/api/llm/embedding-status')) {
+        return new Response(JSON.stringify(embeddingStatus), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (path.includes('/api/embeddings/process')) {
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+      }
+      return new Response(JSON.stringify({ message: 'OK' }), { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<WorkersTab />, { wrapper: createWrapper() });
+    const button = await screen.findByTestId('embedding-run-now');
+    fireEvent.click(button);
+
+    streamController.enqueue(encoder.encode(
+      'data: {"type":"started","message":"Embedding processing started"}\n\n' +
+      'data: {"type":"progress","total":3,"completed":1,"failed":0,"percentage":33}\n\n',
+    ));
+
+    const progress = await screen.findByTestId('embedding-run-progress');
+    expect(progress).toHaveTextContent('1 of 3 pending pages processed');
+    expect(within(screen.getByTestId('worker-card-embedding')).getByText('Running')).toBeInTheDocument();
+    expect(button).toBeDisabled();
+    expect(embeddingFetch).toHaveBeenCalledWith(
+      '/api/embeddings/process',
+      expect.objectContaining({ method: 'POST' }),
+    );
+
+    streamController.enqueue(encoder.encode(
+      'data: {"type":"complete","total":3,"completed":3,"failed":0,"percentage":100,"errors":[]}\n\n',
+    ));
+    streamController.close();
+
+    await waitFor(() => expect(button).not.toBeDisabled());
+    expect(screen.queryByTestId('embedding-run-progress')).not.toBeInTheDocument();
+  });
+
   it('does not show interval for embedding (on-demand worker)', async () => {
     render(<WorkersTab />, { wrapper: createWrapper() });
 
