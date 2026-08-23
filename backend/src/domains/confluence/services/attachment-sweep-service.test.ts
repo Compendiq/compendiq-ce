@@ -171,6 +171,43 @@ describe('collectAttachmentUrlReferences (#1349 keep-set feeder)', () => {
     expect(sq.local.has('my file.png')).toBe(true);
   });
 
+  it('extends an ABSOLUTE quoted spelling too — the quote is not the previous character (fixer, external round)', () => {
+    // `text[match.index - 1]` is `m` from `.com` here, so the r1 continuation
+    // never fired and the keep-set held only `my`; the on-disk `my file.png`
+    // then missed the keep-set and a live run deleted a referenced file.
+    // Absolute attachment URLs really occur in bodies (an editor that
+    // resolves against document.baseURI, a paste from a rendered page).
+    const abs = emptySets();
+    collectAttachmentUrlReferences(
+      '<img src="https://kb.example.com/api/attachments/123/my file.png">',
+      abs,
+    );
+    expect(abs.confluence.has('my file.png')).toBe(true);
+
+    // Same through a proxy path prefix, and on the single-quoted spelling.
+    const prefixed = emptySets();
+    collectAttachmentUrlReferences(
+      "<a href='https://kb.example.com:8443/wiki/api/local-attachments/7/two words.png'>x</a>",
+      prefixed,
+    );
+    expect(prefixed.local.has('two words.png')).toBe(true);
+  });
+
+  it('the enclosing-quote scan stops at whitespace and tag boundaries — a plain-text spelling after a quoted attribute is not extended', () => {
+    // The scan must not reach BACKWARDS past the text that separates a bare
+    // URL from an earlier attribute's closing quote, or it would swallow
+    // everything up to the next quote in the document as the "filename".
+    const sets = emptySets();
+    collectAttachmentUrlReferences(
+      '<p title="t">see /api/attachments/1/my file.png here</p><b class="x">',
+      sets,
+    );
+    expect(sets.confluence.has('my')).toBe(true);
+    for (const name of sets.confluence) {
+      expect(name.includes(' here')).toBe(false);
+    }
+  });
+
   it('the quoted extension still drops query and fragment, and composes with entity decoding', () => {
     const sets = emptySets();
     collectAttachmentUrlReferences('<img src="/api/attachments/1/a b.png?v=2">', sets);

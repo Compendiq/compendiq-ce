@@ -72,7 +72,12 @@ import fs from 'fs/promises';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sniffImageFormat } from './image-validator.js';
-import { canStoreLocalFilename, localAttachmentsDir } from './local-attachment-service.js';
+import {
+  canStoreLocalFilename,
+  localAttachmentsDir,
+  LOCAL_STORE_DIRNAME,
+} from './local-attachment-service.js';
+import { PAGE_ICON_STORE_DIRNAME } from './page-icon-store.js';
 import { confluenceAttachmentDirKey } from './image-references.js';
 import type { ImageFormat, PageSource } from '@compendiq/contracts';
 
@@ -338,10 +343,34 @@ export async function readCachedAttachmentFile(
 // standalone-delete cleanup both wrap them.
 
 /**
+ * Entries under `ATTACHMENTS_DIR` that are STORES of their own rather than
+ * attachment keys (#1349, fixer external round).
+ *
+ * Both sit inside the Confluence-style root and both names pass that tree's
+ * key allow-list (`page-icons` because `-` is in it), so a walker that treats
+ * every root entry as a key finds no page row for either and judges the whole
+ * store one orphan directory. `local/` was reserved from the start; the
+ * page-icon store was not, and a live sweep deleted every uploaded page mark
+ * — permanently, because migrations 095/096 persist only the sha.
+ *
+ * Anything that enumerates the root must skip these by name, and
+ * `removeCachedAttachmentDirectory` refuses them outright so a future walker
+ * that forgets cannot repeat it.
+ */
+export const ATTACHMENT_ROOT_RESERVED_DIRNAMES: ReadonlySet<string> = new Set([
+  LOCAL_STORE_DIRNAME,
+  PAGE_ICON_STORE_DIRNAME,
+]);
+
+/**
  * Remove one attachment key's whole directory (recursive, idempotent).
- * Throws on an invalid key or traversal; ENOENT is a no-op via `force`.
+ * Throws on an invalid key, a reserved store name or traversal; ENOENT is a
+ * no-op via `force`.
  */
 export async function removeCachedAttachmentDirectory(pageId: string): Promise<void> {
+  if (ATTACHMENT_ROOT_RESERVED_DIRNAMES.has(pageId)) {
+    throw new Error(`Refusing to remove the reserved attachment store "${pageId}"`);
+  }
   await fs.rm(attachmentDirNow(pageId), { recursive: true, force: true });
 }
 

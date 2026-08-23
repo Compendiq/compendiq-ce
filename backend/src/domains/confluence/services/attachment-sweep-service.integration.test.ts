@@ -571,6 +571,67 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(missingRow.rows).toHaveLength(1);
     });
 
+    // Fixer, external round — permanent data loss. `page-icons/` is a store of
+    // its own under the SAME root, its name passes PAGE_ID_PATTERN (`-` is in
+    // the class), and no page row claims the key. `readKeyDir` sees only its
+    // per-page SUBDIRECTORIES, so `files` is empty, the keep-set check is
+    // vacuous and `[].every()` collapses the grace check onto the directory's
+    // own mtime — a live run then removed the whole tree recursively. The
+    // uploaded marks are the only copy (migrations 095/096 store only the sha),
+    // so every page icon 404s until re-upload, reported as "1 directory (0 B)".
+    it('never judges the page-icon store — a live run leaves every uploaded mark standing', async () => {
+      const { confPageId } = await seedCorpus();
+      const sha = 'a'.repeat(64);
+      const icon = await writeAged('page-icons', String(confPageId), `${sha}.png`);
+      await ageDirs('page-icons', path.join('page-icons', String(confPageId)));
+
+      const run = await runAttachmentSweep({ dryRun: false });
+
+      expect(run!.status).toBe('completed');
+      expect(await exists(icon), 'the uploaded page mark must survive a live sweep').toBe(true);
+      expect(await exists(path.join(tempBase, 'page-icons'))).toBe(true);
+      // Not merely spared at delete time: never listed, and never counted as
+      // one of the Confluence tree's directories.
+      expect(run!.candidateSample.some((c) => c.key === 'page-icons')).toBe(false);
+      const dry = await runAttachmentSweep({ dryRun: true });
+      expect(dry!.stores!.confluence.orphanDirectories).toBe(0);
+    });
+
+    // Fixer, external round: the record the card polls must describe the tree
+    // as it is NOW. Persisting the pre-delete walk showed the orphans the run
+    // had just destroyed as current candidates, dated "Measured just now",
+    // beside "deleted N files" — so the operator presses Delete orphans again.
+    it('a completed live run persists POST-delete figures, not the walk it swept with', async () => {
+      await seedCorpus();
+
+      const before = await runAttachmentSweep({ dryRun: true });
+      expect(before!.stores!.confluence.orphanFiles).toBeGreaterThan(0);
+      expect(before!.stores!.confluence.orphanDirectories).toBeGreaterThan(0);
+
+      const live = await runAttachmentSweep({ dryRun: false });
+      expect(live!.status).toBe('completed');
+      expect(live!.deleted!.files).toBeGreaterThan(0);
+
+      const record = await readAttachmentStorageStatsRecord();
+      expect(record).not.toBeNull();
+      for (const store of ['confluence', 'local'] as const) {
+        expect(record!.stores[store].orphanFiles, `${store} orphan files`).toBe(0);
+        expect(record!.stores[store].orphanDirectories, `${store} orphan dirs`).toBe(0);
+        expect(record!.stores[store].orphanFileBytes).toBe(0);
+        expect(record!.stores[store].orphanDirectoryBytes).toBe(0);
+      }
+
+      // And the size/count figures match a fresh walk of what is left.
+      const after = await runAttachmentSweep({ dryRun: true });
+      for (const store of ['confluence', 'local'] as const) {
+        expect(record!.stores[store].bytes, `${store} bytes`).toBe(after!.stores![store].bytes);
+        expect(record!.stores[store].files, `${store} files`).toBe(after!.stores![store].files);
+        expect(record!.stores[store].directories, `${store} dirs`).toBe(
+          after!.stores![store].directories,
+        );
+      }
+    });
+
     it('emits a RETENTION_PRUNED audit event with the counts', async () => {
       await seedCorpus();
       const run = await runAttachmentSweep({ dryRun: false });
@@ -587,8 +648,46 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(audit.rows).toHaveLength(1);
       expect(audit.rows[0]!.metadata.dry_run).toBe(false);
       expect(audit.rows[0]!.metadata.files_pruned).toBeGreaterThan(0);
+      // The audit states what was FOUND beside what was destroyed, so it
+      // reads the WALK, never the run record's post-delete residue —
+      // `orphan_files: 0` beside a non-zero `files_pruned` contradicts itself.
+      expect(audit.rows[0]!.metadata.orphan_files).toBeGreaterThan(0);
+      expect(audit.rows[0]!.metadata.orphan_directories).toBeGreaterThan(0);
       // No `triggeredBy` (a non-request caller): a null-actor system event.
       expect(audit.rows[0]!.user_id).toBeNull();
+    });
+
+    // Review, external round: the first cut's side-channel carried only
+    // `deleted`, so a run that threw mid-delete recorded `stores: null` and
+    // `candidatesTotal: 0` although the walk had completed — and its audit row
+    // then said `orphan_files: 0` beside a non-zero `files_pruned`.
+    it('a run that fails mid-delete still records the walk it completed', async () => {
+      await seedCorpus();
+      // A directory whose files cannot be unlinked (no write bit on the
+      // directory itself): the delete loop reaches its orphan and throws.
+      const locked = path.join(tempBase, '90001');
+      await fs.chmod(locked, 0o500);
+      let run: Awaited<ReturnType<typeof runAttachmentSweep>>;
+      try {
+        run = await runAttachmentSweep({ dryRun: false });
+      } finally {
+        await fs.chmod(locked, 0o700);
+      }
+
+      expect(run!.status).toBe('failed');
+      expect(run!.stores, 'the completed walk must survive the failure').not.toBeNull();
+      expect(run!.candidatesTotal).toBeGreaterThan(0);
+      expect(run!.deleted).not.toBeNull();
+
+      const audit = await query<{
+        metadata: { orphan_files: number; files_pruned: number; status: string };
+      }>(
+        `SELECT metadata FROM audit_log
+          WHERE action = 'RETENTION_PRUNED' AND resource_id = 'attachments_orphan_sweep'
+          ORDER BY created_at DESC LIMIT 1`,
+      );
+      expect(audit.rows[0]!.metadata.status).toBe('failed');
+      expect(audit.rows[0]!.metadata.orphan_files).toBeGreaterThan(0);
     });
 
     // Verification round r1: the sweep is manual-only, so every destructive

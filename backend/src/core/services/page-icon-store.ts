@@ -15,7 +15,17 @@ import crypto from 'node:crypto';
 import { sniffImageFormat } from './image-validator.js';
 import type { ImageFormat } from '@compendiq/contracts';
 
-const SUBDIR = 'page-icons';
+/**
+ * The reserved entry name this store owns under `ATTACHMENTS_DIR` (#1349).
+ *
+ * Exported because it is a RESERVATION, not an implementation detail: the tree
+ * sits inside the Confluence-style attachment root and `page-icons` matches
+ * that tree's key allow-list, so any walker over the root must skip it by name
+ * or judge it a keyless — hence orphaned — directory. Migrations 095/096 store
+ * only the sha, so these files are the only copy of an uploaded mark.
+ */
+export const PAGE_ICON_STORE_DIRNAME = 'page-icons';
+const SUBDIR = PAGE_ICON_STORE_DIRNAME;
 const MAX_ICON_BYTES = 512 * 1024;
 
 export class PageIconStoreError extends Error {

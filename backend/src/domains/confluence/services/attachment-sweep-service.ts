@@ -11,10 +11,14 @@
  * ── The orphan rules (design of record, PR #1349) ─────────────────────────
  *
  * The two stores are walked SEPARATELY. The Confluence-style tree is
- * `readdir(attachmentsRootNow())` minus the reserved `local/` entry — that
- * entry lives INSIDE the same root and its name matches the tree's key
- * pattern, so a naive walk would list the entire local store as one "orphan
- * directory". The local store is walked under `localAttachmentsRoot()` only.
+ * `readdir(attachmentsRootNow())` minus the RESERVED entries
+ * (`ATTACHMENT_ROOT_RESERVED_DIRNAMES`: `local/` and `page-icons/`) — each
+ * lives INSIDE the same root and each name matches the tree's key pattern, so
+ * a naive walk lists a whole other store as one "orphan directory" and a live
+ * run deletes it recursively. The local store is walked under
+ * `localAttachmentsRoot()` only; the page-icon store is not walked at all —
+ * its files are never referenced from a body, so this service has no rule that
+ * could keep them.
  *
  * (a) **Directory-level orphans**: a directory whose key matches NO page row
  *     at all — `pages.confluence_id` OR `pages.id` for the Confluence-style
@@ -101,12 +105,12 @@ import {
   releaseWorkerLock,
 } from '../../../core/services/redis-cache.js';
 import {
+  ATTACHMENT_ROOT_RESERVED_DIRNAMES,
   attachmentsRootNow,
   removeCachedAttachmentDirectory,
   removeCachedAttachmentFile,
 } from '../../../core/services/attachment-store.js';
 import {
-  LOCAL_STORE_DIRNAME,
   localAttachmentsRoot,
   removeLocalAttachmentDirectory,
   removeLocalAttachmentFileForSweep,
@@ -166,8 +170,10 @@ export interface AttachmentKeepSets {
  * SPACE inside a QUOTED attribute value is legal HTML and the reference
  * works (the browser percent-encodes it on request, the route decodes it
  * back), but `\s` is outside the filename class, so only the pre-space
- * prefix reached the keep-set. When a match starts immediately after `"` or
- * `'`, the collector therefore ALSO extends the candidate to the closing
+ * prefix reached the keep-set. When a match sits inside a quoted attribute
+ * value — decided by scanning BACK to the opening quote, so an absolute
+ * `src="https://host/api/attachments/…"` counts too — the collector therefore
+ * ALSO extends the candidate to the closing
  * quote below — a plain-text spelling with a space stays unextended, because
  * outside a quoted attribute there is no delimiter and a bare URL with a
  * literal space does not function as a reference.
@@ -249,6 +255,42 @@ function decodeHtmlEntitiesOnce(name: string): string {
  */
 const QUOTED_CONTINUATION_MAX = 512;
 
+/** How far back the enclosing-quote scan below will look. Bounds the cost. */
+const QUOTED_LOOKBACK_MAX = 2048;
+
+/**
+ * The quote that OPENS the attribute value a match sits inside, or `''`.
+ *
+ * The first cut read `text[match.index - 1]` and so only ever recognised a
+ * ROOT-RELATIVE spelling (`src="/api/attachments/…"`), where the quote really
+ * is the previous character. An ABSOLUTE spelling is equally common and just
+ * as functional — `src="https://kb.example.com/api/attachments/123/my
+ * file.png"` — and there the previous character is `m` from `.com`, so the
+ * continuation never fired, the name truncated at the space, and a live run
+ * deleted a referenced file. That is the same defect class r1–r3 patched one
+ * instance at a time; this is the class-level form.
+ *
+ * Scanning BACKWARDS is what makes it general: whatever sits between the
+ * opening quote and `/api/` (scheme, host, port, a proxy path prefix) is
+ * skipped, and the scan stops at the first character that cannot appear inside
+ * a quoted attribute value's leading run — a tag boundary, or any whitespace,
+ * which also terminates an UNQUOTED attribute value and separates a plain-text
+ * spelling from whatever precedes it. Finding a quote first therefore means
+ * the match is inside that quoted value, whose spelling legally runs to the
+ * matching closing quote.
+ */
+function enclosingAttributeQuote(text: string, matchIndex: number): '"' | "'" | '' {
+  const floor = Math.max(0, matchIndex - QUOTED_LOOKBACK_MAX);
+  for (let i = matchIndex - 1; i >= floor; i -= 1) {
+    const ch = text[i]!;
+    if (ch === '"' || ch === "'") return ch;
+    if (ch === '<' || ch === '>' || ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f') {
+      return '';
+    }
+  }
+  return '';
+}
+
 export function collectAttachmentUrlReferences(
   text: string | null | undefined,
   into: AttachmentKeepSets,
@@ -268,18 +310,19 @@ export function collectAttachmentUrlReferences(
       }
     };
     addSeed(raw);
-    // Quoted-attribute continuation (fixer r1): a match that starts right
-    // after `"` or `'` is an attribute value, whose spelling legally runs to
-    // the closing quote — through characters the filename class excludes
-    // (literal spaces above all). The extension is one more SEED, so every
+    // Quoted-attribute continuation (fixer r1, generalised in the external
+    // round): a match INSIDE a quoted attribute value — root-relative or
+    // absolute, see `enclosingAttributeQuote` — has a spelling that legally
+    // runs to the closing quote, through characters the filename class
+    // excludes (literal spaces above all). The extension is one more SEED, so every
     // decode/trim variant below applies to it too. The regex's own
     // query/fragment termination is REPLAYED on it (`?`, and `#` only when
     // it is not part of an `&#` entity): a spelling past either never
     // reaches the disk file — the browser cuts the URL there before
     // requesting — so keeping it would not protect anything, and the pinned
     // fragment rule stays exact.
-    const quote = match.index > 0 ? text[match.index - 1] : '';
-    if (quote === '"' || quote === "'") {
+    const quote = enclosingAttributeQuote(text, match.index);
+    if (quote !== '') {
       const matchEnd = match.index + match[0].length;
       const close = text.indexOf(quote, matchEnd);
       if (close > matchEnd && close - matchEnd <= QUOTED_CONTINUATION_MAX) {
@@ -629,9 +672,18 @@ async function walkConfluenceTree(
   const keys = rootEntries
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
-    // The local store is walked separately; a dot-dir is debris; a key that
-    // fails the allow-list is never judged and never touched.
-    .filter((name) => name !== LOCAL_STORE_DIRNAME && !name.startsWith('.') && PAGE_ID_PATTERN.test(name));
+    // Reserved STORES are skipped whole (`local/`, walked separately, and
+    // `page-icons/`, which is not walked at all): both sit inside this root
+    // and both names pass PAGE_ID_PATTERN, so without this each is a keyless
+    // directory the rules below judge an orphan and a live run deletes
+    // recursively. A dot-dir is debris; a key that fails the allow-list is
+    // never judged and never touched.
+    .filter(
+      (name) =>
+        !ATTACHMENT_ROOT_RESERVED_DIRNAMES.has(name) &&
+        !name.startsWith('.') &&
+        PAGE_ID_PATTERN.test(name),
+    );
 
   const known = await knownConfluenceTreeKeys(keys);
 
@@ -780,6 +832,71 @@ export function emptyDeletedTotals(): DeletedTotals {
   return { directories: 0, files: 0, bytes: 0, imageEmbeddingRows: 0, pagesMarkedDirty: 0 };
 }
 
+/**
+ * What a live delete phase removed, PER STORE, in the walk's own units
+ * (fixer, external round).
+ *
+ * The walk's figures describe the tree BEFORE the delete loop ran, and the
+ * run persisted them verbatim as the stats record — so a completed live run
+ * left the card reporting the orphans it had just destroyed as current
+ * candidates, dated "Measured just now", beside "deleted N files". An
+ * operator reading that presses Delete orphans again believing the sweep did
+ * nothing. `DeletedTotals` cannot answer it: it is one global figure and the
+ * card renders the two stores separately.
+ *
+ * These are SUBTRACTIONS, taken from the delete loop's own re-verified reads
+ * (the same `recheck`/`stat` the removal itself used), so the adjusted figures
+ * describe what is left on disk rather than what the walk once saw.
+ */
+export interface StoreStatsAdjustment {
+  directories: number;
+  files: number;
+  bytes: number;
+  orphanDirectories: number;
+  orphanDirectoryBytes: number;
+  orphanFiles: number;
+  orphanFileBytes: number;
+}
+export type StoreStatsAdjustments = Record<'confluence' | 'local', StoreStatsAdjustment>;
+
+export function emptyStatsAdjustments(): StoreStatsAdjustments {
+  const zero = (): StoreStatsAdjustment => ({
+    directories: 0,
+    files: 0,
+    bytes: 0,
+    orphanDirectories: 0,
+    orphanDirectoryBytes: 0,
+    orphanFiles: 0,
+    orphanFileBytes: 0,
+  });
+  return { confluence: zero(), local: zero() };
+}
+
+/**
+ * The walk's figures minus what the delete phase removed. Clamped at zero:
+ * a file that vanished between the walk and the delete is subtracted by
+ * whoever removed it, and under-reporting a store's size is the harmless
+ * direction — the figures are a measurement, not an accounting ledger.
+ * `graceSkipped`, `keepProtectedDirectories` and `unreadableDirectories`
+ * describe the WALK's verdicts and are carried through untouched.
+ */
+function applyStatsAdjustment(
+  stats: AttachmentStoreSweepStats,
+  adj: StoreStatsAdjustment,
+): AttachmentStoreSweepStats {
+  const sub = (a: number, b: number): number => Math.max(0, a - b);
+  return {
+    ...stats,
+    bytes: sub(stats.bytes, adj.bytes),
+    files: sub(stats.files, adj.files),
+    directories: sub(stats.directories, adj.directories),
+    orphanDirectories: sub(stats.orphanDirectories, adj.orphanDirectories),
+    orphanDirectoryBytes: sub(stats.orphanDirectoryBytes, adj.orphanDirectoryBytes),
+    orphanFiles: sub(stats.orphanFiles, adj.orphanFiles),
+    orphanFileBytes: sub(stats.orphanFileBytes, adj.orphanFileBytes),
+  };
+}
+
 /** Page ids owning a Confluence-tree directory key (0, 1 or 2 rows). */
 async function confluenceKeyOwners(key: string): Promise<number[]> {
   const owners = new Set<number>();
@@ -826,6 +943,7 @@ export async function deleteCandidates(
   keep: AttachmentKeepSets,
   assertNotAborted: () => void,
   totals: DeletedTotals,
+  adjustments: StoreStatsAdjustments = emptyStatsAdjustments(),
 ): Promise<DeletedTotals> {
   const cutoffMs = Date.now() - ATTACHMENT_SWEEP_GRACE_MS;
   const dirtyPages = new Set<number>();
@@ -871,6 +989,12 @@ export async function deleteCandidates(
         totals.directories += 1;
         totals.files += recheck.files.length;
         totals.bytes += recheck.bytes;
+        const dirAdj = adjustments[candidate.store];
+        dirAdj.directories += 1;
+        dirAdj.files += recheck.files.length;
+        dirAdj.bytes += recheck.bytes;
+        dirAdj.orphanDirectories += 1;
+        dirAdj.orphanDirectoryBytes += recheck.bytes;
         continue;
       }
 
@@ -893,6 +1017,11 @@ export async function deleteCandidates(
       }
       totals.files += 1;
       totals.bytes += st.size;
+      const fileAdj = adjustments[candidate.store];
+      fileAdj.files += 1;
+      fileAdj.bytes += st.size;
+      fileAdj.orphanFiles += 1;
+      fileAdj.orphanFileBytes += st.size;
 
       // Index-row prune + dirty marking for the owning pages.
       const ownersCacheKey = `${candidate.store}:${candidate.key}`;
@@ -1066,15 +1195,27 @@ export async function runAttachmentSweep(opts: {
     if (lockLost) throw new SweepAborted();
   };
 
-  // Filled in by `executeSweep` the moment the delete phase starts, so a
-  // throw mid-delete still records and audits the partial destructive work
-  // (review r1): `null` here means the delete phase never ran at all.
-  const partial: { deleted: DeletedTotals | null } = { deleted: null };
+  // Filled in by `executeSweep` as it goes, so a throw ANYWHERE past the walk
+  // still records and audits what the run found and what it destroyed
+  // (review r1, widened in the external round): the first cut carried only
+  // `deleted`, so a run that failed mid-delete recorded `stores: null` and
+  // `candidatesTotal: 0` although the walk had completed — and its
+  // RETENTION_PRUNED event then said `orphan_files: 0` beside a non-zero
+  // `files_pruned`, an audit row that contradicts itself. `stores === null`
+  // now means the walk never finished; `deleted === null`, that the delete
+  // phase never started.
+  const walk: SweepProgress = {
+    stores: null,
+    missingLocalFiles: 0,
+    candidates: [],
+    deleted: null,
+    adjustments: null,
+  };
 
   let run: AttachmentSweepRun;
   try {
     try {
-      run = await executeSweep(opts.dryRun, startedAt, assertNotAborted, partial);
+      run = await executeSweep(opts.dryRun, startedAt, assertNotAborted, walk);
     } catch (err) {
       logger.error({ err, dryRun: opts.dryRun }, 'attachment-sweep: run failed');
       run = shapeRun({
@@ -1082,10 +1223,10 @@ export async function runAttachmentSweep(opts: {
         startedAt,
         status: 'failed',
         note: err instanceof SweepAborted ? err.message : 'sweep failed — see the server logs',
-        stores: null,
-        missingLocalFiles: 0,
-        candidates: [],
-        deleted: partial.deleted,
+        stores: residualStores(walk),
+        missingLocalFiles: walk.missingLocalFiles,
+        candidates: walk.candidates,
+        deleted: walk.deleted,
       });
     }
 
@@ -1098,11 +1239,16 @@ export async function runAttachmentSweep(opts: {
     // errors (bookkeeping, not the work), so holding the lock through it
     // cannot wedge it; the release below still sits in a `finally`.
     await persistSetting(ATTACHMENT_SWEEP_LAST_RUN_KEY, run);
-    // The stats record is the last COMPLETED walk only (review r1): the
+    // The stats record is the last COMPLETED run only (review r1): the
     // anomaly refusal carries `stores` too — a zero-file walk over a store
     // the database still references — and persisting those figures would
     // clobber the one reference record an operator diagnosing the suspected
     // mis-mount needs. The refused run keeps its figures in the RUN record.
+    // A FAILED run is excluded for a different reason: its delete phase may
+    // have stopped anywhere, so `residualStores` is a floor rather than a
+    // measurement, and the card's amber strip already sends the operator to
+    // Dry run. `run.stores` for a completed LIVE run is post-delete —
+    // see `residualStores`.
     if (run.status === 'completed' && run.stores) {
       await persistSetting(ATTACHMENT_STORAGE_STATS_KEY, {
         at: run.at,
@@ -1118,14 +1264,19 @@ export async function runAttachmentSweep(opts: {
   // RETENTION_PRUNED-style heartbeat: one event per run, dry included, with
   // counts by reason class — the auditor can tell "ran, nothing matched"
   // from "never ran". The actor is the triggering admin when there is one.
+  //
+  // The orphan counts come from the WALK (`walk.stores`), never from
+  // `run.stores`: an audit row states what was FOUND beside what was
+  // destroyed, and `run.stores` is deliberately the post-delete residue, so
+  // reading it here would report `orphan_files: 0` next to `files_pruned: 5`.
   await logAuditEvent(opts.triggeredBy ?? null, 'RETENTION_PRUNED', 'table', 'attachments_orphan_sweep', {
     dry_run: run.dryRun,
     status: run.status,
     note: run.note,
     candidates_total: run.candidatesTotal,
     orphan_directories:
-      (run.stores?.confluence.orphanDirectories ?? 0) + (run.stores?.local.orphanDirectories ?? 0),
-    orphan_files: (run.stores?.confluence.orphanFiles ?? 0) + (run.stores?.local.orphanFiles ?? 0),
+      (walk.stores?.confluence.orphanDirectories ?? 0) + (walk.stores?.local.orphanDirectories ?? 0),
+    orphan_files: (walk.stores?.confluence.orphanFiles ?? 0) + (walk.stores?.local.orphanFiles ?? 0),
     files_pruned: run.deleted?.files ?? 0,
     directories_pruned: run.deleted?.directories ?? 0,
     bytes_pruned: run.deleted?.bytes ?? 0,
@@ -1140,8 +1291,8 @@ export async function runAttachmentSweep(opts: {
       durationMs: run.durationMs,
       candidatesTotal: run.candidatesTotal,
       orphanDirectories:
-        (run.stores?.confluence.orphanDirectories ?? 0) + (run.stores?.local.orphanDirectories ?? 0),
-      orphanFiles: (run.stores?.confluence.orphanFiles ?? 0) + (run.stores?.local.orphanFiles ?? 0),
+        (walk.stores?.confluence.orphanDirectories ?? 0) + (walk.stores?.local.orphanDirectories ?? 0),
+      orphanFiles: (walk.stores?.confluence.orphanFiles ?? 0) + (walk.stores?.local.orphanFiles ?? 0),
       deleted: run.deleted,
       missingLocalFiles: run.missingLocalFiles,
     },
@@ -1150,11 +1301,47 @@ export async function runAttachmentSweep(opts: {
   return run;
 }
 
+/**
+ * What the run has established so far — owned by `runAttachmentSweep` and
+ * filled in by `executeSweep`, so a throw anywhere past the walk still has
+ * something honest to record. See the comment at its declaration.
+ */
+interface SweepProgress {
+  /** The WALK's figures, pre-delete. `null` until the walk completes. */
+  stores: AttachmentSweepRun['stores'];
+  missingLocalFiles: number;
+  candidates: AttachmentSweepCandidate[];
+  /** `null` until the delete phase starts. */
+  deleted: DeletedTotals | null;
+  /** `null` until the delete phase starts; mutated per removal. */
+  adjustments: StoreStatsAdjustments | null;
+}
+
+/**
+ * The walk's figures minus what this run has already destroyed — i.e. what is
+ * on disk NOW. This is what a run RECORD publishes as `stores`, and (for a
+ * completed run) what the persisted stats record and the card then show.
+ *
+ * Publishing the raw walk was the defect (fixer, external round): a completed
+ * live run wrote the pre-delete figures as the fresh stats record, so the card
+ * listed the orphans the run had just deleted as current candidates, dated
+ * "Measured just now", beside "deleted N files" — and an operator reading that
+ * presses Delete orphans again believing nothing happened. The audit event
+ * keeps reading the walk, because THAT surface states what was found.
+ */
+function residualStores(walk: SweepProgress): AttachmentSweepRun['stores'] {
+  if (!walk.stores || !walk.adjustments) return walk.stores;
+  return {
+    confluence: applyStatsAdjustment(walk.stores.confluence, walk.adjustments.confluence),
+    local: applyStatsAdjustment(walk.stores.local, walk.adjustments.local),
+  };
+}
+
 async function executeSweep(
   dryRun: boolean,
   startedAt: number,
   assertNotAborted: () => void,
-  partial: { deleted: DeletedTotals | null },
+  walk: SweepProgress,
 ): Promise<AttachmentSweepRun> {
   const refused = (note: string): AttachmentSweepRun =>
     shapeRun({
@@ -1185,6 +1372,9 @@ async function executeSweep(
 
   const stores = { confluence: confluence.stats, local: local.stats };
   const candidates = [...confluence.candidates, ...local.candidates];
+  walk.stores = stores;
+  walk.missingLocalFiles = local.missingLocalFiles;
+  walk.candidates = candidates;
 
   // (e) Live-run anomaly: a store that is empty on disk while the database
   // still references it is a mis-pointed or unmounted ATTACHMENTS_DIR, not a
@@ -1213,14 +1403,23 @@ async function executeSweep(
     });
   }
 
-  partial.deleted = emptyDeletedTotals();
-  const deleted = await deleteCandidates(candidates, keep, assertNotAborted, partial.deleted);
+  walk.deleted = emptyDeletedTotals();
+  walk.adjustments = emptyStatsAdjustments();
+  const deleted = await deleteCandidates(
+    candidates,
+    keep,
+    assertNotAborted,
+    walk.deleted,
+    walk.adjustments,
+  );
   return shapeRun({
     dryRun,
     startedAt,
     status: 'completed',
     note: null,
-    stores,
+    // Post-delete: what is on disk now, not what the walk found — the audit
+    // event carries the findings.
+    stores: residualStores(walk),
     missingLocalFiles: local.missingLocalFiles,
     candidates,
     deleted,
