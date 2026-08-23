@@ -150,6 +150,25 @@ function mockApi(plan: FetchPlan): void {
   });
 }
 
+/**
+ * GET counts PER ROUTE (fixer r1).
+ *
+ * The card runs two independent polling queries and `/admin/attachments/sweep`
+ * is also the POST target, so a total `fetch.mock.calls.length` cannot tell
+ * "both queries are polling" from "one of them is" — which is exactly how the
+ * stats query's `refetchInterval` came to be unguarded.
+ */
+function getsByRoute(): { stats: number; sweep: number } {
+  let stats = 0;
+  let sweep = 0;
+  for (const [input, init] of vi.mocked(globalThis.fetch).mock.calls) {
+    const url = typeof input === 'string' ? input : String(input);
+    if (url.endsWith('/admin/attachments/stats')) stats += 1;
+    else if (url.endsWith('/admin/attachments/sweep') && (init?.method ?? 'GET') === 'GET') sweep += 1;
+  }
+  return { stats, sweep };
+}
+
 describe('AttachmentStorageCard (#1349)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1366,19 +1385,80 @@ describe('AttachmentStorageCard (#1349)', () => {
       // Settle the POST and the two invalidations it fires.
       await vi.advanceTimersByTimeAsync(50);
 
-      const afterKick = vi.mocked(globalThis.fetch).mock.calls.length;
-      // Two GETs per poll tick, and `running` is false on every one of them.
+      const afterKick = getsByRoute();
+      // Two GETs per poll tick — and BOTH are asserted per route (fixer r1).
+      // A total-call count is satisfied by ONE polling query, so it left the
+      // stats query's `refetchInterval` unguarded: deleting that one line kept
+      // all 56 cells green while, in production, `figures` froze at its
+      // pre-run values for the whole walk and after it, because the kick-time
+      // `invalidateQueries` was then the last stats fetch that ever ran.
       await vi.advanceTimersByTimeAsync(3 * POLL_MS_UNDER_TEST);
-      const duringWarmup = vi.mocked(globalThis.fetch).mock.calls.length;
-      expect(duringWarmup, 'the card must keep polling inside the warm-up').toBeGreaterThan(
-        afterKick,
+      const duringWarmup = getsByRoute();
+      expect(duringWarmup.stats, 'the STATS query must keep polling inside the warm-up').toBeGreaterThan(
+        afterKick.stats,
+      );
+      expect(duringWarmup.sweep, 'the SWEEP query must keep polling inside the warm-up').toBeGreaterThan(
+        afterKick.sweep,
       );
 
-      // Past the 20s window with `running` still false: the interval stands down.
+      // Past the 20s window with `running` still false: both intervals stand down.
       await vi.advanceTimersByTimeAsync(KICK_WARMUP_MS_UNDER_TEST);
-      const settled = vi.mocked(globalThis.fetch).mock.calls.length;
+      const settled = getsByRoute();
       await vi.advanceTimersByTimeAsync(3 * POLL_MS_UNDER_TEST);
-      expect(vi.mocked(globalThis.fetch).mock.calls.length, 'the warm-up must expire').toBe(settled);
+      expect(getsByRoute(), 'the warm-up must expire for both routes').toEqual(settled);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The third half-fix of the same shape (fixer r1).
+   *
+   * `figures` and `lastRun` were both derived so that no consumer reads a
+   * record through a failed GET. `running` was left reading `stats.data` /
+   * `sweep.data` raw — and TanStack RETAINS `data` through a failed refetch,
+   * which is the ordinary shape here: the card polls two admin routes that
+   * share a backend, so an outage that begins mid-sweep fails both.
+   *
+   * In that state the card asserted "Sweeping…" and `aria-busy` as fact about
+   * a run it could no longer observe, AND disabled Dry run — the very remedy
+   * its own error copy names — leaving no reachable affordance at all. The
+   * existing 'keeps both actions live when the record cannot be read' cell
+   * uses FIRST-fetch failures, where no `data` is retained, so it cannot see
+   * this path.
+   */
+  it('stops claiming a sweep it can no longer see, and leaves the remedy reachable', async () => {
+    vi.useFakeTimers();
+    try {
+      mockApi({
+        stats: { ...STATS, running: true },
+        sweep: { ...SWEEP, running: true },
+        statsFailsAfterFirst: true,
+        sweepFailsAfterFirst: true,
+      });
+      render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+      await vi.waitFor(() =>
+        expect(screen.getByTestId('attachment-sweep-running')).toBeInTheDocument(),
+      );
+
+      // One poll tick later both GETs are 500ing while the retained payloads
+      // still say `running: true`.
+      await vi.advanceTimersByTimeAsync(POLL_MS_UNDER_TEST + 50);
+      await vi.waitFor(() =>
+        expect(screen.getByTestId('attachment-storage-error')).toBeInTheDocument(),
+      );
+
+      expect(
+        screen.queryByTestId('attachment-sweep-running'),
+        'the card must not announce a sweep it cannot observe',
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('attachment-storage-card')).toHaveAttribute('aria-busy', 'false');
+      expect(
+        screen.getByTestId('attachment-sweep-dry-run'),
+        'the error copy names Dry run as the remedy — it must be pressable',
+      ).toBeEnabled();
+      expect(screen.getByTestId('attachment-sweep-delete')).toBeEnabled();
     } finally {
       vi.useRealTimers();
     }

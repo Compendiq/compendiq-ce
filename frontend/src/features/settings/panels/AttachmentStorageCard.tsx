@@ -254,7 +254,6 @@ export function AttachmentStorageCard() {
     onError: (err: Error) => toast.error(err.message),
   });
 
-  const running = (stats.data?.running ?? false) || (sweep.data?.running ?? false);
   const isPending = stats.isPending || sweep.isPending;
   // Each GET's failure stands alone — see the header comment (review r1).
   const statsError = stats.isError;
@@ -266,6 +265,24 @@ export function AttachmentStorageCard() {
   // down — it exists to say a refused run would not show, which is already
   // implied when nothing at all could be read.
   const bothQueriesFailed = statsError && sweepError;
+  /**
+   * …and the same guard for the RUNNING flag (fixer r1) — the third consumer
+   * of the same half-fix pattern `figures` and `lastRun` already closed.
+   *
+   * TanStack retains `data` through a failed REFETCH, so an outage that begins
+   * while a sweep is in flight — the ordinary shape, since both admin GETs
+   * share a backend — left this reading `running: true` off two payloads the
+   * card could no longer observe. It feeds `aria-busy`, the "Sweeping…" chip
+   * and `actionsDisabled`, so the card simultaneously asserted a sweep as fact
+   * and DISABLED Dry run, the remedy its own error copy names one line above:
+   * no reachable affordance at all until the backend came back.
+   *
+   * A record read through a failed GET claims nothing. Polling is unaffected —
+   * `pollWhile` reads the query's own retained data, so the card keeps asking
+   * and heals itself the moment either route answers again.
+   */
+  const running =
+    (!statsError && (stats.data?.running ?? false)) || (!sweepError && (sweep.data?.running ?? false));
   /**
    * The RAW last-run record — the announcer's input, and nothing else's.
    *
