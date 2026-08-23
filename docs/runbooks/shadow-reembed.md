@@ -103,7 +103,11 @@ committing. The shadow card's **Compare on real queries** section (or
   (live top-K titles vs candidate top-K titles). This is the **vector leg
   only** — not what users see after keyword fusion and rerank — and it is an
   agreement measure, never a quality verdict: it answers "how much would
-  this move?", which is often enough to decide.
+  this move?", which is often enough to decide. In the list, pages **only one
+  side returned** are marked as such and counted per side, so you read the
+  difference rather than diffing two columns of titles by eye; the list opens
+  at the first ten disagreements and expands on request (`limit` 100 × `topK`
+  20 is ~4000 lines of card otherwise).
 - **Mode 2 — judge the disagreements.** Each disagreement row offers
   Live / Candidate / Neither / Both. Judgements persist in
   `embedding_compare_judgements` keyed by (query, live provider+model,
@@ -122,7 +126,10 @@ committing. The shadow card's **Compare on real queries** section (or
   tab's production benchmark**: while either runs the other answers 409
   "already running". A swap/abort/rollback landing mid-run fails the run
   cleanly with a message naming the migration change; just start a new
-  comparison from the new state. A worker killed mid-run is recovered by the
+  comparison from the new state. **You are told, and not by the section** —
+  it lives inside the `ready` branch and your own Abort or Swap unmounts it
+  within a poll, so the card raises the notice instead (and a migration moved
+  from another tab is reported the same way). A worker killed mid-run is recovered by the
   same 30-minute heartbeat sweep the benchmark uses — and the sweep words the
   failure as a comparison, so a row reading "start a new benchmark" is a
   benchmark's, not yours. A one-off provider hiccup (a 429, an opened
