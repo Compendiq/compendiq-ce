@@ -426,22 +426,40 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(screen.queryByTestId('attachment-sweep-last-run-problem')).not.toBeInTheDocument();
   });
 
-  // Review r2: Tailwind preflight forces `svg { display: block }`, so a bare
-  // lucide icon inside a button with no flex layout stacks on its own line
-  // above the label. `nm-action-destructive` supplies colour only — this
-  // callsite must supply the box (the ProviderListSection precedent), or the
-  // two buttons in the row render with different layouts. jsdom cannot see
-  // the layout, so the classes themselves are pinned.
-  it('the Delete orphans button carries the flex layout, gap and radius its treatment needs', async () => {
+  /**
+   * Review r2. The hand-rolled `nm-action-destructive` + box classes shipped a
+   * control that disagreed with the `nm-button-ghost` beside it in the same
+   * row on every axis that matters: 14px/400 against 13px/500, and — because
+   * `@utility nm-action-destructive` declares colour, hover and focus only —
+   * an explicitly TRANSPARENT border against Dry run's
+   * `--color-border-interactive` one. `transparent` is not forced, so under
+   * `forced-colors: active` the colour and the hover fill are both overridden
+   * and the destructive control becomes indistinguishable from body text
+   * while its neutral sibling keeps its outline — the failure ADR-010's "every
+   * operable surface keeps a 1px solid border" rule exists to prevent.
+   *
+   * `nm-button-destructive` is what the lane brief specified, what the
+   * component comment claimed and what the PR body describes; it matches
+   * `nm-button-ghost`'s box metrics by construction. `nm-action-destructive`
+   * stays the right choice for a destructive row INSIDE a bordered container
+   * (its three pinned callsites) — not for a peer button beside a bordered one.
+   */
+  it('Delete orphans is the filled destructive variant, matching its sibling’s box', async () => {
     mockApi({});
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
     await screen.findByTestId('attachment-storage-counters');
     const del = screen.getByTestId('attachment-sweep-delete');
-    expect(del.className).toContain('nm-action-destructive');
-    for (const cls of ['inline-flex', 'items-center', 'gap-1.5', 'rounded-md']) {
-      expect(del.className.split(/\s+/), `Delete orphans must carry ${cls}`).toContain(cls);
+    const dry = screen.getByTestId('attachment-sweep-dry-run');
+
+    expect(del.className.split(/\s+/)).toContain('nm-button-destructive');
+    // No hand-rolled box beside it: the recipe owns padding, radius, border,
+    // type size and weight, so a stray override is how the row drifts apart.
+    for (const cls of ['text-sm', 'border-transparent', 'px-3', 'py-1.5', 'rounded-md']) {
+      expect(del.className.split(/\s+/), `must not re-declare ${cls}`).not.toContain(cls);
     }
+    // Both peers take their box from a `nm-button-*` recipe, not the callsite.
+    expect(dry.className.split(/\s+/)).toContain('nm-button-ghost');
   });
 
   // Review r2: `unreadableDirectories` is recorded per store precisely so an
@@ -586,6 +604,81 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(disclosure.textContent).toMatch(/Showing the first 1 of 940/i);
   });
 
+  /**
+   * Review r2. `candidateSample` is dual-purpose — the contract calls it
+   * "candidates/deletions" — and after a LIVE run it holds the entries the
+   * walk found, most of which the run then destroyed. The card labelled them
+   * "candidates" anyway, directly under post-delete figures reporting zero
+   * orphans: one card saying there is nothing to sweep and listing two things
+   * to sweep a few lines below. The operator's reading is "it did nothing,
+   * press Delete again" — the exact failure the post-delete figures were
+   * introduced to prevent.
+   *
+   * The live wording is past tense about the WALK and never claims removal
+   * per row, because when one store stands down for the mis-mount anomaly its
+   * entries are reported and deliberately NOT deleted.
+   */
+  it('a completed live run never calls what it destroyed a current candidate', async () => {
+    mockApi({
+      stats: {
+        ...STATS,
+        stores: {
+          confluence: { ...STORE_STATS, orphanDirectories: 0, orphanFiles: 0, orphanDirectoryBytes: 0, orphanFileBytes: 0 },
+          local: { ...STORE_STATS, orphanDirectories: 0, orphanFiles: 0, orphanDirectoryBytes: 0, orphanFileBytes: 0 },
+        },
+      },
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          dryRun: false,
+          candidatesTotal: 2,
+          candidateSample: [
+            { store: 'confluence', key: '12345', filename: null, bytes: 4096, reason: 'orphan_directory' },
+            { store: 'local', key: '77', filename: 'gone.png', bytes: 2048, reason: 'orphan_file' },
+          ],
+          deleted: { directories: 1, files: 1, bytes: 6144, imageEmbeddingRows: 0, pagesMarkedDirty: 1 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const disclosure = await screen.findByTestId('attachment-sweep-candidates');
+    const lastRun = screen.getByTestId('attachment-sweep-last-run');
+    for (const el of [disclosure, lastRun]) {
+      expect(el.textContent, 'a live run lists what it FOUND, not what is pending').not.toMatch(
+        /candidate/i,
+      );
+    }
+    expect(lastRun.textContent).toMatch(/2 found/i);
+    expect(disclosure.textContent).toMatch(/what the sweep found/i);
+    // The list itself is unchanged — it is the label that was the lie.
+    expect(screen.getByTestId('attachment-sweep-candidate-list').textContent).toContain(
+      'local/77/gone.png',
+    );
+  });
+
+  it('a completed DRY run still calls them candidates — they really are pending', async () => {
+    mockApi({
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          dryRun: true,
+          candidatesTotal: 1,
+          candidateSample: [
+            { store: 'confluence', key: '12345', filename: null, bytes: 4096, reason: 'orphan_directory' },
+          ],
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const disclosure = await screen.findByTestId('attachment-sweep-candidates');
+    expect(disclosure.textContent).toMatch(/Show the 1 candidate/i);
+    expect(screen.getByTestId('attachment-sweep-last-run').textContent).toMatch(/1 candidate/i);
+  });
+
   it('renders no candidate disclosure when the last run found nothing', async () => {
     mockApi({});
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
@@ -625,6 +718,61 @@ describe('AttachmentStorageCard (#1349)', () => {
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
     await screen.findByTestId('attachment-sweep-last-run');
     expect(screen.queryByTestId('attachment-sweep-partial-note')).not.toBeInTheDocument();
+  });
+
+  /**
+   * Review r2. The kick toast promises the outcome will land on the card
+   * ("figures update here when the walk finishes"), and the 5s poll then swaps
+   * the running chip for the verdict silently — so a screen-reader user who
+   * pressed Delete orphans was told the run STARTED and never told it finished
+   * or what it removed. The two existing live regions are both amber strips
+   * that render only for a run that did not complete or that stood a store
+   * down; the ordinary success path had none.
+   *
+   * `role="status"` (polite), not an alert: a completed run is a verdict worth
+   * hearing, not worth interrupting for — the refusal-strip recipe.
+   */
+  it('announces a completed run politely, and marks the card busy while one is in flight', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const lastRun = await screen.findByTestId('attachment-sweep-last-run');
+    expect(lastRun).toHaveAttribute('role', 'status');
+    expect(screen.getByTestId('attachment-storage-card')).toHaveAttribute('aria-busy', 'false');
+  });
+
+  it('marks the card busy while a sweep is running', async () => {
+    mockApi({ stats: { ...STATS, running: true }, sweep: { ...SWEEP, running: true } });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-sweep-running');
+    expect(screen.getByTestId('attachment-storage-card')).toHaveAttribute('aria-busy', 'true');
+  });
+
+  // Review r2: this is the card's only keyboard-reachable disclosure and it
+  // opens the destructive review list, yet it fell back to the UA outline
+  // while both sibling settings disclosures (ChatVisionCapability,
+  // ImageEmbeddingCapability) ring theirs with the Steel token.
+  it('the candidate disclosure carries the app’s focus ring, not the UA default', async () => {
+    mockApi({
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          candidatesTotal: 1,
+          candidateSample: [
+            { store: 'confluence', key: '1', filename: 'a.png', bytes: 1, reason: 'orphan_file' },
+          ],
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const disclosure = await screen.findByTestId('attachment-sweep-candidates');
+    const summary = disclosure.querySelector('summary')!;
+    for (const cls of ['focus-visible:outline-none', 'focus-visible:ring-2', 'focus-visible:ring-ring']) {
+      expect(summary.className.split(/\s+/), `summary must carry ${cls}`).toContain(cls);
+    }
   });
 
   it('disables both actions while a sweep is running', async () => {

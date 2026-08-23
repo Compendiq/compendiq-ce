@@ -29,6 +29,12 @@ import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
  *    a one-sided failure into the empty state, or silently dropped a refused
  *    last run): a failed stats GET fails the figures block while a healthy
  *    last-run line stays, and vice versa.
+ *  - **"Candidate" is a claim about pending work**, so the last-run line and
+ *    the disclosure say it only for a DRY run. After a live run the same list
+ *    is what the walk FOUND — most of it destroyed, some of it (a store stood
+ *    down for the mis-mount anomaly) deliberately left alone — and labelling
+ *    it "candidates" under post-delete figures reporting zero orphans had the
+ *    card contradicting itself on one screen (review r2).
  *  - **Everything at rest is neutral.** Storage figures, orphan candidates,
  *    the candidate list, the three walk-verdict counters (unreadable, nested,
  *    grace-deferred) and the missing-rows count are MEASUREMENTS (the
@@ -170,7 +176,16 @@ export function AttachmentStorageCard() {
   const actionsDisabled = isPending || running || trigger.isPending;
 
   return (
-    <div className="nm-card space-y-3 p-3 text-sm" data-testid="attachment-storage-card">
+    <div
+      className="nm-card space-y-3 p-3 text-sm"
+      data-testid="attachment-storage-card"
+      // A destructive run's OUTCOME lands here silently (review r2): the kick
+      // toast promises "figures update here when the walk finishes" and the
+      // poll then swaps the running chip for the verdict. `aria-busy` marks
+      // the region as changing; the last-run line carries the polite
+      // announcement.
+      aria-busy={running}
+    >
       {/*
         No heading of its own (fixer, external round): the section this card
         sits in already carries `Attachment Storage` as its h2, and an h3
@@ -330,11 +345,31 @@ export function AttachmentStorageCard() {
         </p>
       )}
 
+      {/*
+        `role="status"` (review r2): the only two live regions on this card
+        were the amber strips, which render only for a run that did NOT
+        complete — so a screen-reader user was told a destructive run had
+        started and never told it finished or what it removed. Polite, not an
+        alert: a completed run is a verdict worth hearing, not interrupting for
+        (the refusal-strip recipe).
+
+        "candidate" is a claim about PENDING work, so it is made only for a dry
+        run. After a live run these are what the walk FOUND — most of them
+        destroyed, and (when a store stood down for the mis-mount anomaly)
+        some deliberately left alone. Calling them candidates under
+        post-delete figures reporting zero orphans is one card contradicting
+        itself, and the operator's reading is "it did nothing, press Delete
+        again" — the exact failure the post-delete figures were added to stop.
+      */}
       {lastRun && lastRun.status === 'completed' && (
-        <p className="text-muted-foreground text-xs" data-testid="attachment-sweep-last-run">
+        <p
+          role="status"
+          className="text-muted-foreground text-xs"
+          data-testid="attachment-sweep-last-run"
+        >
           Last {lastRun.dryRun ? 'dry run' : 'sweep'} {formatRelativeTime(lastRun.at)} ·{' '}
-          <span className="text-foreground font-mono">{lastRun.candidatesTotal}</span> candidate
-          {lastRun.candidatesTotal === 1 ? '' : 's'}
+          <span className="text-foreground font-mono">{lastRun.candidatesTotal}</span>{' '}
+          {lastRun.dryRun ? `candidate${lastRun.candidatesTotal === 1 ? '' : 's'}` : 'found'}
           {lastRun.deleted && (
             <>
               {' '}
@@ -366,11 +401,29 @@ export function AttachmentStorageCard() {
       */}
       {lastRun && lastRun.candidateSample.length > 0 && (
         <details className="text-xs" data-testid="attachment-sweep-candidates">
-          <summary className="text-muted-foreground hover:text-foreground cursor-pointer select-none">
-            Show the {lastRun.candidateSample.length} candidate
-            {lastRun.candidateSample.length === 1 ? '' : 's'}
-            {lastRun.candidatesTotal > lastRun.candidateSample.length &&
-              ` of ${lastRun.candidatesTotal}`}
+          {/*
+            The focus ring is the sibling settings-disclosure recipe
+            (ChatVisionCapability / ImageEmbeddingCapability): `index.css` has
+            no universal `:focus-visible` rule outside `.prose`, so without it
+            the card's only keyboard-reachable disclosure — the one that opens
+            the destructive review list — fell back to the UA outline.
+          */}
+          <summary className="text-muted-foreground hover:text-foreground focus-visible:ring-ring cursor-pointer rounded select-none focus-visible:ring-2 focus-visible:outline-none">
+            {lastRun.dryRun ? (
+              <>
+                Show the {lastRun.candidateSample.length} candidate
+                {lastRun.candidateSample.length === 1 ? '' : 's'}
+                {lastRun.candidatesTotal > lastRun.candidateSample.length &&
+                  ` of ${lastRun.candidatesTotal}`}
+              </>
+            ) : (
+              <>
+                Show what the sweep found ({lastRun.candidateSample.length}
+                {lastRun.candidatesTotal > lastRun.candidateSample.length &&
+                  ` of ${lastRun.candidatesTotal}`}
+                )
+              </>
+            )}
           </summary>
           <ul
             className="border-border mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border p-2"
@@ -467,13 +520,22 @@ export function AttachmentStorageCard() {
       )}
 
       {/*
-        Both controls carry the panel's own 34px box (fixer, external round):
-        the `px-2.5 py-1 text-xs` overrides measured 26px and 24px beside 34px
-        siblings — two rungs below every other action on Spaces & Sync, and 2px
-        out of line with each other, because `nm-action-destructive` supplies
-        colour and no border while `nm-button-ghost` puts one outside its box.
-        The `border border-transparent` on the destructive one is arithmetic,
-        not decoration (ADR-010's Cancel-button note).
+        Both controls take their box from a `nm-button-*` recipe, so the row
+        cannot drift apart (review r2). The hand-rolled version measured 14px/400
+        beside Dry run's 13px/500 and — because `@utility nm-action-destructive`
+        declares colour, hover and focus only — carried an explicitly
+        TRANSPARENT border beside Dry run's `--color-border-interactive` one.
+        `transparent` is not forced, so under `forced-colors: active` both the
+        colour and the hover fill are overridden and the destructive control
+        reads as body text while its neutral sibling keeps its outline: the
+        failure ADR-010's "every operable surface keeps a 1px solid border"
+        rule exists to prevent.
+
+        `nm-button-destructive` is the filled variant for a surface where
+        deleting is the point — the lane brief specified it and the confirm
+        dialog is the second step. `nm-action-destructive` stays correct for a
+        destructive row INSIDE a bordered container (its three pinned
+        callsites); this is a peer button beside a bordered one.
       */}
       <div className="flex flex-wrap items-center gap-2">
         <button
@@ -490,11 +552,7 @@ export function AttachmentStorageCard() {
         <button
           type="button"
           data-testid="attachment-sweep-delete"
-          // nm-action-destructive supplies colour only; the box is this
-          // callsite's job (review r2) — without inline-flex, preflight's
-          // `svg { display: block }` stacks the icon on its own line, and the
-          // hover fill needs the radius (the ProviderListSection precedent).
-          className="nm-action-destructive inline-flex items-center justify-center gap-1.5 rounded-md border border-transparent px-3 py-1.5 text-sm"
+          className="nm-button-destructive"
           disabled={actionsDisabled}
           onClick={() => setConfirmDeleteOpen(true)}
           aria-describedby="attachment-sweep-note"
