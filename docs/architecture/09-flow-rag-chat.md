@@ -1299,7 +1299,11 @@ backfill, TEXT without a CHECK:
   **healthy empty set** — the ordinary `no_context` path — which scores `0`,
   because "the knowledge base has nothing on this" is a measurement. So a
   distribution over this column must be filtered by `confidence_basis`, never
-  by the score merely being present. Never derive it from `max_score` (RRF
+  by the score merely being present — and never by the score being non-zero
+  either: the similarity basis is clamped at 0 for a negative cosine, so `0`
+  on basis `similarity` is a real measurement of the worst-matching question
+  the deployment answered and must stay in the sample. Only the basis
+  separates the two. Never derive it from `max_score` (RRF
   fusion) or `rerank_score` (the reranker's own scale) — a distribution
   published on the wrong scale is worse than none.
 - **`confidence_basis`** — `rerank` | `similarity` | `none`. Its own column
@@ -1326,9 +1330,10 @@ on those paths.
 similarity: {p50, p90, count}, rerank: {p50, p90, count} }` —
 `percentile_cont(0.5|0.9) WITHIN GROUP (ORDER BY confidence)` grouped by basis
 over `surface = 'ask'` and the two real bases (`confidence_basis = ANY
-('{similarity,rerank}')` is what excludes the unmeasurable rows, including the
-healthy-empty zeros; the `confidence IS NOT NULL` beside it only guards
-`COUNT(*)`) inside a fixed 7-day window
+('{similarity,rerank}')` keeps the unmeasurable rows out of the scan, the
+healthy-empty zeros included, and the bucket mapping in the route drops any
+group that is not `similarity`/`rerank`; the `confidence IS NOT NULL` beside
+them only guards `COUNT(*)`) inside a fixed 7-day window
 (inside the default 90-day retention; a shorter configured retention simply
 shrinks the sample, which `count` makes visible). An empty sample answers
 nulls, never NaN and never 0. Settings → AI Models → Retrieval renders it as

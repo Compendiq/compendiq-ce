@@ -959,40 +959,25 @@ export function RetrievalTab() {
       {/* ── Confidence gate ─────────────────────────────────────────────── */}
       <Section
         title="Confidence refuse gate"
-        // #1284 — the section names the readout, and states the one
-        // consequence a number on its own does not carry: where a threshold
-        // sits in the measured distribution IS its refusal rate. The gate
-        // refuses when `score < threshold` (llm-ask.ts), so a threshold AT a
-        // percentile refuses about that share — at p50 half, at p90 nine in
-        // ten. Review r1 corrected "above p50 refuses about half", which was
-        // off by a whole percentile: an operator reading it and setting the
-        // p90 figure would expect 50% refusals and get ~90%. Two points are
-        // named rather than one because the readout prints exactly those two,
-        // and a rule stated at one point does not tell anyone which way the
-        // other moves. The logs and traces stay in the sentence, one rung
+        // #1284 — the description ORIENTS and points at the readout, and
+        // stops there (review r1). Every other section description on this
+        // panel is one line (11–40 words); this one had grown to 111, a
+        // four-sentence block of 12px muted prose above the first control,
+        // restating the same fact the similarity row's help and the readout
+        // beneath it state within about 200px of each other. How to read a
+        // percentile now lives beside the first distribution, where the
+        // numbers it qualifies are; the logs and traces stay here, one rung
         // down, because they are still where a single request's verdict is
         // inspected.
-        //
-        // Review r2 — the percentile is an UPPER BOUND on refusals, not the
-        // rate. `llm-ask.ts` computes `otherGrounding` and short-circuits
-        // `refusalReason` to null BEFORE the threshold comparison is reached,
-        // so a turn carrying a sub-page tree, an attached document, web
-        // results or a substantive prior turn is answered at any threshold —
-        // and `hasSubstantiveHistory` is true for every follow-up in a
-        // conversation. The analytics row is written during retrieval,
-        // before that decision, so those turns ARE in the p50/p90 sample.
-        // On a multi-turn assistant the real refusal rate at p50 is well
-        // below half. The first cut of this sentence was already corrected
-        // once for the neighbouring error ("above p50" → "at p50"), which is
-        // why the residual overstatement is worth naming rather than
-        // rounding off.
-        description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces. Under each knob is the distribution this deployment has actually measured — a threshold set at p50 puts about half the questions measured on that basis below the bar, and one set at p90 about nine in ten. That is a ceiling on refusals rather than the rate: a question grounded some other way — a sub-page tree, an attached document, or an earlier answer in the same conversation — is answered without the gate being consulted."
+        description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces. Under each knob is the distribution this deployment has actually measured."
       >
         {/*
           #1284 review r2 — the recovery for a failed read is a control, and a
-          control can never live inside a threshold row's help block: that
-          block is the input's `aria-describedby` region and must stay prose.
-          One query serves both bases, so one Retry serves both rows, and it
+          control can never live inside a threshold row's readout: that
+          paragraph is the input's `aria-describedby` region and must stay
+          prose (a description flattens to one string, so a button in it is
+          announced with no way to reach it, then repeated on the next tab
+          stop). One query serves both bases, so one Retry serves both rows, and it
           sits at the top of the section where each row's failure sentence
           points. It replaces "Reload this page to try again", which was an
           instruction to discard every unsaved knob edit on this panel — the
@@ -1103,15 +1088,47 @@ export function RetrievalTab() {
           value={values.ragConfidenceThreshold}
           onChange={(v) => set('ragConfidenceThreshold', v)}
           defaultValue={DEFAULTS.ragConfidenceThreshold}
-          // Prose only, so it can be the input's description — the measured
-          // distribution is the reason to reach for this knob at all.
-          describedByHelp
+          // The measured distribution is the reason to reach for this knob at
+          // all, so it is what the input's description carries.
+          describedBy={distributionDescriptionId('ragConfidenceThreshold')}
         >
           <p>
             Basis: max cosine similarity of the best chunk, 0–1. The embedding model moves this
             scale, so there is no universal value — pick one against the measured distribution
             below, not a number from another deployment. The same value is logged and traced per
             request as <code className="font-mono">rag.confidence</code>. 0 turns the gate off.
+          </p>
+          {/*
+            #1284 review r1 — how to READ the distribution, stated once, beside
+            the first one rather than in the section description above. It was
+            four sentences of 12px muted prose at the top of the section, three
+            times the length of every other section description on this panel
+            and restating what this row and the readout below already say.
+            Stated here it sits with the numbers it qualifies, and it is
+            written for both rows ("that basis", not "this one"): duplicating
+            it under the rerank threshold would put a paragraph the reader has
+            just read back into a second input's accessible description, which
+            is the length problem one layer down.
+
+            The rule itself is unchanged and both halves are load-bearing. The
+            gate refuses on `score < threshold` (llm-ask.ts), so a threshold AT
+            a percentile puts about that share of the sample below the bar — at
+            p50 half, at p90 nine in ten; the first cut said "above p50 refuses
+            about half", off by a whole percentile in the direction that
+            flatters the feature. And below the bar is not refused: `llm-ask.ts`
+            computes `otherGrounding` and short-circuits `refusalReason` to null
+            BEFORE the comparison, so a turn carrying a sub-page tree, an
+            attached document, web results or a substantive prior turn is
+            answered at any threshold while its analytics row — written during
+            retrieval — is in the sample regardless. `hasSubstantiveHistory`
+            makes that every follow-up in a conversation.
+          */}
+          <p>
+            Where a threshold sits in the distribution below is a ceiling on how often the gate
+            refuses: one set at p50 puts about half the questions measured on that basis below the
+            bar, one set at p90 about nine in ten. Fewer are refused than that — a question
+            grounded some other way, by a sub-page tree, an attached document or an earlier answer
+            in the same conversation, is answered without the gate being consulted.
           </p>
           <ConfidenceDistributionLine
             fieldKey="ragConfidenceThreshold"
@@ -1142,7 +1159,7 @@ export function RetrievalTab() {
           defaultValue={DEFAULTS.ragConfidenceThresholdRerank}
           // Prose only — the `emptyNote` below deliberately carries no link
           // for exactly this reason.
-          describedByHelp
+          describedBy={distributionDescriptionId('ragConfidenceThresholdRerank')}
         >
           <p>
             Basis: max reranker relevance, 0–1, used only when the rerank stage scored every
@@ -1604,6 +1621,23 @@ const CONFIDENCE_WINDOW_DAYS_FALLBACK = 7;
 const DISTRIBUTION_ERROR_SENTENCE_ID = 'retrieval-distribution-error-sentence';
 
 /**
+ * The id a threshold input's `aria-describedby` points at: the READOUT
+ * paragraph, not the whole help block (review r1).
+ *
+ * A description flattens to one unskippable string that is re-read on every
+ * focus of the control, so its length is a cost paid per interaction. Pointed
+ * at the help block, the rerank threshold's description measured 159 words /
+ * 975 characters — the two scale-caveat paragraphs, the readout and its empty
+ * note concatenated — of which the #1284 measurement is about thirty. The
+ * caveats are the row's visible prose and are read in ordinary reading order
+ * either way; the measurement is the part that is ABOUT this control's number
+ * and changes per deployment, so it is the part the description carries.
+ */
+function distributionDescriptionId(fieldKey: CalibrationFieldKey): string {
+  return `${fieldKey}-distribution`;
+}
+
+/**
  * #1284 — the confidence distribution this deployment has actually produced,
  * under the threshold it is used to set.
  *
@@ -1632,10 +1666,14 @@ const DISTRIBUTION_ERROR_SENTENCE_ID = 'retrieval-distribution-error-sentence';
  * the figures survived, so they are still shown, with one clause saying they
  * are the last ones the panel could get.
  *
- * **It renders inside the row's description**, so `aria-describedby` carries
- * it to touch, keyboard and screen readers — and so the #1114 calibration
- * strip stays the immediately-preceding sibling of the control it is about.
- * It is prose only for the same reason: a description flattens to one string.
+ * **It IS the row's description** — the input's `aria-describedby` points at
+ * this paragraph by id ({@link distributionDescriptionId}), so the measurement
+ * reaches touch, keyboard and screen readers rather than the eye alone. It
+ * renders inside the row's help block, which is what keeps the #1114
+ * calibration strip the immediately-preceding sibling of the control it is
+ * about. It stays prose only: a description flattens to one string, so a
+ * control in here would be announced with no way to act on it — which is why
+ * the failed read's Retry sits at the section top instead.
  */
 function ConfidenceDistributionLine({
   fieldKey,
@@ -1705,8 +1743,11 @@ function ConfidenceDistributionLine({
 }) {
   const testId = `retrieval-${fieldKey}-distribution`;
   // One set of props for all four branches, so the focus target survives
-  // whichever one is on screen when the retry settles.
+  // whichever one is on screen when the retry settles — and so the input's
+  // description resolves to a paragraph that always exists, whichever branch
+  // is on screen.
   const readoutProps = {
+    id: distributionDescriptionId(fieldKey),
     'data-testid': testId,
     ref: readoutRef,
     tabIndex: readoutRef ? -1 : undefined,
@@ -1971,7 +2012,7 @@ function NumberRow({
   onChange,
   defaultValue,
   disabled,
-  describedByHelp,
+  describedBy,
   children,
 }: {
   field: NumericField;
@@ -1980,7 +2021,9 @@ function NumberRow({
   defaultValue: number;
   disabled?: boolean;
   /**
-   * #1284 — point the input's `aria-describedby` at this row's help block.
+   * #1284 — the id of the paragraph that becomes this input's accessible
+   * description. Today: the row's measured-distribution readout
+   * ({@link distributionDescriptionId}).
    *
    * **Opt-in, never panel-wide** (review r1). A description flattens to one
    * string, so the region it names must be PROSE ONLY: three of this panel's
@@ -1990,14 +2033,14 @@ function NumberRow({
    * them, then repeats them on the next tab stop. The blanket form of this
    * prop shipped in the first cut of #1284 and did exactly that.
    *
-   * So a row opts in only once its help is prose, which today is the two
-   * confidence thresholds — the rows whose description carries the measured
-   * distribution the operator is tuning against. `RetrievalTab.test.tsx`
-   * sweeps every `[aria-describedby]` the panel renders and fails on any
-   * region holding something operable, so the rule is enforced for all rows
-   * rather than spot-checked on one.
+   * **And it names ONE paragraph, not the help block** (review r1): the block
+   * form made the rerank threshold's description 975 characters, re-read on
+   * every focus, with the measurement it exists to carry at the far end of it.
+   * `RetrievalTab.test.tsx` sweeps every `[aria-describedby]` the panel
+   * renders and fails on any region holding something operable, so the
+   * prose-only rule is enforced for all rows rather than spot-checked on one.
    */
-  describedByHelp?: boolean;
+  describedBy?: string;
   children?: React.ReactNode;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
@@ -2039,15 +2082,14 @@ function NumberRow({
             onKeyDown={(e) => {
               if (e.key === 'Enter') commit();
             }}
-            // #1284 — the help block under a knob carries the part of the
-            // decision the number cannot: what the value means, and here,
-            // what this deployment has actually measured. Printed beside the
-            // input it was reachable by eye only; wired here it reaches
-            // touch, keyboard and screen readers too (ADR-010's
-            // `DeepSearchToggle` precedent). Per-row, never panel-wide — see
-            // `describedByHelp`: the region is PROSE ONLY, and three rows on
-            // this panel carry a link or a button in their help.
-            aria-describedby={describedByHelp && children ? `${field.key}-help` : undefined}
+            // #1284 — the readout under a knob carries the part of the
+            // decision the number cannot: what this deployment has actually
+            // measured. Printed beside the input it was reachable by eye
+            // only; wired here it reaches touch, keyboard and screen readers
+            // too (ADR-010's `DeepSearchToggle` precedent). Per-row and one
+            // paragraph, never panel-wide and never the whole help block —
+            // see `describedBy`.
+            aria-describedby={describedBy}
             className="w-24 rounded-md border border-border-interactive bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-45"
             data-testid={`retrieval-${field.key}`}
           />

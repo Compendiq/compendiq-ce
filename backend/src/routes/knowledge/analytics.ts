@@ -149,19 +149,33 @@ export async function analyticsRoutes(fastify: FastifyInstance) {
    * scales are unrelated — one distribution over both would be a number with
    * no meaning on either knob.
    *
-   * **The BASIS filter is what excludes the unmeasurable rows** — not
-   * `confidence IS NOT NULL`, and the difference is not academic.
+   * **The row is selected by its BASIS, never by its score** — the two are
+   * not interchangeable, in either direction.
    * `computeRetrievalConfidence` answers `{ score: 0, basis: 'none' }` for a
    * HEALTHY EMPTY set (the ordinary `no_context` path: "the knowledge base
    * has nothing on this" is a measurement, not an absence), so those rows
-   * land on `search_analytics` with `confidence = 0`, not NULL. A predicate
-   * on the score alone would admit every one of them, drag both percentiles
-   * toward the floor and make every threshold look generous — an unmeasurable
-   * set is not a weak one, and an empty corpus is not a weak one either.
-   * `confidence_basis = ANY(...)` is the predicate that keeps them out. The
+   * land on `search_analytics` with `confidence = 0`, not NULL: a predicate
+   * on "the score is present" would admit every one of them, drag both
+   * percentiles toward the floor and make every threshold look generous — an
+   * unmeasurable set is not a weak one, and an empty corpus is not a weak one
+   * either. And a predicate on "the score is non-zero" would drop a REAL
+   * measurement, because the similarity basis is clamped at 0 (cosine runs
+   * negative), so 0 on basis 'similarity' is precisely the worst-matching
+   * question this deployment answered. Only the basis separates them.
    * `confidence IS NOT NULL` beside it guards `COUNT(*)`, which would
    * otherwise count a row `percentile_cont` ignores; it is a backstop, never
    * the exclusion.
+   *
+   * That rule is a rule about **this column**, addressed to the next reader
+   * who reports on it — it is not enforced by the SQL predicate alone here
+   * (review r1). `GROUP BY confidence_basis` puts 'none' rows in their own
+   * group and the bucket mapping below keeps only 'similarity'/'rerank', so
+   * this route would answer the same numbers with the predicate deleted; the
+   * predicate is what keeps the rows out of the scan, and the mapping is what
+   * keeps an unknown basis out of the body. The half that is genuinely
+   * falsifiable — that a legitimate 0 stays in the sample — is asserted in
+   * `analytics-confidence.integration.test.ts`, and the formula's own
+   * healthy-empty zero in `rag-service.test.ts`.
    *
    * **A fixed 7-day window**, comfortably inside the default 90-day
    * `search_analytics` retention. A shorter configured retention simply

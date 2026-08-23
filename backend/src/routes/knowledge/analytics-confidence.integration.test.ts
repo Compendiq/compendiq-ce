@@ -162,12 +162,22 @@ describe.skipIf(!dbAvailable)('GET /api/analytics/confidence-distribution (#1284
     // The row the header comments used to get wrong: `computeRetrievalConfidence`
     // returns `{ score: 0, basis: 'none' }` for a HEALTHY EMPTY set — the
     // ordinary `no_context` path, and by volume the COMMON 'none' case — so
-    // this row really lands with `confidence = 0`, NOT NULL. `confidence IS
-    // NOT NULL` therefore does not exclude it and never did; the basis
-    // predicate does. Anyone reaching for the score-only predicate on this
-    // column (a new report, a dashboard) gets a distribution floored by these
-    // zeros — which is why both the migration and this route now say the
-    // exclusion is by BASIS.
+    // this row really lands with `confidence = 0`, NOT NULL.
+    //
+    // Review r1 — what this row does and does not pin. It DOCUMENTS the case
+    // and asserts the route's answer for it; it cannot single out the SQL
+    // `confidence_basis = ANY(...)` predicate, because the route excludes a
+    // 'none' group twice: the SQL never selects it, and the bucket mapping
+    // drops any group that is not 'similarity'/'rerank'. `GROUP BY
+    // confidence_basis` also keeps 'none' rows in their own group, so they
+    // could never contaminate the similarity percentiles even if both guards
+    // went — deleting the SQL predicate leaves this whole file green (mutation
+    // tested). The two claims that ARE falsifiable live elsewhere and are
+    // referenced deliberately: that the score really is 0 here is pinned by
+    // `rag-service.test.ts`'s "empty result set from HEALTHY retrieval scores
+    // 0 with basis none", and that a score-shaped predicate is the wrong tool
+    // is pinned by the sibling test below, which seeds a legitimate 0 on a
+    // REAL basis and fails the moment the filter looks at the score.
     await seedRow(userId, { confidence: 0, basis: 'none', surface: 'ask' });
     await seedRow(userId, { confidence: 0.6, basis: 'similarity', surface: 'ask' });
 
@@ -177,6 +187,24 @@ describe.skipIf(!dbAvailable)('GET /api/analytics/confidence-distribution (#1284
     // "Appears in NEITHER readout" is the claim the rerank row's copy now
     // makes on screen; assert it on the wire rather than only in prose.
     expect(body.rerank).toEqual({ p50: null, p90: null, count: 0 });
+  });
+
+  it('counts a legitimate zero on a real basis — the filter is the BASIS, never the score', async () => {
+    // The other half of the rule above, and the half a wire test can falsify.
+    // `computeRetrievalConfidence` clamps the similarity basis at 0
+    // (`Math.max(0, maxSim)` — cosine runs negative on an off-topic chunk), so
+    // 0 on basis 'similarity' is a measured verdict about a real set, not a
+    // missing one, and it is exactly the sample an operator setting a refuse
+    // gate needs to see. Any score-shaped predicate reached for here —
+    // `confidence > 0`, `confidence <> 0`, a `NULLIF` — drops it and lifts
+    // both percentiles on the deployment whose corpus matches worst, which is
+    // the deployment most likely to be tuning this knob.
+    await seedRow(userId, { confidence: 0, basis: 'similarity', surface: 'ask' });
+    await seedRow(userId, { confidence: 0.6, basis: 'similarity', surface: 'ask' });
+
+    const body = await get();
+    expect(body.similarity.count).toBe(2);
+    expect(body.similarity.p50).toBeCloseTo(0.3, 5);
   });
 
   it('answers nulls, never NaN, when nothing was measured', async () => {

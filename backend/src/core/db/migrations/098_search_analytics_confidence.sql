@@ -30,7 +30,11 @@
 --                      filter on `confidence_basis` (see
 --                      routes/knowledge/analytics.ts) — never on the score
 --                      merely being present, which would floor both
---                      percentiles with those zeros.
+--                      percentiles with those zeros. Nor on the score being
+--                      NON-zero: the similarity basis is clamped at 0 (cosine
+--                      runs negative), so 0 on basis 'similarity' is the
+--                      worst-matching question the deployment really answered
+--                      and belongs in the sample.
 --   confidence_basis - 'rerank' | 'similarity' | 'none'. The basis flips per
 --                      request (a rerank bypass measures that request on the
 --                      cosine scale), so the two thresholds are two

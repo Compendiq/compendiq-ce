@@ -2255,7 +2255,7 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
 
   it('offers a Retry that re-reads the distribution, outside the description region', async () => {
     // The recovery is a control, and a control can never live inside a
-    // threshold row's help block: that block is the input's
+    // threshold row's readout: that paragraph is the input's
     // `aria-describedby` region and must stay prose. One query serves both
     // bases, so one Retry serves both rows.
     let fail = true;
@@ -2664,20 +2664,33 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     // the sample regardless. `hasSubstantiveHistory` makes that every
     // follow-up turn in a conversation, so the copy must not sell the
     // percentile as the refusal rate.
+    //
+    // Review r1 — the rule now lives beside the first distribution rather
+    // than in the section description, which had grown to 111 words against
+    // an 11–40-word house style and restated the row help and the readout
+    // within about 200px of them. So this asserts it where an operator reads
+    // it, and asserts it is stated ONCE: duplicating it per row would put it
+    // back into both inputs' accessible descriptions, which is the length
+    // problem one layer down.
     mockApi();
     renderTab();
     await ready();
 
-    const description = screen.getByText(/Under each knob is the distribution/i);
-    expect(description.textContent).toMatch(/set at p50 puts about half/i);
-    expect(description.textContent).toMatch(/below the bar/i);
-    expect(description.textContent).toMatch(/p90.{0,30}nine in ten/i);
-    expect(description.textContent).not.toMatch(/above p50/i);
-    // The qualification itself, and at least one of the ways a turn earns it.
-    expect(description.textContent).toMatch(/ceiling on refusals/i);
-    expect(description.textContent).toMatch(/sub-page tree|attached document|earlier answer/i);
+    const rule = screen.getByText(/is a ceiling on how often the gate refuses/i);
+    expect(rule.textContent).toMatch(/set at p50 puts about half/i);
+    expect(rule.textContent).toMatch(/below the\s+bar/i);
+    expect(rule.textContent).toMatch(/p90.{0,30}nine in ten/i);
+    expect(rule.textContent).not.toMatch(/above p50/i);
+    // At least one of the ways a turn earns the qualification.
+    expect(rule.textContent).toMatch(/sub-page tree|attached document|earlier answer/i);
     // It must never state the percentile AS the rate.
-    expect(description.textContent).not.toMatch(/p50 refuses about half/i);
+    expect(rule.textContent).not.toMatch(/p50 refuses about half/i);
+    // Stated once on the panel, and not by the section description, which
+    // keeps the one-line orienting job its siblings have.
+    expect(screen.getAllByText(/nine in ten/i)).toHaveLength(1);
+    const sectionDescription = screen.getByText(/Under each knob is the distribution/i);
+    expect(sectionDescription.textContent).not.toMatch(/nine in ten/i);
+    expect(sectionDescription.textContent!.trim().split(/\s+/).length).toBeLessThan(60);
   });
 
   it('says the window can span two scales while the basis model has changed', async () => {
@@ -2727,10 +2740,18 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
 
   it('is wired to the input it is about, and is prose the description can carry', async () => {
     // Review r2 — BOTH thresholds, not just the similarity one. `NumberRow`'s
-    // wiring is per-row and opt-in, so deleting `describedByHelp` from the
+    // wiring is per-row and opt-in, so deleting `describedBy` from the
     // rerank row alone left the whole suite green while its readout stopped
     // reaching the input's accessible description; the sweep below cannot see
     // that, because it only inspects regions that ARE still wired.
+    //
+    // Review r1 — the description is the READOUT PARAGRAPH, not the row's
+    // whole help block. A description flattens to one unskippable string
+    // re-read on every focus, and the block form measured 159 words / 975
+    // characters on the rerank row (two scale-caveat paragraphs plus the
+    // readout plus its empty note), of which the measurement this feature
+    // exists to surface was about thirty. The caveats are visible prose and
+    // are read in ordinary reading order either way.
     mockApi();
     renderTab();
     await ready();
@@ -2744,11 +2765,12 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
       expect(describedBy, `${fieldKey} has no description`).toBeTruthy();
       const region = document.getElementById(describedBy!);
       expect(region, `${fieldKey} description resolves to nothing`).not.toBeNull();
-      // Its OWN readout, not merely some region with prose in it.
-      await waitFor(() =>
-        expect(within(region!).getByTestId(`retrieval-${fieldKey}-distribution`).textContent)
-          .toContain(expected),
-      );
+      // Its OWN readout, and ONLY its readout — the described element IS the
+      // measurement paragraph, so the description cannot silently regrow into
+      // the surrounding prose.
+      expect(region!.getAttribute('data-testid')).toBe(`retrieval-${fieldKey}-distribution`);
+      await waitFor(() => expect(region!.textContent).toContain(expected));
+      expect(region!.textContent).not.toMatch(/Basis: max/i);
       // A description flattens to one string, so nothing operable may live in
       // it (the rule #1285 states for this panel's rows).
       expect(region!.querySelectorAll('button, a, input, select, textarea')).toHaveLength(0);
