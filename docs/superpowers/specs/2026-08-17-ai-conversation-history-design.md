@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-17
 **Issue:** #1361 (saved conversations in the `/ai` left pane — reopenable `/ai/c/:id`, replaces the page tree and page-click context on `/ai`)
-**Status:** Proposed — design of record for the three PRs in [Sequencing](#sequencing).
+**Status:** Proposed — design of record for the three PRs in [Sequencing](#sequencing). PR 1 shipped (#1365, 2026-08-18); **amended 2026-08-18 and re-amended 2026-08-22** for dev drift before PR 2 — see the amendment block below, which supersedes four sentences of the body.
 **Verified against:** `origin/dev` `7c3a7bf8` (2026-08-17). Every `file:line` below was re-read at that commit; where the issue's own citations had drifted, this document carries the corrected anchor.
 
 > The fourteen decisions in the issue's table are the owner's (interview, 2026-08-17). This
@@ -11,6 +11,261 @@
 > the pane and the tests precisely enough that three PRs can be written from it without
 > reopening the design. Where this document goes beyond the issue it says so, in
 > [Architect's calls](#architects-calls-flagged-for-the-owner).
+
+> ## Amendment (2026-08-18, dev drift before PR 2)
+>
+> First written against `origin/dev` `bbe8118a`. Between this spec's base (`7c3a7bf8`) and that
+> point, #1364 (header chrome distilled into a 48px bar; theme + account moved into the
+> rails), #1362/#1366/#1367 (#1115 P3–P5: image sources on the `/llm/ask` wire and shown to the
+> model), #1368 (layout presets restored, article-only), #1371 (CLAUDE.md consolidation),
+> #1373 (the article *format toolbar* moved back out of the header slot into the page column)
+> and #1372 (article inspector reading rail) landed. **Two of those six have since been
+> reversed** — see the re-verification paragraph below — so read #1364's rails claim and
+> #1368's presets claim as history, not as the state of the code.
+>
+> **Re-verified 2026-08-22 against `origin/dev` `a6a3d329`** (76 further commits, merged into
+> the PR 2 branch as `f409a44b`), and amended again against the **owner's three rulings of
+> 2026-08-22**. Dev reversed both halves of #1364: **#1377/#1378 moved theme + account back
+> out of the rails into the header** (`HeaderSessionCluster`) and **retired the header slot
+> entirely** — `HeaderHost` renders in the document column, `#app-header-slot` has no
+> producer, and the header band is 44px, not 48. **#1391/#1377 deleted the layout presets**
+> and `forceTreeCollapsed` with them. **#1401 put five "create skills" on both assistant
+> surfaces** and gave the dock a Generate-shaped path. Items **1, 2 and 3 below are rewritten
+> for that**; item 2 carries the owner's re-decided **placement** for New chat (ruling 1),
+> and item 9 carries rulings 2 and 3. Routing, thread keys, the state machine and every `/ai`
+> page change still hold — `AiAssistantPage.tsx` has had no commit since `4357f454`. Nine
+> things moved under the pane; items 1–4 supersede sentences below (2 and 4 with the
+> **owner's decisions**), the rest bind the PR 2 plan. The body is left as written (the
+> docked-AI spec's precedent); this block is what the plan reads.
+>
+> 1. **The chassis has NO session-chrome footer; it has a count-and-navigation footer.**
+>    (Rewritten 2026-08-22 — the 2026-08-18 version of this item argued the opposite from
+>    #1364, which dev has since reversed.) #1377/#1378 moved the theme toggle and the account
+>    menu back out of the rails into the **header** — `HeaderSessionCluster`
+>    (`NotificationBell` + `ThemeToggle` + `UserMenu`), mounted at `AppLayout.tsx:498` inside
+>    `<header>` — and `AppLayout.test.tsx:198`/`:241`/`:263-264` now pin that the header
+>    *contains* `header-session-cluster` and `theme-toggle`. `SidebarSessionChrome.tsx` still
+>    exists but **has no consumer left**: zero occurrences in `SidebarTreeView.tsx` and
+>    `SettingsSidebar.tsx`, and the only live references are its own test plus a now-dead
+>    `vi.mock('./SidebarSessionChrome', …)` stub at `SidebarTreeView.test.tsx:19-20`. So the
+>    argument the old item rested on ("a pane without it makes `/ai` the only authenticated
+>    route with no account menu") is **false** — the account menu is in the header on every
+>    route, mobile included, and the pane must not render one.
+>
+>    The [Chassis](#chassis) structure is therefore nav row → New chat → filter → `<nav>` →
+>    Show more → a `panel-toolbar flex shrink-0 items-center gap-2 border-t px-2 py-1.5`
+>    footer (`SidebarTreeView.tsx:1348`, byte for byte) whose left cell is the **loaded row
+>    count** — the same number `CONVERSATION_FILTER_THRESHOLD` is measured against — in a
+>    `min-w-0 flex-1 truncate text-[11px] text-muted-foreground` span. The right cell is
+>    **empty**: the tree spends it on a Trash `Button`, and the pane has no equivalent
+>    low-frequency destination. The collapsed rail is expand button → `MainNavStripCollapsed`
+>    (only when `embedMainNav`) → `SquarePen` New chat, with **no** `mt-auto` footer —
+>    matching the tree's collapsed branch, whose one `mt-auto` child is that same Trash
+>    button. **`border-t`, never `border-b`**: `toolbar-rule-alignment.test.ts:52-69` now
+>    requires **every** `panel-toolbar` + `border-b` line in a `SELF_BORDERED` file to carry
+>    `h-12` (it used to check only the first, and the tree now has two such rows), and
+>    `:92-105` forbids `/\bpy-\d/` on the first such row. Pane test: **no
+>    `SidebarSessionChrome` mock is needed and none may be added**, and **no** mock of the
+>    pane in `AppLayout.test.tsx` (item 8).
+> 2. **New chat lives at the top of the `/ai` document column, via `HeaderHost` — owner
+>    decision 12's intent preserved, its 2026-08-18 placement amendment overtaken by dev and
+>    re-decided by the owner on 2026-08-22 (ruling 1).** Decision 12 read *"List in the
+>    slide-over drawer + a 'New chat' control in the `/ai` sub-header so a phone user needn't
+>    open the drawer"*; the 2026-08-18 interview moved it to the **48px header slot**, and
+>    **dev then deleted that slot outright**, so the owner re-decided the placement on
+>    2026-08-22. The intent ("a phone user needn't open the drawer") stands and is still
+>    served, and Architect's call 2 (renders at every width) stands. The [Mobile](#mobile)
+>    sentence and the AC line read "the top of the `/ai` page column" from here on.
+>
+>    What dev did: #1377/#1378 retired the header slot entirely. `HeaderHost`
+>    (`shared/components/layout/header-slot.tsx:7-16`) is now the whole file and renders its
+>    children **in place** — `return <div className={fallbackClassName}>{node}</div>`. There
+>    is **no `#app-header-slot` element anywhere in `frontend/src`**: `APP_HEADER_SLOT_ID`
+>    (`header-slot-utils.ts:1`) has no producer and only tests read it. `AppHeaderMain`, the
+>    `occupied` computation and `data-header-kpis` are **all gone** (zero hits), so the old
+>    item's `data-header-kpis` warning is moot and its `AppHeaderMain` fallback-title argument
+>    names nothing. Three guards fail any attempt to put a route title back in the band:
+>    `header-slot.test.tsx:7-19` (*"renders the heading in the document, never in the header
+>    slot"* — it appends a real `#app-header-slot` node and asserts nothing lands in it),
+>    `app-shell-layout.test.ts:304` (`AppLayout` contains no `AppHeaderMain`) and
+>    `AppLayout.test.tsx:140` (*"does not put a route title in the header"*, rendered at
+>    `/ai`). The band is also **44px now, not 48** — `index.css` `--app-header-height:
+>    2.75rem`, enforced by `app-shell-layout.test.ts:121-131`, which additionally asserts
+>    `AppLayout` has no `<header … h-12>` and no `<header … border-b>` — so "the 48px header
+>    slot" was doubly wrong. The one live `h-12` line is the *panel toolbars*'
+>    (`toolbar-rule-alignment.test.ts`).
+>
+>    Mechanism: `AiAssistantPage` renders `<HeaderHost fallbackClassName="mb-1">` as the
+>    **first child inside** its root `<m.div>` (`AiAssistantPage.tsx:229-252` — insert directly
+>    after the root's `className="flex min-h-0 flex-1 flex-col gap-3"` and its `>`), never a
+>    fragment sibling above it: `ai-scroll-chain.test.ts:110-126` scopes to
+>    `export function AiAssistantPage()`, finds the root with
+>    `/return \(\s*<m\.div([\s\S]*?)>/` and then requires a **static** `className="…"` on it,
+>    so a moved root or a `cn(...)` root throws and takes two of its cases down. Inside, the
+>    Library heading-row pattern (`PagesPage.tsx:1037-1058`): `<h1>AI</h1>` on the h1 recipe
+>    `min-w-0 truncate text-[15px] font-semibold sm:text-lg`, plus a ghost `SquarePen` "New
+>    chat" (`data-testid="ai-new-chat"`) calling `startNewConversation()`. Because `HeaderHost`
+>    renders a plain `<div className={fallbackClassName}>`, the row supplies its own layout —
+>    `flex min-w-0 items-center justify-between gap-3` — and needs no `ml-auto`. It renders at
+>    every width and stays visible while the log scrolls, because `/ai` scrolls its message
+>    pane and not the page (#1218). `routeHeaderTitle` (`header-slot-utils.ts:6-15`) still
+>    answers `AI` for `/ai/c/:id` but now has **no runtime consumer at all**, so it is dead
+>    code and the follow-up "the conversation title in `/ai`'s sub-header on `/ai/c/:id`"
+>    becomes "in the `/ai` heading row". **The pane's own full-width New chat and the collapsed
+>    rail's glyph stay** (owner's choice): the page column's is the one that survives a
+>    collapsed rail, the pane's is the one inside the mobile drawer. **The sub-header bar
+>    stays** (owner, 2026-08-18, unchanged by ruling 1): the
+>    sticky wrapper (`:292-296`), the bordered card (`:297`), the Think toggle (`:389-409`) and
+>    `DiagramTypeSelector` (`:415`) remain; the divider (`:384`) and the `flex-1` spacer (`:298`)
+>    go with the controls they separated, so Think sits left rather than being pushed right by
+>    a spacer with nothing on its left. Nothing pins the bar: `ai-scroll-chain.test.ts` names
+>    only the root and the message pane.
+> 3. **The pane takes no `forceCollapsed` / `onForceExpand`, and dev removed the only
+>    producer.** (Rewritten 2026-08-22: the conclusion survives, its cited mechanism does
+>    not.) `LayoutPresetMenu.tsx` and `article-layout-controls.tsx` were **deleted** in the
+>    #1391/#1377 shell work — `features/pages/edit-affordance.test.ts:60`/`:62` now assert
+>    `LayoutPresetMenu`'s *absence* from `PageViewPage` and the inspector — and
+>    `forceTreeCollapsed` no longer exists anywhere in `frontend/src`. `AppLayout` passes
+>    neither prop to either sidebar, and there is a **new guard against re-adding them**:
+>    `app-shell-layout.test.ts:268-269` fails if `forceCollapsed` or `forceTreeCollapsed`
+>    reappears in `AppLayout.tsx`. `SidebarTreeView` still *declares* the props
+>    (`:431-439`, used at `:749`, `:773`, `:808`) for its own callers; the pane must not grow
+>    them, and its expand button is a plain `toggleTreeSidebar`. CLAUDE.md says the same in
+>    prose: *"The laptop-width force-collapse of the page tree is gone."*
+>
+>    **What the desktop arms DO carry is `embedMainNav`.** A chassis-level `<MainNavChassisRail
+>    />` now sits outside the workspace card (`AppLayout.tsx:509`), so both desktop sidebars
+>    pass `embedMainNav={false}` and both drawer sidebars pass bare `embedMainNav`. The pane
+>    needs the same prop (`embedMainNav?: boolean`, defaulting to `true`) or the desktop arm
+>    renders a second Pages/AI/Graph strip beside the chassis rail. Two literals in
+>    `AppLayout.tsx` are grepped verbatim by `app-shell-layout.test.ts:300-305` —
+>    `SettingsSidebar embedMainNav={false}`, `SidebarTreeView embedMainNav={false}` and
+>    `SidebarTreeView onNavigate={closeMobileSidebar} embedMainNav` — so the three-arm ternary
+>    must not reorder them out of existence, and `:241-250` additionally requires
+>    `<SidebarTreeView` to appear inside `app-workspace` and before `id="main-content"`.
+> 4. **`SourceThumbnail` is viewport-gated in PR 2 (owner's decision, 2026-08-18).** #1362
+>    renders a `SourceThumbnail` in `CitationChips` (on every answer) and `SourceCitations`,
+>    each fetching the full attachment through `useAuthenticatedSrc` at mount
+>    (`SourceThumbnail.tsx:40-54`); PR 1 persists `kind` + `attachmentUrl` so a reopened answer
+>    renders as the live one did, and `04-frontend-structure.md` states the bound per assistant
+>    turn on screen — an N-turn thread already multiplies it live, and a reopen reaches that
+>    state in one gesture. Rather than accept `answers × MAX_IMAGE_SOURCES` fetches at mount,
+>    the owner chose to bound it now, and the bound lives **inside `SourceThumbnail`** so the
+>    14px chip and the 32px card, live and reopened alike, get it without a per-surface flag:
+>    the component observes a zero-footprint sentinel with `IntersectionObserver` and hands
+>    `useAuthenticatedSrc` `null` until the sentinel has intersected once (the hook already
+>    skips a `null` url); before that, and while loading or on failure, it still renders
+>    NOTHING that has layout — the "loading and failure both render nothing" rule above is kept,
+>    so no placeholder box and no layout shift. `test-setup.ts:5-18` stubs
+>    `IntersectionObserver` for jsdom (the outline's scroll-spy already depends on it); the
+>    existing `CitationChips.test.tsx` / `SourceCitations.test.tsx` thumbnail cases drive the
+>    stub's callback to intersect, and a new case mounts N thumbnails with a stub that never
+>    intersects and asserts **zero** attachment fetches — the assertion that would have failed
+>    on the pre-gate component. It is a #1115 surface, so it is its own task with both test
+>    files re-run. **PR 2 also closes the forward references this decision leaves open**:
+>    `04-frontend-structure.md:259-261` reads *"which is why PR 2 decides whether thumbnails
+>    render lazily (see the PR 2 flag bullet …)"* and the spec's own **PR 2 flag** bullet
+>    (`:519-523`) is what this item answers — both are rewritten to state the decision and the
+>    mechanism. **Also in PR 2:** `SourceCitations` gates its thumbnail on `isImageSource(source)
+>    && target.kind !== 'none'` — an `unavailable` source must not re-probe an ACL the read side
+>    already reported gone (`CitationChips` already does this by construction, gating on
+>    `target.kind === 'internal'`).
+> 5. **PR 1 already landed five items this spec assigned to PR 2**; the plan must not redo
+>    them: `loadConversation` maps `sources` (`AiContext.tsx:686-698`; it still calls
+>    `setModel(conv.model)` at `:699`, which PR 2 removes per the state machine's *Open a
+>    row*); the list query tolerates `{ items }` (`:607-618`, mirror effect `:619-621`);
+>    `refusal.tsx:59-66` and `source-target.ts:44-46` are reworded; CLAUDE.md's #1119 paragraph
+>    is rewritten for persisted sources, `unavailable` and image identity (it now reads "There
+>    are **four** reasons" since #1367's `image_only_context` — do not restate three); and
+>    `image-source.ts:1`/`:31` already gates `isImageSource` on the contract's
+>    `ATTACHMENT_URL_PATTERN` (`packages/contracts/src/schemas/llm.ts:220`), the last gate
+>    before `<img>` — PR 2 adds only the `target.kind !== 'none'` half. PR 2's CLAUDE.md work
+>    is the DeepSearchToggle sentence (the reset keys on `activeThreadId`, now `:66`), the
+>    rail-contract sentence ("Both tree implementations … render in the same rail", now
+>    `:278`), the two-action-sets sentence (now `:318`, and see item 9 — dev has already made
+>    its Generate clause false) and the new pane paragraph — which must **not** contain
+>    the string `#1115`, or `frontend/src/docs-image-retrieval-record.test.ts:69-95` fails
+>    (every `#1115`-mentioning CLAUDE.md paragraph must open with a declared prefix or be a
+>    declared cross-reference).
+> 6. **`CommandPalette` gained a second `/ai?q=` producer** (#1364's no-results recovery item
+>    pushes `path: '/ai?q=' + encodeURIComponent(q)`), so the `?q=` prefill has two callers to
+>    keep working; the "exactly three producers of `/ai?pageId=`" count is unchanged.
+> 7. **The pane owes the `#1218` chain nothing, footer included.** It is a sibling of `<main>`
+>    under `app-workspace` (`AppLayout.tsx:517`), itself under `panel-wrapper` (`:510-516`),
+>    and `ai-scroll-chain.test.ts:145-151` names only `AppLayout`, `PageTransition` and
+>    `AiAssistantPage`. Inside the aside the footer is one more `shrink-0` row: nav row
+>    (`h-12 shrink-0`, rendered only when `embedMainNav`) → New chat → filter → `<nav
+>    className="min-h-0 flex-1 overflow-y-auto">` → Show more → footer. One constraint from
+>    the neighbouring guard: `scroll-padding-mask.test.ts:82` asserts `AppLayout` contains no
+>    responsive `pt-` variant anywhere, so do not add one while wiring the pane.
+> 8. **Anchors** (re-read 2026-08-22 at `a6a3d329`). Everything else is renumbering and is
+>    carried by the PR 2 plan, not repeated
+>    here: `AppLayout.tsx` (drawer ternary `:408-410`, desktop slot `:521-525`, `AiProvider
+>    :351`, drawer-close effect `:317-320`, `panel-wrapper :510-516`, `app-workspace :517`,
+>    the new `<MainNavChassisRail />` at `:509`, and `isExistingArticlePath` renamed to
+>    `isArticlePath` at `:28`), `AppLayout.test.tsx:357-390` (the
+>    `/ai` leg to invert is `:368-379`; `SettingsSidebar` is deliberately unmocked there — do
+>    the same for the pane; the file now also mocks `NotificationBell` `:67` and `UserMenu`
+>    `:71`, and its `use-media-query` stub `:78` gained `useIsInspectorWideLayout`),
+>    `AppLayout.test.tsx:742-758` (the "issues no AI requests" test,
+>    spec `:678-693`), `SidebarTreeView.tsx` chassis anchors (`SECTION_LABEL` `:151`
+>    still module-private; the nav row `:873` now wrapped in `{embedMainNav && (…)}`, with a
+>    **second** bordered `panel-toolbar … h-12` space row at `:890` and a second collapse
+>    button at `:1087-1096` for the `!embedMainNav` branch; the footer `:1348`; the resize
+>    handle `:1373-1401`, whose double-click **resets to 282, not 280** — `ui-store.ts:51`
+>    `treeSidebarWidth: 282`; `isAiRoute` still `pathname === '/ai'` at `:522`; both `#417`
+>    tests at `SidebarTreeView.test.tsx:368`/`:374`; still 26 `isAiRoute` occurrences),
+>    `UserMenu.tsx:34`/`:51` (recipe unchanged, `align` prop added; **its `:39-41` comment has
+>    already been corrected in dev** — it now says "in the header session cluster", which is
+>    true, so PR 2 has nothing to fix in passing there and the step should be struck),
+>    `SettingsSidebar.tsx:147-153`, `index.css:1132-1150` (`nm-action-destructive`, same
+>    shape, still `&:hover:not(:disabled)` at `:1136-1139` and still no `&[data-highlighted]`;
+>    `destructive-treatment.test.ts`'s ratchet is still 21),
+>    `04-frontend-structure.md:27` (the fAI node string **changed again** under the shell work
+>    — `AiDock`/`AiDockSheet` dropped and the inspector clause reworded — so re-derive the
+>    append from the current string, and `:129-138` is now `:150-159`, `:259-261` now
+>    `:278-280`), `09-flow-rag-chat.md:691-693` (the "conversation switch on `/ai`" sentence, spec
+>    `:391-397` — moved ~+300 lines by #1115's docs), `docs/architecture/README.md`'s table at
+>    `:43-63` — the new row must be worded as the narrower case (a new **route inside an
+>    existing feature**, or a provider's data model changing), or it duplicates the row already
+>    at `:49` — `shared/lib/article-route.ts` (#1368; the exact module shape `ai-routes.ts`
+>    argues for — cite it), and the docked-AI spec, which has no commit since. `AiContext.tsx`
+>    shifted ~+5 from PR 1's own edits. Two of this spec's Architect's calls are already
+>    settled by PR 1 and their anchors are dead: call 9's `llm-ask.ts:740-742` is gone,
+>    replaced by `selectReplayableHistory()` in
+>    `backend/src/domains/llm/services/history-budget.ts`, which already implements the
+>    whole-exchanges walk with the orphan user turn dropped; call 10's `page_ref` write landed
+>    beside `llm-ask.ts:373-379`. Mark both decided rather than open.
+> 9. **Create skills (#1401) are intended on BOTH surfaces, and decision 13's `/ai` list grows
+>    by five — owner rulings 2 and 3, 2026-08-22.** #1401 added a fifth block of actions to
+>    `AssistantActionSelect` — `CreateSkillAction = 'create-spec' | 'create-guide' |
+>    'create-notes' | 'create-postmortem' | 'create-custom'` (`:29-30`), rendered
+>    unconditionally at `:217-223`, with `applyAssistantAction` mapping `create-*` →
+>    `setCreateSkill(id); setMode('generate')` (`:102-125`) — and gave the **dock** a
+>    `runCreateSkill` path to `POST /llm/generate` with an *Apply to Page* draft card
+>    (`dock/use-dock-actions.ts`, `dock/DockDraftCard.tsx`, the five-item empty-state picker
+>    at `DockPanel.tsx:570-600`), deleting the effect that used to keep `generate` off the
+>    dock. It is pinned green by `dock/AiDock.create-skills.test.tsx:107-117`.
+>
+>    **The owner ruled this intended (ruling 2): keep it.** It makes CLAUDE.md's standing
+>    sentence *"the article-side dock deliberately does not [offer Generate]"* false in dev
+>    already — a pre-existing dev/doc inconsistency PR 2 did not create — so PR 2's docs task
+>    rewrites that sentence to the new rule rather than reverting a shipped feature. The same
+>    paragraph's closing *"layout presets still expand it"* names the feature item 3 records
+>    as deleted, and is fixed in the same edit.
+>
+>    **Decision 13's "drop the rewrite skills and Diagram from `/ai`" half still stands**, so
+>    the `actions` allow-list restructure stays in PR 2, with these three lists (ruling 3):
+>    `AI_HOME_ACTIONS = ['ask', 'generate', ...CREATE_SKILL_ACTIONS]`;
+>    `DOCK_ACTIONS = ['ask', ...IMPROVEMENT_TYPES, 'diagram', 'generate',
+>    ...CREATE_SKILL_ACTIONS]`; `CREATE_SKILL_ACTIONS` = the five `create-*` ids, sourced from
+>    `features/ai/assistant-actions.ts` alongside the `AssistantAction` /
+>    `CreateSkillAction` type re-export. `AssistantActionSelect` gains `actions` replacing
+>    `includeGenerate`, its #1401 create-skills section renders **iff** the passed list
+>    carries those ids, and `applyAssistantAction`'s `create-*` mapping is preserved
+>    unchanged. **The URL-mode allow-list on AI routes stays `ask | generate` only**:
+>    `create-*` is never a URL `mode` value — `mode=generate` is the URL form and the skill is
+>    picked in-app — so `isAiHomeAction` needs no create entries.
 
 ## Problem
 
@@ -516,11 +771,20 @@ requests per new conversation. A one-shot timer would race the model's latency.
   persisted) and still suppresses the badge on a refusal (#1119). A source with `unavailable:
   true` resolves to `{ kind: 'none' }` in `resolveSourceTarget` and renders inert with
   `title="This page is no longer available to you"`.
-- **PR 2 flag, not decided here**: every persisted `kind: 'image'` source reopens as a live
+- **Decided (owner, 2026-08-18; amendment item 4) — thumbnails are viewport-gated, inside
+  `SourceThumbnail`.** Every persisted `kind: 'image'` source used to reopen as a live
   thumbnail fetch (`useAuthenticatedSrc` pulling the full attachment, up to `MAX_IMAGE_SOURCES`
-  = 4 per turn, no server-side resize per ADR-025) — a long thread reopened fetches N turns × 4.
-  PR 2 should decide whether reopened thumbnails render lazily (in-viewport, or only the last N
-  turns) rather than eagerly for the whole history.
+  = 4 per turn, no server-side resize per ADR-025), so a long thread reopened fetched N turns
+  × 4 at mount. PR 2 puts the bound in the component rather than behind a per-surface flag:
+  `SourceThumbnail` observes a zero-footprint sentinel with `IntersectionObserver` and passes
+  `useAuthenticatedSrc` `null` until the sentinel has intersected once, after which the
+  observer disconnects. The 14px chip and the 32px card, live and reopened alike, inherit it,
+  and `typeof IntersectionObserver === 'undefined'` is treated as intersected so a
+  non-observing environment degrades to today's behaviour rather than to a blank chip.
+  Nothing with layout renders before intersection, while loading or on failure, so the
+  "loading and failure both render nothing" rule is kept and there is no layout shift.
+  "Only the last N turns" was the alternative and was not taken: it is a rule about history
+  length that a reader scrolling back defeats, while the viewport gate is exact.
 
 ## Backend
 
@@ -953,16 +1217,19 @@ be reversed cheaply if the owner disagrees.
    refetches either way.
 7. **`page_ref`, drop `page_id`** — argued under Migration.
 8. **Keyset over offset** — argued under Read side.
-9. **A refused exchange's orphan user turn is dropped from replay.** Today the `refused`
-   filter strips the assistant half and replays the bare question (`llm-ask.ts:740-742`).
-   Defining the budget walk in whole exchanges makes the orphan a decision; dropping it keeps
-   the replayed history well-formed for providers that reject consecutive same-role messages
-   and costs the model one unanswered question it could not have used.
-10. **`page_ref` is authorised at write time.** The ask route never authorised a bare
-    `pageId` (only the `includeSubPages` branch did, `llm-ask.ts:274-280`), and the pane would
-    have read the title back — a page-title oracle over the whole table. A consequence of
-    writing the column at all rather than an owner call, but it adds one `userCanAccessPage`
-    query to the first ask of a dock conversation.
+9. **A refused exchange's orphan user turn is dropped from replay. — DECIDED, shipped in
+   PR 1 (#1365).** The old `refused` filter stripped the assistant half and replayed the
+   bare question; the anchor it cited (`llm-ask.ts:740-742`) no longer exists. The budget
+   walk now lives in `backend/src/domains/llm/services/history-budget.ts`
+   (`selectReplayableHistory`), walks whole exchanges and drops the orphan, which keeps the
+   replayed history well-formed for providers that reject consecutive same-role messages and
+   costs the model one unanswered question it could not have used.
+10. **`page_ref` is authorised at write time. — DECIDED, shipped in PR 1 (#1365).** The ask
+    route never authorised a bare `pageId` (only the `includeSubPages` branch did), and the
+    pane reads the title back, which would have been a page-title oracle over the whole
+    table. The INSERT beside `llm-ask.ts:664` writes `page_ref` only for an id
+    `userCanAccessPage` has cleared, at the cost of one extra query on the first ask of a
+    dock conversation.
 
 ## Follow-ups (already in the issue's out-of-scope list, plus three found here)
 

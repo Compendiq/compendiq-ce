@@ -75,4 +75,27 @@ describe('resolveSourceTarget', () => {
       expect(resolveSourceTarget(source({ url: hostile, pageId: 3 }))).toEqual({ kind: 'none' });
     }
   });
+
+  it('refuses an unavailable source before every other rule (#1361)', () => {
+    // `GET /llm/conversations/:id` annotates a persisted source whose page is
+    // trashed or no longer visible to this caller. The stored row still carries
+    // its pageId and (for a web source) its url, so the annotation has to be
+    // read FIRST — otherwise the citation routes the reader at a page the
+    // server just said they cannot have.
+    expect(resolveSourceTarget(source({ pageId: 42, unavailable: true })))
+      .toEqual({ kind: 'none' });
+    expect(resolveSourceTarget(source({ url: 'https://example.com/a', unavailable: true })))
+      .toEqual({ kind: 'none' });
+    expect(resolveSourceTarget(source({
+      kind: 'image',
+      pageId: 42,
+      attachmentUrl: '/api/attachments/42/x.png',
+      unavailable: true,
+    }))).toEqual({ kind: 'none' });
+  });
+
+  it('leaves an absent flag alone — a live answer never carries one', () => {
+    expect(resolveSourceTarget(source({ pageId: 42 })))
+      .toEqual({ kind: 'internal', path: '/pages/42' });
+  });
 });

@@ -7,12 +7,13 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
-import { AiProvider } from '../AiContext';
+import { AiProvider, useAiContext } from '../AiContext';
 import { DockPanel } from './DockPanel';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
+import { expectComposerFocusOrder } from '../../../test-utils';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -49,6 +50,36 @@ function sse(...chunks: Array<Record<string, unknown>>) {
 
 let modelsFail = false;
 
+/**
+ * Reaches the hoisted provider the way a sibling surface would, so a test can
+ * put a finished answer on one page's thread and a running stream on another —
+ * the only way to observe which thread the in-flight bubble belongs to (#1361).
+ */
+function DockThreadTools() {
+  const navigate = useNavigate();
+  const { setMessages, runStream } = useAiContext();
+  return (
+    <>
+      <button
+        data-testid="dock-seed-answer"
+        onClick={() =>
+          setMessages([
+            { id: 'seed-user', role: 'user', content: 'what changed here?' },
+            { id: 'seed-answer', role: 'assistant', content: 'answer one' },
+          ])
+        }
+      >
+        seed
+      </button>
+      <button data-testid="dock-ask-here" onClick={() => void runStream('/llm/ask', { question: 'q' })}>
+        ask
+      </button>
+      <button data-testid="dock-go-page-2" onClick={() => navigate('/pages/page-2')}>page 2</button>
+      <button data-testid="dock-go-page-1" onClick={() => navigate('/pages/page-1')}>page 1</button>
+    </>
+  );
+}
+
 function renderDock(
   opts: { initialEntry?: string; onClose?: () => void } | string = {},
 ) {
@@ -61,6 +92,7 @@ function renderDock(
         <MemoryRouter initialEntries={[initialEntry]}>
           <AiProvider>
             <button data-testid="dock-trigger">AI Assistant</button>
+            <DockThreadTools />
             <Routes>
               <Route path="/pages/:id" element={<div>article</div>} />
               <Route path="/ai" element={<div>ai page</div>} />
@@ -93,6 +125,10 @@ async function selectDockAction(action: 'ask' | 'grammar' | 'structure' | 'clari
 
 function composer(): HTMLTextAreaElement {
   return screen.getByTestId('ai-dock-input');
+}
+
+function composerBox(): HTMLElement {
+  return composer().closest('.nm-composer') as HTMLElement;
 }
 
 describe('AiDock (#1126)', () => {
@@ -423,6 +459,131 @@ describe('AiDock (#1126)', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Sub-pages context (#1361 owner ruling, 2026-08-23)
+  // -------------------------------------------------------------------------
+  //
+  // `/ai`'s own "+ Sub-pages" chip went with the page scope PR 2 retired from
+  // that route, and it was the app's only writer of `includeSubPages` — every
+  // `/llm/ask` and `/llm/improve` request has been shipping the default
+  // `false` since. The dock still has a page to widen the context of, so the
+  // capability is restored here. `includeSubPages` is `AiContext` provider
+  // state, not panel-local: unlike Deep search it is not cleared per question
+  // or per page (see `useDockActions`'s comment on why `deepSearch` could not
+  // live there), so this suite does not assert a reset — there isn't one.
+  describe('sub-pages', () => {
+    /** The fixture page grown a child, so the toggle has something to offer. */
+    function pageWithChildren() {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/pages/page-1') return Promise.resolve({ ...PAGE, hasChildren: true });
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        if (path.startsWith('/llm/usecase-default')) return Promise.resolve({ model: 'llama3' });
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        if (path === '/embeddings/status') return Promise.resolve({ total: 1, embedded: 1, isProcessing: false });
+        return Promise.resolve({});
+      });
+    }
+
+    it('does not render for a leaf page', async () => {
+      // Default beforeEach fixture: PAGE.hasChildren is false.
+      renderDock();
+      await openAndSettle();
+
+      expect(screen.queryByTestId('ai-dock-include-subpages')).not.toBeInTheDocument();
+    });
+
+    it('renders, off by default, once the page has children', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      expect(screen.getByTestId('ai-dock-include-subpages')).not.toBeChecked();
+    });
+
+    // Diagram and the create skills never send `includeSubPages`
+    // (`useDockActions`), so offering the control there would describe an
+    // option the request does not carry.
+    it('is not offered for Diagram, which does not send includeSubPages', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      await selectDockAction('diagram');
+      expect(screen.queryByTestId('ai-dock-include-subpages')).not.toBeInTheDocument();
+    });
+
+    it('toggling it changes what the next ask sends', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      fireEvent.click(screen.getByTestId('ai-dock-include-subpages'));
+      expect(screen.getByTestId('ai-dock-include-subpages')).toBeChecked();
+
+      fireEvent.change(composer(), { target: { value: 'what changed across sub-pages?' } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/ask',
+          expect.objectContaining({ includeSubPages: true }),
+          expect.anything(),
+        );
+      });
+    });
+
+    it('also reaches the rewrite request, which sends includeSubPages too', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      fireEvent.click(screen.getByTestId('ai-dock-include-subpages'));
+      await selectDockAction('grammar');
+      fireEvent.click(screen.getByTestId('ai-dock-send'));
+
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/improve',
+          expect.objectContaining({ includeSubPages: true }),
+          expect.anything(),
+        );
+      });
+    });
+
+    it('is a native, focusable, non-disabled checkbox — reachable by keyboard', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      const toggle = screen.getByTestId('ai-dock-include-subpages');
+      expect(toggle.tagName).toBe('INPUT');
+      expect(toggle).toHaveAttribute('type', 'checkbox');
+      expect(toggle).not.toHaveAttribute('tabindex', '-1');
+      expect(toggle).not.toBeDisabled();
+      expect(toggle).toHaveAccessibleName('Include sub-pages in the AI context');
+
+      toggle.focus();
+      expect(toggle).toHaveFocus();
+    });
+
+    // It sits above `.nm-composer`, so it must never appear inside the box
+    // `expectComposerFocusOrder` walks — that is what keeps the toggle's own
+    // Tab stop from perturbing the sequence #1154 pinned.
+    it('leaves the composer box focus order exactly as #1154 pinned it', async () => {
+      pageWithChildren();
+      renderDock();
+      await openAndSettle();
+
+      expect(screen.getByTestId('ai-dock-include-subpages')).toBeInTheDocument();
+      expectComposerFocusOrder(composerBox(), [
+        'ai-dock-attach-button',
+        'assistant-action-select',
+        'ai-dock-input',
+        'ai-dock-send',
+      ]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Low-confidence refusal (#1119 / #1105)
   // -------------------------------------------------------------------------
   describe('low-confidence refusal', () => {
@@ -548,5 +709,64 @@ describe('AiDock (#1126)', () => {
       fireEvent.click(toggle);
       expect(toggle).toHaveTextContent('Show more');
     });
+  });
+
+  it("does not paint another page's in-flight answer onto this thread (#1361)", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    streamSSEMock.mockImplementation((_endpoint: string, _body: unknown, signal: AbortSignal) =>
+      (async function* () {
+        yield { content: 'partial from the other page' };
+        await gate;
+        if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      })(),
+    );
+
+    renderDock();
+    await openAndSettle();
+
+    fireEvent.click(screen.getByTestId('dock-seed-answer'));
+    expect(await screen.findByText('answer one')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('dock-go-page-2'));
+    fireEvent.click(screen.getByTestId('dock-ask-here'));
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('dock-go-page-1'));
+
+    expect(await screen.findByText('answer one')).toBeInTheDocument();
+    expect(screen.queryByText('partial from the other page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-dock-typing')).not.toBeInTheDocument();
+
+    await act(async () => { release(); await Promise.resolve(); });
+  });
+
+  // The same mechanism on the second /llm/ask surface (#1361). One of two is
+  // the divergence CLAUDE.md's refusal note warns about.
+  it('renders the history-truncated note when an answer reports it', async () => {
+    streamSSEMock.mockImplementation(() =>
+      sse({ content: 'Answer' }, { final: true, conversationId: 'c-1', historyTruncated: true, sources: [], done: true }));
+
+    renderDock();
+    await openAndSettle();
+    fireEvent.change(composer(), { target: { value: 'and then?' } });
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
+
+    const note = await screen.findByTestId('ai-dock-history-truncated');
+    expect(note).toHaveTextContent('Older messages in this conversation are no longer sent to the model.');
+    expect(note).not.toHaveAttribute('role');
+    expect(note).not.toHaveAttribute('aria-live');
+  });
+
+  it('does not render the note when the answer does not report it', async () => {
+    streamSSEMock.mockImplementation(() => sse({ content: 'Answer' }, { final: true, sources: [], done: true }));
+
+    renderDock();
+    await openAndSettle();
+    fireEvent.change(composer(), { target: { value: 'first question' } });
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
+
+    await screen.findByText('Answer');
+    expect(screen.queryByTestId('ai-dock-history-truncated')).not.toBeInTheDocument();
   });
 });

@@ -689,8 +689,14 @@ discard the choice and an abort or an error cannot leave the toggle lit. Two
 further boundaries clear it, both found in review: a **chip run** in the dock
 (Improve / Summarize / Diagram / Quality post to routes that do not take the
 flag, so leaving it lit would show a mode the request is not in), and a
-**conversation switch** on `/ai` (the sidebar swaps the thread under a composer
-that stays mounted, which no remount tidies up).
+**thread switch** on `/ai`. That second one keys on `AiContext`'s
+`activeThreadId`, not on the sidebar: since #1361 a thread is identified by
+where you are (`draft`, `conv:<id>`, `page:<id>`) and by an identity stamped at
+filing, so New chat, opening a saved conversation from the conversations pane
+and Back/Forward between two `/ai/c/:id` URLs all clear the toggle under a
+composer that stays mounted, which no remount tidies up — while typing, a `?q=`
+prefill and a first answer's promotion from `draft` to `conv:<id>` leave it
+alone, because none of those is a different conversation.
 
 The copy is the other half of the constraint, and it is deliberately
 unflattering. The caveat is **visible at rest and wired to the control via
