@@ -591,6 +591,52 @@ export const ForceReleaseLockResponseSchema = z.object({
 });
 export type ForceReleaseLockResponse = z.infer<typeof ForceReleaseLockResponseSchema>;
 
+// ─── Issue #1284 — observed confidence distribution (read-only) ──────────
+// `GET /api/analytics/confidence-distribution` — the shape behind the
+// readout under each threshold on Settings → AI Models → Retrieval.
+//
+// Deliberately NOT part of `AdminSettingsSchema`: this is a measurement of
+// what the deployment has been doing, not a setting the panel writes, and
+// `GET /admin/settings` is a settings document that is already doing enough.
+
+/** One basis's observed distribution over the window. */
+export const ConfidenceDistributionBucketSchema = z.object({
+  /**
+   * Median and 90th percentile of the recorded `rag.confidence` values, both
+   * `null` when `count` is 0 — never NaN, and never 0, which would read as a
+   * measured verdict rather than as an empty sample.
+   */
+  p50: z.number().nullable(),
+  p90: z.number().nullable(),
+  /**
+   * How many assistant questions the two percentiles were computed over. It
+   * is required, not optional: a p90 over eleven questions is noise, and a
+   * readout without a sample size invites tuning against it.
+   */
+  count: z.number().int().min(0),
+});
+export type ConfidenceDistributionBucket = z.infer<typeof ConfidenceDistributionBucketSchema>;
+
+export const ConfidenceDistributionSchema = z.object({
+  /** Fixed window, in days. Not configurable in this pass. */
+  windowDays: z.number().int().positive(),
+  /**
+   * Which `search_analytics.surface` the sample was drawn from — `'ask'`.
+   * On the wire because the panel's copy names it, and a readout that says
+   * "assistant questions" while the server counted something else would be
+   * the one thing this feature must not do.
+   */
+  surface: z.literal('ask'),
+  /**
+   * Per BASIS, never merged: the basis flips per request (a rerank bypass
+   * measures that request on the cosine scale), and the two thresholds are
+   * two knobs precisely because the two scales are unrelated.
+   */
+  similarity: ConfidenceDistributionBucketSchema,
+  rerank: ConfidenceDistributionBucketSchema,
+});
+export type ConfidenceDistribution = z.infer<typeof ConfidenceDistributionSchema>;
+
 // ─── #1349 — attachment storage observability + orphan sweep ─────────────────
 // Shared contract for `GET /api/admin/attachments/stats`,
 // `POST /api/admin/attachments/sweep` and `GET /api/admin/attachments/sweep`.

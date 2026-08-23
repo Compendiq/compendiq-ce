@@ -97,7 +97,7 @@ function renderImproveMode({ chatVision }: { chatVision: boolean | null }) {
   return render(<><ImproveModeInput /><ModelProbe /><MessagesProbe /></>, {
     wrapper: ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/ai?pageId=page-1&mode=improve']}>
+        <MemoryRouter initialEntries={['/pages/page-1?mode=improve']}>
           <LazyMotion features={domAnimation}>
             <AiProvider>{children}</AiProvider>
           </LazyMotion>

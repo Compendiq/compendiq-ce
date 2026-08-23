@@ -20,6 +20,7 @@ import type { SettingsResponse } from '@compendiq/contracts';
 const ConfluenceTab = lazy(() => import('./panels/ConfluenceTab').then((m) => ({ default: m.ConfluenceTab })));
 const AiPromptsTab = lazy(() => import('./panels/AiPromptsTab').then((m) => ({ default: m.AiPromptsTab })));
 const ThemeTab = lazy(() => import('./ThemeTab').then((m) => ({ default: m.ThemeTab })));
+const EditorPreferencesTab = lazy(() => import('./EditorPreferencesTab').then((m) => ({ default: m.EditorPreferencesTab })));
 const LabelManager = lazy(() => import('./LabelManager').then((m) => ({ default: m.LabelManager })));
 const LicenseStatusCard = lazy(() => import('../admin/LicenseStatusCard').then((m) => ({ default: m.LicenseStatusCard })));
 
@@ -58,6 +59,7 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
     if (isLoading || !settings) return <SkeletonFormFields />;
     return <AiPromptsTab settings={settings} onSave={onSaveSettings} isAdmin={isAdmin} />;
   },
+  'personal/editor': renderWithSettings(EditorPreferencesTab),
   'personal/theme': ({ onSaveSettings }) => <ThemeTab onSave={onSaveSettings} />,
 
   // Knowledge

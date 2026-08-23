@@ -6,6 +6,7 @@ import {
   resolveUsecase,
   resolveConfidenceBasisPair,
   resolveImageEmbeddingUsecase,
+  resolveInlineCompletionUsecase,
 } from './llm-provider-resolver.js';
 import { bumpProviderCacheVersion } from './cache-bus.js';
 
@@ -151,11 +152,33 @@ describe.skipIf(!dbAvailable)('resolveUsecase — truth table', () => {
     });
   });
 
+  describe('resolveInlineCompletionUsecase (#1417)', () => {
+    it('answers null when unassigned, even with a default provider', async () => {
+      await seed();
+      expect(await resolveInlineCompletionUsecase()).toBeNull();
+    });
+
+    it('resolves only its explicitly assigned provider and model', async () => {
+      const { bId } = await seed();
+      await query(
+        `INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+         VALUES ('inline_completion', $1, 'qwen2.5-coder:7b')`,
+        [bId],
+      );
+      const resolved = await resolveInlineCompletionUsecase();
+      expect(resolved?.config.id).toBe(bId);
+      expect(resolved?.model).toBe('qwen2.5-coder:7b');
+    });
+  });
+
   it("resolveUsecase refuses 'image_embedding', exactly as it refuses 'rerank'", async () => {
     await seed();
     await expect(resolveUsecase('image_embedding')).rejects.toThrow(
       /resolveImageEmbeddingUsecase/,
     );
     await expect(resolveUsecase('rerank')).rejects.toThrow(/resolveRerankUsecase/);
+    await expect(resolveUsecase('inline_completion')).rejects.toThrow(
+      /resolveInlineCompletionUsecase/,
+    );
   });
 });

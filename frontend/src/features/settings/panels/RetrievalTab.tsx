@@ -1,10 +1,12 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, type Ref } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import type {
   ConfidenceCalibration,
+  ConfidenceDistribution,
+  ConfidenceDistributionBucket,
   FtsLanguage,
   RagConfidenceCalibration,
   UpdateAdminSettingsResult,
@@ -331,6 +333,119 @@ export function RetrievalTab() {
     queryKey: ['llm-usecases'],
     queryFn: () => apiFetch('/admin/llm-usecases'),
   });
+
+  /**
+   * #1284 — the observed `rag.confidence` distribution, per basis. Its own
+   * endpoint rather than a field on `/admin/settings`: that route is a
+   * settings document, and this is a measurement of what the deployment has
+   * been doing.
+   *
+   * Consumed with `isPending`/`isError` (review-proofing the `usePageTree`
+   * rule): a failed read renders as a failure sentence under each threshold,
+   * never as "nothing was measured" — which would tell an operator their
+   * assistant has had no questions when in fact the panel could not look.
+   */
+  const {
+    data: distribution,
+    isPending: distributionPending,
+    isError: distributionError,
+    refetch: refetchDistribution,
+  } = useQuery<ConfidenceDistribution>({
+    queryKey: ['confidence-distribution'],
+    queryFn: () => apiFetch('/analytics/confidence-distribution'),
+  });
+
+  /**
+   * THREE states, not two (review r1) — the same `usePageTree` rule the
+   * settings query above already implements, applied to this one.
+   *
+   * react-query settles a failed REFETCH as `status: 'error'` while KEEPING
+   * `data`, and this panel's client sets `staleTime: 30_000` with the default
+   * `refetchOnWindowFocus`, so "alt-tab away, come back during a backend
+   * blip" is an ordinary path rather than a corner. Branching the readout on
+   * `isError` alone threw away a real 2,184-question measurement the panel
+   * was still holding and replaced it with "there is nothing measured to
+   * check this threshold against" — a sentence that is FALSE in exactly that
+   * state, since something was measured and only the re-read failed.
+   *
+   * So: `distributionLost` is the destructive case where the error IS the
+   * content, and `distributionStale` keeps the figures and marks them as the
+   * last ones the panel could get. Both notices stay muted — the missing
+   * thing is an auxiliary measurement, not a knob.
+   */
+  const distributionLost = distributionError && distribution === undefined;
+  const distributionStale = distributionError && distribution !== undefined;
+
+  /**
+   * A retry this section's own control started (review r2). It exists for ONE
+   * reason: to keep the strip — and with it the button the user just pressed —
+   * mounted for the duration of that request.
+   *
+   * react-query's `fetchState` spreads `...data === undefined && { error:
+   * null, status: 'pending' }`, so refetching an errored query with NOTHING
+   * cached drops back to `pending`. `isError` goes false, the
+   * `{distributionError && (…)}` strip unmounts, and the control the user
+   * activated disappears out from under their focus — which then falls to
+   * `<body>` in a panel with ~30 tab stops and is never restored, because the
+   * strip that returns on a repeated failure is a fresh element. It also made
+   * the `Retrying…`/`disabled` state unreachable in exactly the branch where
+   * a failed read is most likely: a first load against a backend that has not
+   * run migration 098. The `distributionStale` branch keeps `data`, so it
+   * keeps `status: 'error'` and never had the problem — which is why the
+   * first cut's own test only ever exercised the half that worked.
+   *
+   * The window is not one tick: `query-client.ts` retries a non-4xx failure
+   * twice more with exponential backoff, so this is seconds of the section
+   * standing empty.
+   */
+  const [retryInFlight, setRetryInFlight] = useState(false);
+
+  /**
+   * The busy state is `retryInFlight` ALONE, never `isFetching` (review r3).
+   *
+   * This client leaves `refetchOnWindowFocus` at its v5 default with
+   * `staleTime: 30_000`, so alt-tabbing back into the stale strip starts a
+   * read nobody pressed anything for. Folding `isFetching` in relabelled the
+   * button `Retrying…` and stood it down for that read — a system event
+   * reported as the user's own action, inside a `role="status"` region that
+   * then announces it as one. Everything the button says is about the request
+   * this control started; a background re-read is the strip's own business
+   * and changes no control.
+   */
+
+  /**
+   * Where focus goes when the strip the user pressed disappears BENEATH it
+   * (review r3). The r2 fix kept the button mounted through its own request
+   * and stopped there, which left the ORDINARY outcome — the retry succeeds,
+   * the strip's condition resolves, the button is removed — dropping focus to
+   * `<body>` in the ~30-stop panel the r2 comment calls unacceptable one
+   * branch over. Success is the more common instance of that case, not a
+   * rarer one.
+   *
+   * So a successful retry hands focus to the measurement it produced: the
+   * similarity readout, the first thing on screen that changed. It is a `<p>`
+   * with `tabIndex={-1}`, so it is programmatically focusable without adding a
+   * tab stop, and it stays prose — the description sweep bans operable
+   * elements from these regions, and a paragraph is not one.
+   *
+   * Two guards keep it from being a focus THEFT. The effect only runs for a
+   * retry this control started, and only when the unmount really dropped
+   * focus: if `activeElement` is anything but `<body>`, the user moved on
+   * during the request (it can be seconds — `query-client.ts` retries a
+   * non-4xx twice with backoff) and their caret is left where they put it.
+   */
+  const [restoreFocusAfterRetry, setRestoreFocusAfterRetry] = useState(false);
+  const distributionReadoutRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!restoreFocusAfterRetry) return;
+    // The strip is still up (the retry failed, or is still out) — the button
+    // the user pressed is still under their focus, which is where it belongs.
+    if (distributionError || retryInFlight) return;
+    setRestoreFocusAfterRetry(false);
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    distributionReadoutRef.current?.focus();
+  }, [restoreFocusAfterRetry, distributionError, retryInFlight]);
 
   const saved: RetrievalValues = useMemo(() => {
     const out = { ...DEFAULTS };
@@ -844,8 +959,128 @@ export function RetrievalTab() {
       {/* ── Confidence gate ─────────────────────────────────────────────── */}
       <Section
         title="Confidence refuse gate"
-        description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces."
+        // #1284 — the description ORIENTS and points at the readout, and
+        // stops there (review r1). Every other section description on this
+        // panel is one line (11–40 words); this one had grown to 111, a
+        // four-sentence block of 12px muted prose above the first control,
+        // restating the same fact the similarity row's help and the readout
+        // beneath it state within about 200px of each other. How to read a
+        // percentile now lives beside the first distribution, where the
+        // numbers it qualifies are; the logs and traces stay here, one rung
+        // down, because they are still where a single request's verdict is
+        // inspected.
+        description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces. Under each knob is the distribution this deployment has actually measured."
       >
+        {/*
+          #1284 review r2 — the recovery for a failed read is a control, and a
+          control can never live inside a threshold row's readout: that
+          paragraph is the input's `aria-describedby` region and must stay
+          prose (a description flattens to one string, so a button in it is
+          announced with no way to reach it, then repeated on the next tab
+          stop). One query serves both bases, so one Retry serves both rows, and it
+          sits at the top of the section where each row's failure sentence
+          points. It replaces "Reload this page to try again", which was an
+          instruction to discard every unsaved knob edit on this panel — the
+          exact loss #949's one-shot hydration and the separate Keep mutation
+          both exist to prevent — with the cost unnamed. Muted, not amber: the
+          missing thing is an auxiliary measurement, the panel's own knobs are
+          intact, and #1284 keeps this whole readout off the status palette.
+        */}
+        {/*
+          `role="status"` (review r1) — the panel's two other failure strips
+          both carry it, and without it this one told a screen-reader user
+          nothing at all: it appears silently, and a Retry that fails AGAIN
+          changes no other pixel on the page. The `Retry` → `Retrying…` swap
+          is the second half of that: it is a text change INSIDE the live
+          region, so the press is announced, and the swap BACK on a repeated
+          failure announces the outcome.
+
+          It carries NO `aria-busy` (review r2), and that is the whole point.
+          The r1 cut set `aria-busy={distributionFetching}` on this same
+          element, which per ARIA 1.2 tells assistive technology to WITHHOLD
+          updates to the region until busy clears — so the "Retrying…" text
+          change was emitted precisely while announcements were suppressed,
+          and by the time busy cleared the content had returned to the string
+          that was already announced. The two mechanisms cancelled: the
+          property silenced the content change it was paired with, while the
+          comment above it claimed both were announced. One region, one
+          mechanism — the content IS the announcement. The button's own label
+          carries the busy state where a busy state belongs.
+        */}
+        {(distributionError || retryInFlight) && (
+          <div
+            role="status"
+            className="flex flex-col items-start gap-2 text-xs text-muted-foreground"
+            data-testid="retrieval-distribution-error"
+          >
+            <span id={DISTRIBUTION_ERROR_SENTENCE_ID}>
+              {distributionStale
+                ? 'The measured confidence distribution could not be re-read, so the figures below are'
+                  + ' the last ones this panel could get. Your unsaved edits on this page are untouched.'
+                : 'The measured confidence distribution could not be read, so neither threshold below'
+                  + ' has a measurement beside it. Your unsaved edits on this page are untouched.'}
+            </span>
+            {/*
+              `aria-disabled`, NEVER `disabled` (review r3) — the whole point
+              of the r2 machinery above is that this control keeps the focus
+              of the user who pressed it, and a genuinely disabled element
+              cannot: per the HTML focus fixup rule a control that stops being
+              focusable is blurred, so every browser drops focus to `<body>`
+              here, and `nm-button-ghost`'s `:disabled` rule adds
+              `pointer-events: none` on top. jsdom implements none of that —
+              it leaves `activeElement` on a disabled button — so the test
+              beside this one asserted focus retention and `toBeDisabled()` in
+              the same block, a pair that cannot both hold in a browser. The
+              handler is the refusal instead, since `aria-disabled` blocks no
+              events (the `AuthPanel` SSO-retry precedent, same shape).
+
+              And no `aria-busy` on it either: this button sits INSIDE the
+              `role="status"` region, and busy on an element withholds updates
+              from its subtree — which is r2's silenced-announcement defect
+              moved down one node. The label change IS the announcement.
+            */}
+            <button
+              type="button"
+              onClick={() => {
+                // The refusal `aria-disabled` cannot perform. Belt-and-braces
+                // over react-query's own in-flight dedupe rather than a
+                // second mechanism: the point is that the contract lives here
+                // and not in whether `refetch` happens to coalesce.
+                if (retryInFlight) return;
+                setRetryInFlight(true);
+                setRestoreFocusAfterRetry(true);
+                void refetchDistribution()
+                  .then(
+                    // A retry that fails again leaves the strip up with the
+                    // button still under the user's focus; only a success
+                    // takes it away, and only then does focus need rehoming.
+                    (result) => setRestoreFocusAfterRetry(!result.isError),
+                    () => setRestoreFocusAfterRetry(false),
+                  )
+                  .finally(() => setRetryInFlight(false));
+              }}
+              aria-disabled={retryInFlight || undefined}
+              aria-describedby={DISTRIBUTION_ERROR_SENTENCE_ID}
+              /*
+                `opacity-70`, not 45 (review r1) — and the value is the whole
+                argument above, cashed out. The design deliberately refuses
+                `aria-busy` on both this button and its region, so this LABEL
+                is the only channel the busy state has; at 45% it composites
+                to 3.93:1 in Graphite and 2.88:1 in Paper against
+                `--color-foreground` on `--color-background`, under the 4.5:1
+                floor its 12px text is held to, while 70% clears it at 8.00 /
+                6.36. WCAG's inactive-component exemption does not cover it:
+                this control is deliberately NOT inactive — it keeps focus,
+                and the handler is what refuses. Matches the shape it was
+                modelled on, `AuthPanel`'s SSO re-check.
+              */
+              className="nm-button-ghost shrink-0 text-xs aria-disabled:cursor-default aria-disabled:opacity-70"
+              data-testid="retrieval-distribution-retry"
+            >
+              {retryInFlight ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        )}
         {/*
           #1114 — above the control, and keyed off `saved`, not `values`: the
           calibration describes the number the SERVER is holding, so reading a
@@ -866,13 +1101,59 @@ export function RetrievalTab() {
           value={values.ragConfidenceThreshold}
           onChange={(v) => set('ragConfidenceThreshold', v)}
           defaultValue={DEFAULTS.ragConfidenceThreshold}
+          // The measured distribution is the reason to reach for this knob at
+          // all, so it is what the input's description carries.
+          describedBy={distributionDescriptionId('ragConfidenceThreshold')}
         >
           <p>
             Basis: max cosine similarity of the best chunk, 0–1. The embedding model moves this
-            scale, so there is no universal value — read your own logged{' '}
-            <code className="font-mono">rag.confidence</code> values before picking one. 0 turns the
-            gate off.
+            scale, so there is no universal value — pick one against the measured distribution
+            below, not a number from another deployment. The same value is logged and traced per
+            request as <code className="font-mono">rag.confidence</code>. 0 turns the gate off.
           </p>
+          {/*
+            #1284 review r1 — how to READ the distribution, stated once, beside
+            the first one rather than in the section description above. It was
+            four sentences of 12px muted prose at the top of the section, three
+            times the length of every other section description on this panel
+            and restating what this row and the readout below already say.
+            Stated here it sits with the numbers it qualifies, and it is
+            written for both rows ("that basis", not "this one"): duplicating
+            it under the rerank threshold would put a paragraph the reader has
+            just read back into a second input's accessible description, which
+            is the length problem one layer down.
+
+            The rule itself is unchanged and both halves are load-bearing. The
+            gate refuses on `score < threshold` (llm-ask.ts), so a threshold AT
+            a percentile puts about that share of the sample below the bar — at
+            p50 half, at p90 nine in ten; the first cut said "above p50 refuses
+            about half", off by a whole percentile in the direction that
+            flatters the feature. And below the bar is not refused: `llm-ask.ts`
+            computes `otherGrounding` and short-circuits `refusalReason` to null
+            BEFORE the comparison, so a turn carrying a sub-page tree, an
+            attached document, web results or a substantive prior turn is
+            answered at any threshold while its analytics row — written during
+            retrieval — is in the sample regardless. `hasSubstantiveHistory`
+            makes that every follow-up in a conversation.
+          */}
+          <p>
+            Where a threshold sits in the distribution below is a ceiling on how often the gate
+            refuses: one set at p50 puts about half the questions measured on that basis below the
+            bar, one set at p90 about nine in ten. Fewer are refused than that — a question
+            grounded some other way, by a sub-page tree, an attached document or an earlier answer
+            in the same conversation, is answered without the gate being consulted.
+          </p>
+          <ConfidenceDistributionLine
+            fieldKey="ragConfidenceThreshold"
+            // Where a successful Retry puts focus — see `restoreFocusAfterRetry`.
+            readoutRef={distributionReadoutRef}
+            bucket={distribution?.similarity}
+            windowDays={distribution?.windowDays ?? CONFIDENCE_WINDOW_DAYS_FALLBACK}
+            isPending={distributionPending}
+            isError={distributionLost}
+            staleRead={distributionStale}
+            basisChanged={settings?.ragConfidenceCalibration?.similarity?.stale === true}
+          />
         </NumberRow>
 
         <CalibrationNotice
@@ -889,6 +1170,9 @@ export function RetrievalTab() {
           value={values.ragConfidenceThresholdRerank}
           onChange={(v) => set('ragConfidenceThresholdRerank', v)}
           defaultValue={DEFAULTS.ragConfidenceThresholdRerank}
+          // Prose only — the `emptyNote` below deliberately carries no link
+          // for exactly this reason.
+          describedBy={distributionDescriptionId('ragConfidenceThresholdRerank')}
         >
           <p>
             Basis: max reranker relevance, 0–1, used only when the rerank stage scored every
@@ -901,6 +1185,51 @@ export function RetrievalTab() {
             The two bases are separate knobs because the basis flips per request: a rerank bypass
             measures that request on the cosine scale. Raise both for full coverage.
           </p>
+          <ConfidenceDistributionLine
+            fieldKey="ragConfidenceThresholdRerank"
+            bucket={distribution?.rerank}
+            windowDays={distribution?.windowDays ?? CONFIDENCE_WINDOW_DAYS_FALLBACK}
+            isPending={distributionPending}
+            isError={distributionLost}
+            staleRead={distributionStale}
+            basisChanged={settings?.ragConfidenceCalibration?.rerank?.stale === true}
+            // The empty rerank sample is the ORDINARY state under ADR-021 —
+            // unassigned means the stage never runs — so name the cause
+            // rather than leave a permanent blank reading as a defect. Only
+            // when the panel really knows: `assignments === undefined` is a
+            // query that has not answered, and `rerankActive` is false for it
+            // too (the `usePageTree` three-state rule, one surface over).
+            //
+            // The second sentence is not padding (review, external round). "so
+            // every question is measured on the similarity basis above" is
+            // false: with the stage off, `computeRetrievalConfidence` reaches
+            // the similarity basis only for a VECTOR-LED set, and answers
+            // basis `none` for a keyword-led set, an image-only set, a pinned
+            // exact-identifier head and an empty one — rows the readout
+            // excludes by basis, so they appear in NEITHER count. Left
+            // unqualified, an operator with a few thousand assistant questions
+            // reads a similarity count materially below that and has nothing
+            // in the panel accounting for the gap.
+            //
+            // The criterion is stated as "belongs to neither basis" rather
+            // than as a list of three (review, external round). The formula
+            // has FOUR `none` outcomes and the omitted one — an empty result
+            // set, which scores 0 on basis `none` when retrieval was healthy
+            // and null under a caveat — is the LARGEST residue on a thin
+            // corpus, i.e. exactly the deployment reading this note. A closed
+            // list that reads as exhaustive and is not accounts for less of
+            // the gap than it appears to.
+            emptyNote={
+              assignments && !rerankActive
+                ? 'The rerank stage is disabled on this deployment, so every question that can be'
+                  + ' scored at all is scored on the similarity basis above. Questions that belong'
+                  + ' to neither basis — keyword-led, image-only or pinned exact-identifier'
+                  + ' results, and questions the knowledge base had nothing for — appear in'
+                  + ' neither readout, so the two counts do not add up to the number of questions'
+                  + ' asked.'
+                : undefined
+            }
+          />
         </NumberRow>
       </Section>
 
@@ -1291,6 +1620,237 @@ function Section({
 }
 
 /**
+ * Below this many measured questions the two percentiles are noise, and the
+ * readout says so rather than letting an operator tune against them. A round
+ * number, not a derived one: the honest statement is "this sample is small",
+ * and dressing it as a confidence interval would imply a rigour the figure
+ * does not have.
+ */
+const CONFIDENCE_SAMPLE_FLOOR = 30;
+
+/**
+ * The window the readout names while the request is still in flight or has
+ * failed. The server owns the real number and sends it on every answer; this
+ * only exists so the sentence is never "the last undefined days".
+ */
+const CONFIDENCE_WINDOW_DAYS_FALLBACK = 7;
+
+/**
+ * Names the section-level failure notice for its own Retry button — the
+ * `Record <value>` recipe, so two ghost buttons on one panel stay
+ * distinguishable without an `aria-label` overriding a visible one
+ * (WCAG 2.5.3).
+ */
+const DISTRIBUTION_ERROR_SENTENCE_ID = 'retrieval-distribution-error-sentence';
+
+/**
+ * The id a threshold input's `aria-describedby` points at: the READOUT
+ * paragraph, not the whole help block (review r1).
+ *
+ * A description flattens to one unskippable string that is re-read on every
+ * focus of the control, so its length is a cost paid per interaction. Pointed
+ * at the help block, the rerank threshold's description measured 159 words /
+ * 975 characters — the two scale-caveat paragraphs, the readout and its empty
+ * note concatenated — of which the #1284 measurement is about thirty. The
+ * caveats are the row's visible prose and are read in ordinary reading order
+ * either way; the measurement is the part that is ABOUT this control's number
+ * and changes per deployment, so it is the part the description carries.
+ */
+function distributionDescriptionId(fieldKey: CalibrationFieldKey): string {
+  return `${fieldKey}-distribution`;
+}
+
+/**
+ * #1284 — the confidence distribution this deployment has actually produced,
+ * under the threshold it is used to set.
+ *
+ * The panel's own copy says there is no universal value here, because the
+ * embedding model moves the cosine scale and the reranker's normalisation
+ * moves the relevance one. Until now its only advice was to go and read
+ * logged `rag.confidence` values — a question the product already had the
+ * data for, asked of an operator with a grep.
+ *
+ * Four things about this line are deliberate.
+ *
+ * **It is a MEASUREMENT, so it is neutral** (ADR-010): muted body text, no
+ * status hue, no chip. Amber is attention and Steel is action, and this is
+ * neither — it is the same de-colouring argument `QualityScoreBadge` and
+ * `ConfidenceBadge` settled, reached on a settings surface.
+ *
+ * **The count is never optional.** A p90 over eleven questions is not a p90,
+ * and a readout without a sample size invites exactly the tuning it should
+ * prevent. Below {@link CONFIDENCE_SAMPLE_FLOOR} it says so in words.
+ *
+ * **A failed read is a failure, not an empty distribution** — and a failed
+ * RE-read is neither (review r1). `isError` here means the panel has nothing
+ * cached, and gets its own sentence, because "nothing was measured" and "we
+ * could not look" send an operator in opposite directions; that is the
+ * `usePageTree` defect ADR-010 pins. `staleRead` is the rule's third state:
+ * the figures survived, so they are still shown, with one clause saying they
+ * are the last ones the panel could get.
+ *
+ * **It IS the row's description** — the input's `aria-describedby` points at
+ * this region by id ({@link distributionDescriptionId}), so the measurement
+ * reaches touch, keyboard and screen readers rather than the eye alone. It
+ * renders inside the row's help block, which is what keeps the #1114
+ * calibration strip the immediately-preceding sibling of the control it is
+ * about. It stays prose only: a description flattens to one string, so a
+ * control in here would be announced with no way to act on it — which is why
+ * the failed read's Retry sits at the section top instead.
+ */
+function ConfidenceDistributionLine({
+  fieldKey,
+  readoutRef,
+  bucket,
+  windowDays,
+  isPending,
+  isError,
+  staleRead,
+  basisChanged,
+  emptyNote,
+}: {
+  fieldKey: CalibrationFieldKey;
+  /**
+   * Review r3 — the focus target for a successful Retry, on the ONE row that
+   * takes it. Passing it is what makes the readout region `tabIndex={-1}`: a
+   * row nobody focuses stays out of the tab order entirely, and the focusable
+   * one holds nothing but paragraphs, so the panel's description sweep (which
+   * bans `button`/`a`/`input`/`select`/`textarea` from these regions) is
+   * unaffected and the tab order gains nothing.
+   */
+  readoutRef?: Ref<HTMLDivElement>;
+  bucket: ConfidenceDistributionBucket | undefined;
+  windowDays: number;
+  isPending: boolean;
+  /** The read failed and there is NOTHING cached — the error is the content. */
+  isError: boolean;
+  /**
+   * The read failed but a previous one succeeded, so the figures below are
+   * real and merely not current (review r1). Kept separate from `isError`
+   * because the failure sentence claims "there is nothing measured to check
+   * this threshold against", which is false the moment a measurement is
+   * cached — and this is the state an ordinary focus-refetch during a backend
+   * blip lands in.
+   */
+  staleRead: boolean;
+  /**
+   * #1114's verdict for this basis, review r2. `search_analytics` records no
+   * provider or model beside the score (migration 098 adds `confidence`,
+   * `confidence_basis` and `surface` and nothing else), so the window cannot
+   * be filtered to one model — and the model behind a basis is exactly what
+   * sets its scale. When the calibration strip directly above says the model
+   * has moved, its remedy is "re-tune it below", and "below" is this line:
+   * without this sentence the panel sends an operator to re-tune against a
+   * window that may still be mostly the previous model's numbers.
+   *
+   * It states what it KNOWS and hedges what it does not (the r3 rule the
+   * muted calibration line already follows): the panel has no swap timestamp,
+   * so it cannot say how much of the window predates the change — only that
+   * the window can span both scales. `stale` outlives the swap, so a
+   * deployment that changed a model a year ago and never re-tuned carries
+   * this sentence permanently; that is the safe direction, and it is muted
+   * prose rather than a second amber, which is what keeps the strip above the
+   * one attention-grade thing on the row.
+   */
+  basisChanged: boolean;
+  /**
+   * Why this basis has no sample, when the panel already knows. The reachable
+   * case is the ordinary one: with no rerank assignment the stage never runs,
+   * so the rerank basis is empty forever and "nothing to tune against yet"
+   * reads as a defect rather than as a consequence of the deployment. Prose
+   * only, and no link — the wayfinding to LLM providers already sits on the
+   * rerank pool row, and this string lands inside an `aria-describedby`
+   * region that flattens to one line.
+   */
+  emptyNote?: string;
+}) {
+  const testId = `retrieval-${fieldKey}-distribution`;
+  // One set of props for all four branches, so the focus target survives
+  // whichever one is on screen when the retry settles — and so the input's
+  // description resolves to a region that always exists, whichever branch is
+  // on screen.
+  //
+  // It is a REGION, not a single paragraph (review, external round). Every
+  // caveat used to be appended to the measurement's own sentence, so a stale
+  // read on an eleven-question sample with #1114's verdict stale rendered as
+  // one undifferentiated ~290-character run of 12px muted text with the two
+  // numbers the operator came for buried at its head. Siblings are still
+  // prose and a description flattens across children identically, so the
+  // accessibility contract is unchanged and only the scanning is fixed.
+  //
+  // `nm-focus-ring` is index.css's standalone `:focus-visible` mechanic for a
+  // surface that wants the Steel ring without a button recipe, and this is
+  // the one thing #1284 makes focusable: measured in Chromium, the readout
+  // that a successful Retry lands focus on painted the UA default 1px
+  // `rgb(0, 95, 204)` outline across its full ~865px width at 1440. The
+  // resting rule is a transparent outline, so it costs the unfocusable row
+  // nothing.
+  const readoutProps = {
+    id: distributionDescriptionId(fieldKey),
+    'data-testid': testId,
+    ref: readoutRef,
+    tabIndex: readoutRef ? -1 : undefined,
+    className: 'space-y-1.5 nm-focus-ring',
+  };
+  if (isError) {
+    return (
+      <div {...readoutProps}>
+        <p>
+          The measured distribution could not be read, so there is nothing measured to check this
+          threshold against. Use <strong className="font-medium">Retry</strong> at the top of this
+          section.
+        </p>
+      </div>
+    );
+  }
+  if (isPending || !bucket) {
+    return (
+      <div {...readoutProps}>
+        <p>Reading the measured distribution…</p>
+      </div>
+    );
+  }
+  // One clause, shared by both data branches: what is on screen is real, and
+  // is the last thing the panel could read. The Retry that would refresh it
+  // sits at the section top, where a control is legal.
+  const staleClause = staleRead ? (
+    <p>The latest read failed, so this is the last measurement this panel could get.</p>
+  ) : null;
+  if (bucket.count === 0 || bucket.p50 === null || bucket.p90 === null) {
+    return (
+      <div {...readoutProps}>
+        <p>
+          No assistant questions measured on this basis in the last {windowDays} days, so there is
+          nothing to tune against yet.
+        </p>
+        {emptyNote ? <p>{emptyNote}</p> : null}
+        {staleClause}
+      </div>
+    );
+  }
+  return (
+    <div {...readoutProps}>
+      <p>
+        Measured over the last {windowDays} days: p50{' '}
+        <span className="font-mono">{bucket.p50.toFixed(2)}</span>, p90{' '}
+        <span className="font-mono">{bucket.p90.toFixed(2)}</span> across{' '}
+        {bucket.count.toLocaleString()} assistant question{bucket.count === 1 ? '' : 's'}.
+      </p>
+      {staleClause}
+      {bucket.count < CONFIDENCE_SAMPLE_FLOOR ? (
+        <p>Too few to tune against — treat both figures as provisional.</p>
+      ) : null}
+      {basisChanged ? (
+        <p>
+          No model is recorded beside a measured question, so this window can span both scales — it
+          is comparable again once {windowDays} days have passed since the change.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * #1114 — what a confidence threshold was tuned against, when that no longer
  * matches what is running.
  *
@@ -1507,6 +2067,7 @@ function NumberRow({
   onChange,
   defaultValue,
   disabled,
+  describedBy,
   children,
 }: {
   field: NumericField;
@@ -1514,6 +2075,27 @@ function NumberRow({
   onChange: (value: number) => void;
   defaultValue: number;
   disabled?: boolean;
+  /**
+   * #1284 — the id of the paragraph that becomes this input's accessible
+   * description. Today: the row's measured-distribution readout
+   * ({@link distributionDescriptionId}).
+   *
+   * **Opt-in, never panel-wide** (review r1). A description flattens to one
+   * string, so the region it names must be PROSE ONLY: three of this panel's
+   * rows carry an operable child inside their help — the two wayfinding
+   * `<Link>`s to LLM providers and `Use measured value` — and wiring those
+   * announces a link and a button as description text with no way to act on
+   * them, then repeats them on the next tab stop. The blanket form of this
+   * prop shipped in the first cut of #1284 and did exactly that.
+   *
+   * **And it names ONE paragraph, not the help block** (review r1): the block
+   * form made the rerank threshold's description 975 characters, re-read on
+   * every focus, with the measurement it exists to carry at the far end of it.
+   * `RetrievalTab.test.tsx` sweeps every `[aria-describedby]` the panel
+   * renders and fails on any region holding something operable, so the
+   * prose-only rule is enforced for all rows rather than spot-checked on one.
+   */
+  describedBy?: string;
   children?: React.ReactNode;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
@@ -1555,13 +2137,23 @@ function NumberRow({
             onKeyDown={(e) => {
               if (e.key === 'Enter') commit();
             }}
+            // #1284 — the readout under a knob carries the part of the
+            // decision the number cannot: what this deployment has actually
+            // measured. Printed beside the input it was reachable by eye
+            // only; wired here it reaches touch, keyboard and screen readers
+            // too (ADR-010's `DeepSearchToggle` precedent). Per-row and one
+            // paragraph, never panel-wide and never the whole help block —
+            // see `describedBy`.
+            aria-describedby={describedBy}
             className="w-24 rounded-md border border-border-interactive bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-45"
             data-testid={`retrieval-${field.key}`}
           />
           {field.unit && <span className="w-24 text-xs text-muted-foreground">{field.unit}</span>}
         </div>
       </div>
-      <div className="space-y-1.5 text-xs text-muted-foreground">{children}</div>
+      <div id={`${field.key}-help`} className="space-y-1.5 text-xs text-muted-foreground">
+        {children}
+      </div>
       {value !== defaultValue && (
         <button
           type="button"

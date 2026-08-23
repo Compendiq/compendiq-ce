@@ -159,7 +159,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
   });
 
   // PATCH /api/llm/conversations/:id — rename (#1361). Sets title_source =
-  // 'user', which the auto-title (PR 3) never overwrites. Deliberately does
+  // 'user', which the auto-title never overwrites. Deliberately does
   // NOT bump updated_at: that would re-bucket the row into "Today".
   fastify.patch('/llm/conversations/:id', async (request) => {
     const { id } = ConversationIdParamSchema.parse(request.params);

@@ -4,6 +4,7 @@ import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ChatVisionCapability } from './ChatVisionCapability';
 import { ImageEmbeddingCapability } from './ImageEmbeddingCapability';
+import { Info } from 'lucide-react';
 
 const USECASE_LABELS: Record<LlmUsecase, string> = {
   chat: 'Chat',
@@ -13,17 +14,19 @@ const USECASE_LABELS: Record<LlmUsecase, string> = {
   embedding: 'Embedding',
   rerank: 'Rerank',
   image_embedding: 'Image embedding',
+  inline_completion: 'Inline completion',
 };
 const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 
 /**
- * The use cases that never inherit the default provider (#1104, #1115). Their
+ * The use cases that never inherit the default provider (#1104, #1115, #1417). Their
  * "unset" option says **Disabled**, because there is no fallback behind it —
  * offering "Inherit default" would name a resolution that does not happen.
  */
 const NON_INHERITING: Record<string, string> = {
   rerank: 'Disabled (no reranking)',
   image_embedding: 'Disabled (no image search)',
+  inline_completion: 'Disabled (no inline suggestions)',
 };
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
@@ -95,9 +98,8 @@ export function UsecaseAssignmentsSection({
         // #1104: assigned-but-unresolvable — a provider is chosen but the
         // server could not resolve a model for the stage (rerank with no
         // model anywhere). Without this, the row looks configured while the
-        // stage is silently disabled. #1115's image leg has the same state,
-        // for the same reason: neither inherits, so neither has a fallback to
-        // fall back to.
+        // stage is silently disabled. The image and inline-completion legs have
+        // the same state: none inherits, so none has a fallback to fall back to.
         const assignedButUnresolvable =
           u in NON_INHERITING && row.providerId !== null && row.resolved.providerId === NIL_UUID;
         return (
@@ -117,6 +119,15 @@ export function UsecaseAssignmentsSection({
                     className="text-muted-foreground"
                   >
                     ⓘ
+                  </span>
+                )}
+                {u === 'inline_completion' && (
+                  <span
+                    title="High-frequency editor requests bypass the general LLM queue and are capped at 48 tokens. Assign a small, fast model explicitly; leaving this row unassigned disables inline suggestions."
+                    aria-label="inline-completion-info"
+                    className="text-muted-foreground"
+                  >
+                    <Info size={14} aria-hidden="true" />
                   </span>
                 )}
               </span>

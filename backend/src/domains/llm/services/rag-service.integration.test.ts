@@ -900,7 +900,13 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
       [prov.rows[0]!.id],
     );
 
-    const results = await hybridSearch(user, 'ceil-check', 3, undefined, { rerank: true });
+    const results = await hybridSearch(user, 'ceil-check', 3, undefined, {
+      rerank: true,
+      // #1284, review r1 — the surface travels on the same row, and the
+      // readout filters on it. Declared here so the SELECT below binds all
+      // three new columns to the params that fill them.
+      surface: 'ask',
+    });
     expect(mockRerankCall).toHaveBeenCalledTimes(1);
     const [cfg, model, , docs] = mockRerankCall.mock.calls[0]! as [
       { providerId: string; baseUrl: string },
@@ -916,11 +922,32 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     expect(results.every((r) => r.rerankScore != null)).toBe(true);
 
     await flushSearchAnalytics();
-    const row = await query<{ search_type: string; rerank_score: number | null }>(
-      `SELECT search_type, rerank_score FROM search_analytics ORDER BY id DESC LIMIT 1`,
+    // #1284, review r1 — this SELECT is what binds the writer's positional
+    // params to the COLUMNS they land in. The unit tests read
+    // `analyticsParams()[8..10]` by array index, so swapping two adjacent
+    // TEXT column names in the 11-placeholder INSERT ('confidence,
+    // confidence_basis, surface' → 'confidence, surface,
+    // confidence_basis') left the whole suite green while writing 'ask' into
+    // `confidence_basis` and 'rerank' into `surface` — which makes
+    // `GET /analytics/confidence-distribution`, whose predicate is
+    // `surface = 'ask'` grouped by `confidence_basis`, answer count 0 forever
+    // on every real deployment. The write is fire-and-forget behind a
+    // swallowing catch, so nothing surfaces it either.
+    const row = await query<{
+      search_type: string;
+      rerank_score: number | null;
+      confidence: number | null;
+      confidence_basis: string | null;
+      surface: string | null;
+    }>(
+      `SELECT search_type, rerank_score, confidence, confidence_basis, surface
+         FROM search_analytics ORDER BY id DESC LIMIT 1`,
     );
     expect(row.rows[0]!.search_type).toBe('hybrid_rerank');
     expect(row.rows[0]!.rerank_score).not.toBeNull();
+    expect(row.rows[0]!.surface).toBe('ask');
+    expect(row.rows[0]!.confidence_basis).toBe('rerank');
+    expect(row.rows[0]!.confidence).not.toBeNull();
   });
 
   it('rerank requested but unassigned: stage silently off, analytics stay hybrid (#1104)', async () => {

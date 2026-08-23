@@ -1,11 +1,9 @@
 import { NavLink } from 'react-router-dom';
 import { m, useReducedMotion } from 'framer-motion';
-import { PanelLeftClose, PanelLeft } from 'lucide-react';
 import { useUiStore } from '../../../stores/ui-store';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useEnterprise } from '../../enterprise/use-enterprise';
-import { ShortcutHint } from '../ShortcutHint';
-import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
+import { MainNavStripExpanded } from './MainNavStrip';
 
 import {
   SETTINGS_NAV,
@@ -21,9 +19,9 @@ import { cn } from '../../lib/cn';
  * in Settings.
  * Body: the Settings section nav (was the inner rail inside SettingsLayout).
  *
- * Width / collapse state are shared with SidebarTreeView via useUiStore, so
- * the `,` keyboard shortcut and the chevron toggle both work the same way on
- * Settings as anywhere else.
+ * Always open: Settings is a destination rail, not a working view, so there
+ * is no collapse control here. The shared `treeSidebarCollapsed` state (and
+ * the `,` shortcut) still apply to SidebarTreeView on the other routes.
  */
 
 const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
@@ -35,8 +33,6 @@ export function SettingsSidebar({
   onNavigate?: () => void;
   embedMainNav?: boolean;
 } = {}) {
-  const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
-  const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
   const reduceEffects = useReducedMotion();
 
@@ -45,34 +41,8 @@ export function SettingsSidebar({
   const { isEnterprise, hasFeature } = useEnterprise();
   const ctx: AccessContext = { isAdmin, isEnterprise, hasFeature };
 
-  if (treeSidebarCollapsed) {
-    return (
-      <m.div
-        key="settings-sidebar-collapsed"
-        data-testid="settings-sidebar"
-        initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-        animate={{ width: 40, opacity: 1 }}
-        transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-        className="app-sidebar flex flex-col items-center border-r overflow-hidden"
-      >
-        <button
-          onClick={toggleTreeSidebar}
-          className="mt-2 flex items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-          aria-label="Expand sidebar"
-          title="Expand sidebar (,)"
-        >
-          <PanelLeft size={16} />
-          <ShortcutHint shortcutId="toggle-sidebar" />
-        </button>
-
-        {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
-      </m.div>
-    );
-  }
-
   return (
     <m.aside
-      key="settings-sidebar-expanded"
       data-testid="settings-sidebar"
       initial={reduceEffects ? false : { width: 0, opacity: 0 }}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
@@ -81,29 +51,10 @@ export function SettingsSidebar({
     >
       {/* Same 48px rule height as SidebarTreeView's — the two sidebars share
           MainNavStrip precisely so this row cannot drift between routes. */}
-      {embedMainNav ? (
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
-        <MainNavStripExpanded onNavigate={onNavigate} />
-        <button
-          onClick={toggleTreeSidebar}
-          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={14} />
-        </button>
-      </div>
-      ) : (
-      <div className="flex h-8 shrink-0 items-center justify-end px-2 pt-1.5">
-        <button
-          onClick={toggleTreeSidebar}
-          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={14} />
-        </button>
-      </div>
+      {embedMainNav && (
+        <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+          <MainNavStripExpanded onNavigate={onNavigate} />
+        </div>
       )}
 
       {/* No standalone "Settings" header here — the page H1 inside

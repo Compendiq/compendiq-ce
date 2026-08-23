@@ -1323,6 +1323,69 @@ describe('RAG Service', () => {
       expect(mocks.mockRerank).not.toHaveBeenCalled();
       expect(analyticsParams()[4]).toBe('keyword_fallback');
     });
+
+    /**
+     * #1284 — the refuse gate's verdict is recorded per row, so the Retrieval
+     * panel can show the distribution an operator is asked to tune against.
+     * Params $9/$10/$11 are `confidence`, `confidence_basis`, `surface`.
+     */
+    describe('recorded confidence (#1284)', () => {
+      it('records the similarity verdict and the caller\'s surface', async () => {
+        const results = await hybridSearch('user-1', 'question', 3, undefined, { surface: 'ask' });
+        // The recorded number must BE the verdict on the returned set — the
+        // same call the route's gate makes, not a re-derivation.
+        const expected = computeRetrievalConfidence(results, null);
+        expect(expected.basis).toBe('similarity');
+        expect(analyticsParams()[8]).toBe(expected.score);
+        expect(analyticsParams()[9]).toBe('similarity');
+        expect(analyticsParams()[10]).toBe('ask');
+      });
+
+      it('records the rerank basis when the stage scored every returned row', async () => {
+        mocks.mockResolveRerank.mockResolvedValue(RERANK_CFG);
+        mocks.mockRerank.mockResolvedValue([
+          { index: 2, relevanceScore: 0.92 },
+          { index: 1, relevanceScore: 0.4 },
+          { index: 0, relevanceScore: 0.1 },
+        ]);
+        const results = await hybridSearch('user-1', 'question', 3, undefined, {
+          rerank: true,
+          surface: 'ask',
+        });
+        expect(computeRetrievalConfidence(results, null)).toEqual({ score: 0.92, basis: 'rerank' });
+        expect(analyticsParams()[8]).toBe(0.92);
+        expect(analyticsParams()[9]).toBe('rerank');
+      });
+
+      it('records basis none with a NULL score for a keyword-led set — never a 0', async () => {
+        // An unmeasurable set has no number, and writing 0 would drag every
+        // percentile the panel shows toward the floor.
+        mocks.mockGenerateEmbedding.mockRejectedValue(new Error('embedder down'));
+        mocks.mockQuery.mockImplementation(async (sql: string) => {
+          if (sql.includes('ts_rank')) {
+            return {
+              rows: [{
+                page_id: 7, confluence_id: 'p7', title: 'KW', space_key: 'DEV',
+                body_text: 'keyword only row', rank: 0.5,
+              }],
+            };
+          }
+          if (sql.includes('COUNT(*)')) return { rows: [{ embedded: 3, total: 3 }] };
+          return { rows: [] };
+        });
+        await hybridSearch('user-1', 'question', 3, undefined, { surface: 'ask' });
+        expect(analyticsParams()[6]).toBe('embedding_failed');
+        expect(analyticsParams()[8]).toBeNull();
+        expect(analyticsParams()[9]).toBe('none');
+      });
+
+      it('leaves the surface NULL when no caller declared one', async () => {
+        // NULL means "unknown", which is what every historical row is. The
+        // readout filters on 'ask' and must never adopt an unlabelled row.
+        await hybridSearch('user-1', 'question', 3);
+        expect(analyticsParams()[10]).toBeNull();
+      });
+    });
   });
 
   describe('reciprocalRankFusion', () => {
