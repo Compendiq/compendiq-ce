@@ -136,6 +136,23 @@ describe('#1349 attachment sweep routes', () => {
       expect(svc.run).not.toHaveBeenCalled();
     });
 
+    /**
+     * Fixer r1 — `running` on the STATS answer had only a false assertion, so
+     * hardcoding `running: false` in the handler kept every route test green.
+     * The card's whole poll cadence keys on this field
+     * (`pollWhile(q.state.data?.running)` in AttachmentStorageCard.tsx): a
+     * stats answer stuck on false leaves the figures frozen at their pre-run
+     * values for as long as the sweep takes, with no sign one is running.
+     */
+    it('reports a sweep in flight from the worker lock', async () => {
+      redis.locked.mockResolvedValue(true);
+      const res = await app.inject({ method: 'GET', url: '/api/admin/attachments/stats' });
+      const parsed = AttachmentStorageStatsSchema.parse(res.json());
+      expect(parsed.running).toBe(true);
+      // Read from the sweep's OWN lock, never an embedding lock (#1349 brief).
+      expect(redis.locked).toHaveBeenCalledWith('attachment-sweep');
+    });
+
     it('reports an explicit no-run-yet state when no record exists', async () => {
       svc.statsRecord.mockResolvedValue(null);
       const res = await app.inject({ method: 'GET', url: '/api/admin/attachments/stats' });

@@ -1101,6 +1101,56 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(missingRow.rows).toHaveLength(1);
     });
 
+    /**
+     * Fixer r1 — the pages row's `body_storage` is scanned for RAW attachment
+     * URLs as well as for `ri:filename` references, and nothing exercised that
+     * scan: dropping `collectAttachmentUrlReferences(row.body_storage, keep)`
+     * left every sweep test green.
+     *
+     * It is the only feeder of LOCAL-store keep names out of storage format
+     * (`getExpectedAttachmentFilenames` reads `ac:image`/`ri:attachment` only,
+     * and every name it yields lands in the CONFLUENCE set), and the only one
+     * that sees an anchor-style reference at all — which is exactly what a
+     * #1169 Markdown import produces and `htmlToConfluence` preserves. So a
+     * page whose HTML column is not populated (a fresh import, a row synced
+     * before the body was rendered) had the files its storage format still
+     * points at judged orphans and deleted.
+     */
+    it('keeps files referenced only by a raw attachment URL inside body_storage', async () => {
+      const inserted = await query<{ id: number }>(
+        `INSERT INTO pages (title, space_key, confluence_id, source, page_type, version,
+                            body_html, body_storage)
+         VALUES ('Imported', 'DEV', '90001', 'confluence', 'page', 1, NULL, '')
+         RETURNING id`,
+      );
+      const pageId = inserted.rows[0]!.id;
+      // Both stores in one body: a relocated page legitimately carries the
+      // local prefix beside the Confluence one.
+      await query(`UPDATE pages SET body_storage = $2 WHERE id = $1`, [
+        pageId,
+        `<p><a href="/api/attachments/90001/import-anchor.png">plan</a>` +
+          `<img src="/api/local-attachments/${pageId}/import-local.png" /></p>`,
+      ]);
+
+      const anchorFile = await writeAged('90001', 'import-anchor.png');
+      const localFile = await writeAged('local', String(pageId), 'import-local.png');
+      await ageDirs('90001', path.join('local', String(pageId)));
+
+      const run = await runAttachmentSweep({ dryRun: false });
+
+      expect(run!.status).toBe('completed');
+      expect.soft(await exists(anchorFile), 'an anchor reference in body_storage must keep its file').toBe(
+        true,
+      );
+      // The local file has no `local_attachments` row, so the keep-set is the
+      // only thing standing between it and a delete.
+      expect.soft(
+        await exists(localFile),
+        'a local-store reference in body_storage must keep its file',
+      ).toBe(true);
+      expect(run!.deleted).toMatchObject({ directories: 0, files: 0 });
+    });
+
     // Fixer, external round — permanent data loss. `page-icons/` is a store of
     // its own under the SAME root, its name passes PAGE_ID_PATTERN (`-` is in
     // the class), and no page row claims the key. `readKeyDir` sees only its
