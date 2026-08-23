@@ -355,18 +355,63 @@ export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[],
  * filter `routes/knowledge/search.ts` has always applied. Optional and
  * defaults to undefined/no-op, so every unscoped caller (RAG chat, deep
  * search, the eval/benchmark harness) is byte-identical.
+ *
+ * `opts.column` (#1260) points the SAME probe at the shadow column a #1116
+ * migration backfills, so the comparison run measures the candidate model
+ * through the identical SQL, ACL predicate and ef_search discipline as the
+ * live one — a sibling function would be a fifth `efSearchFor` call site and
+ * a second copy of all of the above. The value is a CLOSED two-member union
+ * re-narrowed below before it touches the SQL string; request input never
+ * reaches it (routes validate a boolean-ish choice away from this layer).
+ * There is deliberately NO cast on the parameter: the candidate column may be
+ * `halfvec`, and `<=>` resolves the untyped parameter from the column's own
+ * type — a `::vector` cast would break exactly the halfvec case the shadow
+ * tiering exists for. Everything but the column identifier — the fan-out, the
+ * ef_search coverage, `visiblePagesPredicate` — is shared by construction.
  */
+export type VectorSearchColumn = 'embedding' | 'embedding_next';
+
 export async function vectorSearch(
   userId: string,
   questionEmbedding: number[],
   limit = RAG_FETCH_WIDTH_DEFAULT,
-  opts?: { spaceKey?: string },
+  opts?: { spaceKey?: string; column?: VectorSearchColumn },
 ): Promise<SearchResult[]> {
   return withSpan(
     'rag.vector_search',
     async (span) => {
       const started = performance.now();
       const spaceKey = opts?.spaceKey;
+      // Allow-listed identifier, re-narrowed at the boundary: anything but
+      // the literal 'embedding_next' — including a value smuggled through a
+      // type assertion — degrades to the live column rather than reaching
+      // the SQL string (#1260).
+      const column: VectorSearchColumn =
+        opts?.column === 'embedding_next' ? 'embedding_next' : 'embedding';
+      // `embedding_next` is ADD COLUMN with no NOT NULL, and the shadow
+      // dual-write deliberately leaves it NULL when the candidate provider
+      // fails on a page edited mid-migration. `NULL <=> $2` is NULL, which
+      // sorts NULLS LAST but is still RETURNED whenever the visible chunk set
+      // is smaller than the fan-out limit — and `1 - null` is 1 in JS, i.e. a
+      // perfect match. So an unfilled page would enter the candidate top-K as
+      // its best hit and inflate every #1260 agreement figure computed from
+      // it.
+      //
+      // The clause is a NARROWING, not the correctness guarantee, and the
+      // distinction is worth stating because it used to claim otherwise (r1).
+      // `ORDER BY <expr>` is ASC and therefore NULLS LAST, so a NULL-vector
+      // row can never displace a scored one under `LIMIT $3` — verified
+      // directly against pgvector — which means deleting this clause changes
+      // no result the `distance !== null` filter below does not already
+      // handle, and no test can make it fail. It earns its place by keeping
+      // those rows off the wire at all when the visible chunk set is narrower
+      // than the fan-out (a space-scoped query, a small instance) and by
+      // stating the intent where the query is. What the figures actually rest
+      // on is that filter, which `rag-service.integration.test.ts` falsifies
+      // by dropping the HNSW index. The live column is NOT NULL on every
+      // migrated instance, so its clause stays byte-identical.
+      const nullVectorGuard =
+        column === 'embedding_next' ? ' AND pe.embedding_next IS NOT NULL' : '';
       const vecSpaces = await getUserAccessibleSpaces(userId);
       // Use the dedicated vector pool so long-running similarity queries
       // do not starve the main pool used by CRUD routes.
@@ -407,12 +452,12 @@ export async function vectorSearch(
           distance: number;
         }>(
           `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.chunk_index, pe.metadata,
-                  pe.embedding <=> $2 AS distance
+                  pe.${column} <=> $2 AS distance
            FROM page_embeddings pe
            JOIN pages cp ON pe.page_id = cp.id
            WHERE ${visiblePagesPredicate(1, 4)}
-           AND cp.deleted_at IS NULL${spaceKey ? ' AND cp.space_key = $5' : ''}
-           ORDER BY pe.embedding <=> $2
+           AND cp.deleted_at IS NULL${nullVectorGuard}${spaceKey ? ' AND cp.space_key = $5' : ''}
+           ORDER BY pe.${column} <=> $2
            LIMIT $3`,
           spaceKey
             ? [vecSpaces, pgvector.toSql(questionEmbedding), rawLimit, userId, spaceKey]
@@ -425,18 +470,27 @@ export async function vectorSearch(
         // unit tests pin. `limit` distinct pages, fan-out bounded to chunks
         // ranking above the last admitted page's entry.
         const mapped = truncateAtDistinctPages(
-          result.rows.map((row) => ({
-            pageId: row.page_id,
-            confluenceId: row.confluence_id,
-            chunkText: row.chunk_text,
-            chunkIndex: row.chunk_index,
-            pageTitle: row.metadata.page_title,
-            sectionTitle: row.metadata.section_title,
-            spaceKey: row.metadata.space_key,
-            score: 1 - row.distance, // Convert distance to similarity
-            vectorScore: 1 - row.distance,
-            keywordRank: null,
-          })),
+          result.rows
+            // Belt-and-braces behind the SQL guard above, and it reaches one
+            // case the guard deliberately does not: between a #1116 swap and
+            // its cleanup the LIVE column is nullable too (the swap drops the
+            // renamed column's NOT NULL), so a chunk the post-swap dual-write
+            // could not fill would otherwise score `1 - null` = 1 — a perfect
+            // match — on the ordinary chat path. A JS filter costs nothing and
+            // leaves every query plan untouched.
+            .filter((row) => row.distance !== null && row.distance !== undefined)
+            .map((row) => ({
+              pageId: row.page_id,
+              confluenceId: row.confluence_id,
+              chunkText: row.chunk_text,
+              chunkIndex: row.chunk_index,
+              pageTitle: row.metadata.page_title,
+              sectionTitle: row.metadata.section_title,
+              spaceKey: row.metadata.space_key,
+              score: 1 - row.distance, // Convert distance to similarity
+              vectorScore: 1 - row.distance,
+              keywordRank: null,
+            })),
           Number(limit),
         );
         // `rag.hits` counts kept CHUNK rows (post-truncation, up to ~fanout x

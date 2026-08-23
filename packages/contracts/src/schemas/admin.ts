@@ -40,6 +40,40 @@ export const RetrievalBenchmarkRequestSchema = z.object({
 export type RetrievalBenchmarkQuery = z.infer<typeof RetrievalBenchmarkQuerySchema>;
 export type RetrievalBenchmarkRequest = z.infer<typeof RetrievalBenchmarkRequestSchema>;
 
+// ─── #1260 — shadow-migration comparison on real queries ─────────────────
+//
+// During a #1116 shadow migration the corpus carries both models' vectors on
+// the same chunk rows, which is the only window a real-data A/B is possible.
+// This request starts a Mode 1 agreement run: sample the most frequent
+// `search_analytics` queries over `days`, embed each once per model, retrieve
+// top-K pages from `embedding` and `embedding_next`, and report where the two
+// disagree. No labels, so no quality verdict — that is what the judgement
+// below accumulates.
+export const ShadowCompareRequestSchema = z.object({
+  days: z.number().int().min(1).max(90).default(30),
+  /** Distinct queries, by descending frequency. */
+  limit: z.number().int().min(1).max(100).default(50),
+  topK: z.number().int().min(1).max(20).default(10),
+});
+
+export type ShadowCompareRequest = z.infer<typeof ShadowCompareRequestSchema>;
+
+/**
+ * #1260 Mode 2 — one side-by-side judgement on a completed comparison run.
+ * The client names only the run's query and which side answered it better;
+ * the server derives the query text, both models and both page lists from
+ * the run's own persisted result, so a judgement can never claim pages or
+ * models the run did not show.
+ */
+export const ShadowCompareJudgementSideSchema = z.enum(['live', 'candidate', 'neither', 'both']);
+export type ShadowCompareJudgementSide = z.infer<typeof ShadowCompareJudgementSideSchema>;
+
+export const ShadowCompareJudgementRequestSchema = z.object({
+  queryId: z.string().trim().min(1).max(100),
+  side: ShadowCompareJudgementSideSchema,
+});
+export type ShadowCompareJudgementRequest = z.infer<typeof ShadowCompareJudgementRequestSchema>;
+
 // ─── #1114 — the keyword-index language ──────────────────────────────────
 //
 // PostgreSQL text-search configurations the keyword leg of search may use,

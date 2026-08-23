@@ -1598,6 +1598,18 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   color: var(--color-foreground);
 }
 
+/* #1260 — there is deliberately NO `.nm-button-ghost[aria-pressed='true']`
+   recipe here. The icon-button rule above transplants badly onto a ghost
+   button: `nm-button-ghost` already carries `--color-border-interactive` and
+   `--color-foreground` at REST, so both of those declarations are no-ops
+   there, and the only surviving delta — `transparent` to
+   `--color-background` — measures 1.03:1 in Graphite and 1.02:1 in Paper on
+   the surface the shadow comparison's judgement rows sit on, is byte
+   identical to the unpressed state on hover, and disappears entirely under
+   `forced-colors`. A mutually exclusive choice takes the segmented recipe
+   instead (`bg-muted` track + `nm-pill-active`), which is what CLAUDE.md
+   names for "selected"; see `EmbeddingShadowCompareSection`. */
+
 /* ===========================
    SKELETON LOADER
    =========================== */

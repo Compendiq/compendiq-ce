@@ -468,6 +468,18 @@ MRR. An explicitly labelled custom suite can be submitted to
 POST /api/admin/retrieval-benchmark when the team has expected page IDs; only
 those labels produce Recall/MRR.
 
+**The single run slot is shared.** Only one run of this kind exists at a time,
+and the other holder is the shadow model comparison — **Settings → AI Models →
+LLM providers → "Compare on real queries"**, which appears inside the shadow
+migration card once a #1116 candidate column is fully backfilled and scores
+that candidate against the live embedding model on the same real queries
+(agreement first, and a judged Recall/MRR/McNemar verdict once 20 side-by-side
+picks exist). Both spend the same LLM queue, so while either runs the other
+answers 409 "already running" — **and the message names the run that is
+actually holding the slot**, so a benchmark refused by a comparison says so
+rather than reporting a benchmark nobody started. The comparison's own
+lifecycle step is 3b in `docs/runbooks/shadow-reembed.md`.
+
 ### Keyword index language (`fts_language`)
 
 The PostgreSQL text-search configuration the keyword leg of hybrid search is
