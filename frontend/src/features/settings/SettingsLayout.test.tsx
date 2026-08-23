@@ -53,6 +53,7 @@ vi.mock('../../shared/hooks/use-settings', () => ({
       confluencePatPromptDismissed: false,
       inlineCompletionEnabled: true,
       inlineCompletionDelay: 'balanced',
+      inlineCompletionMode: 'full',
       inlineCompletionCodeOnly: false,
     },
     isLoading: false,

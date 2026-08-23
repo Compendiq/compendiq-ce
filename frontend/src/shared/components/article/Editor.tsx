@@ -72,7 +72,8 @@ import {
 } from './table-cell-selection';
 import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar-primitives';
 import { InlineCompletionExtension } from './InlineCompletionExtension';
-import type { InlineCompletionDelay } from '@compendiq/contracts';
+import type { InlineCompletionDelay, InlineCompletionMode } from '@compendiq/contracts';
+import { isMac } from '../../lib/platform';
 
 export function EditorContextToolbars({
   editor,
@@ -339,6 +340,7 @@ interface EditorProps {
     available: boolean;
     enabled: boolean;
     delay: InlineCompletionDelay;
+    mode: InlineCompletionMode;
     codeOnly: boolean;
     title?: string;
     spaceKey?: string;
@@ -654,6 +656,42 @@ const INLINE_COMPLETION_DELAYS: Record<InlineCompletionDelay, number | null> = {
   manual: null,
 };
 
+function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
+  const mac = isMac();
+  const wordKeys = mac ? 'Option + ]' : 'Ctrl + ]';
+  const ariaLabel = mode === 'word'
+    ? 'AI word completion available. Press Tab to accept or Escape to dismiss.'
+    : `AI inline suggestion available. Press Tab to accept, ${wordKeys} to accept one word, or Escape to dismiss.`;
+
+  const action = (keys: string, label: string) => (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      <kbd className="rounded border border-border-interactive bg-background px-1.5 py-0.5 font-sans text-[10px] font-semibold leading-none text-foreground shadow-sm">
+        {keys}
+      </kbd>
+      <span>{label}</span>
+    </span>
+  );
+
+  return (
+    <div
+      role="status"
+      aria-label={ariaLabel}
+      data-testid="inline-completion-hint"
+      className="pointer-events-none flex items-center gap-2 rounded-lg border border-border-interactive bg-card/95 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground shadow-md"
+    >
+      {action('Tab', mode === 'word' ? 'Accept word' : 'Accept')}
+      {mode === 'full' && (
+        <>
+          <span className="h-3 w-px bg-border" aria-hidden="true" />
+          {action(wordKeys, 'Word')}
+        </>
+      )}
+      <span className="h-3 w-px bg-border" aria-hidden="true" />
+      {action('Esc', 'Dismiss')}
+    </div>
+  );
+}
+
 export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, inlineCompletion }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -829,6 +867,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           const config = inlineCompletionRef.current;
           return config ? INLINE_COMPLETION_DELAYS[config.delay] : null;
         },
+        mode: () => inlineCompletionRef.current?.mode ?? 'full',
         codeOnly: () => inlineCompletionRef.current?.codeOnly ?? false,
         pageId: pageId && /^\d+$/.test(pageId) ? Number(pageId) : undefined,
         getMetadata: () => ({
@@ -984,15 +1023,12 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       />
       {inlineSuggestionActive && (
         <div
-          role="status"
-          aria-label="AI inline suggestion available"
-          data-testid="inline-completion-hint"
           className={cn(
-            'pointer-events-none absolute right-2 z-10 rounded-md border border-border-interactive bg-card px-2 py-1 text-[11px] font-medium text-muted-foreground',
+            'absolute right-2 z-10',
             vimEnabled ? 'bottom-9' : 'bottom-2',
           )}
         >
-          [Tab] Accept · [Alt+]] Word · [Esc] Dismiss
+          <InlineCompletionHint mode={inlineCompletion?.mode ?? 'full'} />
         </div>
       )}
       {vimEnabled && editable && <VimModeIndicator vimState={vimDisplayState} />}

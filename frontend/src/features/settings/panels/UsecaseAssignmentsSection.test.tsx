@@ -130,7 +130,7 @@ describe('UsecaseAssignmentsSection', () => {
     expect(screen.getByText('Inline completion')).toBeTruthy();
   });
 
-  it('renders inline completion as explicitly disabled with a fast-model warning', () => {
+  it('renders inline completion as disabled with accessible model guidance', () => {
     const Wrapper = createWrapper();
     render(
       <UsecaseAssignmentsSection
@@ -145,7 +145,10 @@ describe('UsecaseAssignmentsSection', () => {
     );
     const select = screen.getByTestId('usecase-inline_completion-provider') as HTMLSelectElement;
     expect(select.options[0]!.text).toBe('Disabled (no inline suggestions)');
-    expect(screen.getByLabelText('inline-completion-info')).toHaveAttribute('title', expect.stringContaining('small, fast model'));
+    fireEvent.click(screen.getByRole('button', { name: 'About the inline-completion model' }));
+    expect(screen.getByTestId('inline-completion-info-content')).toHaveTextContent(
+      'Assign a small, always-warm model',
+    );
   });
 
   it('provider dropdown shows Inherit + all providers', () => {
