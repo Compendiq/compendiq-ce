@@ -349,6 +349,8 @@ export function RetrievalTab() {
     data: distribution,
     isPending: distributionPending,
     isError: distributionError,
+    isFetching: distributionFetching,
+    refetch: refetchDistribution,
   } = useQuery<ConfidenceDistribution>({
     queryKey: ['confidence-distribution'],
     queryFn: () => apiFetch('/analytics/confidence-distribution'),
@@ -874,6 +876,40 @@ export function RetrievalTab() {
         description="Below its threshold the assistant answers “not enough grounded context” with the closest sources, instead of a low-grounded answer. Each basis is 0 by default, which leaves its confidence diagnostic-only in logs and traces. Under each knob is the distribution this deployment has actually measured — a threshold above p50 refuses about half the questions measured on that basis."
       >
         {/*
+          #1284 review r2 — the recovery for a failed read is a control, and a
+          control can never live inside a threshold row's help block: that
+          block is the input's `aria-describedby` region and must stay prose.
+          One query serves both bases, so one Retry serves both rows, and it
+          sits at the top of the section where each row's failure sentence
+          points. It replaces "Reload this page to try again", which was an
+          instruction to discard every unsaved knob edit on this panel — the
+          exact loss #949's one-shot hydration and the separate Keep mutation
+          both exist to prevent — with the cost unnamed. Muted, not amber: the
+          missing thing is an auxiliary measurement, the panel's own knobs are
+          intact, and #1284 keeps this whole readout off the status palette.
+        */}
+        {distributionError && (
+          <div
+            className="flex flex-col items-start gap-2 text-xs text-muted-foreground"
+            data-testid="retrieval-distribution-error"
+          >
+            <span id={DISTRIBUTION_ERROR_SENTENCE_ID}>
+              The measured confidence distribution could not be read, so neither threshold below has
+              a measurement beside it. Your unsaved edits on this page are untouched.
+            </span>
+            <button
+              type="button"
+              onClick={() => void refetchDistribution()}
+              disabled={distributionFetching}
+              aria-describedby={DISTRIBUTION_ERROR_SENTENCE_ID}
+              className="nm-button-ghost shrink-0 text-xs"
+              data-testid="retrieval-distribution-retry"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {/*
           #1114 — above the control, and keyed off `saved`, not `values`: the
           calibration describes the number the SERVER is holding, so reading a
           draft the admin is still typing would let the strip disappear before
@@ -909,6 +945,7 @@ export function RetrievalTab() {
             windowDays={distribution?.windowDays ?? CONFIDENCE_WINDOW_DAYS_FALLBACK}
             isPending={distributionPending}
             isError={distributionError}
+            basisChanged={settings?.ragConfidenceCalibration?.similarity?.stale === true}
           />
         </NumberRow>
 
@@ -947,6 +984,7 @@ export function RetrievalTab() {
             windowDays={distribution?.windowDays ?? CONFIDENCE_WINDOW_DAYS_FALLBACK}
             isPending={distributionPending}
             isError={distributionError}
+            basisChanged={settings?.ragConfidenceCalibration?.rerank?.stale === true}
             // The empty rerank sample is the ORDINARY state under ADR-021 —
             // unassigned means the stage never runs — so name the cause
             // rather than leave a permanent blank reading as a defect. Only
@@ -1365,6 +1403,14 @@ const CONFIDENCE_SAMPLE_FLOOR = 30;
 const CONFIDENCE_WINDOW_DAYS_FALLBACK = 7;
 
 /**
+ * Names the section-level failure notice for its own Retry button — the
+ * `Record <value>` recipe, so two ghost buttons on one panel stay
+ * distinguishable without an `aria-label` overriding a visible one
+ * (WCAG 2.5.3).
+ */
+const DISTRIBUTION_ERROR_SENTENCE_ID = 'retrieval-distribution-error-sentence';
+
+/**
  * #1284 — the confidence distribution this deployment has actually produced,
  * under the threshold it is used to set.
  *
@@ -1401,6 +1447,7 @@ function ConfidenceDistributionLine({
   windowDays,
   isPending,
   isError,
+  basisChanged,
   emptyNote,
 }: {
   fieldKey: CalibrationFieldKey;
@@ -1408,6 +1455,26 @@ function ConfidenceDistributionLine({
   windowDays: number;
   isPending: boolean;
   isError: boolean;
+  /**
+   * #1114's verdict for this basis, review r2. `search_analytics` records no
+   * provider or model beside the score (migration 098 adds `confidence`,
+   * `confidence_basis` and `surface` and nothing else), so the window cannot
+   * be filtered to one model — and the model behind a basis is exactly what
+   * sets its scale. When the calibration strip directly above says the model
+   * has moved, its remedy is "re-tune it below", and "below" is this line:
+   * without this sentence the panel sends an operator to re-tune against a
+   * window that may still be mostly the previous model's numbers.
+   *
+   * It states what it KNOWS and hedges what it does not (the r3 rule the
+   * muted calibration line already follows): the panel has no swap timestamp,
+   * so it cannot say how much of the window predates the change — only that
+   * the window can span both scales. `stale` outlives the swap, so a
+   * deployment that changed a model a year ago and never re-tuned carries
+   * this sentence permanently; that is the safe direction, and it is muted
+   * prose rather than a second amber, which is what keeps the strip above the
+   * one attention-grade thing on the row.
+   */
+  basisChanged: boolean;
   /**
    * Why this basis has no sample, when the panel already knows. The reachable
    * case is the ordinary one: with no rerank assignment the stage never runs,
@@ -1423,7 +1490,9 @@ function ConfidenceDistributionLine({
   if (isError) {
     return (
       <p data-testid={testId}>
-        The measured distribution could not be read. Reload this page to try again.
+        The measured distribution could not be read, so there is nothing measured to check this
+        threshold against. Use <strong className="font-medium">Retry</strong> at the top of this
+        section.
       </p>
     );
   }
@@ -1446,6 +1515,10 @@ function ConfidenceDistributionLine({
       {bucket.count.toLocaleString()} assistant question{bucket.count === 1 ? '' : 's'}.
       {bucket.count < CONFIDENCE_SAMPLE_FLOOR
         ? ' Too few to tune against — treat both figures as provisional.'
+        : ''}
+      {basisChanged
+        ? ` No model is recorded beside a measured question, so this window can span both scales`
+          + ` — it is comparable again once ${windowDays} days have passed since the change.`
         : ''}
     </p>
   );

@@ -654,8 +654,13 @@ once they diverge, naming the old model, the live one and which scale moved.
 **Nothing rewrites the threshold** — a shadow swap, its rollback and a direct
 use-case re-assignment all log a warning naming both models and leave the
 number exactly as you set it. Clear the notice by re-tuning the threshold
-against the observed distribution shown under the control on the new model
-(#1284 — the old advice was to grep your own logs), or by pressing
+against the observed distribution shown under the control (#1284 — the old
+advice was to grep your own logs). **That distribution is not filtered to the
+new model**: `search_analytics` records the score and its basis but no
+provider or model, so for up to seven days after a model change the window
+still contains questions scored on the previous scale, and the readout says so
+while the notice above it stands. Re-tune once the window has turned over, or
+tune conservatively and revisit. You can also clear the notice by pressing
 **Keep &lt;value&gt;** on the notice itself, which records the number you
 already have against the live model. That button is the only way an untouched
 threshold gets re-recorded: the panel's Save sends only knobs you actually

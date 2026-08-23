@@ -104,7 +104,12 @@ interface MockOptions {
    * distribution: "no questions measured" and "we could not look" are
    * different facts and lead an operator to different actions.
    */
-  confidenceDistribution?: Record<string, unknown> | 'error';
+  confidenceDistribution?:
+    | Record<string, unknown>
+    | 'error'
+    // A function is re-read per request, which is how a test can fail the
+    // first read and answer the retry (review r2).
+    | (() => Record<string, unknown> | 'error');
 }
 
 /** Captures every PUT body so a test can assert what was actually sent. */
@@ -124,8 +129,10 @@ function mockApi({
       new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
     if (url.includes('/analytics/confidence-distribution')) {
-      if (confidenceDistribution === 'error') return new Response('boom', { status: 500 });
-      return json(confidenceDistribution);
+      const answer =
+        typeof confidenceDistribution === 'function' ? confidenceDistribution() : confidenceDistribution;
+      if (answer === 'error') return new Response('boom', { status: 500 });
+      return json(answer);
     }
     if (url.includes('/admin/llm-usecases')) {
       const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
@@ -2216,20 +2223,135 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     expect(similarity.textContent).not.toMatch(/p50/);
   });
 
-  it('is wired to the input it is about, and is prose the description can carry', async () => {
+  it('never tells the operator to reload — that would discard every unsaved knob edit', async () => {
+    // Review r2. `values` is local draft state and Save is a pure value diff
+    // against `saved`, so a reload drops every edit not yet sent — the loss
+    // #949's one-shot `hydrated` flag and the separate Keep mutation both
+    // exist to prevent. The distribution query fails independently of the
+    // settings query, so "the readout failed while I have unsaved edits" is
+    // an ordinary state, not a corner.
+    mockApi({ confidenceDistribution: 'error' });
+    renderTab();
+    await ready();
+
+    type('ragFetchWidth', '17');
+    for (const testId of [similarityId, rerankId, 'retrieval-distribution-error']) {
+      expect((await screen.findByTestId(testId)).textContent).not.toMatch(/reload/i);
+    }
+    // And the edit really is still there, which is the thing the old copy
+    // would have thrown away.
+    expect(input('ragFetchWidth').value).toBe('17');
+  });
+
+  it('offers a Retry that re-reads the distribution, outside the description region', async () => {
+    // The recovery is a control, and a control can never live inside a
+    // threshold row's help block: that block is the input's
+    // `aria-describedby` region and must stay prose. One query serves both
+    // bases, so one Retry serves both rows.
+    let fail = true;
+    mockApi({
+      confidenceDistribution: () => (fail ? 'error' : defaultConfidenceDistribution),
+    });
+    renderTab();
+    await ready();
+
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    expect(retry.tagName).toBe('BUTTON');
+    // Visible label is the name (WCAG 2.5.3), disambiguated by its sentence.
+    expect(retry.getAttribute('aria-label')).toBeNull();
+    expect(
+      document.getElementById(retry.getAttribute('aria-describedby') ?? ''),
+    ).not.toBeNull();
+    // Outside every description region on the panel — the sweep below bans
+    // it, but this states the placement rule where the control is added.
+    for (const el of Array.from(document.querySelectorAll('[aria-describedby]'))) {
+      for (const id of (el.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)) {
+        if (id === retry.getAttribute('aria-describedby')) continue;
+        expect(document.getElementById(id)?.contains(retry)).not.toBe(true);
+      }
+    }
+
+    fail = false;
+    fireEvent.click(retry);
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toContain('0.41'),
+    );
+    expect(screen.queryByTestId('retrieval-distribution-retry')).toBeNull();
+  });
+
+  it('says the window can span two scales while the basis model has changed', async () => {
+    // Review r2 — #1114's strip says "re-tune it below", and "below" is this
+    // readout, which carries NO model provenance: migration 098 adds
+    // `confidence`, `confidence_basis` and `surface` and no provider or model,
+    // so the endpoint cannot filter the window to one model. Without this the
+    // panel's own remedy points at a 7-day sample that may be mostly the
+    // previous model's numbers, with nothing on screen saying so.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: {
+          similarity: {
+            providerId: 'p1', model: 'bge-m3', setAt: '2026-01-01T00:00:00.000Z',
+            stale: true, liveModel: 'Qwen3-Embedding-4B', liveResolved: true,
+          },
+          rerank: null,
+        },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    await waitFor(() => expect(similarity.textContent).toMatch(/span both scales/i));
+    // It hedges rather than asserting how much of the window predates the
+    // change — the panel has no swap timestamp, and the r3 rule is that a
+    // notice states what it knows.
+    expect(similarity.textContent).not.toMatch(/were measured on bge-m3/i);
+    // The basis whose calibration is NOT stale must not inherit it.
+    expect((await screen.findByTestId(rerankId)).textContent).not.toMatch(/span both scales/i);
+  });
+
+  it('carries no provenance caveat while the recorded model still matches', async () => {
+    // Mutation guard for the test above: an unconditional sentence would pass
+    // it and put a permanent caveat on every deployment that never swapped.
     mockApi();
     renderTab();
     await ready();
 
-    const control = input('ragConfidenceThreshold');
-    const describedBy = control.getAttribute('aria-describedby');
-    expect(describedBy).toBeTruthy();
-    const region = document.getElementById(describedBy!);
-    expect(region).not.toBeNull();
-    await waitFor(() => expect(region!.textContent).toContain('0.41'));
-    // A description flattens to one string, so nothing operable may live in
-    // it (the rule #1285 states for this panel's rows).
-    expect(region!.querySelectorAll('button, a, input, select, textarea')).toHaveLength(0);
+    for (const testId of [similarityId, rerankId]) {
+      expect((await screen.findByTestId(testId)).textContent).not.toMatch(/span both scales/i);
+    }
+  });
+
+  it('is wired to the input it is about, and is prose the description can carry', async () => {
+    // Review r2 — BOTH thresholds, not just the similarity one. `NumberRow`'s
+    // wiring is per-row and opt-in, so deleting `describedByHelp` from the
+    // rerank row alone left the whole suite green while its readout stopped
+    // reaching the input's accessible description; the sweep below cannot see
+    // that, because it only inspects regions that ARE still wired.
+    mockApi();
+    renderTab();
+    await ready();
+
+    for (const [fieldKey, expected] of [
+      ['ragConfidenceThreshold', '0.41'],
+      ['ragConfidenceThresholdRerank', '0.22'],
+    ] as const) {
+      const control = input(fieldKey);
+      const describedBy = control.getAttribute('aria-describedby');
+      expect(describedBy, `${fieldKey} has no description`).toBeTruthy();
+      const region = document.getElementById(describedBy!);
+      expect(region, `${fieldKey} description resolves to nothing`).not.toBeNull();
+      // Its OWN readout, not merely some region with prose in it.
+      await waitFor(() =>
+        expect(within(region!).getByTestId(`retrieval-${fieldKey}-distribution`).textContent)
+          .toContain(expected),
+      );
+      // A description flattens to one string, so nothing operable may live in
+      // it (the rule #1285 states for this panel's rows).
+      expect(region!.querySelectorAll('button, a, input, select, textarea')).toHaveLength(0);
+    }
   });
 
   it('leaves no description on the panel carrying an operable control', async () => {
