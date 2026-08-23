@@ -211,6 +211,22 @@ describe('ConversationRow', () => {
     expect(del.className).not.toContain('hover:bg-destructive/');
   });
 
+  it('moves focus into the confirm dialog on Delete, not back through the kebab', async () => {
+    renderRow();
+    // Captured before the dialog opens: Radix marks the rest of the page
+    // `aria-hidden` while it is open, so `getByRole` can no longer find it.
+    const trigger = kebab();
+    openMenu(trigger);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+
+    const dialog = await screen.findByTestId('confirm-dialog');
+    // Mirrors Rename's own handoff guard: the dropdown must not hand focus
+    // back to the (about-to-unmount-on-success) kebab on its way to the
+    // dialog's own focus trap.
+    expect(document.activeElement).not.toBe(trigger);
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
   it('Delete confirms, sends the DELETE, purges the thread and reports it', async () => {
     renderRow();
     openMenu(kebab());
@@ -256,6 +272,12 @@ describe('ConversationRow', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename' }));
     return screen.findByRole('textbox', { name: 'Rename Rollout plan' });
   }
+
+  it('moves focus straight into the rename input, not back through the kebab', async () => {
+    renderRow();
+    const input = await startRename();
+    expect(document.activeElement).toBe(input);
+  });
 
   it('renames in place on Enter and never inside a role="menu"', async () => {
     renderRow();

@@ -147,8 +147,10 @@ flowchart LR
   not how it is applied. Consequently Apply is unavailable while the editor is
   open: it rewrites the saved page, which an open editor would overwrite on its
   next save. `article-view` therefore stays a set of read-only mirrors.
-- `/ai` offers Q&A and Generate; the dock offers Q&A, the five rewrite skills
-  and Diagram. Since #1361 those are two named lists in one leaf module,
+- `/ai` offers Q&A, Generate and the five #1401 create skills; the dock offers
+  all of that plus the five standalone rewrite skills and Diagram — `/ai` has
+  neither because page scope was retired there and it has no document to act
+  on. Since #1361 those are two named lists in one leaf module,
   `features/ai/assistant-actions.ts` (`AI_HOME_ACTIONS` / `DOCK_ACTIONS`), and
   `AssistantActionSelect` takes the list as an `actions` prop rather than the
   old `includeGenerate` boolean. The module is a leaf on purpose: it holds the

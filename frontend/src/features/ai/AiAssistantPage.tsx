@@ -491,6 +491,7 @@ export function AiAssistantPage() {
                 {threadLoadError ?? 'The request did not complete.'}
               </p>
               <button
+                type="button"
                 onClick={() => retryThreadLoad()}
                 className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground"
               >

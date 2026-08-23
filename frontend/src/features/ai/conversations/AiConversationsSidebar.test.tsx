@@ -219,6 +219,26 @@ describe('AiConversationsSidebar', () => {
     expect(await screen.findByText('3 conversations')).toBeInTheDocument();
   });
 
+  it('leaves the footer count blank until the first page has loaded', async () => {
+    // Never resolves — the pane stays in `query.isPending` for the life of
+    // the test, the same state a freshly mounted pane is in for one tick.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
+    renderPane();
+    await screen.findByTestId('ai-conversations-sidebar');
+    expect(screen.getByTestId('conversations-footer-count')).toHaveTextContent('');
+  });
+
+  it('reflects the active filter in the footer count, not the loaded total', async () => {
+    mockList(9);
+    renderPane();
+    const filter = (await screen.findByLabelText('Filter conversations')) as HTMLInputElement;
+    fireEvent.change(filter, { target: { value: 'Conversation 3' } });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('conversations-footer-count')).toHaveTextContent('1 conversation');
+    });
+  });
+
   it('fetches the list exactly once on mount', async () => {
     const fetchSpy = mockList(3);
     renderPane();

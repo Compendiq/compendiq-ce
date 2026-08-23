@@ -154,7 +154,11 @@ function AskModeInputContent() {
     // `threadLoadState` is checked here as well as on Send: the textarea is not
     // disabled while a conversation loads, so Enter reaches this handler and
     // would post a question against a thread whose history has not arrived.
-    if (!input.trim() || isStreaming || isBusy || threadLoadState === 'loading') return;
+    // `!== 'ready'` (not `=== 'loading'`): the `error` state is live too —
+    // the composer is not disabled there either, and `conversationId` is
+    // still null on a failed load, so a send would silently fork a brand
+    // new conversation instead of surfacing the failure.
+    if (!input.trim() || isStreaming || isBusy || threadLoadState !== 'ready') return;
     if (!model) {
       toast.error('No model available. Check your LLM provider settings.');
       return;
@@ -379,7 +383,7 @@ function AskModeInputContent() {
           variant="primary"
           size="sm"
           onClick={handleSubmit}
-          disabled={isStreaming || isBusy || !input.trim() || !model || threadLoadState === 'loading'}
+          disabled={isStreaming || isBusy || !input.trim() || !model || threadLoadState !== 'ready'}
           isLoading={isStreaming}
           aria-label={isStreaming ? 'Sending...' : 'Send message'}
           className="shrink-0 self-end h-8 px-3"

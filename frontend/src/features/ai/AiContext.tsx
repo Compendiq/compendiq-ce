@@ -1070,6 +1070,20 @@ export function AiProvider({ children }: { children: ReactNode }) {
       let next = new Map(prev);
       if (promotedId !== null) {
         next = rekeyThread(next, fromKey, `conv:${promotedId}`);
+        // A promotion is a conversation being born from the exchange that
+        // just completed, so the promoted thread is definitionally loaded —
+        // reset any load state the origin was carrying rather than let
+        // `rekeyThread`'s same-object move drag it along. `draft` is always
+        // `'ready'` already; the other origin a promotion can fire from is a
+        // `conv:` thread (F2), which the composer now refuses to send from
+        // outside `'ready'` — but resetting here rather than trusting that
+        // upstream guard is what keeps a `conv:→conv:` re-promotion from
+        // publishing `'loading'`/`'error'` for even one render on the new key.
+        const promotedKey = `conv:${promotedId}`;
+        const promoted = next.get(promotedKey);
+        if (promoted && (promoted.loadState !== 'ready' || promoted.loadError !== null)) {
+          next.set(promotedKey, { ...promoted, loadState: 'ready', loadError: null });
+        }
         if (fromKey === 'draft') {
           // Exactly one draft exists. The promoted object took its content
           // with it, so the draft slot is re-seeded with a fresh identity —
@@ -1139,7 +1153,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     if (hydratingRef.current.has(key)) return;
     hydratingRef.current.add(key);
     try {
-      const conv = await apiFetch<ConversationDetail>(`/llm/conversations/${id}`);
+      const conv = await apiFetch<ConversationDetail>(`/llm/conversations/${encodeURIComponent(id)}`);
       updateThread(key, () => ({
         // `refused` is what `saveConversation` writes onto a #1105 refusal
         // turn, and the route returns the messages JSONB verbatim — so a
@@ -1165,20 +1179,34 @@ export function AiProvider({ children }: { children: ReactNode }) {
       // screen. It deliberately does NOT call setModel: the per-conversation
       // dropdown is gone, and a stored model would silently repoint every
       // later question on the instance.
-      setMode('ask');
+      //
+      // Gated on `key` still being the active thread: this fetch is
+      // fire-and-forget, and a slow response can land after the user has
+      // switched to another conversation, started New chat, or picked
+      // Generate. Flipping the provider-wide mode back to `ask` at that
+      // point would replace whatever composer is actually on screen. The
+      // `updateThread(key, …)` write above stays unconditional — it is
+      // key-scoped, so it only ever touches the (now-background) thread
+      // this response belongs to.
+      if (activeKeyRef.current === key) setMode('ask');
     } catch (err) {
       const status = err instanceof ApiError ? err.statusCode : 0;
       if (status === 404 || status === 400) {
-        toast.error('Conversation not found');
-        // Remove the placeholder in the same tick as the navigation, so the
-        // two batch into one render and the read path never re-seeds
-        // `conv:<id>` as `loading` behind the redirect.
+        // Remove the placeholder regardless of whether this thread is still
+        // on screen — a dead conversation's entry should not linger.
         setThreads((prev) => {
           const next = new Map(prev);
           next.delete(key);
           return next;
         });
-        navigate(AI_HOME_PATH, { replace: true });
+        // The toast and redirect are for the user looking at THIS thread.
+        // If they have since navigated away (switched conversations, or a
+        // delete of this same conversation already navigated home), firing
+        // them would toast/redirect the thread now on screen instead.
+        if (activeKeyRef.current === key) {
+          toast.error('Conversation not found');
+          navigate(AI_HOME_PATH, { replace: true });
+        }
         return;
       }
       // Anything else stays put with an in-pane error and a Retry: redirecting

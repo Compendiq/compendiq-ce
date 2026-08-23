@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { PanelLeft, PanelLeftClose, SquarePen } from 'lucide-react';
 import { MainNavStripExpanded, MainNavStripCollapsed } from '../../../shared/components/layout/MainNavStrip';
@@ -7,6 +7,7 @@ import { cn } from '../../../shared/lib/cn';
 import { useAiContext } from '../AiContext';
 import { useConversationList } from './use-conversation-list';
 import { ConversationList } from './ConversationList';
+import { filterConversations } from './filter-conversations';
 
 const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
 
@@ -48,6 +49,14 @@ export function AiConversationsSidebar({
   const [isResizing, setIsResizing] = useState(false);
 
   const showFilter = list.rows.length > CONVERSATION_FILTER_THRESHOLD;
+  // `ConversationList`'s own predicate (`filterConversations`), not a second
+  // definition of "matches": the footer states what the list above it is
+  // actually showing, filter included, so the two can never read a different
+  // count for the same screen.
+  const visibleCount = useMemo(
+    () => filterConversations(list.rows, filter).length,
+    [list.rows, filter],
+  );
 
   // A remembered filter would silently hide conversations from whoever reopens
   // the pane — the space dropdown's rule, applied to the rail.
@@ -185,7 +194,7 @@ export function AiConversationsSidebar({
           !embedMainNav shape keeps its bordered space row at the top): without
           this, a desktop pane would be the one rail with no hairline across
           its top. Both class branches keep the guard honest — the branch
-          containing panel-toolbar+border-b carries h-12 and no py-*. */}
+          that draws the border carries h-12 and no py-*. */}
       {embedMainNav && (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
         <MainNavStripExpanded onNavigate={onNavigate} />
@@ -247,16 +256,28 @@ export function AiConversationsSidebar({
       <ConversationList list={list} filter={filter} onNavigate={onNavigate} />
 
       {/* Loaded row count, and nothing else. SidebarTreeView.tsx:1348's footer
-          recipe byte for byte; the tree spends its right cell on a Trash link
-          and this pane has no equivalent low-frequency destination, so the
-          count keeps flex-1 and the cell stays empty. No session chrome: theme
-          and account are in the app header on every route (#1377/#1378). The
-          rule below sits on the row's TOP edge, not its bottom — a second
-          bordered nav-style row here would have to carry h-12 and would draw
-          a line where there is no chrome. */}
+          recipe byte for byte — including its `treeData ? … : ''` shape: the
+          count is blank rather than a misleading "0 conversations" until the
+          first page has actually loaded. It counts what `ConversationList`
+          above it is actually showing (`visibleCount`, the same
+          `filterConversations` predicate), not `list.rows.length` — those two
+          diverge the moment a filter is active, and the footer exists to
+          state what is on screen, not what was fetched. The tree spends its
+          right cell on a Trash link and this pane has no equivalent
+          low-frequency destination, so the count keeps flex-1 and the cell
+          stays empty. No session chrome: theme and account are in the app
+          header on every route (#1377/#1378). The rule below sits on the
+          row's TOP edge, not its bottom — a second bordered nav-style row
+          here would have to carry h-12 and would draw a line where there is
+          no chrome. */}
       <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t px-2 py-1.5">
-        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-          {`${list.rows.length} ${list.rows.length === 1 ? 'conversation' : 'conversations'}`}
+        <span
+          data-testid="conversations-footer-count"
+          className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground"
+        >
+          {list.query.isPending
+            ? ''
+            : `${visibleCount} ${visibleCount === 1 ? 'conversation' : 'conversations'}`}
         </span>
       </div>
 

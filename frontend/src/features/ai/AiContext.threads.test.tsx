@@ -413,9 +413,12 @@ describe('AiContext per-page threads (#1126)', () => {
   // The mode-less half of the same contract, and the reason `SidebarTreeView`
   // cannot strand anyone on a retired screen. Clicking a page while already on
   // /ai navigates to `/ai?pageId=…` — a URL carrying no `mode=` — which has to
-  // CLEAR an active mode rather than leave it in place. A sticky `generate`
-  // would render a document screen with no tab selected and no route back
-  // except the URL bar, since #1361 left /ai offering only Ask and Generate.
+  // CLEAR an active mode rather than leave it in place, whether or not that
+  // mode is reachable from the menu: `?mode=` is a wider surface than
+  // `AssistantActionSelect`'s own allow-list (`AI_HOME_ACTIONS`), so the
+  // active thread can be sitting in a mode the menu itself offers no way back
+  // to, and a navigation that left it in place would maroon the reader there
+  // with only the URL bar to escape by.
   //
   // This is what makes SidebarTreeView the thing that *clears* a mode deep
   // link rather than a source of one — it has never built a `?mode=` URL.
@@ -688,9 +691,9 @@ describe('resolveAiPageId', () => {
  */
 function StateProbe() {
   const {
-    messages, conversationId, input, mode, model, activeThreadId,
+    messages, conversationId, input, mode, setMode, model, activeThreadId,
     threadLoadState, threadLoadError, historyTruncated, retryThreadLoad,
-    setInput, setConversationId, purgeConversation, runStream,
+    setInput, setConversationId, purgeConversation, runStream, startNewConversation,
   } = useAiContext();
   const navigate = useNavigate();
 
@@ -732,6 +735,8 @@ function StateProbe() {
       <button onClick={retryThreadLoad}>retry</button>
       <button onClick={() => navigate(-1)}>back</button>
       <button onClick={() => navigate(1)}>forward</button>
+      <button onClick={startNewConversation}>new conversation</button>
+      <button onClick={() => setMode('generate')}>go generate</button>
     </div>
   );
 }
@@ -1178,6 +1183,93 @@ describe('AiContext conversation state machine (#1361)', () => {
     // The placeholder thread is removed, so /ai is the ordinary draft.
     expect(screen.getByTestId('load-state')).toHaveTextContent('ready');
     expect(threadContents()).toEqual([]);
+  });
+
+  // F1: `hydrateThread` is fire-and-forget, so its response can land after the
+  // user has moved off the thread it was fetched for. Both branches of its
+  // catch/then must check `activeKeyRef` before touching anything beyond the
+  // (background) thread the response belongs to.
+
+  it('a stale 404 for a conversation the user has since left does not toast or navigate away from where they are', async () => {
+    const { toast } = await import('sonner');
+    let rejectX!: (err: unknown) => void;
+    withConversations((id) => {
+      if (id === 'x') return new Promise((_resolve, reject) => { rejectX = reject; });
+      return Promise.resolve(conversationDetail(id));
+    });
+
+    renderStateApp('/ai/c/x', ['/ai/c/y']);
+    expect(screen.getByTestId('load-state')).toHaveTextContent('loading');
+
+    goTo('/ai/c/y');
+    await waitFor(() => {
+      expect(threadContents()).toEqual(['question in y', 'answer in y']);
+    });
+
+    // x's 404 arrives only now, after the user is already reading y.
+    await act(async () => {
+      rejectX(new ApiError(404, 'Conversation not found'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/y');
+    expect(threadContents()).toEqual(['question in y', 'answer in y']);
+  });
+
+  it('a stale conversation load does not flip mode back to ask out from under New chat + Generate', async () => {
+    let resolveX!: (value: unknown) => void;
+    withConversations((id) => {
+      if (id === 'x') return new Promise((resolve) => { resolveX = resolve; });
+      return Promise.resolve(conversationDetail(id));
+    });
+
+    renderStateApp('/ai/c/x');
+    expect(screen.getByTestId('load-state')).toHaveTextContent('loading');
+
+    fireEvent.click(screen.getByText('new conversation'));
+    await waitFor(() => {
+      expect(screen.getByTestId('location').textContent).not.toContain('/ai/c/');
+    });
+
+    fireEvent.click(screen.getByText('go generate'));
+    expect(screen.getByTestId('mode')).toHaveTextContent('generate');
+
+    // x's 200 arrives only now, after New chat and picking Generate.
+    await act(async () => {
+      resolveX(conversationDetail('x'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('mode')).toHaveTextContent('generate');
+  });
+
+  // F2's other half: a `conv:` origin whose load failed carries `loadState:
+  // 'error'` and `conversationId: null` — exactly `originHadId: false` on a
+  // `conv:`-prefixed key, so `completeExchange` promotes it like a draft. The
+  // composer now refuses to send from that state, but `completeExchange` is
+  // reached directly here (via `StateProbe`'s ungated `ask` button) to pin
+  // its own half of the fix rather than relying solely on the composer guard.
+  it('a promotion clears whatever load state the origin thread was carrying', async () => {
+    withConversations(() => Promise.reject(new ApiError(503, 'Service Unavailable (HTTP 503)')));
+    renderStateApp('/ai/c/x');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('load-state')).toHaveTextContent('error');
+    });
+
+    streamSSEMock.mockImplementation(askStreamReturning('new-id'));
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/new-id');
+    });
+    // Not the origin's stale `error`/message — a promoted conversation IS the
+    // exchange that just completed, so it is definitionally loaded.
+    expect(screen.getByTestId('load-state')).toHaveTextContent('ready');
+    expect(screen.getByTestId('load-error')).toHaveTextContent('none');
   });
 
   it('keeps the URL and records the error on a network failure, then retries', async () => {

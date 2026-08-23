@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
@@ -7,6 +7,7 @@ import { AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE } 
 import { ASK_FALLBACK_PROMPTS } from './ask-example-prompts';
 import { AiProvider, useAiContext } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
+import { ApiError } from '../../../shared/lib/api';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -1113,6 +1114,52 @@ describe('AskMode', () => {
       expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
 
       // …and Enter must not slip past it: the textarea is not disabled.
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => {
+        expect(streamSSEMock).not.toHaveBeenCalled();
+      });
+    });
+
+    // F2: the guard used to read `threadLoadState === 'loading'` only, so a
+    // FAILED load left Send live with `conversationId: null` — sending would
+    // silently fork a brand new conversation rather than surface the failure
+    // the destructive block above the composer is already reporting.
+    it('disables Send while the open conversation failed to load, not only while it is loading', async () => {
+      let rejectLoad!: (err: unknown) => void;
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        if (path.startsWith('/llm/conversations/')) {
+          return new Promise((_resolve, reject) => { rejectLoad = reject; });
+        }
+        return Promise.resolve([]);
+      });
+      streamSSEMock.mockImplementation(async function* fakeStream() {
+        yield { content: 'Answer' };
+      });
+
+      render(<AskModeInput />, { wrapper: createWrapper(['/ai/c/broken?q=already typed']) });
+
+      const input = await screen.findByTestId('ask-input');
+      await waitFor(() => {
+        expect((input as HTMLTextAreaElement).value).toBe('already typed');
+      });
+      // Still `loading` here — same assertion the sibling test above makes.
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+
+      // The load fails and the thread moves from `loading` to `error`. A
+      // guard reading `threadLoadState === 'loading'` only would let Send go
+      // live right here; `!== 'ready'` keeps it disabled through both states.
+      await act(async () => {
+        rejectLoad(new ApiError(503, 'Service Unavailable (HTTP 503)'));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+
       fireEvent.keyDown(input, { key: 'Enter' });
       await waitFor(() => {
         expect(streamSSEMock).not.toHaveBeenCalled();

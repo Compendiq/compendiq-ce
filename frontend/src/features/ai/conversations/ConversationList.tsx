@@ -6,6 +6,7 @@ import { cn } from '../../../shared/lib/cn';
 import { SECTION_LABEL } from '../../../shared/components/layout/SidebarTreeView';
 import { useListRovingFocus } from '../../../shared/hooks/use-list-roving-focus';
 import { conversationIdFromPath } from '../../../shared/lib/ai-routes';
+import { filterConversations } from './filter-conversations';
 import { groupByRecency } from './group-by-recency';
 import { ConversationRow } from './ConversationRow';
 import type { useConversationList } from './use-conversation-list';
@@ -35,11 +36,7 @@ export function ConversationList({ list, filter, onNavigate, now = () => new Dat
   const navRef = useRef<HTMLElement>(null);
   const { query, rows } = list;
 
-  const needle = filter.trim().toLowerCase();
-  const filtered = useMemo(
-    () => (needle ? rows.filter((row) => row.title.toLowerCase().includes(needle)) : rows),
-    [rows, needle],
-  );
+  const filtered = useMemo(() => filterConversations(rows, filter), [rows, filter]);
   const groups = useMemo(() => groupByRecency(filtered, now()), [filtered, now]);
   const ids = useMemo(() => groups.flatMap((g) => g.items.map((i) => i.id)), [groups]);
 

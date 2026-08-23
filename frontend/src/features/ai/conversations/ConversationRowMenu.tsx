@@ -36,12 +36,16 @@ export function ConversationRowMenu({
 }: ConversationRowMenuProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const deleteConversation = useDeleteConversation();
-  // Set by Rename's onSelect and read one tick later by onCloseAutoFocus:
-  // Radix returns focus to the trigger as the layer unmounts, in the same tick
-  // the freshly mounted input takes it, and the input loses (the EditorToolbar
-  // trap). It is also what keeps focus in the field when the row stops
-  // rendering this menu entirely while editing.
-  const renamePendingRef = useRef(false);
+  // Set by Rename's AND Delete's onSelect, read one tick later by
+  // onCloseAutoFocus: Radix returns focus to the trigger as the layer
+  // unmounts, in the same tick the next layer (the rename input, or
+  // ConfirmDialog's own focus trap) would claim it, and without this the
+  // trigger wins the race (the EditorToolbar trap). Delete needs the same
+  // guard as Rename for a second reason: a completed delete unmounts the
+  // whole row, kebab included, so a trigger that regained focus here would
+  // leave the confirm dialog restoring focus to a node that no longer
+  // exists once the mutation succeeds.
+  const handoffPendingRef = useRef(false);
 
   return (
     <>
@@ -79,8 +83,8 @@ export function ConversationRowMenu({
             className="z-50 min-w-[160px] nm-card-elevated p-1"
             onEscapeKeyDown={(event) => absorbPortalEscape(event, () => onOpenChange(false))}
             onCloseAutoFocus={(event) => {
-              if (renamePendingRef.current) {
-                renamePendingRef.current = false;
+              if (handoffPendingRef.current) {
+                handoffPendingRef.current = false;
                 event.preventDefault();
               }
             }}
@@ -88,7 +92,7 @@ export function ConversationRowMenu({
             <DropdownMenu.Item
               className={MENU_ITEM}
               onSelect={() => {
-                renamePendingRef.current = true;
+                handoffPendingRef.current = true;
                 onRename();
               }}
             >
@@ -97,7 +101,10 @@ export function ConversationRowMenu({
             </DropdownMenu.Item>
             <DropdownMenu.Item
               className={cn(MENU_ITEM, 'nm-action-destructive')}
-              onSelect={() => setConfirmOpen(true)}
+              onSelect={() => {
+                handoffPendingRef.current = true;
+                setConfirmOpen(true);
+              }}
             >
               <Trash2 size={14} aria-hidden="true" />
               Delete
