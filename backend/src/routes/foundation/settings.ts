@@ -13,6 +13,24 @@ import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
 import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';
 
+// #1402 (review, external round): shared by GET and PUT's row-ensure INSERTs.
+// auth.ts caches liveness for USER_SECURITY_CACHE_TTL_MS (30s; #737), so a
+// request for a user hard-deleted moments earlier can still reach either
+// handler here. Swallow only the FK-violation error code (the user is gone,
+// so the row-ensure legitimately cannot proceed); any other error (a real DB
+// outage, a different constraint) still throws.
+async function ensureUserSettingsRow(userId: string): Promise<void> {
+  try {
+    await query('INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [userId]);
+  } catch (err) {
+    if ((err as { code?: string }).code !== '23503') throw err;
+    logger.warn(
+      { userId },
+      'user_settings row-ensure hit a foreign-key violation (user likely deleted mid-request); treating as a no-op',
+    );
+  }
+}
+
 export async function settingsRoutes(fastify: FastifyInstance) {
   // All settings routes require auth
   fastify.addHook('onRequest', fastify.authenticate);
@@ -49,7 +67,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
 
     if (result.rows.length === 0) {
       // Create default settings if missing
-      await query('INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [request.userId]);
+      await ensureUserSettingsRow(request.userId);
       return {
         confluenceUrl: null,
         hasConfluencePat: false,
@@ -310,24 +328,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       // the UPDATE below silently affects 0 rows while the route still
       // returns 200 "Settings updated", and the patch is lost.
       //
-      // #1402 (review r1): tolerate the FK race instead of 500ing. auth.ts
-      // caches liveness for USER_SECURITY_CACHE_TTL_MS (30s; #737), so a PUT
-      // for a user hard-deleted moments earlier can still reach this route.
-      // The INSERT then violates user_settings.user_id -> users(id) — code
-      // 23503 — which used to bubble up as an uncaught 500 where the
-      // pre-#1402 route (no row-ensure) returned a 200 no-op. Swallow only
-      // that error code; the UPDATE below then affects 0 rows against a row
-      // that still doesn't exist, restoring the original 200 no-op. Any
-      // other error (a real DB outage, a different constraint) still throws.
-      try {
-        await query('INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [request.userId]);
-      } catch (err) {
-        if ((err as { code?: string }).code !== '23503') throw err;
-        logger.warn(
-          { userId: request.userId },
-          'PUT /settings row-ensure hit a foreign-key violation (user likely deleted mid-request); treating as a no-op',
-        );
-      }
+      // #1402 (review r1): tolerate the FK race instead of 500ing — see
+      // ensureUserSettingsRow's comment. The UPDATE below then affects 0 rows
+      // against a row that still doesn't exist, restoring the original 200
+      // no-op the pre-#1402 route (no row-ensure) returned.
+      await ensureUserSettingsRow(request.userId);
 
       updates.push(`updated_at = NOW()`);
       values.push(request.userId);

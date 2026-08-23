@@ -237,4 +237,48 @@ describe.skipIf(!dbAvailable)('Onboarding checklist state — real-Postgres roun
     const row = await query('SELECT 1 FROM user_settings WHERE user_id = $1', [userId]);
     expect(row.rows).toHaveLength(0);
   });
+
+  // #1402 (review, external round): GET's row-ensure INSERT (fired when the
+  // SELECT finds no row) hit the exact same FK race as PUT's — a user hard-
+  // deleted inside auth's #737 cached-liveness window — but, unlike PUT's,
+  // had no try/catch for code 23503. This must degrade to the same
+  // fully-defaulted 200 response PUT's tolerant path returns, not an
+  // uncaught 500.
+  it('GET for a user deleted after auth caches them as live does not 500 on the FK violation', async () => {
+    const { token, userId } = await createUserWithoutSettingsRow('onboarding_get_deleted_user');
+
+    // Warm the cached-liveness check with a GET that still finds the user
+    // live (no user_settings row yet, so this itself exercises the
+    // row-ensure INSERT's happy path and leaves a row behind).
+    const warmGet = await app.inject({
+      method: 'GET',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(warmGet.statusCode).toBe(200);
+
+    // Delete the row-ensure's own row plus the user, then delete the user
+    // again to reproduce "row genuinely gone, cache still says live" for the
+    // SELECT-finds-nothing branch.
+    await query('DELETE FROM user_settings WHERE user_id = $1', [userId]);
+    await query('DELETE FROM users WHERE id = $1', [userId]);
+
+    const get = await app.inject({
+      method: 'GET',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(get.statusCode).toBe(200);
+    expect(get.json().onboardingState).toEqual({
+      firstAiQueryMade: false,
+      shortcutsModalViewed: false,
+      pageCreatedOrEdited: false,
+      dismissed: false,
+      completedAt: null,
+    });
+
+    const row = await query('SELECT 1 FROM user_settings WHERE user_id = $1', [userId]);
+    expect(row.rows).toHaveLength(0);
+  });
 });
