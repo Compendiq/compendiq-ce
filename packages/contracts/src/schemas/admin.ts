@@ -639,6 +639,20 @@ export const AttachmentStoreSweepStatsSchema = z.object({
    * Defaulted so records persisted before the field existed still parse.
    */
   nestedDirectories: z.number().int().nonnegative().default(0),
+  /**
+   * Store-root directories whose NAME is not a usable attachment key (fixer
+   * r1) — `tmp.12345/`, `12345 (copy)/`, a numeric name above `pages.id`'s
+   * int4 range. Each is dropped BEFORE the walk opens it, so it contributes to
+   * none of `bytes` / `files` / `directories` and is judged by nothing.
+   * Skipping is the correct verdict; leaving it uncounted was not, on a card
+   * whose contract is to name every verdict the walk declined to reach — its
+   * bytes were simply missing from the figures. Reserved store names
+   * (`local/`, `page-icons/`) and dot-directories are NOT counted here: the
+   * first two are other stores and the third is #1169 debris, neither of which
+   * this store was ever going to measure.
+   * Defaulted so records persisted before the field existed still parse.
+   */
+  unkeyedDirectories: z.number().int().nonnegative().default(0),
   /** Directories whose readdir failed — never judged, reported instead. */
   unreadableDirectories: z.number().int().nonnegative(),
 });

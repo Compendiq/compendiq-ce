@@ -175,8 +175,21 @@ export function AttachmentStorageCard() {
    * run's verdict is read. Nothing is lost by the narrowing: the queries do
    * not poll at all unless kicked or a lock is reported, so a run this card
    * did not watch is one it could not have announced anyway.
+   *
+   * It is published in TWO commits (fixer r1). An `aria-live` region whose
+   * text does not CHANGE is not re-announced, and React bails out of a
+   * `useState` write that is `Object.is`-equal to the current value — so an
+   * operator who pressed Dry run twice and got the same verdict ("Dry run
+   * finished — 3 candidates.") heard it once: the second run, on the one
+   * surface built for the user this announcer exists for, completed in
+   * silence. `pendingAnnouncement` is a fresh OBJECT per run, so no write on
+   * this path can bail; the effect below empties the region and refills it on
+   * the next tick, which is a real mutation whatever the sentence says.
    */
   const [runAnnouncement, setRunAnnouncement] = useState('');
+  const [pendingAnnouncement, setPendingAnnouncement] = useState<{ at: string; text: string } | null>(
+    null,
+  );
   const watchedFrom = useRef<string | null | undefined>(undefined);
 
   const trigger = useMutation({
@@ -189,7 +202,15 @@ export function AttachmentStorageCard() {
       if (result.alreadyRunning) {
         // Neither success nor failure: the press was a no-op against a sweep
         // that already holds the lock (ImageIndexCard's neutral precedent).
-        toast.message('A sweep is already running — the results will appear here when it finishes.');
+        //
+        // The copy names the REMEDY, not an outcome (fixer r1). The lock is
+        // taken `failClosed`, so the server answers `alreadyRunning` for two
+        // different facts — a sweep really is running, and Redis could not be
+        // reached to find out — and on the second no run exists, nothing will
+        // "appear here when it finishes", and the card's warm-up poll expires
+        // after 20 s leaving a promise the server never made. One sentence
+        // true on both branches, and the same remedy applies to both.
+        toast.message('A sweep already holds the lock — its results appear here, or press again if nothing does.');
       } else {
         toast.success(
           dryRun
@@ -254,8 +275,19 @@ export function AttachmentStorageCard() {
     if (watchedFrom.current === undefined) return;
     if (!lastRun || lastRun.at === watchedFrom.current) return;
     watchedFrom.current = undefined;
-    setRunAnnouncement(announceRun(lastRun));
+    setPendingAnnouncement({ at: lastRun.at, text: announceRun(lastRun) });
   }, [running, lastRun]);
+
+  // Publish it: empty the region in this commit, refill it in the next tick —
+  // see `pendingAnnouncement`. Writing the sentence straight in is a no-op
+  // whenever two consecutive runs read the same, which is the ordinary shape
+  // of pressing Dry run twice on a store that did not change.
+  useEffect(() => {
+    if (!pendingAnnouncement) return;
+    setRunAnnouncement('');
+    const id = setTimeout(() => setRunAnnouncement(pendingAnnouncement.text), 0);
+    return () => clearTimeout(id);
+  }, [pendingAnnouncement]);
   // The actions stay live on a failed READ — Dry run is the remedy that
   // refreshes the very record the failed GET could not deliver. Only the
   // pending paint (nothing known yet) and a running sweep disable them.
@@ -473,6 +505,24 @@ export function AttachmentStorageCard() {
           </p>
         )}
 
+      {/*
+        Fixer r1: the FOURTH declined verdict. A store-root directory whose
+        name is not a usable attachment key (`tmp.12345/`, `12345 (copy)/`) is
+        dropped before the walk opens it, so its bytes reach none of the
+        figures above and none of the three lines above this one — a silently
+        declined class on a card whose contract is that a partial walk cannot
+        show the same clean figures as a complete one. Muted, like its
+        siblings: skipping is the correct verdict, and this only says so.
+      */}
+      {figures && figures.confluence.unkeyedDirectories + figures.local.unkeyedDirectories > 0 && (
+        <p className="text-muted-foreground text-xs" data-testid="attachment-storage-unkeyed">
+          {figures.confluence.unkeyedDirectories + figures.local.unkeyedDirectories === 1
+            ? '1 directory does not look like an attachment key and was not measured'
+            : `${figures.confluence.unkeyedDirectories + figures.local.unkeyedDirectories} directories do not look like attachment keys and were not measured`}{' '}
+          — the sweep never opens or removes them, and their bytes are not in the figures above.
+        </p>
+      )}
+
       {figures !== null && (stats.data?.missingLocalFiles ?? 0) > 0 && (
         <p className="text-muted-foreground text-xs" data-testid="attachment-storage-missing-rows">
           {stats.data!.missingLocalFiles} local attachment record
@@ -570,10 +620,19 @@ export function AttachmentStorageCard() {
             screen reader announcing "list, 100 items" is the useful part) and
             named, because a focusable region with no name announces nothing.
             The ring is the sibling `<summary>` recipe two lines up.
+
+            Its NAME follows the same dry-run rule as the summary above it
+            (fixer r1). The r2 ruling — "candidate" is a claim about pending
+            work, so say it only for a dry run — was applied to the visible
+            copy and not to the accessible name, so after a live run a screen
+            reader still announced the region as "Orphan candidates": exactly
+            the wording this card decided was a lie, surviving where the
+            pinned test could not see it (`textContent` never contains an
+            attribute value).
           */}
           <ul
             tabIndex={0}
-            aria-label="Orphan candidates"
+            aria-label={lastRun.dryRun ? 'Orphan candidates' : 'What the sweep found'}
             className="border-border focus-visible:ring-ring mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border p-2 focus-visible:ring-2 focus-visible:outline-none"
             data-testid="attachment-sweep-candidate-list"
           >

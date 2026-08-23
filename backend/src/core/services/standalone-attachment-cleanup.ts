@@ -22,6 +22,24 @@
  * body. The local store has no such ambiguity: `local/<pk>/` belongs to
  * exactly this page and is removed unconditionally.
  *
+ * **This removal consults no keep-set, and that is an accepted loss, not an
+ * oversight** (fixer r1, review). The sweep in the same PR holds a global
+ * `Set<filename>` per store precisely because attachment URLs are copied
+ * verbatim between bodies — "a filename referenced ANYWHERE is kept
+ * EVERYWHERE" — and this path deliberately does not: a hard delete removes
+ * `<pk>/` whole on the strength of the ownership `EXISTS` and the age check
+ * alone. The reachable spelling is editor copy/paste: paste an
+ * `<img src="/api/attachments/<pkA>/x.png">` out of standalone page A into
+ * page B, then hard-delete A, and B's picture goes with it. CE has no
+ * duplicate-page or save-as-template route, so nothing produces that sharing
+ * as a product feature. It is the behaviour the issue's design of record
+ * prescribes, and it is kept for two reasons: an event-driven delete that has
+ * to reconcile against every body in the system is no longer best-effort
+ * cleanup, and deferring to the sweep would put the ordinary case — paste,
+ * delete an hour later — back on a 24-hour window on every hard delete, which
+ * is the leak this module exists to close. The ADMIN-GUIDE's retention
+ * section states the same caveat where an operator will read it.
+ *
  * **Best-effort by contract, never throws.** Both call sites run AFTER the
  * database work has committed (the route's DELETE, the purge's batch) —
  * mirroring how the Confluence delete branch treats `cleanPageAttachments`: a

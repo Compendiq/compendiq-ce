@@ -39,6 +39,7 @@ const STORE_STATS = {
   graceSkipped: 0,
   keepProtectedDirectories: 0,
   nestedDirectories: 0,
+  unkeyedDirectories: 0,
   unreadableDirectories: 0,
 };
 
@@ -70,6 +71,12 @@ interface FetchPlan {
   post?: { started: boolean; alreadyRunning: boolean } | 'error';
   /** What the sweep GET answers once a POST has been seen (the finished run). */
   sweepAfterPost?: AttachmentSweepStatus;
+  /**
+   * One answer per POST — `[0]` after the first press, `[1]` after the second,
+   * the last entry thereafter. For the two-consecutive-runs cells; a single
+   * `sweepAfterPost` cannot express "a second run, same verdict".
+   */
+  sweepAfterPosts?: AttachmentSweepStatus[];
   /** Fail the SECOND stats GET onward — the ordinary failed-refetch shape. */
   statsFailsAfterFirst?: boolean;
 }
@@ -90,6 +97,7 @@ function mockApi(plan: FetchPlan): void {
   postedBodies = [];
   let statsGets = 0;
   let postSeen = false;
+  let postCount = 0;
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
     const json = (body: unknown, status = 200) =>
@@ -100,12 +108,16 @@ function mockApi(plan: FetchPlan): void {
       return plan.stats === 'error' ? json({ message: 'boom' }, 500) : json(plan.stats ?? STATS);
     }
     if (url.endsWith('/admin/attachments/sweep') && (init?.method ?? 'GET') === 'GET') {
+      if (postSeen && plan.sweepAfterPosts) {
+        return json(plan.sweepAfterPosts[Math.min(postCount - 1, plan.sweepAfterPosts.length - 1)]);
+      }
       if (postSeen && plan.sweepAfterPost) return json(plan.sweepAfterPost);
       return plan.sweep === 'error' ? json({ message: 'boom' }, 500) : json(plan.sweep ?? SWEEP);
     }
     if (url.endsWith('/admin/attachments/sweep') && init?.method === 'POST') {
       postedBodies.push(JSON.parse(String(init?.body)));
       postSeen = true;
+      postCount += 1;
       return plan.post === 'error'
         ? json({ message: 'boom' }, 500)
         : json(plan.post ?? { started: true, alreadyRunning: false }, 202);
@@ -192,6 +204,37 @@ describe('AttachmentStorageCard (#1349)', () => {
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
     await screen.findByTestId('attachment-storage-counters');
     expect(screen.queryByTestId('attachment-storage-keep-protected')).not.toBeInTheDocument();
+  });
+
+  // Fixer r1: the FOURTH declined verdict. A root entry whose name is not a
+  // usable attachment key (`tmp.12345/`) is dropped before the walk opens it,
+  // so its bytes are in no figure and it reached none of the three lines
+  // above — a partial walk showing the same clean figures as a complete one,
+  // which is the exact thing those three lines exist to prevent.
+  it('reports directories that do not look like attachment keys', async () => {
+    mockApi({
+      stats: {
+        ...STATS,
+        stores: {
+          confluence: { ...STORE_STATS, unkeyedDirectories: 1 },
+          local: { ...STORE_STATS, unkeyedDirectories: 2 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const note = await screen.findByTestId('attachment-storage-unkeyed');
+    expect(note.textContent).toMatch(/3 directories do not look like attachment keys/i);
+    expect(note.textContent).toMatch(/not in the figures above/i);
+    // A measurement, never a state — muted like its three siblings.
+    expect(note.className).toContain('text-muted-foreground');
+  });
+
+  it('does not claim unkeyed directories when there are none', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+    await screen.findByTestId('attachment-storage-counters');
+    expect(screen.queryByTestId('attachment-storage-unkeyed')).not.toBeInTheDocument();
   });
 
   it('agrees with itself on number — never "1 files in 1 directories"', async () => {
@@ -470,15 +513,22 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(text).toMatch(/page icons/i);
   });
 
-  it('an already-running trigger reports neutrally, not as success', async () => {
+  it('an already-running trigger reports neutrally, names the remedy, and promises no outcome', async () => {
     mockApi({ post: { started: false, alreadyRunning: true } });
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
     await screen.findByTestId('attachment-storage-counters');
     fireEvent.click(screen.getByTestId('attachment-sweep-dry-run'));
 
-    await waitFor(() => expect(toast.message).toHaveBeenCalledWith(expect.stringMatching(/already running/i)));
+    await waitFor(() => expect(toast.message).toHaveBeenCalledWith(expect.stringMatching(/holds the lock/i)));
     expect(toast.success).not.toHaveBeenCalled();
+    // The acquire is `failClosed`, so `alreadyRunning` also covers "Redis was
+    // unreachable and no sweep is running" — on which branch nothing ever
+    // finishes. The copy must therefore offer the remedy rather than promise
+    // a result (fixer r1).
+    const said = vi.mocked(toast.message).mock.calls.at(-1)?.[0] as string;
+    expect(said).toMatch(/press again/i);
+    expect(said).not.toMatch(/when it finishes/i);
   });
 
   it('a last run that did not complete gets the amber strip with its note', async () => {
@@ -894,9 +944,15 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(lastRun.textContent).toMatch(/2 found/i);
     expect(disclosure.textContent).toMatch(/what the sweep found/i);
     // The list itself is unchanged — it is the label that was the lie.
-    expect(screen.getByTestId('attachment-sweep-candidate-list').textContent).toContain(
-      'local/77/gone.png',
-    );
+    const list = screen.getByTestId('attachment-sweep-candidate-list');
+    expect(list.textContent).toContain('local/77/gone.png');
+    // …and the rule reaches the ACCESSIBLE name too (fixer r1). The assertions
+    // above read `textContent`, which never contains an attribute value, so
+    // the region kept announcing itself as "Orphan candidates" after a live
+    // run — the one wording this cell exists to forbid, surviving where the
+    // cell could not see it.
+    expect(list.getAttribute('aria-label')).not.toMatch(/candidate/i);
+    expect(list.getAttribute('aria-label')).toBe('What the sweep found');
   });
 
   it('a completed DRY run still calls them candidates — they really are pending', async () => {
@@ -918,6 +974,11 @@ describe('AttachmentStorageCard (#1349)', () => {
     const disclosure = await screen.findByTestId('attachment-sweep-candidates');
     expect(disclosure.textContent).toMatch(/Show the 1 candidate/i);
     expect(screen.getByTestId('attachment-sweep-last-run').textContent).toMatch(/1 candidate/i);
+    // Visible copy and accessible name agree — a dry run's entries really are
+    // pending (fixer r1, the other half of the cell above).
+    expect(screen.getByTestId('attachment-sweep-candidate-list').getAttribute('aria-label')).toBe(
+      'Orphan candidates',
+    );
   });
 
   it('renders no candidate disclosure when the last run found nothing', async () => {
@@ -1027,6 +1088,66 @@ describe('AttachmentStorageCard (#1349)', () => {
         /Sweep finished — deleted 2 files and 1 directory/,
       ),
     );
+  });
+
+  /**
+   * Fixer r1. An `aria-live` region whose text does not CHANGE is not
+   * re-announced, and React bails out of a `useState` write equal to the
+   * current value — so pressing Dry run twice on a store that did not change
+   * announced the first run and then completed in total silence, on the one
+   * surface built for the user this announcer exists for.
+   *
+   * The assertion is on DOM MUTATIONS, not on the final text: the sentence is
+   * identical by construction, so reading `textContent` after the second run
+   * passes with the bug in place.
+   */
+  it('re-announces a second run whose verdict reads exactly the same', async () => {
+    const first = { ...COMPLETED_RUN, at: new Date(Date.now() + 1000).toISOString(), candidatesTotal: 3 };
+    const second = { ...COMPLETED_RUN, at: new Date(Date.now() + 2000).toISOString(), candidatesTotal: 3 };
+    mockApi({
+      sweepAfterPosts: [
+        { running: false, lastRun: first },
+        { running: false, lastRun: second },
+      ],
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await waitFor(() => expect(screen.getByTestId('attachment-sweep-dry-run')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('attachment-sweep-dry-run'));
+
+    const region = screen.getByTestId('attachment-sweep-announcement');
+    await waitFor(() => expect(region.textContent).toMatch(/Dry run finished — 3 candidates/));
+
+    // Arm the observer only now: everything before this is the FIRST run.
+    let mutations = 0;
+    const observer = new MutationObserver((records) => {
+      mutations += records.length;
+    });
+    observer.observe(region, { childList: true, characterData: true, subtree: true });
+
+    await waitFor(() => expect(screen.getByTestId('attachment-sweep-dry-run')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('attachment-sweep-dry-run'));
+
+    await waitFor(() => expect(mutations).toBeGreaterThan(0));
+    observer.disconnect();
+    // …and it ends up saying the same true thing, not empty.
+    await waitFor(() => expect(region.textContent).toMatch(/Dry run finished — 3 candidates/));
+  });
+
+  /**
+   * Fixer r1. "The actions stay live on a failed READ" is stated in the
+   * card's own header comment and was pinned by nothing — adding
+   * `|| statsError || sweepError` to `actionsDisabled` left every cell green,
+   * so the one remedy for an unreadable record could grey itself out on
+   * exactly the failure it exists to fix.
+   */
+  it('keeps both actions live when the record cannot be read', async () => {
+    mockApi({ stats: 'error', sweep: 'error' });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-error');
+    await waitFor(() => expect(screen.getByTestId('attachment-sweep-dry-run')).toBeEnabled());
+    expect(screen.getByTestId('attachment-sweep-delete')).toBeEnabled();
   });
 
   it('marks the card busy while a sweep is running', async () => {

@@ -57,6 +57,7 @@ const STORE_STATS = {
   graceSkipped: 0,
   keepProtectedDirectories: 0,
   nestedDirectories: 0,
+  unkeyedDirectories: 0,
   unreadableDirectories: 0,
 };
 
@@ -157,6 +158,31 @@ describe('#1349 attachment sweep routes', () => {
       const parsed = AttachmentSweepStatusSchema.parse(res.json());
       expect(parsed.running).toBe(true);
       expect(parsed.lastRun).toEqual(A_RUN);
+    });
+
+    /**
+     * Fixer r1 — every counter added after the first release carries
+     * `.default(0)` so a record persisted by an older build still parses. The
+     * record lives in `admin_settings` as JSON and survives an upgrade, so
+     * without the default the whole card would fail its read on the first
+     * poll after deploy rather than showing one missing line.
+     */
+    it('reads a record persisted before the newest counters existed', async () => {
+      const legacy = JSON.parse(JSON.stringify(A_RUN)) as Record<string, unknown> & {
+        stores: Record<string, Record<string, unknown>>;
+      };
+      for (const store of ['confluence', 'local']) {
+        delete legacy.stores[store]!.unkeyedDirectories;
+        delete legacy.stores[store]!.keepProtectedDirectories;
+        delete legacy.stores[store]!.nestedDirectories;
+      }
+      svc.lastRun.mockResolvedValue(legacy);
+
+      const res = await app.inject({ method: 'GET', url: '/api/admin/attachments/sweep' });
+      expect(res.statusCode).toBe(200);
+      const parsed = AttachmentSweepStatusSchema.parse(res.json());
+      expect(parsed.lastRun!.stores!.confluence.unkeyedDirectories).toBe(0);
+      expect(parsed.lastRun!.stores!.local.unkeyedDirectories).toBe(0);
     });
 
     it('is admin-only', async () => {

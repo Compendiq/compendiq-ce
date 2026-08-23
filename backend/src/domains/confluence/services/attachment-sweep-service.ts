@@ -395,20 +395,59 @@ export function collectAttachmentUrlReferences(
  */
 const UUID_CURSOR_START = '00000000-0000-0000-0000-000000000000';
 
-/** Keyset-paginated read so concurrent inserts/deletes cannot shift a window. */
+/**
+ * Rows per `await yieldToLoop()` inside a keep-set batch callback (fixer r1).
+ *
+ * The walk has always yielded per directory and the delete loop per candidate,
+ * but the keep-set phase — the more expensive half — ran a whole 200-row batch
+ * as one uninterrupted synchronous callback, and `body_storage` costs a full
+ * JSDOM parse per row (`getExpectedAttachmentFilenames` →
+ * `extractImageReferences` → `new JSDOM`). Measured in this worktree on a
+ * 20,710-byte storage body (200 paragraphs + 10 `<ac:image>` refs): **1390 ms
+ * for one batch of 200, 6.95 ms/page**. The only `await` in the loop was the
+ * next `SELECT`, so on a large corpus the process was >99% event-loop-blocked
+ * for the whole phase — `/api/health`, every user request and the 5 s poll
+ * from the card that started the run all queued behind it, and the
+ * ADMIN-GUIDE tells operators to run this against production.
+ *
+ * Ten rows keeps a tick in the tens of milliseconds and costs one
+ * `setImmediate` per ten rows, which is nothing beside a JSDOM parse. It is
+ * applied by the shared helper, so the four regex-only sources get it free.
+ */
+const KEEP_SET_YIELD_EVERY = 10;
+
+/**
+ * Keyset-paginated read so concurrent inserts/deletes cannot shift a window.
+ *
+ * `onRows` is **async and awaited**: it is where the per-row parsing happens,
+ * and it must be able to hand the event loop back mid-batch — see
+ * `KEEP_SET_YIELD_EVERY`.
+ */
 async function forEachBatch<T extends { __cursor: string | number }>(
   sqlFor: (cursor: string | number | null) => { sql: string; params: unknown[] },
   initialCursor: string | number | null,
-  onRows: (rows: T[]) => void,
+  onRows: (rows: T[]) => Promise<void> | void,
 ): Promise<void> {
   let cursor = initialCursor;
   for (;;) {
     const { sql, params } = sqlFor(cursor);
     const res = await query<T>(sql, params);
     if (res.rows.length === 0) return;
-    onRows(res.rows);
+    await onRows(res.rows);
     cursor = res.rows[res.rows.length - 1]!.__cursor;
     if (res.rows.length < KEEP_SET_BATCH) return;
+  }
+}
+
+/**
+ * Run `perRow` over a batch, handing the event loop back every
+ * `KEEP_SET_YIELD_EVERY` rows. The one place the rule is spelled, so a new
+ * keep-set source cannot forget it.
+ */
+async function forEachRowYielding<T>(rows: T[], perRow: (row: T) => void): Promise<void> {
+  for (let i = 0; i < rows.length; i += 1) {
+    perRow(rows[i]!);
+    if ((i + 1) % KEEP_SET_YIELD_EVERY === 0) await yieldToLoop();
   }
 }
 
@@ -441,8 +480,8 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
       params: [cursor ?? 0],
     }),
     0,
-    (rows) => {
-      for (const row of rows) {
+    (rows) =>
+      forEachRowYielding(rows, (row) => {
         collectAttachmentUrlReferences(row.body_html, keep);
         collectAttachmentUrlReferences(row.draft_body_html, keep);
         if (row.body_storage) {
@@ -451,8 +490,7 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
             keep.confluence.add(name);
           }
         }
-      }
-    },
+      }),
   );
 
   type VersionRow = { __cursor: string; body_html: string | null };
@@ -463,9 +501,7 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
       params: [cursor ?? UUID_CURSOR_START],
     }),
     UUID_CURSOR_START,
-    (rows) => {
-      for (const row of rows) collectAttachmentUrlReferences(row.body_html, keep);
-    },
+    (rows) => forEachRowYielding(rows, (row) => collectAttachmentUrlReferences(row.body_html, keep)),
   );
 
   type PendingRow = {
@@ -483,8 +519,8 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
       params: [cursor ?? UUID_CURSOR_START],
     }),
     UUID_CURSOR_START,
-    (rows) => {
-      for (const row of rows) {
+    (rows) =>
+      forEachRowYielding(rows, (row) => {
         collectAttachmentUrlReferences(row.body_html, keep);
         if (row.body_storage) {
           collectAttachmentUrlReferences(row.body_storage, keep);
@@ -492,8 +528,7 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
             keep.confluence.add(name);
           }
         }
-      }
-    },
+      }),
   );
 
   // Persisted AI answers (#1361, added in the external review round). Since
@@ -514,9 +549,7 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
       params: [cursor ?? UUID_CURSOR_START],
     }),
     UUID_CURSOR_START,
-    (rows) => {
-      for (const row of rows) collectAttachmentUrlReferences(row.messages_text, keep);
-    },
+    (rows) => forEachRowYielding(rows, (row) => collectAttachmentUrlReferences(row.messages_text, keep)),
   );
 
   type SimpleRow = { __cursor: number; body_html: string | null };
@@ -527,9 +560,7 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
         params: [cursor ?? 0],
       }),
       0,
-      (rows) => {
-        for (const row of rows) collectAttachmentUrlReferences(row.body_html, keep);
-      },
+      (rows) => forEachRowYielding(rows, (row) => collectAttachmentUrlReferences(row.body_html, keep)),
     );
   }
 
@@ -639,6 +670,7 @@ function emptyStats(): AttachmentStoreSweepStats {
     graceSkipped: 0,
     keepProtectedDirectories: 0,
     nestedDirectories: 0,
+    unkeyedDirectories: 0,
     unreadableDirectories: 0,
   };
 }
@@ -774,12 +806,20 @@ async function walkConfluenceTree(
     // directory the rules below judge an orphan and a live run deletes
     // recursively. A dot-dir is debris; a key that fails the allow-list is
     // never judged and never touched.
-    .filter(
-      (name) =>
-        !ATTACHMENT_ROOT_RESERVED_DIRNAMES.has(name) &&
-        !name.startsWith('.') &&
-        PAGE_ID_PATTERN.test(name),
-    );
+    //
+    // The third class is COUNTED (fixer r1, `unkeyedDirectories`): a
+    // `tmp.12345/` or `12345 (copy)/` is dropped before `readKeyDir` opens it,
+    // so its bytes reach none of the figures and none of the three declined
+    // verdicts the card renders — a fourth silently-declined class on a card
+    // whose whole contract is that a partial walk cannot look like a complete
+    // one. The two above are deliberately NOT counted: they are other stores
+    // and #1169 debris, not directories this walk failed to judge.
+    .filter((name) => {
+      if (ATTACHMENT_ROOT_RESERVED_DIRNAMES.has(name) || name.startsWith('.')) return false;
+      if (PAGE_ID_PATTERN.test(name)) return true;
+      stats.unkeyedDirectories += 1;
+      return false;
+    });
 
   const known = await knownConfluenceTreeKeys(keys);
 
@@ -839,16 +879,15 @@ async function walkLocalStore(
       params: [cursor ?? 0],
     }),
     0,
-    (rows) => {
-      for (const row of rows) {
+    (rows) =>
+      forEachRowYielding(rows, (row) => {
         let set = rowsByPage.get(row.page_id);
         if (!set) {
           set = new Set();
           rowsByPage.set(row.page_id, set);
         }
         set.add(row.filename);
-      }
-    },
+      }),
   );
   const totalRows = [...rowsByPage.values()].reduce((n, s) => n + s.size, 0);
 
@@ -877,12 +916,22 @@ async function walkLocalStore(
   }
 
   const seenByPage = new Map<number, Set<string>>();
+  // The same fourth verdict as the Confluence tree (fixer r1): a directory
+  // under `local/` whose name is not a usable page id — anything failing
+  // `LOCAL_DIR_PATTERN`, and a numeric name past `pages.id`'s int4 range — is
+  // dropped before `readKeyDir` opens it, so it is counted rather than
+  // silently missing from the store's bytes. Dot-directories stay debris.
   const ids = rootEntries
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
-    .filter((name) => LOCAL_DIR_PATTERN.test(name))
-    .map((name) => Number(name))
-    .filter((n) => Number.isInteger(n) && n > 0 && n <= PG_INT4_MAX);
+    .filter((name) => {
+      if (name.startsWith('.')) return false;
+      const n = Number(name);
+      if (LOCAL_DIR_PATTERN.test(name) && Number.isInteger(n) && n > 0 && n <= PG_INT4_MAX) return true;
+      stats.unkeyedDirectories += 1;
+      return false;
+    })
+    .map((name) => Number(name));
 
   const known = await knownLocalPageIds(ids);
   /**

@@ -24,6 +24,7 @@ import type { AttachmentSweepCandidate } from '@compendiq/contracts';
 import {
   ATTACHMENT_SWEEP_GRACE_MS,
   ATTACHMENT_SWEEP_WORKER_LOCK,
+  CANDIDATE_SAMPLE_MAX,
   buildAttachmentKeepSets,
   deleteCandidates,
   emptyDeletedTotals,
@@ -330,6 +331,60 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
     // to a native `id > $1::uuid`. The cursor is still carried as text, so a
     // corpus past one batch is what proves the pagination still terminates
     // AND still reaches the last row.
+    /**
+     * Fixer r1 — the keep-set phase must hand the event loop back, the way
+     * the walk and the delete loop already do.
+     *
+     * `body_storage` costs a full JSDOM parse per row
+     * (`getExpectedAttachmentFilenames` → `extractImageReferences` → `new
+     * JSDOM`), measured at ~7 ms/page, and the batch callback ran a whole
+     * 200-row batch synchronously with the next `SELECT` as its only await —
+     * so the process was blocked in ~1.4-second chunks for the entire phase,
+     * and `/api/health`, every user request and the 5 s poll from the card
+     * that started the run queued behind it.
+     *
+     * The assertion is on the longest SYNCHRONOUS gap, which is what a
+     * blocked loop actually is: a `setImmediate` ticker keeps ticking through
+     * an awaited query, so a slow database cannot fake a pass, and only JS
+     * that refuses to yield can produce a long gap. One full batch of these
+     * bodies takes well over a second unyielded and about a tenth of that at
+     * `KEEP_SET_YIELD_EVERY`, so the threshold has a wide margin.
+     */
+    it('yields to the event loop inside a batch instead of blocking it for the whole batch', async () => {
+      const body =
+        Array.from(
+          { length: 200 },
+          (_, i) => `<p>Absatz ${i} mit etwas Text, damit der Koerper realistisch gross ist.</p>`,
+        ).join('') +
+        Array.from(
+          { length: 10 },
+          (_, i) => `<ac:image><ri:attachment ri:filename="img-${i}.png" /></ac:image>`,
+        ).join('');
+      const values = Array.from({ length: 200 }, (_, i) => `('P${i}', 'DEV', 'c${i}', 'confluence', 'page', 1, $1)`);
+      await query(
+        `INSERT INTO pages (title, space_key, confluence_id, source, page_type, version, body_storage)
+         VALUES ${values.join(',')}`,
+        [body],
+      );
+
+      let last = Date.now();
+      let longestGapMs = 0;
+      let ticking = true;
+      const tick = () => {
+        const now = Date.now();
+        longestGapMs = Math.max(longestGapMs, now - last);
+        last = now;
+        if (ticking) setImmediate(tick);
+      };
+      setImmediate(tick);
+
+      last = Date.now();
+      await buildAttachmentKeepSets();
+      ticking = false;
+
+      expect(longestGapMs).toBeLessThan(500);
+    });
+
     it('paginates the UUID-keyed sources past one batch without losing a reference', async () => {
       const { confPageId } = await seedCorpus();
       // KEEP_SET_BATCH is 200; 250 rows forces a second and third page.
@@ -433,6 +488,35 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(stats!.missingLocalFiles).toBe(1);
     });
 
+    /**
+     * Fixer r1 — `CANDIDATE_SAMPLE_MAX` was exercised by nothing: dropping
+     * the `.slice()` left the suite green, so the bound on the persisted
+     * `admin_settings` JSON row (and on the list the card renders) could be
+     * lost silently, and the largest fixture here produced five candidates.
+     * The sample is a SAMPLE; the true count lives in `candidatesTotal`, and
+     * the card's "Showing the first N of M" line reads both.
+     */
+    it('caps the persisted candidate sample while reporting the true total', async () => {
+      const overCap = CANDIDATE_SAMPLE_MAX + 17;
+      await query(
+        `INSERT INTO pages (title, space_key, confluence_id, source, page_type, version, body_html)
+         VALUES ('Big', 'DEV', '70001', 'confluence', 'page', 1, '<p>no images</p>')`,
+      );
+      for (let i = 0; i < overCap; i += 1) {
+        await writeAged('70001', `orphan-${i}.png`);
+      }
+      await ageDirs('70001');
+
+      const run = await runAttachmentSweep({ dryRun: true });
+      expect(run!.status).toBe('completed');
+      expect(run!.candidatesTotal).toBe(overCap);
+      expect(run!.candidateSample).toHaveLength(CANDIDATE_SAMPLE_MAX);
+      // …and the persisted record carries the capped list, not the full one.
+      const persisted = await readAttachmentSweepLastRun();
+      expect(persisted!.candidateSample).toHaveLength(CANDIDATE_SAMPLE_MAX);
+      expect(persisted!.candidatesTotal).toBe(overCap);
+    });
+
     it('with an empty database, the local store is still never a Confluence-tree candidate', async () => {
       await writeAged('local', '123', 'x.png');
       await ageDirs('local', path.join('local', '123'));
@@ -464,6 +548,38 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
         'a key the allow-list refuses is never judged, so a live run cannot touch it',
       ).toBe(true);
       expect(await exists(path.join(tempBase, 'weird name!'))).toBe(true);
+      // …and it is REPORTED, not silently dropped (fixer r1). The cell above
+      // pins the safety half; without this one the directory's bytes were
+      // missing from `bytes`/`files`/`directories` and it incremented none of
+      // the three counters the card renders — a fourth declined class on a
+      // card whose contract is that a partial walk cannot look complete.
+      expect(run!.stores!.confluence.unkeyedDirectories).toBe(1);
+      expect(run!.stores!.confluence.unreadableDirectories).toBe(0);
+      expect(run!.stores!.confluence.nestedDirectories).toBe(0);
+      expect(run!.stores!.confluence.directories).toBe(0);
+      expect(run!.stores!.confluence.bytes).toBe(0);
+    });
+
+    it('counts an unkeyable LOCAL directory too, and never opens it', async () => {
+      await writeAged('local', 'not-a-page-id', 'x.png');
+      await ageDirs(path.join('local', 'not-a-page-id'));
+      const run = await runAttachmentSweep({ dryRun: false });
+      expect(run!.status).toBe('completed');
+      expect(run!.stores!.local.unkeyedDirectories).toBe(1);
+      expect(run!.stores!.local.directories).toBe(0);
+      expect(await exists(path.join(tempBase, 'local', 'not-a-page-id', 'x.png'))).toBe(true);
+    });
+
+    it('does not count the reserved stores or dot-directories as unkeyed', async () => {
+      // `local/` and `page-icons/` are other stores and `.cache/` is #1169
+      // debris — none of the three is a directory this walk failed to judge,
+      // so none may inflate the counter the card renders.
+      await writeAged('local', '4242', 'x.png');
+      await writeAged('page-icons', '4242', 'y.png');
+      await writeAged('.cache', 'z.png');
+      const run = await runAttachmentSweep({ dryRun: true });
+      expect(run!.status).toBe('completed');
+      expect(run!.stores!.confluence.unkeyedDirectories).toBe(0);
     });
   });
 
@@ -1360,6 +1476,33 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(await exists(path.join(tempBase, '90001', 'gone.png'))).toBe(false);
       expect(totals.directories).toBe(1);
       expect(totals.files).toBe(2); // the directory's one file + gone.png
+    });
+
+    /**
+     * Fixer r1 — `if (!removed) continue` was unguarded: dropping it left the
+     * suite green, so a filename the local store REFUSED could be counted as
+     * a deletion that never happened, which is exactly what the comment
+     * beside it forbids. No fixture reached the `false` return, because the
+     * walk skips dot-files and so can never nominate one.
+     *
+     * A hand-built candidate is the point: the guard exists for a list that
+     * names something `removeLocalAttachmentFileForSweep` will not touch, and
+     * the real `canStoreLocalFilename` is what refuses it here.
+     */
+    it('a local filename the store refuses is not counted as a deletion', async () => {
+      const hidden = await writeAged('local', '4242', '.hidden.png');
+
+      const totals = emptyDeletedTotals();
+      await deleteCandidates(
+        [fileCandidate('local', '4242', '.hidden.png')],
+        emptyKeep(),
+        noAbort,
+        totals,
+      );
+
+      expect(await exists(hidden), 'the store refused the name, so nothing was removed').toBe(true);
+      expect(totals.files).toBe(0);
+      expect(totals.bytes).toBe(0);
     });
   });
 
