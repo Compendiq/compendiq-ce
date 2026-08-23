@@ -115,6 +115,42 @@ describe('AppLayout', () => {
     // jsdom does not implement Element.scrollTo — stub it so the scroll-reset
     // useEffect in AppLayout does not throw
     Element.prototype.scrollTo = vi.fn();
+    // The conversations pane mounts on every AI route (#1361) and consumes
+    // AiContext, which wakes AiProvider — so any test rendering /ai now issues
+    // requests. Answer them here, at the network boundary, once for the suite;
+    // tests that assert on requests read this same spy rather than layering a
+    // second one over it.
+    //
+    // `/ai/c/:id` additionally makes AiProvider's own route effect fetch that
+    // one conversation (`GET /llm/conversations/:id`) to hydrate its thread —
+    // independent of whether the pane is mounted. That response is read as a
+    // ConversationDetail (`.messages.filter(...)` runs on it unconditionally),
+    // so the list shape alone crashes that route; branch on the URL so both
+    // shapes are answered correctly.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (/\/llm\/conversations\/[^/?]+$/.test(url)) {
+        return new Response(
+          JSON.stringify({
+            id: 'stub-conversation',
+            title: 'Stub conversation',
+            titleSource: 'question',
+            model: 'stub-model',
+            pageId: null,
+            pageTitle: null,
+            createdAt: new Date(0).toISOString(),
+            updatedAt: new Date(0).toISOString(),
+            messages: [],
+            historyTruncated: false,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ items: [], nextCursor: null }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
   });
 
   afterEach(() => {
@@ -354,7 +390,7 @@ describe('AppLayout', () => {
     expect(document.activeElement).toBe(toggle);
   });
 
-  it('shows tree sidebar on /pages and /ai, swaps to settings sidebar on /settings', () => {
+  it('shows the tree sidebar on /pages, swaps to the settings sidebar on /settings', () => {
     // Pages root — Pages tree visible
     const { unmount } = render(
       <AppLayout>
@@ -366,17 +402,6 @@ describe('AppLayout', () => {
     expect(screen.queryByTestId('settings-sidebar')).not.toBeInTheDocument();
     unmount();
 
-    // AI route — Pages tree stays (quick page navigation while chatting)
-    const { unmount: unmount2 } = render(
-      <AppLayout>
-        <div>ai page</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/ai') },
-    );
-    expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
-    expect(screen.queryByTestId('settings-sidebar')).not.toBeInTheDocument();
-    unmount2();
-
     // Settings route — Pages tree replaced by SettingsSidebar so the main
     // nav strip stays visible alongside the Settings section nav.
     render(
@@ -387,6 +412,79 @@ describe('AppLayout', () => {
     );
     expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
     expect(screen.getByTestId('settings-sidebar')).toBeInTheDocument();
+  });
+
+  // #1361: the Pages tree leaves /ai entirely. Page navigation there is the
+  // command palette and the Pages tab of MainNavStrip; the rail is the
+  // conversation history, mirroring what /settings already does.
+  it('swaps the tree for the conversations pane on /ai and /ai/c/:id', async () => {
+    const { unmount } = render(
+      <AppLayout>
+        <div>ai page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+    expect(await screen.findByTestId('ai-conversations-sidebar')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-sidebar')).not.toBeInTheDocument();
+    unmount();
+
+    render(
+      <AppLayout>
+        <div>one conversation</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai/c/11111111-1111-4111-8111-111111111111') },
+    );
+    expect(await screen.findByTestId('ai-conversations-sidebar')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
+  });
+
+  it('puts the pane in the mobile drawer and closes it on a New chat tap', async () => {
+    render(
+      <AppLayout>
+        <div>ai page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+
+    fireEvent.click(screen.getByLabelText('Open navigation menu'));
+    const drawer = await screen.findByRole('dialog', { name: 'Navigation menu' });
+    expect(within(drawer).getByTestId('ai-conversations-sidebar')).toBeInTheDocument();
+
+    // New chat on /ai does not change the pathname, so only the pane's own
+    // onNavigate can close the drawer — the discriminating half of the
+    // "every row and New chat call onNavigate" rule.
+    fireEvent.click(within(drawer).getByTestId('conversations-new-chat'));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Navigation menu' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('fetches the conversation list once on /ai and never on /pages/:id', async () => {
+    const fetchSpy = vi.mocked(globalThis.fetch);
+    const listCalls = () =>
+      fetchSpy.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/llm/conversations'));
+
+    fetchSpy.mockClear();
+    const { unmount } = render(
+      <AppLayout>
+        <div>ai page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+    await screen.findByTestId('ai-conversations-sidebar');
+    await waitFor(() => expect(listCalls()).toHaveLength(1));
+    unmount();
+
+    fetchSpy.mockClear();
+    render(
+      <AppLayout>
+        <div>just a page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/abc') },
+    );
+    await waitFor(() => expect(screen.getByText('just a page')).toBeInTheDocument());
+    expect(listCalls()).toEqual([]);
   });
 
   it('shows tree sidebar on /pages/:id route', () => {
@@ -713,12 +811,14 @@ describe('AppLayout', () => {
       return <span data-testid="ai-consumer">{pageId ?? 'no page'}</span>;
     }
 
+    /**
+     * The suite-wide beforeEach already answers every request. Reuse that spy —
+     * two layers of fetch mocks would disagree about which one recorded a call.
+     */
     function spyOnFetch() {
-      return vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
-        Promise.resolve(
-          new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }),
-        ),
-      );
+      const spy = vi.mocked(globalThis.fetch);
+      spy.mockClear();
+      return spy;
     }
 
     /** Requests only the AI provider issues. */
@@ -789,9 +889,12 @@ describe('AppLayout', () => {
         expect(screen.getByText('just a page')).toBeInTheDocument();
       });
       expect(aiRequests(inertSpy)).toEqual([]);
-      inertSpy.mockRestore();
       unmount();
 
+      // spyOnFetch() below reuses the same shared spy and clears its call
+      // log itself — mockRestore() here would tear down the suite-wide fetch
+      // mock installed in beforeEach, leaving the next spyOnFetch() call with
+      // a non-mock globalThis.fetch to clear.
       const wokenSpy = spyOnFetch();
       render(
         <StrictMode>
