@@ -24,6 +24,7 @@ import { query } from '../db/postgres.js';
 import { cleanupStandalonePageAttachmentDirs } from './standalone-attachment-cleanup.js';
 import { purgeExpiredStandalonePages } from './data-retention-service.js';
 import {
+  ATTACHMENT_ROOT_RESERVED_DIRNAMES,
   attachmentsRootNow,
   removeCachedAttachmentDirectory,
   removeCachedAttachmentFile,
@@ -128,6 +129,23 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       await expect(removeCachedAttachmentDirectory('../etc')).rejects.toThrow();
     });
 
+    // #1349 review: the reserved-name refusal is documented as the backstop
+    // against the page-icon data loss ("so a future walker that forgets cannot
+    // repeat it") — both names pass the Confluence tree's key pattern, so
+    // without this the only thing guarding two whole stores was prose.
+    it('removeCachedAttachmentDirectory refuses the reserved store names', async () => {
+      await writeFileAt('local', '77', 'diagram.png');
+      await writeFileAt('page-icons', 'brand', 'mark.png');
+
+      for (const reserved of ATTACHMENT_ROOT_RESERVED_DIRNAMES) {
+        await expect(removeCachedAttachmentDirectory(reserved)).rejects.toThrow(/reserved/i);
+      }
+
+      // …and the refusal really is what kept the bytes: both stores intact.
+      expect(await exists(path.join(tempBase, 'local', '77', 'diagram.png'))).toBe(true);
+      expect(await exists(path.join(tempBase, 'page-icons', 'brand', 'mark.png'))).toBe(true);
+    });
+
     it('removeCachedAttachmentFile removes exactly one file and refuses traversal', async () => {
       await writeFileAt('123', 'a.png');
       await writeFileAt('123', 'b.png');
@@ -185,6 +203,11 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       await seedConfluencePage(userId, String(pageId));
       const confluenceCacheFile = await writeFileAt(String(pageId), 'confluence-owned.png');
       await writeFileAt('local', String(pageId), 'diagram.png');
+      // Age it PAST the grace window, or the 5-minute mtime check spares the
+      // directory on its own and the ownership EXISTS — the invariant this
+      // test names — is never reached (#1349 review r1). The un-aged case is
+      // its own test above.
+      await ageDir(String(pageId));
       await query(`DELETE FROM pages WHERE id = $1`, [pageId]);
 
       await cleanupStandalonePageAttachmentDirs(pageId);
@@ -225,6 +248,8 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       await seedConfluencePage(userId, String(expired));
       const confluenceCacheFile = await writeFileAt(String(expired), 'confluence-owned.png');
       await writeFileAt('local', String(expired), 'diagram.png');
+      // Same as above: aged, so only the ownership check can spare it.
+      await ageDir(String(expired));
 
       const purged = await purgeExpiredStandalonePages();
 
