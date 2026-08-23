@@ -43,6 +43,22 @@ async function createUser(username: string): Promise<{ token: string; userId: st
   return { token, userId };
 }
 
+// #1402 (review, external round): unlike createUser above, this leaves NO
+// user_settings row behind — Phase 2 fires onboardingState PUTs from
+// background events (first AI question, shortcuts modal, page created/edited)
+// that can land before the user's first GET /settings has ever run, so the
+// row-ensure GET relies on cannot be assumed here.
+async function createUserWithoutSettingsRow(username: string): Promise<{ token: string; userId: string }> {
+  const result = await query<{ id: string }>(
+    `INSERT INTO users (username, password_hash, role)
+     VALUES ($1, 'fakehash', 'user') RETURNING id`,
+    [username],
+  );
+  const userId = result.rows[0]!.id;
+  const token = await generateAccessToken({ sub: userId, username, role: 'user' });
+  return { token, userId };
+}
+
 const dbAvailable = await isDbAvailable();
 
 let app: FastifyInstance;
@@ -154,5 +170,34 @@ describe.skipIf(!dbAvailable)('Onboarding checklist state — real-Postgres roun
       dismissed: false,
       completedAt: null,
     });
+  });
+
+  it('PUT onboardingState for a user with no pre-existing user_settings row does not silently drop the patch (#1402 review, external round)', async () => {
+    const { token, userId } = await createUserWithoutSettingsRow('onboarding_no_row_user');
+
+    const preCheck = await query('SELECT 1 FROM user_settings WHERE user_id = $1', [userId]);
+    expect(preCheck.rows).toHaveLength(0);
+
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { onboardingState: { dismissed: true } },
+    });
+    expect(put.statusCode).toBe(200);
+
+    const row = await query<{ onboarding_state: Record<string, unknown> }>(
+      'SELECT onboarding_state FROM user_settings WHERE user_id = $1',
+      [userId],
+    );
+    expect(row.rows).toHaveLength(1);
+    expect(row.rows[0]!.onboarding_state).toEqual({ dismissed: true });
+
+    const get = await app.inject({
+      method: 'GET',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(get.json().onboardingState).toMatchObject({ dismissed: true });
   });
 });

@@ -428,6 +428,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
         show_space_home_content: true,
         inline_completion_enabled: false,
         inline_completion_delay: 'deliberate',
+        inline_completion_mode: 'word',
         inline_completion_code_only: true,
       }],
     });
@@ -443,6 +444,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(body).toMatchObject({
       inlineCompletionEnabled: false,
       inlineCompletionDelay: 'deliberate',
+      inlineCompletionMode: 'word',
       inlineCompletionCodeOnly: true,
     });
   });
@@ -510,6 +512,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(body).toMatchObject({
       inlineCompletionEnabled: true,
       inlineCompletionDelay: 'balanced',
+      inlineCompletionMode: 'full',
       inlineCompletionCodeOnly: false,
     });
   });
@@ -522,6 +525,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
       payload: {
         inlineCompletionEnabled: false,
         inlineCompletionDelay: 'manual',
+        inlineCompletionMode: 'word',
         inlineCompletionCodeOnly: true,
       },
     });
@@ -533,8 +537,9 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     // PUT parser writes it first even when omitted from the wire body.
     expect(update?.[0]).toContain('inline_completion_enabled = $2');
     expect(update?.[0]).toContain('inline_completion_delay = $3');
-    expect(update?.[0]).toContain('inline_completion_code_only = $4');
-    expect(update?.[1]).toEqual(['{}', false, 'manual', true, 'test-user-id']);
+    expect(update?.[0]).toContain('inline_completion_mode = $4');
+    expect(update?.[0]).toContain('inline_completion_code_only = $5');
+    expect(update?.[1]).toEqual(['{}', false, 'manual', 'word', true, 'test-user-id']);
   });
 
   it('PUT /settings does not mark pages dirty when only unrelated user settings change', async () => {

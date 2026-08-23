@@ -755,7 +755,8 @@ provider and model. Leaving the row at **Disabled (no inline suggestions)** is
 the server-wide off switch; it never inherits the default provider.
 
 Choose a small, fast model. Editor requests are frequent, bypass the general
-LLM queue, and are limited to 48 output tokens by the product. FIM-capable coder
+LLM queue, and are limited to 48 output tokens in full-suggestion mode or 8 in
+word mode. FIM-capable coder
 models (for example Qwen Coder, DeepSeek Coder, StarCoder, Codestral, or
 CodeGemma families) use their fill-in-the-middle path; other OpenAI-compatible
 models use chat completion. A provider shared with other use cases also shares
@@ -766,11 +767,14 @@ Each user controls the feature under **Settings → Personal → Editor**:
 
 - **Show inline suggestions** enables or disables ghost text for that user.
 - **Suggestion delay** chooses 300 ms, 500 ms, 800 ms, or manual-only requests.
+- **Default mode** chooses a focused one-word completion or a full one-line
+  suggestion. Existing users keep the full-suggestion default.
 - **Code blocks only** suppresses suggestions in prose.
 
-In the editor, Tab accepts the whole suggestion, Alt+] on macOS or Ctrl+] on
-other platforms accepts one word, Escape dismisses it, and Alt+\ or
-Cmd+Shift+Space requests one manually. Automatic suggestions are also
+In the editor, Tab accepts the visible suggestion, Option+] on macOS or Ctrl+]
+on other platforms accepts one word from a full suggestion, Escape dismisses
+it, and Option+\ or Command+Shift+Space on macOS (Alt+\ elsewhere) requests one
+manually. Automatic suggestions are also
 suppressed during IME composition, in tables, and on coarse-pointer devices.
 
 No prompt or completion content is written to the LLM audit log. Monitoring is

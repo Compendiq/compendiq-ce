@@ -1,9 +1,14 @@
 import { useState } from 'react';
 import * as Switch from '@radix-ui/react-switch';
-import type { InlineCompletionDelay, SettingsResponse } from '@compendiq/contracts';
+import type {
+  InlineCompletionDelay,
+  InlineCompletionMode,
+  SettingsResponse,
+} from '@compendiq/contracts';
 import { Check } from 'lucide-react';
 import { PanelHeader } from './PanelHeader';
 import { cn } from '../../shared/lib/cn';
+import { isMac } from '../../shared/lib/platform';
 
 const DELAYS: ReadonlyArray<{
   value: InlineCompletionDelay;
@@ -14,6 +19,15 @@ const DELAYS: ReadonlyArray<{
   { value: 'balanced', label: 'Balanced', detail: '500 ms' },
   { value: 'deliberate', label: 'Deliberate', detail: '800 ms' },
   { value: 'manual', label: 'Manual only', detail: 'Shortcut' },
+];
+
+const MODES: ReadonlyArray<{
+  value: InlineCompletionMode;
+  label: string;
+  detail: string;
+}> = [
+  { value: 'word', label: 'Word', detail: 'Fast and focused' },
+  { value: 'full', label: 'Full suggestion', detail: 'One concise line' },
 ];
 
 function PreferenceSwitch({
@@ -61,10 +75,13 @@ export function EditorPreferencesTab({
 }) {
   const [enabled, setEnabled] = useState(settings.inlineCompletionEnabled);
   const [delay, setDelay] = useState(settings.inlineCompletionDelay);
+  const [mode, setMode] = useState(settings.inlineCompletionMode);
   const [codeOnly, setCodeOnly] = useState(settings.inlineCompletionCodeOnly);
   const changed = enabled !== settings.inlineCompletionEnabled
     || delay !== settings.inlineCompletionDelay
+    || mode !== settings.inlineCompletionMode
     || codeOnly !== settings.inlineCompletionCodeOnly;
+  const mac = isMac();
 
   return (
     <div className="space-y-6">
@@ -79,8 +96,9 @@ export function EditorPreferencesTab({
             Inline suggestions
           </h3>
           <p className="mt-1 text-sm leading-6 text-muted-foreground">
-            Accept a suggestion with Tab, one word with Alt+], or dismiss it with Escape.
-            Use Alt+\ to request one manually.
+            Accept with Tab, dismiss with Escape, or request manually with{' '}
+            {mac ? 'Option+\\ or Command+Shift+Space' : 'Alt+\\'}.
+            {mode === 'full' && ` Accept one word with ${mac ? 'Option+]' : 'Ctrl+]'}.`}
           </p>
         </div>
 
@@ -128,6 +146,41 @@ export function EditorPreferencesTab({
             </div>
           </fieldset>
 
+          <fieldset className="px-4 py-4" disabled={!enabled}>
+            <legend className="text-sm font-medium text-foreground">Default mode</legend>
+            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+              Choose how much text appears ahead of your cursor.
+            </p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Default completion mode">
+              {MODES.map((option) => {
+                const active = mode === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    disabled={!enabled}
+                    onClick={() => setMode(option.value)}
+                    data-testid={`inline-mode-${option.value}`}
+                    className={cn(
+                      'flex items-center justify-between rounded-lg border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50',
+                      active
+                        ? 'border-[var(--color-primary)] bg-[var(--color-primary)]/8'
+                        : 'border-border hover:border-border-interactive',
+                    )}
+                  >
+                    <span>
+                      <span className="block text-sm font-medium text-foreground">{option.label}</span>
+                      <span className="block text-xs text-muted-foreground">{option.detail}</span>
+                    </span>
+                    {active && <Check size={15} className="text-[var(--color-primary)]" aria-hidden="true" />}
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+
           <PreferenceSwitch
             id="inline-completion-code-only"
             checked={codeOnly}
@@ -145,6 +198,7 @@ export function EditorPreferencesTab({
         onClick={() => onSave({
           inlineCompletionEnabled: enabled,
           inlineCompletionDelay: delay,
+          inlineCompletionMode: mode,
           inlineCompletionCodeOnly: codeOnly,
         })}
         data-testid="editor-preferences-save"

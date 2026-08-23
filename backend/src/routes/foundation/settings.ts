@@ -29,6 +29,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       confluence_pat_prompt_dismissed_at: Date | null;
       inline_completion_enabled: boolean;
       inline_completion_delay: 'fast' | 'balanced' | 'deliberate' | 'manual';
+      inline_completion_mode: 'word' | 'full';
       inline_completion_code_only: boolean;
       onboarding_state: Record<string, unknown> | null;
     }>(
@@ -36,7 +37,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
               show_space_home_content, custom_prompts,
               confluence_pat_prompt_dismissed_at,
               inline_completion_enabled, inline_completion_delay,
-              inline_completion_code_only, onboarding_state
+              inline_completion_mode, inline_completion_code_only, onboarding_state
          FROM user_settings WHERE user_id = $1`,
       [request.userId],
     );
@@ -61,6 +62,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         confluencePatPromptDismissed: false,
         inlineCompletionEnabled: true,
         inlineCompletionDelay: 'balanced',
+        inlineCompletionMode: 'full',
         inlineCompletionCodeOnly: false,
         // #1402: same empty-object-in, fully-defaulted-out pattern as below —
         // a brand new row has never had any onboarding activity recorded.
@@ -82,6 +84,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       confluencePatPromptDismissed: !!row.confluence_pat_prompt_dismissed_at,
       inlineCompletionEnabled: row.inline_completion_enabled,
       inlineCompletionDelay: row.inline_completion_delay,
+      inlineCompletionMode: row.inline_completion_mode,
       inlineCompletionCodeOnly: row.inline_completion_code_only,
       // #1402: always fully defaulted — a row that predates this migration (or
       // predates a given flag being added) still returns every key. Uses
@@ -204,6 +207,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       values.push(body.inlineCompletionDelay);
     }
 
+    if (body.inlineCompletionMode !== undefined) {
+      updates.push(`inline_completion_mode = $${paramIdx++}`);
+      values.push(body.inlineCompletionMode);
+    }
+
     if (body.inlineCompletionCodeOnly !== undefined) {
       updates.push(`inline_completion_code_only = $${paramIdx++}`);
       values.push(body.inlineCompletionCodeOnly);
@@ -294,6 +302,15 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     }
 
     if (updates.length > 0) {
+      // #1402 (review, external round): ensure the row exists before the
+      // UPDATE. Phase 2 fires onboardingState PUTs from background events
+      // (first AI question, shortcuts modal opened, page created/edited)
+      // that can arrive before the user's first GET /settings — the only
+      // place that previously created this row — has ever run. Without this,
+      // the UPDATE below silently affects 0 rows while the route still
+      // returns 200 "Settings updated", and the patch is lost.
+      await query('INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [request.userId]);
+
       updates.push(`updated_at = NOW()`);
       values.push(request.userId);
 

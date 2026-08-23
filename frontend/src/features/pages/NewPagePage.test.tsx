@@ -72,6 +72,7 @@ vi.mock('../../shared/hooks/use-settings', () => ({
     data: {
       inlineCompletionEnabled: true,
       inlineCompletionDelay: 'balanced',
+      inlineCompletionMode: 'full',
       inlineCompletionCodeOnly: false,
     },
   }),
