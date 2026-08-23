@@ -124,6 +124,9 @@ function mockApi(opts: {
   judgements?: Record<string, string>;
   verdict?: object;
   judgementResponse?: object;
+  /** When set, the judgement POST does not answer until this resolves —
+   *  holds the mutation pending so the in-flight UI state can be asserted. */
+  judgementGate?: Promise<void>;
   /** Every status poll answers HTTP 500 (the POST still 202s). */
   pollError?: boolean;
 }) {
@@ -140,6 +143,7 @@ function mockApi(opts: {
     }
     if (url.includes('/judgements')) {
       if (method === 'POST' && opts.judgementResponse) {
+        if (opts.judgementGate) await opts.judgementGate;
         return new Response(JSON.stringify(opts.judgementResponse), {
           headers: { 'Content-Type': 'application/json' },
         });
@@ -367,6 +371,60 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(within(group).getByRole('button', { name: 'Live' })).toHaveAttribute('aria-pressed', 'false');
     // The verdict updates from the same response.
     expect(screen.getByTestId('shadow-compare-verdict')).toHaveTextContent(/1 judgement/i);
+  });
+
+  it('a pending pick never disables the judgement buttons — focus survives the POST and re-entry is guarded instead', async () => {
+    // In Chromium, disabling the focused element drops focus to <body>;
+    // `disabled={judging}` would make a keyboard admin re-Tab from the top
+    // of the panel after every one of the ~20 picks the verdict needs. The
+    // buttons therefore stay enabled (aria-disabled while pending) and the
+    // click handler no-ops instead. jsdom does not blur on disable, so the
+    // falsifiable property here is the ABSENCE of `disabled` — plus the
+    // no-second-POST guard that replaces it.
+    const capture: Array<{ url: string; method: string; body?: string }> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockApi({
+      capture,
+      judgementGate: gate,
+      judgementResponse: {
+        judgements: { 'query-1': 'candidate' },
+        verdict: { ...EMPTY_VERDICT, judgementCount: 1, candidateBetter: 1 },
+      },
+    });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const rows = await screen.findAllByTestId('shadow-compare-disagreement');
+    const group = within(rows[0]!).getByRole('group', { name: /how to configure sync/ });
+    const candidateBtn = within(group).getByRole('button', { name: 'Candidate' });
+    const judgementPosts = () =>
+      capture.filter((c) => c.method === 'POST' && c.url.includes('/judgements')).length;
+
+    candidateBtn.focus();
+    fireEvent.click(candidateBtn);
+    await waitFor(() => expect(candidateBtn).toHaveAttribute('aria-disabled', 'true'));
+    for (const name of ['Live', 'Candidate', 'Neither', 'Both']) {
+      expect(within(group).getByRole('button', { name })).not.toBeDisabled();
+    }
+    expect(candidateBtn).toHaveFocus();
+
+    // Re-entry is guarded in the handler: a second pick while the first is
+    // in flight posts nothing. Flush timers/microtasks before counting —
+    // TanStack starts the mutation's fetch asynchronously, so a synchronous
+    // count would pass even with the guard deleted.
+    expect(judgementPosts()).toBe(1);
+    fireEvent.click(within(group).getByRole('button', { name: 'Live' }));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
+    expect(judgementPosts()).toBe(1);
+
+    release();
+    await waitFor(() => expect(candidateBtn).toHaveAttribute('aria-pressed', 'true'));
+    expect(candidateBtn).not.toHaveAttribute('aria-disabled');
+    // …and once resolved, the next pick posts again.
+    fireEvent.click(within(group).getByRole('button', { name: 'Live' }));
+    await waitFor(() => expect(judgementPosts()).toBe(2));
   });
 
   it('renders stored judgements as pressed on load, and names N-of-20 instead of quoting a premature p', async () => {

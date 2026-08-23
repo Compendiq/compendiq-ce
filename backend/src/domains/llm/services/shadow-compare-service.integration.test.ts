@@ -39,6 +39,10 @@ const mockState = vi.hoisted(() => ({
   /** When set, the shadow-model QUERY embed simulates a concurrent abort
    *  (drops the shadow columns + state) after answering. */
   abortAfterCandidateQueryEmbed: false,
+  /** When set, the shadow-model QUERY embed rewrites only the migration
+   *  STATE row (a swap immediately rolled back), leaving both columns and
+   *  the index standing — only the loop-top fingerprint check can see it. */
+  rewriteStateAfterCandidateQueryEmbed: false,
 }));
 
 // Page → candidate basis index, keyed off the chunk text the backfill embeds.
@@ -48,6 +52,17 @@ const PAGE_AXES: Array<[string, number]> = [
   ['Page C', 2],
   ['Secret D', 3],
 ];
+
+/** A swap immediately rolled back between two queries: `embedding_next` and
+ *  its index survive intact, but the state row now carries a `revertedAt`
+ *  this run's fingerprint has never seen. No kNN will ever 42703 here. */
+async function simulateLifecycleRewrite(): Promise<void> {
+  await query(
+    `UPDATE admin_settings
+     SET setting_value = jsonb_set(setting_value::jsonb, '{revertedAt}', to_jsonb(NOW()::text))::text
+     WHERE setting_key = 'embedding_shadow_migration'`,
+  );
+}
 
 async function simulateAbort(): Promise<void> {
   await query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw_next`);
@@ -99,6 +114,13 @@ function installEmbeddingMock(): void {
       });
       if (model === SHADOW_MODEL && !Array.isArray(input) && mockState.abortAfterCandidateQueryEmbed) {
         await simulateAbort();
+      }
+      if (
+        model === SHADOW_MODEL &&
+        !Array.isArray(input) &&
+        mockState.rewriteStateAfterCandidateQueryEmbed
+      ) {
+        await simulateLifecycleRewrite();
       }
       return vectors;
     },
@@ -230,6 +252,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
     await seedBase();
     mockState.shadowDims = 8;
     mockState.abortAfterCandidateQueryEmbed = false;
+    mockState.rewriteStateAfterCandidateQueryEmbed = false;
     generateEmbeddingMock.mockReset();
     installEmbeddingMock();
     getJobStatusMock.mockResolvedValue(null);
@@ -451,6 +474,43 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       expect(run?.status).toBe('failed');
       expect(run?.error).toMatch(/changed while the comparison ran/i);
       expect(run?.error).not.toMatch(/42703|column/i);
+    });
+
+    it('a lifecycle change that keeps the columns standing fails at the next query boundary, not with a stitched two-epoch report', async () => {
+      await seedReadyMigration();
+      await seedAnalytics([
+        ['how to configure sync', 2],
+        ['reset password', 1],
+      ]);
+      generateEmbeddingMock.mockClear();
+      // The FIRST query's candidate embed rewrites only the state row (a swap
+      // immediately rolled back): both columns and the index stay, so the
+      // 42703 fallback can never fire — the loop-top fingerprint re-check is
+      // the ONLY thing standing between this and a report spanning two
+      // migration epochs.
+      mockState.rewriteStateAfterCandidateQueryEmbed = true;
+
+      const runId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      await runShadowCompare(runId, ADMIN);
+
+      const run = await getShadowCompareRun(runId);
+      expect(run?.status).toBe('failed');
+      expect(run?.error).toMatch(/changed while the comparison ran/i);
+      // The first query completed; the guard fired BETWEEN queries, at the
+      // second query's loop top.
+      expect(run?.progressDone).toBe(1);
+      // The premise the 42703 path cannot cover: the candidate column is
+      // still there, so no kNN ever errored.
+      const column = await query(
+        `SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'page_embeddings' AND column_name = 'embedding_next'`,
+      );
+      expect(column.rowCount).toBe(1);
     });
 
     it('fails cleanly with no analytics queries in the window', async () => {

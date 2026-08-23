@@ -423,8 +423,18 @@ function JudgementRow({
           type="button"
           className="nm-button-ghost"
           aria-pressed={judged === side}
-          disabled={judging}
-          onClick={() => onJudge(side)}
+          // Never `disabled` while the POST is in flight: Chromium drops
+          // focus to <body> when the focused element is disabled, so a
+          // keyboard admin judging twenty rows would re-Tab from the top of
+          // the panel after every single pick (WCAG 2.4.3 — the same focus
+          // drop the sibling card's cancelCleanupRef engineers around).
+          // Re-entry is guarded in the handler; `aria-disabled` announces
+          // the momentary unavailability without removing focusability.
+          aria-disabled={judging || undefined}
+          onClick={() => {
+            if (judging) return;
+            onJudge(side);
+          }}
         >
           {label}
         </button>
