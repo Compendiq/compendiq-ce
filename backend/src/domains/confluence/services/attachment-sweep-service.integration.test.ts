@@ -570,6 +570,43 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(await exists(path.join(tempBase, 'local', 'not-a-page-id', 'x.png'))).toBe(true);
     });
 
+    /**
+     * Fixer r1: `LOCAL_DIR_PATTERN` was the one path-safety allow-list in this
+     * PR that no test could falsify — widening it to `/^.+$/` left the whole
+     * file green, because every other name it rejects (`not-a-page-id` above)
+     * is caught by the `Number.isInteger(n) && n > 0` guard behind it. What
+     * the pattern uniquely rejects is a name whose `Number()` → `String()`
+     * round trip is not itself (`007`, ` 7`, `7.0`, `1e3`, `0x10`): the walk
+     * maps a key to `Number(name)` and rebuilds every path from it, so without
+     * the pattern `local/007/` is neither walked nor reported while
+     * `local/4242/` is walked TWICE — one page's files, bytes and candidates
+     * counted once per spelling, on a card whose stated contract is that a
+     * partial walk cannot look like a complete one.
+     */
+    it('counts a zero-padded LOCAL directory as unkeyed, and never folds it onto the real id', async () => {
+      await writeAged('local', '4242', 'a.png');
+      await writeAged('local', '04242', 'b.png');
+      await ageDirs(path.join('local', '4242'), path.join('local', '04242'));
+
+      const run = await runAttachmentSweep({ dryRun: true });
+
+      expect(run!.status).toBe('completed');
+      expect(run!.stores!.local.unkeyedDirectories).toBe(1);
+      expect(
+        run!.candidateSample.find((c) => c.store === 'local' && c.key === '04242'),
+        'a key the allow-list refuses is never judged',
+      ).toBeUndefined();
+      // `local/4242/` is judged exactly ONCE — not once per spelling that
+      // `Number()` happens to collapse onto 4242.
+      expect(
+        run!.candidateSample.filter((c) => c.store === 'local' && c.key === '4242'),
+      ).toHaveLength(1);
+      expect(run!.stores!.local.orphanDirectories).toBe(1);
+      expect(run!.stores!.local.directories).toBe(1);
+      expect(run!.stores!.local.files).toBe(1);
+      expect(await exists(path.join(tempBase, 'local', '04242', 'b.png'))).toBe(true);
+    });
+
     it('does not count the reserved stores or dot-directories as unkeyed', async () => {
       // `local/` and `page-icons/` are other stores and `.cache/` is #1169
       // debris — none of the three is a directory this walk failed to judge,

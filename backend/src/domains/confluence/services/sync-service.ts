@@ -1805,6 +1805,11 @@ async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Pr
  * leaving DB rows pointing at a deleted space, and a re-run of unsync would
  * sweep them again.
  *
+ * The uploaded page ICONS are the exception and run AFTER the commit (#1349
+ * review r1): that store is the only copy of those bytes and no sweep may walk
+ * it, so a pre-transaction delete would be unrecoverable on a ROLLBACK that
+ * restores every page row with `icon_kind = 'image'` still set.
+ *
  * Deleting the `pages` rows cascades to `page_embeddings` and `page_versions`
  * (page_id FK ON DELETE CASCADE, migration 030).
  *
@@ -1844,10 +1849,6 @@ export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: num
     } catch (err) {
       logger.warn({ err, pageId: p.id, attachmentKey, spaceKey }, 'unsyncSpace: attachment cleanup failed (continuing)');
     }
-    // The icon store is keyed by `pages.id` whatever the page's source, and
-    // these rows are about to be DELETEd (not soft-deleted), so the mark has
-    // no owner left — see `discardPageIconForDeletedPage` (#1349 review r2).
-    await discardPageIconForDeletedPage(p.id);
   }
 
   const pool = getPool();
@@ -1856,7 +1857,13 @@ export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: num
     await conn.query('BEGIN');
 
     // Pages → cascades to page_embeddings + page_versions (migration 030).
-    const del = await conn.query('DELETE FROM pages WHERE space_key = $1', [spaceKey]);
+    // `RETURNING id` so the icon removal below can run over the rows the
+    // transaction actually destroyed (#1349 review r1) — including any page
+    // INSERTed between the pre-transaction SELECT and this DELETE.
+    const del = await conn.query<{ id: number }>(
+      'DELETE FROM pages WHERE space_key = $1 RETURNING id',
+      [spaceKey],
+    );
 
     // RBAC / sync-selection rows for the removed space.
     await conn.query('DELETE FROM space_role_assignments WHERE space_key = $1', [spaceKey]);
@@ -1872,6 +1879,20 @@ export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: num
     await conn.query('DELETE FROM spaces WHERE space_key = $1', [spaceKey]);
 
     await conn.query('COMMIT');
+
+    // AFTER the commit, never before (#1349 review r1). The icon store is keyed
+    // by `pages.id` whatever the page's source, and these rows are now gone, so
+    // the mark has no owner left — see `discardPageIconForDeletedPage`. Unlike
+    // the attachment CACHE above (re-fetchable from Confluence, hence
+    // best-effort ahead of the transaction), the mark is the only copy of user
+    // bytes and the sweep is forbidden to walk `page-icons/`: doing it before
+    // `BEGIN` would destroy it for good on a ROLLBACK that leaves every page
+    // row alive with `icon_kind = 'image'`. Best-effort and never-throwing, so
+    // a filesystem hiccup cannot fail a unsync whose rows are already gone.
+    for (const { id } of del.rows) {
+      await discardPageIconForDeletedPage(id);
+    }
+
     logger.info({ spaceKey, pagesDeleted: del.rowCount ?? 0 }, 'unsyncSpace: purged synced space');
     return { pagesDeleted: del.rowCount ?? 0 };
   } catch (err) {

@@ -18,7 +18,7 @@ flowchart LR
 
     subgraph domains["domains/"]
         direction TB
-        dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>subpage-context<br/>sync-overview-service"]
+        dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>attachment-sweep-service (#1349 orphan sweep)<br/>subpage-context<br/>sync-overview-service"]
         dL["<b>llm</b><br/>openai-compatible-client<br/>inline-completion-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service"]
     end
@@ -27,7 +27,7 @@ flowchart LR
         direction TB
         cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry"]
         cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>image-embedding-dirty"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-embedding-dirty"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -358,6 +358,29 @@ Confluence or writes to disk — `cacheAttachment`, the draw.io and cross-page
 image sync, `writeAttachmentCache`, the relocate writers — stayed in the
 confluence domain, which re-exports the moved names so its six importers did not
 change.
+
+**#1349 moved the DELETERS into `core` too, and the split runs by CALLER, not
+by verb.** `attachment-store.ts` now also exports `attachmentsRootNow`,
+`removeCachedAttachmentDirectory` / `removeCachedAttachmentFile` and
+`ATTACHMENT_ROOT_RESERVED_DIRNAMES` (beside `local-attachment-service.ts`'s
+`removeLocalAttachmentDirectory` / `removeLocalAttachmentFileForSweep` and
+`page-icon-store.ts`'s `discardPageIconForDeletedPage`), because
+`core/services/data-retention-service.ts` is one of the callers and `core` may
+not import a domain — the sentence above is therefore no longer true of
+*writes* in general: the sanctioned, path-validated removals for both stores
+live in `core`, and so does `core/services/standalone-attachment-cleanup.ts`,
+which is the event-driven half (a standalone hard delete or purge drops
+`local/<pk>/` and `page-icons/<pk>/` unconditionally, and the shared-keyspace
+`<pk>/` only when no page claims that `confluence_id` and the directory has
+aged past a 5-minute grace, consulting no keep-set). What stayed in
+`domains/confluence` is the *sweep*: `attachment-sweep-service.ts` needs
+`getExpectedAttachmentFilenames` for the `body_storage` half of its global
+keep-set, which is a Confluence-format parser, so composing it in the domain is
+the only legal direction. `routes/confluence/attachments-sweep.ts` is the
+operator surface (`requireAdmin`, dry-run first); the card is Settings →
+Knowledge → Spaces & Sync. Its rules are stated once in that module's header,
+with the operator view in `docs/ADMIN-GUIDE.md` and the stores in
+[`06-data-model.md`](./06-data-model.md).
 
 **Why the split runs there.** `llm` may import `core` and nothing else, and
 Phase 2's image-embedding worker (`domains/llm`) needs attachment bytes off

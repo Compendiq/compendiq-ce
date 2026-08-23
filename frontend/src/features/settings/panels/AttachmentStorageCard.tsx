@@ -112,6 +112,27 @@ function orphanSummary(stats: AttachmentStoreSweepStats): string | null {
 }
 
 /**
+ * What a run that did NOT complete destroyed before it stopped — the one fact
+ * a failed LIVE run carries that the verdict alone does not.
+ *
+ * Shared by the visible amber strip and the polite announcer (review r1) so
+ * the two surfaces cannot drift: the announcer used to stop at "The sweep
+ * failed: <note>." while the strip beside it said three files were already
+ * gone and how to refresh the figures, i.e. the one branch where files were
+ * destroyed was also the one branch the screen-reader user was told least
+ * about. A live run that failed with the totals still at zero cannot be
+ * vouched for either way — a recursive `rm` can unlink and then throw before
+ * any total is incremented — so it claims only that nothing was RECORDED.
+ */
+function partialDeletionClause(run: AttachmentSweepRun): string {
+  if (run.deleted && run.deleted.files + run.deleted.directories > 0) {
+    const { files, directories, bytes } = run.deleted;
+    return `The run stopped partway: ${files} file${files === 1 ? '' : 's'} and ${directories} director${directories === 1 ? 'y' : 'ies'} (${formatBytes(bytes)}) had already been removed — press Dry run to refresh the figures.`;
+  }
+  return run.deleted ? 'No deletions were recorded.' : 'No files were deleted.';
+}
+
+/**
  * One sentence for the polite announcer — see `runAnnouncement` below.
  *
  * Deliberately not the visible line's markup: what a screen-reader user needs
@@ -121,7 +142,7 @@ function announceRun(run: AttachmentSweepRun): string {
   const subject = run.dryRun ? 'dry run' : 'sweep';
   if (run.status !== 'completed') {
     const verb = run.status === 'refused' ? 'refused to proceed' : 'failed';
-    return `The ${subject} ${verb}${run.note ? `: ${run.note}` : ''}.`;
+    return `The ${subject} ${verb}${run.note ? `: ${run.note}` : ''}. ${partialDeletionClause(run)}`;
   }
   const stoodDown = run.note ? ` One store was left alone: ${run.note}.` : '';
   if (run.dryRun) {
@@ -746,7 +767,8 @@ export function AttachmentStorageCard() {
         failed live run whose delete phase STARTED but recorded zero is the
         one case the record cannot vouch for — a recursive rm can unlink
         files and then throw, before any total is incremented — so it claims
-        only "no deletions were recorded" (review r2).
+        only "no deletions were recorded" (review r2). The clause itself lives
+        in `partialDeletionClause`, shared with the announcer (review r1).
       */}
       {lastRun && lastRun.status !== 'completed' && (
         <p
@@ -758,11 +780,7 @@ export function AttachmentStorageCard() {
             The last {lastRun.dryRun ? 'dry run' : 'sweep'} {formatRelativeTime(lastRun.at)}{' '}
             {lastRun.status === 'refused' ? 'refused to proceed' : 'failed'}
             {lastRun.note ? `: ${lastRun.note}` : ''}.{' '}
-            {lastRun.deleted && lastRun.deleted.files + lastRun.deleted.directories > 0
-              ? `The run stopped partway: ${lastRun.deleted.files} file${lastRun.deleted.files === 1 ? '' : 's'} and ${lastRun.deleted.directories} director${lastRun.deleted.directories === 1 ? 'y' : 'ies'} (${formatBytes(lastRun.deleted.bytes)}) had already been removed — press Dry run to refresh the figures.`
-              : lastRun.deleted
-                ? 'No deletions were recorded.'
-                : 'No files were deleted.'}
+            {partialDeletionClause(lastRun)}
           </span>
         </p>
       )}

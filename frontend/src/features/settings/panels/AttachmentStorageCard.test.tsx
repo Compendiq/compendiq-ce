@@ -1183,6 +1183,44 @@ describe('AttachmentStorageCard (#1349)', () => {
   });
 
   /**
+   * Fixer r1. The announcer carries the VERDICT of the run the operator
+   * watched — and the one branch where files were actually DESTROYED was the
+   * branch it said least about: a live run that failed after deleting
+   * announced "The sweep failed: <note>." while the amber strip beside it
+   * carried the counts and the remedy. Incomplete on the destructive path is
+   * the wrong way round, so both surfaces now render the same clause.
+   */
+  it('announces what a failed LIVE run had already deleted, not just that it failed', async () => {
+    mockApi({
+      sweepAfterPost: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          at: new Date(Date.now() + 1000).toISOString(),
+          dryRun: false,
+          status: 'failed',
+          note: 'sweep failed — see the server logs',
+          deleted: { files: 3, directories: 1, bytes: 87, imageEmbeddingRows: 1, pagesMarkedDirty: 1 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await waitFor(() => expect(screen.getByTestId('attachment-sweep-delete')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('attachment-sweep-delete'));
+    fireEvent.click(await screen.findByTestId('confirm-dialog-confirm'));
+
+    const region = screen.getByTestId('attachment-sweep-announcement');
+    await waitFor(() =>
+      expect(region.textContent).toMatch(/The sweep failed: sweep failed — see the server logs\./),
+    );
+    // The fact the strip carries and the verdict alone does not.
+    expect(region.textContent).toMatch(
+      /3 files and 1 directory \(87 B\) had already been removed — press Dry run to refresh the figures\./,
+    );
+  });
+
+  /**
    * Fixer r1. An `aria-live` region whose text does not CHANGE is not
    * re-announced, and React bails out of a `useState` write equal to the
    * current value — so pressing Dry run twice on a store that did not change
