@@ -85,6 +85,15 @@ interface MockOptions {
   /** #1115 P3 — the `image_embedding` assignment row; unassigned by default. */
   imageEmbedding?: ReturnType<typeof unassignedRerank>;
   /**
+   * #1284 review r1 — a gate the `/admin/llm-usecases` response awaits, so a
+   * test can observe the panel WHILE the assignment query is still in flight.
+   * `rerankActive` is false for a query that has not answered exactly as it is
+   * for one that answered "unassigned", and only the `assignments` half of the
+   * readout's guard separates the two. Without a way to hold the response, no
+   * test could reach the in-flight branch at all.
+   */
+  holdUsecases?: Promise<unknown>;
+  /**
    * #1114 — lets a test model the half of the server the panel's remedy
    * depends on: saving a threshold RE-RECORDS its calibration, so the next
    * GET answers differently. Applied inside the PUT handler, before the
@@ -122,6 +131,7 @@ function mockApi({
   afterPut,
   putResult,
   confidenceDistribution = defaultConfidenceDistribution,
+  holdUsecases,
 }: MockOptions = {}) {
   const puts: Record<string, unknown>[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -138,6 +148,7 @@ function mockApi({
       return json(answer);
     }
     if (url.includes('/admin/llm-usecases')) {
+      if (holdUsecases) await holdUsecases;
       const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
       return json({
         chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank,
@@ -2268,6 +2279,42 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     );
   });
 
+  it('withholds that explanation while the assignment query has not answered', async () => {
+    // Review r1. The note's guard is `assignments && !rerankActive`, and only
+    // the first half is about evidence: `rerankActive` is false for a query
+    // still IN FLIGHT exactly as it is for one that answered "unassigned", so
+    // without it the panel states "the rerank stage is disabled on this
+    // deployment" before it has been told anything — the `usePageTree`
+    // three-state rule, one surface over, and the same rule the image-leg
+    // notice twenty lines up already follows. Deleting the half left all 111
+    // tests in this file green, which is why this case exists.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockApi({
+      holdUsecases: gate,
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        rerank: { p50: null, p90: null, count: 0 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    // The measurement itself has arrived — this is the empty rerank sample,
+    // rendered with nothing yet known about WHY it is empty.
+    const rerank = await screen.findByTestId(rerankId);
+    await waitFor(() => expect(rerank.textContent).toMatch(/no assistant questions/i));
+    expect(rerank.textContent).not.toMatch(/rerank stage is disabled/i);
+
+    // …and once the assignments really do answer, the panel says it.
+    release();
+    await waitFor(() =>
+      expect(screen.getByTestId(rerankId).textContent).toMatch(/rerank stage is disabled/i),
+    );
+  });
+
   it('reports a failed read as a failure, never as an empty distribution', async () => {
     // The #1119 / usePageTree rule on a settings surface: a request that did
     // not answer is not evidence that nothing was measured, and the two send
@@ -2544,6 +2591,27 @@ describe('RetrievalTab — observed confidence distribution (#1284)', () => {
     );
     expect(retry).not.toHaveAttribute('aria-disabled');
     expect(document.activeElement).toBe(retry);
+  });
+
+  it('keeps the in-flight label readable — the only channel the busy state has', async () => {
+    // Review r1. `aria-busy` is refused on this button AND on its region (the
+    // two comments above say why), so `Retrying…` is the whole busy state. At
+    // `opacity-45` it composited to 3.93:1 in Graphite and 2.88:1 in Paper
+    // (`--color-foreground` over `--color-background`, computed from the
+    // tokens), under the 4.5:1 floor its 12px text is held to; 70% clears it
+    // at 8.00 / 6.36. WCAG's inactive-component exemption does not apply —
+    // this control is deliberately NOT inactive: it keeps focus and its
+    // handler is what refuses. `AuthPanel`'s SSO re-check, the shape this was
+    // modelled on, already uses 70. Asserted as a FLOOR rather than a literal
+    // so a retune upward is free and only a regression fails.
+    mockApi({ confidenceDistribution: 'error' });
+    renderTab();
+    await ready();
+
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    const disabledOpacity = /aria-disabled:opacity-(\d+)/.exec(retry.className);
+    expect(disabledOpacity, 'the Retry declares no aria-disabled opacity').not.toBeNull();
+    expect(Number(disabledOpacity![1])).toBeGreaterThanOrEqual(70);
   });
 
   it('hands focus to the measurement when the Retry SUCCEEDS and the strip goes away', async () => {

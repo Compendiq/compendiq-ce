@@ -1061,7 +1061,20 @@ export function RetrievalTab() {
               }}
               aria-disabled={retryInFlight || undefined}
               aria-describedby={DISTRIBUTION_ERROR_SENTENCE_ID}
-              className="nm-button-ghost shrink-0 text-xs aria-disabled:cursor-default aria-disabled:opacity-45"
+              /*
+                `opacity-70`, not 45 (review r1) — and the value is the whole
+                argument above, cashed out. The design deliberately refuses
+                `aria-busy` on both this button and its region, so this LABEL
+                is the only channel the busy state has; at 45% it composites
+                to 3.93:1 in Graphite and 2.88:1 in Paper against
+                `--color-foreground` on `--color-background`, under the 4.5:1
+                floor its 12px text is held to, while 70% clears it at 8.00 /
+                6.36. WCAG's inactive-component exemption does not cover it:
+                this control is deliberately NOT inactive — it keeps focus,
+                and the handler is what refuses. Matches the shape it was
+                modelled on, `AuthPanel`'s SSO re-check.
+              */
+              className="nm-button-ghost shrink-0 text-xs aria-disabled:cursor-default aria-disabled:opacity-70"
               data-testid="retrieval-distribution-retry"
             >
               {retryInFlight ? 'Retrying…' : 'Retry'}
