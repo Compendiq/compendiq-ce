@@ -158,6 +158,45 @@ describe('unsyncSpace', () => {
     await expect(stat(standaloneDir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  /**
+   * #1349 review r2: the icon store is a THIRD tree under the same root,
+   * keyed by `pages.id` whatever the page's source, and `cleanPageAttachments`
+   * never touches it. The sweep is forbidden to walk it by name, so an
+   * event-driven delete is the only thing that ever collects a mark — and
+   * removing a space hard-deletes every page in it.
+   */
+  it('removes the uploaded page icons of the pages it deletes (#1349)', async () => {
+    await ensureRoles();
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source) VALUES ('ENG','Engineering','confluence')`,
+    );
+    const doomed = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, space_key, title, body_text, body_storage, body_html, source)
+       VALUES ('c-icon','ENG','Synced','text','','','confluence') RETURNING id`,
+    );
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source) VALUES ('OPS','Ops','confluence')`,
+    );
+    const survivor = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, space_key, title, body_text, body_storage, body_html, source)
+       VALUES ('c-keep','OPS','Other','text','','','confluence') RETURNING id`,
+    );
+
+    // Test-only paths built from serials under a mkdtemp root. nosemgrep
+    const doomedIcon = path.join(tmpRoot, 'page-icons', String(doomed.rows[0]!.id));
+    const survivorIcon = path.join(tmpRoot, 'page-icons', String(survivor.rows[0]!.id));
+    for (const dir of [doomedIcon, survivorIcon]) {
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, `${'a'.repeat(64)}.png`), 'png-bytes');
+    }
+
+    await unsyncSpace('ENG');
+
+    await expect(stat(doomedIcon)).rejects.toMatchObject({ code: 'ENOENT' });
+    // Another space's marks are untouched — the removal is keyed, not a sweep.
+    await expect(stat(survivorIcon)).resolves.toBeTruthy();
+  });
+
   it('returns pagesDeleted=0 when the space has no pages', async () => {
     await query(
       `INSERT INTO spaces (space_key, space_name, source) VALUES ('EMPTY','Empty','confluence')`,

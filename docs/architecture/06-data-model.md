@@ -497,7 +497,12 @@ together, which matters most for #1114's query-side prefix.
   standalone hard-delete and trash purge now remove both directories, plus the
   page's `page-icons/<pk>/` mark, which nothing but the icon route itself ever
   removed and which no sweep will ever collect
-  (`core/services/standalone-attachment-cleanup.ts`) — but `<pk>/` only when no
+  (`core/services/standalone-attachment-cleanup.ts`). The mark is keyed by
+  `pages.id` alone, so the same removal rides every other HARD delete too —
+  the Confluence delete route (single and bulk), sync's 30-day
+  `purgeDeletedPages` and `unsyncSpace`, through
+  `discardPageIconForDeletedPage` — and never a soft delete, which is
+  restorable. `<pk>/` in the shared tree, by contrast, is removed only when no
   page claims `confluence_id = <pk>` AND the directory is older than a 5-minute
   grace window, because deleting a shared-keyspace directory can evict a live
   Confluence page's whole cache, and during a FIRST sync the claim does not

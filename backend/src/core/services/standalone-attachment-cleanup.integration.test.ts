@@ -29,7 +29,10 @@ import {
   removeCachedAttachmentDirectory,
   removeCachedAttachmentFile,
 } from './attachment-store.js';
-import { removeLocalAttachmentDirectory } from './local-attachment-service.js';
+import {
+  removeLocalAttachmentDirectory,
+  removeLocalAttachmentFileForSweep,
+} from './local-attachment-service.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -161,6 +164,36 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       expect(await exists(path.join(tempBase, '123', 'a.png'))).toBe(false);
       expect(await exists(path.join(tempBase, '123', 'b.png'))).toBe(true);
       await expect(removeCachedAttachmentFile('123', '../b.png')).rejects.toThrow();
+    });
+
+    // Review r2: the local store's ONLY delete-path filename guard, and
+    // nothing exercised either branch — deleting the `if` left all 63 cells
+    // green. This is the sibling of `removeCachedAttachmentFile`'s pinned
+    // traversal refusal two cells up; r1 added the helper precisely to align
+    // the two stores' delete safety, and the alignment was complete in the
+    // code and half-done in the tests.
+    //
+    // `canStoreLocalFilename` cannot carry this on its own: it `basename`s
+    // first, so it says YES to `../b.png` and `localFilePath` then joins the
+    // collapsed name back onto the SAME page directory — i.e. without the
+    // guard the helper reports success for a file the caller never named and
+    // unlinks a different one beside it.
+    it('removeLocalAttachmentFileForSweep removes exactly the named file and refuses a path', async () => {
+      await writeFileAt('local', '77', 'a.png');
+      await writeFileAt('local', '77', 'b.png');
+
+      expect(await removeLocalAttachmentFileForSweep(77, '../b.png')).toBe(false);
+      expect(
+        await exists(path.join(tempBase, 'local', '77', 'b.png')),
+        'a refused name must remove nothing at all',
+      ).toBe(true);
+      expect(await exists(path.join(tempBase, 'local', '77', 'a.png'))).toBe(true);
+
+      // …and the ordinary case still removes exactly one file, so the refusal
+      // is a refusal rather than the helper being inert.
+      expect(await removeLocalAttachmentFileForSweep(77, 'a.png')).toBe(true);
+      expect(await exists(path.join(tempBase, 'local', '77', 'a.png'))).toBe(false);
+      expect(await exists(path.join(tempBase, 'local', '77', 'b.png'))).toBe(true);
     });
 
     it('removeLocalAttachmentDirectory removes local/<pk>/ and refuses a non-integer id', async () => {

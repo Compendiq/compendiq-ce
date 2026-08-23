@@ -1147,11 +1147,13 @@ swept. Those files *are* reconcilable — for `icon_kind = 'image'` the page row
 `icon_value` is the sha that names the file — but they are deliberately out of
 scope for #1349, because they are the only copy of an uploaded mark and a wrong
 verdict there is unrecoverable rather than a re-fetch. Removal is therefore
-event-driven: unsetting or replacing an icon deletes the old file, and since
-#1349 deleting a **standalone** page permanently (hard delete or trash purge)
-removes its icon directory alongside its attachment directories. A Confluence
-page deleted from Compendiq does not yet clear its mark — a known, bounded
-leak of one small file per such page, which no sweep will collect.
+event-driven, and since #1349 **every** permanent delete performs it: unsetting
+or replacing an icon deletes the old file, a standalone hard delete or trash
+purge removes the icon directory alongside the attachment directories, and a
+Confluence page that is hard-deleted (singly or in bulk), purged from the trash
+after its 30-day window, or removed with its space by **Unsync** does the same.
+A *soft* delete deliberately does not: a trashed page is restorable and its
+mark is its own content, not a re-fetchable cache.
 
 **Where:** Settings → Knowledge → Spaces & Sync → **Sync schedule**, in the
 **Attachment storage** card (admin only; the wrapper opens on its Spaces tab,
@@ -1225,7 +1227,14 @@ strength of a missing directory alone.
 `attachment-sweep`), manual-only (no schedule), admin-rate-limited, and every
 run — dry runs included — emits a `RETENTION_PRUNED` audit event on
 `attachments_orphan_sweep` with counts by reason class, so the Data Retention
-Attestation report (Report 7) covers it. API:
+Attestation report (Report 7) covers it. That report's *table* and *rows
+pruned* columns read the event's `table` / `rows_pruned` keys, which name the
+one **table** this sweep prunes rows from — `page_image_embeddings` — and the
+row count it removed there. Files are not rows: what was deleted on disk is in
+the same event's `files_pruned` / `directories_pruned` / `bytes_pruned`, beside
+`dry_run`, which is what tells a heartbeat from a real prune. No retention
+window is reported because there is no retention policy here (Phase 3 was left
+out on purpose); the only time rule is the fixed 24-hour mtime grace. API:
 `GET /api/admin/attachments/stats`, `GET|POST /api/admin/attachments/sweep`
 (body `{ "dryRun": true|false }`).
 

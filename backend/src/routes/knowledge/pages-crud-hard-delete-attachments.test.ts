@@ -64,6 +64,11 @@ vi.mock('../../core/services/standalone-attachment-cleanup.js', () => ({
   cleanupStandalonePageAttachmentDirs: (...args: unknown[]) => mockCleanupStandaloneDirs(...args),
 }));
 
+const mockDiscardPageIcon = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../core/services/page-icon-store.js', () => ({
+  discardPageIconForDeletedPage: (...args: unknown[]) => mockDiscardPageIcon(...args),
+}));
+
 const mockQueryFn = vi.fn();
 const mockTxQueryFn = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
 vi.mock('../../core/db/postgres.js', () => ({
@@ -146,5 +151,44 @@ describe('#1349 standalone hard delete cleans attachment directories', () => {
 
     expect(response.statusCode).toBe(200);
     expect(mockCleanupStandaloneDirs).not.toHaveBeenCalled();
+    // …and the icon goes with the page, not with the trash visit.
+    expect(mockDiscardPageIcon).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Review r2. `cleanPageAttachments` is keyed by `confluence_id`; the icon
+   * store is keyed by `pages.id` and the #1349 sweep is structurally forbidden
+   * to walk it, so a hard-deleted CONFLUENCE page's uploaded mark had nothing
+   * that would ever collect it — the standalone path was wired in r1 and its
+   * sibling was not. `pages-icon.ts`'s `assertCanEdit` accepts
+   * `source === 'confluence'`, so such a mark really can exist.
+   */
+  describe('a hard-deleted Confluence page takes its icon with it', () => {
+    function stubConfluencePageLoad(): void {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{
+          id: 77,
+          source: 'confluence',
+          created_by_user_id: TEST_USER,
+          confluence_id: 'c-77',
+          space_key: 'DEV',
+          visibility: 'shared',
+        }],
+      });
+      // The delete-intent UPDATE and everything after it.
+      mockQueryFn.mockResolvedValue({ rows: [{ id: 77 }], rowCount: 1 });
+      mockGetClientForUser.mockResolvedValue({ deletePage: vi.fn().mockResolvedValue(undefined) });
+    }
+
+    it('removes the icon directory keyed by pages.id', async () => {
+      stubConfluencePageLoad();
+
+      const response = await app.inject({ method: 'DELETE', url: '/api/pages/77' });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockDiscardPageIcon).toHaveBeenCalledTimes(1);
+      // The NUMERIC id, never the confluence_id the cache is keyed by.
+      expect(mockDiscardPageIcon).toHaveBeenCalledWith(77);
+    });
   });
 });

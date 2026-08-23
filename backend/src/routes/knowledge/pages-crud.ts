@@ -21,6 +21,7 @@ import {
 } from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { cleanupStandalonePageAttachmentDirs } from '../../core/services/standalone-attachment-cleanup.js';
+import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
@@ -1737,6 +1738,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         );
       }
     }
+    // …and the icon store, which `cleanPageAttachments` never touches: it is
+    // keyed by `pages.id`, not by `confluence_id`, and the #1349 sweep is
+    // forbidden to walk it, so this event is the only thing that collects a
+    // hard-deleted Confluence page's uploaded mark (#1349 review r2).
+    await discardPageIconForDeletedPage(existingPage.id);
 
     // Confluence pages are visible to every user with space access (#893), and
     // deleting one may also drop its space — clear every user's cache.
@@ -2186,6 +2192,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           }
           // Filesystem attachment cleanup cannot join the DB transaction — best-effort.
           await Promise.allSettled(deletedConfluenceIds.map((id) => bulkLimit(() => cleanPageAttachments(userId, id))));
+          // The icon store is keyed by `pages.id`, so it takes the NUMERIC ids
+          // and is a second pass rather than a line inside the one above
+          // (#1349 review r2 — see `discardPageIconForDeletedPage`).
+          await Promise.allSettled(
+            deletedConfluenceNumericIds.map((pageId) =>
+              bulkLimit(() => discardPageIconForDeletedPage(pageId)),
+            ),
+          );
           // Confluence bulk delete is always a hard delete (Confluence API + local row removal).
           for (const pageId of deletedConfluenceNumericIds) {
             emitWebhookEvent({

@@ -823,6 +823,40 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
         }
       },
     );
+
+    // Verification round r2: the same "unreadable ≠ absent" distinction, one
+    // level UP. The cell above seals ONE key directory, which `readKeyDir`
+    // already told apart; the local store's ROOT readdir had a bare `catch`
+    // that answered "absent" for every failure — so a `chmod 000` on
+    // `<ATTACHMENTS_DIR>/local` published `0 B · 0 files in 0 directories`
+    // for a full store and reported every row as pointing at a file that is
+    // not on disk. A dry run persists those figures into the stats record
+    // (the anomaly guard is `!dryRun`-gated), so the card then carries them
+    // at rest.
+    it.skipIf(process.getuid?.() === 0)(
+      'does not report the whole local store as absent when its root cannot be read',
+      async () => {
+        await seedCorpus();
+        const sealedRoot = path.join(tempBase, 'local');
+        await fs.chmod(sealedRoot, 0o000);
+        try {
+          const dry = await runAttachmentSweep({ dryRun: true });
+
+          expect(dry!.status).toBe('completed');
+          expect(
+            dry!.stores!.local.unreadableDirectories,
+            'an unreadable store root is a fact the walk must report',
+          ).toBe(1);
+          expect(
+            dry!.missingLocalFiles,
+            'a store that could not be read is not evidence any row’s file is gone',
+          ).toBe(0);
+          expect(dry!.candidateSample.some((c) => c.store === 'local')).toBe(false);
+        } finally {
+          await fs.chmod(sealedRoot, 0o700);
+        }
+      },
+    );
   });
 
   describe('live run', () => {
@@ -1002,13 +1036,23 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
     });
 
     it('emits a RETENTION_PRUNED audit event with the counts', async () => {
-      await seedCorpus();
+      const { confPageId } = await seedCorpus();
+      // One index row for a file the sweep really removes, so `rows_pruned`
+      // below is asserted against a non-zero value rather than a default.
+      await seedEmbeddingRow(confPageId, 'confluence', 'orphan.png');
       const run = await runAttachmentSweep({ dryRun: false });
       expect(run!.status).toBe('completed');
 
       const audit = await query<{
         user_id: string | null;
-        metadata: { dry_run: boolean; files_pruned: number };
+        metadata: {
+          dry_run: boolean;
+          files_pruned: number;
+          table?: string;
+          rows_pruned?: number;
+          orphan_files?: number;
+          orphan_directories?: number;
+        };
       }>(
         `SELECT user_id, metadata FROM audit_log
           WHERE action = 'RETENTION_PRUNED' AND resource_id = 'attachments_orphan_sweep'
@@ -1017,6 +1061,15 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(audit.rows).toHaveLength(1);
       expect(audit.rows[0]!.metadata.dry_run).toBe(false);
       expect(audit.rows[0]!.metadata.files_pruned).toBeGreaterThan(0);
+      // The two keys `audit-service.ts` declares for RETENTION_PRUNED, which
+      // the EE Data Retention Attestation renders as "the table touched" and
+      // "rows pruned" (review r2 — omitting them put this run in the report
+      // with both columns blank). The pair describes the DATABASE fact: the
+      // only table this sweep prunes rows from is `page_image_embeddings`, so
+      // `rows_pruned` is that count and never the file count beside it.
+      expect(audit.rows[0]!.metadata.table).toBe('page_image_embeddings');
+      expect(audit.rows[0]!.metadata.rows_pruned).toBe(run!.deleted!.imageEmbeddingRows);
+      expect(audit.rows[0]!.metadata.rows_pruned).toBeGreaterThan(0);
       // The audit states what was FOUND beside what was destroyed, so it
       // reads the WALK, never the run record's post-delete residue —
       // `orphan_files: 0` beside a non-zero `files_pruned` contradicts itself.

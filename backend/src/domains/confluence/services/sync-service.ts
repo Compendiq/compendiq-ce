@@ -15,6 +15,7 @@ import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { processDirtyPageImages } from '../../llm/services/image-embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
+import { discardPageIconForDeletedPage } from '../../../core/services/page-icon-store.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSyncConflictPolicy } from '../../../core/services/sync-conflict-policy-service.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
@@ -1763,14 +1764,22 @@ async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Pr
 
   // Re-assert the 30-day precondition inside the DELETE: a row revived between
   // the SELECT and here has `deleted_at = NULL` and falls out of the predicate.
-  const result = await query<{ confluence_id: string | null }>(
+  // `id` is returned beside `confluence_id` because the two stores are keyed
+  // differently: the attachment cache by `confluence_id`, the icon store by
+  // `pages.id` (#1349 review r2).
+  const result = await query<{ id: number; confluence_id: string | null }>(
     `DELETE FROM pages
       WHERE id = ANY($1::int[]) AND deleted_at < NOW() - INTERVAL '30 days'
-      RETURNING confluence_id`,
+      RETURNING id, confluence_id`,
     [confirmedIds],
   );
   if (result.rowCount && result.rowCount > 0) {
-    for (const { confluence_id } of result.rows) {
+    for (const { id, confluence_id } of result.rows) {
+      // Unconditional and first: the row is gone, and unlike the attachment
+      // cache below this is the page's own content with no re-fetch behind it
+      // — and the #1349 sweep is forbidden to walk that store, so nothing else
+      // would ever collect it.
+      await discardPageIconForDeletedPage(id);
       if (!confluence_id) continue;
       await cleanPageAttachments('', confluence_id);
       await clearPageFailures(confluence_id);
@@ -1835,6 +1844,10 @@ export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: num
     } catch (err) {
       logger.warn({ err, pageId: p.id, attachmentKey, spaceKey }, 'unsyncSpace: attachment cleanup failed (continuing)');
     }
+    // The icon store is keyed by `pages.id` whatever the page's source, and
+    // these rows are about to be DELETEd (not soft-deleted), so the mark has
+    // no owner left — see `discardPageIconForDeletedPage` (#1349 review r2).
+    await discardPageIconForDeletedPage(p.id);
   }
 
   const pool = getPool();

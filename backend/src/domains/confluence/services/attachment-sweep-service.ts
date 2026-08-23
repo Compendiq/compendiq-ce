@@ -856,7 +856,21 @@ async function walkLocalStore(
   let rootEntries: Dirent[];
   try {
     rootEntries = await fs.readdir(localRoot, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      // Unreadable ≠ absent — the SAME distinction review r2 drew one level
+      // down in `readKeyDir`, still collapsed here at the store ROOT
+      // (verification round r2). A `chmod 000` on `<ATTACHMENTS_DIR>/local`
+      // reported every `local_attachments` row as pointing at a file that is
+      // not on disk, for bytes demonstrably sitting there, and published
+      // `0 B · 0 files in 0 directories` for a full store — on a card whose
+      // stated contract is to report only what the walk could see. A store
+      // that could not be READ is evidence of nothing: the honest verdict is
+      // the `unreadableDirectories` counter (the card renders it), and the
+      // missing count stands down.
+      stats.unreadableDirectories += 1;
+      return { stats, candidates, missingLocalFiles: 0, totalRows };
+    }
     // No local store on disk at all. Every row's file is missing; whether
     // that is an anomaly is the live run's refusal check, not the walk's.
     return { stats, candidates, missingLocalFiles: totalRows, totalRows };
@@ -1424,7 +1438,24 @@ export async function runAttachmentSweep(opts: {
   // `run.stores`: an audit row states what was FOUND beside what was
   // destroyed, and `run.stores` is deliberately the post-delete residue, so
   // reading it here would report `orphan_files: 0` next to `files_pruned: 5`.
+  //
+  // `table` + `rows_pruned` are the two keys `audit-service.ts` names as the
+  // RETENTION_PRUNED contract, and the Data Retention Attestation (Report 7,
+  // EE) reads them as "the table touched" and "rows pruned" — every other CE
+  // emitter honours them, `pages_standalone_trash` included, which is the
+  // precedent for a non-table `resource_id` carrying an explicit
+  // `metadata.table`. Without them this run appeared in the attestation with
+  // both columns blank (review r2).
+  //
+  // The pair is the DATABASE fact and nothing else: the only table this sweep
+  // prunes rows from is `page_image_embeddings`, so `rows_pruned` is that
+  // count and never `files_pruned` — files are not rows, and pairing the file
+  // count with a table name would put a number in the attestation that is
+  // false about the table beside it. The file/byte totals keep their own
+  // richer keys below.
   await logAuditEvent(opts.triggeredBy ?? null, 'RETENTION_PRUNED', 'table', 'attachments_orphan_sweep', {
+    table: 'page_image_embeddings',
+    rows_pruned: run.deleted?.imageEmbeddingRows ?? 0,
     dry_run: run.dryRun,
     status: run.status,
     note: run.note,
