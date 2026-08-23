@@ -464,7 +464,7 @@ function publicErrorMessage(err: unknown): string {
 // ── Mode 2 — side-by-side judgements ─────────────────────────────────────
 //
 // Where Mode 1 shows a disagreement, the admin can record which side
-// answered better. Judgements live in `embedding_compare_judgements` (100),
+// answered better. Judgements live in `embedding_compare_judgements` (101),
 // keyed by (normalised query hash, live PAIR, candidate PAIR) — NOT by run —
 // so the fixture accumulates across runs and even across migrations of the
 // same pair, and re-judging a query replaces its row instead of stacking

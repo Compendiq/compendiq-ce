@@ -241,7 +241,7 @@ Run records reuse `retrieval_benchmark_runs` with
 complete, fail, the kind-aware stale sweep and the kind-guarded fetch, one
 copy for both kinds. A comparison and a production benchmark exclude each
 other on the 091 one-active index. Mode 2 judgements persist in
-`embedding_compare_judgements` (migration 100), keyed by provider AND model on
+`embedding_compare_judgements` (migration 101), keyed by provider AND model on
 each side, and the verdict is computed from `eval/metrics.ts`
 (`pairedSignificance`, `recallAtK`, `meanReciprocalRank`) — never re-derived;
 the p-value floor counts the live/candidate PICKS, not ties. The admin surface

@@ -115,13 +115,13 @@ test can make that clause fail, and its comment must not claim a fetch-budget
 effect it does not have. A transient failure costs its own query
 (`failedQueries` on the report), never the 46 comparisons already paid for;
 only a majority of failures fails the run. Mode 2 judgements accumulate in
-`embedding_compare_judgements` (100) keyed by **provider AND model on each
+`embedding_compare_judgements` (101) keyed by **provider AND model on each
 side** — the same name behind a different provider is a different index — and
 quote a McNemar p only from 20 **live-or-candidate PICKS**, never from a total
 that ties inflate (fourteen ties plus six picks published `p = 0.031` from six
 clicks). That key carries **no admin dimension on purpose** — one query is one
 McNemar trial, so a per-judge key would let two admins vote it twice and
-inflate N and the p drawn from it; the cost, stated in 100's header and in
+inflate N and the p drawn from it; the cost, stated in 101's header and in
 `06-data-model.md`, is that on a multi-admin instance the last judge of a
 query wins it and the stored page-id arrays carry THAT judge's visibility.
 Runs reuse `retrieval_benchmark_runs`
