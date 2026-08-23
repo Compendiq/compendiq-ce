@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, type MouseEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, LoaderCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import type {
@@ -205,17 +205,61 @@ function focusKnobBeforeNoticeClears(fieldId: string, pressed: HTMLElement | nul
  * no events, so every one of these handlers must return early on its own
  * pending flag; a `disabled` attribute is what must never come back.
  *
- * `aria-busy` rides beside it (review r1 of the verification round), and the
- * pair is the whole of `AuthPanel`'s recipe rather than half of it. Keeping
- * the operator standing on the pressed button is this round's entire point,
- * and without `aria-busy` that operator is standing on a control that went
- * quiet: a native `disabled` at least announces "unavailable" for free, while
- * `aria-disabled` alone drops the button to 45% opacity and says nothing at
- * all until the toast lands. The visible label deliberately does NOT swap to
- * a gerund the way `AuthPanel`'s does — see the buttons themselves.
+ * `aria-busy` rides beside it, but nothing may be BUILT on it (review r1 of
+ * #1285, correcting the previous round, which had the premise backwards). That
+ * round claimed a native `disabled` "announces unavailable for free" while
+ * `aria-disabled` "says nothing at all", and reached for `aria-busy` to repair
+ * the difference. It is the other way round: `aria-disabled="true"` is mapped
+ * to the disabled state and announced by NVDA, JAWS and VoiceOver, so the
+ * attribute swap lost nothing on that channel — while ARIA 1.2 scopes
+ * `aria-busy` to elements whose SUBTREE is being modified (live regions,
+ * composite widgets), which on a `<button>` reaches no assistive tech at all.
+ * It stays because it is free and, since `PendingRemedyLabel` below, actually
+ * true of the subtree; it is not the in-flight signal.
+ *
+ * What was genuinely missing is the half a human can perceive. A 45% dim reads
+ * as "disabled", not as "working", and the write is an unbounded network PUT,
+ * so on a slow server the operator was left standing on a control that had
+ * gone quiet until the toast landed. `AuthPanel`'s recipe is four parts, not
+ * two: the attribute pair here, plus the spinner and the label swap that
+ * `PendingRemedyLabel` restores.
  */
 const PENDING_REMEDY_CLASS =
   'aria-disabled:cursor-not-allowed aria-disabled:opacity-45 aria-disabled:hover:bg-transparent';
+
+/**
+ * The perceivable half of that state: a spinner and a gerund.
+ *
+ * The label KEEPS ITS NUMBER while the write is in flight. This panel can
+ * render two of these at once — one per confidence basis — and the number is
+ * the only thing on the button that says which threshold is being written, so
+ * the bare gerund `AuthPanel` swaps to ("Checking…") would make the two
+ * identical at exactly the moment one of them is doing something.
+ * `aria-describedby` still names the basis on top of that.
+ *
+ * The spinner is `aria-hidden`: it is a redundant channel for the label beside
+ * it (WCAG 1.4.1), and it honours `prefers-reduced-motion` through the shared
+ * rule in `index.css`.
+ */
+function PendingRemedyLabel({
+  pending,
+  verb,
+  gerund,
+  value,
+}: {
+  pending: boolean;
+  verb: string;
+  gerund: string;
+  value: number;
+}) {
+  if (!pending) return <>{`${verb} ${value}`}</>;
+  return (
+    <>
+      <LoaderCircle aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin" />
+      {`${gerund} ${value}…`}
+    </>
+  );
+}
 
 const DEFAULTS: RetrievalValues = {
   ftsLanguage: 'simple',
@@ -1061,7 +1105,12 @@ export function RetrievalTab() {
               className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
               data-testid="retrieval-ef-search-env-pin"
             >
-              Keep {saved.ragEfSearch}
+              <PendingRemedyLabel
+                pending={efSearchPinPending}
+                verb="Keep"
+                gerund="Keeping"
+                value={saved.ragEfSearch}
+              />
             </button>
           </div>
         )}
@@ -1717,13 +1766,10 @@ function CalibrationNotice({
           would pass unnoticed. Record the model behind it now, or re-tune it below.
         </span>
         {/*
-          The label keeps its NUMBER while the write is in flight — no
-          `Recording…` swap (review r1 of the verification round). This panel
-          can render two of these at once, one per basis, and the number is the
-          only thing on the button that says which threshold is being written;
-          swapping both to the same gerund makes them identical at exactly the
-          moment one of them is doing something. `aria-busy` carries the
-          in-flight fact instead, and `aria-describedby` still names the basis.
+          The label swaps to a gerund and gains a spinner while the write is in
+          flight, but KEEPS ITS NUMBER — see `PendingRemedyLabel` for why the
+          number is what tells two simultaneous notices apart, and
+          `PENDING_REMEDY_CLASS` for why the attribute pair is not the signal.
         */}
         <button
           type="button"
@@ -1734,7 +1780,12 @@ function CalibrationNotice({
           className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
           data-testid={`retrieval-${fieldKey}-calibration-record`}
         >
-          Record {value}
+          <PendingRemedyLabel
+            pending={keepPending}
+            verb="Record"
+            gerund="Recording"
+            value={value}
+          />
         </button>
       </div>
     );
@@ -1823,7 +1874,7 @@ function CalibrationNotice({
           className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
           data-testid={`retrieval-${fieldKey}-calibration-keep`}
         >
-          Keep {value}
+          <PendingRemedyLabel pending={keepPending} verb="Keep" gerund="Keeping" value={value} />
         </button>
       </div>
     </div>

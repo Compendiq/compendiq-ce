@@ -1793,7 +1793,19 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     );
     expect(toastSuccess).not.toHaveBeenCalled();
     // And the strip is still standing, because nothing was recorded.
-    expect(await screen.findByTestId(stripId)).toBeInTheDocument();
+    const survivingStrip = await screen.findByTestId(stripId);
+    expect(survivingStrip).toBeInTheDocument();
+    // The other direction of the in-flight state (review r1 of #1285): this is
+    // the outcome the button OUTLIVES, so a spinner or a gerund left behind
+    // here would tell the operator a write is still running on the one path
+    // where they have to press it again.
+    const survivingKeep = within(survivingStrip).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-keep',
+    );
+    await waitFor(() => expect(survivingKeep).toHaveTextContent(/Keep 0\.35/));
+    expect(survivingKeep).not.toHaveTextContent(/Keeping/);
+    expect(survivingKeep.querySelector('.animate-spin')).toBeNull();
+    expect(survivingKeep).not.toHaveAttribute('aria-busy');
   });
 
   it('says the live model could not be RESOLVED, never that none is assigned', async () => {
@@ -2039,11 +2051,22 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     await waitFor(() => expect(puts).toHaveLength(1));
 
     expect(keep).toHaveAttribute('aria-disabled', 'true');
-    // `aria-disabled` alone announces nothing new when the operator is left
-    // standing on the button by design — a native `disabled` gets
-    // "unavailable" for free, this does not (review r1 of the verification
-    // round). `AuthPanel`'s recipe is the pair, not just the first half.
+    // `aria-busy` rides beside it, but it is NOT the in-flight signal (review
+    // r1 of #1285, correcting the previous round's inverted premise):
+    // `aria-disabled` is the half that is mapped to a state and announced,
+    // while ARIA 1.2 scopes `aria-busy` to a changing subtree, so on a
+    // <button> it reaches no assistive tech.
     expect(keep).toHaveAttribute('aria-busy', 'true');
+    // The half a human can perceive, which the attribute swap dropped: 45%
+    // opacity reads as "disabled", not as "working", and the write is an
+    // unbounded network PUT. `AuthPanel`'s recipe is four parts — the spinner
+    // and the gerund are the other two. The NUMBER survives the swap, because
+    // it is the only thing distinguishing two simultaneous notices.
+    expect(keep).toHaveTextContent(/Keeping 0\.35…/);
+    expect(
+      keep.querySelector('.animate-spin'),
+      'the in-flight state must be visible, not merely announced',
+    ).not.toBeNull();
     expect(
       keep,
       'the `disabled` attribute blurs the pressed button to <body> in a real browser',
@@ -2113,6 +2136,12 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
 
     expect(record).toHaveAttribute('aria-disabled', 'true');
     expect(record).toHaveAttribute('aria-busy', 'true');
+    // See the Keep case above: the attributes are not the in-flight signal.
+    expect(record).toHaveTextContent(/Recording 0\.35…/);
+    expect(
+      record.querySelector('.animate-spin'),
+      'the in-flight state must be visible, not merely announced',
+    ).not.toBeNull();
     expect(
       record,
       'the `disabled` attribute blurs the pressed button to <body> in a real browser',
@@ -2780,6 +2809,12 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
 
     expect(pin).toHaveAttribute('aria-disabled', 'true');
     expect(pin).toHaveAttribute('aria-busy', 'true');
+    // See the Keep case above: the attributes are not the in-flight signal.
+    expect(pin).toHaveTextContent(/Keeping 250…/);
+    expect(
+      pin.querySelector('.animate-spin'),
+      'the in-flight state must be visible, not merely announced',
+    ).not.toBeNull();
     expect(
       pin,
       'the `disabled` attribute blurs the pressed button to <body> in a real browser',

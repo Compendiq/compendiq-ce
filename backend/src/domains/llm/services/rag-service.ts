@@ -348,8 +348,13 @@ export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[],
  * standalone articles the user can access (shared, or private and owned by
  * the user).
  *
- * Tradeoff: higher ef_search = better recall but slower query.
- * Default PostgreSQL ef_search is 40; the floor here is 100.
+ * Tradeoff (review r1 of #1285 — this JSDoc was the third comment left
+ * carrying the inverted claim the rest of the PR retired): a higher ef_search
+ * costs SCAN TIME and is not measured to buy recall. On #1114's halfvec(2560)
+ * corpus the search is effectively exact from 40 — recall@10 was 0.9995 at
+ * 100 and unchanged to 1000, while the probe cost rose 0.39 ms -> 1.74 ms.
+ * PostgreSQL's own default is 40; the floor here is no longer a constant but
+ * `admin_settings.rag_ef_search` (default 100), resolved by `efSearchFor`.
  *
  * `opts.spaceKey` (#1351) narrows the scan to one Confluence space, applied
  * as an additional predicate ALONGSIDE `visiblePagesPredicate` — it can only
