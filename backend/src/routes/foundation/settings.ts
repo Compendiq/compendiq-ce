@@ -29,13 +29,14 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       confluence_pat_prompt_dismissed_at: Date | null;
       inline_completion_enabled: boolean;
       inline_completion_delay: 'fast' | 'balanced' | 'deliberate' | 'manual';
+      inline_completion_mode: 'word' | 'full';
       inline_completion_code_only: boolean;
     }>(
       `SELECT confluence_url, confluence_pat, theme, sync_interval_min,
               show_space_home_content, custom_prompts,
               confluence_pat_prompt_dismissed_at,
               inline_completion_enabled, inline_completion_delay,
-              inline_completion_code_only
+              inline_completion_mode, inline_completion_code_only
          FROM user_settings WHERE user_id = $1`,
       [request.userId],
     );
@@ -60,6 +61,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         confluencePatPromptDismissed: false,
         inlineCompletionEnabled: true,
         inlineCompletionDelay: 'balanced',
+        inlineCompletionMode: 'full',
         inlineCompletionCodeOnly: false,
       };
     }
@@ -78,6 +80,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       confluencePatPromptDismissed: !!row.confluence_pat_prompt_dismissed_at,
       inlineCompletionEnabled: row.inline_completion_enabled,
       inlineCompletionDelay: row.inline_completion_delay,
+      inlineCompletionMode: row.inline_completion_mode,
       inlineCompletionCodeOnly: row.inline_completion_code_only,
     };
   });
@@ -181,6 +184,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.inlineCompletionDelay !== undefined) {
       updates.push(`inline_completion_delay = $${paramIdx++}`);
       values.push(body.inlineCompletionDelay);
+    }
+
+    if (body.inlineCompletionMode !== undefined) {
+      updates.push(`inline_completion_mode = $${paramIdx++}`);
+      values.push(body.inlineCompletionMode);
     }
 
     if (body.inlineCompletionCodeOnly !== undefined) {

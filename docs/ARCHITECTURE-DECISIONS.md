@@ -2016,7 +2016,10 @@ continuation instruction on `/chat/completions`. Output is capped at 64 tokens
 completions are not written to `llm_audit_log`; only fixed-field aggregate
 request/token counters are incremented in Redis, best-effort and off the
 response path. Personal settings in `user_settings` control enabled state,
-delay (`fast | balanced | deliberate | manual`), and code-block-only mode.
+delay (`fast | balanced | deliberate | manual`), default output mode
+(`word | full`), and code-block-only mode. Word mode caps generation at 8
+tokens and clips the visible completion at its first word boundary; full mode
+retains the 48-token cap.
 The TipTap plugin owns the transient suggestion and abort controller; it
 suppresses requests during IME composition, in tables, and on coarse pointers,
 and accepts insertions as one undoable transaction.

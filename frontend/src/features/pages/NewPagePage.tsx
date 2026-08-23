@@ -591,6 +591,7 @@ export function NewPagePage() {
                 available: inlineCompletionAvailable,
                 enabled: settings?.inlineCompletionEnabled ?? true,
                 delay: settings?.inlineCompletionDelay ?? 'balanced',
+                mode: settings?.inlineCompletionMode ?? 'full',
                 codeOnly: settings?.inlineCompletionCodeOnly ?? false,
                 title,
                 spaceKey: spaceKey || undefined,

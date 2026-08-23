@@ -27,6 +27,7 @@ describe('AiPromptsTab', () => {
     confluencePatPromptDismissed: false,
     inlineCompletionEnabled: true,
     inlineCompletionDelay: 'balanced',
+    inlineCompletionMode: 'full',
     inlineCompletionCodeOnly: false,
   };
 

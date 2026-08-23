@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table';
-import type { InlineCompletionRequest, InlineCompletionResponse } from '@compendiq/contracts';
+import type {
+  InlineCompletionMode,
+  InlineCompletionRequest,
+  InlineCompletionResponse,
+} from '@compendiq/contracts';
 import {
   InlineCompletionExtension,
   inlineCompletionPluginKey,
@@ -11,6 +15,7 @@ import {
 interface HarnessOptions {
   content?: string;
   delayMs?: number | null;
+  mode?: InlineCompletionMode;
   codeOnly?: boolean;
   coarse?: boolean;
   isMac?: boolean;
@@ -45,6 +50,7 @@ function mount(options: HarnessOptions = {}) {
       InlineCompletionExtension.configure({
         enabled: true,
         delayMs: options.delayMs === undefined ? 500 : options.delayMs,
+        mode: options.mode ?? 'full',
         codeOnly: options.codeOnly ?? false,
         requestCompletion: request,
         isCoarsePointer: () => options.coarse ?? false,
@@ -108,6 +114,42 @@ describe('InlineCompletionExtension (#1417)', () => {
     editor.destroy();
   });
 
+  it('requests fewer tokens and exposes only one word in word mode', async () => {
+    const request = vi.fn(async () => ({
+      completion: ' access token before expiry.', model: 'm', provider: 'p',
+    }));
+    const { editor } = mount({ request, mode: 'word' });
+    await typeAndResolve(editor);
+
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ maxTokens: 8 }),
+      expect.any(AbortSignal),
+    );
+    expect(document.querySelector('[data-testid="inline-completion-ghost"]')?.textContent).toBe(
+      'access ',
+    );
+    key(editor, { key: 'Tab', code: 'Tab' });
+    expect(editor.getText()).toBe('Rotate the access ');
+    editor.destroy();
+  });
+
+  it('sends a smaller context window in word mode', async () => {
+    const request = vi.fn(async () => ({
+      completion: ' suffix continues', model: 'm', provider: 'p',
+    }));
+    const { editor } = mount({
+      content: `<p>${'a'.repeat(1_200)}</p>`,
+      request,
+      mode: 'word',
+    });
+    await typeAndResolve(editor);
+
+    const input = request.mock.calls[0]?.[0];
+    expect(input?.prefix).toHaveLength(800);
+    expect(input?.maxTokens).toBe(8);
+    editor.destroy();
+  });
+
   it('accepts one word with Ctrl+] off macOS and keeps the remainder as ghost text', async () => {
     const request = vi.fn(async () => ({
       completion: ' access token before expiry.', model: 'm', provider: 'p',
@@ -122,7 +164,7 @@ describe('InlineCompletionExtension (#1417)', () => {
     editor.destroy();
   });
 
-  it('uses Alt+] for word acceptance on macOS', async () => {
+  it('uses the macOS Option+] chord for word acceptance', async () => {
     const { editor } = mount({ isMac: true });
     await typeAndResolve(editor);
     key(editor, { key: ']', code: 'BracketRight', altKey: true });

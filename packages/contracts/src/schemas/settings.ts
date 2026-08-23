@@ -34,6 +34,9 @@ export const InlineCompletionDelaySchema = z.enum([
 ]);
 export type InlineCompletionDelay = z.infer<typeof InlineCompletionDelaySchema>;
 
+export const InlineCompletionModeSchema = z.enum(['word', 'full']);
+export type InlineCompletionMode = z.infer<typeof InlineCompletionModeSchema>;
+
 export const UserSettingsSchema = z.object({
   confluenceUrl: z.string().url().nullable(),
   confluencePat: z.string().nullable(), // Only sent on update, never returned
@@ -44,6 +47,7 @@ export const UserSettingsSchema = z.object({
   customPrompts: CustomPromptsSchema.optional(),
   inlineCompletionEnabled: z.boolean(),
   inlineCompletionDelay: InlineCompletionDelaySchema,
+  inlineCompletionMode: InlineCompletionModeSchema,
   inlineCompletionCodeOnly: z.boolean(),
 });
 
@@ -57,6 +61,7 @@ export const UpdateSettingsSchema = z.object({
   customPrompts: CustomPromptsSchema.optional(),
   inlineCompletionEnabled: z.boolean().optional(),
   inlineCompletionDelay: InlineCompletionDelaySchema.optional(),
+  inlineCompletionMode: InlineCompletionModeSchema.optional(),
   inlineCompletionCodeOnly: z.boolean().optional(),
   // #771: true → record dismissal of the Confluence-PAT onboarding banner
   // (server stores NOW() in user_settings.confluence_pat_prompt_dismissed_at);
@@ -75,6 +80,7 @@ export const SettingsResponseSchema = z.object({
   customPrompts: CustomPromptsSchema,
   inlineCompletionEnabled: z.boolean(),
   inlineCompletionDelay: InlineCompletionDelaySchema,
+  inlineCompletionMode: InlineCompletionModeSchema,
   inlineCompletionCodeOnly: z.boolean(),
   // #771: whether the user dismissed the Confluence-PAT onboarding banner.
   // Derived server-side from confluence_pat_prompt_dismissed_at IS NOT NULL —
