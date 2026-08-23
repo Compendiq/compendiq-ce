@@ -742,7 +742,27 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       await runShadowCompare(runId, ADMIN);
       const run = await getShadowCompareRun(runId, ADMIN);
       expect(run?.status).toBe('failed');
-      expect(run?.error).toBe('No production queries were available in the selected period');
+      // The most likely first-run outcome on a quiet instance, rendered in the
+      // section's amber strip on every attempt — so it names the knob that
+      // fixes it, and the window it is talking about (r1 of this round).
+      expect(run?.error).toMatch(/no searches were recorded in the last 30 days/i);
+      expect(run?.error).toMatch(/look back \(days\)/i);
+    });
+
+    it('the empty-sample failure quotes the window that was actually asked for', async () => {
+      // The remedy is "widen the window", so the sentence has to say which
+      // window — a fixed "the selected period" leaves the admin guessing at
+      // the number they set two fields away.
+      await seedReadyMigration();
+      const runId = await createShadowCompareRun(ADMIN, {
+        kind: 'shadow-compare',
+        days: 7,
+        limit: 50,
+        topK: 3,
+      });
+      await runShadowCompare(runId, ADMIN);
+      const run = await getShadowCompareRun(runId, ADMIN);
+      expect(run?.error).toMatch(/last 7 days/i);
     });
   });
 

@@ -40,6 +40,32 @@ const ADMIN_RATE_LIMIT = {
   },
 };
 
+/**
+ * The Mode 2 judgement POST is the one route in this file a HUMAN WORKFLOW
+ * calls in a burst, and the shared 20/min admin bucket is sized for the
+ * run-STARTING posts beside it. The verdict quotes a p only past
+ * `MIN_JUDGEMENTS_FOR_P` (20) live-or-candidate PICKS, `neither`/`both` cost a
+ * POST without counting toward that floor, and a change of mind re-POSTs — so
+ * the documented "twenty judgements across sittings" flow can cross 20 writes
+ * inside one rolling minute, and a 429 here DROPS the pick rather than
+ * delaying it (the client reverts its optimistic overlay and the row goes back
+ * to unjudged). The request itself is one bounded upsert into a table keyed by
+ * the run's own queries, not a job that spends the LLM queue.
+ *
+ * A MULTIPLE of the operator's knob, never a floor over it: lowering
+ * `rate_limit_admin_max` must still lower this, or the setting is decorative
+ * on the one route that would matter.
+ */
+export const JUDGEMENT_RATE_LIMIT_FACTOR = 5;
+const JUDGEMENT_RATE_LIMIT = {
+  config: {
+    rateLimit: {
+      max: async () => (await getRateLimits()).admin.max * JUDGEMENT_RATE_LIMIT_FACTOR,
+      timeWindow: '1 minute',
+    },
+  },
+};
+
 const StartBodySchema = z.object({
   providerId: z.string().uuid(),
   model: z.string().trim().min(1).max(200),
@@ -317,7 +343,7 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
   // render the updated state from the response it already has.
   fastify.post(
     '/admin/embedding/shadow-migration/compare/:id/judgements',
-    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
+    { preHandler: fastify.requireAdmin, ...JUDGEMENT_RATE_LIMIT },
     async (request, reply) => {
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
       const body = ShadowCompareJudgementRequestSchema.parse(request.body);

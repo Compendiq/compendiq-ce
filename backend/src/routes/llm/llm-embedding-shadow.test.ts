@@ -100,7 +100,9 @@ vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: (...a: unknown[]) => auditMock(...(a as [])),
 }));
 
-const { llmEmbeddingShadowRoutes } = await import('./llm-embedding-shadow.js');
+const { llmEmbeddingShadowRoutes, JUDGEMENT_RATE_LIMIT_FACTOR } = await import(
+  './llm-embedding-shadow.js'
+);
 const { LlmHttpError } = await import('../../domains/llm/services/llm-http-error.js');
 const { ShadowProbeError } = await import('../../domains/llm/services/shadow-migration-service.js');
 
@@ -115,6 +117,11 @@ let isAdmin = true;
  * list is derived and a new route is gated by default or the test names it.
  */
 const declaredRoutes: Array<{ method: string; url: string }> = [];
+
+/** The same routes with the rate-limit config Fastify was handed — the only
+ *  place the per-route allowance is observable without booting the plugin. */
+type RouteLimit = { max?: () => Promise<number> };
+const declaredLimits: Array<{ method: string; url: string; limit?: RouteLimit }> = [];
 
 describe('#1116 shadow-migration routes', () => {
   let app: ReturnType<typeof Fastify>;
@@ -152,6 +159,11 @@ describe('#1116 shadow-migration routes', () => {
         // extra coverage.
         if (method === 'HEAD') continue;
         declaredRoutes.push({ method, url: route.url });
+        declaredLimits.push({
+          method,
+          url: route.url,
+          limit: (route.config as { rateLimit?: RouteLimit } | undefined)?.rateLimit,
+        });
       }
     });
     await app.register(llmEmbeddingShadowRoutes, { prefix: '/api' });
@@ -618,5 +630,39 @@ describe('#1116 shadow-migration routes', () => {
     expect(compareSvc.latest).not.toHaveBeenCalled();
     expect(compareSvc.judge).not.toHaveBeenCalled();
     expect(compareSvc.judgements).not.toHaveBeenCalled();
+  });
+
+  it('the judgement POST gets its own allowance, as a multiple of the admin knob (r1)', async () => {
+    // The shared 20/min admin bucket is sized for the run-STARTING posts in
+    // this file. The judgement POST is the one route a human workflow calls in
+    // a burst — the verdict needs 20 live-or-candidate PICKS before it quotes
+    // a p, ties cost a POST without counting toward that floor, and a change
+    // of mind re-POSTs — and a 429 here DROPS the pick rather than delaying
+    // it: the client reverts its optimistic overlay and the row reads unjudged
+    // again, on the surface whose numbers decide a whole-corpus re-embed.
+    const judgementPost = declaredLimits.find(
+      (route) =>
+        route.method === 'POST' &&
+        route.url === '/api/admin/embedding/shadow-migration/compare/:id/judgements',
+    );
+    const startPost = declaredLimits.find(
+      (route) =>
+        route.method === 'POST' && route.url === '/api/admin/embedding/shadow-migration/compare',
+    );
+    // The derivation is load-bearing: a hook collecting nothing would make
+    // both lookups undefined and every assertion below vacuous.
+    expect(judgementPost?.limit?.max).toBeTypeOf('function');
+    expect(startPost?.limit?.max).toBeTypeOf('function');
+
+    // `getRateLimits` is mocked at 1000 in this file.
+    const shared = await startPost!.limit!.max!();
+    const judging = await judgementPost!.limit!.max!();
+    expect(shared).toBe(1000);
+    expect(judging).toBe(1000 * JUDGEMENT_RATE_LIMIT_FACTOR);
+    // A MULTIPLE of the operator's knob, never a floor over it — otherwise
+    // lowering `rate_limit_admin_max` is decorative on the one route where it
+    // would matter.
+    expect(judging).toBeGreaterThan(shared);
+    expect(JUDGEMENT_RATE_LIMIT_FACTOR).toBeGreaterThan(1);
   });
 });

@@ -170,7 +170,25 @@ const WINDOW_CLOSED_MSG =
   'The shadow migration is not in the ready window — the comparison needs a fully backfilled candidate column';
 const WINDOW_MOVED_MSG =
   'The shadow migration changed while the comparison ran (swap, abort or rollback) — start a new comparison from the current migration';
-const NO_QUERIES_MSG = 'No production queries were available in the selected period';
+/**
+ * The sampler came back empty. Its own type, because the message is now
+ * per-run and identity-comparing a formatted string is how a copy edit turns a
+ * clean failure into "check the provider" (the Mode 2 refusals are typed for
+ * the same reason).
+ */
+export class ShadowCompareNoQueriesError extends Error {}
+
+/**
+ * Named with the ACTION, not just the state (r1 of this round). On a quiet or
+ * freshly deployed instance this is the most likely first-run outcome, it
+ * lands in the section's amber failed-run strip, and it recurs there on every
+ * attempt — while the one knob that fixes it, `Look back (days)`, sits on that
+ * same surface and reaches 90. A recurring amber that names no remedy is how
+ * the reserved colour stops meaning anything.
+ */
+function noQueriesMessage(days: number): string {
+  return `No searches were recorded in the last ${days} ${days === 1 ? 'day' : 'days'}, so there is nothing to compare the two models on. Widen "Look back (days)" (up to 90), or wait until people have searched on this deployment.`;
+}
 const SCHEMA_FAULT_MSG =
   'A column the comparison reads is missing while the shadow migration still reports as active — the comparison was stopped rather than counted as a provider failure. Check the shadow migration state.';
 
@@ -312,7 +330,7 @@ async function executeShadowCompare(
     limit: config.limit,
     orderBy: 'frequency',
   });
-  if (queries.length === 0) throw new Error(NO_QUERIES_MSG);
+  if (queries.length === 0) throw new ShadowCompareNoQueriesError(noQueriesMessage(config.days));
   await onProgress(0, queries.length);
 
   const rows: ShadowCompareQueryResult[] = [];
@@ -433,10 +451,13 @@ function topPages(results: SearchResult[], topK: number): ComparedPages {
 }
 
 function publicErrorMessage(err: unknown): string {
-  if (err instanceof ShadowCompareWindowError || err instanceof ShadowCompareUnusableError) {
+  if (
+    err instanceof ShadowCompareWindowError ||
+    err instanceof ShadowCompareUnusableError ||
+    err instanceof ShadowCompareNoQueriesError
+  ) {
     return err.message;
   }
-  if (err instanceof Error && err.message === NO_QUERIES_MSG) return err.message;
   return 'The comparison could not complete. Check the provider and embedding configuration, then try again.';
 }
 

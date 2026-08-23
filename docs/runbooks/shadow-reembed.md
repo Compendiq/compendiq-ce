@@ -119,7 +119,11 @@ committing. The shadow card's **Compare on real queries** section (or
   exact McNemar p **only once 20 LIVE-OR-CANDIDATE PICKS** exist for the pair;
   `Neither` and `Both` are declared ties, count toward nothing, and do not
   bring the p forward. Below the floor the line says how many picks are still
-  needed rather than dressing a handful of clicks as statistics.
+  needed rather than dressing a handful of clicks as statistics. Judging is
+  the one flow here that writes in a burst, so the judgement POST carries its
+  own rate allowance (five times `rate_limit_admin_max`, so lowering that knob
+  still lowers this): on the shared admin bucket a brisk sitting past twenty
+  picks was refused, and a refused pick is DROPPED, not queued.
 - **Gates and failure modes.** The run 409s outside `ready` (no migration,
   backfilling, swapped) — comparing a partially backfilled column measures
   the backfill, not the model. One run at a time, **shared with the Retrieval
@@ -142,6 +146,11 @@ committing. The shadow card's **Compare on real queries** section (or
   one page whose shadow embed failed mid-window drops `ready` → `backfilling`
   with **the run untouched** — that case keeps the run, says so on the
   backfilling card, and re-shows the section when the backfill catches up.
+  What the backfilling card says there comes from the SERVER, not from what
+  your browser tab happened to watch: it reads your latest comparison itself
+  while the section is unmounted, so a reload (or a Settings sub-tab switch
+  away and back) still tells you a comparison is holding the slot, and a run
+  that finishes behind that note stops being described as running.
   A worker killed mid-run is recovered by the
   same 30-minute heartbeat sweep the benchmark uses — and the sweep words the
   failure as a comparison, so a row reading "start a new benchmark" is a
@@ -162,9 +171,16 @@ committing. The shadow card's **Compare on real queries** section (or
   same way, for the same reason: `GET /admin/retrieval-benchmark/:id` was the
   one caller of the shared run module that omitted the scope, so one admin
   could read titles out of another's report.) A judgements read that FAILS is
-  reported as a failure, never as "nothing judged yet": the picks are hidden
-  rather than shown unmade, so a row already judged in an earlier sitting can
-  never be re-judged from a blank slate. If
+  reported as a failure, never as "nothing judged yet" — but in three states,
+  not two: nothing loaded hides the picks (so a row judged in an earlier
+  sitting can never be re-judged from a blank slate), while a failed REFRESH
+  of judgements already on screen keeps them and adds a quiet "these are the
+  last ones loaded" line, because blanking a sitting's work over one blip is
+  its own way of losing evidence. **A run that finds nothing to sample** —
+  the likeliest first outcome on a quiet or freshly deployed instance — fails
+  naming the window it asked for and the control that widens it
+  (`Look back (days)`, up to 90), rather than only saying that the period was
+  empty. If
   you leave the tab and come back, the card re-attaches to your latest
   comparison by itself; there is nothing to write down. That re-attachment is
   scoped to the migration that is live NOW: a run recorded against another

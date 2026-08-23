@@ -187,10 +187,36 @@ because a toast is gone in seconds and the fact it reports is that N × 2
 embedding calls were spent for nothing: the ending is a dismissible amber
 `role="status"` strip rendered by every branch of the card (the toast still
 covers the one case the strip cannot — a rollback with no pending change takes
-the whole card away). The judgements read consumes `isError` like its two
+the whole card away). That branch also asks the SERVER which
+comparison is live rather than reading a flag only the section can set: the
+section is unmounted there, so a fresh mount (a reload, a sub-tab switch) had
+watched nothing and told the admin comparing was merely "not yet possible"
+over a run holding the slot, while a run that FINISHED behind the note kept
+"still running" for as long as the stragglers lasted and left a stale id that
+made the next swap warn about a comparison that had completed. It reads the
+section's own cache key, candidate and all, so the two are one entry.
+The judgements read consumes `isError` like its two
 siblings — a failed read of a MODEL PAIR's accumulated judgements is a
-failure, not "nothing judged yet", and the four picks are hidden rather than
-rendered `aria-checked="false"` on rows that are already judged — and the
+failure, not "nothing judged yet" — in THREE states, not two: unreadable
+(nothing cached) hides the four picks rather than rendering
+`aria-checked="false"` on rows that are already judged, while a failed
+BACKGROUND refetch over loaded judgements keeps them under a muted
+last-loaded line, because `isError` alone let one 500 on a 30s-stale tab-back
+blank every pick of a sitting react-query was still holding — the `usePageTree`
+ladder, on the workflow whose own copy is "twenty judgements across sittings".
+Judging is also the one flow here that writes in a BURST, so the judgement
+POST carries its own allowance (`JUDGEMENT_RATE_LIMIT_FACTOR` × the admin
+knob, a multiple and never a floor, so lowering `rate_limit_admin_max` still
+lowers it): the shared 20/min bucket is sized for the run-starting POSTs, the
+p needs 20 PICKS with ties costing a POST each, and a 429 here DROPS the pick.
+The client's `['shadow-compare-latest']` cache key carries the CANDIDATE for
+the same reason the server's lookup carries a pair predicate — keyed on the
+bare name, a remount after aborting migration A and readying B inside one
+gcTime rendered A's report and A's live judgement radios under B's heading.
+An empty sample fails naming the window it asked for and the
+control that widens it, not just the state: it is the likeliest first-run
+outcome on a quiet instance and it recurs in the amber failed-run strip on
+every attempt. The
 polite completion announcer is MOUNTED FOR THE SECTION'S LIFE with only its
 sentence conditional, the pattern `AiAssistantPage` and `DockPanel` use,
 because a region inserted together with its text is the case AT is least

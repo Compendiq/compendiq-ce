@@ -620,6 +620,18 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     const note = screen.getByTestId('shadow-compare-locked');
     expect(note.textContent).toMatch(/still running/i);
 
+    // Re-run backfill is the ONE control in this branch that does not end the
+    // migration window — it leaves `status:startedAt:swappedAt:revertedAt`
+    // untouched, so the comparison keeps going. It is also the button a
+    // path-blind `endsMigrationWindow` would fire on, in exactly the state
+    // this test has already built: `backfilling`, with the run still in
+    // flight.
+    fireEvent.click(screen.getByRole('button', { name: /re-run backfill/i }));
+    await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalled());
+    expect(vi.mocked(toast.warning)).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('shadow-compare-ended')).toBeNull();
+    expect(screen.getByTestId('shadow-compare-locked').textContent).toMatch(/still running/i);
+
     // Backfill catches up: the section re-adopts the run it never lost.
     phase = 'ready';
     stragglers = 0;
@@ -745,5 +757,116 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
     expect(screen.queryByTestId('shadow-compare-ended')).toBeNull();
     vi.useRealTimers();
+  });
+
+  describe('the backfilling note asks the server, not this session (r1)', () => {
+    const MIGRATION = {
+      phase: 'backfilling' as const,
+      model: 'qwen3-embedding:4b',
+      dimensions: 2560,
+      totalPages: 40,
+      backfilledPages: 39,
+      stragglerPages: 1,
+      indexed: true,
+      indexReady: false,
+      startedAt: '2026-08-06T10:00:00.000Z',
+    };
+
+    function mockBackfilling(latest: () => unknown) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        const method = init?.method ?? 'GET';
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+        if (url.endsWith('/compare') && method === 'GET') return json(latest());
+        if (url.includes('/shadow-migration') && method === 'GET') {
+          return json({ active: true, migration: MIGRATION });
+        }
+        return json({});
+      });
+    }
+
+    it('a FRESH mount in backfilling finds the run that is holding the slot', async () => {
+      // `compareRunning` was raised only by the compare section, and the
+      // section exists only in the `ready` branch — so a reload, or a Settings
+      // sub-tab switch away and back, landed here having watched nothing and
+      // told the admin that comparing "unlocks when the backfill completes"
+      // while their own comparison was running and holding the one-active
+      // slot. Their next Run press is then 409'd by a run this card never
+      // mentioned.
+      mockBackfilling(() => ({
+        run: { id: 'run-1', status: 'running', progressDone: 7, progressTotal: 16 },
+      }));
+      renderCard(null);
+      const note = await screen.findByTestId('shadow-compare-locked');
+      await waitFor(() => expect(note.textContent).toMatch(/still running/i));
+    });
+
+    it('stops saying "still running" once the run settles behind the note', async () => {
+      // The mirror case: nothing on this side could clear the flag, because
+      // the only thing that ever set it is unmounted. A straggler that keeps
+      // failing holds this branch indefinitely (the runbook's own case), so
+      // the sentence stayed wrong for as long as that lasted.
+      let status = 'running';
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mockBackfilling(() => ({
+        run: { id: 'run-1', status, progressDone: 16, progressTotal: 16 },
+      }));
+      renderCard(null);
+      await waitFor(() =>
+        expect(screen.getByTestId('shadow-compare-locked').textContent).toMatch(/still running/i),
+      );
+
+      status = 'completed';
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() =>
+        expect(screen.getByTestId('shadow-compare-locked').textContent).toMatch(
+          /unlocks when the backfill completes/i,
+        ),
+      );
+      vi.useRealTimers();
+    });
+
+    it('a run that COMPLETED behind the note does not make the next abort report an ending', async () => {
+      // Same stale id, one layer on: `compareRunInFlight` fed the window-close
+      // warning, so aborting after a comparison had finished warned that "the
+      // comparison in progress ended" about a run that produced its report.
+      let status = 'running';
+      let phase: 'backfilling' | 'swapped' = 'backfilling';
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        const method = init?.method ?? 'GET';
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+        if (url.endsWith('/compare') && method === 'GET') {
+          return json({ run: { id: 'run-1', status, progressDone: 16, progressTotal: 16 } });
+        }
+        if (url.includes('/shadow-migration') && method === 'GET') {
+          return json({ active: true, migration: { ...MIGRATION, phase } });
+        }
+        return json({});
+      });
+      renderCard(null);
+      await waitFor(() =>
+        expect(screen.getByTestId('shadow-compare-locked').textContent).toMatch(/still running/i),
+      );
+
+      status = 'completed';
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() =>
+        expect(screen.getByTestId('shadow-compare-locked').textContent).not.toMatch(
+          /still running/i,
+        ),
+      );
+
+      // The migration window now closes from another tab.
+      phase = 'swapped';
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() => expect(screen.queryByTestId('shadow-compare-locked')).toBeNull());
+      expect(vi.mocked(toast.warning)).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('shadow-compare-ended')).toBeNull();
+      vi.useRealTimers();
+    });
   });
 });

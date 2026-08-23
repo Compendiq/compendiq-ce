@@ -1292,4 +1292,148 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     expect(region).toHaveAttribute('role', 'status');
     expect(region.textContent).toBe('');
   });
+
+  it('a failed REFETCH keeps the picks it already holds, degraded (r1)', async () => {
+    // The r2 fix over-corrected: read as `isError` alone, one failed
+    // background refetch on the app client (30s staleTime, refetchOnWindowFocus)
+    // threw away every pick the admin had made in the sitting — while
+    // react-query still held them — on a workflow whose own copy is "twenty
+    // judgements across sittings".
+    let judgementsFail = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/judgements') && method === 'GET') {
+        if (judgementsFail) return json({ message: 'boom' }, 500);
+        return json({
+          judgements: { 'query-1': 'candidate' },
+          verdict: { ...EMPTY_VERDICT, judgementCount: 1, candidateBetter: 1 },
+        });
+      }
+      if (url.includes('/compare/') && method === 'GET') {
+        return json({
+          id: 'run-1',
+          status: 'completed',
+          progressDone: 3,
+          progressTotal: 3,
+          error: null,
+          result: COMPLETED_RESULT,
+        });
+      }
+      if (url.endsWith('/compare') && method === 'GET') return json({ run: null });
+      if (url.includes('/compare') && method === 'POST') return json({ runId: 'run-1' }, 202);
+      return json({});
+    });
+
+    // The app client's CACHING is what this is about (data survives an error);
+    // `retry` is off only to keep the test deterministic — the real client
+    // retries twice first and then reaches this same state.
+    const shared = new QueryClient({
+      defaultOptions: { queries: { staleTime: 30_000, retry: false } },
+    });
+    render(
+      <QueryClientProvider client={shared}>
+        <EmbeddingShadowCompareSection candidateModel="qwen3-embedding:4b" />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-result');
+    await waitFor(() =>
+      expect(screen.getByTestId('shadow-compare-verdict')).toHaveTextContent(/1 judgement/i),
+    );
+
+    judgementsFail = true;
+    await act(async () => {
+      await shared.refetchQueries({ queryKey: ['shadow-compare-judgements', 'run-1'] });
+    });
+    // The cache still holds the picks the screen must keep showing.
+    expect(shared.getQueryData(['shadow-compare-judgements', 'run-1'])).toMatchObject({
+      judgements: { 'query-1': 'candidate' },
+    });
+    await screen.findByTestId('shadow-compare-judgements-stale');
+
+    // The pick, the verdict and the controls survive — only a degraded line
+    // is added beside them.
+    expect(screen.getByTestId('shadow-compare-verdict')).toHaveTextContent(/1 judgement/i);
+    expect(
+      screen.getAllByRole('radio', { name: 'Candidate' })[0],
+    ).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByTestId('shadow-compare-judgements-error')).toBeNull();
+    const stale = screen.getByTestId('shadow-compare-judgements-stale');
+    expect(stale.textContent).toMatch(/last loaded/i);
+    // Muted like its siblings — nothing is wrong with the migration — and it
+    // offers the one action that fixes it.
+    expect(stale.className).toMatch(/muted/);
+    expect(stale.className).not.toMatch(/warning/);
+    expect(within(stale).getByRole('button', { name: /check again/i })).toBeInTheDocument();
+  });
+
+  it('does not adopt the PREVIOUS migration\'s report into the new candidate\'s card (r1)', async () => {
+    // `['shadow-compare-latest']` carried no candidate identity, so a remount
+    // after aborting migration A and bringing migration B to `ready` inside
+    // one session read A's cached run id and rendered A's report — its
+    // disagreement list and its live judgement radios — under a heading naming
+    // B. The server's own pair predicate refuses exactly that; the client key
+    // has to agree with it.
+    // Once armed, the re-attachment lookup never answers — the round-trip
+    // window the stale cache used to fill.
+    let holdLatest = false;
+    const neverResolves = new Promise<void>(() => {});
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/judgements')) return json({ judgements: {}, verdict: EMPTY_VERDICT });
+      if (url.includes('/compare/') && method === 'GET') {
+        return json({
+          id: 'run-a',
+          status: 'completed',
+          progressDone: 3,
+          progressTotal: 3,
+          error: null,
+          result: COMPLETED_RESULT,
+        });
+      }
+      if (url.endsWith('/compare') && method === 'GET') {
+        // The server answers `{run: null}` for candidate B (its own pair
+        // predicate) — but only after a round trip, which is the window this
+        // test is about.
+        if (holdLatest) await neverResolves;
+        return json({ run: null });
+      }
+      if (url.includes('/compare') && method === 'POST') return json({ runId: 'run-a' }, 202);
+      return json({});
+    });
+
+    const shared = createQueryClient();
+    const first = render(
+      <QueryClientProvider client={shared}>
+        <EmbeddingShadowCompareSection candidateModel="model-a" />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+    await waitFor(() =>
+      expect(screen.getByTestId('shadow-compare-basis')).toHaveTextContent(
+        COMPLETED_RESULT.candidate.model,
+      ),
+    );
+    first.unmount();
+
+    // Migration B is now the live one and its lookup is still in flight.
+    holdLatest = true;
+    render(
+      <QueryClientProvider client={shared}>
+        <EmbeddingShadowCompareSection candidateModel="model-b" />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByTestId('shadow-compare-intro')).toHaveTextContent('model-b');
+    // Nothing of A's run may render inside B's card — not its report, not its
+    // judgement controls.
+    expect(screen.queryByTestId('shadow-compare-result')).toBeNull();
+    expect(screen.queryByTestId('shadow-compare-basis')).toBeNull();
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+  });
 });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../shared/lib/api';
 import { EmbeddingShadowCompareSection } from './EmbeddingShadowCompareSection';
@@ -24,6 +24,12 @@ interface Props {
    * destructive path this card replaces while one is under way (review r9).
    */
   onActiveChange?: (active: boolean) => void;
+}
+
+/** Only the two fields the card needs; the section owns the full shape. */
+interface CompareRunSummary {
+  id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
 }
 
 interface ShadowStatus {
@@ -228,6 +234,56 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   }, [migration]);
 
   /**
+   * The comparison as the SERVER sees it, asked only while the card is the
+   * last surface standing — the `backfilling` branch, where the compare
+   * section is not mounted (r1 of this round).
+   *
+   * `compareRunning` was raised and cleared exclusively by the section's own
+   * report, and the section only exists in the `ready` branch, so the sentence
+   * this branch renders was a claim the card could not check in either
+   * direction. A FRESH mount in `backfilling` (a reload, or a Settings sub-tab
+   * switch away and back) had never heard of the run at all and told an admin
+   * that comparing "unlocks when the backfill completes" while their own
+   * comparison was running and holding the one-active slot — the exact case
+   * the two-sentence note was written for. And a run that FINISHED behind the
+   * note kept "still running" for as long as the stragglers lasted, because
+   * nothing on this side could clear the flag; the stale id then also made the
+   * next swap or abort warn that a comparison had ended when it had already
+   * completed. One lookup answers both.
+   *
+   * It shares the section's cache key, candidate and all, so the two are one
+   * entry rather than two racing ones — and it is scoped to this branch, so
+   * the `ready` branch keeps exactly one poller (the section's) and this adds
+   * no request there.
+   */
+  const compareLookupActive = migration?.phase === 'backfilling';
+  const { data: compareLatest } = useQuery<{ run: CompareRunSummary | null }>({
+    queryKey: ['shadow-compare-latest', migration?.model ?? ''],
+    queryFn: () => apiFetch('/admin/embedding/shadow-migration/compare'),
+    enabled: compareLookupActive,
+    // The card's own cadence; two admin-rate-limited polls never share a
+    // route here, because the section that owns the other one is unmounted.
+    refetchInterval: 5_000,
+    staleTime: Infinity,
+    refetchOnMount: 'always',
+  });
+  const latestCompare = compareLatest?.run ?? null;
+  useEffect(() => {
+    if (!compareLookupActive || !latestCompare) return;
+    if (latestCompare.status === 'queued' || latestCompare.status === 'running') {
+      // An ending already reported for this id is not "running" again just
+      // because the server has not caught up yet — the same latch both other
+      // arms use.
+      if (latestCompare.id === warnedFor.current) return;
+      compareRunInFlight.current = latestCompare.id;
+      setCompareRunning(true);
+      return;
+    }
+    if (compareRunInFlight.current === latestCompare.id) compareRunInFlight.current = null;
+    setCompareRunning(false);
+  }, [compareLookupActive, latestCompare]);
+
+  /**
    * The same ending, arrived at without a local POST (r1): a swap, abort or
    * rollback made in ANOTHER TAB or by another admin. `refresh()` flips this
    * card out of the `ready` branch, which unmounts the compare section, its
@@ -421,7 +477,12 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
             running behind this note, holding the one-active slot: telling that
             admin comparing "unlocks when the backfill completes" describes a
             control they already used, and hides the run their next attempt
-            would be 409'd by. */}
+            would be 409'd by.
+
+            Which sentence shows is decided by the SERVER lookup above, not by
+            what this session happened to watch: a fresh mount here has watched
+            nothing, and a run that finished behind this note is no longer
+            running. */}
         <p className="mt-2 text-xs text-muted-foreground" data-testid="shadow-compare-locked">
           {compareRunning
             ? 'A comparison on real queries is still running — this card cannot show it while stragglers remain, and it reappears when the backfill catches up.'

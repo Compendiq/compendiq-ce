@@ -174,12 +174,22 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
   // progress and an enabled Run button that then 409s. Only a full reload (a
   // new QueryClient) recovered. `start.onSuccess` seeds the same entry, so
   // the remount re-attaches from cache without a round trip first.
+  //
+  // The key carries the CANDIDATE, because that cache is exactly what the
+  // server's pair predicate refuses to serve across migrations. Keyed on the
+  // bare name, an admin who aborted migration A and brought migration B to
+  // `ready` inside one session (and inside the five-minute gcTime) remounted
+  // onto A's cached run id — so A's report, A's disagreement list and A's live
+  // judgement radios rendered under a heading naming B's model until the
+  // `refetchOnMount` round trip landed. That is the client-side survivor of
+  // the very defect the server predicate closes, and the fix is to make the
+  // two agree on what identifies a comparison.
   const {
     data: latest,
     isError: latestFailed,
     refetch: refetchLatest,
   } = useQuery<{ run: CompareRun | null }>({
-    queryKey: ['shadow-compare-latest'],
+    queryKey: ['shadow-compare-latest', candidateModel],
     queryFn: () => apiFetch('/admin/embedding/shadow-migration/compare'),
     staleTime: Infinity,
     refetchOnMount: 'always',
@@ -312,9 +322,10 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
       };
       // Seed the lookup this section re-attaches through, or the cached
       // `{ run: null }` from this mount is what the next one reads back.
-      queryClient.setQueryData<{ run: CompareRun | null }>(['shadow-compare-latest'], {
-        run: seeded,
-      });
+      queryClient.setQueryData<{ run: CompareRun | null }>(
+        ['shadow-compare-latest', candidateModel],
+        { run: seeded },
+      );
       // And seed the RUN itself, or the section renders as idle for the whole
       // window between this 202 and the first status GET resolving (r1): Run
       // re-enabled, no progress line, a second click firing a duplicate POST
@@ -396,6 +407,20 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
     // the unmount IS the event: the card re-renders into another branch, this
     // component goes away, and the run keeps going server-side.
   }, [inFlightRunId]);
+
+  // THREE states, not two (r1 of this round). The r2 fix was right that a
+  // failed read is not "nothing judged" — but read as `isError` alone it also
+  // threw away picks react-query was still holding: this query runs on the
+  // app client (30s staleTime, `refetchOnWindowFocus`), so a tab-back plus one
+  // 500 or 429 blanked every radio and the verdict for a pair whose judgements
+  // were loaded and correct, on a workflow whose own copy is "twenty
+  // judgements across sittings". So it is the `usePageTree` ladder:
+  // failed-with-nothing-cached hides the picks (rendering `aria-checked
+  // ="false"` on a judged row invites re-judging from a blank slate),
+  // failed-with-cache keeps them under a degraded line, and neither is the
+  // never-judged state the verdict speaks for.
+  const judgementsUnreadable = judgementsFailed && judgementView === undefined;
+  const judgementsStale = judgementsFailed && judgementView !== undefined;
 
   const storedJudgements = judgementView?.judgements ?? {};
   const judgedSide = (queryId: string): JudgementSide | undefined =>
@@ -557,7 +582,8 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
           judgedSide={judgedSide}
           savingQueryId={judge.isPending ? (judge.variables?.queryId ?? null) : null}
           verdict={judgementView?.verdict ?? null}
-          judgementsFailed={judgementsFailed}
+          judgementsUnreadable={judgementsUnreadable}
+          judgementsStale={judgementsStale}
           onRetryJudgements={() => void refetchJudgements()}
           onJudge={onJudge}
         />
@@ -610,7 +636,8 @@ function CompareResult({
   judgedSide,
   savingQueryId,
   verdict,
-  judgementsFailed,
+  judgementsUnreadable,
+  judgementsStale,
   onRetryJudgements,
   onJudge,
 }: {
@@ -618,7 +645,10 @@ function CompareResult({
   judgedSide: (queryId: string) => JudgementSide | undefined;
   savingQueryId: string | null;
   verdict: JudgedVerdict | null;
-  judgementsFailed: boolean;
+  /** Nothing loaded and the read failed — the picks are hidden. */
+  judgementsUnreadable: boolean;
+  /** Loaded, but the latest read failed — the picks stay, degraded. */
+  judgementsStale: boolean;
   onRetryJudgements: () => void;
   onJudge: (queryId: string, side: JudgementSide) => void;
 }) {
@@ -691,18 +721,32 @@ function CompareResult({
           claim about this model pair, and it is false whenever the read merely
           failed. Muted, not amber, exactly like the two sibling read failures
           above: nothing is wrong with the migration. */}
-      {judgementsFailed ? (
+      {judgementsUnreadable ? (
         <MutedNotice testId="shadow-compare-judgements-error" onRetry={onRetryJudgements}>
           The judgements recorded for this model pair could not be loaded, so no judged verdict can
           be stated and the picks below are hidden rather than shown as unmade.
         </MutedNotice>
       ) : (
-        // The zero-judgement prompt says "pick the better side on a
-        // disagreement below" — suppressed when no disagreement rows render,
-        // or it points at controls that do not exist. A pair with judgements
-        // accumulated from earlier runs keeps its verdict either way.
-        verdict &&
-        (verdict.judgementCount > 0 || disagreements.length > 0) && <VerdictLine verdict={verdict} />
+        <>
+          {/* Degraded, not unreadable: the figures below ARE this pair's
+              judgements, they are simply the last ones read. Stating that is
+              cheaper than hiding a correct verdict, and hiding it is what a
+              single background 500 used to do. */}
+          {judgementsStale && (
+            <MutedNotice testId="shadow-compare-judgements-stale" onRetry={onRetryJudgements}>
+              These are the judgements last loaded for this model pair — the latest could not be
+              fetched, so a pick recorded since then may be missing.
+            </MutedNotice>
+          )}
+          {/* The zero-judgement prompt says "pick the better side on a
+              disagreement below" — suppressed when no disagreement rows
+              render, or it points at controls that do not exist. A pair with
+              judgements accumulated from earlier runs keeps its verdict either
+              way. */}
+          {verdict && (verdict.judgementCount > 0 || disagreements.length > 0) && (
+            <VerdictLine verdict={verdict} />
+          )}
+        </>
       )}
       {disagreements.length === 0 ? (
         <p className="text-xs text-muted-foreground">
@@ -738,7 +782,7 @@ function CompareResult({
                     judged is a false statement, and the obvious next move it
                     invites — re-judging from a blank slate — silently rewrites
                     the evidence a swap is decided on. */}
-                {!judgementsFailed && (
+                {!judgementsUnreadable && (
                   <JudgementRow
                     query={row.query}
                     judged={judgedSide(row.id)}
