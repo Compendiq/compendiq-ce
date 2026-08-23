@@ -1947,7 +1947,13 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     ).toBe(input('ragConfidenceThreshold'));
   });
 
-  it('leaves focus on Record when the server abstains and the note stays', async () => {
+  it('leaves focus on Keep when the server abstains and the amber strip stays', async () => {
+    // Named for the button it actually presses (review r1 of the verification
+    // round): it said "Record", which is the MUTED note's button and a
+    // different branch — the misnomer is how that branch's own gap stayed
+    // invisible for two rounds. Its `Record` counterpart is at the end of this
+    // describe.
+    //
     // The other side of the same condition. `unresolved` is not reliably
     // transient (an undecryptable provider key, an EE policy naming a deleted
     // provider), so the note — and its button — deliberately survive the
@@ -2033,6 +2039,11 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     await waitFor(() => expect(puts).toHaveLength(1));
 
     expect(keep).toHaveAttribute('aria-disabled', 'true');
+    // `aria-disabled` alone announces nothing new when the operator is left
+    // standing on the button by design — a native `disabled` gets
+    // "unavailable" for free, this does not (review r1 of the verification
+    // round). `AuthPanel`'s recipe is the pair, not just the first half.
+    expect(keep).toHaveAttribute('aria-busy', 'true');
     expect(
       keep,
       'the `disabled` attribute blurs the pressed button to <body> in a real browser',
@@ -2057,6 +2068,108 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
       await held;
     });
     await waitFor(() => expect(screen.queryByTestId(stripId)).not.toBeInTheDocument());
+  });
+
+  /**
+   * The THIRD remedy, and the one the two guards above did not reach (review
+   * r1 of the verification round). Verified as a gap by mutation on the shipped
+   * head: reverting `Record`'s `aria-disabled` to `disabled` — leaving the
+   * amber strip's `Keep` and the ef-search pin untouched — left the whole
+   * 106-case suite green, so CLAUDE.md's "a `disabled` attribute is what must
+   * never come back to these three" was enforced for two of three.
+   *
+   * The muted note is the branch that most needs it: it is the one every
+   * upgraded instance with a live threshold renders, and it is reachable in
+   * the pending window twice over — `keepPending` is true while its own write
+   * is in flight AND while the panel-wide Save is, with the note mounted
+   * throughout both.
+   */
+  it('reports a Record in flight with aria-disabled, never the focus-dropping attribute', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const puts = mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration(),
+      },
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({ similarity: freshSimilarity });
+      },
+      holdPut: held,
+    });
+    renderTab();
+    await ready();
+
+    const record = within(await screen.findByTestId(unknownId)).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-record',
+    );
+    record.focus();
+    fireEvent.click(record);
+    await waitFor(() => expect(puts).toHaveLength(1));
+
+    expect(record).toHaveAttribute('aria-disabled', 'true');
+    expect(record).toHaveAttribute('aria-busy', 'true');
+    expect(
+      record,
+      'the `disabled` attribute blurs the pressed button to <body> in a real browser',
+    ).not.toBeDisabled();
+    expect(document.activeElement).toBe(record);
+
+    // The other half of the same treatment: `aria-disabled` blocks no events,
+    // so a second press has to be refused by the handler or it queues a second
+    // PUT. One turn of the event loop, because the mock records the body
+    // before it blocks.
+    await act(async () => {
+      fireEvent.click(record);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(puts).toHaveLength(1);
+
+    await act(async () => {
+      release();
+      await held;
+    });
+    await waitFor(() => expect(screen.queryByTestId(unknownId)).not.toBeInTheDocument());
+  });
+
+  it('leaves focus on Record when the server abstains and the muted note stays', async () => {
+    // The `Record` half of the pair the amber strip already has: the note is
+    // the remedy's only standing surface, so an abstain must leave both it and
+    // the caret exactly where the operator put them. This is the cell the
+    // mis-titled case above claimed to be and was not.
+    toastError.mockClear();
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration(),
+      },
+      putResult: () => ({
+        ragConfidenceCalibrationWrite: {
+          similarity: { outcome: 'unresolved', model: null },
+          rerank: null,
+        },
+      }),
+    });
+    renderTab();
+    await ready();
+
+    const record = within(await screen.findByTestId(unknownId)).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-record',
+    );
+    record.focus();
+    fireEvent.click(record);
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(await screen.findByTestId(unknownId)).toBeInTheDocument();
+    expect(
+      document.activeElement,
+      'the note is still standing, so the caret stays on the control that is still the remedy',
+    ).toBe(screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-record'));
   });
 });
 
@@ -2666,6 +2779,7 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     await waitFor(() => expect(puts).toHaveLength(1));
 
     expect(pin).toHaveAttribute('aria-disabled', 'true');
+    expect(pin).toHaveAttribute('aria-busy', 'true');
     expect(
       pin,
       'the `disabled` attribute blurs the pressed button to <body> in a real browser',

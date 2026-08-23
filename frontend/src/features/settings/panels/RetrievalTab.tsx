@@ -192,6 +192,15 @@ function focusKnobBeforeNoticeClears(fieldId: string): void {
  * `AskMode`'s example chips already use here, for this same reason. It blocks
  * no events, so every one of these handlers must return early on its own
  * pending flag; a `disabled` attribute is what must never come back.
+ *
+ * `aria-busy` rides beside it (review r1 of the verification round), and the
+ * pair is the whole of `AuthPanel`'s recipe rather than half of it. Keeping
+ * the operator standing on the pressed button is this round's entire point,
+ * and without `aria-busy` that operator is standing on a control that went
+ * quiet: a native `disabled` at least announces "unavailable" for free, while
+ * `aria-disabled` alone drops the button to 45% opacity and says nothing at
+ * all until the toast lands. The visible label deliberately does NOT swap to
+ * a gerund the way `AuthPanel`'s does — see the buttons themselves.
  */
 const PENDING_REMEDY_CLASS =
   'aria-disabled:cursor-not-allowed aria-disabled:opacity-45 aria-disabled:hover:bg-transparent';
@@ -1019,6 +1028,7 @@ export function RetrievalTab() {
                 pinEfSearchMutation.mutate(saved.ragEfSearch);
               }}
               aria-disabled={efSearchPinPending || undefined}
+              aria-busy={efSearchPinPending || undefined}
               aria-describedby={EF_SEARCH_ENV_NOTE_ID}
               className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
               data-testid="retrieval-ef-search-env-pin"
@@ -1671,10 +1681,20 @@ function CalibrationNotice({
           Calibration unknown — no model is recorded for {label} {value}, so a model change behind it
           would pass unnoticed. Record the model behind it now, or re-tune it below.
         </span>
+        {/*
+          The label keeps its NUMBER while the write is in flight — no
+          `Recording…` swap (review r1 of the verification round). This panel
+          can render two of these at once, one per basis, and the number is the
+          only thing on the button that says which threshold is being written;
+          swapping both to the same gerund makes them identical at exactly the
+          moment one of them is doing something. `aria-busy` carries the
+          in-flight fact instead, and `aria-describedby` still names the basis.
+        */}
         <button
           type="button"
           onClick={keep}
           aria-disabled={keepPending || undefined}
+          aria-busy={keepPending || undefined}
           aria-describedby={unknownSentenceId}
           className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
           data-testid={`retrieval-${fieldKey}-calibration-record`}
@@ -1763,6 +1783,7 @@ function CalibrationNotice({
           type="button"
           onClick={keep}
           aria-disabled={keepPending || undefined}
+          aria-busy={keepPending || undefined}
           aria-describedby={sentenceId}
           className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
           data-testid={`retrieval-${fieldKey}-calibration-keep`}
