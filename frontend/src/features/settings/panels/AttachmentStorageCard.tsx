@@ -245,7 +245,18 @@ export function AttachmentStorageCard() {
   // down — it exists to say a refused run would not show, which is already
   // implied when nothing at all could be read.
   const bothQueriesFailed = statsError && sweepError;
-  const lastRun = sweep.data?.lastRun ?? null;
+  /**
+   * The RAW last-run record — the announcer's input, and nothing else's.
+   *
+   * The watch below compares `at` against the run it started watching, so it
+   * must see the record TanStack is actually holding: blanking it on a failed
+   * read would rearm `watchedFrom` from `null` and then announce the
+   * unchanged, days-old run as this session's verdict the moment the GET
+   * recovered. Nothing is lost by keeping it raw — a retained record cannot
+   * change while its GET is failing, so this path announces nothing until the
+   * poll succeeds again.
+   */
+  const lastRunRecord = sweep.data?.lastRun ?? null;
   const stores = stats.data?.stores ?? null;
   /**
    * ONE derived value that every figure consumer reads (review r2).
@@ -262,6 +273,19 @@ export function AttachmentStorageCard() {
    * comments keep naming.
    */
   const figures = !isPending && !statsError ? stores : null;
+  /**
+   * …and the same guard for the OTHER record (external round 2).
+   *
+   * `figures` was derived because five of six consumers honoured `!statsError`
+   * and one did not; `lastRun` was the same half-fix one field over — it fed
+   * four surfaces (the last-run line, the candidate disclosure, the stood-down
+   * note, the did-not-complete strip) on `sweep.data` alone. With both admin
+   * GETs failing — the ORDINARY outage shape, since they share a backend — the
+   * card printed "The storage record could not be read" and, directly beneath
+   * it, "Last dry run 6m ago · 3 candidates" with a working disclosure naming
+   * the files. Every last-run consumer now reads this one value.
+   */
+  const lastRun = !sweepError ? lastRunRecord : null;
   // "No run yet" is a claim BOTH records support — a failed read of either
   // one must never be reported as an empty history.
   const noRunYet = !isPending && !statsError && !sweepError && stores === null && lastRun === null;
@@ -269,14 +293,14 @@ export function AttachmentStorageCard() {
   // The watch itself — see `runAnnouncement` above for what it is for.
   useEffect(() => {
     if (running) {
-      if (watchedFrom.current === undefined) watchedFrom.current = lastRun?.at ?? null;
+      if (watchedFrom.current === undefined) watchedFrom.current = lastRunRecord?.at ?? null;
       return;
     }
     if (watchedFrom.current === undefined) return;
-    if (!lastRun || lastRun.at === watchedFrom.current) return;
+    if (!lastRunRecord || lastRunRecord.at === watchedFrom.current) return;
     watchedFrom.current = undefined;
-    setPendingAnnouncement({ at: lastRun.at, text: announceRun(lastRun) });
-  }, [running, lastRun]);
+    setPendingAnnouncement({ at: lastRunRecord.at, text: announceRun(lastRunRecord) });
+  }, [running, lastRunRecord]);
 
   // Publish it: empty the region in this commit, refill it in the next tick —
   // see `pendingAnnouncement`. Writing the sentence straight in is a no-op
@@ -584,13 +608,25 @@ export function AttachmentStorageCard() {
       {lastRun && lastRun.candidateSample.length > 0 && (
         <details className="text-xs" data-testid="attachment-sweep-candidates">
           {/*
-            The focus ring is the sibling settings-disclosure recipe
-            (ChatVisionCapability / ImageEmbeddingCapability): `index.css` has
-            no universal `:focus-visible` rule outside `.prose`, so without it
-            the card's only keyboard-reachable disclosure — the one that opens
-            the destructive review list — fell back to the UA outline.
+            `index.css` has no universal `:focus-visible` rule outside
+            `.prose`, so without an explicit recipe the card's only
+            keyboard-reachable disclosure — the one that opens the destructive
+            review list — falls back to the UA outline.
+
+            `nm-focus-ring`, not the sibling settings-disclosures'
+            `focus-visible:ring-2` (external round 2, measured). A Tailwind
+            ring compiles to a BOX-SHADOW (`--tw-ring-shadow` → `box-shadow`,
+            confirmed against this repo's own compiled output) and
+            `focus-visible:outline-none` suppresses the UA fallback beside it —
+            so under `forced-colors: active`, which discards box-shadow,
+            these two controls had NO focus indicator at all while the two
+            buttons below kept theirs. `nm-focus-ring` is index.css's
+            hand-authored standalone mechanic and a real `outline`, which
+            forced-colors recolours rather than strips (the `transparent`
+            resting value is preserved, the same trick `nm-button-ghost`
+            below relies on).
           */}
-          <summary className="text-muted-foreground hover:text-foreground focus-visible:ring-ring cursor-pointer rounded select-none focus-visible:ring-2 focus-visible:outline-none">
+          <summary className="nm-focus-ring text-muted-foreground hover:text-foreground cursor-pointer rounded select-none">
             {lastRun.dryRun ? (
               <>
                 Show the {lastRun.candidateSample.length} candidate
@@ -619,7 +655,9 @@ export function AttachmentStorageCard() {
             the operator to read first. The implicit `list` role is kept (a
             screen reader announcing "list, 100 items" is the useful part) and
             named, because a focusable region with no name announces nothing.
-            The ring is the sibling `<summary>` recipe two lines up.
+            The focus indicator is the `<summary>`'s recipe two lines up —
+            `nm-focus-ring`, a real outline, for the forced-colors reason
+            spelled out there.
 
             Its NAME follows the same dry-run rule as the summary above it
             (fixer r1). The r2 ruling — "candidate" is a claim about pending
@@ -633,7 +671,7 @@ export function AttachmentStorageCard() {
           <ul
             tabIndex={0}
             aria-label={lastRun.dryRun ? 'Orphan candidates' : 'What the sweep found'}
-            className="border-border focus-visible:ring-ring mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border p-2 focus-visible:ring-2 focus-visible:outline-none"
+            className="nm-focus-ring border-border mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border p-2"
             data-testid="attachment-sweep-candidate-list"
           >
             {lastRun.candidateSample.map((c) => (

@@ -9,6 +9,8 @@
  * last run that did not complete.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AttachmentStorageStats, AttachmentSweepRun, AttachmentSweepStatus } from '@compendiq/contracts';
@@ -96,6 +98,8 @@ interface FetchPlan {
   sweepAfterPosts?: AttachmentSweepStatus[];
   /** Fail the SECOND stats GET onward — the ordinary failed-refetch shape. */
   statsFailsAfterFirst?: boolean;
+  /** The same for the last-run GET; set both for the ordinary outage shape. */
+  sweepFailsAfterFirst?: boolean;
 }
 
 let postedBodies: unknown[] = [];
@@ -113,6 +117,7 @@ const KICK_WARMUP_MS_UNDER_TEST = 20_000;
 function mockApi(plan: FetchPlan): void {
   postedBodies = [];
   let statsGets = 0;
+  let sweepGets = 0;
   let postSeen = false;
   let postCount = 0;
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -125,6 +130,8 @@ function mockApi(plan: FetchPlan): void {
       return plan.stats === 'error' ? json({ message: 'boom' }, 500) : json(plan.stats ?? STATS);
     }
     if (url.endsWith('/admin/attachments/sweep') && (init?.method ?? 'GET') === 'GET') {
+      sweepGets += 1;
+      if (plan.sweepFailsAfterFirst && sweepGets > 1) return json({ message: 'boom' }, 500);
       if (postSeen && plan.sweepAfterPosts) {
         return json(plan.sweepAfterPosts[Math.min(postCount - 1, plan.sweepAfterPosts.length - 1)]);
       }
@@ -352,6 +359,68 @@ describe('AttachmentStorageCard (#1349)', () => {
     ]) {
       expect(screen.queryByTestId(id), `${id} must not survive a failed stats read`).not.toBeInTheDocument();
     }
+  });
+
+  /**
+   * External round 2, browser-verified. `figures` was derived to stop five of
+   * six consumers honouring `!statsError` while one did not — but `lastRun`
+   * was the same half-fix one field over, read straight off `sweep.data` by
+   * four surfaces. Both admin GETs share a backend, so failing together is the
+   * ORDINARY outage shape, and TanStack retains `data` through a failed
+   * refetch: the card printed "The storage record could not be read" and,
+   * directly beneath it, "Last dry run … · 3 candidates" plus a working
+   * disclosure listing the filenames — the record it had just said it could
+   * not read.
+   */
+  it('a failed last-run refetch takes the last-run line and the candidate list with it', async () => {
+    mockApi({
+      statsFailsAfterFirst: true,
+      sweepFailsAfterFirst: true,
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          candidatesTotal: 3,
+          candidateSample: [
+            { store: 'confluence', key: '55555', filename: 'ghost.png', bytes: 4096, reason: 'orphan_file' },
+          ],
+        },
+      },
+    });
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={qc}>
+        <AttachmentStorageCard />
+      </QueryClientProvider>,
+    );
+
+    // First paint: both records read cleanly.
+    await screen.findByTestId('attachment-sweep-last-run');
+    expect(screen.getByTestId('attachment-sweep-candidates')).toBeInTheDocument();
+
+    // …then the whole backend goes away while both records are retained.
+    await act(async () => {
+      await qc.refetchQueries();
+    });
+
+    const failure = await screen.findByTestId('attachment-storage-error');
+    expect(failure.textContent).toContain('The storage record could not be read');
+    for (const id of [
+      'attachment-sweep-last-run',
+      'attachment-sweep-candidates',
+      'attachment-sweep-candidate-list',
+      'attachment-sweep-partial-note',
+      'attachment-sweep-last-run-problem',
+    ]) {
+      expect(
+        screen.queryByTestId(id),
+        `${id} must not survive a failed last-run read`,
+      ).not.toBeInTheDocument();
+    }
+    // The one filename the disclosure would have named must be gone with it.
+    expect(document.body.textContent).not.toContain('ghost.png');
   });
 
   /**
@@ -888,9 +957,12 @@ describe('AttachmentStorageCard (#1349)', () => {
       list.getAttribute('aria-label') ?? list.getAttribute('aria-labelledby'),
       'a focusable region needs an accessible name',
     ).toBeTruthy();
-    // The same ring recipe the disclosure summary carries — the UA outline is
-    // the fallback this card's siblings already refuse.
-    expect(list.className).toContain('focus-visible:ring-2');
+    // The same focus recipe the disclosure summary carries — a real outline,
+    // never a box-shadow ring; see the summary's cell below for why.
+    expect(list.className.split(/\s+/)).toContain('nm-focus-ring');
+    for (const cls of ['focus-visible:ring-2', 'focus-visible:outline-none']) {
+      expect(list.className.split(/\s+/), `a ring is stripped by forced-colors: ${cls}`).not.toContain(cls);
+    }
   });
 
   it('says the sample is bounded when the run found more candidates than it kept', async () => {
@@ -1178,11 +1250,24 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(screen.getByTestId('attachment-storage-card')).toHaveAttribute('aria-busy', 'true');
   });
 
-  // Review r2: this is the card's only keyboard-reachable disclosure and it
-  // opens the destructive review list, yet it fell back to the UA outline
-  // while both sibling settings disclosures (ChatVisionCapability,
-  // ImageEmbeddingCapability) ring theirs with the Steel token.
-  it('the candidate disclosure carries the app’s focus ring, not the UA default', async () => {
+  /**
+   * Review r2: this is the card's only keyboard-reachable disclosure and it
+   * opens the destructive review list, yet it fell back to the UA outline
+   * while both sibling settings disclosures (ChatVisionCapability,
+   * ImageEmbeddingCapability) ring theirs with the Steel token.
+   *
+   * External round 2 then MEASURED the ring away again: `focus-visible:ring-2`
+   * compiles to `box-shadow` (verified against this repo's own Tailwind
+   * output), `forced-colors: active` discards box-shadow, and
+   * `focus-visible:outline-none` had already suppressed the UA fallback — so
+   * in high-contrast mode the summary and the scroller, the card's only
+   * keyboard-reachable non-buttons, showed nothing at all while the two
+   * buttons beside them (a real `outline` via `nm-button-*`) kept their
+   * indicator. The class is asserted BOTH ways: `nm-focus-ring` present, the
+   * ring utilities absent, because adding the outline while leaving the ring
+   * in place would still test green on a "contains" check.
+   */
+  it('the candidate disclosure’s focus indicator is an outline, which forced-colors keeps', async () => {
     mockApi({
       sweep: {
         running: false,
@@ -1199,9 +1284,26 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     const disclosure = await screen.findByTestId('attachment-sweep-candidates');
     const summary = disclosure.querySelector('summary')!;
+    expect(
+      summary.className.split(/\s+/),
+      'the summary must carry index.css’s outline-based focus mechanic',
+    ).toContain('nm-focus-ring');
     for (const cls of ['focus-visible:outline-none', 'focus-visible:ring-2', 'focus-visible:ring-ring']) {
-      expect(summary.className.split(/\s+/), `summary must carry ${cls}`).toContain(cls);
+      expect(
+        summary.className.split(/\s+/),
+        `${cls} is a box-shadow ring (or suppresses the UA outline) and vanishes under forced-colors`,
+      ).not.toContain(cls);
     }
+    // …and the class must NAME an outline recipe, not merely be spelled like
+    // one: index.css's `@utility nm-focus-ring` is the mechanic, and a future
+    // edit that reimplemented it with a ring would leave both assertions above
+    // green while restoring exactly the defect they were written for.
+    const css = readFileSync(join(__dirname, '..', '..', '..', 'index.css'), 'utf8');
+    const at = css.indexOf('@utility nm-focus-ring');
+    expect(at, '`nm-focus-ring` no longer exists in index.css — this guard is stale').toBeGreaterThan(-1);
+    expect(css.slice(at, css.indexOf('}', at)), 'the focus mechanic must be a real outline').toContain(
+      'outline:',
+    );
   });
 
   /**
