@@ -1,18 +1,20 @@
 import type { ReactNode } from 'react';
+import { isAiRoute } from '../../lib/ai-routes';
 
 /**
  * Route-depth ordering preserved for tests + any future use. Not currently
  * consumed by this component because the AnimatePresence-based slide+fade
  * was removed (see below).
  *
- *   /          -> 0  (Pages list)
- *   /pages/new -> 1  (New page)
- *   /pages/:id -> 1  (Page view)
- *   /ai        -> 0  (AI assistant)
- *   /settings  -> 0  (Settings)
+ *   /            -> 0  (Pages list)
+ *   /pages/new   -> 1  (New page)
+ *   /pages/:id   -> 1  (Page view)
+ *   /ai          -> 0  (AI assistant)
+ *   /ai/c/:id    -> 0  (one saved conversation — same surface, #1361)
+ *   /settings    -> 0  (Settings)
  */
 function routeDepth(pathname: string): number {
-  if (pathname === '/' || pathname === '/ai' || pathname === '/settings' || pathname === '/login') {
+  if (pathname === '/' || isAiRoute(pathname) || pathname === '/settings' || pathname === '/login') {
     return 0;
   }
   if (pathname.startsWith('/pages/')) {

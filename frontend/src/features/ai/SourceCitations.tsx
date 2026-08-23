@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronRight, ExternalLink, FileText, Globe, Layers } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
-import { resolveSourceTarget } from './source-target';
+import { resolveSourceTarget, UNAVAILABLE_SOURCE_TITLE } from './source-target';
 import { imageSourceFileName, isImageSource } from './image-source';
 import { SourceThumbnail } from './SourceThumbnail';
 
@@ -30,6 +30,18 @@ export interface Source {
   confluenceId?: string | null;
   /** Absolute http(s) URL — present only on web / external-docs sources. */
   url?: string;
+  /**
+   * #1361 — a READ-TIME annotation from `GET /llm/conversations/:id`: the page
+   * this stored source names is trashed, or is no longer visible to the caller.
+   * Never persisted (the contract's `SourceSchema` says the same), and never
+   * present on a live answer, whose sources were retrieved a moment ago under
+   * this user's own visibility predicate.
+   *
+   * `resolveSourceTarget` answers `{ kind: 'none' }` for it before every other
+   * rule, so the citation renders inert with {@link UNAVAILABLE_SOURCE_TITLE}.
+   * The NUMBER stays either way — the answer text refers to it by position.
+   */
+  unavailable?: true;
   sectionTitle?: string;
   /**
    * Retrieval ORDERING value, in whichever unit produced it — an RRF fusion
@@ -133,8 +145,12 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
                   {/* #1115 P3 — an image source shows the picture where the
                       glyph would be. It renders nothing while loading or on a
                       failed fetch, and the row degrades to the title-only
-                      shape below rather than to a broken-image box. */}
-                  {isImageSource(source)
+                      shape below rather than to a broken-image box.
+                      #1361: and never for a source the read side has already
+                      reported unavailable — fetching the attachment would
+                      re-probe an ACL that has already answered. `CitationChips`
+                      gets this by construction, gating on `kind === 'internal'`. */}
+                  {isImageSource(source) && target.kind !== 'none'
                     ? <SourceThumbnail url={source.attachmentUrl!} size={32} className="mt-0.5" />
                     : target.kind === 'external'
                       ? <Globe size={14} aria-hidden className="mt-0.5 shrink-0 text-primary" />
@@ -230,7 +246,9 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
                   key={i}
                   {...motionProps}
                   className={cardClass}
-                  title="This source has no page that can be opened."
+                  title={source.unavailable
+                    ? UNAVAILABLE_SOURCE_TITLE
+                    : 'This source has no page that can be opened.'}
                   data-testid={testId}
                 >
                   {body}

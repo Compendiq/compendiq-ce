@@ -212,6 +212,14 @@ export function App() {
                             />
                             <Route path="/trash" element={<TrashPage />} />
                             <Route path="/ai" element={<AiAssistantPage />} />
+                            {/* #1361: one conversation, one URL. The same lazy
+                                component — the provider derives which thread is
+                                on screen from location.pathname, so Back and
+                                Forward walk conversations for free. */}
+                            <Route
+                              path="/ai/c/:conversationId"
+                              element={<AiAssistantPage />}
+                            />
                             <Route path="/graph" element={<GraphPage />} />
                             <Route path="/spaces/new" element={<NewSpacePage />} />
                             <Route path="/spaces/:key/settings" element={<SpaceSettingsPage />} />

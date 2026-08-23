@@ -24,13 +24,13 @@ flowchart TB
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
         fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123) · VersionHistory (#1404)"]
         fSpaces["spaces/<br/>settings · new"]
-        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ DockPanel · DockDiffCard (#1126)<br/>tab inside ArticleRightPane; mobile inspector sheet below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
+        fAI["ai/<br/>AiAssistantPage (/ai and /ai/c/:id — no-document home)<br/>conversations/ AiConversationsSidebar · ConversationList · ConversationRow (#1361)<br/>ai-routes.ts (shared/lib) · assistant-actions.ts<br/>dock/ DockPanel · DockDiffCard (#1126)<br/>tab inside ArticleRightPane; mobile inspector sheet below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
         fGraph["graph/"]
         fSettings["settings/<br/>LoginPage · user + admin"]
         fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)<br/>analytics/ (AnalyticsPage)"]
     end
 
-    app --> shell["AppLayout (authenticated shell)<br/>mounts AiProvider above the routes (#1126):<br/>conversations keyed by page and retained,<br/>inert until an AI surface consumes it"]
+    app --> shell["AppLayout (authenticated shell)<br/>mounts AiProvider above the routes (#1126):<br/>dock threads keyed by page, /ai threads by conversation (#1361),<br/>12 retained, inert until an AI surface consumes it"]
     shell --> features
 
     subgraph shared["shared/"]
@@ -147,16 +147,28 @@ flowchart LR
   not how it is applied. Consequently Apply is unavailable while the editor is
   open: it rewrites the saved page, which an open editor would overwrite on its
   next save. `article-view` therefore stays a set of read-only mirrors.
-- `/ai` keeps only the Ask and Generate tabs. The four document actions are
-  dock chips; their mode screens still render for `?mode=…` deep links, but
-  nothing offers them and nothing in the app builds one — only bookmarks and
-  links made before #1126. `SidebarTreeView` is not a source of them and never
-  was: its `isAiRoute` clicks navigate to `/ai?pageId=…` with `replace: true`,
-  which *drops* any `mode=` already in the URL, and `AiContext` reads the
-  mode-less result as Ask (deliberately — a sticky `improve` carried onto a
-  plain `/ai` would render a document screen with no tab selected and no way
-  back except the URL bar). It is what clears a mode deep link, not what makes
-  one.
+- `/ai` offers Q&A, Generate and the five #1401 create skills; the dock offers
+  all of that plus the five standalone rewrite skills and Diagram — `/ai` has
+  neither because page scope was retired there and it has no document to act
+  on. Since #1361 those are two named lists in one leaf module,
+  `features/ai/assistant-actions.ts` (`AI_HOME_ACTIONS` / `DOCK_ACTIONS`), and
+  `AssistantActionSelect` takes the list as an `actions` prop rather than the
+  old `includeGenerate` boolean. The module is a leaf on purpose: it holds the
+  `AssistantAction` type, so `AiContext` can read the allow-list without
+  importing `AssistantActionSelect`, which imports `AiContext`.
+- **No tree clears a mode any more, and the allow-list is what makes a stale
+  deep link fall back.** `SidebarTreeView` used to navigate to `/ai?pageId=…`
+  with `replace: true` on AI routes, which *dropped* any `mode=` already in the
+  URL — an accident that read like a feature. #1361 took the Pages tree off
+  `/ai` entirely and with it all three `/ai?pageId=` producers, so nothing
+  rewrites the URL on a click. What makes `?mode=improve|diagram` land on Q&A
+  is now explicit: `AiContext`'s URL-mode parser accepts, on an AI route, only
+  `ask` or `generate` (`isAiHomeAction`) — narrower than the `AI_HOME_ACTIONS`
+  menu list, because a create skill is picked in-app and never appears in a
+  URL — exactly as the retired `summarize` / `quality` values already fell
+  back. Old bookmarks therefore open the Ask
+  composer instead of a document screen with no action selected and no way
+  back except the URL bar.
 - **Opening the assistant runs nothing (#1176).** The rail icon, the expanded
   pane's row and `Alt+I` (`ai-assistant` in the shortcut registry) call
   `openDock()` and stop there. #1126 had them seed `'improve'`, which `DockPanel`
@@ -277,9 +289,17 @@ Four rules are load-bearing:
   5 × 4 thumbnails today, with `useAuthenticatedSrc` holding one blob per
   chip and no dedupe. **#1361 only makes that state reachable in one
   gesture** — a reopen replays the whole history at once instead of one turn
-  at a time — which is why PR 2 decides whether thumbnails render lazily (see
-  the **PR 2 flag** bullet at the end of the `/ai` page changes section of
-  `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`).
+  at a time — so #1361 bounded it inside `SourceThumbnail` itself rather than
+  behind a per-surface flag: the component observes a zero-footprint sentinel
+  with `IntersectionObserver` and hands `useAuthenticatedSrc` `null` until that
+  sentinel has intersected once, after which the observer disconnects. A
+  thumbnail therefore costs a fetch only when it is scrolled into view, and the
+  14px chip and the 32px card, live and reopened alike, inherit the gate.
+  Nothing with layout renders before intersection, while loading or on failure,
+  so the "loading and failure both render nothing" rule above is kept and there
+  is no layout shift. "Only the last N turns" was the alternative and was not
+  taken: it is a rule about history length that a reader scrolling back
+  defeats, while the viewport gate is exact.
   Lower the cap if the single-answer case stops holding.
 
 **In Settings → AI Models, the leg has three admin surfaces**, one per question

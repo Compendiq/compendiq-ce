@@ -6,6 +6,8 @@ import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
 import type { TreeNode, SidebarTreeNodeProps } from './SidebarTreeView';
 import { useUiStore } from '../../../stores/ui-store';
 import { ApiError } from '../../lib/api';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 vi.mock('framer-motion', async () => {
   const actual = await vi.importActual('framer-motion');
@@ -363,20 +365,6 @@ describe('SidebarTreeView', () => {
 
     expect(mockNavigate).toHaveBeenCalledWith('/pages/root-1');
     expect(screen.getByText('Installation')).toBeInTheDocument();
-  });
-
-  it('navigates to /ai?pageId= on click when on AI route (#417)', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper('/ai') });
-    fireEvent.click(screen.getByText('API Reference'));
-    expect(mockNavigate).toHaveBeenCalledWith('/ai?pageId=root-2', { replace: true });
-  });
-
-  it('highlights the article matching ?pageId on the AI route (#417)', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper('/ai?pageId=child-1') });
-    const installRef = screen.getByText('Installation');
-    const row = installRef.parentElement!;
-    expect(row.className).toContain('nav-selection');
-    expect(row.className).toContain('outline-none');
   });
 
   // #767: tree titles intermittently rendered faux-bold (synthesized weight
@@ -1260,7 +1248,6 @@ describe('SidebarTreeNode memoization', () => {
       expandedSet,
       toggleExpand: vi.fn(),
       activePageId: 'page-1',
-      isAiRoute: false,
       showSpaceKey: false,
     };
 
@@ -1274,8 +1261,8 @@ describe('SidebarTreeNode memoization', () => {
     const node = makeNode('page-1', 'Test');
     const expandedSet = new Set<string>();
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: 'page-1', isAiRoute: false, showSpaceKey: false };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: 'page-1', showSpaceKey: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -1286,21 +1273,8 @@ describe('SidebarTreeNode memoization', () => {
     };
     const node = makeNode('page-1', 'Test');
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
-
-    expect(component.compare(prev, next)).toBe(false);
-  });
-
-  it('custom comparator returns false (re-render) when isAiRoute changes (#960)', () => {
-    const component = SidebarTreeNode as unknown as {
-      compare: (prev: SidebarTreeNodeProps, next: SidebarTreeNodeProps) => boolean;
-    };
-    const node = makeNode('page-1', 'Test');
-    const expandedSet = new Set<string>();
-    const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: true, showSpaceKey: false };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, showSpaceKey: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -1312,8 +1286,8 @@ describe('SidebarTreeNode memoization', () => {
     const node = makeNode('page-1', 'Test');
     const expandedSet = new Set<string>();
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: true };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, showSpaceKey: true };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -1326,8 +1300,8 @@ describe('SidebarTreeNode memoization', () => {
     const toggleExpand = vi.fn();
     const node1 = makeNode('page-1', 'Test');
     const node2 = makeNode('page-1', 'Test Changed');
-    const prev: SidebarTreeNodeProps = { node: node1, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
-    const next: SidebarTreeNodeProps = { node: node2, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false, showSpaceKey: false };
+    const prev: SidebarTreeNodeProps = { node: node1, level: 0, expandedSet, toggleExpand, activePageId: undefined, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node: node2, level: 0, expandedSet, toggleExpand, activePageId: undefined, showSpaceKey: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -1345,7 +1319,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
           showSpaceKey={false}
         />
       </MemoryRouter>,
@@ -1482,7 +1455,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -1507,7 +1479,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -1530,7 +1501,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -1618,7 +1588,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={new Set(['p', 'c1'])}
           toggleExpand={vi.fn()}
           activePageId={undefined}
-          isAiRoute={false}
           rovingId="p"
           onRowFocus={vi.fn()}
           onRowKeyDown={vi.fn()}
@@ -1645,7 +1614,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={new Set(['parent'])}
           toggleExpand={vi.fn()}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -1725,7 +1693,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={new Set<string>()}
           toggleExpand={vi.fn()}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -1755,7 +1722,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={new Set<string>()}
           toggleExpand={vi.fn()}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -1781,7 +1747,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={new Set<string>()}
           toggleExpand={vi.fn()}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -1802,7 +1767,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={new Set<string>()}
           toggleExpand={vi.fn()}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -1824,7 +1788,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
           showSpaceKey={false}
         />
       </MemoryRouter>,
@@ -1847,7 +1810,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -1922,8 +1884,8 @@ describe('SidebarTreeNode memoization', () => {
 
   // #960: memoized rows used to call useLocation() internally, so every
   // location / searchParams change re-rendered every row in the tree — the
-  // memo comparator never got a chance to bail. The /ai signal is now passed
-  // in as a stable `isAiRoute` prop derived once by the parent, so a row only
+  // memo comparator never got a chance to bail. Rows take no location input at
+  // all now (#1361 removed the last one, the `/ai` signal), so a row only
   // re-renders when one of its actually-tracked props changes.
   describe('does not subscribe to location (#960)', () => {
     function UrlChanger() {
@@ -1951,7 +1913,6 @@ describe('SidebarTreeNode memoization', () => {
             expandedSet={expandedSet}
             toggleExpand={toggleExpand}
             activePageId={undefined}
-            isAiRoute={false}
           />
           <UrlChanger />
         </MemoryRouter>,
@@ -2038,6 +1999,43 @@ describe('SidebarTreeNode memoization', () => {
       expect(notesRow.querySelector('svg.lucide-rocket')).not.toBeNull();
       const scratchRow = screen.getByRole('button', { name: /Scratch/ });
       expect(scratchRow.querySelector('svg.lucide-hard-drive')).not.toBeNull();
+    });
+  });
+
+  // #1361: the conversations pane replaces this tree on AI routes, so the tree
+  // has no AI behaviour left. Clicking a page while `/ai` is open navigates to
+  // the page like everywhere else — it no longer rewrites the AI route's query
+  // string with a page scope that `/ai` has stopped reading.
+  describe('no AI-route special casing (#1361)', () => {
+    it('navigates to the page, not to /ai?pageId=, while an AI route is open', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper('/ai') });
+      fireEvent.click(screen.getByText('API Reference'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        expect.stringContaining('/ai?pageId='),
+        expect.anything(),
+      );
+    });
+
+    it('does not highlight a row from ?pageId on an AI route', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper('/ai?pageId=child-1') });
+      // `?pageId=` is inert everywhere now: `resolveAiPageId` answers null on an
+      // AI route (#1361 Task 1) and this tree no longer reads the param at all.
+      const installRef = screen.queryByText('Installation');
+      if (installRef) expect(installRef.parentElement!.className).not.toContain('nav-selection');
+    });
+
+    // A source guard beside the behavioural ones, because the third producer
+    // lives in the lazily-loaded local-space tree that only renders for a local
+    // space: a behavioural test for it needs the whole dnd harness, and a
+    // reintroduced literal in EITHER file is the thing that matters.
+    it('neither tree implementation contains an /ai?pageId= literal', () => {
+      const files = ['SidebarTreeView.tsx', 'DndLocalSpaceTree.tsx'];
+      for (const file of files) {
+        const source = readFileSync(join(import.meta.dirname, file), 'utf-8');
+        expect(source, `${file} still produces /ai?pageId=`).not.toContain('/ai?pageId=');
+        expect(source, `${file} still carries the isAiRoute prop`).not.toContain('isAiRoute');
+      }
     });
   });
 });

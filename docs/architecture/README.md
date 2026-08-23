@@ -47,6 +47,7 @@ Quick reference for what to update when:
 | A new backend domain, service in `backend/src/domains/*`, or route group | `03-backend-domains.md` |
 | `backend/eslint.config.js` `boundaries` rules | `03-backend-domains.md` |
 | A new top-level `frontend/src/features/*` folder or provider | `04-frontend-structure.md` |
+| A new **route** inside an existing `frontend/src/features/*` folder, or a provider's data model changing | `04-frontend-structure.md` |
 | A migration that adds/drops/renames a core table or FK | `06-data-model.md` |
 | Auth routes, JWT/refresh logic, or OIDC wiring | `07-flow-auth.md` |
 | `sync-service.ts`, sync scheduler, attachment handler | `08-flow-sync.md` |

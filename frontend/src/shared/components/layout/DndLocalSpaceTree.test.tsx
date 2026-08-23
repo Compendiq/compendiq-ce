@@ -460,4 +460,26 @@ describe('DndLocalSpaceTree', () => {
       expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
     });
   });
+
+  // #1361: the conversations pane owns the rail on AI routes, so this tree has
+  // no AI branch left. It was the third `/ai?pageId=` producer.
+  it('navigates to the page even when an AI route is open (#1361)', () => {
+    render(
+      <MemoryRouter initialEntries={['/ai']}>
+        <DndLocalSpaceTree
+          tree={[makeNode('p1', 'Page One')]}
+          expandedIds={new Set<string>()}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+          reorderPage={{ mutate: vi.fn() }}
+          rovingId="p1"
+          onRowFocus={vi.fn()}
+          onRowKeyDown={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByText('Page One'));
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/p1');
+  });
 });

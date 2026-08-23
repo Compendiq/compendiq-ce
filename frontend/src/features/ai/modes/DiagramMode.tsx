@@ -3,6 +3,7 @@ import { useCallback } from 'react';
 import { Send, FileInput } from 'lucide-react';
 import { useAiContext } from '../AiContext';
 import { AssistantActionSelect } from '../AssistantActionSelect';
+import { AI_HOME_ACTIONS } from '../assistant-actions';
 import { MermaidDiagram } from '../../../shared/components/diagrams/MermaidDiagram';
 import { cn } from '../../../shared/lib/cn';
 import { apiFetch } from '../../../shared/lib/api';
@@ -199,7 +200,7 @@ function DiagramModeInputContent() {
         </p>
       )}
       <div className="nm-composer">
-        <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
+        <AssistantActionSelect actions={AI_HOME_ACTIONS} disabled={isStreaming} className="self-end" />
         <textarea
           ref={inputRef}
           value={input}

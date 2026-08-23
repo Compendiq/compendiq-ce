@@ -16,8 +16,6 @@ export interface DndLocalSpaceTreeProps {
   expandedIds: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
-  // #960: passed down from the parent so rows don't subscribe to location.
-  isAiRoute: boolean;
   reorderPage: { mutate: (args: { id: string; sortOrder: number }) => void };
   // Roving-tabindex, computed once by SidebarTreeView (#880 follow-up, epic
   // #856) and threaded through here since the two trees share one focus
@@ -33,7 +31,6 @@ interface DndSortableTreeNodeProps {
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
-  isAiRoute: boolean;
   sortableIndex: number;
   rovingId: string | undefined;
   onRowFocus: (id: string) => void;
@@ -46,7 +43,6 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
   expandedSet,
   toggleExpand,
   activePageId,
-  isAiRoute,
   sortableIndex,
   rovingId,
   onRowFocus,
@@ -107,12 +103,8 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
   // matching the other three expand/collapse paths and SidebarTreeNode's twin.
   const handleNavigate = useCallback(() => {
     if (hasChildren && !isExpanded) toggleExpand(node.page.id);
-    if (isAiRoute) {
-      navigate(`/ai?pageId=${node.page.id}`, { replace: true });
-    } else {
-      navigate(`/pages/${node.page.id}`);
-    }
-  }, [navigate, node.page.id, hasChildren, isExpanded, toggleExpand, isAiRoute]);
+    navigate(`/pages/${node.page.id}`);
+  }, [navigate, node.page.id, hasChildren, isExpanded, toggleExpand]);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -269,7 +261,6 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
               expandedSet={expandedSet}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
-              isAiRoute={isAiRoute}
               sortableIndex={idx}
               rovingId={rovingId}
               onRowFocus={onRowFocus}
@@ -286,7 +277,6 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
     prev.expandedSet === next.expandedSet &&
-    prev.isAiRoute === next.isAiRoute &&
     prev.sortableIndex === next.sortableIndex &&
     prev.rovingId === next.rovingId &&
     prev.onRowFocus === next.onRowFocus &&
@@ -299,7 +289,6 @@ export default function DndLocalSpaceTree({
   expandedIds,
   toggleExpand,
   activePageId,
-  isAiRoute,
   reorderPage,
   rovingId,
   onRowFocus,
@@ -340,7 +329,6 @@ export default function DndLocalSpaceTree({
             expandedSet={expandedIds}
             toggleExpand={toggleExpand}
             activePageId={activePageId}
-            isAiRoute={isAiRoute}
             sortableIndex={idx}
             rovingId={rovingId}
             onRowFocus={onRowFocus}

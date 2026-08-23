@@ -411,7 +411,9 @@ describe('AiDockSheet (#1126)', () => {
     for (const action of ['ask', 'grammar', 'structure', 'clarity', 'technical', 'completeness', 'diagram']) {
       expect(await screen.findByTestId(`assistant-action-${action}`)).toBeInTheDocument();
     }
-    expect(screen.queryByTestId('assistant-action-generate')).not.toBeInTheDocument();
+    // #1361 / owner ruling 3: the sheet renders DockPanel, which now offers
+    // Generate (routed to runCreateSkill('custom') since #1401).
+    expect(screen.getByTestId('assistant-action-generate')).toBeInTheDocument();
     expect(screen.getByTestId('ai-dock-thread')).toBeInTheDocument();
     expect(screen.getByTestId('ai-dock-empty')).toHaveTextContent('Onboarding Guide');
 
