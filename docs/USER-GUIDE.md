@@ -109,7 +109,18 @@ The AI assistant can answer questions, improve content, and help with writing:
 1. Open the **AI** panel from the sidebar (or press `G A`).
 2. Type your question or request.
 3. Responses stream in real-time via SSE.
-4. Conversations are saved and can be continued later.
+4. **Q&A conversations are saved.** Past conversations are listed in the left
+   pane on the AI page, grouped by when you last used them (Today, Yesterday,
+   Previous 7 days, and so on), with a filter box once you have more than
+   eight. Selecting one reopens it at its own address (`/ai/c/<id>`), so it can
+   be bookmarked and walked with the browser's Back and Forward buttons, and
+   your next question continues it. Each row's `⋯` menu **renames** it in place
+   (Enter commits, Escape cancels) or **deletes** it permanently. **New chat**
+   — in the top bar and at the top of the pane — starts an empty one.
+5. Only Q&A is saved. Generate, the rewrite skills and Diagram are not.
+   Questions you ask from the assistant beside an article are saved too and
+   appear in the list tagged with the page they started on; continuing one from
+   the AI page searches the whole knowledge base rather than that page.
 
 ### Improve an Article
 

@@ -771,11 +771,20 @@ requests per new conversation. A one-shot timer would race the model's latency.
   persisted) and still suppresses the badge on a refusal (#1119). A source with `unavailable:
   true` resolves to `{ kind: 'none' }` in `resolveSourceTarget` and renders inert with
   `title="This page is no longer available to you"`.
-- **PR 2 flag, not decided here**: every persisted `kind: 'image'` source reopens as a live
+- **Decided (owner, 2026-08-18; amendment item 4) — thumbnails are viewport-gated, inside
+  `SourceThumbnail`.** Every persisted `kind: 'image'` source used to reopen as a live
   thumbnail fetch (`useAuthenticatedSrc` pulling the full attachment, up to `MAX_IMAGE_SOURCES`
-  = 4 per turn, no server-side resize per ADR-025) — a long thread reopened fetches N turns × 4.
-  PR 2 should decide whether reopened thumbnails render lazily (in-viewport, or only the last N
-  turns) rather than eagerly for the whole history.
+  = 4 per turn, no server-side resize per ADR-025), so a long thread reopened fetched N turns
+  × 4 at mount. PR 2 puts the bound in the component rather than behind a per-surface flag:
+  `SourceThumbnail` observes a zero-footprint sentinel with `IntersectionObserver` and passes
+  `useAuthenticatedSrc` `null` until the sentinel has intersected once, after which the
+  observer disconnects. The 14px chip and the 32px card, live and reopened alike, inherit it,
+  and `typeof IntersectionObserver === 'undefined'` is treated as intersected so a
+  non-observing environment degrades to today's behaviour rather than to a blank chip.
+  Nothing with layout renders before intersection, while loading or on failure, so the
+  "loading and failure both render nothing" rule is kept and there is no layout shift.
+  "Only the last N turns" was the alternative and was not taken: it is a rule about history
+  length that a reader scrolling back defeats, while the viewport gate is exact.
 
 ## Backend
 
@@ -1208,16 +1217,19 @@ be reversed cheaply if the owner disagrees.
    refetches either way.
 7. **`page_ref`, drop `page_id`** — argued under Migration.
 8. **Keyset over offset** — argued under Read side.
-9. **A refused exchange's orphan user turn is dropped from replay.** Today the `refused`
-   filter strips the assistant half and replays the bare question (`llm-ask.ts:740-742`).
-   Defining the budget walk in whole exchanges makes the orphan a decision; dropping it keeps
-   the replayed history well-formed for providers that reject consecutive same-role messages
-   and costs the model one unanswered question it could not have used.
-10. **`page_ref` is authorised at write time.** The ask route never authorised a bare
-    `pageId` (only the `includeSubPages` branch did, `llm-ask.ts:274-280`), and the pane would
-    have read the title back — a page-title oracle over the whole table. A consequence of
-    writing the column at all rather than an owner call, but it adds one `userCanAccessPage`
-    query to the first ask of a dock conversation.
+9. **A refused exchange's orphan user turn is dropped from replay. — DECIDED, shipped in
+   PR 1 (#1365).** The old `refused` filter stripped the assistant half and replayed the
+   bare question; the anchor it cited (`llm-ask.ts:740-742`) no longer exists. The budget
+   walk now lives in `backend/src/domains/llm/services/history-budget.ts`
+   (`selectReplayableHistory`), walks whole exchanges and drops the orphan, which keeps the
+   replayed history well-formed for providers that reject consecutive same-role messages and
+   costs the model one unanswered question it could not have used.
+10. **`page_ref` is authorised at write time. — DECIDED, shipped in PR 1 (#1365).** The ask
+    route never authorised a bare `pageId` (only the `includeSubPages` branch did), and the
+    pane reads the title back, which would have been a page-title oracle over the whole
+    table. The INSERT beside `llm-ask.ts:664` writes `page_ref` only for an id
+    `userCanAccessPage` has cleared, at the cost of one extra query on the first ask of a
+    dock conversation.
 
 ## Follow-ups (already in the issue's out-of-scope list, plus three found here)
 

@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-28
 **Issue:** #1126 (AI context switching UX)
-**Status:** Shipped, with one element superseded — see the amendment below.
+**Status:** Shipped, with two elements superseded — see the two amendments below.
 
 > ## Amendment (2026-08-06, UI overhaul)
 >
@@ -34,6 +34,44 @@
 >   opening running nothing (#1176) — is unchanged.
 >
 > Current topology of record: `docs/architecture/04-frontend-structure.md`.
+
+> ## Amendment (2026-08-18, saved conversations on `/ai` — #1361)
+>
+> **The dock is unchanged; `/ai` is not.** Everything above still describes the
+> assistant beside the document, tab container included. What changed is the
+> *other* surface this spec touched in passing, and it supersedes two elements:
+> one bullet of the 2026-08-06 block and one line of
+> [Affected files](#affected-files).
+>
+> - **"conversations keyed by page" (the 2026-08-06 block's last bullet) is now
+>   half true.** `AiContext` keys threads by **location**: `page:<id>` for the
+>   dock — unchanged, the open document is still the key — and `draft` /
+>   `conv:<id>` for `/ai`, which gained a per-conversation URL `/ai/c/:id`.
+>   Each thread also carries an **identity**, so a stream writer follows a
+>   re-key (a first answer promotes `draft` to `conv:<id>` mid-stream) and drops
+>   its write instead of resurrecting a thread that has been replaced. The
+>   12-thread retention and "opening the assistant runs nothing" (#1176) are
+>   untouched.
+> - **"`/ai` becomes Ask + Generate" (the `AiAssistantPage.tsx` line of Affected
+>   files) understates it.** The Pages tree no longer renders on AI routes at
+>   all — a conversations pane takes the left rail — and page scope on `/ai` is
+>   retired outright: no context chip, no `+ Sub-pages`, and an ask from `/ai`
+>   sends no `pageId`, so a dock-origin conversation continued from `/ai`
+>   searches the whole corpus. The dock keeps page scope; that asymmetry is the
+>   point of this spec and is intact.
+>
+> Files this adds to the list below: `frontend/src/shared/lib/ai-routes.ts`,
+> `frontend/src/features/ai/conversations/*` (the pane),
+> `frontend/src/features/ai/assistant-actions.ts`,
+> `frontend/src/shared/hooks/use-list-roving-focus.ts`,
+> `frontend/src/shared/components/layout/AppLayout.tsx` (the pane is the third
+> arm of the sidebar ternary), and
+> `frontend/src/shared/components/layout/SidebarTreeView.tsx` +
+> `DndLocalSpaceTree.tsx` (the `isAiRoute` prop and every branch keyed on it
+> deleted).
+>
+> Design of record for all of it:
+> `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`.
 
 ## Problem
 
