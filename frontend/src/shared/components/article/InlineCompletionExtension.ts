@@ -6,13 +6,18 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { closeHistory } from '@tiptap/pm/history';
 import { isInTable } from '@tiptap/pm/tables';
 import type {
+  InlineCompletionMode,
   InlineCompletionRequest,
   InlineCompletionResponse,
 } from '@compendiq/contracts';
 import { apiFetch } from '../../lib/api';
+import { isMac as detectMac } from '../../lib/platform';
 
 const PREFIX_CONTEXT_CHARS = 3_200; // ~800 tokens
 const SUFFIX_CONTEXT_CHARS = 800; // ~200 tokens
+const WORD_PREFIX_CONTEXT_CHARS = 800; // ~200 tokens
+const WORD_SUFFIX_CONTEXT_CHARS = 200; // ~50 tokens
+const WORD_COMPLETION_MAX_TOKENS = 8;
 
 export const inlineCompletionPluginKey = new PluginKey<InlineCompletionPluginState>(
   'inlineCompletion',
@@ -36,6 +41,7 @@ type InlineCompletionMeta =
 export interface InlineCompletionOptions {
   enabled: boolean | (() => boolean);
   delayMs: number | null | (() => number | null);
+  mode: InlineCompletionMode | (() => InlineCompletionMode);
   codeOnly: boolean | (() => boolean);
   pageId?: number;
   spaceKey?: string;
@@ -86,15 +92,18 @@ function contextAtCursor(
   const { selection, doc } = state;
   if (!(selection instanceof TextSelection) || !selection.empty) return null;
   const at = selection.from;
+  const mode = valueOf(options.mode);
+  const prefixChars = mode === 'word' ? WORD_PREFIX_CONTEXT_CHARS : PREFIX_CONTEXT_CHARS;
+  const suffixChars = mode === 'word' ? WORD_SUFFIX_CONTEXT_CHARS : SUFFIX_CONTEXT_CHARS;
   const prefix = doc.textBetween(
-    Math.max(0, at - PREFIX_CONTEXT_CHARS),
+    Math.max(0, at - prefixChars),
     at,
     '\n',
     '\n',
   );
   const suffix = doc.textBetween(
     at,
-    Math.min(doc.content.size, at + SUFFIX_CONTEXT_CHARS),
+    Math.min(doc.content.size, at + suffixChars),
     '\n',
     '\n',
   );
@@ -111,7 +120,9 @@ function contextAtCursor(
     prefix,
     suffix: suffix || undefined,
     language: codeLanguage ?? metadata.language,
-    maxTokens: options.maxTokens,
+    maxTokens: mode === 'word'
+      ? Math.min(options.maxTokens, WORD_COMPLETION_MAX_TOKENS)
+      : options.maxTokens,
   };
 }
 
@@ -172,13 +183,13 @@ export const InlineCompletionExtension = Extension.create<InlineCompletionOption
     return {
       enabled: false,
       delayMs: 500,
+      mode: 'full',
       codeOnly: false,
       maxTokens: 48,
       requestCompletion: defaultRequest,
       isCoarsePointer: () =>
         typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true,
-      isMac: () =>
-        typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform),
+      isMac: detectMac,
     };
   },
 
@@ -334,6 +345,9 @@ export const InlineCompletionExtension = Extension.create<InlineCompletionOption
               // prefix and continuation. If the user already typed it, avoid
               // rendering/accepting a doubled space.
               if (/\s$/u.test(input.prefix)) completion = completion.replace(/^[\t ]+/u, '');
+              if (valueOf(options.mode) === 'word') {
+                completion = nextWord(completion).accepted;
+              }
               dispatchMeta(view, completion
                 ? { type: 'suggestion', at, completion }
                 : { type: 'clear' });

@@ -8,13 +8,30 @@
  * settings, or records synthetic analytics rows.
  */
 import type { RetrievalBenchmarkQuery, RetrievalBenchmarkRequest } from '@compendiq/contracts';
-import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
+// One run-row lifecycle, shared with the #1260 shadow comparison: the two
+// kinds hold ONE slot between them, and two private copies of these five
+// statements is exactly how the stale sweep started reporting a comparison as
+// a benchmark and the fetch started serving one kind's report to the other's
+// renderer.
+import {
+  BenchmarkRunSlotBusyError,
+  activeBenchmarkRun,
+  claimBenchmarkRun,
+  completeBenchmarkRun,
+  failBenchmarkRun,
+  fetchBenchmarkRun,
+  insertBenchmarkRun,
+  readQueuedConfig,
+  recordBenchmarkProgress,
+  type BenchmarkRunKind,
+} from './benchmark-run-lifecycle.js';
 import {
   hybridSearch,
   type SearchResult,
 } from '../services/rag-service.js';
 import { multiQuerySearch, type ExpansionOutcome } from '../services/multi-query-search.js';
+import { sampleAnalyticsQueries } from './analytics-query-sampler.js';
 // One definition, shared with the #1114 latency benchmark: two byte-identical
 // copies of a percentile rule is how two "p95" figures in one repo stop
 // meaning the same thing (review r2).
@@ -86,89 +103,55 @@ export interface ProductionBenchmarkReport {
   queries: ProductionBenchmarkQueryResult[];
 }
 
-interface BenchmarkRunRow {
+/**
+ * Re-exported under its historical name: the slot is SHARED with the #1260
+ * shadow comparison, so the error is the lifecycle module's, and `kind` names
+ * the holder. The default message stays the benchmark sentence — it is what
+ * the benchmark POST answers, per the #1260 owner decision that the benchmark
+ * direction keeps its wording; the compare route words its own 409 by `kind`.
+ */
+export { BenchmarkRunSlotBusyError as ProductionBenchmarkAlreadyRunningError };
+
+/**
+ * The run holding the shared one-active slot, if any. Deliberately NOT
+ * scoped by kind — a #1260 shadow comparison and the production benchmark
+ * exclude each other because both spend the shared LLM queue — but `kind`
+ * is reported so each route can name what is actually running in its 409.
+ */
+export async function getActiveProductionBenchmark(): Promise<{
   id: string;
-  status: ProductionBenchmarkStatus;
-  config: RetrievalBenchmarkRequest;
-  progress_done: number;
-  progress_total: number;
-  result: ProductionBenchmarkReport | null;
-  error: string | null;
-  created_at: Date | string;
-  started_at: Date | string | null;
-  completed_at: Date | string | null;
-}
-
-export class ProductionBenchmarkAlreadyRunningError extends Error {
-  constructor(public readonly activeRunId: string) {
-    super('A production retrieval benchmark is already running');
-  }
-}
-
-const STALE_BENCHMARK_AFTER = '30 minutes';
-const STALE_BENCHMARK_ERROR = 'The benchmark worker stopped before the run completed. Start a new benchmark.';
-
-export async function getActiveProductionBenchmark(): Promise<{ id: string } | null> {
-  await recoverStaleProductionBenchmarks();
-  const result = await query<{ id: string }>(
-    `SELECT id FROM retrieval_benchmark_runs
-     WHERE status IN ('queued', 'running')
-     ORDER BY created_at ASC
-     LIMIT 1`,
-  );
-  return result.rows[0] ?? null;
-}
-
-async function recoverStaleProductionBenchmarks(): Promise<void> {
-  const result = await query<{ id: string }>(
-    `UPDATE retrieval_benchmark_runs
-     SET status = 'failed', error = $1, completed_at = NOW(), last_heartbeat_at = NOW()
-     WHERE status IN ('queued', 'running')
-       AND last_heartbeat_at < NOW() - $2::interval
-     RETURNING id`,
-    [STALE_BENCHMARK_ERROR, STALE_BENCHMARK_AFTER],
-  );
-  if (result.rows.length > 0) {
-    logger.warn(
-      { benchmarkRunIds: result.rows.map((row) => row.id) },
-      'Recovered abandoned production retrieval benchmark runs',
-    );
-  }
+  kind: BenchmarkRunKind;
+  requestedBy: string | null;
+} | null> {
+  return activeBenchmarkRun();
 }
 
 export async function createProductionBenchmarkRun(
   requestedBy: string,
   config: RetrievalBenchmarkRequest,
 ): Promise<string> {
-  try {
-    const result = await query<{ id: string }>(
-      `INSERT INTO retrieval_benchmark_runs (requested_by, status, config)
-       VALUES ($1, 'queued', $2::jsonb)
-       RETURNING id`,
-      [requestedBy, JSON.stringify(config)],
-    );
-    return result.rows[0]!.id;
-  } catch (err) {
-    // The partial unique index is the cross-request/replica guard. Keep the
-    // route's response stable and do not expose a database constraint name.
-    if (isUniqueActiveRunError(err)) {
-      const active = await getActiveProductionBenchmark();
-      if (active) throw new ProductionBenchmarkAlreadyRunningError(active.id);
-    }
-    throw err;
-  }
+  return insertBenchmarkRun(requestedBy, config);
 }
 
-export async function getProductionBenchmarkRun(id: string): Promise<ProductionBenchmarkRun | null> {
-  const result = await query<BenchmarkRunRow>(
-    `SELECT id, status, config, progress_done, progress_total, result, error,
-            created_at, started_at, completed_at
-     FROM retrieval_benchmark_runs WHERE id = $1`,
-    [id],
-  );
-  const row = result.rows[0];
-  if (!row) return null;
-  return toPublicRun(row);
+/**
+ * A production-benchmark run and NOTHING else. The kind argument is what
+ * stops this surface serving a shadow comparison — whose report has no
+ * `baseline`, so `BenchmarkSummary` throws on it and blanks the Retrieval
+ * panel — and whose `queries[]` carries sampled production query text.
+ *
+ * `requestedBy` is required here for the reason `fetchBenchmarkRun` states
+ * (review r2): this report's `queries[].baseline.pages` carries page TITLES
+ * that `hybridSearch` retrieved under the STARTING admin's own ACL, and
+ * `visiblePagesPredicate` admits their private standalone pages — so an
+ * unscoped read hands admin B titles admin A can see and B cannot. It was the
+ * one caller of the shared lifecycle module that omitted the argument while
+ * the compare side beside it passed it.
+ */
+export async function getProductionBenchmarkRun(
+  id: string,
+  requestedBy: string,
+): Promise<ProductionBenchmarkRun | null> {
+  return fetchBenchmarkRun<RetrievalBenchmarkRequest, ProductionBenchmarkReport>(id, null, requestedBy);
 }
 
 export async function runProductionBenchmark(id: string, userId: string): Promise<void> {
@@ -176,58 +159,32 @@ export async function runProductionBenchmark(id: string, userId: string): Promis
     // Keep the claim path inside the failure handler. If the process dies
     // after insertion but before this transition, the heartbeat recovery in
     // getActiveProductionBenchmark() will release the queued row later.
-    const row = await query<Pick<BenchmarkRunRow, 'config' | 'status'>>(
-      `SELECT config, status FROM retrieval_benchmark_runs WHERE id = $1`,
-      [id],
-    );
-    const config = row.rows[0]?.config;
-    if (!config || row.rows[0]?.status !== 'queued') return;
+    const config = await readQueuedConfig<RetrievalBenchmarkRequest>(id);
+    if (!config) return;
 
-    const claimed = await query(
-      `UPDATE retrieval_benchmark_runs
-       SET status = 'running', started_at = NOW(), progress_done = 0,
-           progress_total = $2, error = NULL, last_heartbeat_at = NOW()
-       WHERE id = $1 AND status = 'queued'`,
-      [id, config.source === 'custom' ? config.queries?.length ?? 0 : config.limit],
+    const claimed = await claimBenchmarkRun(
+      id,
+      config.source === 'custom' ? config.queries?.length ?? 0 : config.limit,
     );
-    if (claimed.rowCount !== 1) return;
+    if (!claimed) return;
 
     const queries = await resolveBenchmarkQueries(config);
-    await query(
-      `UPDATE retrieval_benchmark_runs
-       SET progress_total = $2, last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [id, queries.length],
-    );
+    await recordBenchmarkProgress(id, 0, queries.length);
 
     if (queries.length === 0) {
       throw new Error('No production queries were available in the selected period');
     }
 
     const report = await executeBenchmark(queries, userId, config, async (done) => {
-      await query(
-        `UPDATE retrieval_benchmark_runs
-         SET progress_done = $2, last_heartbeat_at = NOW()
-         WHERE id = $1`,
-        [id, done],
-      );
+      await recordBenchmarkProgress(id, done);
     });
 
-    await query(
-      `UPDATE retrieval_benchmark_runs
-       SET status = 'completed', progress_done = progress_total,
-           result = $2::jsonb, completed_at = NOW(), last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [id, JSON.stringify(report)],
-    );
+    await completeBenchmarkRun(id, report);
   } catch (err) {
     logger.error({ err, benchmarkRunId: id }, 'Production retrieval benchmark failed');
-    await query(
-      `UPDATE retrieval_benchmark_runs
-       SET status = 'failed', error = $2, completed_at = NOW(), last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [id, publicErrorMessage(err)],
-    ).catch((updateErr) => logger.error({ err: updateErr, benchmarkRunId: id }, 'Failed to persist benchmark failure'));
+    await failBenchmarkRun(id, publicErrorMessage(err)).catch((updateErr) =>
+      logger.error({ err: updateErr, benchmarkRunId: id }, 'Failed to persist benchmark failure'),
+    );
   }
 }
 
@@ -239,19 +196,17 @@ async function resolveBenchmarkQueries(config: RetrievalBenchmarkRequest): Promi
     }));
   }
 
-  const result = await query<{ query_text: string }>(
-    `SELECT (ARRAY_AGG(TRIM(query) ORDER BY created_at DESC))[1] AS query_text
-     FROM search_analytics
-     WHERE created_at >= NOW() - ($1 * INTERVAL '1 day')
-       AND char_length(TRIM(query)) BETWEEN 3 AND 1000
-     GROUP BY LOWER(TRIM(query))
-     ORDER BY MAX(created_at) DESC
-     LIMIT $2`,
-    [config.days, config.limit],
-  );
-  return result.rows.map((item, index) => ({
+  // Deliberately RECENCY-ordered — this benchmark reports on what people ask
+  // now. The shadow comparison (#1260) shares the sampler with
+  // `orderBy: 'frequency'` instead; only the ORDER differs.
+  const queries = await sampleAnalyticsQueries({
+    days: config.days,
+    limit: config.limit,
+    orderBy: 'recency',
+  });
+  return queries.map((text, index) => ({
     id: `recent-${index + 1}`,
-    query: item.query_text,
+    query: text,
   }));
 }
 
@@ -387,21 +342,6 @@ function summarizeVariant(
   };
 }
 
-function toPublicRun(row: BenchmarkRunRow): ProductionBenchmarkRun {
-  return {
-    id: row.id,
-    status: row.status,
-    config: row.config,
-    progressDone: row.progress_done,
-    progressTotal: row.progress_total,
-    result: row.result,
-    error: row.error,
-    createdAt: row.created_at,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-  };
-}
-
 function recallAtK(runs: Array<{ retrieved: number[]; expected: number[] }>, k: number): number {
   if (runs.length === 0) return 0;
   return runs.reduce((sum, run) => {
@@ -434,10 +374,6 @@ function sameIds(a: Set<number>, b: Set<number>): boolean {
 
 function intersectionSize(a: Set<number>, b: Set<number>): number {
   return [...a].filter((id) => b.has(id)).length;
-}
-
-function isUniqueActiveRunError(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: unknown }).code === '23505';
 }
 
 function publicErrorMessage(err: unknown): string {

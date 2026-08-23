@@ -1,0 +1,1287 @@
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle, Check } from 'lucide-react';
+import { toast } from 'sonner';
+import { apiFetch } from '../../../shared/lib/api';
+import { cn } from '../../../shared/lib/cn';
+
+/**
+ * #1260 — "Compare on real queries", inside the shadow card's `ready` branch.
+ *
+ * Mode 1 of the shadow comparison: run the deployment's most frequent
+ * recorded searches against both columns and list where the two models
+ * disagree. Everything on this surface is an AGREEMENT statement — the copy
+ * says so at rest, and the result's basis line repeats it — because without
+ * labels the run cannot say which side is right, only how much retrieval
+ * would move.
+ *
+ * A disagreement is a measurement, so the whole surface stays neutral; amber
+ * appears only on a run THIS MOUNT WATCHED FAIL — started here, or adopted
+ * while still counting (the failed-save strip recipe). A run adopted already
+ * failed says the same sentence quietly: it would otherwise re-render its
+ * strip on every fresh mount until another comparison replaced it, and
+ * standing amber at rest is how the reserved colour stops meaning anything.
+ * Watched-versus-adopted is the honest cut, not started-here-versus-not: a
+ * comparison showing live progress one poll earlier is news by any reading,
+ * and its N x 2 embedding calls were just spent. The poll matches the card's
+ * own 5s cadence: this section and the card's status poll are two requests per
+ * interval against the 20/min admin rate limit, so polling faster would starve
+ * the card's own controls.
+ *
+ * The run id is NOT only component state. A tab switch, a route change or a
+ * reload unmounts this section, and a comparison outlives all three: without
+ * a way back the report, its disagreement list and the whole Mode 2 workflow
+ * (twenty judgements across sittings) would be unreachable while the run
+ * itself still held the one-active slot against a replacement. So the section
+ * asks the server for this admin's most recent comparison on mount and
+ * re-attaches to it — and the server answers only a run recorded against the
+ * candidate pair that is live NOW, so an aborted migration's report can never
+ * be presented inside the current migration's card.
+ */
+
+interface Props {
+  /** The migration's candidate model — names the shadow side before a report exists. */
+  candidateModel: string;
+  /**
+   * Identity of the migration this section belongs to, for the re-attachment
+   * cache key. NOT the model name (r1): the server's predicate carries the
+   * whole candidate PAIR (`config @> {"candidate":{providerId,model}}`), and
+   * the same model name re-hosted behind a second provider is a different
+   * index to it — so a name-only key collides where the server's does not,
+   * and a remount inside gcTime rendered the previous migration's report and
+   * its live judgement radios under the current migration's heading. The card
+   * builds it from the model AND the migration's `startedAt`, which is
+   * strictly finer than the pair (`providerId` is not on the status wire) and
+   * therefore safe in the one direction that matters: a finer key can only
+   * miss the cache — the server still serves the run — never mis-serve it.
+   */
+  candidateKey: string;
+  /**
+   * Reports the id of a comparison that is still queued or running, and `null`
+   * the moment it settles. The card needs it because this whole section lives
+   * inside the `ready` branch: a swap or an abort re-renders the card into
+   * another branch, this component unmounts mid-run, and the failure the
+   * migration change causes server-side then has nowhere to appear. The card
+   * is the only surviving surface at that moment, so it is the one that has to
+   * say so.
+   *
+   * It reports on STATUS, never on provenance (r1). Gating it on "started in
+   * this session" made the channel dead on exactly the path re-attachment
+   * exists for — a sub-tab switch, a route change or a reload re-adopts a live
+   * run, and the next Abort then ended it in silence. `GET …/compare` resolves
+   * through `latestBenchmarkRun(..., requestedBy, …)` (`WHERE requested_by =
+   * $1`), so an adopted run is always this admin's own and the card's sentence
+   * can never blame them for someone else's comparison.
+   */
+  onRunInFlightChange?: (runId: string | null) => void;
+}
+
+interface ComparedPages {
+  pageIds: number[];
+  pages: Array<{ pageId: number; title: string; spaceKey: string | null }>;
+}
+
+interface CompareQueryRow {
+  id: string;
+  query: string;
+  live: ComparedPages;
+  candidate: ComparedPages;
+  top1Changed: boolean;
+  jaccard: number;
+  rbo: number;
+}
+
+interface CompareReport {
+  topK: number;
+  queryCount: number;
+  /** Both absent on a report written before per-query failure tolerance. */
+  sampledQueryCount?: number;
+  failedQueries?: number;
+  live: { providerId: string; model: string };
+  candidate: { providerId: string; model: string };
+  agreement: {
+    queryCount: number;
+    top1ChangedQueries: number;
+    top1ChangeRate: number;
+    meanJaccard: number;
+    meanRbo: number;
+    disagreementCount: number;
+  };
+  queries: CompareQueryRow[];
+}
+
+interface CompareRun {
+  id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  progressDone: number;
+  progressTotal: number;
+  result: CompareReport | null;
+  error: string | null;
+}
+
+type JudgementSide = 'live' | 'candidate' | 'neither' | 'both';
+
+interface JudgedVerdict {
+  judgementCount: number;
+  /** The live/candidate picks — the only ones a p-value can come from. */
+  scoredJudgementCount?: number;
+  liveBetter: number;
+  candidateBetter: number;
+  both: number;
+  neither: number;
+  mcnemar: {
+    wins: number;
+    losses: number;
+    pValue: number | null;
+    significant: boolean;
+    direction: 'improvement' | 'regression' | 'none';
+  } | null;
+  recall: { live: number; candidate: number } | null;
+  mrr: { live: number; candidate: number } | null;
+  minJudgementsForP: number;
+}
+
+interface JudgementsView {
+  judgements: Record<string, JudgementSide>;
+  verdict: JudgedVerdict;
+}
+
+const inputClass =
+  'w-20 rounded-md border border-border-interactive bg-background/50 px-2 py-1.5 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring';
+
+/** How many disagreeing queries render before the list asks to be expanded. */
+const DISAGREEMENTS_SHOWN = 10;
+
+/**
+ * `Number.isFinite`, never a truthiness test: `value || min` treats a cleared
+ * field (Number('') === 0) as "use the minimum" and REWRITES the input to it,
+ * so the field can never be emptied to retype — backspacing 50 → '' gave 1,
+ * and typing 25 after it gave 125 → clamped to the maximum, the opposite of
+ * what was typed.
+ */
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * The retry a "could not be read" notice owns — the `RetrievalTab` recipe
+ * (adjudicated over three rounds there, same directory, same panel), applied
+ * to the four notices on this surface (r1).
+ *
+ * The defect it closes is that every one of those notices is gated on
+ * `isError` ALONE, and react-query's `fetchState` spreads
+ * `...(data === undefined && { error: null, status: 'pending' })`: refetching
+ * an errored query with NOTHING cached drops back to `pending`, `isError`
+ * goes false, and the `role="status"` strip CONTAINING the button the admin
+ * just pressed unmounts under their focus, which falls to `<body>` in a
+ * settings tab with ~30 stops. The window is not a tick — `query-client.ts`
+ * retries a non-4xx twice more with backoff — so this is seconds of a panel
+ * with focus lost and nothing saying a read is in flight.
+ *
+ * Three rules, each of them one of that adjudication's rounds:
+ *
+ *  - `retryInFlight` is set in the handler and cleared in `.finally()`, and
+ *    each notice is gated on `<its own isError> || retryInFlight`, so the
+ *    strip survives the request it started.
+ *  - the busy state is `aria-disabled` and a label swap, NEVER a native
+ *    `disabled`: per the HTML focus fixup rule a control that stops being
+ *    focusable is blurred, which is the very thing the flag above exists to
+ *    prevent (jsdom does not implement that, so a test can assert both and be
+ *    wrong). The handler is the refusal instead. And it is `retryInFlight`
+ *    alone, never `isFetching` — a window-focus refetch is not the user's
+ *    action and must not be labelled as one.
+ *  - the ORDINARY outcome is that the retry SUCCEEDS and the notice is
+ *    removed with focus still on it, so a successful retry rehomes focus to
+ *    the nearest surviving prose. Guarded twice: only for a retry this control
+ *    started, and only if focus really did fall to `<body>`.
+ */
+function useNoticeRetry(
+  refetch: () => Promise<{ isError: boolean }>,
+  stillFailing: boolean,
+  focusTarget: React.RefObject<HTMLElement | null>,
+) {
+  const [retryInFlight, setRetryInFlight] = useState(false);
+  const [restoreFocusAfterRetry, setRestoreFocusAfterRetry] = useState(false);
+
+  useEffect(() => {
+    if (!restoreFocusAfterRetry) return;
+    // The notice is still up (the retry failed, or is still out) — the button
+    // is still under the admin's focus, which is where it belongs.
+    if (stillFailing || retryInFlight) return;
+    setRestoreFocusAfterRetry(false);
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    focusTarget.current?.focus();
+  }, [restoreFocusAfterRetry, stillFailing, retryInFlight, focusTarget]);
+
+  const onRetry = useCallback(() => {
+    // The refusal `aria-disabled` cannot perform.
+    if (retryInFlight) return;
+    setRetryInFlight(true);
+    setRestoreFocusAfterRetry(true);
+    void refetch()
+      .then(
+        (result) => setRestoreFocusAfterRetry(!result.isError),
+        () => setRestoreFocusAfterRetry(false),
+      )
+      .finally(() => setRetryInFlight(false));
+  }, [refetch, retryInFlight]);
+
+  return { retryInFlight, onRetry };
+}
+
+export function EmbeddingShadowCompareSection({
+  candidateModel,
+  candidateKey,
+  onRunInFlightChange,
+}: Props) {
+  const queryClient = useQueryClient();
+  const titleId = useId();
+  const pollErrorSentenceId = useId();
+  // The fields hold the RAW string while the admin types; clamping happens on
+  // blur and at submit, so a half-typed or empty field is never rewritten
+  // under the caret.
+  const [days, setDays] = useState('30');
+  const [limit, setLimit] = useState('50');
+  const [topK, setTopK] = useState('10');
+  const [startedRunId, setStartedRunId] = useState<string | null>(null);
+
+  // This admin's most recent comparison OF THE LIVE MIGRATION (the server
+  // refuses a run recorded against another candidate pair) — the
+  // re-attachment path after an unmount. A run started in this session wins
+  // over it.
+  //
+  // `refetchOnMount: 'always'` is what makes that work for the two cases the
+  // module header names (r1). The section unmounts on a Settings sub-tab
+  // switch, the app's QueryClient keeps an unobserved entry for five minutes,
+  // and `staleTime: Infinity` alone suppressed the refetch — so the FIRST
+  // mount's `{ run: null }` was served to the second one, showing no run, no
+  // progress and an enabled Run button that then 409s. Only a full reload (a
+  // new QueryClient) recovered. `start.onSuccess` seeds the same entry, so
+  // the remount re-attaches from cache without a round trip first.
+  //
+  // The key carries the CANDIDATE, because that cache is exactly what the
+  // server's pair predicate refuses to serve across migrations. Keyed on the
+  // bare name, an admin who aborted migration A and brought migration B to
+  // `ready` inside one session (and inside the five-minute gcTime) remounted
+  // onto A's cached run id — so A's report, A's disagreement list and A's live
+  // judgement radios rendered under a heading naming B's model until the
+  // `refetchOnMount` round trip landed. That is the client-side survivor of
+  // the very defect the server predicate closes, and the fix is to make the
+  // two agree on what identifies a comparison.
+  const {
+    data: latest,
+    isError: latestFailed,
+    refetch: refetchLatest,
+  } = useQuery<{ run: CompareRun | null }>({
+    queryKey: ['shadow-compare-latest', candidateKey],
+    queryFn: () => apiFetch('/admin/embedding/shadow-migration/compare'),
+    staleTime: Infinity,
+    refetchOnMount: 'always',
+  });
+  const runId = startedRunId ?? latest?.run?.id ?? null;
+  /** A run this session started, as opposed to one adopted on mount. The two
+   *  get different treatment when something goes wrong: an in-session failure
+   *  is news, a week-old one is history. */
+  const startedHere = startedRunId !== null;
+
+  const {
+    data: run,
+    isError: pollFailed,
+    refetch: refetchRun,
+  } = useQuery<CompareRun>({
+    queryKey: ['shadow-compare', runId],
+    queryFn: () => apiFetch(`/admin/embedding/shadow-migration/compare/${runId}`),
+    enabled: runId !== null,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      // 5s, never faster: see the module header — two admin-rate-limited
+      // polls share this card while a run is under way.
+      return status === 'queued' || status === 'running' ? 5_000 : false;
+    },
+  });
+
+  // Mode 2 — fetched once the run completes; every judgement POST answers the
+  // refreshed view, which replaces this cache entry rather than refetching.
+  //
+  // `isError` is consumed for the same reason the two queries above consume it
+  // (r2): judgements accumulate for a MODEL PAIR across sittings and across
+  // runs, so absence and unreadable are two different facts about this pair,
+  // and collapsing them rendered the never-judged state exactly — four radios
+  // reading `aria-checked="false"` on rows that were already judged, with no
+  // verdict, no notice and no toast. That is the `usePageTree` rule ("a failed
+  // fetch is a failure, not an empty corpus") on a surface whose stored side is
+  // the evidence a swap is decided on.
+  const {
+    data: judgementView,
+    isError: judgementsFailed,
+    refetch: refetchJudgements,
+  } = useQuery<JudgementsView>({
+    queryKey: ['shadow-compare-judgements', runId],
+    queryFn: () => apiFetch(`/admin/embedding/shadow-migration/compare/${runId}/judgements`),
+    enabled: runId !== null && run?.status === 'completed',
+  });
+
+  // Judgement writes are SERIALISED, never dropped. One POST is in flight at
+  // a time (two concurrent writes race in `setQueryData` and one view can
+  // erase the other's row from the table), but a deliberate pick on another
+  // row while one is saving is QUEUED rather than silently discarded — the
+  // admin is working down twenty rows, and a swallowed click leaves them
+  // believing a judgement exists that the verdict's N will never show. The
+  // queue is keyed by queryId, so a change of mind about one row replaces its
+  // pending write instead of stacking a second one.
+  const queued = useRef(new Map<string, JudgementSide>());
+  const inFlight = useRef<{ queryId: string; side: JudgementSide } | null>(null);
+  // The pick is shown pressed the instant it is made, before the round trip,
+  // so what the admin sees always matches what they clicked.
+  const [optimistic, setOptimistic] = useState<Record<string, JudgementSide>>({});
+
+  // `pump` is created before the mutation it drives (the mutation's own
+  // `onSettled` drains the queue), so it reaches `mutate` through a ref
+  // rather than closing over a binding declared below it.
+  const mutateRef = useRef<(vars: { queryId: string; side: JudgementSide }) => void>(() => {});
+  const pump = useCallback(() => {
+    if (inFlight.current) return;
+    const next = queued.current.entries().next();
+    if (next.done) return;
+    const [queryId, side] = next.value;
+    queued.current.delete(queryId);
+    inFlight.current = { queryId, side };
+    mutateRef.current({ queryId, side });
+  }, []);
+
+  const judge = useMutation({
+    mutationFn: ({ queryId, side }: { queryId: string; side: JudgementSide }) =>
+      apiFetch<JudgementsView>(`/admin/embedding/shadow-migration/compare/${runId}/judgements`, {
+        method: 'POST',
+        body: JSON.stringify({ queryId, side }),
+      }),
+    onSuccess: (view, variables) => {
+      queryClient.setQueryData(['shadow-compare-judgements', runId], view);
+      setOptimistic((prev) => {
+        // Keep the overlay when a newer pick for the same row is still queued
+        // — dropping it would flash the row back to the superseded side.
+        if (queued.current.has(variables.queryId)) return prev;
+        if (view.judgements[variables.queryId] !== variables.side) return prev;
+        const next = { ...prev };
+        delete next[variables.queryId];
+        return next;
+      });
+    },
+    onError: (err, variables) => {
+      setOptimistic((prev) => {
+        if (queued.current.has(variables.queryId)) return prev;
+        const next = { ...prev };
+        delete next[variables.queryId];
+        return next;
+      });
+      toast.error(err instanceof Error ? err.message : 'Could not record the judgement');
+    },
+    onSettled: () => {
+      inFlight.current = null;
+      pump();
+    },
+  });
+  mutateRef.current = judge.mutate;
+
+  const start = useMutation({
+    mutationFn: () =>
+      apiFetch<{ runId: string }>('/admin/embedding/shadow-migration/compare', {
+        method: 'POST',
+        body: JSON.stringify({
+          days: clamp(Number(days), 1, 90),
+          limit: clamp(Number(limit), 1, 100),
+          topK: clamp(Number(topK), 1, 20),
+        }),
+      }),
+    onSuccess: (data) => {
+      setStartedRunId(data.runId);
+      setOptimistic({});
+      const seeded: CompareRun = {
+        id: data.runId,
+        status: 'queued',
+        progressDone: 0,
+        progressTotal: 0,
+        result: null,
+        error: null,
+      };
+      // Seed the lookup this section re-attaches through, or the cached
+      // `{ run: null }` from this mount is what the next one reads back.
+      queryClient.setQueryData<{ run: CompareRun | null }>(
+        ['shadow-compare-latest', candidateKey],
+        { run: seeded },
+      );
+      // And seed the RUN itself, or the section renders as idle for the whole
+      // window between this 202 and the first status GET resolving (r1): Run
+      // re-enabled, no progress line, a second click firing a duplicate POST
+      // the server 409s — contradicting the toast below — and an Abort in that
+      // window reporting nothing up to the card, because `running` was false.
+      // The window is a round trip wide and is where an impatient second click
+      // actually lands.
+      queryClient.setQueryData<CompareRun>(['shadow-compare', data.runId], seeded);
+      // …and mark it stale at once, or the app client's 30s `staleTime` would
+      // hold the placeholder on screen until the first 5s poll tick. The seed
+      // is meant to bridge ONE round trip, not to replace it: the server's own
+      // counts must land as soon as it answers.
+      void queryClient.invalidateQueries({ queryKey: ['shadow-compare', data.runId] });
+      toast.success('Comparison started');
+    },
+    onError: (err) =>
+      toast.error(err instanceof Error ? err.message : 'Could not start the comparison'),
+  });
+
+  const running = run?.status === 'queued' || run?.status === 'running';
+
+  /**
+   * Whether this mount has seen the run ALIVE — started here, or adopted and
+   * observed queued/running at least once. It is the honest reading of "news
+   * versus history" (r1), and it is not the same as provenance: a comparison
+   * adopted on mount and still counting is live evidence, and it is precisely
+   * the run whose N x 2 embedding calls a swap or an abort is about to spend
+   * for nothing. Latched, because the transition to `failed` is exactly the
+   * moment `running` stops being true.
+   */
+  const [witnessedLiveId, setWitnessedLiveId] = useState<string | null>(null);
+  useEffect(() => {
+    if (running && runId !== null) setWitnessedLiveId(runId);
+  }, [running, runId]);
+  const liveHere = startedHere || (runId !== null && witnessedLiveId === runId);
+
+  // A failed poll is a failure, not an idle section — but WHICH failure
+  // depends on what is known about the run (r1). A run seen alive on this
+  // mount may still be running server-side, so Run stays disabled (a retry
+  // would just 409) and the strip says what is unknown. A poll that fails on a
+  // run merely ADOPTED and never seen alive says nothing about the slot: that
+  // run may have finished last week, and disabling the section's only action
+  // under "it may still be running" leaves the admin unable to start a
+  // comparison at all. The server's own 409 is the authority on the shared
+  // slot, so that case reports what could not be loaded and leaves Run
+  // available. (Both flags are derived below, beside the retry controls that
+  // have to keep them raised for the length of a re-read.)
+
+  // Two halves of the same hole (r3), because this section is mounted only
+  // while the migration is `ready` and every way the run can end is also a way
+  // this component can vanish.
+  //
+  // (a) A failure of a run this mount saw ALIVE is announced as a toast as
+  //     well as rendered as the strip below. The strip is the better surface
+  //     while it exists — but the card's own 5s status poll is racing this
+  //     one, so a migration changed from another tab (or by another admin)
+  //     takes the whole `ready` branch away within a poll of the run failing,
+  //     taking the strip with it. A toast is rendered at the app root and
+  //     outlives the unmount. (The card covers the case where its poll wins
+  //     that race outright and this section never reads `failed` at all.)
+  // (b) The in-flight id is reported UP, so the card can speak for a run whose
+  //     section its own action is about to unmount.
+  const failureToasted = useRef<string | null>(null);
+  useEffect(() => {
+    if (!liveHere || runId === null) return;
+    if (run?.status !== 'failed') return;
+    if (failureToasted.current === runId) return;
+    failureToasted.current = runId;
+    toast.error(run.error ?? 'The comparison failed.');
+  }, [liveHere, runId, run?.status, run?.error]);
+
+  const inFlightRunId = running ? runId : null;
+  const onRunInFlightChangeRef = useRef(onRunInFlightChange);
+  onRunInFlightChangeRef.current = onRunInFlightChange;
+  useEffect(() => {
+    onRunInFlightChangeRef.current?.(inFlightRunId);
+    // Clearing on unmount would erase the very fact the card needs, because
+    // the unmount IS the event: the card re-renders into another branch, this
+    // component goes away, and the run keeps going server-side.
+  }, [inFlightRunId]);
+
+  // THREE states, not two (r1 of this round). The r2 fix was right that a
+  // failed read is not "nothing judged" — but read as `isError` alone it also
+  // threw away picks react-query was still holding: this query runs on the
+  // app client (30s staleTime, `refetchOnWindowFocus`), so a tab-back plus one
+  // 500 or 429 blanked every radio and the verdict for a pair whose judgements
+  // were loaded and correct, on a workflow whose own copy is "twenty
+  // judgements across sittings". So it is the `usePageTree` ladder:
+  // failed-with-nothing-cached hides the picks (rendering `aria-checked
+  // ="false"` on a judged row invites re-judging from a blank slate),
+  // failed-with-cache keeps them under a degraded line, and neither is the
+  // never-judged state the verdict speaks for.
+  // Where focus goes when a notice the admin pressed is removed BENEATH it —
+  // the section's own orienting prose for the three section-level notices,
+  // and the report's basis line for the judgement one, which sits inside the
+  // report. Both are `tabIndex={-1}` paragraphs: programmatically focusable
+  // without adding a tab stop to a panel that already has ~30.
+  const introRef = useRef<HTMLParagraphElement | null>(null);
+  const basisRef = useRef<HTMLParagraphElement | null>(null);
+  const latestRetry = useNoticeRetry(refetchLatest, latestFailed, introRef);
+  const pollRetry = useNoticeRetry(refetchRun, pollFailed, introRef);
+  const judgementsRetry = useNoticeRetry(refetchJudgements, judgementsFailed, basisRef);
+
+  // Each notice survives the read it starts (r1): see `useNoticeRetry`. Gated
+  // on `isError` alone, all three unmounted the button under the admin's
+  // focus the instant it was clicked, because a refetch with nothing cached
+  // reverts the query to `pending`.
+  const pollUnavailable = liveHere && (pollFailed || pollRetry.retryInFlight);
+  const adoptedRunUnreadable =
+    !liveHere && runId !== null && (pollFailed || pollRetry.retryInFlight);
+  const latestUnreadable = latestFailed || latestRetry.retryInFlight;
+
+  // The judgement picks are suppressed for the WHOLE read, not just while
+  // `isError` happens to be true (r1). Both this flag and the substitute
+  // notice below were gated on `judgementsFailed && judgementView ===
+  // undefined`, and BOTH flipped false together the moment a retry started —
+  // so four `role="radio"` controls returned reading `aria-checked="false"`
+  // on a model pair whose stored judgements the client has never once read,
+  // which is exactly the false statement the comment on the picks says must
+  // never render.
+  const judgementsUnreadable =
+    (judgementsFailed || judgementsRetry.retryInFlight) && judgementView === undefined;
+  const judgementsStale = judgementsFailed && judgementView !== undefined;
+
+  const storedJudgements = judgementView?.judgements ?? {};
+  const judgedSide = (queryId: string): JudgementSide | undefined =>
+    optimistic[queryId] ?? storedJudgements[queryId];
+
+  const onJudge = (queryId: string, side: JudgementSide) => {
+    // A repeat of the side already shown for this row changes nothing — this
+    // is the double-click, and the same-frame case the ref pair closes.
+    if (judgedSide(queryId) === side && !queued.current.has(queryId)) return;
+    setOptimistic((prev) => ({ ...prev, [queryId]: side }));
+    queued.current.set(queryId, side);
+    pump();
+  };
+
+  return (
+    // A REGION with a real heading, not a bare div with a <p> for a title
+    // (r2). This is the longest interactive block on the tab — a completed run
+    // renders four judgement buttons per disagreeing query, up to the
+    // hundred-query cap — and it sits above the use-case assignments, their
+    // Save and the runtime-limits card in both tab order and reading order.
+    // Every sibling settings block already does this (`ProviderListSection`,
+    // the Retrieval tab's benchmark section this one is modelled on).
+    <section
+      aria-labelledby={titleId}
+      className="mt-3 space-y-2 border-t border-border pt-3"
+      data-testid="shadow-compare-section"
+    >
+      <h3 id={titleId} className="text-sm font-semibold">
+        Compare on real queries
+      </h3>
+      <p
+        ref={introRef}
+        tabIndex={-1}
+        className="text-xs text-muted-foreground"
+        data-testid="shadow-compare-intro"
+      >
+        Runs this deployment's most frequent recorded searches against the live index and the{' '}
+        <b>{candidateModel}</b> shadow, and lists the queries where the two disagree. This measures
+        agreement on the vector leg only — not answer quality, and not what users see after keyword
+        fusion and rerank. Each run makes two embedding calls per query through the same queue that
+        embeds live questions, so answers may be slower while it runs. It shares its single run slot
+        with the production retrieval benchmark on the Retrieval tab; while either runs, the other
+        reports &ldquo;already running&rdquo;.
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="space-y-1 text-xs text-muted-foreground">
+          <span className="block">Look back (days)</span>
+          <input
+            type="number"
+            min={1}
+            max={90}
+            value={days}
+            onChange={(event) => setDays(event.target.value)}
+            onBlur={() => setDays(String(clamp(Number(days), 1, 90)))}
+            className={inputClass}
+            data-testid="shadow-compare-days"
+          />
+        </label>
+        <label className="space-y-1 text-xs text-muted-foreground">
+          <span className="block">Queries</span>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={limit}
+            onChange={(event) => setLimit(event.target.value)}
+            onBlur={() => setLimit(String(clamp(Number(limit), 1, 100)))}
+            className={inputClass}
+            data-testid="shadow-compare-limit"
+          />
+        </label>
+        <label className="space-y-1 text-xs text-muted-foreground">
+          <span className="block">Top K</span>
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={topK}
+            onChange={(event) => setTopK(event.target.value)}
+            onBlur={() => setTopK(String(clamp(Number(topK), 1, 20)))}
+            className={inputClass}
+            data-testid="shadow-compare-topk"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => start.mutate()}
+          disabled={start.isPending || running || pollUnavailable}
+          className="nm-button-primary"
+          data-testid="shadow-compare-start"
+        >
+          {start.isPending ? 'Starting…' : 'Run comparison'}
+        </button>
+      </div>
+
+      {pollUnavailable && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs"
+          data-testid="shadow-compare-poll-error"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+          <p>
+            <span id={pollErrorSentenceId}>
+              The comparison was started, but its status could not be fetched — it may still be
+              running.
+            </span>{' '}
+            {/* Same busy contract as `MutedNotice` — see `useNoticeRetry`. */}
+            <button
+              type="button"
+              className="underline aria-disabled:cursor-default aria-disabled:opacity-70"
+              onClick={pollRetry.onRetry}
+              aria-disabled={pollRetry.retryInFlight || undefined}
+              aria-describedby={pollErrorSentenceId}
+              data-testid="shadow-compare-poll-retry"
+            >
+              {pollRetry.retryInFlight ? 'Checking…' : 'Check again'}
+            </button>
+          </p>
+        </div>
+      )}
+      {latestUnreadable && (
+        // A failed lookup is a failure, not "there is no earlier comparison":
+        // absence would silently hide a finished report, its disagreement list
+        // and an accumulated Mode 2 workflow, and a re-run costs another N x 2
+        // provider calls. Muted rather than amber — nothing is wrong with the
+        // migration, and this notice can appear on any mount.
+        <MutedNotice
+          testId="shadow-compare-latest-error"
+          onRetry={latestRetry.onRetry}
+          retryInFlight={latestRetry.retryInFlight}
+        >
+          Could not check whether an earlier comparison exists.
+        </MutedNotice>
+      )}
+      {adoptedRunUnreadable && (
+        <MutedNotice
+          testId="shadow-compare-adopted-error"
+          onRetry={pollRetry.onRetry}
+          retryInFlight={pollRetry.retryInFlight}
+        >
+          The last comparison could not be loaded.
+        </MutedNotice>
+      )}
+      {/* Never beside a failed poll: react-query keeps the last value through
+          an error, and since the start seeds a `queued · 0/?` row that value
+          can be a placeholder the server has never confirmed. A live count
+          rendered under "its status could not be fetched" claims exactly the
+          knowledge the strip above says is missing. */}
+      {run && running && !pollFailed && (
+        <p className="text-xs text-muted-foreground" data-testid="shadow-compare-progress">
+          Comparison {run.status} · {run.progressDone}/{run.progressTotal || '?'} queries
+        </p>
+      )}
+      {run?.status === 'failed' &&
+        (liveHere ? (
+          <div
+            role="status"
+            className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs"
+            data-testid="shadow-compare-error"
+          >
+            <AlertTriangle className="h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+            <p>{run.error ?? 'The comparison failed.'}</p>
+          </div>
+        ) : (
+          // A failure ADOPTED already-failed is history, not news, and it
+          // re-renders on every fresh mount until another comparison replaces
+          // it. Standing amber at rest is what teaches an admin to ignore
+          // amber, so that case states the same sentence quietly (r1); a run
+          // this mount watched fail — started here, or adopted while still
+          // counting — keeps the strip.
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid="shadow-compare-error-adopted"
+          >
+            Last comparison: {run.error ?? 'it failed.'}
+          </p>
+        ))}
+      {run?.status === 'completed' && run.result && (
+        <CompareResult
+          report={run.result}
+          judgedSide={judgedSide}
+          savingQueryId={judge.isPending ? (judge.variables?.queryId ?? null) : null}
+          verdict={judgementView?.verdict ?? null}
+          judgementsUnreadable={judgementsUnreadable}
+          judgementsStale={judgementsStale}
+          onRetryJudgements={judgementsRetry.onRetry}
+          judgementsRetryInFlight={judgementsRetry.retryInFlight}
+          basisRef={basisRef}
+          onJudge={onJudge}
+        />
+      )}
+      {/* The surface's one POLITE announcement, mounted for the section's whole
+          life and carrying text only once the run completes (r2). It used to be
+          inserted TOGETHER with its own sentence — a region and its content
+          arriving in one commit is the case screen readers are least reliable
+          about, and this element is `sr-only`, so failing to fire means the
+          outcome the run exists to produce arrives in total silence after
+          minutes of waiting. The repo's two other announcers (`AiAssistantPage`,
+          `DockPanel`) keep the region standing and vary only its children.
+          POLITE, never an alert: a finished measurement is not worth
+          interrupting for. Off-screen rather than wrapped round the report,
+          because the figures are already readable and a live region containing
+          them would re-announce the whole block on every judgement. */}
+      <p className="sr-only" role="status" data-testid="shadow-compare-complete">
+        {run?.status === 'completed' && run.result
+          ? `Comparison complete — ${run.result.queryCount} queries, ${run.result.agreement.disagreementCount} disagree.`
+          : ''}
+      </p>
+    </section>
+  );
+}
+
+/** A quiet "could not be read" line with the one action that can fix it.
+ *  Muted, not amber: this is a failed READ of history, not a degraded
+ *  migration, and it can appear on any mount.
+ *
+ *  Its button carries `useNoticeRetry`'s busy state, and the mechanics are
+ *  that hook's doc: `aria-disabled` and a label swap rather than a native
+ *  `disabled` (which would blur the very focus the flag exists to hold), no
+ *  `aria-busy` on either the button or the `role="status"` line around it
+ *  (busy WITHHOLDS a region's own updates, silencing the announcement the
+ *  label swap is), and `aria-disabled:opacity-70` — never 45, which
+ *  composites under the 4.5:1 floor this 12px text is held to, and the label
+ *  is the only channel the busy state has. `aria-describedby` points at the
+ *  sentence because up to three identically-labelled "Check again" buttons
+ *  can be on screen at once. */
+function MutedNotice({
+  testId,
+  onRetry,
+  retryInFlight,
+  children,
+}: {
+  testId: string;
+  onRetry: () => void;
+  retryInFlight: boolean;
+  children: React.ReactNode;
+}) {
+  const sentenceId = useId();
+  return (
+    <p role="status" className="text-xs text-muted-foreground" data-testid={testId}>
+      <span id={sentenceId}>{children}</span>{' '}
+      <button
+        type="button"
+        className="underline aria-disabled:cursor-default aria-disabled:opacity-70"
+        onClick={onRetry}
+        aria-disabled={retryInFlight || undefined}
+        aria-describedby={sentenceId}
+      >
+        {retryInFlight ? 'Checking…' : 'Check again'}
+      </button>
+    </p>
+  );
+}
+
+function CompareResult({
+  report,
+  judgedSide,
+  savingQueryId,
+  verdict,
+  judgementsUnreadable,
+  judgementsStale,
+  onRetryJudgements,
+  judgementsRetryInFlight,
+  basisRef,
+  onJudge,
+}: {
+  report: CompareReport;
+  judgedSide: (queryId: string) => JudgementSide | undefined;
+  savingQueryId: string | null;
+  verdict: JudgedVerdict | null;
+  /** Nothing loaded and the read failed — the picks are hidden. */
+  judgementsUnreadable: boolean;
+  /** Loaded, but the latest read failed — the picks stay, degraded. */
+  judgementsStale: boolean;
+  onRetryJudgements: () => void;
+  /** Raised for the whole re-read, not only while `isError` is true. */
+  judgementsRetryInFlight: boolean;
+  /** Where focus goes when the judgement notice is removed beneath it. */
+  basisRef: React.RefObject<HTMLParagraphElement | null>;
+  onJudge: (queryId: string, side: JudgementSide) => void;
+}) {
+  // ANY difference between the lists counts — head moved, sets differ, or the
+  // same set in a different order (rbo < 1, which only RBO can see): drop a
+  // disjunct and the list under-reports movement while the "full agreement"
+  // sentence contradicts an RBO chip reading < 1.00. Mirrors
+  // `summarizeAgreement`'s predicate; the two must stay in lockstep.
+  const disagreements = report.queries.filter(
+    (row) => row.top1Changed || row.jaccard < 1 || row.rbo < 1,
+  );
+  // The list is the section's tallest element by an order of magnitude: the
+  // caps allow 100 queries x 20 titles a side, so an uncapped render is ~4000
+  // lines of settings card and pushes the migration's own Swap and Abort —
+  // the card's reason for existing — thousands of pixels above the fold (r3).
+  // It opens at a readable sample and expands on request; nothing is removed,
+  // and the aggregate chips above already state the totals.
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? disagreements : disagreements.slice(0, DISAGREEMENTS_SHOWN);
+  const failed = report.failedQueries ?? 0;
+  const sampled = report.sampledQueryCount ?? report.queryCount + failed;
+  const failedShare = sampled > 0 ? failed / sampled : 0;
+  /** A fifth of the sample gone is where "annotated" stops being enough and
+   *  the coverage of the figures has to read as part of the claim. */
+  const heavilyThinned = failedShare >= 0.2;
+  return (
+    <div className="space-y-2" data-testid="shadow-compare-result">
+      <p
+        ref={basisRef}
+        tabIndex={-1}
+        className="text-xs font-medium text-foreground"
+        data-testid="shadow-compare-basis"
+      >
+        Agreement between {report.live.model} (live) and {report.candidate.model} (candidate) on{' '}
+        {report.queryCount} real queries — how much results would move, not which model is better.
+      </p>
+      {failed > 0 && (
+        // A measurement about the run's own coverage, so it stays NEUTRAL like
+        // the figures beside it (amber is reserved for a failed run — the lane
+        // decision) — but it must be stated, or the denominator silently
+        // shrinks and nobody knows the sample was thinned. The run may skip up
+        // to half its sample, so the treatment is proportional to the claim
+        // (r1): past a fifth skipped the sentence takes foreground weight and
+        // quotes the share, because "25 of 50" read with the same emphasis as
+        // "1 of 50" on a surface whose output is swap go/no-go evidence.
+        <p
+          className={cn(
+            'text-xs',
+            heavilyThinned ? 'font-medium text-foreground' : 'text-muted-foreground',
+          )}
+          data-testid="shadow-compare-failed-queries"
+        >
+          {failed} of {sampled} sampled {failed === 1 ? 'query was' : 'queries were'} skipped after
+          an embedding or retrieval failure ({Math.round(failedShare * 100)}%), and{' '}
+          {failed === 1 ? 'is' : 'are'} not in the figures below.
+        </p>
+      )}
+      <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+        <CompareMetric
+          label="Top result changed"
+          value={`${report.agreement.top1ChangedQueries}/${report.queryCount} queries`}
+        />
+        <CompareMetric
+          label={`Top-${report.topK} overlap (Jaccard)`}
+          value={`${Math.round(report.agreement.meanJaccard * 100)}%`}
+        />
+        <CompareMetric label="Rank agreement (RBO)" value={report.agreement.meanRbo.toFixed(2)} />
+        <CompareMetric
+          label="Queries that disagree"
+          value={`${report.agreement.disagreementCount}/${report.queryCount}`}
+        />
+      </div>
+      {/* The verdict's PLACE, held by whichever of the two can be told truly.
+          An unreadable stored side cannot say "no judgements yet" — that is a
+          claim about this model pair, and it is false whenever the read merely
+          failed. Muted, not amber, exactly like the two sibling read failures
+          above: nothing is wrong with the migration. */}
+      {judgementsUnreadable ? (
+        <MutedNotice
+          testId="shadow-compare-judgements-error"
+          onRetry={onRetryJudgements}
+          retryInFlight={judgementsRetryInFlight}
+        >
+          The judgements recorded for this model pair could not be loaded, so no judged verdict can
+          be stated and the picks below are hidden rather than shown as unmade.
+        </MutedNotice>
+      ) : (
+        <>
+          {/* Degraded, not unreadable: the figures below ARE this pair's
+              judgements, they are simply the last ones read. Stating that is
+              cheaper than hiding a correct verdict, and hiding it is what a
+              single background 500 used to do. */}
+          {judgementsStale && (
+            <MutedNotice
+              testId="shadow-compare-judgements-stale"
+              onRetry={onRetryJudgements}
+              retryInFlight={judgementsRetryInFlight}
+            >
+              These are the judgements last loaded for this model pair — the latest could not be
+              fetched, so a pick recorded since then may be missing.
+            </MutedNotice>
+          )}
+          {/* The zero-judgement prompt says "pick the better side on a
+              disagreement below" — suppressed when no disagreement rows
+              render, or it points at controls that do not exist. A pair with
+              judgements accumulated from earlier runs keeps its verdict either
+              way. */}
+          {verdict && (verdict.judgementCount > 0 || disagreements.length > 0) && (
+            <VerdictLine verdict={verdict} />
+          )}
+        </>
+      )}
+      {disagreements.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          {/* Names the COMPARED set, not "every sampled query" (r1). Two
+              elements up, the skipped-queries line spends the word "sampled"
+              on the strictly larger denominator that INCLUDES the queries
+              never compared, and the service tolerates up to half the sample
+              going missing — so with 12 of 50 skipped the old sentence claimed
+              agreement over 50 where only 38 were run. One word, two sets, on
+              a surface whose only output is swap go/no-go evidence. */}
+          Both models returned the same pages in the same order for all {report.queryCount}{' '}
+          compared queries.
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-2">
+            {shown.map((row) => (
+              <li
+                key={row.id}
+                className="rounded-md border border-border bg-background/40 p-3"
+                data-testid="shadow-compare-disagreement"
+              >
+                {/* The row's SUBJECT, one step up from the twenty titles under
+                    it (r3). At the same 12px as its own content only weight
+                    and ink separated the question from the answers. */}
+                <p className="break-words text-[13px] font-medium text-foreground">{row.query}</p>
+                <div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
+                  <ResultSide
+                    label={`Live · ${report.live.model}`}
+                    pages={row.live.pages}
+                    otherPageIds={row.candidate.pageIds}
+                  />
+                  <ResultSide
+                    label={`Candidate · ${report.candidate.model}`}
+                    pages={row.candidate.pages}
+                    otherPageIds={row.live.pageIds}
+                  />
+                </div>
+                {/* Suppressed, not merely undecorated, while the stored side
+                    is unreadable: `aria-checked="false"` on a row that IS
+                    judged is a false statement, and the obvious next move it
+                    invites — re-judging from a blank slate — silently rewrites
+                    the evidence a swap is decided on. */}
+                {!judgementsUnreadable && (
+                  <JudgementRow
+                    query={row.query}
+                    judged={judgedSide(row.id)}
+                    saving={savingQueryId === row.id}
+                    onJudge={(side) => onJudge(row.id, side)}
+                  />
+                )}
+              </li>
+            ))}
+          </ul>
+          {disagreements.length > DISAGREEMENTS_SHOWN && (
+            <button
+              type="button"
+              className="nm-button-ghost"
+              onClick={() => setExpanded((prev) => !prev)}
+              data-testid="shadow-compare-show-all"
+            >
+              {expanded
+                ? `Show the first ${DISAGREEMENTS_SHOWN} disagreements`
+                : `Show all ${disagreements.length} disagreements`}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The Mode 2 verdict line. It names its own basis (N judgements for this
+ * model pair), and quotes McNemar's p ONLY when the server did — below the
+ * floor it states how many judgements are still needed, because a p over a
+ * handful of clicks reads as a verdict the evidence cannot carry.
+ */
+function VerdictLine({ verdict }: { verdict: JudgedVerdict }) {
+  if (verdict.judgementCount === 0) {
+    return (
+      <p className="text-xs text-muted-foreground" data-testid="shadow-compare-verdict">
+        No judgements yet for this model pair — pick the better side on a disagreement below to
+        start building a judged verdict.
+      </p>
+    );
+  }
+  const n = verdict.judgementCount;
+  const p = verdict.mcnemar?.pValue;
+  // The countdown counts the SCORED picks, because that is what the server's
+  // floor counts: quoting "24 of 20" beside a withheld p (24 judgements, six
+  // of them picks) would read as a server bug rather than as the floor doing
+  // its job.
+  const scored = verdict.scoredJudgementCount ?? n;
+  const quotesP = p !== null && p !== undefined && verdict.mcnemar !== null;
+  return (
+    <>
+      <p className="text-xs text-muted-foreground" data-testid="shadow-compare-verdict">
+        <span className="font-medium text-foreground">
+          Judged: {n} {n === 1 ? 'judgement' : 'judgements'} for this model pair
+        </span>{' '}
+        — candidate better on {verdict.candidateBetter}, live better on {verdict.liveBetter}
+        {verdict.both > 0 ? `, both good on ${verdict.both}` : ''}
+        {verdict.neither > 0 ? `, neither on ${verdict.neither}` : ''}.{' '}
+        {quotesP && verdict.mcnemar
+          ? `McNemar p = ${p < 0.001 ? '< 0.001' : p.toFixed(3)}${
+              verdict.mcnemar.significant
+                ? verdict.mcnemar.direction === 'improvement'
+                  ? ' — significant, favouring the candidate'
+                  : ' — significant, favouring the live model'
+                : ' — not significant'
+            }.`
+          : verdict.mcnemar === null
+            ? // All recorded judgements are 'both'/'neither': the server scored
+              // nothing, so no amount of further ties reaches a p — counting
+              // down "N of 20" here would misstate why no p is shown.
+              'No live or candidate picks yet — ties alone cannot produce a p-value.'
+            : `${scored} of ${verdict.minJudgementsForP} live-or-candidate picks before a p-value is quoted.`}
+      </p>
+      {/* The two quality figures the judgements actually buy. They come off
+          the same scored picks as the p, so they appear with it and are
+          withheld with it (r2) — publishing the quality half of a verdict the
+          server has declined to state is the failure the floor exists to
+          prevent. Both are computed against the judged-better side's TOP page
+          rather than a labelled fixture, so the label says which page it
+          means; NEUTRAL, because these are measurements, not states. */}
+      {quotesP && verdict.recall && verdict.mrr && (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid="shadow-compare-verdict-metrics"
+        >
+          Recall of the judged page:{' '}
+          <span className="font-medium text-foreground">
+            live {verdict.recall.live.toFixed(2)} → candidate {verdict.recall.candidate.toFixed(2)}
+          </span>{' '}
+          · MRR:{' '}
+          <span className="font-medium text-foreground">
+            live {verdict.mrr.live.toFixed(2)} → candidate {verdict.mrr.candidate.toFixed(2)}
+          </span>
+        </p>
+      )}
+    </>
+  );
+}
+
+const JUDGEMENT_SIDES: Array<{ side: JudgementSide; label: string }> = [
+  { side: 'live', label: 'Live' },
+  { side: 'candidate', label: 'Candidate' },
+  { side: 'neither', label: 'Neither' },
+  { side: 'both', label: 'Both' },
+];
+
+function JudgementRow({
+  query,
+  judged,
+  saving,
+  onJudge,
+}: {
+  query: string;
+  judged: JudgementSide | undefined;
+  saving: boolean;
+  onJudge: (side: JudgementSide) => void;
+}) {
+  const captionId = useId();
+  const groupRef = useRef<HTMLDivElement | null>(null);
+  const sides = JUDGEMENT_SIDES;
+
+  /**
+   * A radio group's roving tabindex (r3). These four are one mutually
+   * exclusive choice, and as four `aria-pressed` toggles a screen reader
+   * announced four independent switches with no statement that picking one
+   * unpicks the rest — while a completed run put four tab stops on every
+   * disagreeing row, so the ten rows below cost forty stops between the
+   * report and the migration's own Swap and Abort. One stop per row instead;
+   * the chosen side is that stop, or `live` before anything is chosen (APG:
+   * an unselected group is entered on its first radio).
+   */
+  const tabbable = judged ?? sides[0]!.side;
+
+  /**
+   * Arrows move FOCUS ONLY — deliberately not APG's default "selection
+   * follows focus". Each selection is a POST that becomes a row in the
+   * McNemar count, so arrowing from Live to Both across a twenty-row report
+   * would silently record sixty judgements nobody made and move the verdict
+   * this surface exists to produce. Space and Enter select, which a native
+   * `<button>` already does.
+   */
+  function moveFocus(event: React.KeyboardEvent<HTMLDivElement>) {
+    const keys = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'];
+    if (!keys.includes(event.key)) return;
+    const radios = Array.from(
+      groupRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+    );
+    if (radios.length === 0) return;
+    event.preventDefault();
+    const current = radios.indexOf(document.activeElement as HTMLButtonElement);
+    const from = current === -1 ? 0 : current;
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? radios.length - 1
+          : event.key === 'ArrowRight' || event.key === 'ArrowDown'
+            ? (from + 1) % radios.length
+            : (from - 1 + radios.length) % radios.length;
+    radios[next]?.focus();
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+      <span id={captionId} className="text-xs text-muted-foreground">
+        Which answered better?
+      </span>
+      {/* The segmented recipe, not a pressed `nm-button-ghost` (r1). A ghost
+          button already carries `--color-border-interactive` and the
+          foreground ink at REST, so a pressed rule adding both changed
+          nothing, and its only real delta — `background: transparent` to
+          `--color-background`, over the row's own `bg-background/40` — measured
+          1.03:1 in Graphite and 1.02:1 in Paper, with the two states byte
+          identical on hover and indistinguishable under `forced-colors`. The
+          only feedback that a judgement registered was therefore invisible.
+          This is what CLAUDE.md means by "selected is the neutral pressed
+          recipe": `NewPagePage`'s track — a `bg-muted` ground, unselected
+          siblings borderless and muted, the chosen one `nm-pill-active` (card
+          fill + a 1px border + weight 500 + foreground ink). The border and
+          the weight are signals the resting state does not already have, and
+          both survive `forced-colors`. Still neutral, never Steel: four
+          toggles lighting up the accent read as four primary buttons. */}
+      <div
+        ref={groupRef}
+        role="radiogroup"
+        aria-label={`Which answered better: ${query}`}
+        // The row is saving, not unavailable: every control stays operable and
+        // every click is recorded, so this announces work in progress rather
+        // than claiming the control cannot be used.
+        aria-busy={saving || undefined}
+        onKeyDown={moveFocus}
+        className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+      >
+        {sides.map(({ side, label }) => {
+          const chosen = judged === side;
+          return (
+            <button
+              key={side}
+              type="button"
+              role="radio"
+              aria-checked={chosen}
+              tabIndex={tabbable === side ? 0 : -1}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium transition-colors',
+                chosen ? 'nm-pill-active' : 'text-muted-foreground hover:text-foreground',
+              )}
+              // The visible caption is what these four bare labels mean; without
+              // it "Live" is the whole accessible name of twenty controls.
+              aria-describedby={captionId}
+              // Never `disabled`, and never a no-op: Chromium drops focus to
+              // <body> when the focused element is disabled, so a keyboard admin
+              // judging twenty rows would re-Tab from the top of the panel after
+              // every single pick (WCAG 2.4.3 — the same focus drop the sibling
+              // card's cancelCleanupRef engineers around). Writes are serialised
+              // and queued in the parent instead, so a deliberate pick on another
+              // row mid-save is accepted rather than silently dropped.
+              onClick={() => onJudge(side)}
+            >
+              {/* The chosen side's THIRD channel, and the only one that is not
+                  a contrast question (r3). `nm-pill-active` on a `bg-muted`
+                  track is the system's own "selected" recipe and it is what
+                  this control wears — but measured off the tokens its fill
+                  step is 1.07:1 in Graphite and 1.11:1 in Paper, and even the
+                  ink step (muted-foreground to foreground) is 2.06:1 in
+                  Graphite, under WCAG 1.4.11's 3:1. A glyph is a SHAPE: it
+                  survives `forced-colors`, colour blindness and a retune of
+                  every token above, the same argument that put a segment meter
+                  on `QualityScoreBadge`. `aria-hidden`, because `aria-checked`
+                  already carries the state and the glyph would otherwise be
+                  announced twice.
+
+                  The slot is RESERVED, not mounted on selection (r1). Mounted
+                  conditionally, the glyph's 12px box plus this group's 4px
+                  `gap-1` entered the layout on every pick: choosing `Live`
+                  grew its segment by ~16px — about a third of it — and pushed
+                  `Candidate`/`Neither`/`Both` right, out from under the
+                  pointer, on a surface built for twenty picks and changes of
+                  mind. `invisible` is `visibility: hidden`: it holds the box
+                  in all five states while staying out of the accessibility
+                  tree and out of `forced-colors` painting. */}
+              <Check className={cn('h-3 w-3', !chosen && 'invisible')} aria-hidden="true" />
+              {label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CompareMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border bg-background/40 px-3 py-2">
+      <span>{label}: </span>
+      <span className="font-medium text-foreground">{value}</span>
+    </div>
+  );
+}
+
+/**
+ * One side's top-K, with the pages the OTHER side did not return marked (r3).
+ *
+ * Two undifferentiated lists of ten titles are a diff the admin has to perform
+ * by eye, twenty rows deep — the chips above say how much moved, and this is
+ * the only surface that can say WHAT moved. So the shared titles recede to
+ * muted (they are the agreement) and the unique ones keep foreground ink at
+ * weight 500 and name themselves in words. The wording is the channel, not the
+ * ink: `forced-colors` flattens both to CanvasText and a colour-blind reader
+ * sees one grey, so "(only here)" has to be readable text rather than a dot, a
+ * rule or a hue. Neutral throughout — a disagreement is a measurement, and
+ * neither side is the right one until Mode 2 says so.
+ */
+function ResultSide({
+  label,
+  pages,
+  otherPageIds,
+}: {
+  label: string;
+  pages: Array<{ pageId: number; title: string; spaceKey: string | null }>;
+  otherPageIds: number[];
+}) {
+  const other = new Set(otherPageIds);
+  const uniqueCount = pages.filter((page) => !other.has(page.pageId)).length;
+  return (
+    <div>
+      <p className="text-muted-foreground">
+        {label}
+        {uniqueCount > 0 ? ` · ${uniqueCount} only here` : ''}
+      </p>
+      {pages.length === 0 ? (
+        <p className="mt-1 text-muted-foreground">No results</p>
+      ) : (
+        <ol className="mt-1 list-inside list-decimal space-y-0.5">
+          {pages.map((page) => {
+            const unique = !other.has(page.pageId);
+            return (
+              <li
+                key={page.pageId}
+                className={cn(
+                  'break-words',
+                  unique ? 'font-medium text-foreground' : 'text-muted-foreground',
+                )}
+                data-unique={unique ? 'true' : undefined}
+              >
+                {page.title}
+                {unique && <span className="font-normal text-muted-foreground"> (only here)</span>}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </div>
+  );
+}

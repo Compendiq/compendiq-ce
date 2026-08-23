@@ -94,7 +94,206 @@ job, scoped to PRs that touch retrieval, so the fast path never waits on it.
 The rule above still holds everywhere else — and note this model is for
 detecting *regressions in retrieval logic*, never for judging a model upgrade:
 those comparisons need the real candidates, run locally through the same script
-(`docs/runbooks/retrieval-eval.md`), or scored on the real corpus via #1260.
+(`docs/runbooks/retrieval-eval.md`), or scored on the real corpus during a
+#1116 shadow migration's `ready` window via the shadow card's **Compare on
+real queries** (#1260): `shadow-compare-service.ts` samples the most frequent
+`search_analytics` queries, embeds each once per model (prefix per model),
+retrieves top-K from `embedding` and `embedding_next` through `vectorSearch`'s
+allow-listed `column` option, and reports AGREEMENT (top-1 change rate,
+Jaccard, RBO) plus per-query disagreements — never presented as quality. An
+unfilled candidate row must never enter the top-K: that column is nullable by
+construction (the dual-write leaves it NULL when the candidate provider fails
+on a page edited mid-migration), `NULL <=> $2` is NULL, and `1 - null` is 1 in
+JS — a PERFECT MATCH that would inflate every figure computed from it. What
+guarantees that is the `distance !== null` filter in JS, which also covers the
+LIVE column between a swap and its cleanup (the swap drops the renamed
+column's NOT NULL) and which `rag-service.integration.test.ts` falsifies by
+dropping the HNSW index. The shadow arm's `AND embedding_next IS NOT NULL` is
+a NARROWING beside it, not the guarantee: `ORDER BY` is ASC and therefore
+NULLS LAST, so such a row cannot displace a scored one under the LIMIT — no
+test can make that clause fail, and its comment must not claim a fetch-budget
+effect it does not have. A transient failure costs its own query
+(`failedQueries` on the report), never the 46 comparisons already paid for;
+only a majority of failures fails the run. Mode 2 judgements accumulate in
+`embedding_compare_judgements` (101) keyed by **provider AND model on each
+side** — the same name behind a different provider is a different index — and
+quote a McNemar p only from 20 **live-or-candidate PICKS**, never from a total
+that ties inflate (fourteen ties plus six picks published `p = 0.031` from six
+clicks). That key carries **no admin dimension on purpose** — one query is one
+McNemar trial, so a per-judge key would let two admins vote it twice and
+inflate N and the p drawn from it; the cost, stated in 101's header and in
+`06-data-model.md`, is that on a multi-admin instance the last judge of a
+query wins it and the stored page-id arrays carry THAT judge's visibility.
+Runs reuse `retrieval_benchmark_runs`
+(`config.kind = 'shadow-compare'`), so a comparison and the production
+benchmark exclude each other — deliberately, both spend the shared LLM queue —
+**and BOTH 409s are worded by the run that HOLDS the slot** (`slotBusyMessage`,
+beside `staleRunError`; a route may not import another route) **while the
+holder's id is withheld unless it is the caller's OWN run of the caller's own
+kind** — `activeBenchmarkRun` reports `requestedBy` for that decision alone, and
+both `:id` reads are scoped by kind AND by `requested_by`, so a foreign id is a
+card re-attached to a run whose every poll 404s. The exclusion is
+the owner decision and both cards' copy states it; telling an operator refused
+by a comparison that "a production retrieval benchmark is already running" is
+not part of that decision, and it named a run that does not exist on the one
+surface consulted to find out what is holding the slot. Both route suites
+`importActual` that module rather than hand-writing a stand-in: the previous
+factories defined a `class extends Error {}` the route's `instanceof` could not
+have distinguished from the real one, and a `slotBusyMessage` that did not
+exist at all — so the sentence never once ran in the suite pinning its wording.
+The whole row lifecycle is ONE module, `eval/benchmark-run-lifecycle.ts`:
+the two private copies diverged inside a single review round, the stale sweep
+failing comparisons with "start a new benchmark" and the benchmark's own
+`GET /:id` serving compare runs to a renderer that dereferences
+`report.baseline`. Its fetch takes the expected `kind` as a REQUIRED argument
+in both directions, and a compare run is additionally scoped to
+`requested_by` — the report's titles came out of that admin's ACL. `GET …/compare`
+(no id) answers this admin's latest run, because the card's `runId` is
+component state and a comparison outlives a tab switch — but only a run whose
+config carries the candidate PAIR that is live now: run rows outlive the
+migration that produced them, so an aborted migration's report was otherwise
+adopted into the next migration's card, under a heading naming the new
+candidate, with live judgement controls beside it. That pair check is a
+PREDICATE of the query (`config @> $2::jsonb`, a bind parameter), never a
+filter over its one row: applied after `ORDER BY created_at DESC LIMIT 1` it
+discarded the completed comparison of the pair that is live NOW whenever any
+newer run named another candidate, so an operator who tries X, tries Y and
+comes back to X loses X's report and re-spends its N x 2 embedding calls. The
+card's half of that is `refetchOnMount: 'always'` plus a cache seed at start;
+`staleTime: Infinity` alone served the first mount's `{run: null}` back to the
+second one, so the re-attachment worked only across a full reload. The judged
+verdict renders **Recall and MRR beside the p and withheld with it** — both
+come off the same scored picks, so quoting them under a withheld p publishes
+the quality half of a verdict the server declined to state; the surface is a
+labelled `region` with a real heading, because a completed run puts four
+judgement controls per disagreeing query above the assignments grid, its Save
+and the runtime-limits card in tab order. **The section lives inside the card's
+`ready` branch, so every way a run can end is also a way the section can
+vanish** — a mid-run Abort took the progress line, the section and any failure
+strip away within one poll while the run failed server-side and nothing
+rendered the reason, and the pair-scoped re-attachment above cannot recover it
+BY DESIGN. So the two surfaces that survive the unmount speak instead: the
+section reports an in-flight run UP to the card (read BEFORE the lifecycle
+request, because that request's own `refresh()` is what unmounts the reporter),
+the card warns that the comparison ended, and a run that fails while still
+mounted is additionally toasted — a toast renders at the app root, the strip
+does not. **The card's warning is keyed on the migration WINDOW, latched by
+run id, and outlives the branch it was raised in.** The window, because the
+server ends a run on the state row's fingerprint while `phase` is recomputed
+from a live `embedding_next IS NULL` count on every poll — one page whose
+shadow embed failed mid-window (a shadow failure must never fail the live
+embed) flips ready → backfilling with the row untouched, and a phase-keyed
+signal announced an ending to a run that was still going, still held the
+one-active slot, and prescribed a remedy the compare route's own 409 refuses.
+That branch keeps the id and says so, and the section re-adopts the run when
+`ready` returns; `Re-run backfill` therefore passes `endsMigrationWindow:
+false`, because path-blind arming would fire on exactly that button. Latched
+by id, because `post()` snapshots the in-flight id BEFORE its request while
+the 5s poll can raise the same ending inside that window — a real abort takes
+a table lock and drops columns, so the POST losing that race is the ordinary
+case, and one ending produced two identical toasts. Outliving the branch,
+because a toast is gone in seconds and the fact it reports is that N × 2
+embedding calls were spent for nothing: the ending is a dismissible amber
+`role="status"` strip rendered by every branch of the card (the toast still
+covers the one case the strip cannot — a rollback with no pending change takes
+the whole card away). That branch also asks the SERVER which
+comparison is live rather than reading a flag only the section can set: the
+section is unmounted there, so a fresh mount (a reload, a sub-tab switch) had
+watched nothing and told the admin comparing was merely "not yet possible"
+over a run holding the slot, while a run that FINISHED behind the note kept
+"still running" for as long as the stragglers lasted and left a stale id that
+made the next swap warn about a comparison that had completed. It reads the
+section's own cache key, candidate and all, so the two are one entry.
+All four "could not be read" notices on the section carry the
+`RetrievalTab` retry recipe (`useNoticeRetry`), because all four were gated on
+`isError` alone and react-query reverts a refetch with nothing cached to
+`pending`: the `role="status"` line containing the pressed button unmounted
+under the admin's focus, and for the judgement notice the four picks came back
+reading `aria-checked="false"` on a pair whose stored side had never been read.
+So each notice is gated on `<its isError> || retryInFlight`, the busy state is
+`aria-disabled` + a label swap (never native `disabled`, which blurs the focus
+the flag exists to hold) and a successful retry rehomes focus to the nearest
+surviving prose, guarded on `activeElement === document.body`.
+The judgements read consumes `isError` like its two
+siblings — a failed read of a MODEL PAIR's accumulated judgements is a
+failure, not "nothing judged yet" — in THREE states, not two: unreadable
+(nothing cached) hides the four picks rather than rendering
+`aria-checked="false"` on rows that are already judged, while a failed
+BACKGROUND refetch over loaded judgements keeps them under a muted
+last-loaded line, because `isError` alone let one 500 on a 30s-stale tab-back
+blank every pick of a sitting react-query was still holding — the `usePageTree`
+ladder, on the workflow whose own copy is "twenty judgements across sittings".
+Judging is also the one flow here that writes in a BURST, so the judgement
+POST carries its own allowance (`JUDGEMENT_RATE_LIMIT_FACTOR` × the admin
+knob, a multiple and never a floor, so lowering `rate_limit_admin_max` still
+lowers it): the shared 20/min bucket is sized for the run-starting POSTs, the
+p needs 20 PICKS with ties costing a POST each, and a 429 here DROPS the pick.
+The client's `['shadow-compare-latest']` cache key carries the CANDIDATE for
+the same reason the server's lookup carries a pair predicate — keyed on the
+bare name, a remount after aborting migration A and readying B inside one
+gcTime rendered A's report and A's live judgement radios under B's heading.
+The model NAME is one dimension short of that predicate, so the key is the
+MIGRATION's identity — `` `${migration.model}@${migration.startedAt}` ``,
+built once in the card and passed to the section as `candidateKey`, both
+halves keying the one entry. `providerId` is not on the shadow-status wire, so
+the same name re-hosted behind a second provider collided on the client while
+the server refused; `startedAt` is strictly FINER than the pair, which is the
+safe direction — a finer key can only miss the cache and pay the round trip
+the server was going to answer anyway, never serve the wrong run. And the
+card's ending notice rehomes focus when its Dismiss unmounts itself (the phase
+paragraph, `tabIndex={-1}`), under `useNoticeRetry`'s two guards: it was the
+fourth self-removing control on this surface and the only one dropping a
+keyboard admin to `<body>`.
+An empty sample fails naming the window it asked for and the
+control that widens it, not just the state: it is the likeliest first-run
+outcome on a quiet instance and it recurs in the amber failed-run strip on
+every attempt. The
+polite completion announcer is MOUNTED FOR THE SECTION'S LIFE with only its
+sentence conditional, the pattern `AiAssistantPage` and `DockPanel` use,
+because a region inserted together with its text is the case AT is least
+reliable about and this one is `sr-only`. `fetchBenchmarkRun`'s `requestedBy`
+is now passed by BOTH callers: the production benchmark's `GET` was the one
+that omitted it, so the module's own ACL argument was contradicted by the
+caller beside the one that honoured it. **The report is keyed on STATUS, never on provenance**, and the card
+watches its own poll as well as its own POST: `GET …/compare` resolves through
+`latestBenchmarkRun(…, requestedBy, …)` (`WHERE requested_by = $1`), so a run
+adopted on mount is always this admin's own — gating the channel on
+started-in-this-session made it dead on exactly the path re-attachment exists
+for, and the next Abort then ended a live comparison in silence. The
+from-another-tab case needs the card's *poll*, not its POST: nothing is pressed
+here, `refresh()` alone flips the branch, and the server fails the run only at
+its next per-query fingerprint check — one or more polls later — so the
+section's compensating toast loses that race and the card raises the same
+sentence when the phase leaves `ready` with a run in flight. Amber-versus-quiet
+likewise tracks WATCHED-versus-adopted rather than provenance: a comparison
+showing live progress one poll earlier is news, one adopted already failed is
+history. The channel is armed on the **202**, by seeding the run cache beside
+the latest cache (and invalidating it, or the app client's 30s `staleTime`
+holds the placeholder until the first poll tick): between the POST and the
+first status GET the section otherwise rendered as idle — Run re-enabled, a
+second click firing a duplicate POST the server 409s, and an Abort in that
+window reporting nothing at all. The completed report carries the surface's one
+POLITE announcement (`shadow-compare-complete`); every failure here already
+announced, while the outcome the run exists to produce arrived in silence after
+minutes. The disagreement list marks the pages only
+ONE side returned, in words (`forced-colors` flattens both inks and a
+colour-blind reader sees one grey), and opens at ten rows with an expander:
+`limit` 100 × `topK` 20 is ~4000 lines inside a settings card, with the
+migration's own Swap and Abort above the fold behind it. The four sides are one
+**`radiogroup` with a roving tabindex**, not four `aria-pressed` toggles — one
+mutually exclusive choice, one tab stop per row — and its arrows move FOCUS
+ONLY, deliberately not APG's selection-follows-focus, because every selection
+is a POST that becomes a row in the McNemar count. The chosen side keeps
+`nm-pill-active` and gains a **check glyph**: measured off the tokens that
+recipe's fill step is 1.07:1 (Graphite) / 1.11:1 (Paper) and even its ink step
+is 2.06:1 (Graphite), all under WCAG 1.4.11's 3:1, so the only channel that is
+not a contrast question is a shape — `QualityScoreBadge`'s segment-meter
+argument. A 42703 while the migration
+still reports active is a SCHEMA fault, not a provider one — it ends the run at
+the first query instead of being counted as a skipped query and reported as
+"check the provider" once the failed-share ceiling (**half** the sample; pinned
+by 2-of-4 completes / 3-of-4 fails) trips. Lifecycle step 3b in
+`docs/runbooks/shadow-reembed.md`.
 There is no separate model-comparison harness — #1113 was closed without one.
 
 **A run states which FTS configuration it measured, and the default is
@@ -341,7 +540,7 @@ The inspector's Details tab is the better **grouping** — tags belong with spac
 
 **Edit-mode toolbar.** `EditorToolbar` lives in its own module; `Editor.tsx` re-exports it and keeps the three context strips. It carries **fourteen main controls** plus utilities: a block-type control (headings and text), Quote, Code block, Divider, five marks, one colour picker (text colour and highlight in the same panel, immediately left of the bullet list), three list toggles, and one Insert menu, with header numbering, undo and redo at the far end. The long tail is behind the two menus *with names beside it* — the flat row shipped two different actions under the same `ListTree` glyph and no label, which is the failure mode a wall of icons has. When the bar is too narrow, folded tools (strike, inline code, task list, alignment, underline, ordered list) go into **Insert**, never a second `…` trigger. Colour stays on the bar, immediately left of the bullet list. Nothing was removed; `EditorToolbar.test.tsx` asserts the Insert menu item by item against what the flat row carried, so a restructure cannot quietly drop one.
 
-Four things in it are load-bearing. (1) **A text field never goes inside the menu.** Image URL and status label open a Radix *Popover* from the menu, because `role="menu"` typeahead swallows printable keystrokes — the same trap the block menu's Improve input documents above, reached from a different direction. `onCloseAutoFocus` is preventDefaulted while a prompt is pending, or Radix returns focus to the trigger in the same tick the popover autofocuses its input, and the input loses. (2) **The roving tabindex is the whole point of `role="toolbar"`.** `use-toolbar-roving-focus.ts` gives the bar one tab stop and arrow-key travel; without it the bar was 31 sequential stops between the prose and Save. Its `root.contains(event.target)` guard is not defensive coding — Radix portals its menu content out of the DOM but *not* out of the React tree, and React replays events up the React tree, so an arrow pressed inside an open Insert menu genuinely arrives at the toolbar's handler. Vertical arrows are deliberately not claimed: ArrowDown on a trigger is how Radix opens a menu. (3) **The pressed state is plain CSS in `index.css`, not nested inside `@utility nm-icon-button`** where it belongs by subject. Tailwind emits a nested `&[aria-pressed='true']` in the production build but **not** through the dev server, so the state was invisible while working on it and correct only once built. It also has to sit after the `forced-colors` and `prefers-reduced-motion` blocks, which name `.nm-icon-button:hover` at the same (0,2,0) specificity — on a tie the later rule wins, and being last is what stops a pressed button dropping back to merely-hovered. Its colour is **neutral, not Steel**: `nm-pill-active` states the rule that the accent is reserved for actions, and six toggles lighting up Steel read as six primary buttons. `EditorFormatBar` shares the recipe, because those are the same six toggles and they used to render the accent there and neutral here. (4) **Separators hide below `sm`**, where the bar wraps — a divider that lands at the end of a wrapped row separates a group from nothing — and the container's horizontal gap opens to 8px instead so the grouping still reads. Menu section labels are uppercase at **12px, not 11**: `ui-text-legibility.test.ts` holds capitals to a higher floor than body text.
+Four things in it are load-bearing. (1) **A text field never goes inside the menu.** Image URL and status label open a Radix *Popover* from the menu, because `role="menu"` typeahead swallows printable keystrokes — the same trap the block menu's Improve input documents above, reached from a different direction. `onCloseAutoFocus` is preventDefaulted while a prompt is pending, or Radix returns focus to the trigger in the same tick the popover autofocuses its input, and the input loses. (2) **The roving tabindex is the whole point of `role="toolbar"`.** `use-toolbar-roving-focus.ts` gives the bar one tab stop and arrow-key travel; without it the bar was 31 sequential stops between the prose and Save. Its `root.contains(event.target)` guard is not defensive coding — Radix portals its menu content out of the DOM but *not* out of the React tree, and React replays events up the React tree, so an arrow pressed inside an open Insert menu genuinely arrives at the toolbar's handler. Vertical arrows are deliberately not claimed: ArrowDown on a trigger is how Radix opens a menu. (3) **The pressed state is plain CSS in `index.css`, not nested inside `@utility nm-icon-button`** where it belongs by subject. Tailwind emits a nested `&[aria-pressed='true']` in the production build but **not** through the dev server, so the state was invisible while working on it and correct only once built. It also has to sit after the `forced-colors` and `prefers-reduced-motion` blocks, which name `.nm-icon-button:hover` at the same (0,2,0) specificity — on a tie the later rule wins, and being last is what stops a pressed button dropping back to merely-hovered. Its colour is **neutral, not Steel**: `nm-pill-active` states the rule that the accent is reserved for actions, and six toggles lighting up Steel read as six primary buttons. `EditorFormatBar` shares the recipe, because those are the same six toggles and they used to render the accent there and neutral here. **The recipe does not transplant onto `nm-button-ghost`, and there is deliberately no `.nm-button-ghost[aria-pressed='true']` rule** (#1260): a ghost button already carries `--color-border-interactive` and `--color-foreground` at rest, so two of the three declarations are no-ops and the surviving fill change measured 1.03:1 (Graphite) / 1.02:1 (Paper) against the surface it sits on, identical to unpressed on hover and absent under `forced-colors` — an invisible pressed state, which is the defect the icon-button rule exists to prevent. A mutually exclusive choice takes the segmented recipe instead — `NewPagePage`'s `bg-muted` track with `nm-pill-active` on the chosen one — which is what "selected is the neutral pressed recipe" above names, **and past a handful of options it wants a shape channel on top**: measured off the tokens, that recipe's fill step over its own track is 1.07:1 (Graphite) / 1.11:1 (Paper) and even its ink step (`--color-muted-foreground` → `--color-foreground`) is 2.06:1 in Graphite, all under 1.4.11's 3:1, so it is legible as a *group* and thin as a *single* readout. The `forced-colors` block already pins `.nm-pill-active` to `Highlight`; where the choice is the whole point of the surface — #1260's judgement rows, where a wrong reading silently mis-records evidence — add a check glyph, which is `QualityScoreBadge`'s segment-meter argument (a shape survives `forced-colors`, colour blindness and a retune of every token) — **rendered in every state with `invisible` when unchosen, never mounted on selection**, because a conditionally mounted glyph puts its 12px box plus the group's 4px gap into the layout on every pick, widening that segment by ~16px and sliding its right-hand siblings out from under the pointer on a surface built for twenty picks and changes of mind. Four such options are also a `radiogroup` with a roving tabindex, not four `aria-pressed` toggles. (4) **Separators hide below `sm`**, where the bar wraps — a divider that lands at the end of a wrapped row separates a group from nothing — and the container's horizontal gap opens to 8px instead so the grouping still reads. Menu section labels are uppercase at **12px, not 11**: `ui-text-legibility.test.ts` holds capitals to a higher floor than body text.
 
 > **Cross-surface parity:** ADR-010 v0.7 changed the app to the Steel accent and
 > the five-step surface ladder. `compendiq-landing` still carries the preceding

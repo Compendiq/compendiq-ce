@@ -212,6 +212,7 @@ vi.mock('../../shared/hooks/use-settings', () => ({
       openaiModel: null,
       inlineCompletionEnabled: true,
       inlineCompletionDelay: 'balanced',
+      inlineCompletionMode: 'full',
       inlineCompletionCodeOnly: false,
     },
     isLoading: false,

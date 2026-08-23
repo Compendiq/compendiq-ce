@@ -428,6 +428,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
         show_space_home_content: true,
         inline_completion_enabled: false,
         inline_completion_delay: 'deliberate',
+        inline_completion_mode: 'word',
         inline_completion_code_only: true,
       }],
     });
@@ -443,6 +444,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(body).toMatchObject({
       inlineCompletionEnabled: false,
       inlineCompletionDelay: 'deliberate',
+      inlineCompletionMode: 'word',
       inlineCompletionCodeOnly: true,
     });
   });
@@ -510,6 +512,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(body).toMatchObject({
       inlineCompletionEnabled: true,
       inlineCompletionDelay: 'balanced',
+      inlineCompletionMode: 'full',
       inlineCompletionCodeOnly: false,
     });
   });
@@ -522,6 +525,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
       payload: {
         inlineCompletionEnabled: false,
         inlineCompletionDelay: 'manual',
+        inlineCompletionMode: 'word',
         inlineCompletionCodeOnly: true,
       },
     });
@@ -529,12 +533,17 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     const update = mockQuery.mock.calls.find(
       (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE user_settings SET'),
     );
-    // CustomPromptsSchema carries its established `{}` default, so the shared
-    // PUT parser writes it first even when omitted from the wire body.
-    expect(update?.[0]).toContain('inline_completion_enabled = $2');
-    expect(update?.[0]).toContain('inline_completion_delay = $3');
+    // #1402 (review r1): customPrompts is no longer written when the request
+    // never sent it — CustomPromptsPatchSchema (unlike the old
+    // CustomPromptsSchema.optional()) has no field-level default, so an
+    // inline-completion-only PUT no longer wipes custom_prompts as a side
+    // effect. See CustomPromptsPatchSchema's comment in
+    // packages/contracts/src/schemas/settings.ts.
+    expect(update?.[0]).toContain('inline_completion_enabled = $1');
+    expect(update?.[0]).toContain('inline_completion_delay = $2');
+    expect(update?.[0]).toContain('inline_completion_mode = $3');
     expect(update?.[0]).toContain('inline_completion_code_only = $4');
-    expect(update?.[1]).toEqual(['{}', false, 'manual', true, 'test-user-id']);
+    expect(update?.[1]).toEqual([false, 'manual', 'word', true, 'test-user-id']);
   });
 
   it('PUT /settings does not mark pages dirty when only unrelated user settings change', async () => {
@@ -584,7 +593,15 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     // Attacker submits a space key that is NOT visible to their own PAT.
     // The PAT only sees DEV/DOCS (default mock), so CONFIDENTIAL must be rejected
     // and NO space_role_assignments row may be inserted.
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 3 }], rowCount: 1 }); // editor role (should not be reached, but safe)
+    // #1402 (review r1): the unauthorized-space check throws BEFORE any query
+    // runs, so this test issues zero mockQuery calls — do NOT queue a
+    // mockResolvedValueOnce here. vi.clearAllMocks() in beforeEach clears
+    // mock.calls but NOT a queued-and-never-consumed mockResolvedValueOnce, so
+    // an unreached queued value here silently shifts every mockQuery.mock
+    // response in whichever test runs next (verified: reinstating this line
+    // makes 'PUT /settings allows deselecting all spaces without a PAT check'
+    // fail two tests later, when the editor-role SELECT unexpectedly consumes
+    // this leftover `{ rows: [{ id: 3 }] }` instead of its own queued value).
 
     const response = await app.inject({
       method: 'PUT',
@@ -727,6 +744,29 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(updateCalls[0][1]).toContain(JSON.stringify({ improve_clarity: 'Be clear!', generate_spec: 'Draft architecture RFC', generate_guide: 'Draft howto guide' }));
   });
 
+  // #1402 (review r1): ensureUserSettingsRow's `code !== '23503'` narrowing
+  // (settings.ts) had no test pinning the negative direction — a mutation
+  // that widens it to swallow every error left the whole suite green (see
+  // the fixer's PR-body write-up for the mutation evidence). A non-FK error
+  // from the row-ensure INSERT (e.g. a connection drop) must surface as a
+  // 500, not a silent 200 with nothing written.
+  it('PUT /settings surfaces a non-FK row-ensure failure as a 500 (#1402 review r1)', async () => {
+    mockQuery.mockImplementationOnce(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO user_settings')) {
+        throw Object.assign(new Error('terminating connection due to administrator command'), { code: '57P01' });
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { onboardingState: { dismissed: true } },
+    });
+
+    expect(response.statusCode).toBe(500);
+  });
+
   it('PUT /settings clears the stored PAT when confluencePat is null (#924)', async () => {
     // #924: confluencePat: null is a valid nullable value meaning "disconnect".
     // The handler must issue `confluence_pat = NULL` so the PAT is actually
@@ -813,6 +853,180 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(mockRemoveAllowedBaseUrl).not.toHaveBeenCalled();
     // But still re-register it (idempotent)
     expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
+  });
+
+  it('GET /settings returns a fully-defaulted onboardingState for a row that predates onboarding activity (#1402)', async () => {
+    // The stored row carries no onboarding_state at all (predates migration 100),
+    // so the driver returns undefined/null for that column — GET must still answer
+    // the full Zod-defaulted shape rather than propagating that absence.
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        confluence_url: null,
+        confluence_pat: null,
+        theme: 'glass-dark',
+        sync_interval_min: 15,
+        show_space_home_content: true,
+        inline_completion_enabled: true,
+        inline_completion_delay: 'balanced',
+        inline_completion_code_only: false,
+        onboarding_state: null,
+      }],
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/settings' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.onboardingState).toEqual({
+      firstAiQueryMade: false,
+      shortcutsModalViewed: false,
+      pageCreatedOrEdited: false,
+      dismissed: false,
+      completedAt: null,
+    });
+  });
+
+  it('GET /settings returns a fully-defaulted onboardingState when no row exists at all (#1402)', async () => {
+    mockGetSelectedSyncSpaces.mockResolvedValueOnce([]);
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // no user_settings row
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // INSERT default row
+
+    const response = await app.inject({ method: 'GET', url: '/api/settings' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.onboardingState).toEqual({
+      firstAiQueryMade: false,
+      shortcutsModalViewed: false,
+      pageCreatedOrEdited: false,
+      dismissed: false,
+      completedAt: null,
+    });
+  });
+
+  it('GET /settings falls back to defaults instead of 400ing when stored onboarding_state fails validation (#1402 review r1)', async () => {
+    // A corrupt/legacy value here (bad out-of-band SQL write, or a future phase
+    // changing a field's type) must degrade only this field, never the whole
+    // GET /settings response. Before the fix, OnboardingStateSchema.parse threw
+    // and Fastify's default error handler turned that into a 400 for every
+    // other settings field too.
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        confluence_url: null,
+        confluence_pat: null,
+        theme: 'glass-dark',
+        sync_interval_min: 15,
+        show_space_home_content: true,
+        inline_completion_enabled: true,
+        inline_completion_delay: 'balanced',
+        inline_completion_code_only: false,
+        onboarding_state: { firstAiQueryMade: 'yes', legacyKey: 1 },
+      }],
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/settings' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.onboardingState).toEqual({
+      firstAiQueryMade: false,
+      shortcutsModalViewed: false,
+      pageCreatedOrEdited: false,
+      dismissed: false,
+      completedAt: null,
+    });
+  });
+
+  it('PUT /settings merges onboardingState at the top level rather than overwriting it (#1402)', async () => {
+    // This is the test a reviewer will try hardest to break by reverting the
+    // merge operator (`onboarding_state || $n::jsonb`) to a plain assignment
+    // (`onboarding_state = $n::jsonb`) — that mutation must turn this red.
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { onboardingState: { firstAiQueryMade: true } },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const updateCalls = mockQuery.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE user_settings SET'),
+    );
+    expect(updateCalls).toHaveLength(1);
+    const [sql, values] = updateCalls[0]!;
+    // The SQL fragment must contain the merge operator against the existing
+    // column — a bare `onboarding_state = $n::jsonb` reproduces custom_prompts'
+    // overwrite bug for this column.
+    expect(sql).toMatch(/onboarding_state\s*=\s*onboarding_state\s*\|\|\s*\$\d+::jsonb/);
+    expect(values).toContain(JSON.stringify({ firstAiQueryMade: true }));
+  });
+
+  it('GET /settings echoes back whatever onboarding_state the DB row holds (#1402)', async () => {
+    // NOTE (review r1): despite the two PUTs below, this test cannot observe
+    // the route's merge behavior — `query` is mocked, so neither PUT's SQL is
+    // ever executed, and the GET's response is entirely determined by the
+    // mockResolvedValueOnce row fed to it just before the GET. Renamed from
+    // "...both survive in the next GET" / "End-to-end proof of merge-not-
+    // overwrite at the route layer", which this test cannot provide (a
+    // mutation reverting the merge operator to a bare assignment leaves it
+    // green). The real merge-not-overwrite proof is the SQL-regex assertion
+    // above plus the real-Postgres round trip in
+    // settings-onboarding-state.test.ts (added in review round r1).
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE #1
+    const first = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { onboardingState: { firstAiQueryMade: true } },
+    });
+    expect(first.statusCode).toBe(200);
+
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE #2
+    const second = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { onboardingState: { shortcutsModalViewed: true } },
+    });
+    expect(second.statusCode).toBe(200);
+
+    // Simulate the DB now holding the merged result of both UPDATEs.
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        confluence_url: null,
+        confluence_pat: null,
+        theme: 'glass-dark',
+        sync_interval_min: 15,
+        show_space_home_content: true,
+        inline_completion_enabled: true,
+        inline_completion_delay: 'balanced',
+        inline_completion_code_only: false,
+        onboarding_state: { firstAiQueryMade: true, shortcutsModalViewed: true },
+      }],
+    });
+    const getResponse = await app.inject({ method: 'GET', url: '/api/settings' });
+    const body = JSON.parse(getResponse.body);
+    expect(body.onboardingState).toMatchObject({
+      firstAiQueryMade: true,
+      shortcutsModalViewed: true,
+    });
+  });
+
+  it('PUT /settings without onboardingState does not touch onboarding_state (#1402)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { theme: 'polar-slate' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const updateCalls = mockQuery.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE user_settings SET'),
+    );
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0]![0]).not.toContain('onboarding_state');
   });
 
   it('GET /settings returns only explicitly-selected spaces, not all admin-accessible spaces (#721)', async () => {

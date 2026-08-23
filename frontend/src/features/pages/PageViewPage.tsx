@@ -847,6 +847,7 @@ export function PageViewPage() {
                     available: inlineCompletionAvailable,
                     enabled: settings?.inlineCompletionEnabled ?? true,
                     delay: settings?.inlineCompletionDelay ?? 'balanced',
+                    mode: settings?.inlineCompletionMode ?? 'full',
                     codeOnly: settings?.inlineCompletionCodeOnly ?? false,
                     title: editTitle,
                     spaceKey: page.spaceKey ?? undefined,
@@ -1068,4 +1069,3 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
     </div>
   );
 }
-

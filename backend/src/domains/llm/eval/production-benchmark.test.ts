@@ -76,17 +76,28 @@ describe('production retrieval benchmark report', () => {
     expect(report.deepSearch.recallAtK).toEqual({ '@1': 1 });
   });
 
-  it('recovers stale active runs before checking for a conflicting run', async () => {
+  it('recovers stale active runs before checking for a conflicting run, naming each run\'s kind', async () => {
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ id: 'stale-run' }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'stale-run', kind: null }, { id: 'stale-compare', kind: 'shadow-compare' }] })
       .mockResolvedValueOnce({ rows: [] });
 
     await expect(getActiveProductionBenchmark()).resolves.toBeNull();
 
-    expect(mockQuery.mock.calls[0]![0]).toContain('last_heartbeat_at < NOW()');
+    const sweep = mockQuery.mock.calls[0]!;
+    expect(sweep[0]).toContain('last_heartbeat_at < NOW()');
+    // One sweep, two kinds of copy: a comparison must never be failed with
+    // "start a new benchmark", a run its admin never started.
+    expect(sweep[0]).toContain("CASE WHEN config->>'kind' = 'shadow-compare'");
+    expect(sweep[1]![0]).toMatch(/comparison worker stopped/i);
+    expect(sweep[1]![1]).toMatch(/benchmark worker stopped/i);
     expect(mockLogger.warn).toHaveBeenCalledWith(
-      { benchmarkRunIds: ['stale-run'] },
-      'Recovered abandoned production retrieval benchmark runs',
+      {
+        runs: [
+          { id: 'stale-run', kind: null },
+          { id: 'stale-compare', kind: 'shadow-compare' },
+        ],
+      },
+      'Recovered abandoned retrieval benchmark / shadow comparison runs',
     );
   });
 

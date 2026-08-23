@@ -322,6 +322,11 @@ describe('query-instruction (#1114)', () => {
       // `GET /api/search?mode=semantic` embeds the query itself instead of
       // delegating to `hybridSearch`, so it is a second, independent query path.
       'src/routes/knowledge/search.ts',
+      // #1260 — the shadow comparison embeds each sampled QUERY twice, once
+      // per model, and the prefix must ride per model: Qwen3 prefixed,
+      // bge-m3 bare, whichever side each is on. Prefixing both, or neither,
+      // silently handicaps one arm of the very comparison being run.
+      'src/domains/llm/services/shadow-compare-service.ts',
     ].sort();
 
     /**
