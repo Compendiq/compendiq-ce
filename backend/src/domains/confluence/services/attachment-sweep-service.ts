@@ -68,8 +68,9 @@
  *     successfully readdir'd before any of its files can be judged).
  *
  * A live run deletes only what the SAME walk lists now — never a stale
- * dry-run list — and re-verifies each candidate (page existence, grace) at
- * delete time. All removals go through the validated core helpers
+ * dry-run list — and re-verifies each candidate (page existence, grace, and
+ * the keep-set, for a file candidate as well as a directory's current
+ * contents) at delete time. All removals go through the validated core helpers
  * (`removeCachedAttachment*`, `removeLocalAttachment*`); no path is ever
  * concatenated from DB values here.
  *
@@ -1099,10 +1100,11 @@ async function confluenceKeyOwners(key: string): Promise<number[]> {
  * Delete the candidates the walk just listed, re-verifying each at delete
  * time: a directory's page may have appeared since phase A (first sync
  * creates `<confluence_id>/` before the `pages` INSERT), any file may have
- * been rewritten inside the grace window, and a directory candidate's
- * CURRENT contents are re-checked against the keep-set (fixer r1) — a
- * directory holding a filename some body references is never removed, no
- * matter how stale the listing that named it. ENOENT anywhere is a skip,
+ * been rewritten inside the grace window, and BOTH candidate classes are
+ * re-checked against the keep-set — a directory whose CURRENT contents hold
+ * a referenced filename (fixer r1) and a file candidate whose own filename
+ * is referenced (fixer r2) are never removed, no matter how stale the
+ * listing that named them. ENOENT anywhere is a skip,
  * never an error — nothing is deleted on the strength of a stale listing.
  *
  * For every FILE removed, the matching `page_image_embeddings` rows
@@ -1188,6 +1190,17 @@ export async function deleteCandidates(
 
       // orphan_file
       const filename = candidate.filename!;
+      // Keep-set re-check (fixer r2) — the same guard the directory branch
+      // above already applies, so the delete-time contract holds for BOTH
+      // candidate classes rather than only one. The list a candidate comes
+      // from can be older than the keep-set it is judged against (this
+      // function is exported and callers hand it hand-built lists), and the
+      // three checks below cannot catch a reference: a sync re-adding an
+      // image whose bytes are already cached does not re-download it, so its
+      // mtime stays aged and the grace re-check waves it through. O(1)
+      // against a Set already in memory; never deletes something the walk
+      // would refuse.
+      if (keep[candidate.store].has(filename)) continue;
       let st;
       try {
         st = await fs.stat(path.join(dirPath, filename));

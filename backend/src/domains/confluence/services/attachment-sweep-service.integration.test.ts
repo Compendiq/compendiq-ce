@@ -1496,6 +1496,35 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(totals.files).toBe(0);
     });
 
+    it('a FILE candidate whose filename is in the keep-set survives at delete time (fixer r2)', async () => {
+      // The directory branch re-checked the keep-set at delete time; the file
+      // branch re-checked only existence, is-file and mtime, so a reference
+      // that landed after the walk was honoured for directories and ignored
+      // for files — over a window that is the whole run. Reachable shape: a
+      // sync re-adds an image whose bytes are already cached (so
+      // `getMissingAttachments` does not re-download it and its mtime stays
+      // aged) and the body carrying the reference is written after the walk
+      // listed the file.
+      await writeAged('90001', 'kept-file.png');
+      await writeAged('local', '4243', 'local-kept-file.png');
+
+      const totals = emptyDeletedTotals();
+      await deleteCandidates(
+        [
+          fileCandidate('confluence', '90001', 'kept-file.png'),
+          fileCandidate('local', '4243', 'local-kept-file.png'),
+        ],
+        { confluence: new Set(['kept-file.png']), local: new Set(['local-kept-file.png']) },
+        noAbort,
+        totals,
+      );
+
+      expect(await exists(path.join(tempBase, '90001', 'kept-file.png'))).toBe(true);
+      expect(await exists(path.join(tempBase, 'local', '4243', 'local-kept-file.png'))).toBe(true);
+      expect(totals.files).toBe(0);
+      expect(totals.bytes).toBe(0);
+    });
+
     it('sanity: an unchanged orphan still falls through every re-check and is deleted', async () => {
       await writeAged('55555', 'old.png');
       await ageDirs('55555');
