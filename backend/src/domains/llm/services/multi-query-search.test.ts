@@ -43,6 +43,10 @@ const {
   PARAPHRASE_COUNT,
 } = await import('./multi-query-search.js');
 const { RAG_RERANK_CANDIDATES_DEFAULT } = await import('../../../core/services/admin-settings-service.js');
+// The formula's own leaf module (#1268): rag-service is stubbed above, so the
+// verdict this suite compares against has to come from where the wrapper
+// imports it — not from the stub.
+const { computeRetrievalConfidence } = await import('./retrieval-confidence.js');
 
 function row(pageId: number, over: Partial<SearchResult> = {}): SearchResult {
   return {
@@ -482,6 +486,109 @@ describe('multiQuerySearch (#1112)', () => {
       9,
     );
     expect(extras).toMatchObject({ rerankScore: 0.71, degradedReason: null, embeddingCoverage: 1 });
+  });
+
+  /**
+   * #1284 — deep search is the second `search_analytics` writer, and it must
+   * record the same verdict the route's gate computes. The gate runs
+   * `computeRetrievalConfidence` over the MERGED set with the ORIGINAL leg's
+   * health caveat, so this row does too.
+   */
+  it('records the merged set\'s confidence, its basis and the caller\'s surface (#1284)', async () => {
+    mockChat.mockResolvedValue('first rewrite\nsecond rewrite');
+    /*
+     * The fixture DISCRIMINATES the merged set from the original leg (review
+     * r2), and it has to: with all three legs answering the same row,
+     * `merged`, `legs[0]` and every intermediate set carry the identical max
+     * score and basis, so substituting `computeRetrievalConfidence(legs[0],
+     * …)` for the merged set left all 35 tests in this file green. The
+     * difference is real at runtime — each leg retrieves at
+     * `DEEP_SEARCH_LEG_TOPK` 20 while the merge slices to the caller's topK,
+     * so a paraphrase-leg row absent from leg 0 routinely leads the merge —
+     * and it is exactly what makes the recorded number equal to the one
+     * `llm-ask.ts` gates on.
+     *
+     * Page 2 is reached only by the two paraphrases and outranks page 1 in
+     * the merge (2 x 0.6/61 > 1/61), so it leads `merged` and carries the max
+     * cosine; page 1 is all the original leg saw.
+     */
+    mockHybridSearch.mockImplementation(async (_u: string, q: string, _k: number, _c: unknown, opts: { onRetrievalMeta?: (m: unknown) => void }) => {
+      opts?.onRetrievalMeta?.({
+        degradedReason: null, healthCaveat: null, searchType: 'hybrid',
+        embeddingCoverage: 1, aclEmptied: false,
+      });
+      return q === 'the user question'
+        ? [row(1, { vectorScore: 0.83 })]
+        : [row(2, { vectorScore: 0.95 })];
+    });
+
+    const merged = await multiQuerySearch('u1', 'the user question', 5, undefined, {
+      ...optsIn,
+      surface: 'ask',
+    });
+
+    const [, , , , , extras] = mockTrackSearchAnalytics.mock.calls[0]!;
+    expect(computeRetrievalConfidence(merged, null)).toEqual({ score: 0.95, basis: 'similarity' });
+    // The verdict the ORIGINAL leg alone would have produced — different, so
+    // the assertion below names one set rather than agreeing with all of them.
+    expect(computeRetrievalConfidence([row(1, { vectorScore: 0.83 })], null))
+      .toEqual({ score: 0.83, basis: 'similarity' });
+    expect(extras).toMatchObject({ confidence: 0.95, confidenceBasis: 'similarity', surface: 'ask' });
+  });
+
+  /*
+   * The health caveat is the writer's SECOND argument, and an empty merged
+   * set is the only place it changes the answer on its own: healthy-empty is
+   * the measurement "the KB has nothing" (score 0), caveated-empty is an
+   * outage symptom (score null). Without this pair, dropping the caveat
+   * argument entirely also left the suite green.
+   */
+  it('records 0 for an empty merged set retrieved healthily (#1284)', async () => {
+    mockChat.mockResolvedValue('first rewrite\nsecond rewrite');
+    mockHybridSearch.mockImplementation(async (_u: string, _q: string, _k: number, _c: unknown, opts: { onRetrievalMeta?: (m: unknown) => void }) => {
+      opts?.onRetrievalMeta?.({
+        degradedReason: null, healthCaveat: null, searchType: 'hybrid',
+        embeddingCoverage: 1, aclEmptied: false,
+      });
+      return [];
+    });
+
+    await multiQuerySearch('u1', 'the user question', 5, undefined, { ...optsIn, surface: 'ask' });
+
+    const [, , , , , extras] = mockTrackSearchAnalytics.mock.calls[0]!;
+    expect(extras).toMatchObject({ confidence: 0, confidenceBasis: 'none' });
+  });
+
+  it('records NULL for an empty merged set under the original leg\'s health caveat (#1284)', async () => {
+    mockChat.mockResolvedValue('first rewrite\nsecond rewrite');
+    mockHybridSearch.mockImplementation(async (_u: string, _q: string, _k: number, _c: unknown, opts: { onRetrievalMeta?: (m: unknown) => void }) => {
+      opts?.onRetrievalMeta?.({
+        degradedReason: 'no_embeddings', healthCaveat: 'no_embeddings', searchType: 'hybrid',
+        embeddingCoverage: 0, aclEmptied: false,
+      });
+      return [];
+    });
+
+    await multiQuerySearch('u1', 'the user question', 5, undefined, { ...optsIn, surface: 'ask' });
+
+    const [, , , , , extras] = mockTrackSearchAnalytics.mock.calls[0]!;
+    expect(extras).toMatchObject({ confidence: null, confidenceBasis: 'none' });
+  });
+
+  it('records basis none with a NULL score when the merged set is unmeasurable (#1284)', async () => {
+    mockChat.mockResolvedValue('first rewrite\nsecond rewrite');
+    mockHybridSearch.mockImplementation(async (_u: string, _q: string, _k: number, _c: unknown, opts: { onRetrievalMeta?: (m: unknown) => void }) => {
+      opts?.onRetrievalMeta?.({
+        degradedReason: 'embedding_failed', healthCaveat: 'embedding_failed', searchType: 'keyword_fallback',
+        embeddingCoverage: 1, aclEmptied: false,
+      });
+      return [row(1, { vectorScore: null, keywordRank: 0.5 })];
+    });
+
+    await multiQuerySearch('u1', 'the user question', 5, undefined, { ...optsIn, surface: 'ask' });
+
+    const [, , , , , extras] = mockTrackSearchAnalytics.mock.calls[0]!;
+    expect(extras).toMatchObject({ confidence: null, confidenceBasis: 'none' });
   });
 
   it('does not file analytics when an internal replay opts out', async () => {

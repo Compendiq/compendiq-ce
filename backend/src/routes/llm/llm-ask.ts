@@ -309,6 +309,13 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // next breaks the ordering the pages share.
       searchResults = await search(userId, question, 5, undefined, {
         rerank: true,
+        // #1284: this is the surface the refuse gate is evaluated on, and
+        // the only one whose rows the Retrieval panel's confidence readout
+        // reads. Both retrieval entrypoints record the verdict they computed
+        // over the set returned here, which is the same set — and the same
+        // health caveat — the gate below re-derives from, so the recorded
+        // number is the number the gate compared.
+        surface: 'ask',
         // #1106 PR 2: assemble each source page's sibling chunks into the
         // context window buildRagContext reads. Chat-path only — see
         // HybridSearchOptions.assembleContext.
