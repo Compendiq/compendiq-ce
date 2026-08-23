@@ -281,4 +281,43 @@ describe.skipIf(!dbAvailable)('Onboarding checklist state — real-Postgres roun
     const row = await query('SELECT 1 FROM user_settings WHERE user_id = $1', [userId]);
     expect(row.rows).toHaveLength(0);
   });
+
+  // #1402 (review r1): a single-key `onboardingState` PUT must not touch
+  // `custom_prompts` — CustomPromptsSchema ends in `.default({})`, and in
+  // zod v4 wrapping that in `.optional()` on UpdateSettingsSchema did NOT
+  // stop the default from materialising when the request body never sent
+  // `customPrompts` at all, so `body.customPrompts !== undefined` fired on
+  // EVERY PUT and overwrote the column with `'{}'`. This is the acceptance
+  // criterion the lane brief states explicitly ("every other settings
+  // column [is] unaffected by a single-key patch") and phase 2 makes it
+  // routine by firing onboardingState PUTs from background events.
+  it('a single-key onboardingState PUT leaves a previously-saved customPrompts intact', async () => {
+    const { token, userId } = await createUser('onboarding_custom_prompts_user');
+
+    await query(
+      `UPDATE user_settings SET custom_prompts = $1::jsonb WHERE user_id = $2`,
+      [JSON.stringify({ improve_grammar: 'my saved prompt' }), userId],
+    );
+
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { onboardingState: { firstAiQueryMade: true } },
+    });
+    expect(put.statusCode).toBe(200);
+
+    const row = await query<{ custom_prompts: Record<string, string> }>(
+      'SELECT custom_prompts FROM user_settings WHERE user_id = $1',
+      [userId],
+    );
+    expect(row.rows[0]!.custom_prompts).toEqual({ improve_grammar: 'my saved prompt' });
+
+    const get = await app.inject({
+      method: 'GET',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(get.json().customPrompts).toEqual({ improve_grammar: 'my saved prompt' });
+  });
 });

@@ -533,13 +533,17 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     const update = mockQuery.mock.calls.find(
       (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE user_settings SET'),
     );
-    // CustomPromptsSchema carries its established `{}` default, so the shared
-    // PUT parser writes it first even when omitted from the wire body.
-    expect(update?.[0]).toContain('inline_completion_enabled = $2');
-    expect(update?.[0]).toContain('inline_completion_delay = $3');
-    expect(update?.[0]).toContain('inline_completion_mode = $4');
-    expect(update?.[0]).toContain('inline_completion_code_only = $5');
-    expect(update?.[1]).toEqual(['{}', false, 'manual', 'word', true, 'test-user-id']);
+    // #1402 (review r1): customPrompts is no longer written when the request
+    // never sent it — CustomPromptsPatchSchema (unlike the old
+    // CustomPromptsSchema.optional()) has no field-level default, so an
+    // inline-completion-only PUT no longer wipes custom_prompts as a side
+    // effect. See CustomPromptsPatchSchema's comment in
+    // packages/contracts/src/schemas/settings.ts.
+    expect(update?.[0]).toContain('inline_completion_enabled = $1');
+    expect(update?.[0]).toContain('inline_completion_delay = $2');
+    expect(update?.[0]).toContain('inline_completion_mode = $3');
+    expect(update?.[0]).toContain('inline_completion_code_only = $4');
+    expect(update?.[1]).toEqual([false, 'manual', 'word', true, 'test-user-id']);
   });
 
   it('PUT /settings does not mark pages dirty when only unrelated user settings change', async () => {
@@ -589,7 +593,15 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     // Attacker submits a space key that is NOT visible to their own PAT.
     // The PAT only sees DEV/DOCS (default mock), so CONFIDENTIAL must be rejected
     // and NO space_role_assignments row may be inserted.
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 3 }], rowCount: 1 }); // editor role (should not be reached, but safe)
+    // #1402 (review r1): the unauthorized-space check throws BEFORE any query
+    // runs, so this test issues zero mockQuery calls — do NOT queue a
+    // mockResolvedValueOnce here. vi.clearAllMocks() in beforeEach clears
+    // mock.calls but NOT a queued-and-never-consumed mockResolvedValueOnce, so
+    // an unreached queued value here silently shifts every mockQuery.mock
+    // response in whichever test runs next (verified: reinstating this line
+    // makes 'PUT /settings allows deselecting all spaces without a PAT check'
+    // fail two tests later, when the editor-role SELECT unexpectedly consumes
+    // this leftover `{ rows: [{ id: 3 }] }` instead of its own queued value).
 
     const response = await app.inject({
       method: 'PUT',
@@ -730,6 +742,29 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     );
     expect(updateCalls).toHaveLength(1);
     expect(updateCalls[0][1]).toContain(JSON.stringify({ improve_clarity: 'Be clear!', generate_spec: 'Draft architecture RFC', generate_guide: 'Draft howto guide' }));
+  });
+
+  // #1402 (review r1): ensureUserSettingsRow's `code !== '23503'` narrowing
+  // (settings.ts) had no test pinning the negative direction — a mutation
+  // that widens it to swallow every error left the whole suite green (see
+  // the fixer's PR-body write-up for the mutation evidence). A non-FK error
+  // from the row-ensure INSERT (e.g. a connection drop) must surface as a
+  // 500, not a silent 200 with nothing written.
+  it('PUT /settings surfaces a non-FK row-ensure failure as a 500 (#1402 review r1)', async () => {
+    mockQuery.mockImplementationOnce(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO user_settings')) {
+        throw Object.assign(new Error('terminating connection due to administrator command'), { code: '57P01' });
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { onboardingState: { dismissed: true } },
+    });
+
+    expect(response.statusCode).toBe(500);
   });
 
   it('PUT /settings clears the stored PAT when confluencePat is null (#924)', async () => {

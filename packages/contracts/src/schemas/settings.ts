@@ -19,12 +19,32 @@ export const CUSTOM_PROMPT_KEYS = [
 ] as const;
 export type CustomPromptKey = (typeof CUSTOM_PROMPT_KEYS)[number];
 
-export const CustomPromptsSchema = z.object(
-  Object.fromEntries(CUSTOM_PROMPT_KEYS.map((k) => [k, z.string().max(5000).optional()])) as {
-    [K in CustomPromptKey]: z.ZodOptional<z.ZodString>;
-  },
-).strict().default({});
+// #1402 (review r1): the shape shared by the read side (defaulted, below) and
+// the write side (NOT defaulted — see CustomPromptsSchema's comment for why a
+// defaulted shape can't be reused for PUT).
+const customPromptsShape = Object.fromEntries(
+  CUSTOM_PROMPT_KEYS.map((k) => [k, z.string().max(5000).optional()]),
+) as { [K in CustomPromptKey]: z.ZodOptional<z.ZodString> };
+
+export const CustomPromptsSchema = z.object(customPromptsShape).strict().default({});
 export type CustomPrompts = Partial<Record<CustomPromptKey, string>>;
+
+// #1402 (review r1): the write-side counterpart, deliberately NOT
+// `CustomPromptsSchema` and NOT `CustomPromptsSchema.optional()`. In zod v4,
+// wrapping a schema in `.optional()` does not strip that schema's OWN
+// `.default({})` — `UpdateSettingsSchema.parse({ onboardingState: {...} })`
+// (no `customPrompts` key in the input) resolved to
+// `{ customPrompts: {}, onboardingState: {...} }`, so
+// `body.customPrompts !== undefined` was true on EVERY PUT, including one
+// that only meant to patch `onboardingState`, and the route then overwrote
+// `custom_prompts` with `'{}'` — silently wiping every saved custom prompt.
+// This schema has no field-level default, so an absent key resolves to
+// `undefined` and `JSON.stringify` (and thus the `!== undefined` guard in
+// settings.ts) correctly treats it as "not sent". Verified via probe: parsing
+// `{ onboardingState: {...} }` through this schema keeps `customPrompts`
+// absent from the result, where the old `CustomPromptsSchema.optional()`
+// materialised it.
+export const CustomPromptsPatchSchema = z.object(customPromptsShape).strict();
 
 export const InlineCompletionDelaySchema = z.enum([
   'fast',
@@ -97,7 +117,10 @@ export const UpdateSettingsSchema = z.object({
   theme: z.string().optional(),
   syncIntervalMin: z.number().int().min(1).max(1440).optional(),
   showSpaceHomeContent: z.boolean().optional(),
-  customPrompts: CustomPromptsSchema.optional(),
+  // #1402 (review r1): CustomPromptsPatchSchema, not CustomPromptsSchema — see
+  // its comment above for why the defaulted schema silently wipes every
+  // saved custom prompt on a PUT that never sent this key.
+  customPrompts: CustomPromptsPatchSchema.optional(),
   inlineCompletionEnabled: z.boolean().optional(),
   inlineCompletionDelay: InlineCompletionDelaySchema.optional(),
   inlineCompletionMode: InlineCompletionModeSchema.optional(),
