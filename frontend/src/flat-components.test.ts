@@ -155,30 +155,91 @@ function callsites(
     .map((s) => s.replace(/\s+/g, ' ').trim().slice(0, 100));
 }
 
+/**
+ * Matches the named scale AND arbitrary values AND `drop-shadow`.
+ *
+ * The first version matched only `shadow-{sm,md,lg,xl,2xl,inner}`, which let
+ * five shadows through: three coloured glows on ConfidenceBadge, a hardcoded
+ * `#22d3ee` glow on StreamingCursor, a `drop-shadow` on the main nav's
+ * *expanded* renderer (the rail copy had been cleaned, under a comment claiming
+ * it was the last one), and — worst — an AiDockSheet shadow pointing at
+ * `--nm-shadow-out-strong`, a retired token that now resolves to `transparent`,
+ * so it rendered nothing while reading as live code. A guard whose pattern is
+ * narrower than the rule it enforces certifies exactly the call sites nobody
+ * would have written by accident.
+ */
+const SHADOW_UTILITY = /\b(drop-)?shadow(-(sm|md|lg|xl|2xl|inner))?(-\[|(?=["'\s]|$))/;
+
+/**
+ * A class list is lowercase utility tokens. Prose carries capitals and sentence
+ * punctuation — but an arbitrary value (`bg-[var(--Foo)]`, `w-[calc(100%-1.5rem)]`)
+ * and a `${}` placeholder both carry them too, so blank those first. Otherwise a
+ * real class list could disguise itself as a sentence and buy the exemption below.
+ */
+function readsAsProse(body: string): boolean {
+  const classish = body.replace(/\$\{[^{}]*\}/g, ' ').replace(/\[[^\]]*\]/g, ' ');
+  return /[A-Z]/.test(classish) || /[.,;!?—–]/.test(classish);
+}
+
+/**
+ * True when every shadow match in `body` is one the rule permits.
+ *
+ * `shadow` is a Tailwind utility AND an ordinary English word, and the pattern
+ * has to match the bare token or `className="shadow"` walks straight through.
+ * That is also how this guard came to fail on `EmbeddingShadowMigrationCard`'s
+ * toast — "the shadow migration changed underneath it" — a user-facing sentence
+ * naming a feature's own domain term, in a string that never reaches a class
+ * attribute. A guard that red-lights English is a guard people delete.
+ *
+ * So the AMBIGUOUS bare form (`shadow` / `drop-shadow`, no suffix) is permitted
+ * inside prose, and only there. Every unambiguous spelling — `shadow-lg`,
+ * `shadow-[…]`, `drop-shadow-md` — stays matched everywhere, prose included,
+ * because none of those is a word anyone writes by accident.
+ *
+ * `shadow-[var(--shadow-overlay)]` is the system shadow spelled as an arbitrary
+ * value, for the overlays that are not `nm-card-elevated` (two drawers, a round
+ * floating button). Allowed by name, per occurrence — naming it once no longer
+ * absolves the rest of the string.
+ */
+function shadowIsPermitted(body: string): boolean {
+  const re = new RegExp(SHADOW_UTILITY.source, 'g');
+  for (let m = re.exec(body); m; m = re.exec(body)) {
+    const rest = body.slice(m.index);
+    if (/^shadow-\[var\(--shadow-overlay\)\]/.test(rest)) continue;
+    const bare = !m[2] && m[4] !== '-[';
+    if (bare && readsAsProse(body)) continue;
+    return false;
+  }
+  return true;
+}
+
 describe('the component layer is as flat as the token layer', () => {
+  it('the shadow guard reads class lists, not prose', () => {
+    // Fixtures rather than sources: the matcher itself is what is under test,
+    // and a sweep that finds nothing proves nothing about why it found nothing.
+    const offends = (body: string) => !shadowIsPermitted(body);
+
+    expect(offends('shadow')).toBe(true);
+    expect(offends('flex shadow rounded-md')).toBe(true);
+    expect(offends('nm-card shadow-lg p-3')).toBe(true);
+    expect(offends('hover:drop-shadow-md')).toBe(true);
+    expect(offends('shadow-[0_0_8px_#22d3ee]')).toBe(true);
+    expect(offends('rounded-full shadow-[var(--shadow-overlay)]')).toBe(false);
+
+    // Prose naming this codebase's own domain term is not a call site.
+    expect(
+      offends('The comparison in progress ended — the shadow migration changed underneath it.'),
+    ).toBe(false);
+    expect(offends('Start a shadow migration first.')).toBe(false);
+
+    // …but prose buys no exemption for an actual utility sitting in it.
+    expect(offends('Applies the shadow-lg class. Do not.')).toBe(true);
+  });
+
   it('no Tailwind shadow utility survives — the system has one shadow', () => {
     const offenders: string[] = [];
     for (const file of FILES) {
-      // Matches the named scale AND arbitrary values AND `drop-shadow`.
-      //
-      // The first version matched only `shadow-{sm,md,lg,xl,2xl,inner}`, which
-      // let five shadows through: three coloured glows on ConfidenceBadge, a
-      // hardcoded `#22d3ee` glow on StreamingCursor, a `drop-shadow` on the
-      // main nav's *expanded* renderer (the rail copy had been cleaned, under a
-      // comment claiming it was the last one), and — worst — an AiDockSheet
-      // shadow pointing at `--nm-shadow-out-strong`, a retired token that now
-      // resolves to `transparent`, so it rendered nothing while reading as live
-      // code. A guard whose pattern is narrower than the rule it enforces
-      // certifies exactly the call sites nobody would have written by accident.
-      //
-      // `shadow-[var(--shadow-overlay)]` is the system shadow spelled as an
-      // arbitrary value, for the overlays that are not `nm-card-elevated`
-      // (two drawers, a round floating button). Allowed by name.
-      const hits = callsites(
-        file,
-        /\b(drop-)?shadow(-(sm|md|lg|xl|2xl|inner))?(-\[|(?=["'\s]|$))/,
-        (body) => /\bshadow-\[var\(--shadow-overlay\)\]/.test(body),
-      );
+      const hits = callsites(file, SHADOW_UTILITY, shadowIsPermitted);
       for (const hit of hits) offenders.push(`${file.path}: ${hit}`);
     }
     expect(
