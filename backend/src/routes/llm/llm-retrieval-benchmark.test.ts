@@ -177,7 +177,14 @@ describe('production retrieval benchmark admin routes', () => {
     expect(response.json()).not.toHaveProperty('runId');
   });
 
-  it('returns a persisted run for polling', async () => {
+  it('returns a persisted run for polling, scoped to the admin who started it (r2)', async () => {
+    // `fetchBenchmarkRun`'s own doc states why `requestedBy` exists: the report
+    // carries page TITLES retrieved under the starting admin's ACL
+    // (`visiblePagesPredicate` admits their private standalone pages), so an
+    // unscoped read hands admin B titles admin A can see and B cannot. This was
+    // the ONE caller of the shared lifecycle module that omitted it — the
+    // compare side has passed it since #1260 — so the module's argument was
+    // silently contradicted by the caller beside it.
     mockGet.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', status: 'completed', result: null });
 
     const response = await app.inject({
@@ -187,5 +194,6 @@ describe('production retrieval benchmark admin routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().status).toBe('completed');
+    expect(mockGet).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', 'admin-user');
   });
 });

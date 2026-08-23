@@ -799,7 +799,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
         limit: 50,
         topK: 10,
       });
-      expect(await getProductionBenchmarkRun(compareId)).toBeNull();
+      expect(await getProductionBenchmarkRun(compareId, ADMIN)).toBeNull();
       expect((await getShadowCompareRun(compareId, ADMIN))?.id).toBe(compareId);
     });
 
@@ -830,7 +830,7 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
         [ADMIN],
       );
       await recoverStaleBenchmarkRuns();
-      const staleBench = await getProductionBenchmarkRun(benchId.rows[0]!.id);
+      const staleBench = await getProductionBenchmarkRun(benchId.rows[0]!.id, ADMIN);
       expect(staleBench?.status).toBe('failed');
       expect(staleBench?.error).toMatch(/benchmark worker stopped/i);
     });

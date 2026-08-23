@@ -75,7 +75,11 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
         // comparison, and `GET /admin/retrieval-benchmark/:id` is kind-guarded
         // and 404s a compare run's id. Handing it back would let this card
         // adopt an id its own poll refuses (r1) — the mirror of the guard the
-        // compare route already applies.
+        // compare route already applies. Note the same GET is also scoped to
+        // the admin who STARTED the run (r2 — its report carries page titles
+        // read under that admin's ACL), so a benchmark id handed to a
+        // different admin is likewise unreadable by them; the Retrieval tab
+        // reads only its own POST's id and never this field.
         ...(active.kind === null ? { runId: active.id } : {}),
       });
     }
@@ -120,7 +124,7 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
     ...ADMIN_RATE_LIMIT,
   }, async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const run = await getProductionBenchmarkRun(id);
+    const run = await getProductionBenchmarkRun(id, request.userId);
     if (!run) return reply.code(404).send({ error: 'not_found', message: 'Benchmark run not found' });
     return run;
   });

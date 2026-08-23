@@ -562,4 +562,188 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalled());
     expect(vi.mocked(toast.warning)).not.toHaveBeenCalled();
   });
+
+  it('does NOT report an ending when a straggler drops the phase back to backfilling (r2)', async () => {
+    // The card's ending signal used to key on leaving the `ready` PHASE, but
+    // the server ends a run on the migration FINGERPRINT
+    // (`status:startedAt:swappedAt:revertedAt`). `phase` is recomputed from a
+    // LIVE straggler count on every poll, so a page whose shadow embed failed
+    // mid-window flips ready → backfilling with the state row untouched: the
+    // comparison is still running, still holds the one-active slot, and the
+    // card told the admin it had ended and to start another one — which the
+    // compare route's own 409 then refuses.
+    const migration = {
+      model: 'qwen3-embedding:4b',
+      dimensions: 2560,
+      totalPages: 40,
+      backfilledPages: 40,
+      stragglerPages: 0,
+      indexed: true,
+      indexReady: true,
+      startedAt: '2026-08-06T10:00:00.000Z',
+    };
+    let phase: 'ready' | 'backfilling' = 'ready';
+    let stragglers = 0;
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      const running = { id: 'run-1', status: 'running', progressDone: 7, progressTotal: 16, error: null, result: null };
+      if (url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) return json(running);
+      if (url.endsWith('/compare') && method === 'POST') return json({ runId: 'run-1' }, 202);
+      // The re-attachment lookup answers the live run, which is how the
+      // section adopts it again once `ready` returns.
+      if (url.endsWith('/compare') && method === 'GET') return json({ run: running });
+      if (url.includes('/judgements')) return json({ judgements: {}, verdict: null });
+      if (url.includes('/shadow-migration') && method === 'GET') {
+        return json({ active: true, migration: { ...migration, phase, stragglerPages: stragglers, backfilledPages: 40 - stragglers, indexReady: phase === 'ready' } });
+      }
+      return json({});
+    });
+    renderCard(null);
+
+    fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-progress');
+
+    // A straggler reappears. No swap, no abort, no rollback — the run is
+    // untouched.
+    phase = 'backfilling';
+    stragglers = 1;
+    await vi.advanceTimersByTimeAsync(6_000);
+    await waitFor(() => expect(screen.queryByTestId('shadow-compare-section')).toBeNull());
+    expect(vi.mocked(toast.warning)).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('shadow-compare-ended')).toBeNull();
+    // And the locked sentence must not claim comparing is merely "not yet
+    // possible" while one is running behind it.
+    const note = screen.getByTestId('shadow-compare-locked');
+    expect(note.textContent).toMatch(/still running/i);
+
+    // Backfill catches up: the section re-adopts the run it never lost.
+    phase = 'ready';
+    stragglers = 0;
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(await screen.findByTestId('shadow-compare-progress')).toHaveTextContent('7/16');
+    expect(vi.mocked(toast.warning)).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('reports ONE ending when the POST and the poll both observe it (r2)', async () => {
+    // `post()` snapshots the in-flight id BEFORE its request; the 5s status
+    // poll can raise the same ending inside that window. A real abort takes a
+    // table lock and drops columns, so the POST losing that race is the
+    // ordinary case, not the exotic one — and the admin got the same sentence
+    // twice for one ending.
+    const migration = {
+      phase: 'ready' as const,
+      model: 'qwen3-embedding:4b',
+      dimensions: 2560,
+      totalPages: 40,
+      backfilledPages: 40,
+      stragglerPages: 0,
+      indexed: true,
+      indexReady: true,
+      startedAt: '2026-08-06T10:00:00.000Z',
+    };
+    let phase: 'ready' | 'swapped' = 'ready';
+    let releaseRollback = () => {};
+    const rollbackGate = new Promise<void>((resolve) => {
+      releaseRollback = resolve;
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) {
+        return json({ id: 'run-1', status: 'running', progressDone: 7, progressTotal: 16, error: null, result: null });
+      }
+      if (url.endsWith('/compare') && method === 'POST') return json({ runId: 'run-1' }, 202);
+      if (url.endsWith('/compare') && method === 'GET') return json({ run: null });
+      if (url.includes('/judgements')) return json({ judgements: {}, verdict: null });
+      if (url.includes('/rollback') && method === 'POST') {
+        await rollbackGate;
+        return json({ ok: true });
+      }
+      if (url.includes('/shadow-migration') && method === 'GET') {
+        return json({ active: true, migration: { ...migration, phase } });
+      }
+      return json({});
+    });
+    renderCard(null);
+
+    fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-progress');
+    fireEvent.click(screen.getByRole('button', { name: /^Abort$/ }));
+    // The abort lands server-side while its own POST is still open; two polls
+    // see the new state before the response arrives.
+    phase = 'swapped';
+    await vi.advanceTimersByTimeAsync(12_000);
+    releaseRollback();
+    await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(vi.mocked(toast.warning).mock.calls).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it('the ending notice OUTLIVES the branch that raised it (browser verify F3)', async () => {
+    // The whole point of moving this up to the card: a toast is gone in
+    // seconds, and the surface that would have shown the failure — the compare
+    // section and its amber strip — is unmounted by the very action that
+    // caused it. Something has to still be on screen afterwards saying the
+    // run's N x 2 embedding calls were spent for nothing.
+    const migration = {
+      phase: 'ready' as const,
+      model: 'qwen3-embedding:4b',
+      dimensions: 2560,
+      totalPages: 40,
+      backfilledPages: 40,
+      stragglerPages: 0,
+      indexed: true,
+      indexReady: true,
+      startedAt: '2026-08-06T10:00:00.000Z',
+    };
+    let phase: 'ready' | 'swapped' = 'ready';
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) {
+        return json({ id: 'run-1', status: 'running', progressDone: 7, progressTotal: 16, error: null, result: null });
+      }
+      if (url.endsWith('/compare') && method === 'POST') return json({ runId: 'run-1' }, 202);
+      if (url.endsWith('/compare') && method === 'GET') return json({ run: null });
+      if (url.includes('/judgements')) return json({ judgements: {}, verdict: null });
+      if (url.includes('/shadow-migration') && method === 'GET') {
+        return json({ active: true, migration: { ...migration, phase } });
+      }
+      return json({});
+    });
+    renderCard(null);
+
+    fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-progress');
+    phase = 'swapped';
+    await vi.advanceTimersByTimeAsync(6_000);
+
+    const strip = await screen.findByTestId('shadow-compare-ended');
+    expect(strip).toHaveAttribute('role', 'status');
+    expect(strip.textContent).toMatch(/comparison in progress ended/i);
+    // Rendered in the branch the swap moved the card into — it survived the
+    // unmount that took the section away.
+    expect(screen.queryByTestId('shadow-compare-section')).toBeNull();
+    expect(screen.getByRole('button', { name: /roll back/i })).toBeInTheDocument();
+    // Amber: degraded, not failed — the action the admin asked for succeeded.
+    expect(strip.className).toMatch(/warning/);
+
+    // It is dismissible, or it stands at rest forever on a card the admin
+    // still has to finish using.
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
+    expect(screen.queryByTestId('shadow-compare-ended')).toBeNull();
+    vi.useRealTimers();
+  });
 });

@@ -137,9 +137,20 @@ export async function createProductionBenchmarkRun(
  * stops this surface serving a shadow comparison — whose report has no
  * `baseline`, so `BenchmarkSummary` throws on it and blanks the Retrieval
  * panel — and whose `queries[]` carries sampled production query text.
+ *
+ * `requestedBy` is required here for the reason `fetchBenchmarkRun` states
+ * (review r2): this report's `queries[].baseline.pages` carries page TITLES
+ * that `hybridSearch` retrieved under the STARTING admin's own ACL, and
+ * `visiblePagesPredicate` admits their private standalone pages — so an
+ * unscoped read hands admin B titles admin A can see and B cannot. It was the
+ * one caller of the shared lifecycle module that omitted the argument while
+ * the compare side beside it passed it.
  */
-export async function getProductionBenchmarkRun(id: string): Promise<ProductionBenchmarkRun | null> {
-  return fetchBenchmarkRun<RetrievalBenchmarkRequest, ProductionBenchmarkReport>(id, null);
+export async function getProductionBenchmarkRun(
+  id: string,
+  requestedBy: string,
+): Promise<ProductionBenchmarkRun | null> {
+  return fetchBenchmarkRun<RetrievalBenchmarkRequest, ProductionBenchmarkReport>(id, null, requestedBy);
 }
 
 export async function runProductionBenchmark(id: string, userId: string): Promise<void> {

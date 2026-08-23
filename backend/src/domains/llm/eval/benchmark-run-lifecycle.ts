@@ -198,7 +198,12 @@ export async function insertBenchmarkRun(requestedBy: string, config: unknown): 
  * `requestedBy`, when given, additionally scopes the read to the admin who
  * started the run. Reports carry page TITLES retrieved under that admin's own
  * ACL (`visiblePagesPredicate` admits their private standalone pages), so an
- * unscoped read hands admin B titles admin A can see and B cannot.
+ * unscoped read hands admin B titles admin A can see and B cannot. **Both
+ * callers pass it** (review r2): the production benchmark's `GET` was the one
+ * that did not, so this argument was stated here and contradicted by the caller
+ * beside the one that honoured it. It stays optional only because the
+ * kind-guarded read has no other legitimate shape today — do not add a caller
+ * that omits it without writing down why its report carries no ACL-scoped text.
  */
 export async function fetchBenchmarkRun<TConfig, TReport>(
   id: string,

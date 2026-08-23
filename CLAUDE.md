@@ -168,7 +168,36 @@ section reports an in-flight run UP to the card (read BEFORE the lifecycle
 request, because that request's own `refresh()` is what unmounts the reporter),
 the card warns that the comparison ended, and a run that fails while still
 mounted is additionally toasted — a toast renders at the app root, the strip
-does not. **The report is keyed on STATUS, never on provenance**, and the card
+does not. **The card's warning is keyed on the migration WINDOW, latched by
+run id, and outlives the branch it was raised in.** The window, because the
+server ends a run on the state row's fingerprint while `phase` is recomputed
+from a live `embedding_next IS NULL` count on every poll — one page whose
+shadow embed failed mid-window (a shadow failure must never fail the live
+embed) flips ready → backfilling with the row untouched, and a phase-keyed
+signal announced an ending to a run that was still going, still held the
+one-active slot, and prescribed a remedy the compare route's own 409 refuses.
+That branch keeps the id and says so, and the section re-adopts the run when
+`ready` returns; `Re-run backfill` therefore passes `endsMigrationWindow:
+false`, because path-blind arming would fire on exactly that button. Latched
+by id, because `post()` snapshots the in-flight id BEFORE its request while
+the 5s poll can raise the same ending inside that window — a real abort takes
+a table lock and drops columns, so the POST losing that race is the ordinary
+case, and one ending produced two identical toasts. Outliving the branch,
+because a toast is gone in seconds and the fact it reports is that N × 2
+embedding calls were spent for nothing: the ending is a dismissible amber
+`role="status"` strip rendered by every branch of the card (the toast still
+covers the one case the strip cannot — a rollback with no pending change takes
+the whole card away). The judgements read consumes `isError` like its two
+siblings — a failed read of a MODEL PAIR's accumulated judgements is a
+failure, not "nothing judged yet", and the four picks are hidden rather than
+rendered `aria-checked="false"` on rows that are already judged — and the
+polite completion announcer is MOUNTED FOR THE SECTION'S LIFE with only its
+sentence conditional, the pattern `AiAssistantPage` and `DockPanel` use,
+because a region inserted together with its text is the case AT is least
+reliable about and this one is `sr-only`. `fetchBenchmarkRun`'s `requestedBy`
+is now passed by BOTH callers: the production benchmark's `GET` was the one
+that omitted it, so the module's own ACL argument was contradicted by the
+caller beside the one that honoured it. **The report is keyed on STATUS, never on provenance**, and the card
 watches its own poll as well as its own POST: `GET …/compare` resolves through
 `latestBenchmarkRun(…, requestedBy, …)` (`WHERE requested_by = $1`), so a run
 adopted on mount is always this admin's own — gating the channel on

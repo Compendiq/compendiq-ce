@@ -95,13 +95,46 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
    * is the last surface standing at that moment, so it is the one that speaks.
    */
   const compareRunInFlight = useRef<string | null>(null);
+  /**
+   * Latched by RUN ID, not by a boolean (review r2). The two arms below do not
+   * coordinate: `post()` snapshots the in-flight id BEFORE its request, and the
+   * 5s status poll can observe the same ending inside that window — which a
+   * real abort (table lock, column drops) makes the ordinary case rather than
+   * the exotic one. Keyed on the id, one ending produces one notice from
+   * whichever arm gets there first, and the mirror case (the poll wins and the
+   * POST's snapshot is stale) closes with it.
+   */
+  const warnedFor = useRef<string | null>(null);
+  /** Mirrors the ref for RENDER — the backfilling branch has to say something
+   *  true while a comparison it cannot show is still running behind it. */
+  const [compareRunning, setCompareRunning] = useState(false);
+  /**
+   * The ending, as a surface that OUTLIVES the branch it was raised in
+   * (browser verification F3). The toast below announces it at the app root
+   * and covers the one case this strip cannot — a rollback with no pending
+   * change takes the whole card away — but it is gone in seconds, while the
+   * thing it reports is that a run's N x 2 embedding calls were spent for
+   * nothing and the admin has to start another comparison. So the fact stays
+   * on screen, in whatever branch the lifecycle action moved the card into,
+   * until it is dismissed or a new comparison replaces it.
+   */
+  const [endedNotice, setEndedNotice] = useState(false);
   const onCompareRunInFlightChange = useCallback((runId: string | null) => {
     compareRunInFlight.current = runId;
+    // A run already reported ended is not "running" for either surface, even
+    // though the section keeps reporting it up until the server catches up.
+    const live = runId !== null && runId !== warnedFor.current;
+    setCompareRunning(live);
+    if (live) setEndedNotice(false);
   }, []);
   /** The one sentence both endings share — the local action and the remote
    *  one. Written once so the two paths cannot drift apart. */
-  const warnComparisonEnded = useCallback(() => {
+  const warnComparisonEnded = useCallback((runId: string) => {
+    if (warnedFor.current === runId) return;
+    warnedFor.current = runId;
     compareRunInFlight.current = null;
+    setCompareRunning(false);
+    setEndedNotice(true);
     toast.warning(
       'The comparison in progress ended — the shadow migration changed underneath it. Start a new comparison from the current migration.',
     );
@@ -129,12 +162,20 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     };
   }, [refresh]);
 
-  async function post(path: string, okMessage: string, body?: object) {
+  /**
+   * `endsMigrationWindow` is explicit, never inferred from the path: swap,
+   * rollback and cleanup all move the state row and therefore end any running
+   * comparison, while **Re-run backfill does not** — it leaves
+   * `status:startedAt:swappedAt:revertedAt` untouched, so the run keeps going.
+   * Since the ready → backfilling regression now KEEPS the in-flight id (r2),
+   * a path-blind arm would fire on exactly that button.
+   */
+  async function post(path: string, okMessage: string, opts: { endsMigrationWindow: boolean }, body?: object) {
     setBusy(true);
     // Read BEFORE the request: `refresh()` below re-renders the card into
     // another phase branch, which unmounts the compare section and clears
     // this ref on the way out.
-    const endedComparison = compareRunInFlight.current;
+    const endedComparison = opts.endsMigrationWindow ? compareRunInFlight.current : null;
     try {
       await apiFetch(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
       toast.success(okMessage);
@@ -147,7 +188,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
         // progress line, the section and any strip vanish within one poll,
         // with the run's N x 2 embedding calls silently spent. Said here it
         // outlives every unmount, because a toast renders at the app root.
-        warnComparisonEnded();
+        warnComparisonEnded(endedComparison);
       }
       await refresh();
       // Swap/rollback/cleanup repoint the embedding assignment and
@@ -197,21 +238,54 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
    * so without this the comparison died with no notice on any surface, and the
    * pair-scoped re-attachment cannot recover the run by design.
    *
-   * Keyed on LEAVING `ready`, which is exactly when the section unmounts. The
-   * local path clears the ref before its own `refresh()`, so this cannot
-   * double-fire behind Abort/Swap; the section clears it too the moment it
-   * reads the run settled, so a comparison that finished on its own is not
-   * reported as collateral.
+   * Keyed on the migration WINDOW closing, not on leaving the `ready` PHASE
+   * (review r2). The server ends a run on the state row's fingerprint
+   * (`status:startedAt:swappedAt:revertedAt`), while `phase` is recomputed from
+   * a LIVE `embedding_next IS NULL` count on every poll — so one page whose
+   * shadow embed failed mid-window (`embedding-service`: a shadow failure must
+   * never fail the live embed) flips ready → backfilling with the state row
+   * untouched. Keyed on the phase, that regression announced an ending to a run
+   * that was still going, still holding the one-active slot, and prescribed a
+   * remedy the compare route's own 409 refuses. The window is exactly
+   * `migration === null` (rolled back or cleaned up) or `swapped` / `aborting`;
+   * `backfilling` KEEPS the id, so the section re-adopts the run when `ready`
+   * returns.
+   *
+   * Both arms latch on the run id, so the local POST and this poll cannot
+   * report one ending twice.
    */
-  const wasReady = useRef(false);
+  const migrationWindowOpen =
+    migration !== null && migration.phase !== 'swapped' && migration.phase !== 'aborting';
+  const wasOpen = useRef(false);
   useEffect(() => {
-    const ready = migration?.phase === 'ready';
-    if (wasReady.current && !ready && compareRunInFlight.current) warnComparisonEnded();
-    wasReady.current = ready;
-  }, [migration?.phase, warnComparisonEnded]);
+    const inFlight = compareRunInFlight.current;
+    if (wasOpen.current && !migrationWindowOpen && inFlight) warnComparisonEnded(inFlight);
+    wasOpen.current = migrationWindowOpen;
+  }, [migrationWindowOpen, warnComparisonEnded]);
 
   if (!migration && !pending) return null;
   if (status === null) return null; // first poll not resolved yet
+
+  // Rendered by EVERY branch below, because the branch is exactly what changes
+  // underneath a comparison. Amber, not destructive: the lifecycle action the
+  // admin asked for succeeded and the migration is fine — the comparison is the
+  // collateral, which is what ADR-010 reserves amber for. It is dismissible so
+  // it cannot stand at rest on a card the admin still has to finish using.
+  const endedStrip = endedNotice ? (
+    <div
+      role="status"
+      className="mt-2 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs"
+      data-testid="shadow-compare-ended"
+    >
+      <p className="flex-1">
+        The comparison in progress ended — the shadow migration changed underneath it. Start a new
+        comparison from the current migration.
+      </p>
+      <button type="button" className="shrink-0 underline" onClick={() => setEndedNotice(false)}>
+        Dismiss
+      </button>
+    </div>
+  ) : null;
 
   if (!migration && pending) {
     return (
@@ -228,11 +302,12 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
           <button
             className="nm-button-primary"
             disabled={busy}
-            onClick={() => pending && void post('/admin/embedding/shadow-migration', 'Shadow backfill started', pending)}
+            onClick={() => pending && void post('/admin/embedding/shadow-migration', 'Shadow backfill started', { endsMigrationWindow: false }, pending)}
           >
             {busy ? 'Starting…' : 'Start zero-downtime re-embed (recommended)'}
           </button>
         </div>
+        {endedStrip}
       </div>
     );
   }
@@ -250,11 +325,12 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
           <button
             className="nm-button-primary"
             disabled={busy}
-            onClick={() => void post('/admin/embedding/shadow-migration/rollback', 'Abort completed')}
+            onClick={() => void post('/admin/embedding/shadow-migration/rollback', 'Abort completed', { endsMigrationWindow: true })}
           >
             Retry abort
           </button>
         </div>
+        {endedStrip}
       </div>
     );
   }
@@ -321,14 +397,14 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
           <button
             className="nm-button-primary"
             disabled={busy}
-            onClick={() => void post('/admin/embedding/shadow-migration/backfill', 'Backfill re-enqueued')}
+            onClick={() => void post('/admin/embedding/shadow-migration/backfill', 'Backfill re-enqueued', { endsMigrationWindow: false })}
           >
             Re-run backfill
           </button>
           <button
             className="nm-button-ghost"
             disabled={busy}
-            onClick={() => void post('/admin/embedding/shadow-migration/rollback', 'Shadow migration aborted')}
+            onClick={() => void post('/admin/embedding/shadow-migration/rollback', 'Shadow migration aborted', { endsMigrationWindow: true })}
           >
             Abort
           </button>
@@ -336,11 +412,22 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
         {/* #1260 — absent, not disabled-with-no-reason: comparing against a
             partially backfilled column measures the backfill, not the model,
             so the control only exists once `ready` does. Muted, never amber —
-            waiting is the normal state of a backfill. */}
+            waiting is the normal state of a backfill.
+
+            Two sentences, because this branch is reached two ways (r2). The
+            usual one is a backfill that has not finished yet. The other is a
+            REGRESSION out of `ready` — one page whose shadow embed failed
+            raises the straggler count again — and there a comparison can be
+            running behind this note, holding the one-active slot: telling that
+            admin comparing "unlocks when the backfill completes" describes a
+            control they already used, and hides the run their next attempt
+            would be 409'd by. */}
         <p className="mt-2 text-xs text-muted-foreground" data-testid="shadow-compare-locked">
-          Comparing the two models on real queries unlocks when the backfill completes — a
-          partially filled candidate column would measure the backfill, not the model.
+          {compareRunning
+            ? 'A comparison on real queries is still running — this card cannot show it while stragglers remain, and it reappears when the backfill catches up.'
+            : 'Comparing the two models on real queries unlocks when the backfill completes — a partially filled candidate column would measure the backfill, not the model.'}
         </p>
+        {endedStrip}
       </div>
     );
   }
@@ -367,14 +454,14 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
           <button
             className="nm-button-primary"
             disabled={busy}
-            onClick={() => void post('/admin/embedding/shadow-migration/swap', 'Swapped — new model is live')}
+            onClick={() => void post('/admin/embedding/shadow-migration/swap', 'Swapped — new model is live', { endsMigrationWindow: true })}
           >
             {busy ? 'Swapping…' : 'Swap to the new model'}
           </button>
           <button
             className="nm-button-ghost"
             disabled={busy}
-            onClick={() => void post('/admin/embedding/shadow-migration/rollback', 'Shadow migration aborted')}
+            onClick={() => void post('/admin/embedding/shadow-migration/rollback', 'Shadow migration aborted', { endsMigrationWindow: true })}
           >
             Abort
           </button>
@@ -385,6 +472,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
           candidateModel={migration.model}
           onRunInFlightChange={onCompareRunInFlightChange}
         />
+        {endedStrip}
       </div>
     );
   }
@@ -417,7 +505,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
             <button
               className="nm-button-primary"
               disabled={busy}
-              onClick={() => void post('/admin/embedding/shadow-migration/cleanup', 'Cleaned up — migration complete')}
+              onClick={() => void post('/admin/embedding/shadow-migration/cleanup', 'Cleaned up — migration complete', { endsMigrationWindow: true })}
             >
               Confirm cleanup
             </button>
@@ -430,13 +518,14 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
             <button
               className="nm-button-ghost"
               disabled={busy}
-              onClick={() => void post('/admin/embedding/shadow-migration/rollback', 'Rolled back — previous model is live')}
+              onClick={() => void post('/admin/embedding/shadow-migration/rollback', 'Rolled back — previous model is live', { endsMigrationWindow: true })}
             >
               Roll back
             </button>
           </>
         )}
       </div>
+        {endedStrip}
     </div>
   );
 }

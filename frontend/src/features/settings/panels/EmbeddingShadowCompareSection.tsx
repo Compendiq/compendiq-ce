@@ -208,7 +208,20 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
 
   // Mode 2 — fetched once the run completes; every judgement POST answers the
   // refreshed view, which replaces this cache entry rather than refetching.
-  const { data: judgementView } = useQuery<JudgementsView>({
+  //
+  // `isError` is consumed for the same reason the two queries above consume it
+  // (r2): judgements accumulate for a MODEL PAIR across sittings and across
+  // runs, so absence and unreadable are two different facts about this pair,
+  // and collapsing them rendered the never-judged state exactly — four radios
+  // reading `aria-checked="false"` on rows that were already judged, with no
+  // verdict, no notice and no toast. That is the `usePageTree` rule ("a failed
+  // fetch is a failure, not an empty corpus") on a surface whose stored side is
+  // the evidence a swap is decided on.
+  const {
+    data: judgementView,
+    isError: judgementsFailed,
+    refetch: refetchJudgements,
+  } = useQuery<JudgementsView>({
     queryKey: ['shadow-compare-judgements', runId],
     queryFn: () => apiFetch(`/admin/embedding/shadow-migration/compare/${runId}/judgements`),
     enabled: runId !== null && run?.status === 'completed',
@@ -544,9 +557,28 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
           judgedSide={judgedSide}
           savingQueryId={judge.isPending ? (judge.variables?.queryId ?? null) : null}
           verdict={judgementView?.verdict ?? null}
+          judgementsFailed={judgementsFailed}
+          onRetryJudgements={() => void refetchJudgements()}
           onJudge={onJudge}
         />
       )}
+      {/* The surface's one POLITE announcement, mounted for the section's whole
+          life and carrying text only once the run completes (r2). It used to be
+          inserted TOGETHER with its own sentence — a region and its content
+          arriving in one commit is the case screen readers are least reliable
+          about, and this element is `sr-only`, so failing to fire means the
+          outcome the run exists to produce arrives in total silence after
+          minutes of waiting. The repo's two other announcers (`AiAssistantPage`,
+          `DockPanel`) keep the region standing and vary only its children.
+          POLITE, never an alert: a finished measurement is not worth
+          interrupting for. Off-screen rather than wrapped round the report,
+          because the figures are already readable and a live region containing
+          them would re-announce the whole block on every judgement. */}
+      <p className="sr-only" role="status" data-testid="shadow-compare-complete">
+        {run?.status === 'completed' && run.result
+          ? `Comparison complete — ${run.result.queryCount} queries, ${run.result.agreement.disagreementCount} disagree.`
+          : ''}
+      </p>
     </section>
   );
 }
@@ -578,12 +610,16 @@ function CompareResult({
   judgedSide,
   savingQueryId,
   verdict,
+  judgementsFailed,
+  onRetryJudgements,
   onJudge,
 }: {
   report: CompareReport;
   judgedSide: (queryId: string) => JudgementSide | undefined;
   savingQueryId: string | null;
   verdict: JudgedVerdict | null;
+  judgementsFailed: boolean;
+  onRetryJudgements: () => void;
   onJudge: (queryId: string, side: JudgementSide) => void;
 }) {
   // ANY difference between the lists counts — head moved, sets differ, or the
@@ -610,19 +646,6 @@ function CompareResult({
   const heavilyThinned = failedShare >= 0.2;
   return (
     <div className="space-y-2" data-testid="shadow-compare-result">
-      {/* The one thing on this surface that was never announced (r1). Every
-          failure here already is — the poll error, the run error and both
-          muted reads all carry `role="status"` — while the outcome the run
-          exists to produce arrived in silence after minutes of waiting.
-          POLITE, never an alert: a finished measurement is not worth
-          interrupting for. Off-screen rather than a live region wrapped round
-          the report, because the figures below are already readable and a live
-          region containing them would re-announce the whole block on every
-          judgement. */}
-      <p className="sr-only" role="status" data-testid="shadow-compare-complete">
-        Comparison complete — {report.queryCount} queries, {report.agreement.disagreementCount}{' '}
-        disagree.
-      </p>
       <p className="text-xs font-medium text-foreground" data-testid="shadow-compare-basis">
         Agreement between {report.live.model} (live) and {report.candidate.model} (candidate) on{' '}
         {report.queryCount} real queries — how much results would move, not which model is better.
@@ -663,12 +686,23 @@ function CompareResult({
           value={`${report.agreement.disagreementCount}/${report.queryCount}`}
         />
       </div>
-      {/* The zero-judgement prompt says "pick the better side on a
-          disagreement below" — suppressed when no disagreement rows render,
-          or it points at controls that do not exist. A pair with judgements
-          accumulated from earlier runs keeps its verdict either way. */}
-      {verdict && (verdict.judgementCount > 0 || disagreements.length > 0) && (
-        <VerdictLine verdict={verdict} />
+      {/* The verdict's PLACE, held by whichever of the two can be told truly.
+          An unreadable stored side cannot say "no judgements yet" — that is a
+          claim about this model pair, and it is false whenever the read merely
+          failed. Muted, not amber, exactly like the two sibling read failures
+          above: nothing is wrong with the migration. */}
+      {judgementsFailed ? (
+        <MutedNotice testId="shadow-compare-judgements-error" onRetry={onRetryJudgements}>
+          The judgements recorded for this model pair could not be loaded, so no judged verdict can
+          be stated and the picks below are hidden rather than shown as unmade.
+        </MutedNotice>
+      ) : (
+        // The zero-judgement prompt says "pick the better side on a
+        // disagreement below" — suppressed when no disagreement rows render,
+        // or it points at controls that do not exist. A pair with judgements
+        // accumulated from earlier runs keeps its verdict either way.
+        verdict &&
+        (verdict.judgementCount > 0 || disagreements.length > 0) && <VerdictLine verdict={verdict} />
       )}
       {disagreements.length === 0 ? (
         <p className="text-xs text-muted-foreground">
@@ -699,12 +733,19 @@ function CompareResult({
                     otherPageIds={row.live.pageIds}
                   />
                 </div>
-                <JudgementRow
-                  query={row.query}
-                  judged={judgedSide(row.id)}
-                  saving={savingQueryId === row.id}
-                  onJudge={(side) => onJudge(row.id, side)}
-                />
+                {/* Suppressed, not merely undecorated, while the stored side
+                    is unreadable: `aria-checked="false"` on a row that IS
+                    judged is a false statement, and the obvious next move it
+                    invites — re-judging from a blank slate — silently rewrites
+                    the evidence a swap is decided on. */}
+                {!judgementsFailed && (
+                  <JudgementRow
+                    query={row.query}
+                    judged={judgedSide(row.id)}
+                    saving={savingQueryId === row.id}
+                    onJudge={(side) => onJudge(row.id, side)}
+                  />
+                )}
               </li>
             ))}
           </ul>

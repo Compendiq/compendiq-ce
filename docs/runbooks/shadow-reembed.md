@@ -128,12 +128,21 @@ committing. The shadow card's **Compare on real queries** section (or
   cleanly with a message naming the migration change; just start a new
   comparison from the new state. **You are told, and not by the section** —
   it lives inside the `ready` branch and your own Abort or Swap unmounts it
-  within a poll, so the card raises the notice instead. A migration moved
+  within a poll, so the card raises the notice instead — as a toast **and** as
+  an amber strip that stays on the card in whatever branch the action moved it
+  into, because a toast is gone in seconds and what it reports is that the
+  run's N × 2 embedding calls were spent for nothing. Dismiss it, or start
+  another comparison, and it goes. A migration moved
   **from another tab, or by another admin**, is reported the same way and by
-  the same card: its own 5s status poll sees the phase leave `ready` with a
-  comparison still in flight and says so, because the server fails the run
-  only at its next per-query check — one or more polls after the section that
-  would have rendered the failure has already gone. A worker killed mid-run is recovered by the
+  the same card: its own 5s status poll sees the migration **window** close
+  with a comparison still in flight and says so, because the server fails the
+  run only at its next per-query check — one or more polls after the section
+  that would have rendered the failure has already gone. The window, not the
+  phase: `phase` is recomputed from a live `embedding_next IS NULL` count, so
+  one page whose shadow embed failed mid-window drops `ready` → `backfilling`
+  with **the run untouched** — that case keeps the run, says so on the
+  backfilling card, and re-shows the section when the backfill catches up.
+  A worker killed mid-run is recovered by the
   same 30-minute heartbeat sweep the benchmark uses — and the sweep words the
   failure as a comparison, so a row reading "start a new benchmark" is a
   benchmark's, not yours. A one-off provider hiccup (a 429, an opened
@@ -148,7 +157,14 @@ committing. The shadow card's **Compare on real queries** section (or
   so, rather than spending the whole sample on an error no retry can clear.
   **The comparison is yours alone** — the card, the poll and
   the judgement routes serve the admin who started the run, because the
-  report's page titles were retrieved under that admin's own visibility. If
+  report's page titles were retrieved under that admin's own visibility.
+  (Since review r2 the Retrieval tab's production benchmark reads back the
+  same way, for the same reason: `GET /admin/retrieval-benchmark/:id` was the
+  one caller of the shared run module that omitted the scope, so one admin
+  could read titles out of another's report.) A judgements read that FAILS is
+  reported as a failure, never as "nothing judged yet": the picks are hidden
+  rather than shown unmade, so a row already judged in an earlier sitting can
+  never be re-judged from a blank slate. If
   you leave the tab and come back, the card re-attaches to your latest
   comparison by itself; there is nothing to write down. That re-attachment is
   scoped to the migration that is live NOW: a run recorded against another

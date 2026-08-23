@@ -145,6 +145,8 @@ function mockApi(opts: {
   latestRun?: Partial<Run> | null;
   /** The re-attachment lookup answers HTTP 500. */
   latestError?: boolean;
+  /** `GET …/compare/:id/judgements` answers HTTP 500. */
+  judgementsError?: boolean;
 }) {
   let polls = 0;
   let posts = 0;
@@ -159,6 +161,12 @@ function mockApi(opts: {
       });
     }
     if (url.includes('/judgements')) {
+      if (opts.judgementsError && method === 'GET') {
+        return new Response(JSON.stringify({ message: 'boom' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       if (method === 'POST' && (opts.judgementResponse || opts.judgementResponses)) {
         if (opts.judgementGate) await opts.judgementGate;
         const body =
@@ -1089,9 +1097,12 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     mockApi({});
     renderSection();
     fireEvent.click(screen.getByTestId('shadow-compare-start'));
-    const done = await screen.findByTestId('shadow-compare-complete');
+    // The region is standing before the run finishes (see the sibling test);
+    // what AT announces is the SENTENCE arriving into it, so wait on the text,
+    // never on the element.
+    const done = screen.getByTestId('shadow-compare-complete');
     expect(done).toHaveAttribute('role', 'status');
-    expect(done.textContent).toMatch(/complete/i);
+    await waitFor(() => expect(done.textContent).toMatch(/complete/i));
     expect(done.textContent).toMatch(/5/);
     expect(done.textContent).toMatch(/4/);
   });
@@ -1237,5 +1248,48 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     // The chosen radio is also the group's single tab stop.
     expect(chosen).toHaveAttribute('tabindex', '0');
     expect(sibling).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('a failed judgements read is a failure, not "nothing judged yet" (r2)', async () => {
+    // The one query in this file that did not consume `isError`. A 500 on
+    // `GET …/compare/:id/judgements` rendered EXACTLY the never-judged state:
+    // four radios all `aria-checked="false"`, no verdict line, no notice, no
+    // toast. An admin returning to a pair with judgements accumulated across
+    // sittings was told there were none — and every pressed state on the
+    // surface was then a lie, so re-judging a row from a blank slate was the
+    // obvious next move.
+    mockApi({ judgementsError: true });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-result');
+
+    const notice = await screen.findByTestId('shadow-compare-judgements-error');
+    expect(notice.textContent).toMatch(/judgements/i);
+    expect(notice.textContent).toMatch(/could not/i);
+    // Muted, not amber: a failed READ of history, exactly like its two sibling
+    // notices — nothing is wrong with the migration.
+    expect(notice.className).toMatch(/muted/);
+    expect(notice.className).not.toMatch(/warning/);
+    expect(within(notice).getByRole('button', { name: /check again/i })).toBeInTheDocument();
+
+    // The verdict cannot be stated, and the controls must not present a judged
+    // row as unjudged.
+    expect(screen.queryByTestId('shadow-compare-verdict')).toBeNull();
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+  });
+
+  it('keeps the completion announcer mounted BEFORE the run completes (r2)', async () => {
+    // A live region inserted together with its own text is the case AT support
+    // is least reliable about — and this element is sr-only, so if it does not
+    // fire it does nothing at all. The repo's two other announcers
+    // (`AiAssistantPage`, `DockPanel`) keep the region mounted and vary only
+    // its children, for exactly this reason.
+    mockApi({ run: { status: 'running', progressDone: 1, progressTotal: 5, result: null } });
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-progress');
+    const region = screen.getByTestId('shadow-compare-complete');
+    expect(region).toHaveAttribute('role', 'status');
+    expect(region.textContent).toBe('');
   });
 });
