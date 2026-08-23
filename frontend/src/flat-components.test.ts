@@ -256,6 +256,14 @@ const CLASS_TOKEN = /^-?[a-z0-9][a-z0-9:_./%!@&<>~+*(),#-]*$/;
  * that set makes its class list read as prose, which can only ever forgive a
  * bare `shadow` standing beside it. It can never red-light English — the failure
  * mode that gets a guard deleted.
+ *
+ * A CAPITALISED token costs the same way: `shadow Toolbar-root` reads as prose
+ * and keeps the exemption. Buying that back means admitting capitals into
+ * `CLASS_TOKEN`, which is also how an English sentence starts qualifying as a
+ * class list, so it was measured before it was declined: no `className` literal
+ * under `src/` carries a capitalised token at all (harvest every `className="…"`,
+ * blank the `[…]` spans, split on whitespace, `grep '[A-Z]'` → 0 hits). The hole
+ * is hypothetical in this tree; the English red-light would not have been.
  */
 function isClassList(body: string): boolean {
   const tokens = body
