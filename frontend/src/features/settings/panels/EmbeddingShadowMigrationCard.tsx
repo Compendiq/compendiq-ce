@@ -98,6 +98,14 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   const onCompareRunInFlightChange = useCallback((runId: string | null) => {
     compareRunInFlight.current = runId;
   }, []);
+  /** The one sentence both endings share — the local action and the remote
+   *  one. Written once so the two paths cannot drift apart. */
+  const warnComparisonEnded = useCallback(() => {
+    compareRunInFlight.current = null;
+    toast.warning(
+      'The comparison in progress ended — the shadow migration changed underneath it. Start a new comparison from the current migration.',
+    );
+  }, []);
   // Through a ref so an inline arrow prop cannot re-fire the effect each render.
   const onActiveChangeRef = useRef(onActiveChange);
   onActiveChangeRef.current = onActiveChange;
@@ -139,10 +147,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
         // progress line, the section and any strip vanish within one poll,
         // with the run's N x 2 embedding calls silently spent. Said here it
         // outlives every unmount, because a toast renders at the app root.
-        compareRunInFlight.current = null;
-        toast.warning(
-          'The comparison in progress ended — the shadow migration changed underneath it. Start a new comparison from the current migration.',
-        );
+        warnComparisonEnded();
       }
       await refresh();
       // Swap/rollback/cleanup repoint the embedding assignment and
@@ -180,6 +185,30 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   useEffect(() => {
     onActiveChangeRef.current?.(migration !== null);
   }, [migration]);
+
+  /**
+   * The same ending, arrived at without a local POST (r1): a swap, abort or
+   * rollback made in ANOTHER TAB or by another admin. `refresh()` flips this
+   * card out of the `ready` branch, which unmounts the compare section, its
+   * progress line and any strip it would have rendered — and the section's own
+   * compensating toast cannot cover it, because the server fails the run only
+   * at its next per-query fingerprint check, one or more polls after the
+   * migration went inactive. The card's poll usually wins that race outright,
+   * so without this the comparison died with no notice on any surface, and the
+   * pair-scoped re-attachment cannot recover the run by design.
+   *
+   * Keyed on LEAVING `ready`, which is exactly when the section unmounts. The
+   * local path clears the ref before its own `refresh()`, so this cannot
+   * double-fire behind Abort/Swap; the section clears it too the moment it
+   * reads the run settled, so a comparison that finished on its own is not
+   * reported as collateral.
+   */
+  const wasReady = useRef(false);
+  useEffect(() => {
+    const ready = migration?.phase === 'ready';
+    if (wasReady.current && !ready && compareRunInFlight.current) warnComparisonEnded();
+    wasReady.current = ready;
+  }, [migration?.phase, warnComparisonEnded]);
 
   if (!migration && !pending) return null;
   if (status === null) return null; // first poll not resolved yet

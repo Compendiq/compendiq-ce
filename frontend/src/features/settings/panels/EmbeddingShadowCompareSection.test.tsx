@@ -849,7 +849,11 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     const first = render(ui);
     await waitFor(() => expect(latestCalls).toBe(1));
     fireEvent.click(screen.getByTestId('shadow-compare-start'));
-    expect(await screen.findByTestId('shadow-compare-progress')).toHaveTextContent('2/5');
+    // The seeded `queued · 0/?` renders on the 202 itself (r1); the server's
+    // own counts replace it on the first poll.
+    await waitFor(() =>
+      expect(screen.getByTestId('shadow-compare-progress')).toHaveTextContent('2/5'),
+    );
 
     first.unmount();
     render(ui);
@@ -979,10 +983,15 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     await waitFor(() => expect(seen[seen.length - 1]).toBeNull());
   });
 
-  it('a run merely ADOPTED on mount is never reported as in-flight', async () => {
-    // The card's message names an action the admin just took. A comparison
-    // someone else started, or one adopted from an earlier sitting, is not
-    // that, and blaming their Abort for it would be a false statement.
+  it('a run ADOPTED on mount and still running is reported as in-flight too (r1)', async () => {
+    // Provenance is the wrong test here, and gating on it made the whole
+    // reporting channel dead on exactly the path re-attachment exists for: a
+    // Settings sub-tab switch, a route change or a reload re-adopts a live
+    // comparison, and the admin's next Abort then ended it with no toast, no
+    // strip and no progress line anywhere. `GET …/compare` resolves through
+    // `latestBenchmarkRun(..., requestedBy, ...)`, whose SQL is
+    // `WHERE requested_by = $1`, so an adopted run is ALWAYS this admin's own
+    // — the card's sentence can never blame them for someone else's run.
     const seen: Array<string | null> = [];
     mockApi({
       latestRun: { id: 'old-run', status: 'running', progressDone: 2, progressTotal: 9, result: null },
@@ -990,7 +999,101 @@ describe('EmbeddingShadowCompareSection (#1260)', () => {
     });
     renderSection({ onRunInFlightChange: (id) => seen.push(id) });
     await screen.findByTestId('shadow-compare-progress');
+    await waitFor(() => expect(seen).toContain('old-run'));
+  });
+
+  it('a run adopted on mount that has already SETTLED is never reported as in-flight', async () => {
+    // The invariant that actually matters: only a queued/running run arms the
+    // card's warning, or a week-old finished report would make every Abort
+    // claim it ended a comparison.
+    const seen: Array<string | null> = [];
+    mockApi({
+      latestRun: { id: 'old-run', status: 'completed' },
+      run: { id: 'old-run', status: 'completed' },
+    });
+    renderSection({ onRunInFlightChange: (id) => seen.push(id) });
+    await screen.findByTestId('shadow-compare-result');
     expect(seen.every((id) => id === null)).toBe(true);
+  });
+
+  it('arms the in-flight report on the 202, before the first status poll answers (r1)', async () => {
+    // Between the POST's 202 and the first GET resolving, `run` was undefined:
+    // Run re-enabled, no progress line rendered, a second click fired a
+    // duplicate POST the server 409s, and an Abort in that window produced no
+    // warning at all — the whole reporting channel bypassed by the window it
+    // is needed in most.
+    const seen: Array<string | null> = [];
+    let releaseFirstPoll = () => {};
+    const firstPoll = new Promise<void>((resolve) => {
+      releaseFirstPoll = resolve;
+    });
+    let posts = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/judgements')) return json({ judgements: {}, verdict: EMPTY_VERDICT });
+      if (url.includes('/compare/') && method === 'GET') {
+        await firstPoll;
+        return json({ id: 'run-1', status: 'running', progressDone: 1, progressTotal: 4, error: null, result: null });
+      }
+      if (url.endsWith('/compare') && method === 'GET') return json({ run: null });
+      if (url.includes('/compare') && method === 'POST') {
+        posts += 1;
+        return json({ runId: 'run-1' }, 202);
+      }
+      return json({});
+    });
+    renderSection({ onRunInFlightChange: (id) => seen.push(id) });
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalledWith('Comparison started'));
+
+    // Still inside the window — the first status GET has not answered.
+    expect(seen).toContain('run-1');
+    expect(screen.getByTestId('shadow-compare-progress')).toBeInTheDocument();
+    expect(screen.getByTestId('shadow-compare-start')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    expect(posts).toBe(1);
+    releaseFirstPoll();
+  });
+
+  it('toasts and ambers a failure the section WATCHED happen on an adopted run (r1)', async () => {
+    // Adopted-already-failed is history and stays quiet. A run that was
+    // showing live progress one poll earlier is news by any reading, and it is
+    // the run whose N x 2 embedding calls were just spent.
+    const message = 'The shadow migration changed while the comparison ran — start a new comparison';
+    mockApi({
+      latestRun: { id: 'old-run', status: 'running', progressDone: 2, progressTotal: 9, result: null },
+      runSequence: [
+        { id: 'old-run', status: 'running', progressDone: 2, progressTotal: 9, result: null },
+        { id: 'old-run', status: 'failed', result: null, error: message },
+      ],
+    });
+    renderSection();
+    await screen.findByTestId('shadow-compare-progress');
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['shadow-compare', 'old-run'] });
+    });
+    const strip = await screen.findByTestId('shadow-compare-error');
+    expect(strip.className).toMatch(/warning/);
+    expect(screen.queryByTestId('shadow-compare-error-adopted')).toBeNull();
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith(message));
+  });
+
+  it('announces the completed report politely — every failure on this surface already announces', async () => {
+    // A run takes minutes. Without this a screen-reader admin hears
+    // "Comparison started", then silence, and nothing when four metric chips,
+    // the disagreement list and the whole Mode 2 workflow appear. Polite, not
+    // an alert: a finished measurement is not worth interrupting for.
+    mockApi({});
+    renderSection();
+    fireEvent.click(screen.getByTestId('shadow-compare-start'));
+    const done = await screen.findByTestId('shadow-compare-complete');
+    expect(done).toHaveAttribute('role', 'status');
+    expect(done.textContent).toMatch(/complete/i);
+    expect(done.textContent).toMatch(/5/);
+    expect(done.textContent).toMatch(/4/);
   });
 
   it('marks the pages unique to each side, so the admin does not diff two lists by eye (r3)', async () => {

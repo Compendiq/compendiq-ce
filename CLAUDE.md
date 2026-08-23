@@ -100,12 +100,19 @@ real queries** (#1260): `shadow-compare-service.ts` samples the most frequent
 `search_analytics` queries, embeds each once per model (prefix per model),
 retrieves top-K from `embedding` and `embedding_next` through `vectorSearch`'s
 allow-listed `column` option, and reports AGREEMENT (top-1 change rate,
-Jaccard, RBO) plus per-query disagreements — never presented as quality. The
-shadow arm excludes `embedding_next IS NULL`: that column is nullable by
+Jaccard, RBO) plus per-query disagreements — never presented as quality. An
+unfilled candidate row must never enter the top-K: that column is nullable by
 construction (the dual-write leaves it NULL when the candidate provider fails
 on a page edited mid-migration), `NULL <=> $2` is NULL, and `1 - null` is 1 in
-JS — an unfilled page would enter the candidate top-K as a PERFECT MATCH and
-inflate every figure computed from it. A transient failure costs its own query
+JS — a PERFECT MATCH that would inflate every figure computed from it. What
+guarantees that is the `distance !== null` filter in JS, which also covers the
+LIVE column between a swap and its cleanup (the swap drops the renamed
+column's NOT NULL) and which `rag-service.integration.test.ts` falsifies by
+dropping the HNSW index. The shadow arm's `AND embedding_next IS NOT NULL` is
+a NARROWING beside it, not the guarantee: `ORDER BY` is ASC and therefore
+NULLS LAST, so such a row cannot displace a scored one under the LIMIT — no
+test can make that clause fail, and its comment must not claim a fetch-budget
+effect it does not have. A transient failure costs its own query
 (`failedQueries` on the report), never the 46 comparisons already paid for;
 only a majority of failures fails the run. Mode 2 judgements accumulate in
 `embedding_compare_judgements` (099) keyed by **provider AND model on each
@@ -160,8 +167,29 @@ BY DESIGN. So the two surfaces that survive the unmount speak instead: the
 section reports an in-flight run UP to the card (read BEFORE the lifecycle
 request, because that request's own `refresh()` is what unmounts the reporter),
 the card warns that the comparison ended, and a run that fails while still
-mounted is additionally toasted for the from-another-tab case — a toast renders
-at the app root, the strip does not. The disagreement list marks the pages only
+mounted is additionally toasted — a toast renders at the app root, the strip
+does not. **The report is keyed on STATUS, never on provenance**, and the card
+watches its own poll as well as its own POST: `GET …/compare` resolves through
+`latestBenchmarkRun(…, requestedBy, …)` (`WHERE requested_by = $1`), so a run
+adopted on mount is always this admin's own — gating the channel on
+started-in-this-session made it dead on exactly the path re-attachment exists
+for, and the next Abort then ended a live comparison in silence. The
+from-another-tab case needs the card's *poll*, not its POST: nothing is pressed
+here, `refresh()` alone flips the branch, and the server fails the run only at
+its next per-query fingerprint check — one or more polls later — so the
+section's compensating toast loses that race and the card raises the same
+sentence when the phase leaves `ready` with a run in flight. Amber-versus-quiet
+likewise tracks WATCHED-versus-adopted rather than provenance: a comparison
+showing live progress one poll earlier is news, one adopted already failed is
+history. The channel is armed on the **202**, by seeding the run cache beside
+the latest cache (and invalidating it, or the app client's 30s `staleTime`
+holds the placeholder until the first poll tick): between the POST and the
+first status GET the section otherwise rendered as idle — Run re-enabled, a
+second click firing a duplicate POST the server 409s, and an Abort in that
+window reporting nothing at all. The completed report carries the surface's one
+POLITE announcement (`shadow-compare-complete`); every failure here already
+announced, while the outcome the run exists to produce arrived in silence after
+minutes. The disagreement list marks the pages only
 ONE side returned, in words (`forced-colors` flattens both inks and a
 colour-blind reader sees one grey), and opens at ten rows with an expander:
 `limit` 100 × `topK` 20 is ~4000 lines inside a settings card, with the

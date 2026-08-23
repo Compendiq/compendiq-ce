@@ -446,6 +446,111 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     expect(vi.mocked(toast.success)).toHaveBeenCalledWith('Shadow migration aborted');
   });
 
+  it('speaks for a comparison ended by a migration change made ELSEWHERE (r1)', async () => {
+    // The from-another-tab case, which no code path covered: the card's own 5s
+    // status poll flips the branch with no POST involved, the `ready` branch
+    // and the whole compare section go with it, and the section's compensating
+    // toast requires observing `failed` while still mounted — which it loses,
+    // because the server only fails the run at its next query boundary, one or
+    // more polls later. The comparison then died with no notice on any
+    // surface, and the pair-scoped re-attachment cannot recover it by design.
+    const migration = {
+      phase: 'ready' as const,
+      model: 'qwen3-embedding:4b',
+      dimensions: 2560,
+      totalPages: 40,
+      backfilledPages: 40,
+      stragglerPages: 0,
+      indexed: true,
+      indexReady: true,
+      startedAt: '2026-08-06T10:00:00.000Z',
+    };
+    let phase: 'ready' | 'swapped' = 'ready';
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) {
+        return json({ id: 'run-1', status: 'running', progressDone: 7, progressTotal: 16, error: null, result: null });
+      }
+      if (url.endsWith('/compare') && method === 'POST') return json({ runId: 'run-1' }, 202);
+      if (url.endsWith('/compare') && method === 'GET') return json({ run: null });
+      if (url.includes('/judgements')) return json({ judgements: {}, verdict: null });
+      if (url.includes('/shadow-migration') && method === 'GET') {
+        return json({ active: true, migration: { ...migration, phase } });
+      }
+      return json({});
+    });
+    renderCard(null);
+
+    fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+    await screen.findByTestId('shadow-compare-progress');
+
+    // Another tab swaps. Nothing on THIS card was pressed — only the card's
+    // own 5s status poll observes it.
+    phase = 'swapped';
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(screen.queryByTestId('shadow-compare-section')).toBeNull();
+    await waitFor(() =>
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(
+        expect.stringMatching(/comparison in progress ended/i),
+      ),
+    );
+    // Once — the poll keeps answering the new phase.
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(vi.mocked(toast.warning).mock.calls).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it('warns on an Abort pressed before the first status poll answers (r1)', async () => {
+    // The window between the compare POST's 202 and its first GET. The shipped
+    // guard stepped past it by awaiting the progress line, which is the very
+    // thing that used to arm the report.
+    const migration = {
+      phase: 'ready' as const,
+      model: 'qwen3-embedding:4b',
+      dimensions: 2560,
+      totalPages: 40,
+      backfilledPages: 40,
+      stragglerPages: 0,
+      indexed: true,
+      indexReady: true,
+      startedAt: '2026-08-06T10:00:00.000Z',
+    };
+    let releasePoll = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releasePoll = resolve;
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) {
+        await gate;
+        return json({ id: 'run-1', status: 'running', progressDone: 1, progressTotal: 16, error: null, result: null });
+      }
+      if (url.endsWith('/compare') && method === 'POST') return json({ runId: 'run-1' }, 202);
+      if (url.endsWith('/compare') && method === 'GET') return json({ run: null });
+      if (url.includes('/judgements')) return json({ judgements: {}, verdict: null });
+      if (url.includes('/shadow-migration') && method === 'GET') return json({ active: true, migration });
+      return json({});
+    });
+    renderCard(null);
+
+    fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+    await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalledWith('Comparison started'));
+    fireEvent.click(screen.getByRole('button', { name: /^Abort$/ }));
+    await waitFor(() =>
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(
+        expect.stringMatching(/comparison in progress ended/i),
+      ),
+    );
+    releasePoll();
+  });
+
   it('says nothing about a comparison when none was running', async () => {
     // A warning every abort carries is a warning every admin learns to skip.
     mockApi({

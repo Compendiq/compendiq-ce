@@ -16,11 +16,14 @@ import { cn } from '../../../shared/lib/cn';
  * would move.
  *
  * A disagreement is a measurement, so the whole surface stays neutral; amber
- * appears only on a run that failed UNDER THIS ADMIN'S HAND (the failed-save
- * strip recipe). A failure adopted from an earlier sitting says the same
- * sentence quietly — it would otherwise re-render its strip on every fresh
- * mount until another comparison replaced it, and standing amber at rest is
- * how the reserved colour stops meaning anything. The poll matches the card's
+ * appears only on a run THIS MOUNT WATCHED FAIL — started here, or adopted
+ * while still counting (the failed-save strip recipe). A run adopted already
+ * failed says the same sentence quietly: it would otherwise re-render its
+ * strip on every fresh mount until another comparison replaced it, and
+ * standing amber at rest is how the reserved colour stops meaning anything.
+ * Watched-versus-adopted is the honest cut, not started-here-versus-not: a
+ * comparison showing live progress one poll earlier is news by any reading,
+ * and its N x 2 embedding calls were just spent. The poll matches the card's
  * own 5s cadence: this section and the card's status poll are two requests per
  * interval against the 20/min admin rate limit, so polling faster would starve
  * the card's own controls.
@@ -40,13 +43,21 @@ interface Props {
   /** The migration's candidate model — names the shadow side before a report exists. */
   candidateModel: string;
   /**
-   * Reports the id of a comparison THIS SESSION started while it is still
-   * queued or running, and `null` the moment it settles (r3). The card needs
-   * it because this whole section lives inside the `ready` branch: a swap or
-   * an abort re-renders the card into another branch, this component unmounts
-   * mid-run, and the failure the migration change causes server-side then has
-   * nowhere to appear. The card is the only surviving surface at that moment,
-   * so it is the one that has to say so.
+   * Reports the id of a comparison that is still queued or running, and `null`
+   * the moment it settles. The card needs it because this whole section lives
+   * inside the `ready` branch: a swap or an abort re-renders the card into
+   * another branch, this component unmounts mid-run, and the failure the
+   * migration change causes server-side then has nowhere to appear. The card
+   * is the only surviving surface at that moment, so it is the one that has to
+   * say so.
+   *
+   * It reports on STATUS, never on provenance (r1). Gating it on "started in
+   * this session" made the channel dead on exactly the path re-attachment
+   * exists for — a sub-tab switch, a route change or a reload re-adopts a live
+   * run, and the next Abort then ended it in silence. `GET …/compare` resolves
+   * through `latestBenchmarkRun(..., requestedBy, …)` (`WHERE requested_by =
+   * $1`), so an adopted run is always this admin's own and the card's sentence
+   * can never blame them for someone else's comparison.
    */
   onRunInFlightChange?: (runId: string | null) => void;
 }
@@ -278,18 +289,32 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
     onSuccess: (data) => {
       setStartedRunId(data.runId);
       setOptimistic({});
+      const seeded: CompareRun = {
+        id: data.runId,
+        status: 'queued',
+        progressDone: 0,
+        progressTotal: 0,
+        result: null,
+        error: null,
+      };
       // Seed the lookup this section re-attaches through, or the cached
       // `{ run: null }` from this mount is what the next one reads back.
       queryClient.setQueryData<{ run: CompareRun | null }>(['shadow-compare-latest'], {
-        run: {
-          id: data.runId,
-          status: 'queued',
-          progressDone: 0,
-          progressTotal: 0,
-          result: null,
-          error: null,
-        },
+        run: seeded,
       });
+      // And seed the RUN itself, or the section renders as idle for the whole
+      // window between this 202 and the first status GET resolving (r1): Run
+      // re-enabled, no progress line, a second click firing a duplicate POST
+      // the server 409s — contradicting the toast below — and an Abort in that
+      // window reporting nothing up to the card, because `running` was false.
+      // The window is a round trip wide and is where an impatient second click
+      // actually lands.
+      queryClient.setQueryData<CompareRun>(['shadow-compare', data.runId], seeded);
+      // …and mark it stale at once, or the app client's 30s `staleTime` would
+      // hold the placeholder on screen until the first 5s poll tick. The seed
+      // is meant to bridge ONE round trip, not to replace it: the server's own
+      // counts must land as soon as it answers.
+      void queryClient.invalidateQueries({ queryKey: ['shadow-compare', data.runId] });
       toast.success('Comparison started');
     },
     onError: (err) =>
@@ -297,40 +322,59 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
   });
 
   const running = run?.status === 'queued' || run?.status === 'running';
+
+  /**
+   * Whether this mount has seen the run ALIVE — started here, or adopted and
+   * observed queued/running at least once. It is the honest reading of "news
+   * versus history" (r1), and it is not the same as provenance: a comparison
+   * adopted on mount and still counting is live evidence, and it is precisely
+   * the run whose N x 2 embedding calls a swap or an abort is about to spend
+   * for nothing. Latched, because the transition to `failed` is exactly the
+   * moment `running` stops being true.
+   */
+  const [witnessedLiveId, setWitnessedLiveId] = useState<string | null>(null);
+  useEffect(() => {
+    if (running && runId !== null) setWitnessedLiveId(runId);
+  }, [running, runId]);
+  const liveHere = startedHere || (runId !== null && witnessedLiveId === runId);
+
   // A failed poll is a failure, not an idle section — but WHICH failure
-  // depends on whose run it is (r1). A run this session 202'd may still be
-  // live server-side, so Run stays disabled (a retry would just 409) and the
-  // strip says what is unknown. A poll that fails on a run merely ADOPTED on
-  // mount says nothing about the slot: that run may have finished last week,
-  // and disabling the section's only action under "it may still be running"
-  // leaves the admin unable to start a comparison at all. The server's own
-  // 409 is the authority on the shared slot, so that case reports what could
-  // not be loaded and leaves Run available.
-  const pollUnavailable = startedHere && pollFailed;
-  const adoptedRunUnreadable = !startedHere && runId !== null && pollFailed;
+  // depends on what is known about the run (r1). A run seen alive on this
+  // mount may still be running server-side, so Run stays disabled (a retry
+  // would just 409) and the strip says what is unknown. A poll that fails on a
+  // run merely ADOPTED and never seen alive says nothing about the slot: that
+  // run may have finished last week, and disabling the section's only action
+  // under "it may still be running" leaves the admin unable to start a
+  // comparison at all. The server's own 409 is the authority on the shared
+  // slot, so that case reports what could not be loaded and leaves Run
+  // available.
+  const pollUnavailable = liveHere && pollFailed;
+  const adoptedRunUnreadable = !liveHere && runId !== null && pollFailed;
 
   // Two halves of the same hole (r3), because this section is mounted only
   // while the migration is `ready` and every way the run can end is also a way
   // this component can vanish.
   //
-  // (a) A failure READ HERE is announced as a toast as well as rendered as the
-  //     strip below. The strip is the better surface while it exists — but the
-  //     card's own 5s status poll is racing this one, so a migration changed
-  //     from another tab (or by another admin) takes the whole `ready` branch
-  //     away within a poll of the run failing, taking the strip with it. A
-  //     toast is rendered at the app root and outlives the unmount.
+  // (a) A failure of a run this mount saw ALIVE is announced as a toast as
+  //     well as rendered as the strip below. The strip is the better surface
+  //     while it exists — but the card's own 5s status poll is racing this
+  //     one, so a migration changed from another tab (or by another admin)
+  //     takes the whole `ready` branch away within a poll of the run failing,
+  //     taking the strip with it. A toast is rendered at the app root and
+  //     outlives the unmount. (The card covers the case where its poll wins
+  //     that race outright and this section never reads `failed` at all.)
   // (b) The in-flight id is reported UP, so the card can speak for a run whose
   //     section its own action is about to unmount.
   const failureToasted = useRef<string | null>(null);
   useEffect(() => {
-    if (!startedHere || runId === null) return;
+    if (!liveHere || runId === null) return;
     if (run?.status !== 'failed') return;
     if (failureToasted.current === runId) return;
     failureToasted.current = runId;
     toast.error(run.error ?? 'The comparison failed.');
-  }, [startedHere, runId, run?.status, run?.error]);
+  }, [liveHere, runId, run?.status, run?.error]);
 
-  const inFlightRunId = startedHere && running ? runId : null;
+  const inFlightRunId = running ? runId : null;
   const onRunInFlightChangeRef = useRef(onRunInFlightChange);
   onRunInFlightChangeRef.current = onRunInFlightChange;
   useEffect(() => {
@@ -460,13 +504,18 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
           The last comparison could not be loaded.
         </MutedNotice>
       )}
-      {run && running && (
+      {/* Never beside a failed poll: react-query keeps the last value through
+          an error, and since the start seeds a `queued · 0/?` row that value
+          can be a placeholder the server has never confirmed. A live count
+          rendered under "its status could not be fetched" claims exactly the
+          knowledge the strip above says is missing. */}
+      {run && running && !pollFailed && (
         <p className="text-xs text-muted-foreground" data-testid="shadow-compare-progress">
           Comparison {run.status} · {run.progressDone}/{run.progressTotal || '?'} queries
         </p>
       )}
       {run?.status === 'failed' &&
-        (startedHere ? (
+        (liveHere ? (
           <div
             role="status"
             className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs"
@@ -476,11 +525,12 @@ export function EmbeddingShadowCompareSection({ candidateModel, onRunInFlightCha
             <p>{run.error ?? 'The comparison failed.'}</p>
           </div>
         ) : (
-          // The same failure ADOPTED on mount is history, not news, and it
+          // A failure ADOPTED already-failed is history, not news, and it
           // re-renders on every fresh mount until another comparison replaces
           // it. Standing amber at rest is what teaches an admin to ignore
-          // amber, so the adopted case states the same sentence quietly
-          // (r1); the run that failed under this admin's hand keeps the strip.
+          // amber, so that case states the same sentence quietly (r1); a run
+          // this mount watched fail — started here, or adopted while still
+          // counting — keeps the strip.
           <p
             className="text-xs text-muted-foreground"
             data-testid="shadow-compare-error-adopted"
@@ -560,6 +610,19 @@ function CompareResult({
   const heavilyThinned = failedShare >= 0.2;
   return (
     <div className="space-y-2" data-testid="shadow-compare-result">
+      {/* The one thing on this surface that was never announced (r1). Every
+          failure here already is — the poll error, the run error and both
+          muted reads all carry `role="status"` — while the outcome the run
+          exists to produce arrived in silence after minutes of waiting.
+          POLITE, never an alert: a finished measurement is not worth
+          interrupting for. Off-screen rather than a live region wrapped round
+          the report, because the figures below are already readable and a live
+          region containing them would re-announce the whole block on every
+          judgement. */}
+      <p className="sr-only" role="status" data-testid="shadow-compare-complete">
+        Comparison complete — {report.queryCount} queries, {report.agreement.disagreementCount}{' '}
+        disagree.
+      </p>
       <p className="text-xs font-medium text-foreground" data-testid="shadow-compare-basis">
         Agreement between {report.live.model} (live) and {report.candidate.model} (candidate) on{' '}
         {report.queryCount} real queries — how much results would move, not which model is better.

@@ -395,9 +395,21 @@ export async function vectorSearch(
       // is smaller than the fan-out limit — and `1 - null` is 1 in JS, i.e. a
       // perfect match. So an unfilled page would enter the candidate top-K as
       // its best hit and inflate every #1260 agreement figure computed from
-      // it. Excluded in SQL rather than dropped after mapping so the rows
-      // never consume the fetch budget either. The live column is NOT NULL
-      // on every migrated instance, so its clause stays byte-identical.
+      // it.
+      //
+      // The clause is a NARROWING, not the correctness guarantee, and the
+      // distinction is worth stating because it used to claim otherwise (r1).
+      // `ORDER BY <expr>` is ASC and therefore NULLS LAST, so a NULL-vector
+      // row can never displace a scored one under `LIMIT $3` — verified
+      // directly against pgvector — which means deleting this clause changes
+      // no result the `distance !== null` filter below does not already
+      // handle, and no test can make it fail. It earns its place by keeping
+      // those rows off the wire at all when the visible chunk set is narrower
+      // than the fan-out (a space-scoped query, a small instance) and by
+      // stating the intent where the query is. What the figures actually rest
+      // on is that filter, which `rag-service.integration.test.ts` falsifies
+      // by dropping the HNSW index. The live column is NOT NULL on every
+      // migrated instance, so its clause stays byte-identical.
       const nullVectorGuard =
         column === 'embedding_next' ? ' AND pe.embedding_next IS NOT NULL' : '';
       const vecSpaces = await getUserAccessibleSpaces(userId);

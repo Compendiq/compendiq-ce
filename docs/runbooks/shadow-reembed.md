@@ -128,8 +128,12 @@ committing. The shadow card's **Compare on real queries** section (or
   cleanly with a message naming the migration change; just start a new
   comparison from the new state. **You are told, and not by the section** —
   it lives inside the `ready` branch and your own Abort or Swap unmounts it
-  within a poll, so the card raises the notice instead (and a migration moved
-  from another tab is reported the same way). A worker killed mid-run is recovered by the
+  within a poll, so the card raises the notice instead. A migration moved
+  **from another tab, or by another admin**, is reported the same way and by
+  the same card: its own 5s status poll sees the phase leave `ready` with a
+  comparison still in flight and says so, because the server fails the run
+  only at its next per-query check — one or more polls after the section that
+  would have rendered the failure has already gone. A worker killed mid-run is recovered by the
   same 30-minute heartbeat sweep the benchmark uses — and the sweep words the
   failure as a comparison, so a row reading "start a new benchmark" is a
   benchmark's, not yours. A one-off provider hiccup (a 429, an opened
