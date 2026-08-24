@@ -116,6 +116,36 @@ describe.skipIf(!redisAvailable)('collab-room-service Redis fan-out (#1444)', ()
     }, { timeout: 4_000 });
   });
 
+  it('fans an awareness update to a peer pod (#1449 leftover from #1444)', async () => {
+    const pageId = nextPageId();
+    await runtimeA!.attachSocket(pageId, {
+      id: 'a1',
+      ws: stubWs(),
+      userId: 'user-a',
+      writable: true,
+      identity: { id: 'user-a', name: 'Alice', color: 'hsl(10 50% 40%)' },
+    });
+    await runtimeB!.attachSocket(pageId, {
+      id: 'b1',
+      ws: stubWs(),
+      userId: 'user-b',
+      writable: true,
+      identity: { id: 'user-b', name: 'Bob', color: 'hsl(200 50% 40%)' },
+    });
+
+    const { frame } = encodeAwarenessFrame({
+      user: { id: 'user-a', name: 'Alice', color: 'hsl(10 50% 40%)' },
+    });
+    expect(runtimeA!.handleInboundFrame(pageId, 'a1', frame)).toBe('ok');
+
+    await vi.waitFor(() => {
+      const names = [...(runtimeB!.getRoom(pageId)?.awareness.getStates().values() ?? [])]
+        .map((s) => (s as { user?: { name?: string } }).user?.name)
+        .filter((n): n is string => typeof n === 'string');
+      expect(names).toContain('Alice');
+    }, { timeout: 4_000 });
+  });
+
   it('does not republish when origin === redis (no loop)', async () => {
     if (!main) throw new Error('unreachable');
     const pageId = nextPageId();
