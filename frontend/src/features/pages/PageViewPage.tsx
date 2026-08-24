@@ -178,7 +178,9 @@ export function PageViewPage() {
   });
   const collabLive = collabEnabled && editing;
   const mergedViewers = useMemo(
-    () => mergePresence(presenceViewers, collabLive ? collab.awarenessUsers : []),
+    () => (collabLive
+      ? mergePresence(presenceViewers, collab.awarenessUsers)
+      : presenceViewers),
     [presenceViewers, collabLive, collab.awarenessUsers],
   );
   const caretUser = useMemo(() => {

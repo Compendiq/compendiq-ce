@@ -6,7 +6,7 @@ const alice: PresenceViewer = { userId: 'u1', name: 'Alice', role: 'editor', isE
 const bob: PresenceViewer = { userId: 'u2', name: 'Bob', role: 'viewer', isEditing: false };
 
 describe('mergePresence', () => {
-  it('keeps SSE viewers with isEditing false when awareness is empty (flag off path)', () => {
+  it('clears SSE isEditing when awareness is empty (collab live, no editors in the room)', () => {
     const merged = mergePresence([alice, bob], []);
     expect(merged.map((v) => v.userId)).toEqual(['u1', 'u2']);
     expect(merged.every((v) => v.isEditing === false)).toBe(true);

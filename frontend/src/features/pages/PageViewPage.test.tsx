@@ -1456,12 +1456,15 @@ describe('PageViewPage', () => {
   describe('collaborative editing (#1447)', () => {
     it('flag off: provider stays disabled in edit mode and SSE still drives presence', async () => {
       mockPresenceViewers = [
+        { userId: 'u1', name: 'Alice', role: 'editor', isEditing: true },
         { userId: 'u2', name: 'Bob', role: 'viewer', isEditing: false },
       ];
       render(<PageViewPage />, { wrapper: createWrapper() });
 
       expect(await screen.findByTestId('presence-avatar-stack')).toBeInTheDocument();
       expect(screen.getByText('Bob')).toBeInTheDocument();
+      const alice = screen.getByText('Alice').closest('[data-testid="presence-avatar"]');
+      expect(alice).toHaveAttribute('data-is-editing', 'true');
 
       fireEvent.click(screen.getByText('Edit'));
 
