@@ -55,5 +55,5 @@ export async function initCollabFlag(): Promise<void> {
   subscribe('collab:enabled:changed', () => {
     void refreshCollabFlag();
   });
-  onReconnect(() => { void loadFromDb('re-read'); });
+  onReconnect(() => { void refreshCollabFlag(); });
 }

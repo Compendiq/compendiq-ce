@@ -42,7 +42,15 @@ export type CollabBusMessage = {
   origin: string;
   kind: CollabBusKind;
   update?: string;
+  code?: number;
+  reason?: string;
 };
+
+export interface CollabIdentity {
+  id: string;
+  name: string;
+  color: string;
+}
 
 export interface CollabSocket {
   id: string;
@@ -50,6 +58,7 @@ export interface CollabSocket {
   userId: string;
   writable: boolean;
   readonlyDrops: number;
+  identity?: CollabIdentity;
 }
 
 export interface CollabRoom {
@@ -192,7 +201,8 @@ export async function createCollabRuntime(
       return;
     }
     if (msg.kind === 'tombstone') {
-      closeRoomSockets(room, 4404, 'tombstone');
+      const code = typeof msg.code === 'number' ? msg.code : 4404;
+      closeRoomSockets(room, code, msg.reason ?? 'tombstone');
       rooms.delete(room.pageId);
       return;
     }
@@ -248,21 +258,55 @@ export async function createCollabRuntime(
     room.doc.destroy();
   }
 
+  async function sremOurActiveMembers(pageId: number): Promise<void> {
+    try {
+      const key = activeKey(pageId);
+      const members = await main.sMembers(key);
+      const ours = members.filter((m) => m.startsWith(`${podId}:`));
+      if (ours.length > 0) await main.sRem(key, ours);
+      if ((await main.sCard(key)) === 0) await main.del(key);
+    } catch (err) {
+      logger.debug({ err, pageId }, 'collab: srem our active members failed');
+    }
+  }
+
   async function dropRoom(pageId: number): Promise<void> {
     const room = rooms.get(pageId);
     if (!room) return;
-    rooms.delete(pageId);
-    if (room.emptyGrace) clearTimeout(room.emptyGrace);
-    try {
-      await main.del(activeKey(pageId));
-    } catch {
-      // best-effort
+    // A reconnect during grace can fire this timer after sockets are back.
+    if (room.sockets.size > 0) {
+      if (room.emptyGrace) {
+        clearTimeout(room.emptyGrace);
+        room.emptyGrace = null;
+      }
+      return;
     }
+    rooms.delete(pageId);
+    if (room.emptyGrace) {
+      clearTimeout(room.emptyGrace);
+      room.emptyGrace = null;
+    }
+    await sremOurActiveMembers(pageId);
     try {
       room.doc.destroy();
     } catch {
       // already destroyed
     }
+  }
+
+  function stampAwarenessIdentity(update: Uint8Array, user: CollabIdentity): Uint8Array {
+    const tmpDoc = new Y.Doc();
+    const tmp = new awarenessProtocol.Awareness(tmpDoc);
+    awarenessProtocol.applyAwarenessUpdate(tmp, update, 'stamp');
+    const ids: number[] = [];
+    for (const [clientId, state] of tmp.getStates()) {
+      const rec = state && typeof state === 'object' ? { ...(state as Record<string, unknown>) } : {};
+      delete rec.user;
+      tmp.getStates().set(clientId, { ...rec, user });
+      ids.push(clientId);
+    }
+    if (ids.length === 0) return update;
+    return awarenessProtocol.encodeAwarenessUpdate(tmp, ids);
   }
 
   function wireDoc(room: CollabRoom): void {
@@ -382,7 +426,8 @@ export async function createCollabRuntime(
         return 'ok';
       }
       if (messageType === MESSAGE_AWARENESS) {
-        const update = decoding.readVarUint8Array(decoder);
+        let update = decoding.readVarUint8Array(decoder);
+        if (sock.identity) update = stampAwarenessIdentity(update, sock.identity);
         awarenessProtocol.applyAwarenessUpdate(room.awareness, update, connId);
         return 'ok';
       }
@@ -432,7 +477,8 @@ export async function createCollabRuntime(
     }
     // Last editor out: keep this member (and a :grace sentinel) in
     // collab:active until the in-memory Y.Doc is dropped, so PUT still 409s
-    // during the reconnect window.
+    // during the reconnect window. Idempotent — do not replace an armed timer.
+    if (room.emptyGrace) return;
     await saddActive(pageId, 'grace');
     await refreshActiveTtl(pageId);
     room.emptyGrace = setTimeout(() => {
@@ -447,7 +493,7 @@ export async function createCollabRuntime(
       closeRoomSockets(room, code, reason);
       rooms.delete(pageId);
     }
-    await publish(pageId, { origin: podId, kind: 'tombstone' });
+    await publish(pageId, { origin: podId, kind: 'tombstone', code, reason });
     try {
       await main.del(activeKey(pageId));
     } catch {
@@ -498,7 +544,7 @@ export async function createCollabRuntime(
         closeRoomSockets(room, 1001, 'shutdown');
         rooms.delete(id);
       }
-      try { await main.del(activeKey(id)); } catch { /* */ }
+      await sremOurActiveMembers(id);
     }
     const sub = subscriber;
     subscriber = null;

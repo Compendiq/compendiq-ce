@@ -9,6 +9,9 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { createClient, type RedisClientType } from 'redis';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import type { WebSocket } from 'ws';
+import * as Y from 'yjs';
+import * as encoding from 'lib0/encoding';
+import * as awarenessProtocol from 'y-protocols/awareness';
 import {
   createCollabRuntime,
   COLLAB_ACTIVE_TTL_SEC,
@@ -32,8 +35,25 @@ function nextPageId(): number {
   return id;
 }
 
-function stubWs(): WebSocket {
-  return { readyState: 1, send() {}, close() {} } as unknown as WebSocket;
+function stubWs(onClose?: (code: number, reason: string) => void): WebSocket {
+  return {
+    readyState: 1,
+    send() {},
+    close(code?: number, reason?: string) {
+      onClose?.(code ?? 1005, String(reason ?? ''));
+    },
+  } as unknown as WebSocket;
+}
+
+function encodeAwarenessFrame(state: Record<string, unknown>): Uint8Array {
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  awareness.setLocalState(state);
+  const update = awarenessProtocol.encodeAwarenessUpdate(awareness, [doc.clientID]);
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, 1);
+  encoding.writeVarUint8Array(encoder, update);
+  return encoding.toUint8Array(encoder);
 }
 
 async function cleanupKeys(): Promise<void> {
@@ -188,5 +208,96 @@ describe.skipIf(!redisAvailable)('collab-room-service Redis fan-out (#1444)', ()
     const members = await main.sMembers(`collab:active:${pageId}`);
     expect(members).toContain(`${runtimeA!.podId}:reconnect`);
     expect(runtimeA!.getRoom(pageId)?.emptyGrace).toBeNull();
+  });
+
+  it('dropRoom SREMs only this pod — peer members stay and PUT still 409s', async () => {
+    if (!main) throw new Error('unreachable');
+    const pageId = nextPageId();
+    await runtimeA!.attachSocket(pageId, {
+      id: 'a1', ws: stubWs(), userId: 'user-a', writable: true,
+    });
+    await runtimeB!.attachSocket(pageId, {
+      id: 'b1', ws: stubWs(), userId: 'user-b', writable: true,
+    });
+
+    await runtimeA!.detachSocket(pageId, 'a1');
+    await new Promise((r) => setTimeout(r, COLLAB_EMPTY_ROOM_GRACE_MS + 250));
+
+    const members = await main.sMembers(`collab:active:${pageId}`);
+    expect(members.some((m) => m.startsWith(`${runtimeB!.podId}:`))).toBe(true);
+    expect(members.some((m) => m.startsWith(`${runtimeA!.podId}:`))).toBe(false);
+    await expect(assertNoLiveCollabRoom(pageId)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'collab_session_active',
+    });
+    expect(runtimeB!.getRoom(pageId)?.doc).toBeDefined();
+  }, 15_000);
+
+  it('double-detach plus reconnect during grace does not destroy the live Y.Doc', async () => {
+    const pageId = nextPageId();
+    await runtimeA!.attachSocket(pageId, {
+      id: 'last', ws: stubWs(), userId: 'user-a', writable: true,
+    });
+    await runtimeA!.detachSocket(pageId, 'last');
+    await runtimeA!.detachSocket(pageId, 'last');
+
+    await runtimeA!.attachSocket(pageId, {
+      id: 'reconnect', ws: stubWs(), userId: 'user-a', writable: true,
+    });
+    const doc = runtimeA!.getRoom(pageId)?.doc;
+    expect(doc).toBeDefined();
+    doc!.getText('t').insert(0, 'still-here');
+
+    await new Promise((r) => setTimeout(r, COLLAB_EMPTY_ROOM_GRACE_MS + 250));
+
+    const live = runtimeA!.getRoom(pageId);
+    expect(live?.doc).toBe(doc);
+    expect(live?.doc.getText('t').toString()).toBe('still-here');
+    expect(live?.sockets.has('reconnect')).toBe(true);
+    await expect(assertNoLiveCollabRoom(pageId)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'collab_session_active',
+    });
+  }, 15_000);
+
+  it('bus tombstone carries 4403 on flag-off so peer sockets do not close 4404', async () => {
+    const pageId = nextPageId();
+    const codes: number[] = [];
+    await runtimeB!.attachSocket(pageId, {
+      id: 'b1',
+      ws: stubWs((code) => { codes.push(code); }),
+      userId: 'user-b',
+      writable: true,
+    });
+
+    await runtimeA!.tombstone(pageId, 4403, 'flag_off');
+
+    await vi.waitFor(() => {
+      expect(codes).toContain(4403);
+    }, { timeout: 2_000 });
+    expect(codes).not.toContain(4404);
+  });
+
+  it('stamps awareness identity so a client-claimed name is not what peers see', async () => {
+    const pageId = nextPageId();
+    const identity = { id: 'user-a', name: 'Alice', color: 'hsl(10 50% 40%)' };
+    await runtimeA!.attachSocket(pageId, {
+      id: 'editor',
+      ws: stubWs(),
+      userId: 'user-a',
+      writable: true,
+      identity,
+    });
+
+    const spoofed = encodeAwarenessFrame({
+      user: { id: 'user-a', name: 'Definitely Not Alice', color: '#fff' },
+    });
+    expect(runtimeA!.handleInboundFrame(pageId, 'editor', spoofed)).toBe('ok');
+
+    const names = [...(runtimeA!.getRoom(pageId)?.awareness.getStates().values() ?? [])]
+      .map((s) => (s as { user?: { name?: string } }).user?.name)
+      .filter((n): n is string => typeof n === 'string');
+    expect(names).toContain('Alice');
+    expect(names).not.toContain('Definitely Not Alice');
   });
 });

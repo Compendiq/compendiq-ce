@@ -8,6 +8,8 @@
  * handshake (`onRequest authenticate` throw → close 1006).
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import type { AddressInfo } from 'node:net';
 import * as jose from 'jose';
@@ -576,6 +578,28 @@ describe.skipIf(!canRun)('collab:active TTL / idle 409 (#1444)', () => {
     expect(ttl).toBeGreaterThan(20);
     ws.close();
   }, 45_000);
+});
+
+describe('GET /api/collab/:pageId route options (#1444)', () => {
+  it('does not enable Fastify rateLimit on the WS upgrade (101 then 4403)', () => {
+    const src = fs.readFileSync(fileURLToPath(new URL('./pages-collab.ts', import.meta.url)), 'utf8');
+    expect(src).toMatch(/rateLimit:\s*false/);
+    expect(src).not.toMatch(/rateLimit:\s*\{\s*max:\s*UPGRADE_LIMIT_PER_MIN/);
+  });
+});
+
+describe.skipIf(!canRun)('collab upgrade Redis limiter (#1444)', () => {
+  it('rate-limits upgrades after 101 with 4403, not HTTP 429', async () => {
+    const { token, userId } = await createUser('collab_rl');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    await getRedisClient()!.set(`collab:upgrade:${userId}`, '20', { EX: 60 });
+
+    const ws = openWhatwg(pageId, token);
+    const closed = await waitClose(ws);
+    expect(closed.opened, 'must complete 101 before refusing').toBe(true);
+    expect(closed.code).toBe(4403);
+  });
 });
 
 function pageIdEntropy(): string {

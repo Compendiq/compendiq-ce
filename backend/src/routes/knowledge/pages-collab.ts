@@ -105,7 +105,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     websocket: true,
     // @fastify/compress must not wrap the upgrade.
     compress: false,
-    config: { rateLimit: { max: UPGRADE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
+    config: { rateLimit: false },
   } as never, (socket, request) => {
     mapWsProtocolToAuthorization(request);
 
@@ -220,6 +220,11 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         ws: socket,
         userId: auth.userId,
         writable,
+        identity: {
+          id: auth.userId,
+          name: meta.name,
+          color: awarenessColor(auth.userId),
+        },
       });
       logger.debug(
         { pageId, userId: auth.userId, writable, connId, name: meta.name, color: awarenessColor(auth.userId) },
