@@ -25,6 +25,7 @@ erDiagram
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
     pages ||--o{ spaces : "is custom home of (#352)"
+    pages ||--o| page_collaborative_docs : "live CRDT state (#1411)"
 
     roles ||--o{ group_memberships : "granted via"
     groups ||--o{ group_memberships : "has"
@@ -87,6 +88,15 @@ erDiagram
         text_array expected_image_files "cached asset filenames; NULL => recompute (#887)"
         text_array expected_drawio_files "cached draw.io filenames; NULL => recompute (#887)"
         timestamptz deleted_at
+    }
+
+    page_collaborative_docs {
+        int page_id PK,FK "ON DELETE CASCADE"
+        bytea doc_state "Y.encodeStateAsUpdate persist form"
+        bytea state_vector "nullable until first persist"
+        int version "persistence generation NOT pages.version"
+        timestamptz created_at
+        timestamptz updated_at
     }
 
     page_versions {
@@ -670,6 +680,14 @@ together, which matters most for #1114's query-side prefix.
   the target to the `__system__` sentinel user
   (`00000000-0000-0000-0000-000000000000`) inside the same transaction
   before issuing the `DELETE FROM users`.
+- **`page_collaborative_docs` is 1:1 with `pages` (#1411 / #1443).** `page_id`
+  is the PK and an `ON DELETE CASCADE` FK. `doc_state` is the full
+  `Y.encodeStateAsUpdate` persist form (Redis fan-out is incremental and
+  never this column). `version` is the BYTEA write generation for crash
+  recovery — it is **not** `pages.version` and is never shown to editors.
+  Rows appear on first collab join; there is no backfill. The feature flag
+  `admin_settings.collab_editing_enabled` defaults to `'0'`. Topology:
+  [`12-realtime-collaboration.md`](./12-realtime-collaboration.md).
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.
   Standalone pages in the trash are hard-deleted after 30 days
   (`purgeExpiredStandalonePages` in `data-retention-service.ts`, run by the

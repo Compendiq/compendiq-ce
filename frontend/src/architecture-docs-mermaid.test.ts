@@ -256,6 +256,21 @@ describe('docs/architecture mermaid blocks', () => {
     expect(blocks.length).toBeGreaterThanOrEqual(20);
   });
 
+  it('README index links every numbered NN-*.md diagram', () => {
+    // A new architecture file that never lands in the index is how 12 would
+    // have shipped unlisted. The mermaid walker already readdirs the folder;
+    // this pins the README row that humans actually follow.
+    const numbered = readdirSync(architectureDir)
+      .filter((f) => /^\d{2}-.+\.md$/.test(f))
+      .sort();
+    expect(numbered).toContain('12-realtime-collaboration.md');
+    const readme = readFileSync(resolve(architectureDir, 'README.md'), 'utf-8');
+    const missing = numbered.filter((f) => !readme.includes(`[\`${f}\`](./${f})`));
+    expect(missing, `README index is missing: ${missing.join(', ')}`).toEqual([]);
+    expect(readme).toMatch(/page_collaborative_docs/);
+    expect(readme).toMatch(/12-realtime-collaboration\.md/);
+  });
+
   describe('parses without throwing', () => {
     for (const block of blocks) {
       it(`${block.file}:${block.startLine}`, async () => {
