@@ -4,6 +4,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { WorkersTab } from './WorkersTab';
 
+const toastMocks = vi.hoisted(() => ({
+  success: vi.fn(),
+  warning: vi.fn(),
+  info: vi.fn(),
+  error: vi.fn(),
+}));
+
+vi.mock('sonner', () => ({ toast: toastMocks }));
+
 // Mock auth store - supports both hook-style (selector) and getState() calls
 const authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
 vi.mock('../../stores/auth-store', () => ({
@@ -105,6 +114,7 @@ describe('WorkersTab', () => {
 
   beforeEach(() => {
     fetchSpy = mockFetch();
+    Object.values(toastMocks).forEach((mock) => mock.mockClear());
   });
 
   afterEach(() => {
@@ -275,6 +285,97 @@ describe('WorkersTab', () => {
       );
       expect(postCalls.length).toBeGreaterThan(0);
     });
+  });
+
+  it('streams embedding progress and stays visibly running until completion', async () => {
+    fetchSpy.mockRestore();
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+
+    const embeddingFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+      if (path.includes('/api/llm/quality-status')) {
+        return new Response(JSON.stringify(qualityStatus), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (path.includes('/api/llm/summary-status')) {
+        return new Response(JSON.stringify(summaryStatus), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (path.includes('/api/llm/embedding-status')) {
+        return new Response(JSON.stringify(embeddingStatus), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (path.includes('/api/embeddings/process')) {
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+      }
+      return new Response(JSON.stringify({ message: 'OK' }), { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<WorkersTab />, { wrapper: createWrapper() });
+    const button = await screen.findByTestId('embedding-run-now');
+    fireEvent.click(button);
+
+    streamController.enqueue(encoder.encode(
+      'data: {"type":"started","message":"Embedding processing started"}\n\n' +
+      'data: {"type":"progress","total":3,"completed":1,"failed":0,"percentage":33}\n\n',
+    ));
+
+    const progress = await screen.findByTestId('embedding-run-progress');
+    expect(progress).toHaveTextContent('1 of 3 pending pages processed');
+    expect(within(screen.getByTestId('worker-card-embedding')).getByText('Running')).toBeInTheDocument();
+    expect(button).toBeDisabled();
+    expect(embeddingFetch).toHaveBeenCalledWith(
+      '/api/embeddings/process',
+      expect.objectContaining({ method: 'POST' }),
+    );
+
+    streamController.enqueue(encoder.encode(
+      'data: {"type":"complete","total":3,"completed":3,"failed":0,"percentage":100,"errors":[]}\n\n',
+    ));
+    streamController.close();
+
+    await waitFor(() => expect(button).not.toBeDisabled());
+    expect(screen.queryByTestId('embedding-run-progress')).not.toBeInTheDocument();
+  });
+
+  it('warns when the embedding stream stops before all pending pages are processed', async () => {
+    fetchSpy.mockRestore();
+    const events = [
+      'data: {"type":"started","message":"Embedding processing started"}',
+      'data: {"type":"complete","total":5,"completed":2,"failed":1,"percentage":60,"errors":[]}',
+      '',
+    ].join('\n\n');
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+      if (path.includes('/api/llm/quality-status')) {
+        return new Response(JSON.stringify(qualityStatus), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (path.includes('/api/llm/summary-status')) {
+        return new Response(JSON.stringify(summaryStatus), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (path.includes('/api/llm/embedding-status')) {
+        return new Response(JSON.stringify(embeddingStatus), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (path.includes('/api/embeddings/process')) {
+        return new Response(events, { headers: { 'Content-Type': 'text/event-stream' } });
+      }
+      return new Response(JSON.stringify({ message: 'OK' }), { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<WorkersTab />, { wrapper: createWrapper() });
+    fireEvent.click(await screen.findByTestId('embedding-run-now'));
+
+    await waitFor(() => {
+      expect(toastMocks.warning).toHaveBeenCalledWith(
+        'Embedding stopped early: 3 of 5 processed; 2 pages remain pending. Try again after the embedding provider recovers.',
+      );
+    });
+    expect(toastMocks.success).not.toHaveBeenCalled();
   });
 
   it('does not show interval for embedding (on-demand worker)', async () => {

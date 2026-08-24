@@ -737,6 +737,24 @@ describe('embedding-service', () => {
       expect(mocks.query).toHaveBeenCalledTimes(2);
     });
 
+    it('emits a terminal completion event when no dirty pages exist', async () => {
+      mockChunkSettings();
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      const onProgress = vi.fn();
+
+      await processDirtyPages('user-1', onProgress);
+
+      expect(onProgress).toHaveBeenCalledOnce();
+      expect(onProgress).toHaveBeenCalledWith({
+        type: 'complete',
+        total: 0,
+        completed: 0,
+        failed: 0,
+        percentage: 100,
+        errors: [],
+      });
+    });
+
     it('should process a small batch of pages (fewer than batch size)', async () => {
       mockChunkSettings();
       // COUNT query
