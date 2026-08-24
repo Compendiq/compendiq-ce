@@ -138,6 +138,27 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
   }, [dismissed, dismissing]);
 
   /**
+   * If the optimistic dismissal rolls back, return a keyboard user to the
+   * control that reappeared. The page may have rehomed focus to its heading
+   * when the card left; restoring the button closes that loop. The identity
+   * check is the same guard in reverse: if the user moved on while the request
+   * was pending, their newer focus wins.
+   */
+  const dismissButtonRef = useRef<HTMLButtonElement | null>(null);
+  const focusAfterDismissal = useRef<Element | null>(null);
+  const restoreFocusAfterRollback = useRef(false);
+  const dismissalRemovedFocusedButton = useRef(false);
+  useEffect(() => {
+    if (!onScreen || !restoreFocusAfterRollback.current) return;
+    restoreFocusAfterRollback.current = false;
+    const currentFocus = document.activeElement;
+    if (currentFocus === focusAfterDismissal.current || currentFocus === document.body) {
+      dismissButtonRef.current?.focus();
+    }
+    focusAfterDismissal.current = null;
+  }, [onScreen]);
+
+  /**
    * The removal is reported once the card is really gone — which is now the
    * commit right after the press, so `PagesPage` rehomes focus at the moment
    * the button under it disappears rather than a round-trip later.
@@ -147,6 +168,7 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
     if (!dismissPressed.current) return;
     dismissPressed.current = false;
     onDismissed?.();
+    focusAfterDismissal.current = document.activeElement;
   }, [onScreen, onDismissed]);
 
   if (!ready) return null;
@@ -171,10 +193,16 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
   };
 
   const handleDismiss = () => {
+    dismissalRemovedFocusedButton.current = document.activeElement === dismissButtonRef.current;
     dismissPressed.current = true;
     setCelebrating(false);
     setDismissing(true);
-    dismiss({ onError: () => setDismissing(false) });
+    dismiss({
+      onError: () => {
+        restoreFocusAfterRollback.current = dismissalRemovedFocusedButton.current;
+        setDismissing(false);
+      },
+    });
   };
 
   return (
@@ -202,6 +230,7 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
           </span>
         </div>
         <button
+          ref={dismissButtonRef}
           type="button"
           onClick={handleDismiss}
           data-testid="onboarding-dismiss"

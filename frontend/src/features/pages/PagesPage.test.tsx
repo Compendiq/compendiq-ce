@@ -3057,7 +3057,9 @@ describe('PagesPage — Getting Started checklist (#1402)', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument(),
     );
-    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Library' }));
+    const libraryHeading = screen.getByRole('heading', { name: 'Library' });
+    expect(document.activeElement).toBe(libraryHeading);
+    expect(libraryHeading).toHaveClass('nm-focus-ring');
   });
 
   /**

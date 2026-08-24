@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { SettingsResponse } from '@compendiq/contracts';
@@ -58,7 +59,11 @@ function settingsFixture(
   } as SettingsResponse;
 }
 
-function renderCard(settings: SettingsResponse | undefined, onDismissed?: () => void) {
+function renderCard(
+  settings: SettingsResponse | undefined,
+  onDismissed?: () => void,
+  afterCard?: ReactNode,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -67,6 +72,7 @@ function renderCard(settings: SettingsResponse | undefined, onDismissed?: () => 
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <OnboardingChecklistCard onDismissed={onDismissed} />
+        {afterCard}
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -355,6 +361,72 @@ describe('OnboardingChecklistCard — dismissal', () => {
     expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument();
 
     expect(await screen.findByTestId('onboarding-checklist')).toBeInTheDocument();
+  });
+
+  it('restores focus to Dismiss when a keyboard dismissal rolls back', async () => {
+    let rejectDismissal: ((error: Error) => void) | undefined;
+    apiFetchMock.mockImplementation((_path: string, init?: { method?: string }) => {
+      if (init?.method === 'PUT') {
+        return new Promise((_resolve, reject) => {
+          rejectDismissal = reject;
+        });
+      }
+      return Promise.resolve(settingsFixture());
+    });
+    const onDismissed = () => screen.getByTestId('dismissal-focus-target').focus();
+    renderCard(
+      settingsFixture(),
+      onDismissed,
+      <button type="button" data-testid="dismissal-focus-target">Library</button>,
+    );
+
+    const dismissButton = screen.getByTestId('onboarding-dismiss');
+    dismissButton.focus();
+    fireEvent.click(dismissButton);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('dismissal-focus-target')).toHaveFocus(),
+    );
+    await waitFor(() => expect(rejectDismissal).toBeTypeOf('function'));
+    await act(async () => rejectDismissal?.(new Error('Network down')));
+
+    expect(await screen.findByTestId('onboarding-dismiss')).toHaveFocus();
+  });
+
+  it('does not steal focus back if the user moved on before a rollback', async () => {
+    let rejectDismissal: ((error: Error) => void) | undefined;
+    apiFetchMock.mockImplementation((_path: string, init?: { method?: string }) => {
+      if (init?.method === 'PUT') {
+        return new Promise((_resolve, reject) => {
+          rejectDismissal = reject;
+        });
+      }
+      return Promise.resolve(settingsFixture());
+    });
+    const onDismissed = () => screen.getByTestId('dismissal-focus-target').focus();
+    renderCard(
+      settingsFixture(),
+      onDismissed,
+      <>
+        <button type="button" data-testid="dismissal-focus-target">Library</button>
+        <button type="button" data-testid="new-focus-target">Search</button>
+      </>,
+    );
+
+    const dismissButton = screen.getByTestId('onboarding-dismiss');
+    dismissButton.focus();
+    fireEvent.click(dismissButton);
+    await waitFor(() =>
+      expect(screen.getByTestId('dismissal-focus-target')).toHaveFocus(),
+    );
+
+    const newFocusTarget = screen.getByTestId('new-focus-target');
+    newFocusTarget.focus();
+    await waitFor(() => expect(rejectDismissal).toBeTypeOf('function'));
+    await act(async () => rejectDismissal?.(new Error('Network down')));
+
+    await screen.findByTestId('onboarding-checklist');
+    expect(newFocusTarget).toHaveFocus();
   });
 });
 

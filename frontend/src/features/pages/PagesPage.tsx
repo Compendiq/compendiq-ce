@@ -1059,7 +1059,7 @@ export function PagesPage() {
           <h1
             ref={libraryHeadingRef}
             tabIndex={-1}
-            className="min-w-0 truncate text-[15px] font-semibold sm:text-lg"
+            className="nm-focus-ring min-w-0 truncate text-[15px] font-semibold sm:text-lg"
           >
             {LIBRARY_HEADING}
           </h1>
