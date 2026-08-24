@@ -31,6 +31,38 @@ interface LlmModel { name: string; }
 interface HealthResult { connected: boolean; error?: string; }
 interface StreamChunk { content: string; done: boolean; }
 
+/** Wire shape shared by chat `message` and stream `delta` (#1453). */
+interface CompletionText {
+  content?: string | null;
+  reasoning_content?: string | null;
+}
+
+function visibleText(part: CompletionText | undefined): string {
+  return part?.content ?? '';
+}
+
+function reasoningText(part: CompletionText | undefined): string {
+  return part?.reasoning_content ?? '';
+}
+
+/**
+ * Hosted reasoners (DeepSeek `deepseek-reasoner`, and OpenAI-compatible
+ * peers that follow the same shape) put the thinking pass on
+ * `reasoning_content` and the visible answer on `content`.
+ *
+ * Think-off / unset: return `content` only — never dump a chain-of-thought
+ * into a summary/quality/auto-tag completion.
+ * Think-on: wrap reasoning in the same `<think>` channel local Qwen /
+ * DeepSeek-R1 already emit in `content`, then the answer.
+ */
+function composeAssistantText(part: CompletionText | undefined, thinking?: boolean): string {
+  const answer = visibleText(part);
+  if (!thinking) return answer;
+  const reasoning = reasoningText(part);
+  if (!reasoning) return answer;
+  return `<think>${reasoning}</think>${answer}`;
+}
+
 const dispatchers = new Map<string, Agent>();
 function dispatcherFor(cfg: ProviderConfig): Agent | undefined {
   if (cfg.verifySsl) return undefined;
@@ -86,18 +118,35 @@ export const providerRequestInfra = { headers, dispatcherFor, errorDetail } as c
  * Together, Groq, Fireworks, OpenRouter, etc.) ignores unknown fields, so
  * "tolerant" is the safer default. Adding a host here means the toggle
  * silently no-ops rather than 400s for models that don't support reasoning.
+ *
+ * Hosted DeepSeek (`api.deepseek.com`) 400s on `think` /
+ * `chat_template_kwargs` the same way OpenAI does, so it is strict — but
+ * OpenAI's `reasoning_effort` must not leak onto it (#1453 / ADR-021 D5).
  */
-const STRICT_HOSTS: ReadonlySet<string> = new Set(['api.openai.com']);
+const STRICT_HOSTS: ReadonlySet<string> = new Set(['api.openai.com', 'api.deepseek.com']);
 const STRICT_HOST_SUFFIXES: ReadonlyArray<string> = ['.openai.azure.com'];
+const OPENAI_REASONING_EFFORT_HOSTS: ReadonlySet<string> = new Set(['api.openai.com']);
+
+function hostnameOf(baseUrl: string): string | null {
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return null;
+  }
+}
 
 function isStrictOpenAiCompatibleHost(baseUrl: string): boolean {
-  let hostname: string;
-  try {
-    hostname = new URL(baseUrl).hostname;
-  } catch {
-    return false;
-  }
+  const hostname = hostnameOf(baseUrl);
+  if (!hostname) return false;
   if (STRICT_HOSTS.has(hostname)) return true;
+  return STRICT_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
+}
+
+/** OpenAI + Azure accept `reasoning_effort` on o3/gpt-5; DeepSeek does not. */
+function emitsOpenAiReasoningEffort(baseUrl: string): boolean {
+  const hostname = hostnameOf(baseUrl);
+  if (!hostname) return false;
+  if (OPENAI_REASONING_EFFORT_HOSTS.has(hostname)) return true;
   return STRICT_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
 }
 
@@ -122,13 +171,13 @@ function isOpenAiReasoningModel(model: string): boolean {
  * strictness toward unknown fields. We branch on the provider, not on the
  * model name:
  *
- * 1. **Strict providers** (`api.openai.com`, `*.openai.azure.com`): only
- *    emit `reasoning_effort: 'medium'` when the model is recognized as
- *    reasoning-capable (`o[3-9]*`, `gpt-5*`). For everything else
- *    (`gpt-4o`, `gpt-3.5`, the `o1` family, custom fine-tunes) we emit
- *    nothing — the toggle becomes a silent no-op rather than a 400.
- *    Users can still toggle Think; the strict backend just won't reason
- *    on models that can't.
+ * 1. **Strict providers** (`api.openai.com`, `*.openai.azure.com`,
+ *    `api.deepseek.com`): never emit `think` / `chat_template_kwargs`.
+ *    OpenAI and Azure additionally emit `reasoning_effort: 'medium'` when
+ *    the model is recognized as reasoning-capable (`o[3-9]*`, `gpt-5*`).
+ *    For everything else — including every DeepSeek model — we emit
+ *    no extras rather than 400. That is the request body only: Think-on
+ *    still maps `reasoning_content` on the response path.
  *
  * 2. **Anything else** (Ollama, vLLM/SGLang, LM Studio, TGI, custom):
  *    always emit `think: true` + `chat_template_kwargs.enable_thinking: true`.
@@ -144,15 +193,16 @@ function thinkingExtras(
 ): Record<string, unknown> {
   if (!thinking) return {};
   if (isStrictOpenAiCompatibleHost(baseUrl)) {
-    if (isOpenAiReasoningModel(model)) return { reasoning_effort: 'medium' };
+    if (emitsOpenAiReasoningEffort(baseUrl) && isOpenAiReasoningModel(model)) {
+      return { reasoning_effort: 'medium' };
+    }
     // Leave a debug breadcrumb so support can answer "why didn't Think do
     // anything?" without re-deriving the routing rules. Log the parsed
     // hostname rather than the raw baseUrl — the latter can legally
     // contain credentials (`https://user:pass@host/v1`) per WHATWG URL,
     // which would otherwise leak into centralized log storage.
-    let host: string;
-    try { host = new URL(baseUrl).hostname; } catch { host = '<invalid>'; }
-    logger.debug({ host, model }, 'Think requested on a strict provider but model is not reasoning-capable — emitting no extras');
+    const host = hostnameOf(baseUrl) ?? '<invalid>';
+    logger.debug({ host, model }, 'Think requested on a strict provider with no applicable extras — emitting none');
     return {};
   }
   return { think: true, chat_template_kwargs: { enable_thinking: true } };
@@ -373,8 +423,8 @@ export async function chat(
           signal: deadline ? AbortSignal.any([signal, deadline]) : signal,
         });
         if (!res.ok) throw new LlmHttpError('chat', res.status, await errorDetail(res));
-        const body = await res.json() as { choices: Array<{ message: { content: string } }> };
-        return body.choices[0]?.message.content ?? '';
+        const body = await res.json() as { choices: Array<{ message?: CompletionText }> };
+        return composeAssistantText(body.choices[0]?.message, opts?.thinking);
       }),
     ),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model },
@@ -414,6 +464,12 @@ export async function* streamChat(
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
   let buf = '';
+  // Hosted reasoners stream CoT on `delta.reasoning_content` before any
+  // `delta.content`. Think-on wraps that pass in `<think>` so the rest of
+  // the app sees the same channel local Qwen already writes into `content`.
+  // Think-off drops it. The flag is closed on the first visible token or
+  // at [DONE] so a reasoning-only stream still emits a well-formed block.
+  let thinkOpen = false;
   // The try/finally guarantees teardown on ANY exit — including the early
   // generator.return() the runtime triggers when a consumer stops iterating
   // (e.g. streamSSE breaks its loop on client disconnect). reader.cancel()
@@ -431,17 +487,38 @@ export async function* streamChat(
         buf = buf.slice(idx + 2);
         if (!frame.startsWith('data:')) continue;
         const data = frame.slice(5).trim();
-        if (data === '[DONE]') { yield { content: '', done: true }; return; }
+        if (data === '[DONE]') {
+          if (thinkOpen) { yield { content: '</think>', done: false }; thinkOpen = false; }
+          yield { content: '', done: true }; return;
+        }
         try {
-          const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
-          const content = parsed.choices?.[0]?.delta?.content ?? '';
-          if (content) yield { content, done: false };
+          const parsed = JSON.parse(data) as { choices?: Array<{ delta?: CompletionText }> };
+          const delta = parsed.choices?.[0]?.delta;
+          const reasoning = opts?.thinking ? reasoningText(delta) : '';
+          const content = visibleText(delta);
+          if (reasoning) {
+            if (!thinkOpen) {
+              yield { content: `<think>${reasoning}`, done: false };
+              thinkOpen = true;
+            } else {
+              yield { content: reasoning, done: false };
+            }
+          }
+          if (content) {
+            if (thinkOpen) {
+              yield { content: `</think>${content}`, done: false };
+              thinkOpen = false;
+            } else {
+              yield { content, done: false };
+            }
+          }
         } catch { /* ignore parse errors on malformed frames */ }
       }
     }
   } finally {
     await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
   }
+  if (thinkOpen) yield { content: '</think>', done: false };
   yield { content: '', done: true };
 }
 
