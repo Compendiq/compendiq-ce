@@ -3,6 +3,13 @@ import { toast } from 'sonner';
 import type { LlmProvider, LlmProviderInput } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { Button } from '../../../shared/components/Button';
+import {
+  PROVIDER_PRESETS,
+  type ProviderPreset,
+  type ProviderPresetId,
+  presetById,
+  presetWouldOverwrite,
+} from './provider-presets';
 
 interface Props {
   mode: 'create' | 'edit';
@@ -19,20 +26,62 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   const [authType, setAuthType] = useState<'bearer' | 'none'>(initial?.authType ?? 'bearer');
   const [verifySsl, setVerifySsl] = useState(initial?.verifySsl ?? true);
   const [defaultModel, setDefaultModel] = useState(initial?.defaultModel ?? '');
+  const [presetId, setPresetId] = useState<ProviderPresetId>('custom');
+  const [pendingPresetId, setPendingPresetId] = useState<ProviderPresetId | null>(null);
   const [saving, setSaving] = useState(false);
   const canSave = name.trim().length > 0 && /^https?:\/\//.test(baseUrl);
   const nameRef = useRef<HTMLInputElement>(null);
+  const lastFilled = useRef({
+    baseUrl: initial?.baseUrl ?? '',
+    defaultModel: initial?.defaultModel ?? '',
+  });
+  const appliedPresetId = useRef<ProviderPresetId>('custom');
+  const activePreset = presetById(presetId) ?? PROVIDER_PRESETS[PROVIDER_PRESETS.length - 1]!;
+
+  function applyPreset(preset: ProviderPreset) {
+    setPresetId(preset.id);
+    setPendingPresetId(null);
+    setBaseUrl(preset.baseUrl);
+    setDefaultModel(preset.suggestedModel);
+    setAuthType(preset.authType);
+    if (!name.trim() && preset.id !== 'custom') setName(preset.label);
+    lastFilled.current = { baseUrl: preset.baseUrl, defaultModel: preset.suggestedModel };
+    appliedPresetId.current = preset.id;
+  }
+
+  function onPresetChange(nextId: ProviderPresetId) {
+    const next = presetById(nextId);
+    if (!next) return;
+    if (
+      presetWouldOverwrite(next, { baseUrl, defaultModel }, lastFilled.current)
+    ) {
+      setPresetId(next.id);
+      setPendingPresetId(next.id);
+      return;
+    }
+    applyPreset(next);
+  }
+
+  function keepCurrentFields() {
+    setPendingPresetId(null);
+    setPresetId(appliedPresetId.current);
+  }
 
   // Close on Escape and move focus into the dialog when it opens.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      if (pendingPresetId) {
+        keepCurrentFields();
+        return;
+      }
+      onClose();
     };
     document.addEventListener('keydown', onKey);
     nameRef.current?.focus();
     return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, onClose, pendingPresetId]);
 
   if (!open) return null;
 
@@ -79,27 +128,87 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
         role="dialog"
         aria-modal="true"
         aria-labelledby="provider-modal-title"
-        className="nm-card w-[480px] space-y-3 p-6"
+        className="nm-card w-[480px] max-h-[min(90vh,40rem)] max-w-[calc(100vw-2rem)] space-y-3 overflow-y-auto p-6"
       >
         <h2 id="provider-modal-title" className="text-lg font-semibold">
           {mode === 'create' ? 'Add provider' : 'Edit provider'}
         </h2>
+        <div>
+          <label htmlFor="provider-preset" className="block text-sm">
+            Preset
+          </label>
+          <select
+            id="provider-preset"
+            className="nm-select-md mt-1 w-full"
+            value={presetId}
+            onChange={(e) => onPresetChange(e.target.value as ProviderPresetId)}
+          >
+            {PROVIDER_PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {pendingPresetId ? (
+          <div
+            data-testid="preset-overwrite-confirm"
+            role="status"
+            className="space-y-2 rounded-md border border-border-interactive bg-muted/40 p-3 text-sm"
+          >
+            <p>
+              Replace the URL or model you typed with this preset? The API key is left as-is.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={keepCurrentFields}>
+                Keep current
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  const next = presetById(pendingPresetId);
+                  if (next) applyPreset(next);
+                }}
+              >
+                Use preset
+              </Button>
+            </div>
+          </div>
+        ) : null}
         <label className="block text-sm">
           Name
           <input ref={nameRef} className="nm-input w-full" value={name} onChange={(e) => setName(e.target.value)} />
         </label>
-        <label className="block text-sm">
-          Base URL
-          <input
-            className="nm-input w-full"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="http://host.docker.internal:1234/v1"
-          />
-          <span className="mt-1 block text-[11px] text-muted-foreground">
-            For local servers (LM Studio, vLLM) in Docker, use <code className="text-foreground">http://host.docker.internal:1234/v1</code>.
-          </span>
-        </label>
+        <div>
+          <label htmlFor="provider-base-url" className="block text-sm">
+            Base URL
+            <input
+              id="provider-base-url"
+              className="nm-input w-full"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder={activePreset.urlPlaceholder}
+              aria-describedby="provider-url-help"
+            />
+          </label>
+          <p id="provider-url-help" className="mt-1 text-[11px] text-muted-foreground">
+            {activePreset.id === 'custom' ? (
+              <>
+                For local servers (LM Studio, vLLM) in Docker, use{' '}
+                <code className="text-foreground">http://host.docker.internal:1234/v1</code>. For a hosted
+                API, pick a preset above.
+              </>
+            ) : activePreset.id === 'azure-openai' ? (
+              <>
+                Paste the resource endpoint, e.g.{' '}
+                <code className="text-foreground">https://{'{resource}'}.openai.azure.com/openai/v1</code>.
+              </>
+            ) : (
+              activePreset.urlHelper
+            )}
+          </p>
+        </div>
         <label className="block text-sm">
           API Key{' '}
           {initial?.hasApiKey && (
@@ -117,6 +226,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
           <label>
             <input
               type="radio"
+              name="provider-auth"
               checked={authType === 'bearer'}
               onChange={() => setAuthType('bearer')}
             />{' '}
@@ -125,6 +235,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
           <label>
             <input
               type="radio"
+              name="provider-auth"
               checked={authType === 'none'}
               onChange={() => setAuthType('none')}
             />{' '}
