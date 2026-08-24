@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { toast } from 'sonner';
 import { ApiError } from '../../../shared/lib/api';
+import { useOnboardingActions } from '../../../shared/hooks/use-onboarding';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { chipUserMessage, type DockChipId } from './dock-chips';
 import { getCreateSkill, CREATE_SKILLS, type CreateSkillId } from '../create-skills';
@@ -94,6 +95,11 @@ export function useDockActions({
     setDiffBaseVersion, setDiagramCode, setGeneratedDraft,
   } = useAiContext();
 
+  // #1402: "Ask your first AI question". `/ai`'s AskMode marks the same
+  // milestone from its own handler — the two composers post `/llm/ask`
+  // independently and share no send function, so both are wired.
+  const { markComplete } = useOnboardingActions();
+
   /** Shared preflight. Returns false (having explained why) when we cannot run. */
   const canRun = useCallback((): boolean => {
     if (isStreaming) return false;
@@ -146,11 +152,15 @@ export function useDockActions({
           toast.error('The image expired — attach it again.');
           return true;
         },
+        // Success only: runStream returns before `onComplete` on an abort, a
+        // thrown request error and an in-band SSE error frame (#1402).
+        onComplete: () => markComplete('firstAiQueryMade'),
       },
     );
   }, [
     input, canRun, isBusy, setInput, onDeepSearchConsumed, imageHandle, onImageConsumed, setMessages, runStream,
     model, conversationId, pageId, includeSubPages, thinkingMode, deepSearch, referenceText, onImageExpired,
+    markComplete,
   ]);
 
   const runChip = useCallback(async (id: DockChipId) => {

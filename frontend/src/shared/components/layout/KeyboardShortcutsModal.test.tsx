@@ -1,16 +1,74 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { render as rtlRender, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
+
+// #1402: the modal now records the "Learn power shortcuts" milestone, which is
+// a `PUT /settings`. Mocked at the network boundary; everything else is real.
+const apiFetchMock = vi.fn();
+vi.mock('../../lib/api', () => ({
+  apiFetch: (...args: unknown[]) => apiFetchMock(...args),
+}));
+
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
+
+/**
+ * The modal needs a query client because the milestone write is a mutation.
+ * Every existing assertion below is unchanged; only the wrapper is new.
+ */
+function render(ui: React.ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return rtlRender(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
+
+function settingsPuts() {
+  return apiFetchMock.mock.calls.filter(
+    ([path, init]) =>
+      path === '/settings' && (init as { method?: string } | undefined)?.method === 'PUT',
+  );
+}
 
 describe('KeyboardShortcutsModal', () => {
   beforeEach(() => {
     useKeyboardShortcutsStore.setState({ isOpen: false });
+    apiFetchMock.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    apiFetchMock.mockReset();
   });
 
   it('does not render content when closed', () => {
     render(<KeyboardShortcutsModal />);
     expect(screen.queryByText('Keyboard Shortcuts')).not.toBeInTheDocument();
+  });
+
+  // #1402, milestone 4. The modal is the one surface every discovery path
+  // lands on — `?`, Ctrl+/, the User Menu item and the checklist's own CTA —
+  // so seeing it is what "learned the shortcuts" means.
+  it('records the shortcuts milestone when it is opened', async () => {
+    render(<KeyboardShortcutsModal />);
+    expect(settingsPuts()).toEqual([]);
+
+    act(() => {
+      useKeyboardShortcutsStore.setState({ isOpen: true });
+    });
+
+    await waitFor(() => expect(settingsPuts()).toHaveLength(1));
+    expect(JSON.parse((settingsPuts()[0]![1] as { body: string }).body)).toEqual({
+      onboardingState: { shortcutsModalViewed: true },
+    });
+  });
+
+  it('records nothing while the modal stays closed', async () => {
+    render(<KeyboardShortcutsModal />);
+    await Promise.resolve();
+    expect(settingsPuts()).toEqual([]);
   });
 
   it('renders modal content when opened via store', () => {

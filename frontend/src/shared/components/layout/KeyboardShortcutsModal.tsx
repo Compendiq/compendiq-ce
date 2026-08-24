@@ -1,6 +1,8 @@
+import { useEffect } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Keyboard, X } from 'lucide-react';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
+import { useOnboardingActions } from '../../hooks/use-onboarding';
 import { getShortcutsByCategory, getCategoryLabel, formatKeysForPlatform, TIPTAP_SHORTCUTS } from '../../lib/shortcut-registry';
 import { isMac } from '../../lib/platform';
 
@@ -39,6 +41,15 @@ export function KeyboardShortcutsModal() {
   const isOpen = useKeyboardShortcutsStore((s) => s.isOpen);
   const close = useKeyboardShortcutsStore((s) => s.close);
   const categories = getShortcutsByCategory();
+  const { markComplete } = useOnboardingActions();
+
+  // #1402, milestone 4. This modal is where every discovery path lands — `?`,
+  // Ctrl+/, the User Menu item and the checklist's own CTA — so opening it is
+  // the signal. No dedupe guard: `markComplete` skips the write once the
+  // cached settings report the flag, and the PATCH is idempotent regardless.
+  useEffect(() => {
+    if (isOpen) markComplete('shortcutsModalViewed');
+  }, [isOpen, markComplete]);
 
   return (
     <Dialog.Root open={isOpen} onOpenChange={(open) => { if (!open) close(); }}>

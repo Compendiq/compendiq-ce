@@ -18,6 +18,17 @@
 export const CONFLUENCE_SETTINGS_PATH = '/settings/personal/confluence';
 
 /**
+ * Settings → Spaces & Sync — the wrapper panel that owns space selection.
+ *
+ * Same arrangement as `CONFLUENCE_SETTINGS_PATH`: it must match the path
+ * settings-nav.ts derives for the `knowledge/spaces` nav item, and
+ * settings-wayfinding.test.ts holds every mirror constant here to a live
+ * panel path. Added for #1402's Getting Started checklist, whose second step
+ * deep-links into it from `features/` while the constant stays in `shared/`.
+ */
+export const SPACES_SETTINGS_PATH = '/settings/knowledge/spaces';
+
+/**
  * Rail label of the Settings → AI Models panel (admin LLM / embedding /
  * workers configuration), for `shared/` copy that names the panel without
  * importing `features/settings/settings-nav`.
