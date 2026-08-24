@@ -37,7 +37,7 @@ import { COLLAB_WS_PROTOCOL } from '@compendiq/contracts';
 import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 import { assertNoLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
-import { _resetCollabRoomsForTest, createCollabRuntime } from '../../core/services/collab-room-service.js';
+import { _resetCollabRoomsForTest, createCollabRuntime, getDefaultCollabRuntime } from '../../core/services/collab-room-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import * as persist from '../../core/services/collab-persistence.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
@@ -982,6 +982,42 @@ describe.skipIf(!canRun)('collab commit multi-pod dump (#1445 review)', () => {
     );
     expect(page.rows[0]!.title).not.toBe('Should 503');
     expect(page.rows[0]!.body_html).toContain('STALE_BYTEA_BODY');
-  }, 15_000);
+
+    // Dump-wait must not leave an unattached persistable heap room or this
+    // pod's :room member; a leftover room would 200 the next commit from
+    // stale BYTEA and 409 PUT even after the ghost is gone.
+    const runtime = getDefaultCollabRuntime();
+    expect(runtime?.getRoom(pageId)).toBeUndefined();
+    const members = await getRedisClient()!.sMembers(`collab:active:${pageId}`);
+    expect(members.some((m) => m.startsWith(`${runtime!.podId}:`))).toBe(false);
+    expect(members).toContain('ghost-pod:conn');
+
+    const again = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'Should 503 again' },
+    });
+    expect(again.statusCode).toBe(503);
+
+    await getRedisClient()!.sRem(`collab:active:${pageId}`, 'ghost-pod:conn');
+    const afterGhost = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'Bytea fallback' },
+    });
+    expect(afterGhost.statusCode).toBe(200);
+    expect(afterGhost.json().version).toBe(2);
+
+    const put = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'ok', bodyHtml: '<p>ok</p>', version: 2 },
+    });
+    expect(put.statusCode).toBe(200);
+    expect(put.json().code).not.toBe('collab_session_active');
+  }, 20_000);
 });
 

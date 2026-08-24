@@ -137,11 +137,11 @@ export function scheduleCollabPersist(room: CollabPersistHandle & { persistable?
 }
 
 export async function flushCollabPersist(room: CollabPersistHandle & { persistable?: boolean }): Promise<void> {
-  if (room.persistable === false) return;
   if (room.persistTimer) {
     clearTimeout(room.persistTimer);
     room.persistTimer = null;
   }
+  if (room.persistable === false) return;
   enqueuePersist(room);
   await room.persistChain;
 }

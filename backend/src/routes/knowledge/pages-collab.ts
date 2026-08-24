@@ -170,9 +170,15 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         const created = await runtime.getOrCreateRoom(pageId);
         const dumped = await runtime.waitForPeerStateDump(pageId, COLLAB_COMMIT_DUMP_TIMEOUT_MS);
         if (!dumped) {
+          if (created.sockets.size === 0) {
+            // Dump never arrived — do not snapshot the BYTEA-loaded heap onto body_html.
+            created.persistable = false;
+            await runtime.dropRoom(pageId);
+          }
           throw fastify.httpErrors.serviceUnavailable('Collaborative state is not available on this pod');
         }
         html = snapshotRoomHtml(created.doc);
+        if (created.sockets.size === 0) await runtime.dropRoom(pageId);
       } else {
         html = await htmlFromPersistedDoc(pageId);
       }

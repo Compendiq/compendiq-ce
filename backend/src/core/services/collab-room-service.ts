@@ -99,6 +99,8 @@ export interface CollabRuntime {
   tombstoneAll: (code: number, reason?: string) => Promise<void>;
   broadcastControl: (pageId: number, control: CollabControl) => void;
   waitForPeerStateDump: (pageId: number, timeoutMs?: number) => Promise<boolean>;
+  /** Flush, SREM this pod's members, destroy the Y.Doc. No-op if sockets remain. */
+  dropRoom: (pageId: number) => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -672,6 +674,7 @@ export async function createCollabRuntime(
     tombstoneAll,
     broadcastControl,
     waitForPeerStateDump,
+    dropRoom,
     close,
   };
 }
