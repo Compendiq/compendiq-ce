@@ -173,6 +173,9 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
     requests,
     close: () =>
       new Promise((resolve, reject) => {
+        // Undici keep-alive holds pooled sockets; `close()` alone waits on
+        // them (openai-compatible-client.test.ts). Drop them first.
+        server.closeAllConnections();
         server.close((err) => (err ? reject(err) : resolve()));
       }),
   };

@@ -59,13 +59,13 @@ export async function connectNotionToken(userId: string, token: string): Promise
 
   const ciphertext = encryptPat(token);
   await ensureUserSettingsRow(userId);
-  await query(
+  const updated = await query(
     `UPDATE user_settings
         SET notion_integration_token = $1, updated_at = NOW()
       WHERE user_id = $2`,
     [ciphertext, userId],
   );
-  return { hasToken: true };
+  return { hasToken: (updated.rowCount ?? 0) > 0 };
 }
 
 export async function disconnectNotionToken(userId: string): Promise<NotionConnectionStatus> {

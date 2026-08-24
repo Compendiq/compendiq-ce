@@ -23,7 +23,14 @@ export async function notionRoutes(fastify: FastifyInstance) {
     const { token } = ConnectNotionSchema.parse(request.body);
     try {
       const status = await connectNotionToken(request.userId, token);
-      await logAuditEvent(request.userId, 'NOTION_TOKEN_UPDATED', 'settings', request.userId, { connected: true }, request);
+      await logAuditEvent(
+        request.userId,
+        'NOTION_TOKEN_UPDATED',
+        'settings',
+        request.userId,
+        { connected: status.hasToken },
+        request,
+      );
       return toResponse(status);
     } catch (err) {
       if (err instanceof NotionError && err.statusCode >= 400 && err.statusCode < 500) {

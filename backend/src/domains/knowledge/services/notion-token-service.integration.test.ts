@@ -77,6 +77,11 @@ describe.skipIf(!dbAvailable)('notion-token-service (Postgres 5433 + fake Notion
     expect(await getDecryptedNotionToken(userId)).toBeNull();
   });
 
+  it('returns hasToken false when the UPDATE matches no row (user gone mid-request)', async () => {
+    await query('DELETE FROM users WHERE id = $1', [userId]);
+    expect(await connectNotionToken(userId, TOKEN)).toEqual({ hasToken: false });
+  });
+
   it('does not persist when the fake Notion probe returns 401', async () => {
     await expect(connectNotionToken(userId, 'wrong-token-secret')).rejects.toBeInstanceOf(NotionError);
     expect(await getNotionConnectionStatus(userId)).toEqual({ hasToken: false });
