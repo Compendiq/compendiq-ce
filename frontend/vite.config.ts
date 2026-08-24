@@ -89,6 +89,9 @@ export default defineConfig({
       '/api': {
         target: process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:3051',
         changeOrigin: true,
+        // Collaborative editing is GET /api/collab/:pageId (WebSocket).
+        // Without this, `npm run dev` cannot upgrade on the Vite port.
+        ws: true,
       },
     },
   },

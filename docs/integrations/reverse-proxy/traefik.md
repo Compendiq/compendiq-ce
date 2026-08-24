@@ -4,7 +4,7 @@ _last-verified: 2026-04-24 (corrected after PR #328 review; founder VM test pend
 
 ## Who this is for
 
-Your company runs Docker Swarm or Docker Compose with Traefik v3 as the edge router — TLS terminates at Traefik, certificates come from Let's Encrypt or an internal ACME CA, and every service picks up its routing via Docker labels. You want to drop Compendiq into the same stack: one vanity hostname, auto-TLS, forwarded client IPs, and the LLM / presence streams working through the proxy without breaking.
+Your company runs Docker Swarm or Docker Compose with Traefik v3 as the edge router — TLS terminates at Traefik, certificates come from Let's Encrypt or an internal ACME CA, and every service picks up its routing via Docker labels. You want to drop Compendiq into the same stack: one vanity hostname, auto-TLS, forwarded client IPs, and the LLM / presence streams **and** collaborative-editing WebSockets working through the proxy without breaking.
 
 ## Architecture
 
@@ -94,6 +94,29 @@ services:
 
       - "traefik.http.services.compendiq-sse.loadBalancer.server.port=8081"
       - "traefik.http.services.compendiq-sse.loadBalancer.passHostHeader=true"
+
+      # --- Collab WebSocket router --------------------------------
+      # Yjs collab is GET /api/collab/:pageId (HTTP/1.1 Upgrade,
+      # RFC 6455 — not RFC 8441 Extended CONNECT). Traefik upgrades
+      # WebSockets by default; a Buffering middleware on this router
+      # (or on a chain it inherits) is what *breaks* the upgrade, the
+      # same way it breaks SSE. Keep Buffering off this router.
+      #
+      # Long idle: Traefik's entrypoint `idleTimeout` defaults to 180s
+      # and will cut a quiet socket. Raise it in Traefik's **static**
+      # config (Docker labels cannot set entrypoint timeouts):
+      #   --entrypoints.websecure.transport.respondingTimeouts.idleTimeout=1h
+      # Browsers' WebSocket() still speaks HTTP/1.1 to this hop even
+      # when the page itself was HTTP/2; do not pin this router to h2c.
+      - "traefik.http.routers.compendiq-collab.rule=Host(`compendiq.corp.example.com`) && PathPrefix(`/api/collab/`)"
+      - "traefik.http.routers.compendiq-collab.entrypoints=websecure"
+      - "traefik.http.routers.compendiq-collab.tls=true"
+      - "traefik.http.routers.compendiq-collab.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.compendiq-collab.service=compendiq-collab"
+      - "traefik.http.routers.compendiq-collab.priority=200"   # beats the generic router
+
+      - "traefik.http.services.compendiq-collab.loadBalancer.server.port=8081"
+      - "traefik.http.services.compendiq-collab.loadBalancer.passHostHeader=true"
 ```
 
 ### 3. Configure Compendiq's forwarded-headers trust
@@ -134,10 +157,11 @@ docker logs traefik 2>&1 | grep -i acme | tail -20
 **1. LLM chat spinner never streams text; SSE presence stream cuts off after ~30 s.**
 A `buffering` middleware has been attached to the SSE router (or to the entrypoint / generic router above it) and is holding the response in memory until the backend closes the connection. Traefik v3 does **not** buffer by default — attaching a Buffering middleware is what turns buffering on, and the `maxResponseBodyBytes=0` / `memResponseBodyBytes=0` values mean "no size cap," not "disabled." Verify with `docker inspect <compendiq-frontend-id> | grep buffering` — the output should be empty for this router. If other middleware in your stack (auth, rate-limit, headers) is a `chain` that pulls in `buffering`, either drop `buffering` from the chain or exclude the `compendiq-sse` router from the chain. See the Traefik [Buffering middleware reference](https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/buffering/) and tracking issue [traefik/traefik#12869](https://github.com/traefik/traefik/issues/12869).
 
-**2. Browser DevTools shows 404 on WebSocket / EventSource connection.**
-Compendiq doesn't use WebSockets, but the EventSource (SSE) connection fails if the `compendiq-sse` router rule doesn't match. Two common misses:
-- The `PathRegexp` for presence requires an exact `^/api/pages/[^/]+/presence$` anchor. If your backend later adds sub-paths (e.g. `/presence/heartbeat`), extend the regex.
-- Traefik v3 path matchers are case-sensitive — `/API/llm/ask` will fall through to the generic router (which buffers).
+**2. Browser DevTools shows 404 on EventSource, or the collab WebSocket never 101s.**
+Two different sockets, two routers:
+
+- **SSE** (`EventSource` on `/api/pages/*/presence` and `/api/llm/*`) fails if the `compendiq-sse` router rule doesn't match. The `PathRegexp` for presence requires an exact `^/api/pages/[^/]+/presence$` anchor — extend it if a later backend adds sub-paths (e.g. `/presence/heartbeat`). Traefik v3 path matchers are case-sensitive — `/API/llm/ask` falls through to the generic router.
+- **WebSocket** (`GET /api/collab/:pageId`) needs the `compendiq-collab` `PathPrefix(`/api/collab/`)` router. A 404 here is a missed prefix; a connection that opens and dies at ~3 minutes is the entrypoint `idleTimeout` (default 180s) — raise it to `1h` as in the labels comment. A Buffering middleware on this router (or a chain that pulls one in) holds the upgrade until the backend closes, which looks like a hung 101. Confirm with `docker inspect <compendiq-frontend-id> | grep -i buffering` — it should be empty for this router.
 
 **3. Audit log shows Traefik's internal IP (`172.x.x.x`) instead of the real client IP.**
 `passHostHeader=true` is set but Traefik isn't forwarding `X-Forwarded-For`. Confirm Traefik's static config has `--entrypoints.websecure.forwardedHeaders.insecure=true` (if Traefik itself is behind another proxy) or `--entrypoints.websecure.forwardedHeaders.trustedIPs=<upstream-CIDR>`. Compendiq's `trustProxy: true` trusts whatever Traefik forwards, so the fix is upstream of Compendiq.

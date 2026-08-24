@@ -8,7 +8,8 @@ Flag off ≡ today's TipTap draft + #301 SSE presence.
 Design of record: [`docs/superpowers/specs/2026-08-24-realtime-collaborative-editing-design.md`](../superpowers/specs/2026-08-24-realtime-collaborative-editing-design.md)
 (epic [#1411](https://github.com/Compendiq/compendiq-ce/issues/1411), architecture PR [#1443](https://github.com/Compendiq/compendiq-ce/issues/1443)).
 This diagram is the topology later PRs implement. The table exists from
-migration 104; the gateway, nginx location, and editor wiring do **not**.
+migration 104 and the bundled `/api/collab/` nginx location plus Vite
+`ws: true` ship here; the editor wiring does **not**.
 
 ## Topology
 
@@ -53,9 +54,9 @@ flowchart TB
     SSE --> RD
 ```
 
-The `/api/collab/` nginx location, Vite `ws: true`, and the Fastify
-`@fastify/websocket` registration ship in later PRs. Diagram them here so
-ingress and the handshake are not reinvented when those PRs land.
+The bundled `location ^~ /api/collab/` and Vite `/api` `ws: true` ship
+in `frontend/nginx.conf` and `frontend/vite.config.ts`. Corporate
+reverse-proxy snippets live in `docs/integrations/reverse-proxy/`.
 
 ## Gateway (not Hocuspocus)
 
@@ -193,21 +194,21 @@ domains/routes. `assertNoLiveCollabRoom` lives in `core` so
 
 Register `/collab/config` **before** `/collab/:pageId`.
 
-## Ingress (`/api/collab/` — later PR)
+## Ingress (`/api/collab/`)
 
-Bundled `frontend/nginx.conf` today has `location ^~ /api/` with SSE
-`proxy_read_timeout 300` and **no** `Upgrade` / `Connection`. A sibling
-`location ^~ /api/collab/` (longer prefix beats `^~ /api/`) must set:
+Bundled `frontend/nginx.conf` keeps `location ^~ /api/` SSE-shaped
+(`proxy_read_timeout 300`, **no** `Upgrade` / `Connection`). The sibling
+`location ^~ /api/collab/` (longer prefix beats `^~ /api/`) sets:
 
 - `proxy_http_version 1.1`
 - `proxy_set_header Upgrade $http_upgrade`
 - `proxy_set_header Connection "Upgrade"`
 - `proxy_read_timeout 3600s` / `proxy_send_timeout 3600s`
 
-Leave the `/api/` SSE 300 s timeout unchanged. Vite's `/api` proxy must
-set `ws: true`. Corporate nginx currently sets `Connection ""` at server
-scope for SSE keep-alive — a dedicated `/api/collab/` location must
-override that or Upgrade is silently dropped.
+Vite's `/api` proxy sets `ws: true` so `npm run dev` upgrades on the
+Vite port. Corporate nginx sets `Connection ""` at server scope for SSE
+keep-alive — a dedicated `/api/collab/` location must override that or
+Upgrade is silently dropped. Snippets: `docs/integrations/reverse-proxy/`.
 
 HTTP/2: browsers' `WebSocket()` uses HTTP/1.1 Upgrade (RFC 6455).
 `/api/collab/` must be reachable as HTTP/1.1 to the next hop. CSP
