@@ -47,6 +47,12 @@ describe('ADMIN-GUIDE hosted OpenAI + DeepSeek (#1456)', () => {
     // OLLAMA_BASE_URL's sentinel rewrite is named; LLM_BEARER_TOKEN is not a fake Ollama auth seed.
     expect(guide).toMatch(/sentinel `http:\/\/localhost:11434\/v1`/);
     expect(guide).toMatch(/not\*\* read as an Ollama auth seed/i);
+    // Troubleshooting must not claim the env never touches a saved row (sentinel rewrite).
+    const troubleshooting = guide.slice(guide.indexOf('### LLM requests fail or time out'));
+    expect(troubleshooting).not.toMatch(
+      /only seeds an empty\s+table — it does not override a saved row/,
+    );
+    expect(troubleshooting).toMatch(/non-sentinel\s+saved URL is not overridden/);
   });
 
   it('hedges DeepSeek strict thinking / reasoning_content on #1457 until that PR is on dev (D5)', () => {

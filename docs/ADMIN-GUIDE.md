@@ -1787,8 +1787,10 @@ Check that the `POSTGRES_URL` and `REDIS_URL` in your `.env` match the container
    and press **Test** on that row.
 2. For a local Ollama / LM Studio host: verify it is reachable from the backend
    container (`curl` the `/v1/models` URL; inside Docker use
-   `http://host.docker.internal:…`). Env `OLLAMA_BASE_URL` only seeds an empty
-   table — it does not override a saved row.
+   `http://host.docker.internal:…`). Env `OLLAMA_BASE_URL` seeds an empty
+   table and, on an existing install, rewrites only the default sentinel
+   `http://localhost:11434/v1` when the env value differs — a non-sentinel
+   saved URL is not overridden.
 3. For hosted OpenAI / DeepSeek / similar: confirm the API key on the provider
    row (Edit → paste a new key) and that the model id is one the account can
    call. A 401 from **Test** is almost always a bad key.
