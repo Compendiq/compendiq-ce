@@ -335,6 +335,146 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it('keeps the canonical database (and its rows) on the real host when a linked view is walked first', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'linked-host',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Linked host'),
+        },
+        {
+          object: 'page',
+          id: 'real-host',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Real host'),
+        },
+        {
+          object: 'database',
+          id: 'crm',
+          parent: { type: 'block_id', block_id: 'toggle-on-real' },
+          title: richTitle('CRM'),
+        },
+        {
+          object: 'page',
+          id: 'row-listed',
+          parent: { type: 'database_id', database_id: 'crm' },
+          properties: titleProp('Acme Corp'),
+        },
+      ],
+      blockChildren: {
+        'linked-host': [
+          {
+            object: 'block',
+            id: 'crm',
+            type: 'child_database',
+            child_database: { title: 'CRM' },
+          },
+        ],
+        'real-host': [
+          {
+            object: 'block',
+            id: 'toggle-on-real',
+            type: 'toggle',
+            has_children: true,
+            toggle: { rich_text: [] },
+          },
+        ],
+        'toggle-on-real': [
+          {
+            object: 'block',
+            id: 'crm',
+            type: 'child_database',
+            child_database: { title: 'CRM' },
+          },
+        ],
+      },
+      blocks: {
+        'toggle-on-real': {
+          object: 'block',
+          id: 'toggle-on-real',
+          type: 'toggle',
+          parent: { type: 'page_id', page_id: 'real-host' },
+          has_children: true,
+        },
+      },
+    });
+
+    const realHost = findById(nodes as TreeNode[], 'real-host');
+    const linkedHost = findById(nodes as TreeNode[], 'linked-host');
+    const canonical = realHost?.children.find((c) => c.id === 'crm');
+    const clone = linkedHost?.children.find((c) => c.id !== undefined);
+    expect(canonical).toMatchObject({
+      id: 'crm',
+      type: 'database',
+      selectable: false,
+      skipReason: NOTION_UNSUPPORTED_LABEL,
+    });
+    expect(canonical?.children.map((c) => c.id)).toContain('row-listed');
+    expect(clone).toMatchObject({
+      id: 'linked:linked-host:crm',
+      type: 'database',
+      selectable: false,
+      skipReason: NOTION_UNSUPPORTED_LABEL,
+    });
+    expect((clone as { linkedFromId?: string } | undefined)?.linkedFromId).toBe('crm');
+    expect(clone?.children ?? []).toEqual([]);
+    expect(linkedHost?.children.some((c) => c.id === 'crm')).toBe(false);
+    const ids = flatten(nodes as TreeNode[]).map((n) => n.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('finds a linked database nested under a toggleable heading', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'handbook',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Handbook'),
+        },
+        {
+          object: 'database',
+          id: 'crm',
+          parent: { type: 'page_id', page_id: 'elsewhere' },
+          title: richTitle('CRM'),
+        },
+      ],
+      blockChildren: {
+        handbook: [
+          {
+            object: 'block',
+            id: 'h1-toggle',
+            type: 'heading_1',
+            has_children: true,
+            heading_1: { is_toggleable: true, rich_text: [] },
+          },
+        ],
+        'h1-toggle': [
+          {
+            object: 'block',
+            id: 'crm',
+            type: 'child_database',
+            child_database: { title: 'CRM' },
+          },
+        ],
+      },
+    });
+
+    const handbook = findById(nodes as TreeNode[], 'handbook');
+    const linked = handbook?.children.find((c) => c.type === 'database');
+    expect(linked).toMatchObject({
+      id: 'linked:handbook:crm',
+      selectable: false,
+      skipReason: NOTION_UNSUPPORTED_LABEL,
+      title: 'CRM',
+    });
+    expect((linked as { linkedFromId?: string } | undefined)?.linkedFromId).toBe('crm');
+  });
+
   it('does not walk block children of Search-listed database row-pages', async () => {
     const nodes = await treeFor({
       validToken: TOKEN,
