@@ -399,8 +399,11 @@ export async function createCollabRuntime(
   ): Promise<CollabSocket> {
     const room = await getOrCreateRoom(pageId);
     if (room.emptyGrace) {
+      // Reconnect during grace: last member (or :grace sentinel) is still in
+      // collab:active. Cancel the drop; SADD the new connId regardless.
       clearTimeout(room.emptyGrace);
       room.emptyGrace = null;
+      await sremActive(pageId, 'grace');
     }
     const full: CollabSocket = { ...socket, readonlyDrops: 0 };
     room.sockets.set(full.id, full);
@@ -417,19 +420,25 @@ export async function createCollabRuntime(
     if (!room) return;
     const sock = room.sockets.get(connId);
     room.sockets.delete(connId);
-    await sremActive(pageId, connId);
     if (sock) {
       logger.info(
         { pageId, userId: sock.userId, writable: sock.writable, connId },
         'collab.leave',
       );
     }
-    if (room.sockets.size === 0) {
-      room.emptyGrace = setTimeout(() => {
-        void dropRoom(pageId);
-      }, COLLAB_EMPTY_ROOM_GRACE_MS);
-      if (typeof room.emptyGrace.unref === 'function') room.emptyGrace.unref();
+    if (room.sockets.size > 0) {
+      await sremActive(pageId, connId);
+      return;
     }
+    // Last editor out: keep this member (and a :grace sentinel) in
+    // collab:active until the in-memory Y.Doc is dropped, so PUT still 409s
+    // during the reconnect window.
+    await saddActive(pageId, 'grace');
+    await refreshActiveTtl(pageId);
+    room.emptyGrace = setTimeout(() => {
+      void dropRoom(pageId);
+    }, COLLAB_EMPTY_ROOM_GRACE_MS);
+    if (typeof room.emptyGrace.unref === 'function') room.emptyGrace.unref();
   }
 
   async function tombstone(pageId: number, code: number, reason = 'tombstone'): Promise<void> {

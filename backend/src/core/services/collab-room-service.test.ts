@@ -8,9 +8,11 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { createClient, type RedisClientType } from 'redis';
 import { isRedisAvailable } from '../../test-redis-helper.js';
+import type { WebSocket } from 'ws';
 import {
   createCollabRuntime,
   COLLAB_ACTIVE_TTL_SEC,
+  COLLAB_EMPTY_ROOM_GRACE_MS,
   type CollabRuntime,
 } from './collab-room-service.js';
 import { assertNoLiveCollabRoom } from './collab-guard.js';
@@ -28,6 +30,10 @@ function nextPageId(): number {
   const id = 1_411_000 + Math.floor(Math.random() * 1_000_000);
   usedPageIds.push(id);
   return id;
+}
+
+function stubWs(): WebSocket {
+  return { readyState: 1, send() {}, close() {} } as unknown as WebSocket;
 }
 
 async function cleanupKeys(): Promise<void> {
@@ -123,5 +129,64 @@ describe.skipIf(!redisAvailable)('collab-room-service Redis fan-out (#1444)', ()
     const ttl = await main!.ttl(`collab:active:${pageId}`);
     expect(ttl).toBeGreaterThan(0);
     expect(ttl).toBeLessThanOrEqual(COLLAB_ACTIVE_TTL_SEC);
+  });
+
+  it('holds collab:active through empty-room grace so PUT still 409s', async () => {
+    if (!main) throw new Error('unreachable');
+    const pageId = nextPageId();
+    const connId = 'last-editor';
+    await runtimeA!.attachSocket(pageId, {
+      id: connId,
+      ws: stubWs(),
+      userId: 'user-a',
+      writable: true,
+    });
+
+    await runtimeA!.detachSocket(pageId, connId);
+
+    await expect(assertNoLiveCollabRoom(pageId)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'collab_session_active',
+    });
+    const membersDuringGrace = await main.sMembers(`collab:active:${pageId}`);
+    expect(
+      membersDuringGrace.some(
+        (m) => m === `${runtimeA!.podId}:${connId}` || m === `${runtimeA!.podId}:grace`,
+      ),
+      'last member (or a grace sentinel) must stay in the SET until the Y.Doc is dropped',
+    ).toBe(true);
+    expect(runtimeA!.getRoom(pageId)?.doc).toBeDefined();
+
+    await new Promise((r) => setTimeout(r, COLLAB_EMPTY_ROOM_GRACE_MS + 250));
+
+    await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
+    expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+  }, 15_000);
+
+  it('reconnect during empty-room grace keeps collab:active (still 409)', async () => {
+    if (!main) throw new Error('unreachable');
+    const pageId = nextPageId();
+    await runtimeA!.attachSocket(pageId, {
+      id: 'first',
+      ws: stubWs(),
+      userId: 'user-a',
+      writable: true,
+    });
+    await runtimeA!.detachSocket(pageId, 'first');
+
+    await runtimeA!.attachSocket(pageId, {
+      id: 'reconnect',
+      ws: stubWs(),
+      userId: 'user-a',
+      writable: true,
+    });
+
+    await expect(assertNoLiveCollabRoom(pageId)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'collab_session_active',
+    });
+    const members = await main.sMembers(`collab:active:${pageId}`);
+    expect(members).toContain(`${runtimeA!.podId}:reconnect`);
+    expect(runtimeA!.getRoom(pageId)?.emptyGrace).toBeNull();
   });
 });
