@@ -20,9 +20,10 @@ import {
 /**
  * Two-browser collaborative editing (#1449 / #1411 child 7).
  *
- * Isolated Playwright project `collab` (workers: 1). PUT collabEditingEnabled
- * only as admin; restore only if this worker turned the flag on. Chromium
- * ignores this file so the rest of the suite stays flag-off.
+ * Isolated Playwright project `collab` (workers: 1, depends on chromium so
+ * a full run keeps the flag off during the default suite). PUT
+ * collabEditingEnabled only as admin; restore only if this worker turned
+ * the flag on. Chromium ignores this file.
  *
  * Read-only prefix-drop is covered by `pages-collab.test.ts` (CE GET /pages/:id
  * 404s an admin on someone else's private page, so that UI path is not

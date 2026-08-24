@@ -20,11 +20,13 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
     {
-      // Isolated: this spec PUTs collabEditingEnabled. workers:1 + not
-      // fullyParallel so it cannot race the rest of the suite, which stays
-      // flag-off because chromium ignores the file.
+      // Isolated: this spec PUTs collabEditingEnabled. `dependencies` runs
+      // it after chromium so a full `npx playwright test` keeps the flag
+      // off during the default suite. workers:1 + not fullyParallel so
+      // collab cannot race itself.
       name: 'collab',
       testMatch: /collab-editing/,
+      dependencies: ['chromium'],
       fullyParallel: false,
       workers: 1,
       use: { ...devices['Desktop Chrome'] },
