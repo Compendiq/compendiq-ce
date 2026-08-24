@@ -9,7 +9,9 @@ COMMENT ON COLUMN pages.notion_page_id IS
 
 -- Same owner, same Notion id, still live → one local page. Dashes are
 -- stripped so "uuid" and "uuid-without-dashes" collide. Trashed rows are
--- excluded so a restore-vs-reimport is an explicit choice.
+-- excluded so trash-then-reimport is allowed. Restoring the trashed copy
+-- while a live import exists is a 409 from POST /pages/:id/restore, not
+-- a unique-index 500.
 CREATE UNIQUE INDEX IF NOT EXISTS pages_notion_page_id_owner_live_uidx
   ON pages (
     created_by_user_id,

@@ -44,4 +44,26 @@ describe.skipIf(!dbAvailable)('Migration 103 — pages.notion_page_id (#1465)', 
       ),
     ).rejects.toThrow();
   });
+
+  it('allows a live reimport while a trashed copy of the same Notion id exists', async () => {
+    const user = await query<{ id: string }>(
+      `INSERT INTO users (username, password_hash, role) VALUES ('mig103_trash', 'h', 'user') RETURNING id`,
+    );
+    const userId = user.rows[0]!.id;
+    await query(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, notion_page_id, deleted_at)
+       VALUES ('Old', '<p>old</p>', 'old', 1, 'standalone', $1, 'page-1', NOW())`,
+      [userId],
+    );
+    await query(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, notion_page_id)
+       VALUES ('New', '<p>new</p>', 'new', 1, 'standalone', $1, 'page-1')`,
+      [userId],
+    );
+    const rows = await query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM pages WHERE created_by_user_id = $1 AND notion_page_id = 'page-1'`,
+      [userId],
+    );
+    expect(rows.rows[0]!.n).toBe('2');
+  });
 });

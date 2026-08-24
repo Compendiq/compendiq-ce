@@ -43,7 +43,7 @@ export interface RunNotionImportInput {
 export async function runNotionImport(input: RunNotionImportInput): Promise<NotionImportItem[]> {
   const destination = await resolveDestination(input);
   const items = new Map<string, NotionImportItem>();
-  const fetched = new Map<string, Record<string, unknown>>();
+  const jobs: ImportJob[] = [];
 
   for (const rawId of input.pageIds) {
     if (items.has(rawId)) continue;
@@ -52,7 +52,7 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
       continue;
     }
     const existing = await findImportedPage(input.userId, rawId);
-    if (existing) {
+    if (existing?.complete) {
       items.set(rawId, {
         notionPageId: rawId,
         status: 'already_imported',
@@ -62,48 +62,74 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
     }
     const classified = await classifySelection(input.client, rawId);
     if (classified.kind === 'skip') {
+      if (existing) await abandonPage(existing.id, destination.parentId);
       items.set(rawId, { notionPageId: rawId, status: 'skip', reason: classified.reason });
       continue;
     }
     if (classified.kind === 'fail') {
+      if (existing) await abandonPage(existing.id, destination.parentId);
       items.set(rawId, { notionPageId: rawId, status: 'fail', reason: classified.reason });
       continue;
     }
-    fetched.set(rawId, classified.page);
+    jobs.push({
+      id: rawId,
+      page: classified.page,
+      title: extractTitle(classified.page),
+      parentNotionId: parentPageIdOf(classified.page),
+      reuseId: existing?.id,
+    });
   }
 
   const importedPages = new Map<string, number>();
   for (const item of items.values()) {
-    if ((item.status === 'already_imported' || item.status === 'success') && item.localPageId) {
+    if (item.status === 'already_imported' && item.localPageId) {
       importedPages.set(normalizeNotionId(item.notionPageId), item.localPageId);
     }
   }
 
-  const toCreate = [...fetched.entries()].map(([id, page]) => ({
-    id,
-    page,
-    title: extractTitle(page),
-    parentNotionId: parentPageIdOf(page),
-  }));
-  const ordered = topoBySelectedParent(toCreate, new Set(toCreate.map((j) => normalizeNotionId(j.id))));
+  for (const job of jobs) {
+    try {
+      job.blocks = await fetchBlocksDeep(input.client, job.id);
+    } catch (err) {
+      if (job.reuseId) await abandonPage(job.reuseId, destination.parentId);
+      items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+    }
+  }
+
+  const toPersist = jobs.filter((job) => !items.has(job.id));
+  const ordered = topoBySelectedParent(
+    toPersist,
+    new Set(toPersist.map((j) => normalizeNotionId(j.id))),
+  );
 
   for (const job of ordered) {
+    let localPageId: number | undefined = job.reuseId;
     try {
       const parentLocal = resolveParentLocalId(job.parentNotionId, importedPages, destination.parentId);
-      const created = await insertStandalonePage({
+      localPageId = job.reuseId ?? (await nextPageId());
+      const converted = convertNotionBlocks(job.blocks ?? [], {
+        localPageId,
+        importedPages,
+      });
+      await persistStandalonePage({
+        id: localPageId,
+        reuse: Boolean(job.reuseId),
         userId: input.userId,
         title: job.title,
         spaceKey: destination.spaceKey,
         parentId: parentLocal,
         visibility: destination.visibility,
         notionPageId: job.id,
+        bodyHtml: converted.bodyHtml,
+        bodyText: converted.bodyText,
       });
-      importedPages.set(normalizeNotionId(job.id), created.id);
-      items.set(job.id, { notionPageId: job.id, status: 'success', localPageId: created.id });
+      await storeAttachments(input.client, input.userId, localPageId, converted.attachments);
+      importedPages.set(normalizeNotionId(job.id), localPageId);
+      items.set(job.id, { notionPageId: job.id, status: 'success', localPageId });
     } catch (err) {
       if (isUniqueViolation(err)) {
         const existing = await findImportedPage(input.userId, job.id);
-        if (existing) {
+        if (existing?.complete) {
           importedPages.set(normalizeNotionId(job.id), existing.id);
           items.set(job.id, {
             notionPageId: job.id,
@@ -113,32 +139,26 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
           continue;
         }
       }
+      if (localPageId) {
+        await abandonPage(localPageId, destination.parentId);
+        importedPages.delete(normalizeNotionId(job.id));
+      }
       items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
     }
   }
 
-  for (const job of ordered) {
-    const current = items.get(job.id);
-    if (current?.status !== 'success' || !current.localPageId) continue;
-    const localPageId = current.localPageId;
-    try {
-      const blocks = await fetchBlocksDeep(input.client, job.id);
-      const converted = convertNotionBlocks(blocks, { localPageId, importedPages });
-      await query(
-        `UPDATE pages
-            SET body_html = $2, body_text = $3, embedding_dirty = TRUE, image_embedding_dirty = TRUE
-          WHERE id = $1`,
-        [localPageId, converted.bodyHtml, converted.bodyText],
-      );
-      await storeAttachments(input.client, input.userId, localPageId, converted.attachments);
-    } catch (err) {
-      await query('DELETE FROM pages WHERE id = $1', [localPageId]);
-      importedPages.delete(normalizeNotionId(job.id));
-      items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
-    }
-  }
+  await rewriteImportedMentions(ordered, items, importedPages);
 
   return input.pageIds.map((id) => items.get(id) ?? { notionPageId: id, status: 'fail', reason: 'Unknown item' });
+}
+
+interface ImportJob {
+  id: string;
+  page: Record<string, unknown>;
+  title: string;
+  parentNotionId: string | null;
+  reuseId?: number;
+  blocks?: NotionBlock[];
 }
 
 interface Destination {
@@ -174,43 +194,65 @@ async function resolveDestination(input: RunNotionImportInput): Promise<Destinat
   return { spaceKey, parentId: input.parentId ?? null, visibility: input.visibility };
 }
 
-async function insertStandalonePage(opts: {
+async function nextPageId(): Promise<number> {
+  const result = await query<{ id: string }>('SELECT nextval(\'pages_id_seq\')::text AS id');
+  return Number.parseInt(result.rows[0]!.id, 10);
+}
+
+async function persistStandalonePage(opts: {
+  id: number;
+  reuse: boolean;
   userId: string;
   title: string;
   spaceKey: string | null;
   parentId: string | null;
   visibility: 'private' | 'shared';
   notionPageId: string;
-}): Promise<{ id: number }> {
+  bodyHtml: string;
+  bodyText: string;
+}): Promise<void> {
   let parentPath: string | null = null;
   if (opts.parentId) {
     const parentResult = await query<{ path: string | null }>(
       'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
       [opts.parentId],
     );
-    parentPath = parentResult.rows[0]?.path ?? null;
+    parentPath = parentResult.rows[0]?.path ?? `/${opts.parentId}`;
+  }
+  const newPath = parentPath ? `${parentPath}/${opts.id}` : `/${opts.id}`;
+  const depth = newPath.split('/').filter(Boolean).length - 1;
+
+  if (opts.reuse) {
+    await query(
+      `UPDATE pages
+          SET title = $2, body_html = $3, body_text = $4, space_key = $5, parent_id = $6,
+              visibility = $7, path = $8, depth = $9, embedding_dirty = TRUE, image_embedding_dirty = TRUE
+        WHERE id = $1 AND deleted_at IS NULL`,
+      [opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.spaceKey, opts.parentId, opts.visibility, newPath, depth],
+    );
+    return;
   }
 
-  const result = await query<{ id: number }>(
+  await query(
     `INSERT INTO pages
-       (title, body_html, body_text, body_storage, source, created_by_user_id,
+       (id, title, body_html, body_text, body_storage, source, created_by_user_id,
         visibility, version, space_key, confluence_id, parent_id,
-        page_type, embedding_dirty, image_embedding_dirty, embedding_status, last_synced, labels, notion_page_id)
-     VALUES ($1, '', '', NULL, 'standalone', $2, $3, 1, $4, NULL, $5,
-             'page', TRUE, TRUE, 'not_embedded', NOW(), '{}', $6)
-     RETURNING id`,
-    [opts.title, opts.userId, opts.visibility, opts.spaceKey, opts.parentId, opts.notionPageId],
+        page_type, embedding_dirty, image_embedding_dirty, embedding_status, last_synced, labels, notion_page_id, path, depth)
+     VALUES ($1, $2, $3, $4, NULL, 'standalone', $5, $6, 1, $7, NULL, $8,
+             'page', TRUE, TRUE, 'not_embedded', NOW(), '{}', $9, $10, $11)`,
+    [
+      opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.userId,
+      opts.visibility, opts.spaceKey, opts.parentId, opts.notionPageId, newPath, depth,
+    ],
   );
-  const id = result.rows[0]!.id;
-  const newPath = parentPath ? `${parentPath}/${id}` : `/${id}`;
-  const depth = newPath.split('/').filter(Boolean).length - 1;
-  await query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3', [newPath, depth, id]);
-  return { id };
 }
 
-async function findImportedPage(userId: string, notionPageId: string): Promise<{ id: number } | null> {
-  const result = await query<{ id: number }>(
-    `SELECT id FROM pages
+async function findImportedPage(
+  userId: string,
+  notionPageId: string,
+): Promise<{ id: number; complete: boolean } | null> {
+  const result = await query<{ id: number; body_html: string | null }>(
+    `SELECT id, body_html FROM pages
       WHERE created_by_user_id = $1
         AND deleted_at IS NULL
         AND notion_page_id IS NOT NULL
@@ -218,7 +260,62 @@ async function findImportedPage(userId: string, notionPageId: string): Promise<{
       LIMIT 1`,
     [userId, normalizeNotionId(notionPageId)],
   );
-  return result.rows[0] ?? null;
+  const row = result.rows[0];
+  if (!row) return null;
+  return { id: row.id, complete: Boolean(row.body_html && row.body_html.trim().length > 0) };
+}
+
+async function abandonPage(pageId: number, destinationParentId: string | null): Promise<void> {
+  const page = await query<{ path: string | null }>(
+    'SELECT path FROM pages WHERE id = $1',
+    [pageId],
+  );
+  const oldPath = page.rows[0]?.path ?? `/${pageId}`;
+  let destPath = '';
+  if (destinationParentId) {
+    const dest = await query<{ path: string | null }>(
+      'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      [destinationParentId],
+    );
+    destPath = dest.rows[0]?.path ?? `/${destinationParentId}`;
+  }
+  const descendants = await query<{ id: number; parent_id: string | null; path: string }>(
+    `SELECT id, parent_id, path FROM pages
+      WHERE deleted_at IS NULL AND path IS NOT NULL AND path LIKE $1`,
+    [`${oldPath}/%`],
+  );
+  for (const kid of descendants.rows) {
+    const suffix = kid.path.slice(oldPath.length);
+    const newPath = `${destPath}${suffix}` || `/${kid.id}`;
+    const depth = newPath.split('/').filter(Boolean).length - 1;
+    const parentId = kid.parent_id === String(pageId) ? destinationParentId : kid.parent_id;
+    await query('UPDATE pages SET parent_id = $1, path = $2, depth = $3 WHERE id = $4', [
+      parentId,
+      newPath,
+      depth,
+      kid.id,
+    ]);
+  }
+  await query('DELETE FROM pages WHERE id = $1', [pageId]);
+}
+
+async function rewriteImportedMentions(
+  jobs: ImportJob[],
+  items: Map<string, NotionImportItem>,
+  importedPages: Map<string, number>,
+): Promise<void> {
+  for (const job of jobs) {
+    const current = items.get(job.id);
+    if (current?.status !== 'success' || !current.localPageId || !job.blocks) continue;
+    const converted = convertNotionBlocks(job.blocks, {
+      localPageId: current.localPageId,
+      importedPages,
+    });
+    await query(
+      `UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1`,
+      [current.localPageId, converted.bodyHtml, converted.bodyText],
+    );
+  }
 }
 
 type Classified =
@@ -239,7 +336,6 @@ async function classifySelection(client: NotionClient, id: string): Promise<Clas
         await client.getDatabase(id);
         return { kind: 'skip', reason: NOTION_UNSUPPORTED_LABEL };
       } catch (dbErr) {
-        if (isMissing(dbErr)) return { kind: 'fail', reason: failReason(dbErr) };
         return { kind: 'fail', reason: failReason(dbErr) };
       }
     }
@@ -248,13 +344,7 @@ async function classifySelection(client: NotionClient, id: string): Promise<Clas
 }
 
 async function fetchBlocksDeep(client: NotionClient, blockId: string): Promise<NotionBlock[]> {
-  let raw: Array<Record<string, unknown>>;
-  try {
-    raw = await client.getAllBlockChildren(blockId);
-  } catch (err) {
-    if (isMissing(err)) return [];
-    throw err;
-  }
+  const raw = await client.getAllBlockChildren(blockId);
   const out: NotionBlock[] = [];
   for (const item of raw) {
     if (!isRecord(item) || typeof item.type !== 'string') continue;
@@ -284,7 +374,8 @@ async function storeAttachments(
         userId,
       });
     } catch (err) {
-      logger.warn({ pageId, filename: att.filename, err: failReason(err) }, 'notion-import: attachment download skipped');
+      logger.warn({ pageId, filename: att.filename, err: failReason(err) }, 'notion-import: attachment download failed');
+      throw err instanceof Error ? err : new Error(failReason(err));
     }
   }
 }

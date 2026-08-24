@@ -171,6 +171,26 @@ describe.skipIf(!dbAvailable)('GET /api/pages/trash + standalone auto-purge (DB)
       expect(mockCacheInvalidate).not.toHaveBeenCalledWith(userA, 'pages');
     });
 
+    it('returns 409 instead of 500 when restoring would collide with a live Notion import', async () => {
+      const trashedId = await insertStandalonePage('Old Notion copy', 'private', userA, 'NOTES', {
+        deletedAt: new Date(),
+      });
+      const liveId = await insertStandalonePage('Live Notion copy', 'private', userA, 'NOTES');
+      await query(`UPDATE pages SET notion_page_id = 'notion-1' WHERE id = ANY($1::int[])`, [
+        [trashedId, liveId],
+      ]);
+
+      currentUserId = userA;
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${trashedId}/restore` });
+      expect(response.statusCode).toBe(409);
+      expect(String(response.json().error ?? response.json().message ?? '')).toMatch(/live import/i);
+      const stillTrashed = await query<{ deleted_at: Date | null }>(
+        'SELECT deleted_at FROM pages WHERE id = $1',
+        [trashedId],
+      );
+      expect(stillTrashed.rows[0]!.deleted_at).not.toBeNull();
+    });
+
     it('keeps per-user invalidation when restoring a private page', async () => {
       const pageId = await insertStandalonePage('Private trashed note', 'private', userA, 'NOTES', {
         deletedAt: new Date(),
