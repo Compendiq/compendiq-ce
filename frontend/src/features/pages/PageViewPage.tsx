@@ -45,6 +45,7 @@ import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button, IconButton } from '../../shared/components/Button';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
+import { ConfluenceModifiedAlert } from './ConfluenceModifiedAlert';
 import { useCollabProvider } from './use-collab-provider';
 import { mergePresence } from './merge-presence';
 import { caretColorForUserId } from './collab-colors';
@@ -190,6 +191,10 @@ export function PageViewPage() {
     return { name: user.username, color: caretColorForUserId(user.id) };
   }, [currentUserId]);
   const [collabSaving, setCollabSaving] = useState(false);
+  const [confluenceModified, setConfluenceModified] = useState<{
+    remoteVersion?: number;
+    localVersion?: number;
+  } | null>(null);
   useEffect(() => {
     setPresenceEditing(collabLive ? false : editing);
   }, [editing, collabLive, setPresenceEditing]);
@@ -237,6 +242,7 @@ export function PageViewPage() {
       setEditorInstance(null);
       setConfirmDiscardOpen(false);
       setConfirmTrashOpen(false);
+      setConfluenceModified(null);
     }
   }, [id, setStoreHeadings]);
 
@@ -419,6 +425,7 @@ export function PageViewPage() {
             method: 'POST',
             body: JSON.stringify({ title: editTitle }),
           });
+          setConfluenceModified(null);
           queryClient.invalidateQueries({ queryKey: ['pages', id] });
         } finally {
           setCollabSaving(false);
@@ -451,6 +458,13 @@ export function PageViewPage() {
       const isConfluence = page.source === 'confluence' || Boolean(page.confluenceId);
       toast.success(isConfluence ? 'Page saved & synced to Confluence DC.' : 'Page saved.');
     } catch (error) {
+      if (error instanceof ApiError && error.code === 'confluence_modified') {
+        setConfluenceModified({
+          remoteVersion: error.remoteVersion,
+          localVersion: error.localVersion,
+        });
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Failed to save page.';
       if (message.includes('modified since you loaded')) {
         toast.error('Version conflict detected.', {
@@ -800,6 +814,13 @@ export function PageViewPage() {
           keeps the bar: labels as pills on the left, Edit on the right.
           Operate verbs stay in the inspector. */}
       <div className="relative z-30 shrink-0">
+        {confluenceModified && (
+          <ConfluenceModifiedAlert
+            remoteVersion={confluenceModified.remoteVersion}
+            localVersion={confluenceModified.localVersion}
+            onDismiss={() => setConfluenceModified(null)}
+          />
+        )}
         <div className="relative w-full border-b border-border bg-card">
           {editing && editorInstance ? (
             <div className="px-2">

@@ -284,6 +284,28 @@ describe('apiFetch', () => {
       expect(err.message).toBe('Markdown too large (max ~1MB)');
     });
 
+    it('forwards allow-listed collab codes and Confluence version fields (#1448)', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            message: 'This page was modified in Confluence.',
+            code: 'confluence_modified',
+            remoteVersion: 9,
+            localVersion: 7,
+            statusCode: 409,
+          }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+
+      const err = await apiFetch('/pages/1/collab/commit').catch((e) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err.statusCode).toBe(409);
+      expect(err.code).toBe('confluence_modified');
+      expect(err.remoteVersion).toBe(9);
+      expect(err.localVersion).toBe(7);
+    });
+
     it('names the status when the error body is JSON without a message', async () => {
       // The one branch that could ever emit the bare 'Request failed' — which
       // took a full code audit to identify, because the string named nothing.

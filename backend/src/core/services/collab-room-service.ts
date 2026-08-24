@@ -101,6 +101,8 @@ export interface CollabRuntime {
   waitForPeerStateDump: (pageId: number, timeoutMs?: number) => Promise<boolean>;
   /** Flush, SREM this pod's members, destroy the Y.Doc. No-op if sockets remain. */
   dropRoom: (pageId: number) => Promise<void>;
+  /** Rebuild BYTEA from inbound HTML, `doc_reset`, close sockets 1001. */
+  resetFromHtml: (pageId: number, html: string) => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -592,6 +594,26 @@ export async function createCollabRuntime(
     if (typeof room.emptyGrace.unref === 'function') room.emptyGrace.unref();
   }
 
+  async function resetFromHtml(pageId: number, html: string): Promise<void> {
+    persist.beginCollabReset(pageId);
+    const room = rooms.get(pageId);
+    if (room) {
+      room.persistable = false;
+      if (room.persistTimer) {
+        clearTimeout(room.persistTimer);
+        room.persistTimer = null;
+      }
+      await room.persistChain;
+    }
+    try {
+      await persist.replaceCollabDocFromHtml(pageId, html);
+    } finally {
+      persist.endCollabReset(pageId);
+    }
+    broadcastControl(pageId, { type: 'doc_reset' });
+    await tombstone(pageId, 1001, 'doc_reset');
+  }
+
   async function tombstone(pageId: number, code: number, reason = 'tombstone'): Promise<void> {
     const room = rooms.get(pageId);
     if (room) {
@@ -675,6 +697,7 @@ export async function createCollabRuntime(
     broadcastControl,
     waitForPeerStateDump,
     dropRoom,
+    resetFromHtml,
     close,
   };
 }
@@ -693,6 +716,15 @@ export async function initCollabBus(main: RedisClientType): Promise<() => Promis
 
 export function getDefaultCollabRuntime(): CollabRuntime | null {
   return defaultRuntime;
+}
+
+export async function resetCollabRoomFromHtml(pageId: number, html: string): Promise<void> {
+  const runtime = getDefaultCollabRuntime();
+  if (runtime) {
+    await runtime.resetFromHtml(pageId, html);
+    return;
+  }
+  await persist.replaceCollabDocFromHtml(pageId, html);
 }
 
 export async function tombstoneCollabRoom(pageId: number, code: number, reason?: string): Promise<void> {

@@ -80,8 +80,17 @@ export async function loadOrInitCollabDoc(
   }
 }
 
-export async function persistAndSnapshot(pageId: number, doc: Y.Doc): Promise<void> {
-  const t0 = Date.now();
+const resettingPageIds = new Set<number>();
+
+export function beginCollabReset(pageId: number): void {
+  resettingPageIds.add(pageId);
+}
+
+export function endCollabReset(pageId: number): void {
+  resettingPageIds.delete(pageId);
+}
+
+export async function persistCollabDocState(pageId: number, doc: Y.Doc): Promise<number> {
   const docState = Buffer.from(Y.encodeStateAsUpdate(doc));
   const stateVector = Buffer.from(Y.encodeStateVector(doc));
   try {
@@ -97,10 +106,28 @@ export async function persistAndSnapshot(pageId: number, doc: Y.Doc): Promise<vo
     );
   } catch (err) {
     const code = (err as { code?: string }).code;
-    if (code === '23503') return;
+    if (code === '23503') return 0;
     throw err;
   }
-  logger.info({ pageId, duration_ms: Date.now() - t0, bytes: docState.length }, 'collab.persist');
+  return docState.length;
+}
+
+export async function replaceCollabDocFromHtml(pageId: number, html: string): Promise<void> {
+  const doc = new Y.Doc();
+  try {
+    applyHtmlToYDoc(doc, html);
+    await persistCollabDocState(pageId, doc);
+  } finally {
+    doc.destroy();
+  }
+}
+
+export async function persistAndSnapshot(pageId: number, doc: Y.Doc): Promise<void> {
+  if (resettingPageIds.has(pageId)) return;
+  const t0 = Date.now();
+  const bytes = await persistCollabDocState(pageId, doc);
+  if (bytes === 0 || resettingPageIds.has(pageId)) return;
+  logger.info({ pageId, duration_ms: Date.now() - t0, bytes }, 'collab.persist');
 
   const t1 = Date.now();
   let html: string;
@@ -146,9 +173,12 @@ export async function flushCollabPersist(room: CollabPersistHandle & { persistab
   await room.persistChain;
 }
 
-function enqueuePersist(room: CollabPersistHandle): void {
+function enqueuePersist(room: CollabPersistHandle & { persistable?: boolean }): void {
   room.persistChain = room.persistChain
-    .then(() => persistAndSnapshot(room.pageId, room.doc))
+    .then(() => {
+      if (room.persistable === false) return;
+      return persistAndSnapshot(room.pageId, room.doc);
+    })
     .catch((err) => {
       logger.warn({ err, pageId: room.pageId }, 'collab: persist failed');
     });

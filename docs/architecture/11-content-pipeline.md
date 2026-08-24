@@ -24,12 +24,20 @@ truth. Two writers move `body_html`:
 | Path | What it writes | What it must not write |
 |------|----------------|------------------------|
 | **Snapshot** (debounced 2 s after an applied update, and immediately on last disconnect) | `pages.body_html`, `pages.body_text`, `embedding_dirty`, gated `image_embedding_dirty`. `page_collaborative_docs.doc_state` / `state_vector` (persistence generation `version`). | `pages.version`, `local_modified_at` / `local_modified_by`, `summary_status` / `quality_status`, `body_storage`. Snapshot HTML is search freshness, not a Save. Stamping local-modified would make confluence-wins treat a pause as `hasLocalEdits`. |
-| **Commit** (`POST /api/pages/:id/collab/commit`, standalone) | Snapshot HTML from the Y.Doc, then `title`, `body_html`, `body_text`, `version = version + 1`, `local_modified_*`, summary/quality pending, embedding flags. Retry once if two commits race. Broadcasts WS control type 4 `pages_version`. | Client `bodyHtml` / client `version`. Confluence `updatePage` is a later PR. |
+| **Commit** (`POST /api/pages/:id/collab/commit`) | Snapshot HTML from the Y.Doc (do **not** bump `pages.version` yet). **Standalone:** `title`, `body_html`, `body_text`, `version = version + 1`, `local_modified_*`, summary/quality pending, embedding flags. Retry once if two commits race. **Confluence:** GET remote version; if `version.number` moved vs current `pages.version` → 409 `{ code: 'confluence_modified', remoteVersion, localVersion }`, no `updatePage`, room stays live. Else `htmlToConfluence` + `uploadLocalImagesToConfluence` then **`client.updatePage` first** (pass the current local version; the client adds 1). On 5xx local version unchanged. On success one transaction: `body_html` / `body_text` / `body_storage` / `version = confPage.version.number` / `last_synced` / clear `local_modified_*` / summary+quality pending. Broadcasts WS control type 4 `pages_version`. | Client `bodyHtml` / client `version`. Never increment `pages.version` before the remote write succeeds. |
 
 A non-collab `body_html` writer (PUT, restore, Apply, draft-publish) **409s**
 `collab_session_active` while `collab:active:{pageId}` is non-empty. When the
 room is empty it writes HTML as today and `DELETE FROM page_collaborative_docs`
 so the next join re-inits from HTML (Decision B).
+
+**Inbound Confluence sync while collab is live.** `applyConflictPolicyForExistingPage`
+skips confluence-wins / HTML-equality overwrite while `collab:active:{pageId}` is
+non-empty **unless** the remote `version.number` increased (lossy snapshot HTML
+would look like `htmlChanged` even when nobody edited Confluence). On a real
+remote increase: apply the inbound HTML, rebuild the Y.Doc + BYTEA, send control
+`doc_reset`, close sockets with **1001** so `y-websocket` reconnects onto the
+remote body. Empty-room inbound writes still `DELETE` BYTEA (Decision B).
 
 ## Flow
 

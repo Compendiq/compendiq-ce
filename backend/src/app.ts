@@ -421,11 +421,15 @@ export async function buildApp() {
 
     const code = (error as { code?: unknown }).code;
     const publicCodes = new Set(['collab_session_active', 'confluence_modified']);
+    const remoteVersion = (error as { remoteVersion?: unknown }).remoteVersion;
+    const localVersion = (error as { localVersion?: unknown }).localVersion;
     reply.status(statusCode).send({
       error: safeErrorName(statusCode, error.name),
       message: statusCode === 500 ? 'Internal Server Error' : error.message,
       statusCode,
       ...(typeof code === 'string' && publicCodes.has(code) ? { code } : {}),
+      ...(code === 'confluence_modified' && typeof remoteVersion === 'number' ? { remoteVersion } : {}),
+      ...(code === 'confluence_modified' && typeof localVersion === 'number' ? { localVersion } : {}),
     });
   });
 

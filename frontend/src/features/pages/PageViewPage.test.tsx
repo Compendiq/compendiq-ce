@@ -179,10 +179,14 @@ vi.mock('../../shared/lib/api', () => ({
   apiFetch: vi.fn().mockResolvedValue({}),
   ApiError: class ApiError extends Error {
     statusCode: number;
-    constructor(statusCode: number, message: string) {
+    code?: string;
+    remoteVersion?: number;
+    localVersion?: number;
+    constructor(statusCode: number, message: string, code?: string) {
       super(message);
       this.name = 'ApiError';
       this.statusCode = statusCode;
+      this.code = code;
     }
   },
 }));
@@ -1540,6 +1544,36 @@ describe('PageViewPage', () => {
         );
       });
       expect(mockUpdatePage).not.toHaveBeenCalled();
+    });
+
+    it('flag on: confluence_modified shows a neutral alert, not a toast, and stays in edit mode', async () => {
+      vi.mocked(toast.error).mockClear();
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        if (path === '/pages/page-1/collab/commit') {
+          const err = new ApiError(409, 'This page was modified in Confluence.', 'confluence_modified');
+          err.remoteVersion = 9;
+          err.localVersion = 7;
+          throw err;
+        }
+        return {};
+      });
+      useCollabProviderMock.mockImplementation(() => ({
+        ydoc: { __ydoc: true },
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [],
+        error: null,
+      }));
+
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      fireEvent.click(await screen.findByText('Edit'));
+      fireEvent.click(screen.getByText('Save'));
+
+      expect(await screen.findByTestId('confluence-modified-alert')).toBeInTheDocument();
+      expect(vi.mocked(toast.error).mock.calls.every((c) => !String(c[0]).match(/Confluence/i))).toBe(true);
+      expect(screen.getByText('Save')).toBeInTheDocument();
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
     });
 
     it('flag on: SSE usePresence still runs so viewers stay on the stack', async () => {
