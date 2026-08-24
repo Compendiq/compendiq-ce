@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Save, Upload, LayoutTemplate, Globe, Lock, X, ChevronDown, Sparkles, Loader2 } from 'lucide-react';
+import { Save, Upload, LayoutTemplate, Globe, Lock, X, ChevronDown, Sparkles, Loader2, Download } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
@@ -22,6 +22,7 @@ import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
+import { NotionImportDialog } from './notion-import/NotionImportDialog';
 
 const NEW_PAGE_DRAFT_KEY = 'new-page';
 
@@ -62,6 +63,7 @@ export function NewPagePage() {
   const [visibility, setVisibility] = useState<Visibility>('private');
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
   const [showAiModal, setShowAiModal] = useState(false);
+  const [showNotionImport, setShowNotionImport] = useState(false);
   const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
   const [headerNumbering, setHeaderNumbering] = useState(() =>
     localStorage.getItem('editor-header-numbering') === 'true',
@@ -316,6 +318,16 @@ export function NewPagePage() {
                     >
                       <Upload size={15} aria-hidden="true" />
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowNotionImport(true)}
+                      className="nm-icon-button shrink-0"
+                      title="Import from Notion"
+                      aria-label="Import from Notion"
+                      data-testid="import-notion-btn"
+                    >
+                      <Download size={15} aria-hidden="true" />
+                    </button>
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -518,7 +530,7 @@ export function NewPagePage() {
           <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
             <div className="mt-8 mb-6 rounded-xl border border-border/70 bg-card/40 p-5" data-testid="new-page-starter-zone">
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Get started with your page</p>
-              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <button
                   type="button"
                   onClick={() => setShowTemplateGallery(true)}
@@ -546,6 +558,21 @@ export function NewPagePage() {
                   <div>
                     <p className="text-sm font-medium text-foreground">Import Markdown</p>
                     <p className="text-xs text-muted-foreground">Load a .md document directly into the live editor</p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowNotionImport(true)}
+                  className="group flex flex-col items-start gap-2 rounded-lg border border-border/70 bg-card p-3.5 text-left transition-colors hover:border-border hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="starter-notion-btn"
+                >
+                  <div className="flex size-8 items-center justify-center rounded-md bg-muted text-foreground">
+                    <Download size={16} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Import from Notion</p>
+                    <p className="text-xs text-muted-foreground">Pick pages to migrate. Databases stay in Notion.</p>
                   </div>
                 </button>
 
@@ -615,6 +642,8 @@ export function NewPagePage() {
           onClose={() => setShowTemplateGallery(false)}
         />
       )}
+
+      <NotionImportDialog open={showNotionImport} onClose={() => setShowNotionImport(false)} />
 
       {/* AI Assistant Create Skill Modal */}
       {showAiModal && (

@@ -837,7 +837,17 @@ describe('NewPagePage', () => {
     expect(screen.getByTestId('new-page-starter-zone')).toBeInTheDocument();
     expect(screen.getByTestId('starter-template-btn')).toBeInTheDocument();
     expect(screen.getByTestId('starter-import-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('starter-notion-btn')).toBeInTheDocument();
     expect(screen.getByTestId('starter-ai-btn')).toBeInTheDocument();
+  });
+
+  it('opens the Notion import wizard from the starter without touching Markdown import', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('notion-import-dialog')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('starter-notion-btn'));
+    expect(await screen.findByTestId('notion-import-dialog')).toBeInTheDocument();
+    expect(mockImportMutateAsync).not.toHaveBeenCalled();
+    expect(mockCreateMutateAsync).not.toHaveBeenCalled();
   });
 
   it('opens AI assistant create modal from starter button', async () => {

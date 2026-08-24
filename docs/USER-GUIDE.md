@@ -81,6 +81,22 @@ The **Pages** view shows all synced pages from your selected Confluence spaces, 
 
 You can also start a page from a template (e.g. Meeting Notes, Incident Report, How-to Guide, ADR, Runbook) via the **Use Template** button on the New Page screen.
 
+### Importing from Notion
+
+This is a **one-shot migrate**, not a live sync. Open it from **Library → Import from Notion** or from **New Page → Import from Notion**.
+
+1. Paste an **internal integration token**. Compendiq stores it encrypted and never shows it again.
+2. Pick pages in the workspace tree. Nested children are selected independently — a parent can import without its children.
+3. Confirm the destination: a **local space**, optional parent page, and visibility (the same contract as creating a standalone page).
+4. Run the import. Pages that already exist locally are reported as already imported rather than duplicated.
+
+**Not supported — stays in Notion** (the picker uses these exact words, and those nodes cannot be selected):
+
+- Databases (full, linked, every view) **including their rows**. A row is imported only if it appears as its own page in the tree and you selected it.
+- Comments, permissions, automations, buttons, Notion AI artefacts, whiteboards/canvases, database properties / relations / rollups / formulas.
+
+Skipped and unselected Notion items keep their Notion URLs in imported page bodies. Markdown import on New Page is unchanged: it still loads one `.md` file into the editor and does not create pages until you press Create.
+
 ### Editing a Page
 
 1. Open a page by clicking on it.
