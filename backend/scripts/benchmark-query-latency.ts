@@ -57,6 +57,7 @@ import { hybridSearch, flushSearchAnalytics } from '../src/domains/llm/services/
 import { getFtsLanguage } from '../src/core/services/fts-language.js';
 import { getMetrics } from '../src/domains/llm/services/llm-queue.js';
 import { resolveUsecase } from '../src/domains/llm/services/llm-provider-resolver.js';
+import { resolveRagEfSearch, type RagEfSearchSource } from '../src/core/services/admin-settings-service.js';
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
 import { EVAL_USER_ID, readCorpusLanguage, assertSeededFtsLanguage } from '../src/domains/llm/eval/seed.js';
 import { FixtureSchema } from '../src/domains/llm/eval/fixture.js';
@@ -149,6 +150,15 @@ async function main(): Promise<void> {
   let searchModel: string | undefined;
   let searchBaseUrl: string | undefined;
   let corpusLanguage: string | null | undefined;
+  // #1285: the HNSW scan depth used to be a module-load read of
+  // `process.env.RAG_EF_SEARCH` — a constant this script's operator could see
+  // in their own shell. It is now a row in the database under test, so two runs
+  // labelled identically can measure different scan depths over one corpus.
+  // Reported, not certified: unlike `fts_language` there is no seeded artefact
+  // to recompute it against, and a floor the operator did not choose is a fact
+  // about the instance rather than an inconsistency to refuse over.
+  let ragEfSearch: number | undefined;
+  let ragEfSearchSource: RagEfSearchSource | undefined;
 
   if (needsDb) {
     // The guard is shared with the destructive eval, but its default message
@@ -190,9 +200,15 @@ async function main(): Promise<void> {
     corpusLanguage = await readCorpusLanguage();
     const corpusWarning = checkCorpusLanguage(corpusLanguage, config.lang);
 
+    // One read-only SELECT through the product's own reader, so inheritance
+    // (row → deprecated env var → default) cannot drift from what the timed
+    // kNN will really run at.
+    ({ value: ragEfSearch, source: ragEfSearchSource } = await resolveRagEfSearch());
+
     console.log(
       `corpus ${pages} pages (${corpusLanguage ?? 'language unrecorded'}) · index ${column.columnType} `
       + `· fts ${ftsLanguage} · search embeds with ${searchModel} @ ${searchBaseUrl} `
+      + `· ef_search floor ${ragEfSearch} (${ragEfSearchSource}) `
       + '· pipeline: hybrid, rerank off, assembly on, identifier pinning on',
     );
     if (corpusWarning) console.warn(`\nWARNING: ${corpusWarning}\n`);
@@ -280,6 +296,10 @@ async function main(): Promise<void> {
         // these are the limits THIS run ran under.
         llmConcurrency: getMetrics().concurrency,
         vectorPoolMax: getVectorPool().options.max,
+        // Since #1285 this is a row in the database under test rather than a
+        // constant in the launching shell — see BenchmarkMetadata.ragEfSearch.
+        ragEfSearch,
+        ragEfSearchSource,
       }
       : {}),
   };

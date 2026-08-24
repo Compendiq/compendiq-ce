@@ -32,7 +32,7 @@ import {
 } from '../../../core/services/admin-settings-service.js';
 import { withSpan, recordHistogram } from '../../../telemetry.js';
 import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
-import { RAG_EF_SEARCH, efSearchFor } from './hnsw-ef-search.js';
+import { efSearchFor } from './hnsw-ef-search.js';
 import { formatQueryForEmbedding } from './query-instruction.js';
 import {
   searchImageLeg,
@@ -56,11 +56,14 @@ const STAGE_DURATION_OPTS = {
   description: 'Latency of retrieval pipeline stages (vector/keyword legs, rerank, page_merge, total)',
 };
 
-// The ef_search knob, its bounds and the 2x-headroom arithmetic live in
+// The ef_search resolver and its 2x-headroom arithmetic live in
 // hnsw-ef-search.ts, so the page_avg_embedding kNN in embedding-service.ts can
 // share ONE definition with retrieval instead of running at PostgreSQL's
 // default 40 (#1113's folded-in scope item). See that module for why it is not
-// declared here. Re-exported below, so this stays the import path for it.
+// declared here. Since #1285 the FLOOR is `admin_settings.rag_ef_search` rather
+// than a module-load env read, so there is no constant left to re-export from
+// here — `efSearchFor` is async and reads the same cached getter every other
+// Retrieval-panel knob reads.
 
 // The fetch-width knob itself (constants, clamp, 60s TTL cache, invalidation)
 // lives in core/services/admin-settings-service.ts so the admin surface
@@ -345,8 +348,13 @@ export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[],
  * standalone articles the user can access (shared, or private and owned by
  * the user).
  *
- * Tradeoff: higher ef_search = better recall but slower query.
- * Default PostgreSQL ef_search is 40; the floor here is 100.
+ * Tradeoff (review r1 of #1285 — this JSDoc was the third comment left
+ * carrying the inverted claim the rest of the PR retired): a higher ef_search
+ * costs SCAN TIME and is not measured to buy recall. On #1114's halfvec(2560)
+ * corpus the search is effectively exact from 40 — recall@10 was 0.9995 at
+ * 100 and unchanged to 1000, while the probe cost rose 0.39 ms -> 1.74 ms.
+ * PostgreSQL's own default is 40; the floor here is no longer a constant but
+ * `admin_settings.rag_ef_search` (default 100), resolved by `efSearchFor`.
  *
  * `opts.spaceKey` (#1351) narrows the scan to one Confluence space, applied
  * as an additional predicate ALONGSIDE `visiblePagesPredicate` — it can only
@@ -413,33 +421,38 @@ export async function vectorSearch(
       const nullVectorGuard =
         column === 'embedding_next' ? ' AND pe.embedding_next IS NOT NULL' : '';
       const vecSpaces = await getUserAccessibleSpaces(userId);
+      // The RAW fetch is chunk-denominated (#1106): PAGE_FANOUT x the
+      // requested page count, capped so the ef arithmetic below stays
+      // inside pgvector's ceiling.
+      // Math.max(limit, …): above limit 500 the fan-out cap would make the
+      // raw fetch NARROWER than the requested page count, inverting the
+      // "pre-#1106 yield is the floor" guarantee (#1269 review m16 —
+      // unreachable at today's 200 stage-limit ceiling, but the JSDoc
+      // explicitly anticipates internal callers with a large topK; past
+      // 500 the ef headroom relaxes from 2x toward 1x under the 1000
+      // clamp, still covering the LIMIT).
+      const rawLimit = vectorRawLimit(limit);
+      // Resolved BEFORE the checkout (review r1): on a cache miss this reads
+      // `admin_settings` on the MAIN pool, and doing that while holding a
+      // vector-pool client would extend the hold on the scarcer pool
+      // (`PG_VECTOR_POOL_MAX`, default 5) by a foreign pool's latency.
+      const efSearch = await efSearchFor(rawLimit);
       // Use the dedicated vector pool so long-running similarity queries
       // do not starve the main pool used by CRUD routes.
       const client = await getVectorPool().connect();
       try {
         await client.query('BEGIN');
-        // The RAW fetch is chunk-denominated (#1106): PAGE_FANOUT x the
-        // requested page count, capped so the ef arithmetic below stays
-        // inside pgvector's ceiling.
-        // Math.max(limit, …): above limit 500 the fan-out cap would make the
-        // raw fetch NARROWER than the requested page count, inverting the
-        // "pre-#1106 yield is the floor" guarantee (#1269 review m16 —
-        // unreachable at today's 200 stage-limit ceiling, but the JSDoc
-        // explicitly anticipates internal callers with a large topK; past
-        // 500 the ef headroom relaxes from 2x toward 1x under the 1000
-        // clamp, still covering the LIMIT).
-        const rawLimit = vectorRawLimit(limit);
         // ef_search must cover the RAW LIMIT: HNSW returns at most
         // ef_search rows (verified against pgvector 0.8.5 — LIMIT 200 with
-        // ef_search 100 yields 100 rows), so a fetch above RAG_EF_SEARCH
-        // would silently plateau while the keyword leg kept widening. Since
-        // #1106 the covered quantity is the raw CHUNK fetch, not the page
+        // ef_search 100 yields 100 rows), so a fetch above the configured
+        // `rag_ef_search` floor would silently plateau while the keyword leg
+        // kept widening. Since #1106 the covered quantity is the raw CHUNK fetch, not the page
         // count — covering only `limit` would starve the truncation of the
         // very rows it needs. 2x, not 1x: ef_search == k is HNSW's worst
         // recall setting — the graph walk needs headroom beyond the return
         // size. Clamped to pgvector's [1, 1000] bound; the raw cap keeps
         // 2 x rawLimit <= 1000 at every reachable width.
-        await client.query(`SET LOCAL hnsw.ef_search = ${efSearchFor(rawLimit)}`);
+        await client.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
 
         const result = await client.query<{
           page_id: number;
@@ -2388,7 +2401,8 @@ async function hybridSearchInner(
   // caveat since #1103: the fusion value's SCALE tracks the stage limit
   // (rrfWorstCase rises with the fetch width), so rows straddling a
   // `rag_fetch_width` change are only loosely comparable — the same caveat
-  // RAG_EF_SEARCH always carried.
+  // the ef_search floor always carried, and since #1285 that one is a knob on
+  // the same panel.
   // Pinned NEW rows carry score 0 (never a fused value); excluding them
   // keeps max_score's unit contract and stops a pinned-only head writing
   // 0 into the knowledge-gap predicate's range (#1273 review M8). Moved
@@ -2498,5 +2512,5 @@ export function buildRagContext(results: SearchResult[]): string {
     .join('\n\n---\n\n');
 }
 
-export { RAG_EF_SEARCH, reciprocalRankFusion, rrfWorstCase };
+export { reciprocalRankFusion, rrfWorstCase };
 export type { SearchResult };

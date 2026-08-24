@@ -422,6 +422,12 @@ async function imageKnn(
 ): Promise<ImageRow[]> {
   const spaces = await getUserAccessibleSpaces(userId);
   const rawLimit = imageRawLimit(opts.limit);
+  // Resolved BEFORE the checkout (review r1): on a cache miss this reads
+  // `admin_settings` on the MAIN pool, and this leg already holds the SECOND
+  // of at most five vector-pool connections while `vectorSearch` holds the
+  // first — a foreign-pool round-trip inside that window is exactly the hold
+  // the comment below is asking not to lengthen.
+  const efSearch = await efSearchFor(rawLimit);
   // The dedicated vector pool, like `vectorSearch`: a similarity scan must not
   // starve the main pool the CRUD routes share.
   //
@@ -441,7 +447,7 @@ async function imageKnn(
     // ef_search must cover the RAW fetch — HNSW returns at most `ef_search`
     // rows, so a LIMIT above it silently plateaus. 2x for graph-walk headroom;
     // `efSearchFor` clamps to pgvector's [1, 1000].
-    await client.query(`SET LOCAL hnsw.ef_search = ${efSearchFor(rawLimit)}`);
+    await client.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
     // …and the leg's own budget for the scan below (see the constant). The
     // vector leg has no equivalent because a bypass there is not equivalent:
     // it sets `embeddingFailed`, which `/llm/ask` refuses the turn on. This

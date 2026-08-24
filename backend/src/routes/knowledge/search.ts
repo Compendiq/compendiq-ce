@@ -29,9 +29,30 @@ import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js'
 import { toUserFacingEmbeddingError } from '../../domains/llm/services/embedding-error-message.js';
 
 /**
- * Fuzzy title similarity threshold for pg_trgm.
- * 0.3 (30%) provides a useful recall without excessive false positives.
- * Named constant makes it easy to tune for specific corpora.
+ * Fuzzy title similarity threshold for `pg_trgm` — **deliberately fixed, not a
+ * setting (#1285)**.
+ *
+ * 0.3 is `pg_trgm`'s own `pg_trgm.similarity_threshold` GUC default, and that
+ * is the whole reason this number cannot simply become an `admin_settings`
+ * knob. The fuzzy-title query below is sargable *because* it filters on the
+ * `%` operator (`cp.title % $1`), which lets the planner use the GIN index
+ * `idx_pages_title_trgm` instead of a Seq Scan (#928) — and `%` compares
+ * against the GUC, not against this constant. So the retained
+ * `similarity(...) > $4` predicate is exact only while the two agree.
+ *
+ * Making it configurable therefore means changing the GUC too, and the two
+ * ways to do that both cost more than the knob is worth: `SET LOCAL` inside a
+ * transaction turns a single pooled `query()` into a checked-out client per
+ * search, and a session-level `SET` would leak the value to every other user
+ * of that connection. Meanwhile `similarity() > $4` alone, with the `%` filter
+ * removed, silently returns the Seq Scan the index exists to avoid.
+ *
+ * If a deployment genuinely needs a different threshold, the honest lever is
+ * PostgreSQL's own: `ALTER DATABASE ... SET pg_trgm.similarity_threshold`,
+ * with this constant changed to match in the same release. Anything else makes
+ * the sargability claim above false. Stated for operators in
+ * `docs/ADMIN-GUIDE.md` (Retrieval) and on the Retrieval panel's Keyword index
+ * help text.
  */
 const TRGM_SIMILARITY_THRESHOLD = 0.3;
 
@@ -235,8 +256,10 @@ export async function searchRoutes(fastify: FastifyInstance) {
       // append pages after the ones a narrower fetch found, never reorder
       // them. (Exact while ef_search is constant: ef now covers the RAW
       // fetch, 8x the stage limit, so the constant range is stage limits
-      // <= RAG_EF_SEARCH/8 = 12 — still true at the default width 10, but
-      // narrower than the pre-#1106 <= 50. Beyond it, a raised ef explores
+      // <= `rag_ef_search`/8 — 12 at the default floor of 100, still true at
+      // the default width 10, but narrower than the pre-#1106 <= 50. Since
+      // #1285 that floor is an admin_settings knob, so the range moves with
+      // it rather than with a restart. Beyond it, a raised ef explores
       // more of the HNSW graph and can genuinely surface a nearer neighbour
       // above previous results — an accuracy improvement, not the RRF
       // dilution the hybrid path guards against.)

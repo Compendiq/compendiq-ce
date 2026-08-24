@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo, useRef, type Ref } from 'react';
+import { useState, useEffect, useMemo, useRef, type MouseEvent, type Ref } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, LoaderCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import type {
@@ -73,6 +73,17 @@ interface RetrievalValues {
    */
   ftsLanguage: FtsLanguage;
   ragFetchWidth: number;
+  /**
+   * #1285 — the HNSW `ef_search` FLOOR. It sits beside the fetch width as
+   * CONTEXT for it, not as a knob to move with it (review r1): `efSearchFor`
+   * already raises each probe to `2 ×` its own raw fetch, and both legs cap
+   * that raw fetch at 500, so `2 × raw` covers the LIMIT at every reachable
+   * width and this floor binds only the probes narrower than half of it —
+   * widening the fetch makes this number matter *less*. It used to be
+   * `RAG_EF_SEARCH`, read at module load: a recall floor that could not change
+   * without a restart, on no panel at all.
+   */
+  ragEfSearch: number;
   ragRerankCandidates: number;
   ragConfidenceThreshold: number;
   ragConfidenceThresholdRerank: number;
@@ -136,9 +147,126 @@ interface BenchmarkRun {
   error: string | null;
 }
 
+/** #1285 — the env-provenance note's sentence, named so its button can describe itself with it. */
+const EF_SEARCH_ENV_NOTE_ID = 'retrieval-ef-search-env-sentence';
+
+/**
+ * Hand focus to the knob a self-dismissing notice was about (WCAG 2.4.3).
+ *
+ * Every `Keep` / `Record` on this panel lives INSIDE the notice it satisfies,
+ * so pressing it removes the pressed element from the document. A browser drops
+ * focus to `<body>` when that happens: a keyboard or screen-reader operator
+ * loses their place mid-panel and the next Tab restarts from the top of the
+ * page — on a panel that is fourteen controls long, with no announcement of
+ * what just happened beyond a toast.
+ *
+ * Called BEFORE the invalidate that unmounts the notice, never after: at that
+ * point the field below is certainly mounted and the button certainly still
+ * is, so focus can only ever land on a live element. Doing it afterwards races
+ * React's re-render for a node that may already be gone.
+ *
+ * The knob itself is the landing spot rather than the surrounding section: it
+ * is what the notice was about, its `aria-describedby` help is then announced,
+ * and it is where an operator who has just been told the value is now theirs
+ * to set would want the caret.
+ *
+ * It is a HANDOFF, never a grab (review r2 of the verification round), which is
+ * why it takes the element that was pressed and moves nothing unless the caret
+ * is still on it. A write is in flight for as long as the server takes, the
+ * three remedies are deliberately not locked against one another (see
+ * `keepPending`), and every one of them resolves into a panel the operator may
+ * have moved on in — onto another remedy's button, or into any of fourteen
+ * fields. Yanking the caret out of one of those is the same 2.4.3 failure this
+ * function exists to prevent, arriving from the other direction. A `null`
+ * pressed element therefore moves nothing at all: not knowing where the press
+ * came from is not a licence to take focus.
+ */
+function focusKnobBeforeNoticeClears(fieldId: string, pressed: HTMLElement | null): void {
+  if (pressed === null || document.activeElement !== pressed) return;
+  document.getElementById(fieldId)?.focus();
+}
+
+/**
+ * The other half of that contract, and the half a `disabled` attribute breaks
+ * (verification round).
+ *
+ * Each of the three remedies below inerts ITSELF while its write is in flight.
+ * Spelled `disabled`, that runs the HTML unfocusing steps on the element the
+ * operator is standing on: every real browser blurs it to `<body>` the moment
+ * the press lands, and it leaves the tab order too. So the handoff above was
+ * only ever true on the outcomes that CLEAR the notice — on `unresolved`,
+ * `failed` and both `onError` paths the notice deliberately stays, the button
+ * stays with it, and the operator who has to press it again was already on
+ * `<body>` with the next Tab restarting from the top of the document. The
+ * panel's own test could not see it: jsdom does not implement the unfocusing
+ * steps, so `document.activeElement` stayed on the disabled button there.
+ *
+ * `aria-disabled` states the same thing to assistive tech without touching
+ * focus or the tab order — the recipe `AuthPanel`'s SSO re-check and
+ * `AskMode`'s example chips already use here, for this same reason. It blocks
+ * no events, so every one of these handlers must return early on its own
+ * pending flag; a `disabled` attribute is what must never come back.
+ *
+ * `aria-busy` rides beside it, but nothing may be BUILT on it (review r1 of
+ * #1285, correcting the previous round, which had the premise backwards). That
+ * round claimed a native `disabled` "announces unavailable for free" while
+ * `aria-disabled` "says nothing at all", and reached for `aria-busy` to repair
+ * the difference. It is the other way round: `aria-disabled="true"` is mapped
+ * to the disabled state and announced by NVDA, JAWS and VoiceOver, so the
+ * attribute swap lost nothing on that channel — while ARIA 1.2 scopes
+ * `aria-busy` to elements whose SUBTREE is being modified (live regions,
+ * composite widgets), which on a `<button>` reaches no assistive tech at all.
+ * It stays because it is free and, since `PendingRemedyLabel` below, actually
+ * true of the subtree; it is not the in-flight signal.
+ *
+ * What was genuinely missing is the half a human can perceive. A 45% dim reads
+ * as "disabled", not as "working", and the write is an unbounded network PUT,
+ * so on a slow server the operator was left standing on a control that had
+ * gone quiet until the toast landed. `AuthPanel`'s recipe is four parts, not
+ * two: the attribute pair here, plus the spinner and the label swap that
+ * `PendingRemedyLabel` restores.
+ */
+const PENDING_REMEDY_CLASS =
+  'aria-disabled:cursor-not-allowed aria-disabled:opacity-45 aria-disabled:hover:bg-transparent';
+
+/**
+ * The perceivable half of that state: a spinner and a gerund.
+ *
+ * The label KEEPS ITS NUMBER while the write is in flight. This panel can
+ * render two of these at once — one per confidence basis — and the number is
+ * the only thing on the button that says which threshold is being written, so
+ * the bare gerund `AuthPanel` swaps to ("Checking…") would make the two
+ * identical at exactly the moment one of them is doing something.
+ * `aria-describedby` still names the basis on top of that.
+ *
+ * The spinner is `aria-hidden`: it is a redundant channel for the label beside
+ * it (WCAG 1.4.1), and it honours `prefers-reduced-motion` through the shared
+ * rule in `index.css`.
+ */
+function PendingRemedyLabel({
+  pending,
+  verb,
+  gerund,
+  value,
+}: {
+  pending: boolean;
+  verb: string;
+  gerund: string;
+  value: number;
+}) {
+  if (!pending) return <>{`${verb} ${value}`}</>;
+  return (
+    <>
+      <LoaderCircle aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin" />
+      {`${gerund} ${value}…`}
+    </>
+  );
+}
+
 const DEFAULTS: RetrievalValues = {
   ftsLanguage: 'simple',
   ragFetchWidth: 10,
+  ragEfSearch: 100,
   ragRerankCandidates: 30,
   ragConfidenceThreshold: 0,
   ragConfidenceThresholdRerank: 0,
@@ -185,6 +313,22 @@ interface NumericField {
 
 const FIELDS: Record<NumericKey, NumericField> = {
   ragFetchWidth: { key: 'ragFetchWidth', label: 'Fetch width', unit: 'rows / leg', min: 10, max: 200, step: 1 },
+  ragEfSearch: {
+    key: 'ragEfSearch',
+    label: 'Index search depth',
+    unit: 'candidates',
+    // pgvector's own bound, both ends. 0 is not "off" — the extension has no
+    // such value — so the floor is 1 and the reader reads a `'0'` row as unset.
+    min: 1,
+    max: 1000,
+    // 1, not 10 (review r1). For `type=number` the step BASE is `min`, so
+    // `min: 1` with `step: 10` makes the legal set 1, 11, 21 … — the field's
+    // own default of 100, its max of 1,000 and every value the help text and
+    // the admin guide name are `stepMismatch`, the control renders `:invalid`
+    // at rest, and the spinner walks 101 / 111. `min` is pgvector's floor and
+    // cannot move to a multiple of 10, so the step is the half that gives.
+    step: 1,
+  },
   ragRerankCandidates: {
     key: 'ragRerankCandidates',
     label: 'Rerank candidate pool',
@@ -322,7 +466,18 @@ export function RetrievalTab() {
     isError: settingsError,
     error: settingsErrorObj,
     refetch: refetchSettings,
-  } = useQuery<Partial<RetrievalValues> & { ragConfidenceCalibration?: RagConfidenceCalibration }>({
+  } = useQuery<
+    Partial<RetrievalValues> & {
+      ragConfidenceCalibration?: RagConfidenceCalibration;
+      /**
+       * #1285 review r1 — read-only provenance for the floor. `true` means the
+       * number beside it came from the deprecated `RAG_EF_SEARCH` variable
+       * rather than from a saved row, which is the one state where Save (a
+       * pure value diff) cannot write the row the note asks for.
+       */
+      ragEfSearchFromEnv?: boolean;
+    }
+  >({
     queryKey: ['admin-settings'],
     queryFn: () => apiFetch('/admin/settings'),
   });
@@ -549,14 +704,30 @@ export function RetrievalTab() {
     // `saved`, never `values`: the record must describe the number the SERVER
     // is holding, which is the same reason the strip itself reads `saved`. A
     // half-typed draft in the field must not be what gets certified.
-    mutationFn: async (key: CalibrationFieldKey) => {
+    mutationFn: async ({ key }: { key: CalibrationFieldKey; pressed: HTMLElement | null }) => {
       const result = await apiFetch<UpdateAdminSettingsResult>('/admin/settings', {
         method: 'PUT',
         body: JSON.stringify({ [key]: saved[key] }),
       });
       return { key, result };
     },
-    onSuccess: async ({ key, result }) => {
+    onSuccess: async ({ key, result }, { pressed }) => {
+      // Read the server's verdict BEFORE the invalidate, because focus has to
+      // move before it: on the one outcome that clears the notice the button
+      // is about to be unmounted from under the operator's caret (WCAG 2.4.3,
+      // see `focusKnobBeforeNoticeClears`). On `unresolved` / `failed` the
+      // notice — and its button — deliberately stay, so focus stays too, which
+      // holds only because the button reports itself inert with
+      // `aria-disabled` (see `PENDING_REMEDY_CLASS`): the `disabled` attribute
+      // it used to carry blurs the pressed element to `<body>` in every real
+      // browser, and the same is true of both `onError` paths below.
+      // `result` is in hand from the mutation itself; nothing below the await
+      // contributes to it, so this is a pure reordering of the same read.
+      const { basis, basisNoun } = CONFIDENCE_BASIS_COPY[key];
+      const write = result?.ragConfidenceCalibrationWrite?.[basis] ?? null;
+      if (write === null || write.outcome === 'recorded' || write.outcome === 'cleared') {
+        focusKnobBeforeNoticeClears(key, pressed);
+      }
       await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
       // Review r3 — the toast reports what the SERVER did, not that the
       // request returned 200. The route writes the threshold row and answers
@@ -568,8 +739,6 @@ export function RetrievalTab() {
       // back with nothing on screen explaining why. And `unresolved` is not
       // reliably transient: an undecryptable provider key after a rotation,
       // or an EE policy naming a deleted provider, throws on every attempt.
-      const { basis, basisNoun } = CONFIDENCE_BASIS_COPY[key];
-      const write = result?.ragConfidenceCalibrationWrite?.[basis] ?? null;
       if (!write) {
         // A server that reported nothing has told us nothing — claim only
         // what the status code supports. (Unreachable from the notices
@@ -602,9 +771,63 @@ export function RetrievalTab() {
     },
   });
 
-  function handleKeepCalibration(key: CalibrationFieldKey) {
-    keepMutation.mutate(key);
+  function handleKeepCalibration(key: CalibrationFieldKey, pressed: HTMLElement | null) {
+    keepMutation.mutate({ key, pressed });
   }
+
+  /**
+   * #1285 review r1 — "set it here, not in the environment" needs a control
+   * that can perform it.
+   *
+   * On an instance still running on `RAG_EF_SEARCH`, GET resolves the
+   * variable's value, the field is seeded with it, `changed` is empty and Save
+   * is dead: the only knob whose note names a remedy the panel could not
+   * carry out. Reset-to-default writes 100, i.e. a DIFFERENT depth, and on an
+   * instance whose variable already reads 100 there is no reachable value at
+   * all. This is the #1114 `Keep <value>` shape, for the same reason and with
+   * the same discipline: `saved`, never the draft — the number to persist is
+   * the one the server resolved — and its own mutation, because Save's
+   * `onSuccess` releases `hydrated` and would revert every other unsaved edit
+   * on the panel for a request that submitted nothing the operator typed.
+   */
+  const pinEfSearchMutation = useMutation({
+    mutationFn: ({ value }: { value: number; pressed: HTMLElement | null }) =>
+      apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify({ ragEfSearch: value }) }),
+    onSuccess: async (_data, { value, pressed }) => {
+      // This press is the last thing this button ever does: the refetch below
+      // clears the note and takes the button with it. Move focus first
+      // (WCAG 2.4.3) — see `focusKnobBeforeNoticeClears`, which hands focus on
+      // only if the caret is still on the button that is about to vanish.
+      focusKnobBeforeNoticeClears(FIELDS.ragEfSearch.key, pressed);
+      // Invalidating is what clears the note: the refetch comes back with
+      // `ragEfSearchFromEnv: false` because the row now exists.
+      await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      toast.success(`Index search depth saved as ${value} — RAG_EF_SEARCH is no longer read`);
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to save the index search depth');
+    },
+  });
+
+  /**
+   * A remedy reports itself unavailable while ITS OWN write is in flight, and
+   * while SAVE is — `aria-disabled`, never `disabled`, and every handler
+   * guards on this itself (see `PENDING_REMEDY_CLASS`).
+   *
+   * Deliberately not one lock across all three (review r2 of the verification
+   * round, which found the comment here claiming one). Save is in both flags
+   * because it PUTs the whole changed set and its `onSuccess` re-hydrates the
+   * form, so a one-key write racing it can be reverted or can revert. The
+   * three remedies race nothing: each PUTs a single, different key, none of
+   * them re-hydrates, and `admin.ts` writes only the keys a request carried.
+   * Greying two unrelated notices because the operator pressed a third would
+   * report an unavailability that is not real — and it would not have bought
+   * the focus safety either, since `aria-disabled` leaves a button focusable
+   * by design. That is `focusKnobBeforeNoticeClears`'s job, and it does it by
+   * refusing to move a caret that is no longer on the pressed button.
+   */
+  const keepPending = keepMutation.isPending || mutation.isPending;
+  const efSearchPinPending = pinEfSearchMutation.isPending || mutation.isPending;
 
   function set<K extends keyof RetrievalValues>(key: K, value: RetrievalValues[K]) {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -901,6 +1124,20 @@ export function RetrievalTab() {
             </div>
           )}
         </div>
+
+        {/*
+          #1285 — the keyword leg's other lever, stated because it is NOT one.
+          Fuzzy title matching is pinned to pg_trgm's own default threshold,
+          which is what lets the query use the GIN index rather than scanning
+          every title; a knob here would have to move the database setting too.
+          Its own sibling paragraph rather than part of the select's
+          description: it describes the leg, not the language control.
+        */}
+        <p className="text-xs text-muted-foreground" data-testid="retrieval-trgm-fixed">
+          Fuzzy title matching is fixed at similarity 0.3 and is not configurable. It is
+          PostgreSQL&apos;s own <code className="font-mono">pg_trgm</code> default, and the title
+          index depends on the two agreeing.
+        </p>
       </Section>
 
       {/* ── Candidate pools ─────────────────────────────────────────────── */}
@@ -926,32 +1163,136 @@ export function RetrievalTab() {
           </p>
         </NumberRow>
 
+        {/*
+          #1285 — directly under Fetch width, because this is the number that
+          bounds the same index scan and an operator reasoning about the width
+          needs it in view. NOT because the two must be raised together: the
+          help copy below is the accurate statement of the relationship, and it
+          runs the other way — each probe already walks at twice the rows it
+          fetches, so a wider fetch outgrows this floor rather than being
+          bounded by it (review r1 measured every reachable pair and found no
+          case where the depth falls below the LIMIT). It was `RAG_EF_SEARCH`
+          until this release — env-only, read at module load, and absent from
+          the panel that owns every knob around it.
+        */}
+        {/*
+          Muted, never amber (ADR-010): the environment variable being in force
+          is a fact at rest, not an attention state. It renders only on the
+          instances it is true of — a standing line on every panel is how the
+          panel's own no-notice-at-rest rule gets hollowed out — and it carries
+          the write, because Save cannot (see `pinEfSearchMutation`).
+
+          It sits ABOVE the row and outside it, the #1114 placement: inside
+          `NumberRow`'s children it would be part of the input's
+          `aria-describedby` region, which would fold a BUTTON into the field's
+          own description.
+        */}
+        {settings?.ragEfSearchFromEnv === true && (
+          <div
+            className="flex flex-col items-start gap-2 text-xs text-muted-foreground"
+            data-testid="retrieval-ef-search-env-note"
+          >
+            <span id={EF_SEARCH_ENV_NOTE_ID}>
+              This depth is coming from the deprecated{' '}
+              <code className="font-mono">RAG_EF_SEARCH</code> environment variable, because the
+              setting below has never been saved. Save it once — at this value or another — and the
+              variable is never read again.
+            </span>
+            {/*
+              WCAG 2.5.3: the visible label is the accessible name, so no
+              `aria-label`; `aria-describedby` is what tells it apart from the
+              calibration panel's identically-shaped buttons.
+            */}
+            <button
+              type="button"
+              onClick={(event) => {
+                // `aria-disabled` blocks no events, so the guard is the handler
+                // (see `PENDING_REMEDY_CLASS`).
+                if (efSearchPinPending) return;
+                pinEfSearchMutation.mutate({
+                  value: saved.ragEfSearch,
+                  pressed: event.currentTarget,
+                });
+              }}
+              aria-disabled={efSearchPinPending || undefined}
+              aria-busy={efSearchPinPending || undefined}
+              aria-describedby={EF_SEARCH_ENV_NOTE_ID}
+              className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
+              data-testid="retrieval-ef-search-env-pin"
+            >
+              <PendingRemedyLabel
+                pending={efSearchPinPending}
+                verb="Keep"
+                gerund="Keeping"
+                value={saved.ragEfSearch}
+              />
+            </button>
+          </div>
+        )}
+        <NumberRow
+          field={FIELDS.ragEfSearch}
+          value={values.ragEfSearch}
+          onChange={(v) => set('ragEfSearch', v)}
+          defaultValue={DEFAULTS.ragEfSearch}
+        >
+          <p>
+            Candidates the vector index walks per probe. This is a{' '}
+            <span className="text-foreground">floor</span>: each probe runs at this value or at
+            twice the rows it asks for, whichever is larger, capped at pgvector&apos;s limit of
+            1,000.
+          </p>
+          {/*
+            Scan time, and NOT index footprint (review r1): `ef_search` is a
+            query-time setting, and the 18.6 MiB of HNSW the re-embed runbook
+            tells you to watch is fixed by how the index was BUILT — identical
+            at every value of this control. Naming it here also inverted the
+            measurement it quotes, which says to leave this alone and watch
+            footprint instead.
+          */}
+          <p>
+            Raising it is not measured to buy recall. On a 2,560-dimension index the search is
+            effectively exact from 40 — recall@10 was 0.9995 at the default 100 and unchanged all
+            the way to 1,000. What does rise with it is query time: 0.39 ms per probe at 100
+            against 1.74 ms at 1,000 on that corpus. So raising it costs latency and buys nothing
+            that was measured.
+          </p>
+        </NumberRow>
+
         <NumberRow
           field={FIELDS.ragRerankCandidates}
           value={values.ragRerankCandidates}
           onChange={(v) => set('ragRerankCandidates', v)}
           defaultValue={DEFAULTS.ragRerankCandidates}
+          // Wayfinding, not description (review r2): its disabled branch
+          // carries a Link, and a link folded into `aria-describedby` flattens
+          // to prose the reader cannot act on from the announcement.
+          aside={
+            <p data-testid="retrieval-rerank-stage-status">
+              {rerankActive ? (
+                <>
+                  Rerank stage:{' '}
+                  <span className="text-foreground">{rerankRow.resolved.providerName}</span>
+                  {rerankRow.resolved.model ? ` / ${rerankRow.resolved.model}` : ''}.
+                </>
+              ) : (
+                <>
+                  Rerank stage: <span className="text-foreground">Disabled (no reranking)</span> —
+                  this pool applies only once a rerank provider is assigned in{' '}
+                  <Link
+                    className="underline underline-offset-2 hover:text-foreground"
+                    to={LLM_PROVIDERS_PATH}
+                  >
+                    {SETTINGS_PANELS.models.label} → LLM providers
+                  </Link>
+                  . Setting the pool first is fine; it just has nothing to size yet.
+                </>
+              )}
+            </p>
+          }
         >
           <p>
             Fused candidates the cross-encoder re-scores. Every candidate is a document shipped to
             the rerank provider, so this bounds the stage&apos;s cost as well as its reach.
-          </p>
-          <p data-testid="retrieval-rerank-stage-status">
-            {rerankActive ? (
-              <>
-                Rerank stage: <span className="text-foreground">{rerankRow.resolved.providerName}</span>
-                {rerankRow.resolved.model ? ` / ${rerankRow.resolved.model}` : ''}.
-              </>
-            ) : (
-              <>
-                Rerank stage: <span className="text-foreground">Disabled (no reranking)</span> — this
-                pool applies only once a rerank provider is assigned in{' '}
-                <Link className="underline underline-offset-2 hover:text-foreground" to={LLM_PROVIDERS_PATH}>
-                  {SETTINGS_PANELS.models.label} → LLM providers
-                </Link>
-                . Setting the pool first is fine; it just has nothing to size yet.
-              </>
-            )}
           </p>
         </NumberRow>
       </Section>
@@ -1093,8 +1434,8 @@ export function RetrievalTab() {
           value={saved.ragConfidenceThreshold}
           supported={settings?.ragConfidenceCalibration !== undefined}
           calibration={settings?.ragConfidenceCalibration?.similarity ?? null}
-          onKeep={() => handleKeepCalibration('ragConfidenceThreshold')}
-          keepDisabled={keepMutation.isPending || mutation.isPending}
+          onKeep={(event) => handleKeepCalibration('ragConfidenceThreshold', event.currentTarget)}
+          keepPending={keepPending}
         />
         <NumberRow
           field={FIELDS.ragConfidenceThreshold}
@@ -1162,8 +1503,9 @@ export function RetrievalTab() {
           value={saved.ragConfidenceThresholdRerank}
           supported={settings?.ragConfidenceCalibration !== undefined}
           calibration={settings?.ragConfidenceCalibration?.rerank ?? null}
-          onKeep={() => handleKeepCalibration('ragConfidenceThresholdRerank')}
-          keepDisabled={keepMutation.isPending || mutation.isPending}
+          onKeep={(event) =>
+            handleKeepCalibration('ragConfidenceThresholdRerank', event.currentTarget)}
+          keepPending={keepPending}
         />
         <NumberRow
           field={FIELDS.ragConfidenceThresholdRerank}
@@ -1337,6 +1679,22 @@ export function RetrievalTab() {
           value={values.ragAnswerMaxImages}
           onChange={(v) => set('ragAnswerMaxImages', v)}
           defaultValue={DEFAULTS.ragAnswerMaxImages}
+          // The pointer is wayfinding, so it leaves the described region
+          // (review r2) — the two sentences above it still describe the knob,
+          // and the reader who needs the verdict reaches the link by reading
+          // on rather than through a flattened description string.
+          aside={
+            <p>
+              Whether yours can is shown on the chat row under{' '}
+              <Link
+                className="underline underline-offset-2 hover:text-foreground"
+                to={LLM_PROVIDERS_PATH}
+              >
+                {SETTINGS_PANELS.models.label} → LLM providers
+              </Link>
+              .
+            </p>
+          }
         >
           {/*
             The second sentence is the only place this fact is ever stated.
@@ -1354,12 +1712,7 @@ export function RetrievalTab() {
           */}
           <p>
             Up to this many retrieved images are attached to the question when the chat model can
-            see images; 0 turns this off. Text-only chat models never receive images. Whether
-            yours can is shown on the chat row under{' '}
-            <Link className="underline underline-offset-2 hover:text-foreground" to={LLM_PROVIDERS_PATH}>
-              {SETTINGS_PANELS.models.label} → LLM providers
-            </Link>
-            .
+            see images; 0 turns this off. Text-only chat models never receive images.
           </p>
         </NumberRow>
 
@@ -1441,6 +1794,34 @@ export function RetrievalTab() {
               value={values.ragRankingPriorWeight}
               onChange={(v) => set('ragRankingPriorWeight', v)}
               defaultValue={DEFAULTS.ragRankingPriorWeight}
+              // Outside the description (review r2): `Use measured value` is
+              // an operable control, and `aria-describedby` flattens its
+              // region to text — folded in, it announced as part of a
+              // two-paragraph rationale with nothing saying it can be
+              // pressed. The note below it moves with it so the visible order
+              // is unchanged.
+              aside={
+                <>
+                  {values.ragRankingPriorWeight !== RANKING_PRIOR_TUNED && (
+                    <button
+                      type="button"
+                      onClick={() => set('ragRankingPriorWeight', RANKING_PRIOR_TUNED)}
+                      className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                      data-testid="retrieval-prior-use-measured"
+                    >
+                      Use measured value ({RANKING_PRIOR_TUNED})
+                    </button>
+                  )}
+                  {rerankActive && values.ragRankingPriorWeight > 0 && (
+                    <p data-testid="retrieval-prior-discarded-note">
+                      A rerank provider is assigned on this deployment, and the rerank pool is
+                      wider than the fused candidate set — so the cross-encoder re-scores every
+                      candidate and discards this ordering wholesale. The prior will have no
+                      effect here.
+                    </p>
+                  )}
+                </>
+              }
             >
               {/*
                 Never a bare RRF-scale number: 0.003 means nothing without the
@@ -1454,23 +1835,6 @@ export function RetrievalTab() {
                 0.05 the prior exceeds that tier gap entirely and starts outranking retrieval
                 itself. 0 disables the stage and skips its signal query.
               </p>
-              {values.ragRankingPriorWeight !== RANKING_PRIOR_TUNED && (
-                <button
-                  type="button"
-                  onClick={() => set('ragRankingPriorWeight', RANKING_PRIOR_TUNED)}
-                  className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-                  data-testid="retrieval-prior-use-measured"
-                >
-                  Use measured value ({RANKING_PRIOR_TUNED})
-                </button>
-              )}
-              {rerankActive && values.ragRankingPriorWeight > 0 && (
-                <p data-testid="retrieval-prior-discarded-note">
-                  A rerank provider is assigned on this deployment, and the rerank pool is wider
-                  than the fused candidate set — so the cross-encoder re-scores every candidate and
-                  discards this ordering wholesale. The prior will have no effect here.
-                </p>
-              )}
             </NumberRow>
           </div>
         </div>
@@ -1929,16 +2293,28 @@ function CalibrationNotice({
   supported,
   calibration,
   onKeep,
-  keepDisabled,
+  keepPending,
 }: {
   fieldKey: keyof typeof CONFIDENCE_BASIS_COPY;
   label: string;
   value: number;
   supported: boolean;
   calibration: ConfidenceCalibration | null;
-  onKeep: () => void;
-  keepDisabled: boolean;
+  /**
+   * Carries the EVENT, so the handler can hand its `currentTarget` on: what
+   * `focusKnobBeforeNoticeClears` needs is the element that was pressed, and
+   * this component renders two different buttons (`Keep` and `Record`) into
+   * one callback.
+   */
+  onKeep: (event: MouseEvent<HTMLButtonElement>) => void;
+  keepPending: boolean;
 }) {
+  // `aria-disabled` blocks no events, so the inert state is enforced here
+  // rather than by the attribute (see `PENDING_REMEDY_CLASS`).
+  const keep = (event: MouseEvent<HTMLButtonElement>) => {
+    if (keepPending) return;
+    onKeep(event);
+  };
   if (value <= 0 || !supported) return null;
 
   if (!calibration) {
@@ -1952,15 +2328,27 @@ function CalibrationNotice({
           Calibration unknown — no model is recorded for {label} {value}, so a model change behind it
           would pass unnoticed. Record the model behind it now, or re-tune it below.
         </span>
+        {/*
+          The label swaps to a gerund and gains a spinner while the write is in
+          flight, but KEEPS ITS NUMBER — see `PendingRemedyLabel` for why the
+          number is what tells two simultaneous notices apart, and
+          `PENDING_REMEDY_CLASS` for why the attribute pair is not the signal.
+        */}
         <button
           type="button"
-          onClick={onKeep}
-          disabled={keepDisabled}
+          onClick={keep}
+          aria-disabled={keepPending || undefined}
+          aria-busy={keepPending || undefined}
           aria-describedby={unknownSentenceId}
-          className="nm-button-ghost shrink-0 text-xs"
+          className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
           data-testid={`retrieval-${fieldKey}-calibration-record`}
         >
-          Record {value}
+          <PendingRemedyLabel
+            pending={keepPending}
+            verb="Record"
+            gerund="Recording"
+            value={value}
+          />
         </button>
       </div>
     );
@@ -2011,16 +2399,29 @@ function CalibrationNotice({
             // on every read, so the panel would keep naming the wrong cause
             // and send the operator to the assignment grid instead of the
             // provider row.
+            //
+            // Review r3 — the wayfinding LINK is the one thing that does not
+            // belong in here: this span is the `Keep` button's
+            // `aria-describedby` region, which flattens to one string, so a
+            // link inside it announces as prose the reader cannot follow. It
+            // moved to its own line below, the same relocation `NumberRow`'s
+            // `aside` performs for the three rows that carried one.
             <>
               The live {basisNoun} model could not be resolved, so the threshold is not gating
-              against anything it was tuned on — check its provider in{' '}
-              <Link className="underline underline-offset-2" to={LLM_PROVIDERS_PATH}>
-                {SETTINGS_PANELS.models.label} → LLM providers
-              </Link>
-              , then re-tune it below or keep it and record it once the model resolves.
+              against anything it was tuned on — re-tune it below, or keep it and record it once
+              the model resolves.
             </>
           )}
         </span>
+        {calibration.liveModel === null && !calibration.liveResolved && (
+          <span>
+            Check its provider in{' '}
+            <Link className="underline underline-offset-2" to={LLM_PROVIDERS_PATH}>
+              {SETTINGS_PANELS.models.label} → LLM providers
+            </Link>
+            .
+          </span>
+        )}
         {/*
           WCAG 2.5.3: the accessible name is the visible label, so no
           `aria-label` overrides it. Two strips can both read "Keep 0.2"; what
@@ -2029,13 +2430,14 @@ function CalibrationNotice({
         */}
         <button
           type="button"
-          onClick={onKeep}
-          disabled={keepDisabled}
+          onClick={keep}
+          aria-disabled={keepPending || undefined}
+          aria-busy={keepPending || undefined}
           aria-describedby={sentenceId}
-          className="nm-button-ghost shrink-0 text-xs"
+          className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
           data-testid={`retrieval-${fieldKey}-calibration-keep`}
         >
-          Keep {value}
+          <PendingRemedyLabel pending={keepPending} verb="Keep" gerund="Keeping" value={value} />
         </button>
       </div>
     </div>
@@ -2072,6 +2474,7 @@ function NumberRow({
   disabled,
   describedBy,
   children,
+  aside,
 }: {
   field: NumericField;
   value: number;
@@ -2100,6 +2503,24 @@ function NumberRow({
    */
   describedBy?: string;
   children?: React.ReactNode;
+  /**
+   * Everything under the row that is NOT description: an operable control, or
+   * a wayfinding sentence pointing at another panel. Rendered in the same
+   * muted block, immediately below the description and OUTSIDE it.
+   *
+   * Review r2 — `aria-describedby` flattens its region to a text string, so a
+   * button folded into it announces as prose with no hint it can be pressed,
+   * and a link announces as wayfinding the reader cannot act on from the
+   * announcement. That is the exact reason the `RAG_EF_SEARCH` note sits
+   * outside its row (see its comment in the Candidate pools section); the
+   * blanket wiring above would otherwise have re-created it inside three
+   * rows. `RetrievalTab.test.tsx` walks the region behind EVERY
+   * `aria-describedby` on the panel — not only a field's — and fails if one
+   * contains an interactive element; review r3 widened it from inputs and
+   * selects after the calibration strip's `Keep` button turned out to be
+   * described by a sentence carrying a wayfinding link.
+   */
+  aside?: React.ReactNode;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   // Any committed change — Save's re-hydration, "reset to default", "use
@@ -2140,23 +2561,25 @@ function NumberRow({
             onKeyDown={(e) => {
               if (e.key === 'Enter') commit();
             }}
-            // #1284 — the readout under a knob carries the part of the
-            // decision the number cannot: what this deployment has actually
-            // measured. Printed beside the input it was reachable by eye
-            // only; wired here it reaches touch, keyboard and screen readers
-            // too (ADR-010's `DeepSearchToggle` precedent). Per-row and one
-            // paragraph, never panel-wide and never the whole help block —
-            // see `describedBy`.
-            aria-describedby={describedBy}
+            // #1284/#1285 — confidence thresholds name their one measured
+            // readout; every other knob names its prose-only help block. An
+            // operable aside must never enter either description region.
+            aria-describedby={describedBy ?? (children ? `${field.key}-help` : undefined)}
             className="w-24 rounded-md border border-border-interactive bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-45"
             data-testid={`retrieval-${field.key}`}
           />
           {field.unit && <span className="w-24 text-xs text-muted-foreground">{field.unit}</span>}
         </div>
       </div>
-      <div id={`${field.key}-help`} className="space-y-1.5 text-xs text-muted-foreground">
-        {children}
-      </div>
+      {(children || aside) && (
+        <div className="space-y-1.5 text-xs text-muted-foreground">
+          {/* Only this half is the input's description — see `aside`'s JSDoc. */}
+          <div id={`${field.key}-help`} className="space-y-1.5">
+            {children}
+          </div>
+          {aside}
+        </div>
+      )}
       {value !== defaultValue && (
         <button
           type="button"
@@ -2196,6 +2619,15 @@ function ToggleRow({
           type="checkbox"
           checked={checked}
           onChange={(e) => onChange(e.target.checked)}
+          // #1285, review r1 — the same wiring `NumberRow` gained, for the same
+          // reason. Leaving it on the number rows alone meant that inside ONE
+          // group a screen-reader user heard the caveat for `Images per page`
+          // and not the one for `Image leg` directly above it — and the toggles
+          // are where the sharpest caveats on this panel live ("It costs one
+          // extra embedding call per question", the identifier-pinning
+          // explanation, "No Recall@1 gain measured"). A caveat reachable by
+          // eye only is not a caveat the control carries.
+          aria-describedby={children ? `${id}-help` : undefined}
           className="h-4 w-4 rounded border-border accent-primary"
           data-testid={id}
         />
@@ -2204,7 +2636,16 @@ function ToggleRow({
         </label>
         {badge === 'Off' && <OffChip />}
       </div>
-      <div className="space-y-1.5 pl-6 text-xs text-muted-foreground">{children}</div>
+      {/*
+        Prose only, like `NumberRow`'s `children`: a description flattens to one
+        string, so an operable control or a wayfinding link belongs beside the
+        region, never inside it. `RetrievalTab.test.tsx`'s panel-wide
+        `describedRegionOffenders` sweep walks every `[aria-describedby]` and
+        fails if one appears here.
+      */}
+      <div id={`${id}-help`} className="space-y-1.5 pl-6 text-xs text-muted-foreground">
+        {children}
+      </div>
       {checked !== defaultChecked && (
         <button
           type="button"

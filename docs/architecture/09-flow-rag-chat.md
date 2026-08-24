@@ -1452,7 +1452,8 @@ truncates at the requested page count, so the old chunks-vs-pages
 under-delivery is resolved at the source). Widening is order-preserving
 (cosine order is a stable prefix) while `ef_search` is constant — since
 #1106 ef covers the RAW fetch, so the constant range is stage limits
-≤ `RAG_EF_SEARCH/8` = 12, still true at the default width 10; beyond it a
+≤ `rag_ef_search/8` = 12 at the default floor of 100, still true at the
+default width 10; beyond it a
 raised `ef` explores more of the HNSW graph and can surface genuinely nearer
 neighbours above previous results.
 
@@ -1853,7 +1854,42 @@ test pins that.
   corrupts every query vector.
 - **Vector search** uses pgvector's `<=>` cosine distance against an HNSW
   index on `page_embeddings.embedding`. `ef_search` is set per request for
-  a recall/latency trade-off.
+  a recall/latency trade-off — `SET LOCAL` inside the probe's own transaction,
+  never a session-level `SET`, which would leak the value to the next borrower
+  of that pooled connection. The floor is RESOLVED before the probe checks its
+  client out, though: on a cache miss the reader queries the main pool, and a
+  probe that awaits it between `BEGIN` and the `SET LOCAL` is asking a pool for
+  a second connection while holding one — under saturation that waits out
+  `connectionTimeoutMillis`, soft-fails to the default floor and caches that
+  for a TTL, while holding its own client for the whole stall. The value is
+  `min(1000, max(floor, 2 × raw row count))`, one definition in
+  `domains/llm/services/hnsw-ef-search.ts` shared by all four kNN probes (the
+  vector leg, the image leg, `computePageRelationships` and the duplicate
+  detector). Since **#1285** the floor is `admin_settings.rag_ef_search`
+  (default 100, range 1–1000, 60-second cached reader), edited in
+  Settings → AI Models → Retrieval beside Fetch width. It sits there as
+  CONTEXT for the width, not as a knob to move with it: the `2 ×` headroom
+  above means a probe's depth already covers its own raw fetch at every
+  reachable width (both legs cap the raw fetch at 500, so `2 × raw` stays
+  inside the 1000 ceiling), and the floor therefore binds only the probes
+  narrower than half of it — widening the fetch makes this number matter
+  *less*. The one plateau that does exist is pgvector's own 1000 ceiling
+  against a raw fetch above 500, which is unreachable at today's 200 stage
+  limit and independent of this setting. It was `RAG_EF_SEARCH`, read at module
+  load, so the deployment's recall floor could not be changed without a restart
+  and was invisible on the panel that owns every other retrieval number; that
+  variable is now a bootstrap fallback consulted
+  only while no row exists, and reported as deprecated at startup — with the
+  panel offering a one-key `Keep <value>` write on exactly the instances where
+  the variable is still what produced the number (`ragEfSearchFromEnv` on the
+  settings payload), since Save sends only the values an admin changed and
+  would otherwise have no row to write. A row read that FAILS never falls
+  through to the variable: an unreadable row is not an absent one, and the
+  fall-through would reinstate a retired value for a full cache TTL. Raising
+  the floor is not measured to buy recall, and its measured cost is scan time
+  only — 0.39 ms per probe at 100 against 1.74 ms at 1000; index footprint is a
+  build-time property and does not move with this setting. See the `ef_search`
+  sizing item in ADR-025's neighbourhood (`docs/runbooks/shadow-reembed.md`).
 - **Keyword search** uses the PostgreSQL text-search configuration stored in
   `admin_settings.fts_language` (default `simple`; set `german`, `english`,
   etc. for language-aware stemming), edited in

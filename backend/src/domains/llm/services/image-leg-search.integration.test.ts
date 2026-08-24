@@ -7,9 +7,10 @@ import {
   teardownTestDb,
   isDbAvailable,
 } from '../../../test-db-helper.js';
-import { query, getPool } from '../../../core/db/postgres.js';
+import { query, getPool, getVectorPool } from '../../../core/db/postgres.js';
 import {
   invalidateRagImageLegCache,
+  invalidateRagEfSearchCache,
 } from '../../../core/services/admin-settings-service.js';
 import {
   ensureImageEmbeddingColumn,
@@ -236,6 +237,44 @@ function failStatementsMatching(needle: string): void {
   }) as unknown as typeof pool.query);
 }
 
+/**
+ * Record every SQL string this leg runs on its checked-out VECTOR-pool client,
+ * and hand the borrowed client back exactly as it was found.
+ *
+ * `SET LOCAL` is invisible after the transaction ends and invisible to a
+ * `pool.query` spy, because the leg owns a client. Without this, the fourth
+ * kNN callsite was the one #1285 left unpinned: swapping its `efSearchFor` for
+ * a hardcoded floor kept every suite in the repo green (review r1, mutation B).
+ *
+ * The restore in `release` is load-bearing rather than tidy: pg hands the SAME
+ * client object to the next borrower, so a permanently wrapped `query` would
+ * keep pushing into a dead array for the rest of the file.
+ */
+function recordVectorClientSql(): string[] {
+  const seen: string[] = [];
+  const pool = getVectorPool();
+  const connect = pool.connect.bind(pool) as () => Promise<{
+    query: (...args: unknown[]) => unknown;
+    release: (...args: unknown[]) => unknown;
+  }>;
+  vi.spyOn(pool, 'connect').mockImplementation((async () => {
+    const client = await connect();
+    const realQuery = client.query.bind(client);
+    const realRelease = client.release.bind(client);
+    client.query = (...args: unknown[]) => {
+      if (typeof args[0] === 'string') seen.push(args[0]);
+      return realQuery(...args);
+    };
+    client.release = (...args: unknown[]) => {
+      client.query = realQuery;
+      client.release = realRelease;
+      return realRelease(...args);
+    };
+    return client;
+  }) as unknown as typeof pool.connect);
+  return seen;
+}
+
 /** The gate's fourth condition, verbatim enough to match only itself. */
 const INDEX_PROBE_SQL = 'EXISTS(SELECT 1 FROM page_image_embeddings)';
 /** The lede fetch for image-only pages — the only `LEFT JOIN` on chunk 0. */
@@ -332,6 +371,7 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
       res.end(JSON.stringify({ data: [{ embedding: unit(0) }] }));
     };
     invalidateRagImageLegCache();
+    invalidateRagEfSearchCache();
     await ensureImageEmbeddingColumn(DIMS, {
       providerId: '22222222-2222-4222-8222-222222222222',
       model: VL_MODEL,
@@ -344,6 +384,7 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
 
   afterEach(() => {
     invalidateRagImageLegCache();
+    invalidateRagEfSearchCache();
     vi.restoreAllMocks();
     while (heldResponses.length > 0) {
       const res = heldResponses.pop()!;
@@ -505,6 +546,30 @@ describe.skipIf(!dbAvailable)('image retrieval leg (#1115 P3)', () => {
     const out = await searchImageLeg(USER, 'turbine', { limit: 10, spaceKey: SPACE });
 
     expect(out.pages.map((p) => p.pageId)).toEqual([inScope]);
+  });
+
+  it('runs its kNN at the configured rag_ef_search floor (#1285)', async () => {
+    // The fourth callsite, pinned. #1285's acceptance criterion is that ALL
+    // FOUR kNN probes read the same floor; the other three assert their
+    // `SET LOCAL` value, and this one asserted only that the statement parsed
+    // — a hardcoded 100 here passed the whole repo (review r1).
+    //
+    // 500 is chosen to be none of the alternatives a regression would produce:
+    // not the 100 default, not `2 x rawLimit` (80 at limit 10), not pgvector's
+    // 1000 ceiling.
+    await assignProviders();
+    const page = await seedPage({ title: 'Turbine' });
+    await seedImage(page, 'turbine.png', 0);
+    await setSetting('rag_ef_search', '500');
+    invalidateRagEfSearchCache();
+    const sql = recordVectorClientSql();
+
+    const out = await searchImageLeg(USER, 'turbine', { limit: 10 });
+
+    // The leg really ran — otherwise the assertion below passes vacuously on
+    // an empty array.
+    expect(out.pages.map((p) => p.pageId)).toEqual([page]);
+    expect(sql).toContain('SET LOCAL hnsw.ef_search = 500');
   });
 
   it('excludes soft-deleted pages', async () => {

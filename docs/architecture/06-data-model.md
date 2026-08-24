@@ -454,7 +454,10 @@ together, which matters most for #1114's query-side prefix.
 
   pgvector 0.8 caps HNSW at 2000 dims for `vector` and 4000 dims for `halfvec`;
   larger models (e.g. `qwen3-embedding:8b` at 4096) fall to the seq-scan tier.
-  Query-time `ef_search` is set per request. Source of truth:
+  Query-time `ef_search` is set per request, floored at
+  `admin_settings.rag_ef_search` (#1285 — default 100, edited in
+  Settings → AI Models → Retrieval; the `RAG_EF_SEARCH` environment variable it
+  replaced is a deprecated bootstrap fallback). Source of truth:
   `backend/src/domains/llm/services/embedding-service.ts` (`enqueueReembedAll`).
 
   **Which model, in practice.** `bge-m3` at 1024 (`vector(1024)` + HNSW) is the

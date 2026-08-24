@@ -520,6 +520,55 @@ describe('formatBenchmarkTable', () => {
     expect(table).toMatch(/corpus de/);
   });
 
+  it('names the ef_search floor the vector leg ran at, and where it came from', () => {
+    // Review r1 (verification round). Before #1285 the HNSW scan depth was a
+    // module-load read of `process.env.RAG_EF_SEARCH` — a constant, visible in
+    // the launching shell, that this script could reasonably leave implicit.
+    // It is now `admin_settings.rag_ef_search` in the database under test, so
+    // two runs labelled identically can measure different scan depths over one
+    // corpus, and the panel's own copy puts the swing at 0.39 ms per probe at
+    // 100 against 1.74 ms at 1000 — exactly the quantity this table publishes.
+    // The SOURCE is reported beside it because "100" reached by a saved row, by
+    // the deprecated variable and by the unconfigured default are three
+    // different claims about the instance.
+    const base = {
+      baseUrl: 'http://localhost:1234/v1',
+      lang: 'de',
+      ftsLanguage: 'german',
+      columnType: 'halfvec(2560)',
+      dims: 2560,
+      queries: 40,
+      mode: 'both' as const,
+      generatedAt: '2026-08-16T00:00:00.000Z',
+      corpusLanguage: 'de',
+      searchModel: 'text-embedding-qwen3-embedding-4b',
+      searchBaseUrl: 'http://localhost:1234/v1',
+      llmConcurrency: 4,
+      vectorPoolMax: 5,
+    };
+
+    expect(
+      formatBenchmarkTable({
+        metadata: { ...base, ragEfSearch: 400, ragEfSearchSource: 'row' },
+        results: [],
+      }),
+    ).toMatch(/ef_search floor 400 \(row\)/);
+
+    expect(
+      formatBenchmarkTable({
+        metadata: { ...base, ragEfSearch: 250, ragEfSearchSource: 'env' },
+        results: [],
+      }),
+    ).toMatch(/ef_search floor 250 \(env\)/);
+
+    // A report written before this field existed must not be rendered as
+    // though it had certified the default — the same rule `corpus unrecorded`
+    // follows one line above.
+    expect(formatBenchmarkTable({ metadata: base, results: [] })).toMatch(
+      /ef_search floor \? \(unrecorded\)/,
+    );
+  });
+
   it('says "unrecorded" rather than inventing a corpus language it never read', () => {
     const table = formatBenchmarkTable({
       metadata: {

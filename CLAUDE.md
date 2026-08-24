@@ -59,7 +59,7 @@ Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-
 
 N named `openai-compatible` providers in `llm_providers` table, configured via Settings → AI Models. Each use case (chat / summary / quality / auto_tag / embedding) inherits a default or pins an explicit `provider+model` — **except `rerank` (#1104), which never inherits: unassigned means the rerank stage is disabled** (it targets a Cohere/Jina-style `/v1/rerank` endpoint the default provider cannot serve; `resolveRerankUsecase`, not `resolveUsecase`, and a dedicated `rerank-client.ts` sharing the queue/breaker infra) **and `image_embedding` (#1115), which never inherits for the same reason one rung stronger** — a text embedder answers the plain shape with a plausible but wrong vector, so unassigned means the image leg is off (see the multimodal block below). Ollama uses its `/v1` shim — not a separate protocol. Queue + per-provider circuit breakers wrap every outbound call in `openai-compatible-client.ts`.
 
-**Legacy env vars** (`OLLAMA_BASE_URL`, `OPENAI_*`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `LLM_MAX_CONCURRENT_STREAMS_PER_USER`, `COMPENDIQ_LICENSE_KEY`) are **deprecated bootstrap fallbacks** — consulted only on fresh install when the DB row / `admin_settings` value is absent. `EMBEDDING_MODEL` is one rung further gone: it is **fully inert** since migration 054 (#1114) — `llm-provider-bootstrap.ts` keeps it in `DEPRECATED_VARS` only so that setting it logs a notice, and nothing reads its value, so a fresh install resolves the `embedding` use case to the default provider's `default_model` until an admin assigns it. (`EMBEDDING_DIMENSIONS` is unaffected — it is still the fallback for a missing `admin_settings.embedding_dimensions` row.) Don't add new env-driven LLM config; extend the providers table or `admin_settings` instead.
+**Legacy env vars** (`OLLAMA_BASE_URL`, `OPENAI_*`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `LLM_MAX_CONCURRENT_STREAMS_PER_USER`, `COMPENDIQ_LICENSE_KEY`, `RAG_EF_SEARCH`) are **deprecated bootstrap fallbacks** — consulted only on fresh install when the DB row / `admin_settings` value is absent. `EMBEDDING_MODEL` is one rung further gone: it is **fully inert** since migration 054 (#1114) — `llm-provider-bootstrap.ts` keeps it in `DEPRECATED_VARS` only so that setting it logs a notice, and nothing reads its value, so a fresh install resolves the `embedding` use case to the default provider's `default_model` until an admin assigns it. (`EMBEDDING_DIMENSIONS` is unaffected — it is still the fallback for a missing `admin_settings.embedding_dimensions` row.) Don't add new env-driven LLM config; extend the providers table or `admin_settings` instead.
 
 **Deep search reuses `chat` — do not give it a use case (#1112).** Multi-query expansion asks the `chat` model for two paraphrases of the question, retrieves all three phrasings and fuses them (`multi-query-search.ts`, in front of `hybridSearch` — `/api/search` paginates and must never expand). It is one extra completion for a one-sentence rewrite, so a sixth ADR-021 assignment would be a knob every operator has to set before the feature works at all. It is per-request and **default off** (`deepSearch`, the `searchWeb` precedent), it never expands an exact-identifier or pasted-error query (#1107 pins the first, and the second IS the literal FTS matches), and every failure — timeout, open breaker, no assignment, unparseable reply — soft-fails to the original query alone. Design of record: `docs/architecture/09-flow-rag-chat.md`.
 
@@ -322,11 +322,113 @@ top-1 is now unestablished in both languages. So the panel's note states the
 result rather than a pending flag, and the Retrieval tab's keyword-language
 hint names the rebuild cost instead of promising a recall gain. `ef_search` at
 `halfvec(2560)` is **measured, not settled**: effectively exact from 40,
-recall@10 0.9995 at the `RAG_EF_SEARCH=100` default and unchanged to the 1000
+recall@10 0.9995 at the default floor of 100 and unchanged to the 1000
 ceiling — leave it alone and watch **footprint** instead (18.6 MiB of HNSW for
-2,377 vectors, larger than heap and TOAST combined). That was one
-cache-resident 2,377-chunk corpus with **build time unmeasured**, so it does not
-license extrapolating to production scale. **The proposed go/no-go, revert
+2,377 vectors, larger than heap and TOAST combined). That footprint figure came
+from one cache-resident 2,377-chunk corpus with **build time unmeasured**, so it
+does not license extrapolating to production scale — and it is a property of how
+the index was BUILT (`m` / `ef_construction`), identical at every value of the
+floor below, which is why the panel's copy names scan time (0.39 ms per probe at
+100 against 1.74 ms at 1000) and never footprint as this control's cost.
+**Since #1285 that floor
+is a knob, not an environment variable**: `admin_settings.rag_ef_search`
+(default 100, range 1–1000 — pgvector's own bound), read through the same
+60-second cached reader as its Retrieval-panel siblings and written by
+`PUT /admin/settings`, with the panel's help text quoting the measurement above
+so nobody raises it hoping for recall. `efSearchFor(k)` in
+`domains/llm/services/hnsw-ef-search.ts` is the ONE form all four kNN probes
+call (retrieval's vector leg, the image leg, `computePageRelationships`, the
+duplicate detector) — it resolves the floor and returns
+`min(1000, max(floor, 2k))`, and a fifth probe needs nothing but `await
+efSearchFor(rawRowCount)` interpolated into a `SET LOCAL` **inside the
+transaction it already owns** (a session-level `SET` leaks into the next
+borrower of that pooled connection). It sits beside Fetch width as CONTEXT and
+**must never be described as a knob to raise with the width** (review r1): the
+`2k` half covers every probe's own SQL LIMIT at every reachable width — both
+legs cap the raw fetch at 500, so `2 × raw` stays inside the 1000 ceiling — so
+the floor binds only probes narrower than half of it and a wider fetch outgrows
+it rather than plateauing against it. Three docs, THREE code comments and the
+panel's own placement note shipped the inverse claim, which told an operator to
+buy scan time (0.39 → 1.74 ms) for nothing; the panel's visible help text was
+right all along and is the wording to copy. The third comment was `vectorSearch`'s
+own JSDoc — the function whose `SET LOCAL hnsw.ef_search` line this work
+rewrites — still carrying both "higher ef_search = better recall" and "the floor
+here is 100" a whole round after the rest was corrected (review r1). No test
+reads a JSDoc, so grep the retired phrasings across `backend/src`, `docs/` and
+`frontend/src` rather than trusting a green suite. `RAG_EF_SEARCH` survives as a bootstrap
+fallback in `getRagEfSearch`'s row → env → 100 cascade, and it is the LEGACY-LLM-VARS
+kind of deprecated rather than `FTS_LANGUAGE`'s: nothing seeds the row, so the
+variable is still live on every instance that has never saved the panel, which
+is exactly what the startup notice and the panel's own muted line say. Three
+rules that review r1 had to add and that a fifth probe or a later edit must
+keep: a row read that THREW never falls through to the variable (an unreadable
+row is not an absent one, and the fall-through silently reinstated a retired
+env value for a TTL); the floor is resolved **before** the probe checks its
+client out, never between `BEGIN` and the `SET LOCAL`, because on a cache miss
+it queries the MAIN pool and a transaction asking its own pool for a second
+connection stalls under saturation; and the panel's line about the variable
+renders only where `ragEfSearchFromEnv` says the variable really produced the
+number, carrying its own one-key `Keep <value>` write — Save is a pure value
+diff, so on exactly that instance the number on screen already matches the
+server's and the row the note asks for could not be written from the panel
+(the #1114 `Keep`/`Record` precedent, same reason, same discipline) — reading
+`saved` and never the draft in the field, like every other `Keep` on this
+panel. Review r2 added the guards those three rules were missing: the ordering
+one is pinned at all four probes by a source assertion in
+`hnsw-ef-search.test.ts` plus an `invocationCallOrder` assertion at the vector
+leg, and the `Keep` one by a test that edits the ef-search field itself before
+pressing it. Review r3 closed the two holes in the first of those: it checked
+each file's FIRST probe only, and read its file list off a hand-maintained
+array — so a second probe added below a correct one passed green, and a probe
+in a NEW file was covered by nothing at all. It now checks EVERY probe in a
+file and cross-checks that array against a walk of `backend/src`, so a fifth
+probe fails the suite until it is registered there (which is where its author
+is told a pool this text guard cannot instrument also wants a runtime
+ordering assertion). That cross-check keys on the GUC NAME, never on the
+statement: keyed on `SET LOCAL hnsw.ef_search` it could not see the one
+spelling that hurts most — a session-level `SET hnsw.ef_search`, invisible to
+both walks and worse than the literal, since it outlives `COMMIT` — so every
+code line in `backend/src` naming the GUC must now spell `SET LOCAL`, checked
+per line with its own failure message. The verification round closed the hole
+BETWEEN those two walks: both compare sets of file PATHS, so a second,
+unresolved depth statement added inside an ALREADY-LISTED file satisfied all of
+them at once — the GUC walk still matched the same file set, the `SET LOCAL`
+assertion still passed, and the ordering test iterates probes, of which such a
+mutant adds none (verified green on `rag-service.ts`, the file #1260 edits
+against this head). So the per-callsite check now COUNTS a file's depth
+statements against that file's own probe count and requires each to
+interpolate (`hnsw.ef_search = ${…}`) rather than name a literal — per-LINE
+rules where the walks are per-FILE. The startup notice's out-of-range branch hedges on the row too
+("while no `rag_ef_search` row exists…"): the function reads `process.env` and
+cannot know the resolved floor. And the panel-wide `aria-describedby` wiring
+those knobs gained reaches **`ToggleRow` too, not only `NumberRow`** — the
+first cut stopped at the number rows, so inside one group a screen-reader user
+heard the caveat for `Images per page` and not the one for `Image leg` above
+it, and the toggles carry the sharpest caveats on the panel (`Image leg`'s
+"one extra embedding call per question", MMR's measured NO-gain). Either way
+**a row's `children` are prose only** — a
+description flattens to one string, so an operable control or a wayfinding
+link goes in the row's `aside` prop, beside the region rather than inside it
+(`RetrievalTab.test.tsx` walks the region behind every `aria-describedby` on
+the panel — review r3 widened it from `input`/`select` describers, which
+certified the layer #1285 had just fixed and stayed silent on the one live
+offender: the #1114 calibration strip's `Keep` **button**, described by a
+sentence that carried the LLM-providers link. That link now sits on its own
+line inside the strip. Review r2 of the verification round then seeded that
+walk on the **`RAG_EF_SEARCH` note** as well: both existing cells rendered a
+panel with no env note on it, so the one branch whose source comment states
+this rule — the pin sits outside its row to obey it — was the one branch
+nothing walked, and folding the button back into the described span passed the
+whole suite). **#1285's
+other value went the other way and must stay there**: `TRGM_SIMILARITY_THRESHOLD`
+in `routes/knowledge/search.ts` is FIXED at 0.3 because the fuzzy-title query is
+sargable only through pg_trgm's `%` operator, which compares against the
+`pg_trgm.similarity_threshold` GUC — so the constant must equal the GUC's
+default or the retained `similarity() > $4` stops being exact, and making it a
+knob means moving the GUC too (a `SET LOCAL` per search, i.e. a checked-out
+client where a pooled `query()` does now). Documented as deliberately fixed in
+its JSDoc, in ADMIN-GUIDE's Retrieval section and on the panel's Keyword index
+group; don't "finish the job" by making it configurable. **The proposed go/no-go, revert
 criteria and measured costs for the Qwen3 cutover live in
 `docs/runbooks/shadow-reembed.md`** — they are proposals until the owner agrees
 them, and they must be agreed before a re-embed starts. Both eval entrypoints
@@ -436,7 +538,21 @@ refused, because the dead-vector-leg guard only fires at *zero* participation.
 The metadata also carries `llmConcurrency` and `vectorPoolMax`: the search half
 runs through the shared LLM queue (default 4) and the vector pool (default 5),
 so a rung above those measures the product's serialisation, while the embedding
-half bypasses the queue and really does run N wide.
+half bypasses the queue and really does run N wide. Since #1285 it carries
+`ragEfSearch` and `ragEfSearchSource` beside them: the HNSW scan depth stopped
+being a module-load `process.env` constant visible in the launching shell and
+became a row in the database under test, so two identically-labelled runs can
+now measure different scan depths over one corpus (0.39 ms per probe at 100
+against 1.74 ms at 1000 — the very quantity this script publishes). The
+provenance is reported because "100" reached by a saved row, by the deprecated
+variable and by the unconfigured default are three different claims about the
+instance. Reported, **not certified** like `ftsLanguage`: there is no seeded
+artefact to recompute it against, and a floor the operator chose is a fact
+about the instance rather than an inconsistency to refuse over. Both fields
+are pinned in `eval/script-wiring.test.ts` beside `llmConcurrency` /
+`vectorPoolMax`, which is that file's whole subject: deleting the pair from
+the metadata literal leaves the measurement correct and the report silent
+about what it measured, and lint, typecheck and every other suite stay green.
 
 - DB tests → real Postgres, never mocked.
 - Backend route tests → mock external HTTP and auth via `vi.spyOn()` passthroughs; nothing else.
@@ -498,7 +614,7 @@ The same rule swept the borrowings the aliasing made visible: **categories are n
 
 **A failure is reported, never inferred from a 200** (review r3). The read path ships `liveResolved` beside the pair, because "no {basis} model is assigned now" is a claim about `llm_usecase_assignments` that is false — and persistently so — when the row is present and merely unreadable (a `PAT_ENCRYPTION_KEY` rotation leaving `api_key` undecryptable, an EE policy naming a deleted provider); the *verdict* stays stale either way, only the sentence differs, and the panel then points at the provider row instead of the assignment grid. The write path likewise answers `ragConfidenceCalibrationWrite` — `recorded` (with the model) / `cleared` / `unresolved` / `failed` per basis — because the threshold row lands and the route answers 200 whether or not the bookkeeping beside it did, so a `Keep`/`Record` press that the server abstained from would otherwise toast "recorded", refetch, and re-render the very notice the operator was told to clear. `recordConfidenceCalibration` returns whether the row moved for the same reason: swallowing the write error AND claiming success is the same dishonesty one layer down.
 
-**Keeping the number is its own control, and Save stays a pure value diff.** The strip's second remedy changes no value, so Save can never carry it — and the first cut fixed that by arming Save on staleness, which put the untouched threshold into *every* subsequent PUT. An operator editing the fetch width at the far end of the panel then certified the refuse gate against a model they had never measured it on, and the strip — the only standing surface saying the gate needs re-tuning once the swap's log line has scrolled away — silently vanished, defeating the route's "only a threshold this PUT carried" rule from one layer up. So the strip carries a **`Keep <value>`** button that PUTs exactly that one key, read from `saved` and never from the draft in the field. It is its **own mutation**, not Save's: Save's success releases the panel's one-shot `hydrated` flag so the form re-reads the server, which is right for a request that submitted the form and wrong for one submitting a row nobody edited — it would revert every other unsaved edit on the panel, the failure #949's flag exists to prevent. No `aria-label` (WCAG 2.5.3 — the visible label *is* the name); `aria-describedby` points at the strip's sentence so two identically-labelled buttons stay distinguishable. The toast reports the server's own verdict, not the status code: `Threshold recorded against <model>`, `Threshold recorded — no <basis> model is assigned`, or an error naming the reason it was left alone. **The muted line carries the same control** (`Record <value>`), and it is the branch that needed it: its copy told the operator to "save to record it against the live model" while Save only diffs values and that branch rendered no button, so on every instance upgraded with a live threshold — the exact instance the swap runbook's go/no-go step is written for — the note was permanent and recording the current number was reachable only by changing the gate to a different number and back. Fixing the amber branch and leaving its sibling is how a fix becomes half a fix. `RetrievalTab.test.tsx` fails if an unrelated knob's save carries a stale threshold, if Save arms on staleness, if Keep discards a draft elsewhere, if the strip stops being the immediately-preceding sibling of its control (order alone passed for a strip parked four sections away), if either notice reads the draft instead of `saved`, and if the muted line stops offering a remedy the panel can perform. Its copy names the ACTION, not the outcome — "record the model behind it now", never "against the live model" — because that branch has no calibration object and therefore no live pair to name, and its reachable case (a rerank threshold predating #1114 on an instance with the stage unassigned) records "tuned against nothing".
+**Keeping the number is its own control, and Save stays a pure value diff.** The strip's second remedy changes no value, so Save can never carry it — and the first cut fixed that by arming Save on staleness, which put the untouched threshold into *every* subsequent PUT. An operator editing the fetch width at the far end of the panel then certified the refuse gate against a model they had never measured it on, and the strip — the only standing surface saying the gate needs re-tuning once the swap's log line has scrolled away — silently vanished, defeating the route's "only a threshold this PUT carried" rule from one layer up. So the strip carries a **`Keep <value>`** button that PUTs exactly that one key, read from `saved` and never from the draft in the field. It is its **own mutation**, not Save's: Save's success releases the panel's one-shot `hydrated` flag so the form re-reads the server, which is right for a request that submitted the form and wrong for one submitting a row nobody edited — it would revert every other unsaved edit on the panel, the failure #949's flag exists to prevent. No `aria-label` (WCAG 2.5.3 — the visible label *is* the name); `aria-describedby` points at the strip's sentence so two identically-labelled buttons stay distinguishable. **And it hands focus off before it vanishes** (#1285 review r1): every `Keep`/`Record` on this panel — the two calibration ones and the ef-search env note's — sits INSIDE the notice it satisfies, so a successful press unmounts the pressed element and the browser drops focus to `<body>`, restarting the next Tab from the top of the document fourteen controls into the panel. `focusKnobBeforeNoticeClears` moves focus to the knob the notice was about, called **before** the invalidate rather than after it (at that moment both the button and the field are certainly mounted, so focus can only land on a live element), and **only on the outcomes that actually clear the notice** — an `unresolved` or `failed` calibration write leaves the strip and its button standing, so focus stays where the operator put it. **Both sides of that condition are pinned** (review r1 of r1): the first cut guarded only the ef-search button, so disabling the whole calibration branch left the suite green under a rule CLAUDE.md stated for all three — `RetrievalTab.test.tsx` now fails both when a notice-clearing `Keep` leaves focus on `<body>` and when an abstaining one yanks focus off a button the operator still has to press. **The second half of that pair is a claim about the `disabled` ATTRIBUTE, and it is only true without one** (verification round): each of the three buttons inerts itself while its write is in flight, and spelled `disabled` that runs the HTML unfocusing steps on the element the operator is standing on — every real browser blurs it to `<body>` at the press and drops it from the tab order, so on `unresolved`, on `failed` and on both `onError` paths, where the notice and its button deliberately survive, the caret was already gone. jsdom implements none of that, so the abstain test passed against the broken source. They now report themselves inert with **`aria-disabled`**, the recipe `AuthPanel`'s SSO re-check and `AskMode`'s example chips already use for this exact reason, which costs each handler an early return because `aria-disabled` blocks no events; the guard asserts the attributes (jsdom models those faithfully) rather than `activeElement` across a disabled toggle, and fails on a reverted attribute *and* on a dropped handler guard. A `disabled` attribute is what must never come back to these three. **It is a handoff, never a grab** (review r2 of the verification round): `focusKnobBeforeNoticeClears` takes the element that was PRESSED — threaded from the click's `currentTarget` through each mutation's own variables, so a second remedy pressed meanwhile cannot be mistaken for the first — and moves nothing unless the caret is still on it. The write is in flight for as long as the server takes, and the three remedies are deliberately **not locked against one another** (only against Save, which PUTs the whole changed set and re-hydrates the form): they write three different single keys, nothing re-hydrates, and greying two unrelated notices because a third was pressed would state an unavailability that is not real. So an operator who moves on mid-write — onto another remedy's button, or into any of fourteen fields — used to have the caret yanked to the depth field when the pin resolved, which is this same 2.4.3 failure arriving from the other direction; a cross-remedy lock would not have closed it either, since `aria-disabled` leaves a button focusable by design. **All three, and that had to be said twice** (review r1 of the verification round): the guard covered `Keep` and the ef-search pin, so reverting the muted note's `Record` alone left the whole suite green under a rule stated for three — the same half-a-fix shape as the round above it, one layer down. Each of the three now has its own in-flight case, and the abstain pair is per-branch too: the amber strip's cell had been *named* for `Record` while pressing `Keep`, which is how the muted note's gap survived two rounds. The attribute is **`aria-disabled` plus `aria-busy`**, but **neither of them is the in-flight signal, and the round that said so had the premise inverted** (review r1 of #1285). It argued that a native `disabled` "announces unavailable for free" while `aria-disabled` "says nothing at all", and reached for `aria-busy` to repair the difference. It is the other way round: `aria-disabled="true"` IS mapped to the disabled state and announced by NVDA, JAWS and VoiceOver, so dropping the attribute cost that channel nothing — while ARIA 1.2 scopes `aria-busy` to elements whose SUBTREE is being modified (live regions, composite widgets), which on a `<button>` reaches no assistive tech at all. What the attribute swap really dropped is the half a **human** can perceive: 45% opacity reads as "disabled", not as "working", and the write is an unbounded network PUT, so on a slow server the operator was left standing on a control that had gone quiet until the toast landed. `AuthPanel`'s recipe is **four** parts — the attribute pair, a spinner and a label swap — and `PendingRemedyLabel` restores the last two for all three remedies. It swaps to a gerund that **keeps the number** (`Keeping 0.35…`, `Recording 0.35…`): two of these can render at once, one per basis, and the number is the only thing on the button naming which threshold is being written, so `AuthPanel`'s bare `Checking…` would make them identical at the one moment one of them is acting. The spinner is `aria-hidden` (redundant channel, WCAG 1.4.1) and honours `prefers-reduced-motion` through `index.css`'s global rule. `RetrievalTab.test.tsx` fails on all three if the spinner or the gerund goes, and on the outcome the button OUTLIVES (`unresolved`) if either is left behind after the write settles. The toast reports the server's own verdict, not the status code: `Threshold recorded against <model>`, `Threshold recorded — no <basis> model is assigned`, or an error naming the reason it was left alone. **The muted line carries the same control** (`Record <value>`), and it is the branch that needed it: its copy told the operator to "save to record it against the live model" while Save only diffs values and that branch rendered no button, so on every instance upgraded with a live threshold — the exact instance the swap runbook's go/no-go step is written for — the note was permanent and recording the current number was reachable only by changing the gate to a different number and back. Fixing the amber branch and leaving its sibling is how a fix becomes half a fix. `RetrievalTab.test.tsx` fails if an unrelated knob's save carries a stale threshold, if Save arms on staleness, if Keep discards a draft elsewhere, if the strip stops being the immediately-preceding sibling of its control (order alone passed for a strip parked four sections away), if either notice reads the draft instead of `saved`, and if the muted line stops offering a remedy the panel can perform. Its copy names the ACTION, not the outcome — "record the model behind it now", never "against the live model" — because that branch has no calibration object and therefore no live pair to name, and its reachable case (a rerank threshold predating #1114 on an instance with the stage unassigned) records "tuned against nothing".
 
 Inline code resolves `--inline-code-color` in **both** themes. Paper declares its own value (#7041a8) but a later `[data-theme-type="light"]` rule used to hardcode a red over it, so the token was dead and the two themes rendered different hues rather than one hue at two lightnesses. Retune the token, never re-add a `color` there. `::selection` is mixed from `--color-primary` at 28% so body text keeps 4.5:1 on top of it — there was no rule at all before, which left the editor's highest-frequency interaction at the UA default blue. `workspace-themes.test.ts` guards all of this: the quality badge is parsed for `status-*` and for hex literals, the light inline-code rule for a `color` declaration, and `::selection` for existence and for resolving the token. Each assertion was verified to **fail** against the pre-change source, not merely to pass after it.
 

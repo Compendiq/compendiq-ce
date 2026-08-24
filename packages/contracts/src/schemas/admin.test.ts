@@ -52,6 +52,11 @@ const validReadPayload = {
   ragImageLegEnabled: true,
   // #1115 P4 — how many retrieved images the answer path may show the model.
   ragAnswerMaxImages: 2,
+  // #1285 — the HNSW ef_search floor, required on read like every knob above.
+  ragEfSearch: 100,
+  // #1285 review r1 — and where it came from, so the panel can tell an
+  // instance still running on RAG_EF_SEARCH from one holding a saved row.
+  ragEfSearchFromEnv: false,
   // #1114 — required on read; both bases null on an instance that has never
   // set a threshold (the 0/0 default).
   ragConfidenceCalibration: { similarity: null, rerank: null },
@@ -488,6 +493,13 @@ describe('retrieval knobs (#1118)', () => {
       'ragImageLegEnabled',
       // #1115 P4 — and the answer-path cap.
       'ragAnswerMaxImages',
+      // #1285 — and the ef_search floor.
+      'ragEfSearch',
+      // #1285 review r1 — and its provenance. Required for the same reason
+      // the value is: the panel's remedy for an env-sourced floor is
+      // unreachable without it, so a payload that omits it is not one this
+      // panel can render honestly.
+      'ragEfSearchFromEnv',
     ] as const) {
       const { [key]: _dropped, ...without } = validReadPayload;
       expect(() => AdminSettingsSchema.parse(without), `${key} must be required`).toThrow();
@@ -713,6 +725,35 @@ describe('retrieval knobs (#1118)', () => {
     });
     it.each(['ragPinIdentifiers', 'ragMmrEnabled'] as const)('%s rejects a string', (key) => {
       expect(() => UpdateAdminSettingsSchema.parse({ [key]: 'true' })).toThrow();
+    });
+  });
+
+  // #1285 — the ef_search floor. Its range mirrors pgvector's own bound rather
+  // than a reader-invented one, and the reader mirrors it back: [1, 1000].
+  describe('rag_ef_search — [1, 1000] integer', () => {
+    it('accepts the bounds', () => {
+      expect(UpdateAdminSettingsSchema.parse({ ragEfSearch: 1 }).ragEfSearch).toBe(1);
+      expect(UpdateAdminSettingsSchema.parse({ ragEfSearch: 1000 }).ragEfSearch).toBe(1000);
+    });
+    // 0 is not "off" for this knob — pgvector's floor is 1 and the reader
+    // treats a zero row as unset, so the schema must not let one be saved.
+    it('rejects 0, above 1000, and non-integers', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ ragEfSearch: 0 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragEfSearch: 1001 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragEfSearch: 100.5 })).toThrow();
+      expect(() => AdminSettingsSchema.parse({ ...validReadPayload, ragEfSearch: '100' })).toThrow();
+    });
+
+    it('carries the provenance flag on read only — it is a fact, not a setting', () => {
+      expect(
+        AdminSettingsSchema.parse({ ...validReadPayload, ragEfSearchFromEnv: true })
+          .ragEfSearchFromEnv,
+      ).toBe(true);
+      // No write counterpart: the operator cannot ask the server to pretend
+      // the value came from somewhere else.
+      expect(
+        'ragEfSearchFromEnv' in UpdateAdminSettingsSchema.parse({ ragEfSearchFromEnv: true } as never),
+      ).toBe(false);
     });
   });
 });

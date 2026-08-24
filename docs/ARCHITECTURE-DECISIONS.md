@@ -1349,7 +1349,8 @@ are proposals until the owner agrees them, and #1114 asks for that agreement
    which figures ride on which is set out in *On the chunk count* in
    `docs/runbooks/shadow-reembed.md`). `halfvec(2560)` HNSW is effectively
    exact from `ef_search` = 40:
-   recall@10 = 0.9995 at the `RAG_EF_SEARCH` default of 100 and *identical* at
+   recall@10 = 0.9995 at the default floor of 100 (`RAG_EF_SEARCH` when this
+   was measured; `admin_settings.rag_ef_search` since #1285) and *identical* at
    200, 240, 400 and pgvector's 1000 ceiling, with the single non-matching row
    a 7×10⁻⁷ distance tie inside halfvec's own fp16 noise. Leave the default
    alone; the number that moved is **footprint** — 18.6 MiB of HNSW for 2,377
