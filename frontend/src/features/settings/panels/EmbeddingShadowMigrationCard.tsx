@@ -397,19 +397,25 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
       // Every phase card wears border-status-embedding/30: this surface IS
       // the embedding pipeline, and Steel is its reserved hue (ADR-010). It
       // used to be the informational indigo, which names no state.
-      <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
+      <div
+        className="nm-card border-status-embedding/30 p-3 text-sm"
+        data-testid="shadow-migration-card"
+        id="embedding-reembed-next-step"
+        role="status"
+      >
         <p ref={phaseProseRef} tabIndex={-1}>
-          Embedding model change detected (<b>{pending.model}</b>). The zero-downtime path
-          backfills the new vectors in the background — search keeps serving the current
-          index until you swap, and the swap is reversible until cleanup.
+          Start a re-embed to switch to <b>{pending.model}</b>. Search keeps the current index
+          until you swap. Do not save the assignment — that would switch the live model
+          immediately, and new vectors will not fit the current index.
         </p>
-        <div className="mt-2 flex gap-2">
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <button
+            type="button"
             className="nm-button-primary"
             disabled={busy}
             onClick={() => pending && void post('/admin/embedding/shadow-migration', 'Shadow backfill started', { endsMigrationWindow: false }, pending)}
           >
-            {busy ? 'Starting…' : 'Start zero-downtime re-embed (recommended)'}
+            {busy ? 'Starting…' : 'Start re-embed'}
           </button>
         </div>
         {endedStrip}

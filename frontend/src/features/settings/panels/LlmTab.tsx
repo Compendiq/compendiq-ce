@@ -126,6 +126,22 @@ export function LlmTab() {
     return { providerId, model };
   }, [rawAssignments, assignments, providers]);
 
+  const otherAssignmentsDirty = useMemo(() => {
+    if (!rawAssignments || !assignments) return false;
+    const diff = diffUsecaseAssignments(rawAssignments, assignments);
+    delete diff.embedding;
+    const nextImageTargetDims = clampImageEmbeddingTargetDimensions(imageTargetDims);
+    const imageTargetChanged =
+      imageTargetInitialized && nextImageTargetDims !== savedImageTargetDims;
+    return Object.keys(diff).length > 0 || imageTargetChanged;
+  }, [
+    rawAssignments,
+    assignments,
+    imageTargetDims,
+    imageTargetInitialized,
+    savedImageTargetDims,
+  ]);
+
   const save = useMutation<
     { ok: boolean; imageIndexWarning?: string },
     Error,
@@ -237,6 +253,11 @@ export function LlmTab() {
   function handleSave() {
     if (!assignments || !rawAssignments) return;
     const diff = diffUsecaseAssignments(rawAssignments, assignments);
+    // An unsaved embedding assignment is started from the row's re-embed
+    // control, never from this Save. Writing it here would switch the live
+    // model immediately, hide the re-embed card, and (on a width change)
+    // fail every page against the current column.
+    if (embeddingPending) delete diff.embedding;
     // Clamped BEFORE the comparison, not only before the request: a typed 32
     // against a stored 64 is not a change once the clamp has run, and diffing
     // the raw value would re-send the assignment and re-probe for a width the
@@ -283,43 +304,6 @@ export function LlmTab() {
         LLM provider + per-use-case assignments are shared across all users. Only admins can change them here.
       </div>
       <ProviderListSection />
-      <EmbeddingShadowMigrationCard
-        pending={embeddingPending}
-        // A swap writes an EXPLICIT (provider, model) pair server-side, and
-        // without re-seeding, the local copy stays frozen on the admin's
-        // pre-start edit — an inherit-shaped one then reads as a fresh "model
-        // changed" the moment the swap succeeds, re-raising the destructive
-        // re-embed banner over a completed migration (review r7).
-        //
-        // Only the EMBEDDING row is re-seeded, not the whole document
-        // (review r8): dropping the #949 hydration guard wholesale would
-        // silently revert unsaved edits to the other four use cases, which is
-        // the exact invariant that guard exists to protect. The embedding row
-        // has no unsaved edits worth keeping — it is pinned server-side for
-        // the duration, so a PUT touching it is refused with a 409.
-        onActiveChange={setShadowMigrationActive}
-        onLifecycleChange={() => {
-          const fresh = qc.getQueryData<UsecaseAssignments>(['llm-usecases']);
-          if (fresh) {
-            setAssignments((prev) => (prev ? { ...prev, embedding: fresh.embedding } : prev));
-          }
-        }}
-      />
-      {/* Suppressed while a shadow migration exists (review r9): `pending`
-          stays non-null for the whole migration — the assignment PUT is
-          deliberately 409'd, so the admin's edit is never saved — and the
-          destructive banner would otherwise sit under the shadow card
-          offering "Confirm + re-embed" for the same intent the card is
-          mid-way through serving. The server refuses that button anyway; the
-          point is not to offer the replaced path beside its replacement. */}
-      {!shadowMigrationActive && (
-        <EmbeddingReembedBanner
-          // Legacy 1024-dim default while settings load or on older backends
-          // whose payload predates the field.
-          currentDimensions={adminSettings?.embeddingDimensions ?? 1024}
-          pending={embeddingPending}
-        />
-      )}
       <UsecaseAssignmentsSection
         assignments={assignments}
         savedAssignments={rawAssignments}
@@ -327,15 +311,72 @@ export function LlmTab() {
         onChange={setAssignments}
         imageTargetDimensions={imageTargetDims}
         onImageTargetDimensionsChange={setImageTargetDims}
+        embeddingAction={
+          <div className="space-y-2">
+            <EmbeddingShadowMigrationCard
+              pending={embeddingPending}
+              // A swap writes an EXPLICIT (provider, model) pair server-side, and
+              // without re-seeding, the local copy stays frozen on the admin's
+              // pre-start edit — an inherit-shaped one then reads as a fresh "model
+              // changed" the moment the swap succeeds, re-raising the destructive
+              // re-embed banner over a completed migration (review r7).
+              //
+              // Only the EMBEDDING row is re-seeded, not the whole document
+              // (review r8): dropping the #949 hydration guard wholesale would
+              // silently revert unsaved edits to the other four use cases, which is
+              // the exact invariant that guard exists to protect. The embedding row
+              // has no unsaved edits worth keeping — it is pinned server-side for
+              // the duration, so a PUT touching it is refused with a 409.
+              onActiveChange={setShadowMigrationActive}
+              onLifecycleChange={() => {
+                const fresh = qc.getQueryData<UsecaseAssignments>(['llm-usecases']);
+                if (fresh) {
+                  setAssignments((prev) => (prev ? { ...prev, embedding: fresh.embedding } : prev));
+                }
+              }}
+            />
+            {/* Suppressed while a shadow migration exists (review r9): `pending`
+                stays non-null for the whole migration — the assignment PUT is
+                deliberately 409'd, so the admin's edit is never saved — and the
+                destructive path would otherwise sit under the shadow card
+                offering the same intent the card is mid-way through serving. */}
+            {!shadowMigrationActive && (
+              <EmbeddingReembedBanner
+                currentDimensions={adminSettings?.embeddingDimensions ?? 1024}
+                pending={embeddingPending}
+              />
+            )}
+          </div>
+        }
       />
-      <div className="flex gap-3">
-        <button
-          className="nm-button-primary"
-          disabled={save.isPending}
-          onClick={handleSave}
-        >
-          {save.isPending ? 'Saving…' : 'Save use-case assignments'}
-        </button>
+      <div className="space-y-2">
+        {embeddingPending && (
+          <p
+            id="usecase-save-embedding-hint"
+            data-testid="usecase-save-embedding-hint"
+            className="text-xs text-muted-foreground"
+          >
+            Start the re-embed from the Embedding row. Saving would switch the live model
+            before the index is ready.
+          </p>
+        )}
+        <div className="flex gap-3">
+          <button
+            type="button"
+            className="nm-button-primary"
+            disabled={save.isPending || (embeddingPending !== null && !otherAssignmentsDirty)}
+            onClick={handleSave}
+            {...(embeddingPending
+              ? { 'aria-describedby': 'usecase-save-embedding-hint' }
+              : {})}
+          >
+            {save.isPending
+              ? 'Saving…'
+              : embeddingPending && otherAssignmentsDirty
+                ? 'Save other use-case assignments'
+                : 'Save use-case assignments'}
+          </button>
+        </div>
       </div>
 
       {/* Runtime limits — per-user concurrent-SSE-stream cap (#268) */}

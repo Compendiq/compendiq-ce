@@ -59,7 +59,7 @@ describe('EmbeddingReembedBanner', () => {
       />,
       { wrapper: Wrapper },
     );
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    fireEvent.click(screen.getByRole('button', { name: /wipe current index/i }));
     await waitFor(() => {
       expect(spy).toHaveBeenCalledWith(
         expect.stringContaining('/admin/embedding/probe'),
@@ -86,7 +86,7 @@ describe('EmbeddingReembedBanner', () => {
       />,
       { wrapper: Wrapper },
     );
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    fireEvent.click(screen.getByRole('button', { name: /wipe current index/i }));
     await screen.findByText(/delete all existing embeddings/i);
     expect(screen.getByText(/1024 → 768/)).toBeTruthy();
   });
@@ -112,7 +112,7 @@ describe('EmbeddingReembedBanner', () => {
       />,
       { wrapper: Wrapper },
     );
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    fireEvent.click(screen.getByRole('button', { name: /wipe current index/i }));
     await screen.findByText(/delete all existing embeddings/i);
 
     expect(screen.queryByText(/re-embed worker not yet implemented/i)).toBeNull();
@@ -142,7 +142,7 @@ describe('EmbeddingReembedBanner', () => {
       />,
       { wrapper: Wrapper },
     );
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    fireEvent.click(screen.getByRole('button', { name: /wipe current index/i }));
     await screen.findByText(/delete all existing embeddings/i);
     fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
     await waitFor(() => {
@@ -180,7 +180,7 @@ describe('EmbeddingReembedBanner', () => {
       />,
       { wrapper: Wrapper },
     );
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    fireEvent.click(screen.getByRole('button', { name: /wipe current index/i }));
     await screen.findByText(/inconsistent until re-embedded/i);
     fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
     await waitFor(() => {
@@ -235,7 +235,7 @@ describe('EmbeddingReembedBanner', () => {
       { wrapper: Wrapper },
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    fireEvent.click(screen.getByRole('button', { name: /wipe current index/i }));
     await screen.findByText(/inconsistent until re-embedded/i);
     fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
 

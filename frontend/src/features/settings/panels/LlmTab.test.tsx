@@ -321,13 +321,71 @@ describe('LlmTab', () => {
     render(<LlmTab />, { wrapper: Wrapper });
     await screen.findByText('Use case assignments');
     // No banner initially.
-    expect(screen.queryByRole('button', { name: /probe/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /start re-embed/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /wipe current index/i })).toBeNull();
     // Change embedding provider to providerB.
     fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
       target: { value: providerB.id },
     });
+    const row = await screen.findByTestId('usecase-row-embedding');
+    expect(await within(row).findByRole('button', { name: /start re-embed/i })).toBeTruthy();
+    expect(within(row).getByRole('button', { name: /wipe current index/i })).toBeTruthy();
+  });
+
+  it('an embedding-only change disables Save so it cannot go live without a re-embed', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
+      target: { value: providerB.id },
+    });
+
+    const save = await screen.findByRole('button', { name: /save use-case assignments/i });
+    expect(save).toBeDisabled();
+    expect(screen.getByTestId('usecase-save-embedding-hint')).toHaveTextContent(
+      /start the re-embed from the Embedding row/i,
+    );
+
+    fireEvent.click(save);
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: /probe/i })).toBeTruthy();
+      const put = spy.mock.calls.find(
+        ([input, init]) =>
+          String(typeof input === 'string' ? input : (input as URL).toString()).endsWith('/admin/llm-usecases')
+          && (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(put).toBeUndefined();
+    });
+  });
+
+  it('saving other use cases while embedding is pending omits the embedding assignment', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
+      target: { value: providerB.id },
+    });
+    fireEvent.change(screen.getByTestId('usecase-chat-provider'), {
+      target: { value: providerB.id },
+    });
+
+    const save = await screen.findByRole('button', { name: /save other use-case assignments/i });
+    expect(save).not.toBeDisabled();
+    fireEvent.click(save);
+
+    await waitFor(() => {
+      const put = spy.mock.calls.find(
+        ([input, init]) =>
+          String(typeof input === 'string' ? input : (input as URL).toString()).endsWith('/admin/llm-usecases')
+          && (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(put).toBeTruthy();
+      const body = JSON.parse(String((put![1] as RequestInit).body));
+      expect(body.chat).toEqual({ providerId: providerB.id });
+      expect(body.embedding).toBeUndefined();
     });
   });
 
@@ -390,8 +448,7 @@ describe('LlmTab', () => {
     // The shadow card is up…
     expect(await screen.findByText(/pages backfilled/i)).toBeInTheDocument();
     // …and the destructive path it replaces is not offered beside it.
-    await waitFor(() => expect(screen.queryByRole('button', { name: /probe/i })).toBeNull());
-    expect(screen.queryByText(/Embedding provider\/model changed/i)).toBeNull();
+    await waitFor(() => expect(screen.queryByRole('button', { name: /wipe current index/i })).toBeNull());
   });
 
   it('a completed swap does not re-raise the destructive re-embed banner (review r8)', async () => {
@@ -859,7 +916,7 @@ describe('LlmTab', () => {
     fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
       target: { value: providerB.id },
     });
-    fireEvent.click(await screen.findByRole('button', { name: /probe/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /wipe current index/i }));
     // Probe returns the same dims → confirm copy renders the settings value.
     await screen.findByText(/dimension stays at 768/i);
 
@@ -880,7 +937,7 @@ describe('LlmTab', () => {
     fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
       target: { value: providerB.id },
     });
-    fireEvent.click(await screen.findByRole('button', { name: /probe/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /wipe current index/i }));
     await screen.findByText(/dimension stays at 1024/i);
   });
 

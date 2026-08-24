@@ -173,12 +173,21 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/permanently deletes/i);
   });
 
+  it('tells the operator not to save the assignment first', async () => {
+    mockApi({ active: false, migration: null });
+    renderCard(PENDING);
+    const card = await screen.findByTestId('shadow-migration-card');
+    expect(card).toHaveTextContent(/do not save the assignment/i);
+    expect(card).toHaveTextContent(/start re-embed/i);
+    expect(screen.getByRole('button', { name: /^Start re-embed$/i })).toHaveClass('nm-button-primary');
+  });
+
   it('offers the zero-downtime path for a pending model change and starts it', async () => {
     const calls: Array<{ url: string; method: string }> = [];
     mockApi({ active: false, migration: null }, calls);
     renderCard(PENDING);
 
-    const startBtn = await screen.findByRole('button', { name: /zero-downtime re-embed/i });
+    const startBtn = await screen.findByRole('button', { name: /^Start re-embed$/i });
     fireEvent.click(startBtn);
 
     await waitFor(() => {

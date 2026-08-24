@@ -146,13 +146,13 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
       <div className="nm-card border-destructive/30 p-3 text-sm">
         {heavy ? (
           <p>
-            ⚠ Dimension change: <b>{currentDimensions} → {newDims}</b>. This will{' '}
+            Dimension change: <b>{currentDimensions} → {newDims}</b>. This will{' '}
             <b>delete all existing embeddings</b>, rewrite the column type, and rebuild the
             HNSW index. Continue?
           </p>
         ) : (
           <p>
-            ⚠ Embedding model changed (dimension stays at {currentDimensions}). Existing
+            Embedding model changed (dimension stays at {currentDimensions}). Existing
             vectors will be inconsistent until re-embedded. Continue?
           </p>
         )}
@@ -203,15 +203,13 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
   }
 
   return (
-    <div className="nm-card border-warning/30 flex items-center justify-between p-3 text-sm">
-      <span>⚠ Embedding provider/model changed. Probe and re-embed required.</span>
-      <button
-        className="nm-button-primary"
-        disabled={stage !== 'idle'}
-        onClick={start}
-      >
-        {stage === 'probing' ? 'Probing…' : stage === 'running' ? 'Queuing…' : 'Probe & re-embed'}
-      </button>
-    </div>
+    <button
+      type="button"
+      className="nm-button-ghost"
+      disabled={stage !== 'idle'}
+      onClick={start}
+    >
+      {stage === 'probing' ? 'Probing…' : stage === 'running' ? 'Queuing…' : 'Wipe current index instead'}
+    </button>
   );
 }
