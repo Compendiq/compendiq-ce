@@ -55,24 +55,26 @@ describe('ADMIN-GUIDE hosted OpenAI + DeepSeek (#1456)', () => {
     expect(troubleshooting).toMatch(/non-sentinel\s+saved URL is not overridden/);
   });
 
-  it('hedges DeepSeek strict thinking / reasoning_content on #1457 until that PR is on dev (D5)', () => {
-    expect(guide).toMatch(/#1457/);
-    expect(guide).toMatch(/strict thinking host/i);
-    expect(guide).toMatch(/`think`[\s\S]{0,40}`chat_template_kwargs`/);
-    expect(guide).toMatch(/do \*\*not\*\* assume Think-on against DeepSeek cannot 400/i);
-    // Must not claim D5 as already live on current dev.
-    expect(guide).not.toMatch(
-      /Hosted DeepSeek is a \*\*strict thinking host\*\*: Think never sends/,
+  it('documents hosted DeepSeek as a live strict thinking host (D5 / #1457)', () => {
+    expect(guide).toMatch(
+      /Hosted DeepSeek is a \*\*strict thinking host\*\*: Think never sends `think` or\s*`chat_template_kwargs`/,
     );
+    expect(guide).toMatch(/`reasoning_content`/);
+    // Must not keep the pre-merge hedge now that #1457 is on dev.
+    expect(guide).not.toMatch(/do \*\*not\*\* assume Think-on against DeepSeek cannot 400/i);
+    expect(guide).not.toMatch(/Until #1457 is on/);
   });
 
-  it('hedges vendor presets on #1458 and keeps manual URL recipes that work today', () => {
-    expect(guide).toMatch(/#1458/);
-    expect(guide).toMatch(/blank form/i);
+  it('documents live vendor presets (#1458) and Start re-embed for OpenAI embeddings', () => {
+    expect(guide).toMatch(/Pick a \*\*preset\*\*/);
+    expect(guide).toMatch(/\|\s*Preset\s*\|\s*\*\*OpenAI\*\*/);
+    expect(guide).toMatch(/\|\s*Preset\s*\|\s*\*\*DeepSeek\*\*/);
     expect(guide).toContain('https://api.openai.com/v1');
     expect(guide).toContain('https://api.deepseek.com/v1');
     expect(guide).toMatch(/Start re-embed/);
     expect(guide).not.toMatch(/that triggers a re-embed/);
+    expect(guide).not.toMatch(/blank form/i);
+    expect(guide).not.toMatch(/until that\s+merges/i);
   });
 
   it('points connectivity checks at the provider-row Test control, not a modal-only button', () => {

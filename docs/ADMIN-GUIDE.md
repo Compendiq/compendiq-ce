@@ -152,12 +152,10 @@ is no separate OpenAI SDK path and no DeepSeek-specific protocol.
 #### Add a provider
 
 1. Open **Settings → AI → AI Models → LLM providers** and click **+ Add**.
-2. Fill **Base URL**, bearer auth, and a default model by hand. The Add modal
-   on current `dev` is still a blank form (placeholder
-   `http://host.docker.internal:1234/v1` for LM Studio / vLLM in Docker).
-   Vendor presets that prefill OpenAI / DeepSeek / … land in
-   [#1458](https://github.com/Compendiq/compendiq-ce/pull/1458) — until that
-   merges, paste the URLs and model ids from the recipes below.
+2. Pick a **preset** (OpenAI, DeepSeek, …) to fill the base URL, bearer auth,
+   and a suggested default model — or leave **Custom** blank for a local
+   server (`http://host.docker.internal:1234/v1` for LM Studio / vLLM in
+   Docker). Typed values are not overwritten silently when you change preset.
 3. Paste the API key into the password field (bearer). Keys are AES-256-GCM
    at rest; the UI only ever shows `hasApiKey` / `keyPreview`.
 4. Set or edit the default model id, then **Save**.
@@ -171,7 +169,7 @@ is no separate OpenAI SDK path and no DeepSeek-specific protocol.
 
 | Field | Value |
 |-------|-------|
-| Name | e.g. **OpenAI** (type freely; preset fill arrives with [#1458](https://github.com/Compendiq/compendiq-ce/pull/1458)) |
+| Preset | **OpenAI** |
 | Base URL | `https://api.openai.com/v1` |
 | Auth | Bearer + your OpenAI API key |
 | Suggested model | `gpt-4.1-mini` (editable; type any id the account can call) |
@@ -187,20 +185,17 @@ are not cutting over).
 
 | Field | Value |
 |-------|-------|
-| Name | e.g. **DeepSeek** (type freely; preset fill arrives with [#1458](https://github.com/Compendiq/compendiq-ce/pull/1458)) |
+| Preset | **DeepSeek** |
 | Base URL | `https://api.deepseek.com/v1` |
 | Auth | Bearer + your DeepSeek API key |
 | Suggested model | `deepseek-chat` (editable; `deepseek-reasoner` works on the same `/v1`) |
 
 Save, **Test**, assign **Chat** (and other chat-shaped use cases as needed).
 
-Hosted DeepSeek thinking extras land in
-[#1457](https://github.com/Compendiq/compendiq-ce/pull/1457): that PR adds
-`api.deepseek.com` as a **strict thinking host** so Think never sends `think`
-or `chat_template_kwargs` (those fields 400 there) and maps
-`reasoning_content` onto the existing Think channel. Until #1457 is on
-`dev`, do **not** assume Think-on against DeepSeek cannot 400 — current
-`dev` still treats only `api.openai.com` / Azure as strict.
+Hosted DeepSeek is a **strict thinking host**: Think never sends `think` or
+`chat_template_kwargs` to `api.deepseek.com` (those fields 400 there).
+Reasoning models that stream `reasoning_content` still return the visible
+answer on `content`; with Think off the reasoning channel is dropped.
 
 #### Chat-only hosts must not cover embedding / rerank / image embedding
 
