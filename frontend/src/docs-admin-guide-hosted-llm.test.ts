@@ -44,11 +44,37 @@ describe('ADMIN-GUIDE hosted OpenAI + DeepSeek (#1456)', () => {
       guide.indexOf('### Deprecated LLM env vars (bootstrap-only)'),
     );
     expect(primary).not.toMatch(/\|\s*`LLM_PROVIDER`\s*\|/);
+    // OLLAMA_BASE_URL's sentinel rewrite is named; LLM_BEARER_TOKEN is not a fake Ollama auth seed.
+    expect(guide).toMatch(/sentinel `http:\/\/localhost:11434\/v1`/);
+    expect(guide).toMatch(/not\*\* read as an Ollama auth seed/i);
+    // Troubleshooting must not claim the env never touches a saved row (sentinel rewrite).
+    const troubleshooting = guide.slice(guide.indexOf('### LLM requests fail or time out'));
+    expect(troubleshooting).not.toMatch(
+      /only seeds an empty\s+table — it does not override a saved row/,
+    );
+    expect(troubleshooting).toMatch(/non-sentinel\s+saved URL is not overridden/);
   });
 
-  it('documents hosted DeepSeek as a strict thinking host (D5)', () => {
-    expect(guide).toMatch(/strict thinking host/i);
-    expect(guide).toMatch(/`think` or\s*`chat_template_kwargs`/);
+  it('documents hosted DeepSeek as a live strict thinking host (D5 / #1457)', () => {
+    expect(guide).toMatch(
+      /Hosted DeepSeek is a \*\*strict thinking host\*\*: Think never sends `think` or\s*`chat_template_kwargs`/,
+    );
+    expect(guide).toMatch(/`reasoning_content`/);
+    // Must not keep the pre-merge hedge now that #1457 is on dev.
+    expect(guide).not.toMatch(/do \*\*not\*\* assume Think-on against DeepSeek cannot 400/i);
+    expect(guide).not.toMatch(/Until #1457 is on/);
+  });
+
+  it('documents live vendor presets (#1458) and Start re-embed for OpenAI embeddings', () => {
+    expect(guide).toMatch(/Pick a \*\*preset\*\*/);
+    expect(guide).toMatch(/\|\s*Preset\s*\|\s*\*\*OpenAI\*\*/);
+    expect(guide).toMatch(/\|\s*Preset\s*\|\s*\*\*DeepSeek\*\*/);
+    expect(guide).toContain('https://api.openai.com/v1');
+    expect(guide).toContain('https://api.deepseek.com/v1');
+    expect(guide).toMatch(/Start re-embed/);
+    expect(guide).not.toMatch(/that triggers a re-embed/);
+    expect(guide).not.toMatch(/blank form/i);
+    expect(guide).not.toMatch(/until that\s+merges/i);
   });
 
   it('points connectivity checks at the provider-row Test control, not a modal-only button', () => {
