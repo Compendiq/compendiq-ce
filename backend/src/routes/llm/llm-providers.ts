@@ -16,6 +16,7 @@ import {
 import {
   listModels as clientListModels,
   invalidateBreaker,
+  invalidateDispatcher,
   type ProviderConfig,
 } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
@@ -427,28 +428,25 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
         throw err;
       }
       let apiKey = body.apiKey ?? null;
-      let providerId: string | null = null;
       if (!apiKey && body.providerId) {
         const stored = await getProviderById(body.providerId);
         if (!stored) return reply.code(404).send({ error: 'Provider not found' });
         apiKey = stored.apiKey;
-        providerId = stored.id;
       }
-      // Draft probes must not share a breaker keyed on the URL: three 401s
-      // then a good key would look unreachable. A unique id per request,
-      // dropped after the probe, keeps Test connection independent of
-      // saved-provider breakers.
-      const draftId = providerId ?? `probe:${randomUUID()}`;
+      // Never key listModels on a saved provider UUID: three failures would
+      // open the live production breaker. providerId is lookup-only.
+      const probeId = `probe:${randomUUID()}`;
       try {
         return await probeProvider({
-          providerId: draftId,
+          providerId: probeId,
           baseUrl: body.baseUrl,
           apiKey,
           authType: body.authType,
           verifySsl: body.verifySsl,
         });
       } finally {
-        if (!providerId) invalidateBreaker(draftId);
+        invalidateBreaker(probeId);
+        invalidateDispatcher(probeId);
       }
     },
   );

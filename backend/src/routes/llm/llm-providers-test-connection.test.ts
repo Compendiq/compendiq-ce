@@ -22,11 +22,9 @@ vi.mock('../../domains/llm/services/llm-provider-service.js', () => ({
 }));
 
 const llm = vi.hoisted(() => ({
-  checkHealth: vi.fn(async () => ({ connected: true })),
   listModels: vi.fn(async () => [{ name: 'gpt-4o' }]),
 }));
 vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
-  checkHealth: (...a: unknown[]) => llm.checkHealth(...(a as [])),
   listModels: (...a: unknown[]) => llm.listModels(...(a as [])),
   invalidateBreaker: vi.fn(),
   invalidateDispatcher: vi.fn(),
@@ -72,7 +70,6 @@ describe('POST /api/admin/llm-providers/test', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     llm.listModels.mockResolvedValue([{ name: 'gpt-4o' }, { name: 'gpt-4.1-mini' }]);
-    llm.checkHealth.mockResolvedValue({ connected: true });
     svc.getById.mockResolvedValue(null);
   });
 
@@ -123,8 +120,9 @@ describe('POST /api/admin/llm-providers/test', () => {
     const ids = llm.listModels.mock.calls.map((c) => (c[0] as { providerId: string }).providerId);
     expect(new Set(ids).size).toBe(3);
     expect(ids.every((id) => id.startsWith('probe:') && id !== 'probe:https://api.openai.com/v1')).toBe(true);
-    const { invalidateBreaker } = await import('../../domains/llm/services/openai-compatible-client.js');
+    const { invalidateBreaker, invalidateDispatcher } = await import('../../domains/llm/services/openai-compatible-client.js');
     expect(vi.mocked(invalidateBreaker).mock.calls.map((c) => c[0])).toEqual(ids);
+    expect(vi.mocked(invalidateDispatcher).mock.calls.map((c) => c[0])).toEqual(ids);
   });
 
   it('sanitizes a 401 as a bad key and never echoes the secret or upstream body', async () => {
@@ -188,9 +186,39 @@ describe('POST /api/admin/llm-providers/test', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().connected).toBe(true);
     expect(llm.listModels).toHaveBeenCalledWith(
-      expect.objectContaining({ providerId: PROVIDER_ID, apiKey: 'sk-stored-secret' }),
+      expect.objectContaining({ apiKey: 'sk-stored-secret' }),
     );
     expect(JSON.stringify(res.json())).not.toMatch(/sk-/);
+  });
+
+  it('does not key the live provider breaker when POST /test looks up a stored key', async () => {
+    svc.getById.mockResolvedValue({
+      id: PROVIDER_ID,
+      baseUrl: 'https://api.mistral.ai/v1',
+      apiKey: 'sk-stored-secret',
+      authType: 'bearer',
+      verifySsl: false,
+    });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/llm-providers/test',
+      payload: {
+        providerId: PROVIDER_ID,
+        baseUrl: 'https://api.mistral.ai/v1',
+        authType: 'bearer',
+        verifySsl: false,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const cfg = llm.listModels.mock.calls[0]?.[0] as { providerId: string };
+    expect(cfg.providerId).toMatch(/^probe:/);
+    expect(cfg.providerId).not.toBe(PROVIDER_ID);
+    const { invalidateBreaker, invalidateDispatcher } = await import(
+      '../../domains/llm/services/openai-compatible-client.js'
+    );
+    expect(vi.mocked(invalidateBreaker)).toHaveBeenCalledWith(cfg.providerId);
+    expect(vi.mocked(invalidateDispatcher)).toHaveBeenCalledWith(cfg.providerId);
+    expect(vi.mocked(invalidateBreaker).mock.calls.map((c) => c[0])).not.toContain(PROVIDER_ID);
   });
 
   it('keeps POST /:id/test on the same probe path (sampleModelsCount + models)', async () => {
