@@ -50,13 +50,25 @@ export interface OnboardingStep {
  * answered question fired another `PUT /settings`.
  *
  * A `WeakMap` rather than a module-level `Set` so the record dies with the
- * QueryClient it belongs to: a `Set` would leak across the whole test file and,
- * in the app, across a client rebuilt on sign-out.
+ * QueryClient it belongs to, which keeps it out of every other test file's way.
+ *
+ * **The QueryClient is NOT rebuilt on sign-out.** `main.tsx` builds exactly one
+ * at module scope and login is a pure SPA transition, so this record outlives a
+ * logout the way the query cache would — issue #885's class of bug. It is
+ * therefore cleared by `useClearCacheOnLogout`, the single choke point every
+ * `clearAuth` path already flows through: without that, the second user in a
+ * tab has their milestones silently suppressed for the rest of the page load
+ * while their server-side flags are still false.
  *
  * The entry is added optimistically and **removed again if the write fails**,
  * which is what keeps the documented retry-on-the-next-occurrence behaviour of
  * a `silentErrors` auto-mark: a flag lost to a network blip must not be
- * suppressed for the rest of the page load.
+ * suppressed for the rest of the page load. That release runs from the
+ * mutation's **hook-level** `onError` and not from `mutate`'s own options,
+ * because react-query delivers the latter through the MutationObserver, which
+ * `useMutation` detaches on unmount — and `useCreatePage().onSuccess` marks its
+ * milestone and navigates away in the same breath, so the caller is normally
+ * already gone by the time the write settles.
  */
 const flagsWrittenThisSession = new WeakMap<QueryClient, Set<OnboardingFlag>>();
 
@@ -69,6 +81,15 @@ function sessionWrites(queryClient: QueryClient): Set<OnboardingFlag> {
   return written;
 }
 
+/**
+ * Forget every flag this client has written, so the next user in the tab starts
+ * from their own server state. Called by `useClearCacheOnLogout` beside the
+ * cache wipe — see the record's own note above for why that is necessary.
+ */
+export function resetOnboardingSessionWrites(queryClient: QueryClient): void {
+  flagsWrittenThisSession.delete(queryClient);
+}
+
 export interface OnboardingActions {
   /**
    * Record one milestone. Idempotent and fire-and-forget: the write is skipped
@@ -77,8 +98,15 @@ export interface OnboardingActions {
    * this on every success without turning every send into a second request.
    */
   markComplete: (flag: OnboardingFlag) => void;
-  /** Hide the checklist for this user, persistently. */
-  dismiss: () => void;
+  /**
+   * Hide the checklist for this user, persistently.
+   *
+   * `onError` is safe as a mutate-level option here — unlike the auto-marks
+   * above — because the only caller is the checklist card, which `PagesPage`
+   * mounts unconditionally and keeps mounted while it renders nothing. It is
+   * how the card rolls back its optimistic hide.
+   */
+  dismiss: (options?: { onError?: () => void }) => void;
   /** Bring it back — the User Menu's "Getting Started Guide". */
   reopen: () => void;
 }
@@ -95,7 +123,18 @@ export function useOnboardingActions(): OnboardingActions {
   const queryClient = useQueryClient();
   // Nobody asked for an auto-mark, so neither outcome is worth a toast — see
   // `UpdateSettingsToastOptions`.
-  const autoMark = useUpdateSettings({ silent: true, silentErrors: true });
+  const autoMark = useUpdateSettings({
+    silent: true,
+    silentErrors: true,
+    // Hook-level, not `mutate`'s second argument — the caller is usually
+    // unmounted by now (see the session record's note).
+    onWriteError: (_error, body) => {
+      const state = (body as { onboardingState?: Record<string, unknown> }).onboardingState;
+      if (!state) return;
+      const written = sessionWrites(queryClient);
+      for (const flag of Object.keys(state)) written.delete(flag as OnboardingFlag);
+    },
+  });
   // Dismiss/Reopen are button presses: no confirmation (there is nothing the
   // user is waiting to see beyond the card appearing or going), but a failure
   // has to be reported or the button looks broken.
@@ -110,16 +149,14 @@ export function useOnboardingActions(): OnboardingActions {
       const written = sessionWrites(queryClient);
       if (written.has(flag)) return;
       written.add(flag);
-      autoMarkMutate(
-        { onboardingState: { [flag]: true } },
-        { onError: () => written.delete(flag) },
-      );
+      autoMarkMutate({ onboardingState: { [flag]: true } });
     },
     [queryClient, autoMarkMutate],
   );
 
   const dismiss = useCallback(
-    () => explicitMutate({ onboardingState: { dismissed: true } }),
+    (options?: { onError?: () => void }) =>
+      explicitMutate({ onboardingState: { dismissed: true } }, { onError: options?.onError }),
     [explicitMutate],
   );
 

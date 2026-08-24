@@ -38,6 +38,16 @@ export interface UpdateSettingsToastOptions {
    * button started — see `silent` above.
    */
   silentErrors?: boolean;
+  /**
+   * Extra failure handling, run from the mutation's own `onError`.
+   *
+   * Deliberately **not** something a caller can pass to `mutate` instead:
+   * react-query delivers `mutate`'s callbacks through the MutationObserver,
+   * which `useMutation` detaches on unmount, so a fire-and-forget write whose
+   * caller navigates away — every onboarding auto-mark — would never see its
+   * own failure. The mutation keeps these options, so this fires either way.
+   */
+  onWriteError?: (error: Error, body: Record<string, unknown>) => void;
 }
 
 /**
@@ -50,7 +60,11 @@ export interface UpdateSettingsToastOptions {
  * for 5 minutes, so without this a user who just added a PAT would reopen
  * the version-history dialog and still be told to add one (#763 follow-up).
  */
-export function useUpdateSettings({ silent, silentErrors }: UpdateSettingsToastOptions = {}) {
+export function useUpdateSettings({
+  silent,
+  silentErrors,
+  onWriteError,
+}: UpdateSettingsToastOptions = {}) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -66,7 +80,8 @@ export function useUpdateSettings({ silent, silentErrors }: UpdateSettingsToastO
       }
       if (!silent) toast.success('Settings saved');
     },
-    onError: (err: Error) => {
+    onError: (err: Error, body) => {
+      onWriteError?.(err, body);
       if (!silentErrors) toast.error(err.message);
     },
   });

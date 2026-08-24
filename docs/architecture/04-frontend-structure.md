@@ -442,6 +442,21 @@ absent there and a cache-only guard let every answered question fire another
 `PUT`. A `WeakMap<QueryClient, Set<flag>>` carries the record, and a failed
 write releases its entry so the next occurrence still retries.
 
+Neither half of that is session-scoped by accident.
+
+- The QueryClient is **never rebuilt**: `main.tsx` builds one at module scope
+  and login is a pure SPA transition, so the record survives a sign-out the way
+  the query cache does (#885) and the next user in the tab had their milestones
+  skipped while their own flags were still false. `useClearCacheOnLogout` — the
+  single choke point every `clearAuth` path already flows through — calls
+  `resetOnboardingSessionWrites(queryClient)` beside its cache wipe.
+- The release-on-failure runs from the mutation's **hook-level** `onError`
+  (`useUpdateSettings({ onWriteError })`), never from `mutate`'s second
+  argument: react-query delivers those callbacks through the MutationObserver
+  that `useMutation` detaches on unmount, and `useCreatePage().onSuccess` marks
+  its milestone while `NewPagePage` navigates away, so the caller is normally
+  gone before the write settles.
+
 When all five are true, `useOnboarding({ trackCompletion: true })` — mounted by
 the card and nowhere else — writes `completedAt` and `dismissed: true` once and
 never again. **The completion line is driven by that server fact, not by an
@@ -454,13 +469,34 @@ resurfacing the panel. **User Menu → Getting Started Guide** brings the
 finished list (not a second congratulation — `completedAt` is set by then) back
 at any time by clearing `dismissed`.
 
+The congratulation is an **addition, not a replacement**: it renders above the
+five checked rows rather than instead of them. `shortcuts` is the one milestone
+completable in place, so when it is the fifth step the graduating render was the
+render that discarded the activated CTA below — Radix then restored focus on
+dialog close to a detached node and it fell to `<body>`. The `role="status"`
+region is mounted empty from the first paint and only its text changes: a live
+region inserted together with its content is announced inconsistently at best,
+and in the arrive-already-complete flow it was present on first paint, which is
+never announced at all.
+
+**Dismiss takes the card on the press**, optimistically, and rolls back (with
+the error toast `dismiss()` keeps) if the write fails. Waiting for the PUT and
+its refetch left the pressed control with no pending state and no visible effect
+for a whole round trip, so a second and third press each fired another write —
+and on the celebration it put the fully-checked list back on screen under a user
+who had just closed the congratulation for finishing it. The local override is
+released once the server reports the dismissal, so a User Menu reopen still
+brings the card back.
+
 Two focus rules follow from the card removing its own controls. Dismiss reports
 the removal to `PagesPage`, which moves focus to the Library heading
-(`tabIndex={-1}`) when the unmount really dropped it to `<body>` — the
-`RetrievalTab` Retry precedent. And a CTA the user has activated stays rendered
-for the life of the mount even once its step completes, because `shortcuts` is
-the one milestone that completes in place and its button used to disappear
-while the modal it opened was still on screen.
+(`tabIndex={-1}`) when the removal really dropped it to `<body>` — the
+`RetrievalTab` Retry precedent; a mouse click does not take focus to a button on
+every platform, so that guard has its own test rather than only its comment. And
+a CTA the user has activated stays rendered for the life of the mount even once
+its step completes, because `shortcuts` is the one milestone that completes in
+place and its button used to disappear while the modal it opened was still on
+screen.
 
 ## Enterprise gating
 

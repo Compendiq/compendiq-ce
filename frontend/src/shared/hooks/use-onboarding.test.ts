@@ -4,6 +4,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement } from 'react';
 import type { SettingsResponse } from '@compendiq/contracts';
 import { useOnboarding, useOnboardingActions, ONBOARDING_STEP_IDS } from './use-onboarding';
+import { useClearCacheOnLogout } from './useClearCacheOnLogout';
+import { useAuthStore } from '../../stores/auth-store';
 
 // Network boundary only.
 const apiFetchMock = vi.fn();
@@ -284,6 +286,66 @@ describe('useOnboardingActions — silent auto-marks', () => {
     act(() => result.current.markComplete('pageCreatedOrEdited'));
     await waitFor(() => expect(putBodies()).toHaveLength(2));
     expect(toastError).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The same retry, with the caller GONE before the write settles — which is
+   * the ordinary case, not a corner: `useCreatePage().onSuccess` marks the
+   * milestone and `NewPagePage` navigates to the created page in the same
+   * breath. `mutate`'s own `onError` is delivered through the MutationObserver
+   * that `useMutation` detaches on unmount, so the release has to come from the
+   * mutation's hook-level options or the flag stays suppressed for the rest of
+   * the page load.
+   */
+  it('releases a failed flag even when the caller unmounted before the write settled', async () => {
+    apiFetchMock.mockRejectedValueOnce(new Error('Network down')).mockResolvedValue({});
+    const { wrapper } = harness(undefined);
+    const first = renderHook(() => useOnboardingActions(), { wrapper });
+
+    act(() => first.result.current.markComplete('pageCreatedOrEdited'));
+    first.unmount();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(putBodies()).toHaveLength(1);
+
+    const second = renderHook(() => useOnboardingActions(), { wrapper });
+    act(() => second.result.current.markComplete('pageCreatedOrEdited'));
+    await waitFor(() => expect(putBodies()).toHaveLength(2));
+  });
+
+  /**
+   * The record is keyed by the QueryClient, and `main.tsx` builds exactly one
+   * at module scope: login is a pure SPA transition with no reload, so it
+   * outlives a sign-out the way the query cache does (#885). Without the reset
+   * beside that cache wipe, the second user in a tab has their milestones
+   * silently skipped while their own server flags are still false.
+   */
+  it('forgets the previous user record when the session ends in the same tab', async () => {
+    apiFetchMock.mockResolvedValue({});
+    const { queryClient, wrapper } = harness(settingsFixture());
+    act(() => {
+      useAuthStore.getState().setAuth('tok', { id: '1', username: 'a', role: 'admin' });
+    });
+    const logoutProbe = renderHook(() => useClearCacheOnLogout(), { wrapper });
+    const userA = renderHook(() => useOnboardingActions(), { wrapper });
+
+    act(() => userA.result.current.markComplete('firstAiQueryMade'));
+    await waitFor(() => expect(putBodies()).toHaveLength(1));
+    userA.unmount();
+
+    act(() => {
+      useAuthStore.getState().clearAuth();
+    });
+    // The premise: the cache really is gone, so only the session record could
+    // still be suppressing the next user's write.
+    expect(queryClient.getQueryData(['settings'])).toBeUndefined();
+
+    const userB = renderHook(() => useOnboardingActions(), { wrapper });
+    act(() => userB.result.current.markComplete('firstAiQueryMade'));
+
+    await waitFor(() => expect(putBodies()).toHaveLength(2));
+    logoutProbe.unmount();
   });
 });
 

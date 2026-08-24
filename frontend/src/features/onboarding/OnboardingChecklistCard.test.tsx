@@ -96,6 +96,10 @@ function serveSettings(initial: SettingsResponse) {
     }
     return Promise.resolve(current);
   });
+  /** Move the served row on, for a milestone that landed somewhere else. */
+  return (next: SettingsResponse) => {
+    current = next;
+  };
 }
 
 function settingsPuts() {
@@ -290,13 +294,67 @@ describe('OnboardingChecklistCard — dismissal', () => {
     renderCard(settingsFixture(), onDismissed);
 
     fireEvent.click(screen.getByTestId('onboarding-dismiss'));
-    // Not while the write is still out and the button is still under focus.
-    expect(onDismissed).not.toHaveBeenCalled();
 
+    // The card goes on the press, so the report — and `PagesPage`'s focus
+    // rehome behind it — happens while the removal is what moved the focus,
+    // not a round-trip later.
     await waitFor(() =>
       expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument(),
     );
     expect(onDismissed).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * There is no pending state to render because there is no pending window:
+   * the card leaves on the press. Waiting for the PUT and its refetch left the
+   * button sitting there doing nothing, and each further press was another
+   * write.
+   */
+  it('takes the card away on the press, and cannot be pressed twice', async () => {
+    apiFetchMock.mockReturnValue(new Promise(() => {}));
+    renderCard(settingsFixture());
+
+    fireEvent.click(screen.getByTestId('onboarding-dismiss'));
+
+    expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(settingsPuts()).toHaveLength(1);
+  });
+
+  /**
+   * The optimistic hide is local, so it has to be released once the server
+   * agrees — otherwise the User Menu's Reopen clears `dismissed` and the card
+   * stays hidden anyway for the life of the mount.
+   */
+  it('comes back when the guide is reopened after a dismissal', async () => {
+    serveSettings(settingsFixture());
+    const { queryClient } = renderCard(settingsFixture());
+
+    fireEvent.click(screen.getByTestId('onboarding-dismiss'));
+    await waitFor(() =>
+      expect(queryClient.getQueryData<SettingsResponse>(['settings'])?.onboardingState?.dismissed)
+        .toBe(true),
+    );
+    expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument();
+
+    // What the User Menu's Reopen does: `dismissed` goes back to false.
+    act(() => {
+      queryClient.setQueryData(['settings'], settingsFixture());
+    });
+
+    expect(await screen.findByTestId('onboarding-checklist')).toBeInTheDocument();
+  });
+
+  it('brings the card back when the dismissal fails — the guide is not silently lost', async () => {
+    apiFetchMock.mockRejectedValue(new Error('Network down'));
+    renderCard(settingsFixture());
+
+    fireEvent.click(screen.getByTestId('onboarding-dismiss'));
+    expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument();
+
+    expect(await screen.findByTestId('onboarding-checklist')).toBeInTheDocument();
   });
 });
 
@@ -307,22 +365,89 @@ describe('OnboardingChecklistCard — graduation', () => {
     pageCreatedOrEdited: true,
   });
 
-  it('shows a completion state when the last step lands, and stops listing steps', async () => {
-    const { queryClient } = renderCard(
-      settingsFixture({ hasConfluencePat: true, selectedSpaces: ['ENG'] }, {
-        firstAiQueryMade: true,
-        shortcutsModalViewed: true,
-      }),
-    );
+  /**
+   * The congratulation is an addition, not a replacement. Discarding the list
+   * on the graduating render also discarded any CTA the user had activated —
+   * and `shortcuts` is the one step completable in place, so when it is the
+   * fifth the modal it opened was left with nothing to restore focus to.
+   */
+  it('shows a completion state when the last step lands, above the checked list', async () => {
+    const almost = settingsFixture({ hasConfluencePat: true, selectedSpaces: ['ENG'] }, {
+      firstAiQueryMade: true,
+      shortcutsModalViewed: true,
+    });
+    const serve = serveSettings(almost);
+    const { queryClient } = renderCard(almost);
     expect(screen.queryByTestId('onboarding-complete')).not.toBeInTheDocument();
 
     act(() => {
+      serve(allDone);
       queryClient.setQueryData(['settings'], allDone);
     });
 
-    const done = await screen.findByTestId('onboarding-complete');
-    expect(done).toHaveAttribute('role', 'status');
-    expect(screen.queryByRole('listitem')).not.toBeInTheDocument();
+    await screen.findByTestId('onboarding-complete');
+    expect(screen.getByTestId('onboarding-status')).toHaveAttribute('role', 'status');
+    expect(screen.getAllByRole('listitem')).toHaveLength(5);
+    // Nothing left to do, so nothing left to press.
+    expect(screen.queryByTestId('onboarding-cta-create-page')).not.toBeInTheDocument();
+  });
+
+  /**
+   * A live region announces a CHANGE to its content, so it has to be in the
+   * accessibility tree before the content arrives. Mounted together with its
+   * text it is announced inconsistently at best — and in the arrive-already-
+   * complete flow below it would be present on the very first paint, which is
+   * never announced.
+   */
+  it('keeps the live region mounted before there is anything to announce', () => {
+    renderCard(settingsFixture());
+    const region = screen.getByTestId('onboarding-status');
+    expect(region).toHaveAttribute('role', 'status');
+    expect(region).toBeEmptyDOMElement();
+  });
+
+  /**
+   * `shortcuts` is the only milestone completable without leaving `/`, so it is
+   * the only one that can be the FIFTH step pressed from this card. Its CTA
+   * must survive the render that graduates the user, or Radix restores focus on
+   * dialog close to a detached node and it falls to `<body>`.
+   */
+  it('keeps an activated CTA through the graduation it triggered', async () => {
+    const almost = settingsFixture({ hasConfluencePat: true, selectedSpaces: ['ENG'] }, {
+      firstAiQueryMade: true,
+      pageCreatedOrEdited: true,
+    });
+    const serve = serveSettings(almost);
+    const { queryClient } = renderCard(almost);
+
+    const cta = screen.getByTestId('onboarding-cta-shortcuts');
+    cta.focus();
+    fireEvent.click(cta);
+    expect(useKeyboardShortcutsStore.getState().isOpen).toBe(true);
+
+    act(() => {
+      serve(allDone);
+      queryClient.setQueryData(['settings'], allDone);
+    });
+
+    await screen.findByTestId('onboarding-complete');
+    expect(screen.getByTestId('onboarding-cta-shortcuts')).toBe(document.activeElement);
+  });
+
+  /**
+   * Pressing Dismiss on the congratulation used to clear `celebrating` while
+   * `dismissed` was still false a round-trip away, so the card fell back to the
+   * fully-checked five-row list — the user closed a congratulation and got a
+   * checklist.
+   */
+  it('goes away when the congratulation itself is dismissed', () => {
+    apiFetchMock.mockReturnValue(new Promise(() => {}));
+    renderCard(allDone);
+    expect(screen.getByTestId('onboarding-complete')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('onboarding-dismiss'));
+
+    expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument();
   });
 
   /**

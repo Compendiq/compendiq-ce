@@ -116,14 +116,35 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
   const [activated, setActivated] = useState<readonly OnboardingStepId[]>([]);
 
   /**
-   * A dismissal only counts once the card is really gone: `dismiss()` is a
-   * network round-trip, and until it lands the user's focus is still on a
-   * button that is still on screen.
+   * Dismiss removes the card on the press, not a round-trip later.
+   *
+   * `dismiss()` is a `PUT /settings` plus the `['settings']` refetch it
+   * invalidates, and waiting for both left the one control the user pressed
+   * with no pending state, no disabled state and no visible effect for that
+   * whole window — so a second and third press each fired another PUT. Worse,
+   * on the celebration the press cleared `celebrating` while `dismissed` was
+   * still false, which put the fully-checked five-row list back on screen: the
+   * user pressed Dismiss on a congratulation and got the checklist.
+   *
+   * Optimistic, and rolled back if the write fails — the card returns and
+   * `dismiss()`'s own error toast (it is `silent`, never `silentErrors`) says
+   * why. Once the server reports the dismissal the override is dropped again,
+   * or a User Menu reopen would find the card locally hidden forever.
+   */
+  const [dismissing, setDismissing] = useState(false);
+  const onScreen = !dismissing && (visible || celebrating);
+  useEffect(() => {
+    if (dismissed && dismissing) setDismissing(false);
+  }, [dismissed, dismissing]);
+
+  /**
+   * The removal is reported once the card is really gone — which is now the
+   * commit right after the press, so `PagesPage` rehomes focus at the moment
+   * the button under it disappears rather than a round-trip later.
    */
   const dismissPressed = useRef(false);
-  const onScreen = visible || celebrating;
   useEffect(() => {
-    if (!dismissPressed.current || onScreen) return;
+    if (!dismissPressed.current) return;
     dismissPressed.current = false;
     onDismissed?.();
   }, [onScreen, onDismissed]);
@@ -152,7 +173,8 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
   const handleDismiss = () => {
     dismissPressed.current = true;
     setCelebrating(false);
-    dismiss();
+    setDismissing(true);
+    dismiss({ onError: () => setDismissing(false) });
   };
 
   return (
@@ -189,69 +211,84 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
         </button>
       </div>
 
-      {celebrating ? (
-        <p
-          role="status"
-          data-testid="onboarding-complete"
-          className="mt-3 text-sm text-muted-foreground"
-        >
-          All five done — Compendiq is set up. You can reopen this guide from your
-          account menu.
-        </p>
-      ) : (
-        <ul className="mt-3 space-y-0.5">
-          {steps.map((step) => {
-            const copy = STEP_COPY[step.id];
-            return (
-              <li
-                key={step.id}
-                data-testid={`onboarding-step-${step.id}`}
-                data-complete={String(step.complete)}
-                className="flex items-center gap-2.5 py-1"
-              >
-                {step.complete ? (
-                  <Check size={15} className="shrink-0 text-foreground" aria-hidden="true" />
-                ) : (
-                  <span
-                    className="h-[15px] w-[15px] shrink-0 rounded-full border border-border-interactive"
-                    aria-hidden="true"
-                  />
-                )}
-                {/* Wraps rather than truncates: at phone widths a truncated
-                    instruction is the one thing the row exists to say. */}
+      {/* The live region is mounted from the first paint and only its TEXT
+          changes: a region inserted together with its content is announced
+          inconsistently at best, and in the flow this card is dominated by —
+          arriving at `/` already complete — it would be present on the first
+          paint, which is never announced at all. `sr-only` while empty, so an
+          idle region costs no layout. */}
+      <p
+        role="status"
+        data-testid="onboarding-status"
+        className={celebrating ? 'mt-3 text-sm text-muted-foreground' : 'sr-only'}
+      >
+        {celebrating ? (
+          <span data-testid="onboarding-complete">
+            All five done — Compendiq is set up. You can reopen this guide from your
+            account menu.
+          </span>
+        ) : null}
+      </p>
+
+      {/* The list stays through the graduation. Replacing it with the
+          completion note removed an activated CTA out from under the modal it
+          had opened: `shortcuts` is the one milestone completable in place, so
+          when it is the fifth step its own button vanished on exactly the
+          render that graduates, and Radix had nothing to restore focus to on
+          close — the failure `activated` exists to prevent. The five checked
+          rows are the evidence for the congratulation above them anyway. */}
+      <ul className="mt-3 space-y-0.5">
+        {steps.map((step) => {
+          const copy = STEP_COPY[step.id];
+          return (
+            <li
+              key={step.id}
+              data-testid={`onboarding-step-${step.id}`}
+              data-complete={String(step.complete)}
+              className="flex items-center gap-2.5 py-1"
+            >
+              {step.complete ? (
+                <Check size={15} className="shrink-0 text-foreground" aria-hidden="true" />
+              ) : (
                 <span
-                  id={`onboarding-step-title-${step.id}`}
-                  className={
-                    step.complete
-                      ? 'min-w-0 flex-1 text-sm text-muted-foreground'
-                      : 'min-w-0 flex-1 text-sm text-foreground'
-                  }
+                  className="h-[15px] w-[15px] shrink-0 rounded-full border border-border-interactive"
+                  aria-hidden="true"
+                />
+              )}
+              {/* Wraps rather than truncates: at phone widths a truncated
+                  instruction is the one thing the row exists to say. */}
+              <span
+                id={`onboarding-step-title-${step.id}`}
+                className={
+                  step.complete
+                    ? 'min-w-0 flex-1 text-sm text-muted-foreground'
+                    : 'min-w-0 flex-1 text-sm text-foreground'
+                }
+              >
+                {copy.title}
+              </span>
+              {/* The glyph is decoration; the state has to be readable. */}
+              <span className="sr-only">{step.complete ? 'Done' : 'Not done yet'}</span>
+              {(!step.complete || activated.includes(step.id)) && (
+                <button
+                  type="button"
+                  onClick={() => runStep(step.id)}
+                  data-testid={`onboarding-cta-${step.id}`}
+                  /* The visible label stays the accessible name (WCAG 2.5.3),
+                     but "Connect" and "New page" say nothing on their own to
+                     a reader browsing by control — the row title is the
+                     missing half, and DOM proximity is not an accessibility
+                     relationship. */
+                  aria-describedby={`onboarding-step-title-${step.id}`}
+                  className="nm-button-ghost h-8 shrink-0 px-2.5 text-xs"
                 >
-                  {copy.title}
-                </span>
-                {/* The glyph is decoration; the state has to be readable. */}
-                <span className="sr-only">{step.complete ? 'Done' : 'Not done yet'}</span>
-                {(!step.complete || activated.includes(step.id)) && (
-                  <button
-                    type="button"
-                    onClick={() => runStep(step.id)}
-                    data-testid={`onboarding-cta-${step.id}`}
-                    /* The visible label stays the accessible name (WCAG 2.5.3),
-                       but "Connect" and "New page" say nothing on their own to
-                       a reader browsing by control — the row title is the
-                       missing half, and DOM proximity is not an accessibility
-                       relationship. */
-                    aria-describedby={`onboarding-step-title-${step.id}`}
-                    className="nm-button-ghost h-8 shrink-0 px-2.5 text-xs"
-                  >
-                    {copy.cta}
-                  </button>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
+                  {copy.cta}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }

@@ -4,6 +4,7 @@ import { useAuthStore } from '../../stores/auth-store';
 import { forgetLastConfluenceSpace } from '../../features/pages/last-confluence-space';
 import { forgetRecentLibrarySpaces } from '../../features/pages/library-space-history';
 import { SETUP_STATUS_QUERY_KEY } from './useSetupStatus';
+import { resetOnboardingSessionWrites } from './use-onboarding';
 
 /**
  * Wipe the in-memory TanStack Query cache whenever the session ends.
@@ -45,6 +46,11 @@ export function useClearCacheOnLogout(): void {
       // clear() dropped mutation state too; keep doing that so an interrupted
       // mutation can't surface to whoever logs in next in this tab.
       queryClient.getMutationCache().clear();
+      // The onboarding auto-mark dedupe is keyed by this same never-rebuilt
+      // client (#1402), so it is exactly as stale as the cache above: without
+      // this the next user in the tab has their milestones suppressed for the
+      // rest of the page load while their own flags are still false.
+      resetOnboardingSessionWrites(queryClient);
       forgetLastConfluenceSpace();
       forgetRecentLibrarySpaces();
     }

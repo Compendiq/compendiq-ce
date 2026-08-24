@@ -3059,4 +3059,50 @@ describe('PagesPage — Getting Started checklist (#1402)', () => {
     );
     expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Library' }));
   });
+
+  /**
+   * The other half of the same rule (the `RetrievalTab` precedent): the rehome
+   * happens only when the removal really dropped focus to `<body>`. A mouse
+   * click does not move focus to a button on every platform, so the caret can
+   * still be in the search box when the card goes — and yanking it to a heading
+   * is a worse interruption than the one the rehome exists to fix.
+   */
+  it('leaves focus alone when the dismissal did not take it', async () => {
+    let dismissed = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+      if (url.includes('/pages/filters')) return json(mockFilterOptions);
+      if (url.includes('/spaces')) return json(mockSpaces);
+      if (url.includes('/sync/status')) return json({ status: 'idle' });
+      if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+      if (url.includes('/settings')) {
+        if (init?.method === 'PUT') {
+          const patch = JSON.parse(String(init.body)) as {
+            onboardingState?: { dismissed?: boolean };
+          };
+          if (patch.onboardingState?.dismissed !== undefined) {
+            dismissed = patch.onboardingState.dismissed;
+          }
+          return json({});
+        }
+        return json({ onboardingState: { dismissed } });
+      }
+      return json(mockPagesResponse);
+    });
+
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const dismiss = await screen.findByTestId('onboarding-dismiss');
+    // The caret is in the search box, and the click never takes it.
+    const elsewhere = screen.getByPlaceholderText(/search/i);
+    elsewhere.focus();
+    fireEvent.click(dismiss);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument(),
+    );
+    expect(document.activeElement).toBe(elsewhere);
+  });
 });
