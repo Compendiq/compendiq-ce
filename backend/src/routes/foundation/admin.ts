@@ -155,6 +155,35 @@ export async function adminRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // #1462: the Notion integration token is the same encryptPat ciphertext
+    // as confluence_pat. Sweeping only the PAT would strand it after the
+    // operator removes the old key.
+    const notionRows = await query<{ user_id: string; notion_integration_token: string }>(
+      'SELECT user_id, notion_integration_token FROM user_settings WHERE notion_integration_token IS NOT NULL',
+    );
+    total += notionRows.rows.length;
+    for (const row of notionRows.rows) {
+      try {
+        const reEncrypted = reEncryptPat(row.notion_integration_token);
+        if (reEncrypted) {
+          const updated = await query(
+            'UPDATE user_settings SET notion_integration_token = $1 WHERE user_id = $2 AND notion_integration_token = $3',
+            [reEncrypted, row.user_id, row.notion_integration_token],
+          );
+          if ((updated.rowCount ?? 0) > 0) {
+            rotated++;
+          } else {
+            skipped++;
+          }
+        } else {
+          skipped++;
+        }
+      } catch (err) {
+        errors++;
+        logger.error({ err, userId: row.user_id }, 'Failed to re-encrypt Notion token for user');
+      }
+    }
+
     // issue #738 / #762 review follow-up — admin_settings.smtp_pass is a
     // versioned ciphertext too. Sweeping only user_settings would strand it
     // on the old key once the operator follows the documented procedure
