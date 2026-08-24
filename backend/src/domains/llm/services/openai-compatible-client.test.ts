@@ -460,9 +460,10 @@ describe('thinkingExtras — provider-strictness × model matrix', () => {
       chat_template_kwargs: { enable_thinking: false },
     });
     expect(nonThinkingExtras('https://api.openai.com/v1')).toEqual({});
+    expect(nonThinkingExtras('https://api.deepseek.com/v1')).toEqual({});
   });
 
-  describe('Strict providers (OpenAI, Azure OpenAI)', () => {
+  describe('Strict providers (OpenAI, Azure OpenAI, DeepSeek)', () => {
     it.each([
       // [baseUrl, model, expected extras]
       ['https://api.openai.com/v1',                                 'o3',        { reasoning_effort: 'medium' }],
@@ -491,8 +492,23 @@ describe('thinkingExtras — provider-strictness × model matrix', () => {
       ['https://api.openai.com/v1',                                 'text-embedding-3-large'],
       // Azure tenant hosting a non-reasoning deployment.
       ['https://my-resource.openai.azure.com/openai/deployments/x', 'gpt-4o'],
+      // Hosted DeepSeek 400s on think / chat_template_kwargs (D5). It is
+      // strict, but OpenAI's reasoning_effort must not leak onto it either.
+      ['https://api.deepseek.com/v1',                               'deepseek-chat'],
+      ['https://api.deepseek.com/v1',                               'deepseek-reasoner'],
+      ['https://api.deepseek.com/v1',                               'o3'],
+      ['https://api.deepseek.com/v1',                               'gpt-5'],
     ])('on %s with non-reasoning model %s → no extras (silent no-op)', (baseUrl, model) => {
       expect(thinkingExtras(baseUrl, model, true)).toEqual({});
+    });
+
+    it('never puts think or chat_template_kwargs on api.deepseek.com', () => {
+      for (const model of ['deepseek-chat', 'deepseek-reasoner', 'o3', 'qwen3:8b']) {
+        const extras = thinkingExtras('https://api.deepseek.com/v1', model, true);
+        expect(extras).not.toHaveProperty('think');
+        expect(extras).not.toHaveProperty('chat_template_kwargs');
+        expect(extras).not.toHaveProperty('reasoning_effort');
+      }
     });
   });
 
@@ -523,8 +539,14 @@ describe('thinkingExtras — provider-strictness × model matrix', () => {
       ['https://api.openai.com:443/v1',                             true],
       ['https://my-resource.openai.azure.com/openai/deployments/x', true],
       ['https://contoso.openai.azure.com/v1',                       true],
+      ['https://api.deepseek.com/v1',                               true],
+      ['https://api.deepseek.com:443/v1',                           true],
       // tolerant
       ['http://localhost:11434/v1',                                 false],
+      ['https://openrouter.ai/api/v1',                              false],
+      // adversarial: substring spoofing must not match
+      ['https://my-deepseek-proxy.example/v1',                      false],
+      ['https://api.deepseek.com.evil.tld/v1',                      false],
       ['http://192.168.1.10:8000/v1',                               false],
       // adversarial: substring spoofing must not match
       ['https://my-openai-proxy.example/v1',                        false],
@@ -639,6 +661,134 @@ describe('openai-compatible-client — thinking-mode integration via streamChat/
       think: true,
       chat_template_kwargs: { enable_thinking: true },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1453 — hosted DeepSeek (and similar OpenAI-compatible reasoners) put the
+// thinking pass on `reasoning_content` / `delta.reasoning_content` and the
+// visible answer on `content`. chat()/streamChat must return the answer, and
+// Think-off must never dump the chain-of-thought into a completion.
+// Local fake /v1 only — never a live vendor host.
+// ---------------------------------------------------------------------------
+describe('openai-compatible-client — DeepSeek reasoning_content (#1453)', () => {
+  const REASONING = 'I should add 2 and 2.';
+  const ANSWER = 'The answer is 4.';
+
+  let dsSrv: Server;
+  let dsBase: string;
+
+  beforeAll(async () => {
+    dsSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          const parsed = JSON.parse(body) as { stream?: boolean };
+          if (parsed.stream) {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.write('data: ' + JSON.stringify({
+              choices: [{ delta: { reasoning_content: 'I should add ', content: null } }],
+            }) + '\n\n');
+            res.write('data: ' + JSON.stringify({
+              choices: [{ delta: { reasoning_content: '2 and 2.', content: null } }],
+            }) + '\n\n');
+            res.write('data: ' + JSON.stringify({
+              choices: [{ delta: { content: 'The answer is ' } }],
+            }) + '\n\n');
+            res.write('data: ' + JSON.stringify({
+              choices: [{ delta: { content: '4.' } }],
+            }) + '\n\n');
+            res.write('data: [DONE]\n\n');
+            res.end();
+          } else {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  content: ANSWER,
+                  reasoning_content: REASONING,
+                },
+              }],
+            }));
+          }
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => dsSrv.listen(0, r));
+    const { port } = dsSrv.address() as AddressInfo;
+    dsBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => dsSrv.close(() => r())));
+
+  async function drain(thinking?: boolean): Promise<string> {
+    const out: string[] = [];
+    for await (const c of streamChat(
+      { ...cfg, baseUrl: dsBase, providerId: `ds-reasoner-${String(thinking)}` },
+      'deepseek-reasoner',
+      [{ role: 'user', content: '2+2?' }],
+      undefined,
+      thinking === undefined ? undefined : { thinking },
+    )) {
+      if (c.content) out.push(c.content);
+    }
+    return out.join('');
+  }
+
+  it('chat returns the visible answer after reasoning_content, not the CoT', async () => {
+    const r = await chat(
+      { ...cfg, baseUrl: dsBase, providerId: 'ds-chat-answer' },
+      'deepseek-reasoner',
+      [{ role: 'user', content: '2+2?' }],
+    );
+    expect(r).toBe(ANSWER);
+    expect(r).not.toContain(REASONING);
+  });
+
+  it('streamChat returns the visible answer after reasoning_content deltas', async () => {
+    const r = await drain();
+    expect(r).toBe(ANSWER);
+    expect(r).not.toContain('I should add');
+  });
+
+  it('Think-off chat never includes reasoning_content', async () => {
+    const r = await chat(
+      { ...cfg, baseUrl: dsBase, providerId: 'ds-chat-think-off' },
+      'deepseek-reasoner',
+      [{ role: 'user', content: '2+2?' }],
+      { thinking: false },
+    );
+    expect(r).toBe(ANSWER);
+    expect(r).not.toContain(REASONING);
+  });
+
+  it('Think-off streamChat never includes reasoning_content', async () => {
+    const r = await drain(false);
+    expect(r).toBe(ANSWER);
+    expect(r).not.toContain('I should add');
+    expect(r).not.toContain('<think>');
+  });
+
+  it('Think-on chat surfaces reasoning on the existing <think> path then the answer', async () => {
+    const r = await chat(
+      { ...cfg, baseUrl: dsBase, providerId: 'ds-chat-think-on' },
+      'deepseek-reasoner',
+      [{ role: 'user', content: '2+2?' }],
+      { thinking: true },
+    );
+    expect(r).toContain(`<think>${REASONING}</think>`);
+    expect(r.endsWith(ANSWER)).toBe(true);
+  });
+
+  it('Think-on streamChat surfaces reasoning_content as <think> then the answer', async () => {
+    const r = await drain(true);
+    expect(r).toContain('<think>');
+    expect(r).toContain('I should add 2 and 2.');
+    expect(r).toContain('</think>');
+    expect(r.endsWith(ANSWER)).toBe(true);
   });
 });
 
