@@ -320,4 +320,88 @@ describe('ProviderEditModal — presets', () => {
     expect(baseUrlInput().value).toBe('https://api.deepseek.com/v1');
     expect(defaultModelInput().value).toBe('deepseek-chat');
   });
+
+  it('does not steal focus from the preset select when confirm appears', () => {
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(baseUrlInput(), { target: { value: 'http://localhost:11434/v1' } });
+    presetSelect().focus();
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    expect(screen.getByTestId('preset-overwrite-confirm')).toBeTruthy();
+    expect(presetSelect()).toHaveFocus();
+  });
+
+  it('returns focus to the preset select after Keep current from the confirm buttons', () => {
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(baseUrlInput(), { target: { value: 'http://localhost:11434/v1' } });
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    const keep = screen.getByRole('button', { name: /keep current/i });
+    keep.focus();
+    fireEvent.click(keep);
+    expect(screen.queryByTestId('preset-overwrite-confirm')).toBeNull();
+    expect(presetSelect()).toHaveFocus();
+  });
+
+  it('returns focus to the preset select after Use preset from the confirm buttons', () => {
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(baseUrlInput(), { target: { value: 'http://localhost:11434/v1' } });
+    fireEvent.change(presetSelect(), { target: { value: 'deepseek' } });
+    const usePreset = screen.getByRole('button', { name: /use preset/i });
+    usePreset.focus();
+    fireEvent.click(usePreset);
+    expect(baseUrlInput().value).toBe('https://api.deepseek.com/v1');
+    expect(presetSelect()).toHaveFocus();
+  });
+
+  it('labels the overwrite confirm as a group with a heading, not a live status, and does not make Use preset primary', () => {
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(baseUrlInput(), { target: { value: 'http://localhost:11434/v1' } });
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    const confirm = screen.getByTestId('preset-overwrite-confirm');
+    expect(confirm).not.toHaveAttribute('role', 'status');
+    expect(screen.getByRole('group', { name: /replace the url or model you typed/i })).toBe(confirm);
+    expect(confirm.querySelector('h3')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /use preset/i }).className).not.toMatch(/bg-primary/);
+  });
+});
+
+describe('ProviderEditModal — edit presets', () => {
+  beforeEach(() => {
+    useAuthStore.getState().setAuth('test-token', { id: '1', username: 'admin', role: 'admin' });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useAuthStore.getState().clearAuth();
+  });
+
+  it('does not overwrite a stored local URL until Use preset', () => {
+    const Wrapper = createWrapper();
+    const initial = {
+      ...savedProvider,
+      name: 'Local Ollama',
+      baseUrl: 'http://localhost:11434/v1',
+      defaultModel: 'qwen3:4b',
+      hasApiKey: false,
+      keyPreview: null,
+    };
+    render(
+      <ProviderEditModal mode="edit" initial={initial} open onClose={() => {}} onSaved={() => {}} />,
+      { wrapper: Wrapper },
+    );
+    expect(baseUrlInput().value).toBe('http://localhost:11434/v1');
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    expect(baseUrlInput().value).toBe('http://localhost:11434/v1');
+    expect(defaultModelInput().value).toBe('qwen3:4b');
+    expect(screen.getByTestId('preset-overwrite-confirm')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /keep current/i }));
+    expect(baseUrlInput().value).toBe('http://localhost:11434/v1');
+    expect(presetSelect().value).toBe('custom');
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    fireEvent.click(screen.getByRole('button', { name: /use preset/i }));
+    expect(baseUrlInput().value).toBe('https://api.openai.com/v1');
+    expect(defaultModelInput().value).toBe('gpt-4.1-mini');
+  });
 });

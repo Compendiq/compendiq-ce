@@ -31,14 +31,22 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   const [saving, setSaving] = useState(false);
   const canSave = name.trim().length > 0 && /^https?:\/\//.test(baseUrl);
   const nameRef = useRef<HTMLInputElement>(null);
-  const lastFilled = useRef({
-    baseUrl: initial?.baseUrl ?? '',
-    defaultModel: initial?.defaultModel ?? '',
-  });
+  const presetSelectRef = useRef<HTMLSelectElement>(null);
+  const confirmRef = useRef<HTMLDivElement>(null);
+  // Empty until applyPreset — a stored edit-mode URL is operator-owned, not a fill.
+  const lastFilled = useRef({ baseUrl: '', defaultModel: '' });
   const appliedPresetId = useRef<ProviderPresetId>('custom');
   const activePreset = presetById(presetId) ?? PROVIDER_PRESETS[PROVIDER_PRESETS.length - 1]!;
 
+  function restorePresetFocusFromConfirm() {
+    const active = document.activeElement;
+    if (active === document.body || (active instanceof Node && confirmRef.current?.contains(active))) {
+      presetSelectRef.current?.focus();
+    }
+  }
+
   function applyPreset(preset: ProviderPreset) {
+    restorePresetFocusFromConfirm();
     setPresetId(preset.id);
     setPendingPresetId(null);
     setBaseUrl(preset.baseUrl);
@@ -63,23 +71,32 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   }
 
   function keepCurrentFields() {
+    restorePresetFocusFromConfirm();
     setPendingPresetId(null);
     setPresetId(appliedPresetId.current);
   }
 
-  // Close on Escape and move focus into the dialog when it opens.
+  useEffect(() => {
+    if (!open) return;
+    nameRef.current?.focus();
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (pendingPresetId) {
-        keepCurrentFields();
+        const active = document.activeElement;
+        if (active === document.body || (active instanceof Node && confirmRef.current?.contains(active))) {
+          presetSelectRef.current?.focus();
+        }
+        setPendingPresetId(null);
+        setPresetId(appliedPresetId.current);
         return;
       }
       onClose();
     };
     document.addEventListener('keydown', onKey);
-    nameRef.current?.focus();
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose, pendingPresetId]);
 
@@ -138,6 +155,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
             Preset
           </label>
           <select
+            ref={presetSelectRef}
             id="provider-preset"
             className="nm-select-md mt-1 w-full"
             value={presetId}
@@ -152,19 +170,22 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
         </div>
         {pendingPresetId ? (
           <div
+            ref={confirmRef}
             data-testid="preset-overwrite-confirm"
-            role="status"
+            role="group"
+            aria-labelledby="preset-overwrite-heading"
             className="space-y-2 rounded-md border border-border-interactive bg-muted/40 p-3 text-sm"
           >
-            <p>
-              Replace the URL or model you typed with this preset? The API key is left as-is.
-            </p>
+            <h3 id="preset-overwrite-heading" className="font-medium text-foreground">
+              Replace the URL or model you typed with this preset?
+            </h3>
+            <p className="text-muted-foreground">The API key is left as-is.</p>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={keepCurrentFields}>
                 Keep current
               </Button>
               <Button
-                variant="primary"
+                variant="ghost"
                 size="sm"
                 onClick={() => {
                   const next = presetById(pendingPresetId);
