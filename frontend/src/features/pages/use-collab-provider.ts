@@ -54,6 +54,8 @@ function closeCodeError(code: number): CollabJoinError | null {
  * - `if (!token) return` — never `protocols: [v1, '']`.
  * - 4401 → `refreshAccessTokenOnce()` then a new provider on the same Y.Doc.
  * - 4403 / 4404 → destroy, do not reconnect.
+ * - `doc_reset` / close 1001 `doc_reset` → destroy provider **and** Y.Doc,
+ *   then a new pair so TipTap remounts. Never reconnect onto the old document.
  * - `disableBc: true` so two tabs go through Redis, not BroadcastChannel.
  */
 export function useCollabProvider({
@@ -87,8 +89,8 @@ export function useCollabProvider({
 
     let cancelled = false;
     let current: WebsocketProvider | null = null;
-    const doc = new Y.Doc();
-    const awareness = new Awareness(doc);
+    let doc = new Y.Doc();
+    let awareness = new Awareness(doc);
     setYdoc(doc);
     setError(null);
     setSynced(false);
@@ -101,11 +103,35 @@ export function useCollabProvider({
     };
     awareness.on('update', refreshAwareness);
 
+    const remount = (jwt: string) => {
+      if (cancelled || !jwt) return;
+      const oldWs = current;
+      const oldDoc = doc;
+      const oldAwareness = awareness;
+      current = null;
+      oldWs?.destroy();
+      oldAwareness.off('update', refreshAwareness);
+      try { oldAwareness.destroy(); } catch { /* */ }
+      try { oldDoc.destroy(); } catch { /* */ }
+      doc = new Y.Doc();
+      awareness = new Awareness(doc);
+      awareness.on('update', refreshAwareness);
+      setYdoc(doc);
+      setSynced(false);
+      setError(null);
+      connect(jwt);
+    };
+
     const attachControlHandler = (ws: WebsocketProvider) => {
       ws.messageHandlers[MESSAGE_CONTROL] = (_encoder, decoder) => {
         try {
           const raw = decoding.readVarString(decoder);
           const control = JSON.parse(raw) as { type?: string };
+          if (control.type === 'doc_reset') {
+            const jwt = useAuthStore.getState().accessToken;
+            if (jwt) remount(jwt);
+            return;
+          }
           if (control.type === 'tombstone') {
             ws.destroy();
             if (!cancelled) {
@@ -150,6 +176,20 @@ export function useCollabProvider({
             }
             connect(fresh);
           });
+          return;
+        }
+        if (event.code === 1001 && event.reason === 'doc_reset') {
+          if (current === ws) {
+            const jwt = useAuthStore.getState().accessToken;
+            if (jwt) {
+              remount(jwt);
+              return;
+            }
+            ws.destroy();
+            current = null;
+            setProvider(null);
+            setSynced(false);
+          }
           return;
         }
         const joinError = closeCodeError(event.code);

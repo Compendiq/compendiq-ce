@@ -153,4 +153,67 @@ describe('useCollabProvider', () => {
     expect(MockWebsocketProvider.instances).toHaveLength(1);
     expect(result.current.error).toBe('not_found');
   });
+
+  it('on 1001 doc_reset remounts a new Y.Doc and provider (never reconnects onto the old document)', async () => {
+    const { result } = renderHook(() => useCollabProvider({ pageId: '42', enabled: true }));
+    const first = MockWebsocketProvider.instances[0]!;
+    const oldDoc = first.doc;
+    expect(result.current.ydoc).toBe(oldDoc);
+
+    await act(async () => {
+      first.emit('connection-close', { code: 1001, reason: 'doc_reset' } as CloseEvent);
+    });
+
+    expect(first.destroyed).toBe(true);
+    await waitFor(() => {
+      expect(MockWebsocketProvider.instances).toHaveLength(2);
+    });
+    const second = MockWebsocketProvider.instances[1]!;
+    expect(second.doc).not.toBe(oldDoc);
+    expect(result.current.ydoc).not.toBe(oldDoc);
+    expect(result.current.ydoc).toBe(second.doc);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('on type-4 doc_reset remounts a new Y.Doc even if the socket has not closed yet', async () => {
+    const { result } = renderHook(() => useCollabProvider({ pageId: '42', enabled: true }));
+    const first = MockWebsocketProvider.instances[0]!;
+    const oldDoc = first.doc;
+    const handler = first.messageHandlers[4] as
+      | ((_encoder: unknown, decoder: unknown) => void)
+      | undefined;
+    expect(handler).toEqual(expect.any(Function));
+
+    const encoding = await import('lib0/encoding');
+    const decoding = await import('lib0/decoding');
+    const encoder = encoding.createEncoder();
+    encoding.writeVarString(encoder, JSON.stringify({ type: 'doc_reset' }));
+    const decoder = decoding.createDecoder(encoding.toUint8Array(encoder));
+
+    await act(async () => {
+      handler!(null, decoder);
+    });
+
+    expect(first.destroyed).toBe(true);
+    await waitFor(() => {
+      expect(MockWebsocketProvider.instances).toHaveLength(2);
+    });
+    expect(MockWebsocketProvider.instances[1]!.doc).not.toBe(oldDoc);
+    expect(result.current.ydoc).not.toBe(oldDoc);
+
+    await act(async () => {
+      first.emit('connection-close', { code: 1001, reason: 'doc_reset' } as CloseEvent);
+    });
+    expect(MockWebsocketProvider.instances).toHaveLength(2);
+  });
+
+  it('on 1001 without doc_reset does not remount (token-refresh 4401 still shares the Y.Doc)', async () => {
+    renderHook(() => useCollabProvider({ pageId: '42', enabled: true }));
+    const first = MockWebsocketProvider.instances[0]!;
+    await act(async () => {
+      first.emit('connection-close', { code: 1001, reason: 'shutdown' } as CloseEvent);
+    });
+    expect(MockWebsocketProvider.instances).toHaveLength(1);
+    expect(first.destroyed).toBe(false);
+  });
 });
