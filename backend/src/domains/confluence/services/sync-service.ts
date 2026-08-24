@@ -16,6 +16,7 @@ import { processDirtyPageImages } from '../../llm/services/image-embedding-servi
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
 import { discardPageIconForDeletedPage } from '../../../core/services/page-icon-store.js';
+import { tombstoneCollabRoomAfterCommit } from '../../../core/services/collab-tombstone.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSyncConflictPolicy } from '../../../core/services/sync-conflict-policy-service.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
@@ -558,11 +559,14 @@ async function softDeleteVanishedPage(
   counts: SyncSpaceCounts,
   reason: string,
 ): Promise<void> {
-  const res = await query(
-    'UPDATE pages SET deleted_at = NOW() WHERE confluence_id = $1 AND deleted_at IS NULL',
+  const res = await query<{ id: number }>(
+    'UPDATE pages SET deleted_at = NOW() WHERE confluence_id = $1 AND deleted_at IS NULL RETURNING id',
     [confluenceId],
   );
   if ((res.rowCount ?? 0) > 0) {
+    for (const row of res.rows) {
+      await tombstoneCollabRoomAfterCommit(row.id);
+    }
     counts.pagesDeleted++;
     // Attachment dirs are keyed by confluence_id; cleanPageAttachments ignores
     // its first arg (same call shape detectDeletedPages uses).
@@ -1692,10 +1696,13 @@ async function detectDeletedPages(
     }
 
     logger.info({ spaceKey, confluenceId }, 'Soft-deleting page confirmed deleted in Confluence');
-    await query(
-      'UPDATE pages SET deleted_at = NOW() WHERE confluence_id = $1 AND deleted_at IS NULL',
+    const deleted = await query<{ id: number }>(
+      'UPDATE pages SET deleted_at = NOW() WHERE confluence_id = $1 AND deleted_at IS NULL RETURNING id',
       [confluenceId],
     );
+    for (const row of deleted.rows) {
+      await tombstoneCollabRoomAfterCommit(row.id);
+    }
     await cleanPageAttachments('', confluenceId);
     await clearPageFailures(confluenceId);
     counts.pagesDeleted++;
@@ -1780,6 +1787,7 @@ async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Pr
       // — and the #1349 sweep is forbidden to walk that store, so nothing else
       // would ever collect it.
       await discardPageIconForDeletedPage(id);
+      await tombstoneCollabRoomAfterCommit(id);
       if (!confluence_id) continue;
       await cleanPageAttachments('', confluence_id);
       await clearPageFailures(confluence_id);

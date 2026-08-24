@@ -60,6 +60,8 @@ const validReadPayload = {
   // #1114 — required on read; both bases null on an instance that has never
   // set a threshold (the 0/0 default).
   ragConfidenceCalibration: { similarity: null, rerank: null },
+  // #1444 — collab gateway flag, required on read (seeded '0').
+  collabEditingEnabled: false,
 } as const;
 
 describe('AdminSettingsSchema (read)', () => {
@@ -500,6 +502,7 @@ describe('retrieval knobs (#1118)', () => {
       // unreachable without it, so a payload that omits it is not one this
       // panel can render honestly.
       'ragEfSearchFromEnv',
+      'collabEditingEnabled',
     ] as const) {
       const { [key]: _dropped, ...without } = validReadPayload;
       expect(() => AdminSettingsSchema.parse(without), `${key} must be required`).toThrow();

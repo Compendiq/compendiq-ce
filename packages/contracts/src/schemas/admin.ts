@@ -526,6 +526,11 @@ export const AdminSettingsSchema = z.object({
    * threshold tuned against a model that is long gone.
    */
   ragConfidenceCalibration: RagConfidenceCalibrationSchema,
+  /**
+   * #1444 — realtime collaborative editing. Seeded `'0'` (off). Soft-fail
+   * default is false. PUT publishes `collab:enabled:changed`.
+   */
+  collabEditingEnabled: z.boolean(),
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -608,6 +613,8 @@ export const UpdateAdminSettingsSchema = z.object({
   ragAnswerMaxImages: RagAnswerMaxImagesSchema.optional(),
   /** #1285 — the Retrieval tab's `Index search depth` floor, beside Fetch width. */
   ragEfSearch: RagEfSearchSchema.optional(),
+  /** #1444 — opt-in collab gateway. Omitted → leave unchanged. */
+  collabEditingEnabled: z.boolean().optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;

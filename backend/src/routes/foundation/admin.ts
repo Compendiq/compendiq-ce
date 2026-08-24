@@ -67,6 +67,8 @@ import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-
 import { getStreamCap, invalidateStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import { getSmtpConfig, updateSmtpConfig, sendTestEmail, stripMaskedSmtpPass } from '../../core/services/email-service.js';
+import { publish } from '../../core/services/redis-cache-bus.js';
+import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 
 const AuditLogQuerySchema = z.object({
   userId: z.string().optional(),
@@ -580,6 +582,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // number the server did not resolve from the variable.
       ragEfSearch: efSearch.value,
       ragEfSearchFromEnv: efSearch.source === 'env',
+      collabEditingEnabled: isCollabEditingEnabled(),
     };
   });
 
@@ -713,6 +716,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (body.registrationMode !== undefined) {
       updates.push({ key: 'registration_mode', value: body.registrationMode });
     }
+    if (body.collabEditingEnabled !== undefined) {
+      updates.push({
+        key: 'collab_editing_enabled',
+        value: body.collabEditingEnabled ? '1' : '0',
+      });
+    }
 
     // ─── #1118 — epic #1100's retrieval knobs ─────────────────────────────
     //
@@ -845,6 +854,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // and no others. Other pods still converge on the TTL, as with the
       // stream cap.
       invalidateFor.get(key)?.();
+    }
+
+    if (body.collabEditingEnabled !== undefined) {
+      await publish('collab:enabled:changed', { enabled: body.collabEditingEnabled });
+      await refreshCollabFlag();
     }
 
     // ─── #1114 — record which model each written threshold was tuned on ───

@@ -13,7 +13,7 @@ flowchart LR
         rF["foundation<br/>health, auth, settings,<br/>admin, admin-embedding-locks,<br/>rbac, notifications, setup"]
         rC["confluence<br/>spaces, sync, attachments"]
         rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>inline-completion, embeddings,<br/>embedding-shadow, models,<br/>admin, pdf, prepare-image"]
-        rK["knowledge<br/>pages CRUD, relocate, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, export/import,<br/>notion connection, tree, and import"]
+        rK["knowledge<br/>pages CRUD, relocate, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, export/import,<br/>notion connection, tree, and import,<br/>pages-collab (WS gateway)"]
     end
 
     subgraph domains["domains/"]
@@ -27,7 +27,7 @@ flowchart LR
         direction TB
         cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry"]
         cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-embedding-dirty"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-embedding-dirty,<br/>collab-room-service, collab-flag,<br/>collab-tombstone, collab-guard"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -108,6 +108,12 @@ flowchart LR
 - `routes/llm` may import `core` + `llm` + `confluence` (sub-page context,
   `getClientForUser`) — this allowance predates #1347.
 - `routes/knowledge` is the top-level aggregator and may import anything.
+
+**Realtime collab (#1444).** Yjs, `y-protocols`, and the collab room/flag/guard/tombstone
+helpers live in `core` plus the `GET /api/collab/:pageId` gateway in
+`routes/knowledge`. Do **not** put Yjs in `domains/llm`. `assertNoLiveCollabRoom`
+is in `core` so `routes/llm` can 409 Apply while a room is live (wired in a
+later PR).
 
 Adding a new import across these lines without updating the ESLint config is
 a build failure — update the config *and* this diagram together.

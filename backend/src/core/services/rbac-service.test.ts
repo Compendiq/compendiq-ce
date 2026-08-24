@@ -21,7 +21,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { query as mockQuery } from '../db/postgres.js';
 import { getRedisClient } from './redis-cache.js';
-import { userHasPermission, userHasGlobalPermission, getUserSpaceRole, getUserAccessibleSpaces, isSystemAdmin, invalidateRbacCache } from './rbac-service.js';
+import { userHasPermission, userHasGlobalPermission, getUserSpaceRole, getUserAccessibleSpaces, isSystemAdmin, invalidateRbacCache, userCanEditPage } from './rbac-service.js';
 
 describe('RBAC service', () => {
   beforeEach(() => {
@@ -321,6 +321,117 @@ describe('RBAC service', () => {
     it('should not throw when Redis is unavailable', async () => {
       // Redis client is null (mocked)
       await expect(invalidateRbacCache('user-id')).resolves.not.toThrow();
+    });
+  });
+
+  describe('userCanEditPage (PUT predicates verbatim, #1444)', () => {
+    const ownerId = '11111111-1111-4111-8111-111111111111';
+    const adminId = '22222222-2222-4222-8222-222222222222';
+    const otherId = '33333333-3333-4333-8333-333333333333';
+
+    function mockQueries(opts: {
+      page: Record<string, unknown> | null;
+      isAdmin?: boolean;
+      assignedSpaces?: string[];
+      knownSpaces?: string[];
+    }): void {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('FROM pages') && sql.includes('WHERE id')) {
+          return { rows: opts.page ? [opts.page] : [], rowCount: opts.page ? 1 : 0 };
+        }
+        if (typeof sql === 'string' && sql.includes("u.role = 'admin'")) {
+          return { rows: opts.isAdmin ? [{ '?column?': 1 }] : [], rowCount: opts.isAdmin ? 1 : 0 };
+        }
+        if (typeof sql === 'string' && sql.includes('FROM space_role_assignments')) {
+          return {
+            rows: (opts.assignedSpaces ?? []).map((space_key) => ({ space_key })),
+            rowCount: opts.assignedSpaces?.length ?? 0,
+          };
+        }
+        if (typeof sql === 'string' && sql.includes('FROM spaces')) {
+          return {
+            rows: (opts.knownSpaces ?? []).map((space_key) => ({ space_key })),
+            rowCount: opts.knownSpaces?.length ?? 0,
+          };
+        }
+        return { rows: [], rowCount: 0 };
+      });
+    }
+
+    it('denies a non-owner admin on a private standalone page (no isSystemAdmin bypass)', async () => {
+      mockQueries({
+        isAdmin: true,
+        page: {
+          source: 'standalone',
+          created_by_user_id: ownerId,
+          visibility: 'private',
+          space_key: '_standalone',
+          deleted_at: null,
+        },
+        assignedSpaces: [],
+        knownSpaces: ['_standalone'],
+      });
+
+      await expect(userCanEditPage(adminId, 42)).resolves.toBe(false);
+    });
+
+    it('allows the owner of a private standalone page', async () => {
+      mockQueries({
+        isAdmin: false,
+        page: {
+          source: 'standalone',
+          created_by_user_id: ownerId,
+          visibility: 'private',
+          space_key: '_standalone',
+          deleted_at: null,
+        },
+      });
+
+      await expect(userCanEditPage(ownerId, 42)).resolves.toBe(true);
+    });
+
+    it('allows any authenticated user on a shared standalone page', async () => {
+      mockQueries({
+        isAdmin: false,
+        page: {
+          source: 'standalone',
+          created_by_user_id: ownerId,
+          visibility: 'shared',
+          space_key: '_standalone',
+          deleted_at: null,
+        },
+      });
+
+      await expect(userCanEditPage(otherId, 42)).resolves.toBe(true);
+    });
+
+    it('allows Confluence edits only when the space is in getUserAccessibleSpaces', async () => {
+      mockQueries({
+        isAdmin: false,
+        page: {
+          source: 'confluence',
+          created_by_user_id: null,
+          visibility: 'shared',
+          space_key: 'DEV',
+          deleted_at: null,
+        },
+        assignedSpaces: ['DEV'],
+      });
+      await expect(userCanEditPage(otherId, 7)).resolves.toBe(true);
+
+      mockQueries({
+        isAdmin: false,
+        page: {
+          source: 'confluence',
+          created_by_user_id: null,
+          visibility: 'shared',
+          space_key: 'DEV',
+          deleted_at: null,
+        },
+        assignedSpaces: ['OTHER'],
+      });
+      await expect(userCanEditPage(otherId, 7)).resolves.toBe(false);
     });
   });
 });

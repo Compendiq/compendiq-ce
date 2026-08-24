@@ -43,7 +43,8 @@ export type CacheBusChannel =
   | 'sync:conflict:policy:changed'
   | 'pii:policy:changed'
   | 'license:changed'
-  | 'user:security:changed';
+  | 'user:security:changed'
+  | 'collab:enabled:changed';
 
 type Handler<T = unknown> = (payload: T) => void | Promise<void>;
 
