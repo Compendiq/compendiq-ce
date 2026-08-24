@@ -315,21 +315,21 @@ describe('LlmTab', () => {
     });
   });
 
-  it('changing the embedding assignment reveals the re-embed banner', async () => {
+  it('changing the embedding assignment reveals Start re-embed and hides Wipe', async () => {
     const Wrapper = createWrapper();
     mockRoutes();
     render(<LlmTab />, { wrapper: Wrapper });
     await screen.findByText('Use case assignments');
-    // No banner initially.
+    // Wipe rebuilds the live index, so it is offered at rest. Start re-embed
+    // is the apply path for an unsaved model change.
     expect(screen.queryByRole('button', { name: /start re-embed/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /wipe current index/i })).toBeNull();
-    // Change embedding provider to providerB.
+    expect(screen.getByRole('button', { name: /^Wipe current index$/i })).toBeTruthy();
     fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
       target: { value: providerB.id },
     });
     const row = await screen.findByTestId('usecase-row-embedding');
     expect(await within(row).findByRole('button', { name: /start re-embed/i })).toBeTruthy();
-    expect(within(row).getByRole('button', { name: /wipe current index/i })).toBeTruthy();
+    expect(within(row).queryByRole('button', { name: /wipe current index/i })).toBeNull();
   });
 
   it('an embedding-only change disables Save so it cannot go live without a re-embed', async () => {
@@ -374,6 +374,8 @@ describe('LlmTab', () => {
 
     const save = await screen.findByRole('button', { name: /save other use-case assignments/i });
     expect(save).not.toBeDisabled();
+    expect(save).toHaveClass('nm-button-ghost');
+    expect(screen.getByRole('button', { name: /start re-embed/i })).toHaveClass('nm-button-primary');
     fireEvent.click(save);
 
     await waitFor(() => {
@@ -387,6 +389,164 @@ describe('LlmTab', () => {
       expect(body.chat).toEqual({ providerId: providerB.id });
       expect(body.embedding).toBeUndefined();
     });
+
+    // The #949 re-seed must not wipe the embedding draft: that hid Start
+    // re-embed after a mixed save and left the assignment unmigrated.
+    await waitFor(() => {
+      expect((screen.getByTestId('usecase-embedding-provider') as HTMLSelectElement).value).toBe(
+        providerB.id,
+      );
+    });
+    const row = screen.getByTestId('usecase-row-embedding');
+    expect(within(row).getByRole('button', { name: /start re-embed/i })).toBeTruthy();
+  });
+
+  it('saves Inherit default on Embedding when it still resolves to the live model', async () => {
+    const Wrapper = createWrapper();
+    const pinned = {
+      ...assignments,
+      embedding: {
+        providerId: providerA.id,
+        model: 'bge-m3',
+        resolved: { providerId: providerA.id, providerName: 'Ollama', model: 'bge-m3' },
+      },
+    };
+    const providers = [{ ...providerA, defaultModel: 'bge-m3' }, providerB];
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.endsWith('/admin/llm-providers') && (init as RequestInit).method !== 'POST') {
+        return new Response(JSON.stringify(providers), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/admin/llm-usecases') && (init as RequestInit).method === 'PUT') {
+        return new Response(JSON.stringify(pinned), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/admin/llm-usecases')) {
+        return new Response(JSON.stringify(pinned), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/admin/settings') && (init as RequestInit).method !== 'PUT') {
+        return new Response(
+          JSON.stringify({
+            ftsLanguage: 'simple',
+            embeddingChunkSize: 500,
+            embeddingChunkOverlap: 50,
+            drawioEmbedUrl: null,
+            llmMaxConcurrentStreamsPerUser: 3,
+            embeddingDimensions: 1024,
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.includes('/admin/llm-providers/') && url.endsWith('/models')) {
+        return new Response(JSON.stringify([{ name: 'bge-m3' }, { name: 'gpt-4o-mini' }]), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/llm/usecase-default?usecase=chat')) {
+        return new Response(
+          JSON.stringify({
+            usecase: 'chat',
+            providerId: providerA.id,
+            providerName: 'Ollama',
+            model: 'bge-m3',
+            vision: true,
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), { headers: { 'Content-Type': 'application/json' } });
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-embedding-provider'), { target: { value: '' } });
+    fireEvent.change(screen.getByTestId('usecase-embedding-model'), { target: { value: '' } });
+
+    expect(screen.queryByRole('button', { name: /start re-embed/i })).toBeNull();
+    const save = screen.getByRole('button', { name: /save use-case assignments/i });
+    expect(save).not.toBeDisabled();
+    fireEvent.click(save);
+
+    await waitFor(() => {
+      const put = spy.mock.calls.find(
+        ([input, init]) =>
+          String(typeof input === 'string' ? input : (input as URL).toString()).endsWith(
+            '/admin/llm-usecases',
+          ) && (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(put).toBeTruthy();
+      expect(JSON.parse(String((put![1] as RequestInit).body)).embedding).toEqual({
+        providerId: null,
+        model: null,
+      });
+    });
+  });
+
+  it('Start re-embed for Inherit default names the default provider model, not the saved pair', async () => {
+    const Wrapper = createWrapper();
+    const pinned = {
+      ...assignments,
+      embedding: {
+        providerId: providerB.id,
+        model: providerB.defaultModel,
+        resolved: {
+          providerId: providerB.id,
+          providerName: 'OpenAI',
+          model: providerB.defaultModel,
+        },
+      },
+    };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.endsWith('/admin/llm-providers') && (init as RequestInit).method !== 'POST') {
+        return new Response(JSON.stringify([providerA, providerB]), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/llm-usecases')) {
+        return new Response(JSON.stringify(pinned), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/admin/settings') && (init as RequestInit).method !== 'PUT') {
+        return new Response(
+          JSON.stringify({
+            ftsLanguage: 'simple',
+            embeddingChunkSize: 500,
+            embeddingChunkOverlap: 50,
+            drawioEmbedUrl: null,
+            llmMaxConcurrentStreamsPerUser: 3,
+            embeddingDimensions: 1024,
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.includes('/admin/llm-providers/') && url.endsWith('/models')) {
+        return new Response(JSON.stringify([{ name: 'qwen3:4b' }, { name: 'gpt-4o-mini' }]), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/llm/usecase-default?usecase=chat')) {
+        return new Response(
+          JSON.stringify({
+            usecase: 'chat',
+            providerId: providerA.id,
+            providerName: 'Ollama',
+            model: 'qwen3:4b',
+            vision: true,
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), { headers: { 'Content-Type': 'application/json' } });
+    });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-embedding-provider'), { target: { value: '' } });
+    fireEvent.change(screen.getByTestId('usecase-embedding-model'), { target: { value: '' } });
+
+    const card = within(await screen.findByTestId('shadow-migration-card'));
+    expect(card.getByText(providerA.defaultModel)).toBeInTheDocument();
+    expect(card.queryByText(providerB.defaultModel)).toBeNull();
+    expect(screen.getByRole('button', { name: /save use-case assignments/i })).toBeDisabled();
   });
 
   it('names the newly selected provider\'s own default model in the pending change (review r5)', async () => {
@@ -912,12 +1072,7 @@ describe('LlmTab', () => {
     render(<LlmTab />, { wrapper: Wrapper });
     await screen.findByText('Use case assignments');
 
-    // Reveal the re-embed banner and probe so currentDimensions is displayed.
-    fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
-      target: { value: providerB.id },
-    });
-    fireEvent.click(await screen.findByRole('button', { name: /wipe current index/i }));
-    // Probe returns the same dims → confirm copy renders the settings value.
+    fireEvent.click(await screen.findByRole('button', { name: /^Wipe current index$/i }));
     await screen.findByText(/dimension stays at 768/i);
 
     // The dead endpoint must never be requested.
@@ -934,10 +1089,7 @@ describe('LlmTab', () => {
     render(<LlmTab />, { wrapper: Wrapper });
     await screen.findByText('Use case assignments');
 
-    fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
-      target: { value: providerB.id },
-    });
-    fireEvent.click(await screen.findByRole('button', { name: /wipe current index/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Wipe current index$/i }));
     await screen.findByText(/dimension stays at 1024/i);
   });
 

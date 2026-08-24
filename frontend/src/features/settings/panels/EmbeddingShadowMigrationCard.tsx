@@ -52,7 +52,7 @@ interface ShadowStatus {
  * vectors throughout: start probes the pair server-side and backfills a
  * shadow column in the background, swap is one bounded-lock rename, rollback
  * stays available until cleanup deletes the old vectors. Sits beside the
- * destructive EmbeddingReembedBanner as the recommended path for model
+ * destructive wipe (live-index rebuild) as the recommended path for model
  * changes.
  */
 /**
@@ -400,13 +400,11 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
       <div
         className="nm-card border-status-embedding/30 p-3 text-sm"
         data-testid="shadow-migration-card"
-        id="embedding-reembed-next-step"
-        role="status"
       >
         <p ref={phaseProseRef} tabIndex={-1}>
           Start a re-embed to switch to <b>{pending.model}</b>. Search keeps the current index
           until you swap. Do not save the assignment — that would switch the live model
-          immediately, and new vectors will not fit the current index.
+          immediately. If the new width differs, those vectors will not fit the current index.
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button

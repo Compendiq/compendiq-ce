@@ -114,17 +114,22 @@ export function LlmTab() {
     const origE = rawAssignments.embedding;
     const nowE = assignments.embedding;
     if (origE.providerId === nowE.providerId && origE.model === nowE.model) return null;
-    const providerId = nowE.providerId ?? nowE.resolved.providerId;
-    // `resolved` is the SERVER's resolution of the saved assignment, so it
-    // still names the old provider's model after an unsaved provider switch
-    // with the model left on inherit. Resolve through the provider actually
-    // selected; the shadow path makes this load-bearing — it pins whatever
-    // model name it is handed into the assignment at swap (review r5).
-    const selectedDefault = providers.find((p) => p.id === providerId)?.defaultModel ?? null;
-    const model = nowE.model ?? selectedDefault ?? nowE.resolved.model;
-    if (!providerId || !model) return null;
-    return { providerId, model };
+    const draft = embeddingDraftIdentity(nowE, providers);
+    if (!draft) return null;
+    if (
+      draft.providerId === origE.resolved.providerId &&
+      draft.model === origE.resolved.model
+    ) {
+      return null;
+    }
+    return draft;
   }, [rawAssignments, assignments, providers]);
+
+  const embeddingLive = useMemo(() => {
+    const resolved = rawAssignments?.embedding.resolved;
+    if (!resolved?.providerId || !resolved.model) return null;
+    return { providerId: resolved.providerId, model: resolved.model };
+  }, [rawAssignments]);
 
   const otherAssignmentsDirty = useMemo(() => {
     if (!rawAssignments || !assignments) return false;
@@ -145,7 +150,11 @@ export function LlmTab() {
   const save = useMutation<
     { ok: boolean; imageIndexWarning?: string },
     Error,
-    { diff: UpdateUsecaseAssignmentsInput; imageTargetDimensions?: number | null }
+    {
+      diff: UpdateUsecaseAssignmentsInput;
+      imageTargetDimensions?: number | null;
+      keepEmbeddingDraft?: boolean;
+    }
   >({
     // #1115 — two requests, in this order and never the other. The truncation
     // width is what the probe SENDS, so it has to be stored before the
@@ -180,14 +189,23 @@ export function LlmTab() {
       await qc.invalidateQueries({ queryKey: ['admin-settings'] });
       if (!error) setImageTargetInitialized(false);
     },
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
       // Refetch the canonical assignments, then drop the one-shot hydration
       // guard so the form re-seeds from the fresh server state (#949) — the
       // same post-save reset IpAllowlistTab does. Awaiting the invalidation
       // first ensures the re-seed reads the refetched document rather than
       // the stale cache entry.
       await qc.invalidateQueries({ queryKey: ['llm-usecases'] });
-      setAssignmentsInitialized(false);
+      if (variables.keepEmbeddingDraft) {
+        const fresh = qc.getQueryData<UsecaseAssignments>(['llm-usecases']);
+        if (fresh) {
+          setAssignments((prev) =>
+            prev ? { ...fresh, embedding: prev.embedding } : fresh,
+          );
+        }
+      } else {
+        setAssignmentsInitialized(false);
+      }
       // #355 (Finding 1, AC-3): cascade the change to consumers of the
       // resolved per-use-case default (notably the AI chat input pane in
       // AiContext.tsx) and the use-case-scoped models list. Prefix-match on
@@ -282,6 +300,7 @@ export function LlmTab() {
     }
     save.mutate({
       diff,
+      keepEmbeddingDraft: embeddingPending !== null,
       ...(imageTargetChanged ? { imageTargetDimensions: nextImageTargetDims } : {}),
     });
   }
@@ -344,6 +363,7 @@ export function LlmTab() {
               <EmbeddingReembedBanner
                 currentDimensions={adminSettings?.embeddingDimensions ?? 1024}
                 pending={embeddingPending}
+                live={embeddingLive}
               />
             )}
           </div>
@@ -363,7 +383,9 @@ export function LlmTab() {
         <div className="flex gap-3">
           <button
             type="button"
-            className="nm-button-primary"
+            className={
+              embeddingPending && otherAssignmentsDirty ? 'nm-button-ghost' : 'nm-button-primary'
+            }
             disabled={save.isPending || (embeddingPending !== null && !otherAssignmentsDirty)}
             onClick={handleSave}
             {...(embeddingPending
@@ -437,6 +459,21 @@ export function LlmTab() {
       </div>
     </div>
   );
+}
+
+function embeddingDraftIdentity(
+  now: UsecaseAssignments['embedding'],
+  providers: LlmProvider[],
+): { providerId: string; model: string } | null {
+  if (now.providerId) {
+    const selectedDefault = providers.find((p) => p.id === now.providerId)?.defaultModel ?? null;
+    const model = now.model ?? selectedDefault;
+    if (!model) return null;
+    return { providerId: now.providerId, model };
+  }
+  const fallback = providers.find((p) => p.isDefault);
+  if (!fallback?.id || !fallback.defaultModel) return null;
+  return { providerId: fallback.id, model: fallback.defaultModel };
 }
 
 function diffUsecaseAssignments(

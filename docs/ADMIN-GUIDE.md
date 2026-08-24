@@ -1704,7 +1704,7 @@ For self-signed certificates on Confluence or LLM servers:
 ### Embeddings are not being generated
 
 1. Ensure the embedding model is pulled: `ollama pull bge-m3` (or the model assigned under Settings → AI Models).
-2. Changing the **Embedding** row does **not** go live via **Save use-case assignments**. Start the re-embed from that row (**Start re-embed**). Saving first would switch the live model before the index can store its vectors.
+2. Changing the **Embedding** row does **not** go live via **Save use-case assignments**. Start the re-embed from that row (**Start re-embed**). Saving first would switch the live model before the index can store its vectors. **Wipe current index** rebuilds the *live* index only — it is not a way to apply an unsaved model change.
 3. If the assigned model’s width does not match `page_embeddings.embedding` (for example Qwen3-Embedding-4B at 2560 vs a 1024 column), every page fails until that re-embed (or the assignment is pointed back at a matching model). See `docs/runbooks/shadow-reembed.md`.
 
 ### Database migrations fail

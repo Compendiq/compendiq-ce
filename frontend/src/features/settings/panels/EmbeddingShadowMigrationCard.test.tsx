@@ -179,6 +179,8 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     const card = await screen.findByTestId('shadow-migration-card');
     expect(card).toHaveTextContent(/do not save the assignment/i);
     expect(card).toHaveTextContent(/start re-embed/i);
+    expect(card.textContent ?? '').not.toMatch(/new vectors will not fit the current index/i);
+    expect(card).not.toHaveAttribute('role', 'status');
     expect(screen.getByRole('button', { name: /^Start re-embed$/i })).toHaveClass('nm-button-primary');
   });
 
