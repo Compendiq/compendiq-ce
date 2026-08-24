@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { NOTION_UNSUPPORTED_LABEL, NotionTreeResponseSchema } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
-import { NotionClient, setNotionApiBaseUrlForTests } from './notion-client.js';
+import { NotionClient, NotionError, setNotionApiBaseUrlForTests } from './notion-client.js';
 import { fetchNotionWorkspaceTree } from './notion-tree.js';
 
 const TOKEN = 'secret_tree_ntn_never_echo';
@@ -250,5 +250,149 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(src).not.toMatch(/databases\/.*query/);
     expect(src).not.toContain('queryDatabase');
     expect(src).not.toContain('api.notion.com');
+  });
+
+  it('nests child_database and child_page found under a toggle; block_id parents are not roots', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'handbook',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Handbook'),
+        },
+        {
+          object: 'database',
+          id: 'crm',
+          parent: { type: 'page_id', page_id: 'elsewhere' },
+          title: richTitle('CRM'),
+        },
+        {
+          object: 'page',
+          id: 'nested-in-toggle',
+          parent: { type: 'block_id', block_id: 'toggle-1' },
+          properties: titleProp('Nested under toggle'),
+        },
+      ],
+      blockChildren: {
+        handbook: [
+          {
+            object: 'block',
+            id: 'toggle-1',
+            type: 'toggle',
+            has_children: true,
+            toggle: { rich_text: [] },
+          },
+        ],
+        'toggle-1': [
+          {
+            object: 'block',
+            id: 'crm',
+            type: 'child_database',
+            child_database: { title: 'CRM' },
+          },
+          {
+            object: 'block',
+            id: 'nested-in-toggle',
+            type: 'child_page',
+            child_page: { title: 'Nested under toggle' },
+          },
+        ],
+      },
+      blocks: {
+        'toggle-1': {
+          object: 'block',
+          id: 'toggle-1',
+          type: 'toggle',
+          parent: { type: 'page_id', page_id: 'handbook' },
+          has_children: true,
+        },
+      },
+    });
+
+    expect(nodes.map((n) => n.id)).toEqual(['handbook', 'crm']);
+    const handbook = findById(nodes as TreeNode[], 'handbook');
+    expect(handbook?.children.map((c) => c.id)).toEqual(
+      expect.arrayContaining(['nested-in-toggle']),
+    );
+    expect(findById(nodes as TreeNode[], 'nested-in-toggle')).toMatchObject({
+      type: 'page',
+      selectable: true,
+      title: 'Nested under toggle',
+    });
+    const linked = handbook?.children.find((c) => c.id !== 'nested-in-toggle');
+    expect(linked).toMatchObject({
+      type: 'database',
+      selectable: false,
+      skipReason: NOTION_UNSUPPORTED_LABEL,
+      title: 'CRM',
+    });
+    expect(linked?.id).not.toBe('crm');
+    expect((linked as { linkedFromId?: string } | undefined)?.linkedFromId).toBe('crm');
+    expect(linked?.children ?? []).toEqual([]);
+    const ids = flatten(nodes as TreeNode[]).map((n) => n.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('does not walk block children of Search-listed database row-pages', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'handbook',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Handbook'),
+        },
+        {
+          object: 'database',
+          id: 'crm',
+          parent: { type: 'page_id', page_id: 'handbook' },
+          title: richTitle('CRM'),
+        },
+        {
+          object: 'page',
+          id: 'row-listed',
+          parent: { type: 'database_id', database_id: 'crm' },
+          properties: titleProp('Acme Corp'),
+        },
+      ],
+      blockChildren: {
+        'row-listed': [
+          {
+            object: 'block',
+            id: 'should-not-fetch',
+            type: 'child_database',
+            child_database: { title: 'Hidden linked' },
+          },
+        ],
+      },
+    });
+
+    expect(findById(nodes as TreeNode[], 'should-not-fetch')).toBeUndefined();
+    expect(server!.requests.some((r) => r.url.includes('/blocks/row-listed/children'))).toBe(false);
+    expect(server!.requests.some((r) => r.url.includes('/blocks/handbook/children'))).toBe(true);
+  });
+
+  it('fails the tree when block children return 5xx rather than 200ing a partial forest', async () => {
+    await expect(
+      treeFor({
+        validToken: TOKEN,
+        searchResults: [
+          {
+            object: 'page',
+            id: 'handbook',
+            parent: { type: 'workspace', workspace: true },
+            properties: titleProp('Handbook'),
+          },
+        ],
+        blockChildrenErrors: { handbook: 503 },
+      }),
+    ).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(NotionError);
+      expect((err as InstanceType<typeof NotionError>).statusCode).toBe(503);
+      return true;
+    });
   });
 });

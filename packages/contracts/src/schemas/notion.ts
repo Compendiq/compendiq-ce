@@ -35,6 +35,8 @@ export type NotionTreeSkippedNode = {
   type: 'database' | 'unsupported';
   selectable: false;
   skipReason: typeof NOTION_UNSUPPORTED_LABEL;
+  /** Notion database id when `id` is a linked-view key, not the object id. */
+  linkedFromId?: string;
   url?: string;
   children: NotionTreeNode[];
 };
@@ -60,6 +62,7 @@ export const NotionTreeNodeSchema: z.ZodType<NotionTreeNode> = z.lazy(() =>
         type: z.enum(['database', 'unsupported']),
         selectable: z.literal(false),
         skipReason: z.literal(NOTION_UNSUPPORTED_LABEL),
+        linkedFromId: z.string().min(1).optional(),
         url: z.string().optional(),
         children: z.array(NotionTreeNodeSchema),
       })

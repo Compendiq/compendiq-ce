@@ -109,4 +109,24 @@ describe('NotionTreeResponseSchema', () => {
       }),
     ).toThrow();
   });
+
+  it('accepts a linked-view clone with linkedFromId and a distinct id', () => {
+    const tree = NotionTreeResponseSchema.parse({
+      nodes: [
+        {
+          id: 'linked:handbook:db-1',
+          title: 'CRM',
+          type: 'database',
+          selectable: false,
+          skipReason: NOTION_UNSUPPORTED_LABEL,
+          linkedFromId: 'db-1',
+          children: [],
+        },
+      ],
+    });
+    const node = tree.nodes[0]!;
+    if (node.selectable) throw new Error('expected skipped node');
+    expect(node.linkedFromId).toBe('db-1');
+    expect(node.id).toBe('linked:handbook:db-1');
+  });
 });

@@ -68,10 +68,16 @@ export async function notionRoutes(fastify: FastifyInstance) {
       const nodes = await fetchNotionWorkspaceTree(client);
       return NotionTreeResponseSchema.parse({ nodes });
     } catch (err) {
-      if (err instanceof NotionError && err.statusCode >= 400 && err.statusCode < 500) {
-        const body = { error: 'ClientError', message: err.message, statusCode: err.statusCode };
+      if (err instanceof NotionError && err.statusCode >= 400) {
+        const status =
+          err.statusCode === 503 || err.statusCode === 529
+            ? 503
+            : err.statusCode >= 500
+              ? 502
+              : err.statusCode;
+        const body = { error: 'ClientError', message: err.message, statusCode: status };
         expectNoSecret(body, token);
-        return reply.status(err.statusCode).send(body);
+        return reply.status(status).send(body);
       }
       throw err;
     }

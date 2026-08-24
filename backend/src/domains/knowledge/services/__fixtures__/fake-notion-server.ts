@@ -22,6 +22,10 @@ export interface FakeNotionState {
   pages?: Record<string, Record<string, unknown>>;
   databases?: Record<string, Record<string, unknown>>;
   blockChildren?: Record<string, Array<Record<string, unknown>>>;
+  /** GET /v1/blocks/:id (parent-chain lookup). */
+  blocks?: Record<string, Record<string, unknown>>;
+  /** Status to return for GET /v1/blocks/:id/children instead of a list. */
+  blockChildrenErrors?: Record<string, number>;
   /**
    * Rows returned ONLY if a caller POSTs `/v1/databases/:id/query`.
    * Child B must never hit this — row-pages are search page objects or they stay skipped.
@@ -157,6 +161,16 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
 
     const blocksMatch = /^\/v1\/blocks\/([^/]+)\/children$/.exec(path);
     if (method === 'GET' && blocksMatch) {
+      const errorStatus = state.blockChildrenErrors?.[blocksMatch[1]!];
+      if (errorStatus) {
+        send(res, errorStatus, {
+          object: 'error',
+          status: errorStatus,
+          code: errorStatus >= 500 ? 'internal_server_error' : 'rate_limited',
+          message: 'upstream',
+        });
+        return;
+      }
       const all = state.blockChildren?.[blocksMatch[1]!] ?? [];
       const pageSize = Math.min(Number.parseInt(parsed.searchParams.get('page_size') ?? '100', 10) || 100, 100);
       const start = parsed.searchParams.get('start_cursor')
@@ -173,6 +187,17 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
         next_cursor: hasMore ? String(next) : null,
         has_more: hasMore,
       });
+      return;
+    }
+
+    const blockMatch = /^\/v1\/blocks\/([^/]+)$/.exec(path);
+    if (method === 'GET' && blockMatch) {
+      const block = state.blocks?.[blockMatch[1]!];
+      if (!block) {
+        send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
+        return;
+      }
+      send(res, 200, block);
       return;
     }
 

@@ -271,3 +271,58 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree (#1463)', () => {
     }
   });
 });
+
+describe.skipIf(!dbAvailable)('GET /api/notion/tree upstream failures (#1463)', () => {
+  let server: FakeNotionServer;
+  let userId: string;
+
+  beforeAll(async () => {
+    await setupTestDb();
+  });
+
+  afterAll(async () => {
+    setNotionApiBaseUrlForTests(null);
+    await teardownTestDb();
+  });
+
+  beforeEach(async () => {
+    await truncateAllTables();
+    userId = await insertUser('notion-tree-5xx-user');
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'handbook',
+          parent: { type: 'workspace', workspace: true },
+          properties: {
+            title: { type: 'title', title: [{ type: 'text', plain_text: 'Handbook' }] },
+          },
+        },
+      ],
+      blockChildrenErrors: { handbook: 503 },
+    });
+    setNotionApiBaseUrlForTests(server.baseUrl);
+  });
+
+  afterEach(async () => {
+    expect(JSON.stringify(server.requests.map((r) => r.url))).not.toContain('api.notion.com');
+    await server.close();
+    setNotionApiBaseUrlForTests(null);
+  });
+
+  it('returns 503 when Notion children are unavailable and never echoes the token', async () => {
+    const instance = await buildKnowledgeTestApp(() => userId, async (fastify) => {
+      await fastify.register(notionRoutes, { prefix: '/api' });
+    });
+    try {
+      await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
+      const res = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
+      expect(res.statusCode).toBe(503);
+      expect(res.body).not.toContain(TOKEN);
+      expect(res.json()).toMatchObject({ statusCode: 503 });
+    } finally {
+      await instance.close();
+    }
+  });
+});
