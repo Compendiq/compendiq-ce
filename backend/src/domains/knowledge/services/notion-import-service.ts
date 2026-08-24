@@ -12,6 +12,7 @@ import {
 } from '@compendiq/contracts';
 import { query } from '../../../core/db/postgres.js';
 import { putLocalAttachment } from '../../../core/services/local-attachment-service.js';
+import { cleanupStandalonePageAttachmentDirs } from '../../../core/services/standalone-attachment-cleanup.js';
 import { logger } from '../../../core/utils/logger.js';
 import { NotionClient, NotionError } from './notion-client.js';
 import {
@@ -44,6 +45,7 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
   const destination = await resolveDestination(input);
   const items = new Map<string, NotionImportItem>();
   const jobs: ImportJob[] = [];
+  const alreadyImported: AlreadyImported[] = [];
 
   for (const rawId of input.pageIds) {
     if (items.has(rawId)) continue;
@@ -57,6 +59,13 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
         notionPageId: rawId,
         status: 'already_imported',
         localPageId: existing.id,
+      });
+      const page = await getPageQuietly(input.client, rawId);
+      alreadyImported.push({
+        notionPageId: rawId,
+        localPageId: existing.id,
+        parentNotionId: page ? parentPageIdOf(page) : null,
+        page,
       });
       continue;
     }
@@ -97,6 +106,12 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
   }
 
   const toPersist = jobs.filter((job) => !items.has(job.id));
+  const selectedKeys = new Set([
+    ...toPersist.map((j) => normalizeNotionId(j.id)),
+    ...alreadyImported.map((row) => normalizeNotionId(row.notionPageId)),
+  ]);
+  applyChildPageHosts(toPersist, alreadyImported);
+  await resolveRemainingBlockParents(input.client, toPersist, alreadyImported, selectedKeys);
   const ordered = topoBySelectedParent(
     toPersist,
     new Set(toPersist.map((j) => normalizeNotionId(j.id))),
@@ -148,6 +163,7 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
   }
 
   await rewriteImportedMentions(ordered, items, importedPages);
+  await rehomeAlreadyImported(alreadyImported, importedPages, destination.parentId);
 
   return input.pageIds.map((id) => items.get(id) ?? { notionPageId: id, status: 'fail', reason: 'Unknown item' });
 }
@@ -159,6 +175,13 @@ interface ImportJob {
   parentNotionId: string | null;
   reuseId?: number;
   blocks?: NotionBlock[];
+}
+
+interface AlreadyImported {
+  notionPageId: string;
+  localPageId: number;
+  parentNotionId: string | null;
+  page: Record<string, unknown> | null;
 }
 
 interface Destination {
@@ -297,6 +320,7 @@ async function abandonPage(pageId: number, destinationParentId: string | null): 
     ]);
   }
   await query('DELETE FROM pages WHERE id = $1', [pageId]);
+  await cleanupStandalonePageAttachmentDirs(pageId);
 }
 
 async function rewriteImportedMentions(
@@ -424,6 +448,151 @@ function parentPageIdOf(page: Record<string, unknown>): string | null {
   if (!parent || typeof parent.type !== 'string') return null;
   if (parent.type === 'page_id' && typeof parent.page_id === 'string') return parent.page_id;
   return null;
+}
+
+function parentBlockIdOf(page: Record<string, unknown> | null): string | null {
+  if (!page) return null;
+  const parent = isRecord(page.parent) ? page.parent : null;
+  if (!parent || parent.type !== 'block_id') return null;
+  return typeof parent.block_id === 'string' ? parent.block_id : null;
+}
+
+function applyChildPageHosts(jobs: ImportJob[], already: AlreadyImported[]): void {
+  const hostByChild = new Map<string, string>();
+  for (const job of jobs) {
+    if (job.blocks) collectChildPageHosts(job.blocks, job.id, hostByChild);
+  }
+  for (const job of jobs) {
+    const host = hostByChild.get(normalizeNotionId(job.id));
+    if (host) job.parentNotionId = host;
+  }
+  for (const row of already) {
+    const host = hostByChild.get(normalizeNotionId(row.notionPageId));
+    if (host) row.parentNotionId = host;
+  }
+}
+
+function collectChildPageHosts(blocks: readonly NotionBlock[], hostId: string, out: Map<string, string>): void {
+  for (const block of blocks) {
+    if (block.type === 'child_page' && typeof block.id === 'string') {
+      out.set(normalizeNotionId(block.id), hostId);
+    }
+    if (Array.isArray(block.children) && block.children.length > 0) {
+      collectChildPageHosts(block.children, hostId, out);
+    }
+  }
+}
+
+async function resolveRemainingBlockParents(
+  client: NotionClient,
+  jobs: ImportJob[],
+  already: AlreadyImported[],
+  selectedKeys: Set<string>,
+): Promise<void> {
+  for (const job of jobs) {
+    if (job.parentNotionId) continue;
+    const blockId = parentBlockIdOf(job.page);
+    if (!blockId) continue;
+    const host = await resolveHostPageId(client, blockId, selectedKeys);
+    if (host) job.parentNotionId = host;
+  }
+  for (const row of already) {
+    if (row.parentNotionId) continue;
+    const blockId = parentBlockIdOf(row.page);
+    if (!blockId) continue;
+    const host = await resolveHostPageId(client, blockId, selectedKeys);
+    if (host) row.parentNotionId = host;
+  }
+}
+
+async function resolveHostPageId(
+  client: NotionClient,
+  startBlockId: string,
+  selectedKeys: Set<string>,
+): Promise<string | null> {
+  const seen = new Set<string>();
+  let current = startBlockId;
+  for (let i = 0; i < 25; i++) {
+    const key = normalizeNotionId(current);
+    if (seen.has(key)) return null;
+    seen.add(key);
+    if (selectedKeys.has(key)) return current;
+    let block: Record<string, unknown>;
+    try {
+      block = await client.getBlock(current);
+    } catch (err) {
+      if (isMissing(err)) return null;
+      throw err;
+    }
+    const parent = isRecord(block.parent) ? block.parent : null;
+    if (!parent || typeof parent.type !== 'string') return null;
+    if (parent.type === 'page_id' && typeof parent.page_id === 'string') {
+      return selectedKeys.has(normalizeNotionId(parent.page_id)) ? parent.page_id : null;
+    }
+    if (parent.type === 'block_id' && typeof parent.block_id === 'string') {
+      current = parent.block_id;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+async function getPageQuietly(client: NotionClient, id: string): Promise<Record<string, unknown> | null> {
+  try {
+    return await client.getPage(id);
+  } catch {
+    return null;
+  }
+}
+
+async function rehomeAlreadyImported(
+  already: AlreadyImported[],
+  importedPages: Map<string, number>,
+  destinationParentId: string | null,
+): Promise<void> {
+  for (const row of already) {
+    const parentLocal = resolveParentLocalId(row.parentNotionId, importedPages, destinationParentId);
+    await rehomePage(row.localPageId, parentLocal);
+  }
+}
+
+async function rehomePage(pageId: number, parentId: string | null): Promise<void> {
+  const current = await query<{ parent_id: string | null; path: string | null }>(
+    'SELECT parent_id, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
+    [pageId],
+  );
+  const row = current.rows[0];
+  if (!row) return;
+  if ((row.parent_id ?? null) === (parentId ?? null)) return;
+
+  let parentPath: string | null = null;
+  if (parentId) {
+    const parent = await query<{ path: string | null }>(
+      'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      [parentId],
+    );
+    parentPath = parent.rows[0]?.path ?? `/${parentId}`;
+  }
+  const oldPath = row.path ?? `/${pageId}`;
+  const newPath = parentPath ? `${parentPath}/${pageId}` : `/${pageId}`;
+  const depth = newPath.split('/').filter(Boolean).length - 1;
+  await query('UPDATE pages SET parent_id = $1, path = $2, depth = $3 WHERE id = $4', [
+    parentId,
+    newPath,
+    depth,
+    pageId,
+  ]);
+  const descendants = await query<{ id: number; path: string }>(
+    `SELECT id, path FROM pages WHERE deleted_at IS NULL AND path IS NOT NULL AND path LIKE $1`,
+    [`${oldPath}/%`],
+  );
+  for (const kid of descendants.rows) {
+    const suffix = kid.path.slice(oldPath.length);
+    const kidPath = `${newPath}${suffix}`;
+    const kidDepth = kidPath.split('/').filter(Boolean).length - 1;
+    await query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3', [kidPath, kidDepth, kid.id]);
+  }
 }
 
 function extractTitle(item: Record<string, unknown>): string {

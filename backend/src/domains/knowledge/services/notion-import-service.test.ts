@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -163,6 +163,77 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
 
     const leftover = await query('SELECT 1 FROM pages WHERE title = $1', ['Sibling']);
     expect(leftover.rows).toHaveLength(0);
+  });
+
+  it('nests a page whose Notion parent is a toggle block under the selected host', async () => {
+    const dest = await query<{ id: number }>(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, space_key, visibility, path)
+       VALUES ('Dest', '<p>d</p>', 'd', 1, 'standalone', $1, 'wiki', 'private', '/0') RETURNING id`,
+      [userId],
+    );
+    const destId = dest.rows[0]!.id;
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        host: {
+          object: 'page',
+          id: 'host',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Host'),
+        },
+        nested: {
+          object: 'page',
+          id: 'nested',
+          parent: { type: 'block_id', block_id: 'toggle-1' },
+          properties: titleProp('Nested'),
+        },
+      },
+      blocks: {
+        'toggle-1': {
+          object: 'block',
+          id: 'toggle-1',
+          type: 'toggle',
+          parent: { type: 'page_id', page_id: 'host' },
+        },
+      },
+      blockChildren: {
+        host: [
+          {
+            object: 'block',
+            id: 'toggle-1',
+            type: 'toggle',
+            has_children: true,
+            toggle: { rich_text: [{ type: 'text', plain_text: 'More', text: { content: 'More' } }] },
+          },
+        ],
+        'toggle-1': [
+          {
+            object: 'block',
+            id: 'nested',
+            type: 'child_page',
+            child_page: { title: 'Nested' },
+          },
+        ],
+        nested: [paragraph('n1', 'inside toggle')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['host', 'nested'],
+      spaceKey: 'wiki',
+      parentId: String(destId),
+      visibility: 'private',
+    });
+    expect(items.every((i) => i.status === 'success')).toBe(true);
+    const host = await query<{ id: number }>('SELECT id FROM pages WHERE notion_page_id = $1', ['host']);
+    const nested = await query<{ parent_id: string | null }>(
+      'SELECT parent_id FROM pages WHERE notion_page_id = $1',
+      ['nested'],
+    );
+    expect(nested.rows[0]!.parent_id).toBe(String(host.rows[0]!.id));
+    expect(nested.rows[0]!.parent_id).not.toBe(String(destId));
   });
 
   it('skips databases in the payload without stubbing a page and continues the run', async () => {
@@ -449,6 +520,70 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(leftoverParent.rows).toHaveLength(0);
   });
 
+  it('on retry, re-nests an already_imported child under a parent that failed last run', async () => {
+    const dest = await query<{ id: number }>(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, space_key, visibility, path)
+       VALUES ('Dest', '<p>d</p>', 'd', 1, 'standalone', $1, 'wiki', 'private', '/0') RETURNING id`,
+      [userId],
+    );
+    const destId = dest.rows[0]!.id;
+    const pages = {
+      parent: {
+        object: 'page',
+        id: 'parent',
+        parent: { type: 'workspace', workspace: true },
+        properties: titleProp('Parent'),
+      },
+      child: {
+        object: 'page',
+        id: 'child',
+        parent: { type: 'page_id', page_id: 'parent' },
+        properties: titleProp('Child'),
+      },
+    };
+    const first = await start({
+      validToken: TOKEN,
+      pages,
+      blockChildren: {
+        child: [paragraph('c1', 'child body')],
+      },
+      blockChildrenErrors: { parent: 500 },
+    });
+    await runNotionImport({
+      userId,
+      client: first,
+      pageIds: ['parent', 'child'],
+      spaceKey: 'wiki',
+      parentId: String(destId),
+      visibility: 'private',
+    });
+    await server.close();
+
+    const client = await start({
+      validToken: TOKEN,
+      pages,
+      blockChildren: {
+        parent: [paragraph('p1', 'parent body')],
+        child: [paragraph('c1', 'child body')],
+      },
+    });
+    const second = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['parent', 'child'],
+      spaceKey: 'wiki',
+      parentId: String(destId),
+      visibility: 'private',
+    });
+    const byId = Object.fromEntries(second.map((i) => [i.notionPageId, i]));
+    expect(byId.parent?.status).toBe('success');
+    expect(byId.child?.status).toBe('already_imported');
+    const child = await query<{ parent_id: string | null }>(
+      `SELECT parent_id FROM pages WHERE notion_page_id = 'child'`,
+    );
+    expect(child.rows[0]!.parent_id).toBe(String(byId.parent!.localPageId));
+  });
+
   it('fails the item when block children are 403 rather than importing an empty body', async () => {
     const client = await start({
       validToken: TOKEN,
@@ -506,6 +641,56 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(items[0]?.status).toBe('fail');
     const pages = await query(`SELECT 1 FROM pages WHERE notion_page_id = 'pic'`);
     expect(pages.rows).toHaveLength(0);
+  });
+
+  it('removes written attachment files when a later image download fails', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        pic: {
+          object: 'page',
+          id: 'pic',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Pic'),
+        },
+      },
+      files: {
+        '/files/one.png': { contentType: 'image/png', body: PNG },
+      },
+      blockChildren: { pic: [] },
+    });
+    server.state.blockChildren = {
+      pic: [
+        {
+          object: 'block',
+          id: 'img-ok',
+          type: 'image',
+          image: {
+            type: 'file',
+            file: { url: `${server.baseUrl}/files/one.png` },
+            caption: [],
+          },
+        },
+        {
+          object: 'block',
+          id: 'img-miss',
+          type: 'image',
+          image: {
+            type: 'file',
+            file: { url: `${server.baseUrl}/files/missing.png` },
+            caption: [],
+          },
+        },
+      ],
+    };
+
+    const items = await runNotionImport({ userId, client, pageIds: ['pic'], visibility: 'shared' });
+    expect(items[0]?.status).toBe('fail');
+    const pages = await query(`SELECT 1 FROM pages WHERE notion_page_id = 'pic'`);
+    expect(pages.rows).toHaveLength(0);
+    const localRoot = join(attachmentsDir, 'local');
+    const leftovers = await readdir(localRoot).catch(() => [] as string[]);
+    expect(leftovers).toEqual([]);
   });
 
   it('does not duplicate on a second run of the same Notion ids', async () => {
