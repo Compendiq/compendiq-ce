@@ -24,6 +24,8 @@ export interface FakeNotionState {
   blockChildren?: Record<string, Array<Record<string, unknown>>>;
   /** GET /v1/blocks/:id (parent-chain lookup). */
   blocks?: Record<string, Record<string, unknown>>;
+  /** Status to return for GET /v1/blocks/:id instead of the block object. */
+  blockErrors?: Record<string, number>;
   /** Status to return for GET /v1/blocks/:id/children instead of a list. */
   blockChildrenErrors?: Record<string, number>;
   /**
@@ -195,6 +197,16 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
 
     const blockMatch = /^\/v1\/blocks\/([^/]+)$/.exec(path);
     if (method === 'GET' && blockMatch) {
+      const errorStatus = state.blockErrors?.[blockMatch[1]!];
+      if (errorStatus) {
+        send(res, errorStatus, {
+          object: 'error',
+          status: errorStatus,
+          code: errorStatus >= 500 ? 'internal_server_error' : 'rate_limited',
+          message: 'upstream',
+        });
+        return;
+      }
       const block = state.blocks?.[blockMatch[1]!];
       if (!block) {
         send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });

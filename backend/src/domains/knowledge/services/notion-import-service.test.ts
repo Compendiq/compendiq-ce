@@ -584,6 +584,111 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(child.rows[0]!.parent_id).toBe(String(byId.parent!.localPageId));
   });
 
+  it('does not un-nest an already_imported child when the subset reimport omits the parent', async () => {
+    const dest = await query<{ id: number }>(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, space_key, visibility, path)
+       VALUES ('Dest', '<p>d</p>', 'd', 1, 'standalone', $1, 'wiki', 'private', '/0') RETURNING id`,
+      [userId],
+    );
+    const destId = dest.rows[0]!.id;
+    const pages = {
+      parent: {
+        object: 'page',
+        id: 'parent',
+        parent: { type: 'workspace', workspace: true },
+        properties: titleProp('Parent'),
+      },
+      child: {
+        object: 'page',
+        id: 'child',
+        parent: { type: 'page_id', page_id: 'parent' },
+        properties: titleProp('Child'),
+      },
+    };
+    const first = await start({
+      validToken: TOKEN,
+      pages,
+      blockChildren: {
+        parent: [paragraph('p1', 'parent body')],
+        child: [paragraph('c1', 'child body')],
+      },
+    });
+    const imported = await runNotionImport({
+      userId,
+      client: first,
+      pageIds: ['parent', 'child'],
+      spaceKey: 'wiki',
+      parentId: String(destId),
+      visibility: 'private',
+    });
+    const parentLocalId = imported.find((i) => i.notionPageId === 'parent')!.localPageId;
+    await server.close();
+
+    const otherDest = await query<{ id: number }>(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, space_key, visibility, path)
+       VALUES ('Other', '<p>o</p>', 'o', 1, 'standalone', $1, 'wiki', 'private', '/1') RETURNING id`,
+      [userId],
+    );
+    const client = await start({
+      validToken: TOKEN,
+      pages,
+      blockChildren: {
+        child: [paragraph('c1', 'child body')],
+      },
+    });
+    const second = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['child'],
+      spaceKey: 'wiki',
+      parentId: String(otherDest.rows[0]!.id),
+      visibility: 'private',
+    });
+    expect(second[0]).toMatchObject({ notionPageId: 'child', status: 'already_imported' });
+    const child = await query<{ parent_id: string | null }>(
+      `SELECT parent_id FROM pages WHERE notion_page_id = 'child'`,
+    );
+    expect(child.rows[0]!.parent_id).toBe(String(parentLocalId));
+    expect(child.rows[0]!.parent_id).not.toBe(String(otherDest.rows[0]!.id));
+  });
+
+  it('does not abort the run when getBlock for a block_id parent returns 500', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        ok: {
+          object: 'page',
+          id: 'ok',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Ok'),
+        },
+        nested: {
+          object: 'page',
+          id: 'nested',
+          parent: { type: 'block_id', block_id: 'toggle-1' },
+          properties: titleProp('Nested'),
+        },
+      },
+      blockErrors: { 'toggle-1': 500 },
+      blockChildren: {
+        ok: [paragraph('o1', 'survives')],
+        nested: [paragraph('n1', 'nested body')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['ok', 'nested'],
+      visibility: 'shared',
+    });
+    const byId = Object.fromEntries(items.map((i) => [i.notionPageId, i]));
+    expect(byId.ok?.status).toBe('success');
+    expect(byId.nested?.status).toBe('success');
+    const pages = await query<{ title: string }>('SELECT title FROM pages ORDER BY title');
+    expect(pages.rows.map((r) => r.title)).toEqual(['Nested', 'Ok']);
+  });
+
   it('fails the item when block children are 403 rather than importing an empty body', async () => {
     const client = await start({
       validToken: TOKEN,

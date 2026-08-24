@@ -163,7 +163,7 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
   }
 
   await rewriteImportedMentions(ordered, items, importedPages);
-  await rehomeAlreadyImported(alreadyImported, importedPages, destination.parentId);
+  await rehomeAlreadyImported(alreadyImported, importedPages);
 
   return input.pageIds.map((id) => items.get(id) ?? { notionPageId: id, status: 'fail', reason: 'Unknown item' });
 }
@@ -520,9 +520,8 @@ async function resolveHostPageId(
     let block: Record<string, unknown>;
     try {
       block = await client.getBlock(current);
-    } catch (err) {
-      if (isMissing(err)) return null;
-      throw err;
+    } catch {
+      return null;
     }
     const parent = isRecord(block.parent) ? block.parent : null;
     if (!parent || typeof parent.type !== 'string') return null;
@@ -549,11 +548,12 @@ async function getPageQuietly(client: NotionClient, id: string): Promise<Record<
 async function rehomeAlreadyImported(
   already: AlreadyImported[],
   importedPages: Map<string, number>,
-  destinationParentId: string | null,
 ): Promise<void> {
   for (const row of already) {
-    const parentLocal = resolveParentLocalId(row.parentNotionId, importedPages, destinationParentId);
-    await rehomePage(row.localPageId, parentLocal);
+    if (!row.parentNotionId) continue;
+    const parentLocal = importedPages.get(normalizeNotionId(row.parentNotionId));
+    if (typeof parentLocal !== 'number') continue;
+    await rehomePage(row.localPageId, String(parentLocal));
   }
 }
 
