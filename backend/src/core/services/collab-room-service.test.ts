@@ -45,7 +45,7 @@ function stubWs(onClose?: (code: number, reason: string) => void): WebSocket {
   } as unknown as WebSocket;
 }
 
-function encodeAwarenessFrame(state: Record<string, unknown>): Uint8Array {
+function encodeAwarenessFrame(state: Record<string, unknown>): { frame: Uint8Array; clientID: number } {
   const doc = new Y.Doc();
   const awareness = new awarenessProtocol.Awareness(doc);
   awareness.setLocalState(state);
@@ -53,7 +53,11 @@ function encodeAwarenessFrame(state: Record<string, unknown>): Uint8Array {
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, 1);
   encoding.writeVarUint8Array(encoder, update);
-  return encoding.toUint8Array(encoder);
+  const frame = encoding.toUint8Array(encoder);
+  const clientID = doc.clientID;
+  awareness.destroy();
+  doc.destroy();
+  return { frame, clientID };
 }
 
 async function cleanupKeys(): Promise<void> {
@@ -289,12 +293,17 @@ describe.skipIf(!redisAvailable)('collab-room-service Redis fan-out (#1444)', ()
       identity,
     });
 
-    const spoofed = encodeAwarenessFrame({
+    const { frame: spoofed, clientID: senderId } = encodeAwarenessFrame({
       user: { id: 'user-a', name: 'Definitely Not Alice', color: '#fff' },
     });
     expect(runtimeA!.handleInboundFrame(pageId, 'editor', spoofed)).toBe('ok');
 
-    const names = [...(runtimeA!.getRoom(pageId)?.awareness.getStates().values() ?? [])]
+    const room = runtimeA!.getRoom(pageId);
+    expect(room).toBeDefined();
+    const ids = [...room!.awareness.getStates().keys()];
+    expect(ids, 'stamping must not inject a throwaway Awareness clientID').toEqual([senderId]);
+
+    const names = [...room!.awareness.getStates().values()]
       .map((s) => (s as { user?: { name?: string } }).user?.name)
       .filter((n): n is string => typeof n === 'string');
     expect(names).toContain('Alice');

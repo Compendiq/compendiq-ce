@@ -295,18 +295,12 @@ export async function createCollabRuntime(
   }
 
   function stampAwarenessIdentity(update: Uint8Array, user: CollabIdentity): Uint8Array {
-    const tmpDoc = new Y.Doc();
-    const tmp = new awarenessProtocol.Awareness(tmpDoc);
-    awarenessProtocol.applyAwarenessUpdate(tmp, update, 'stamp');
-    const ids: number[] = [];
-    for (const [clientId, state] of tmp.getStates()) {
-      const rec = state && typeof state === 'object' ? { ...(state as Record<string, unknown>) } : {};
+    return awarenessProtocol.modifyAwarenessUpdate(update, (state) => {
+      if (state == null) return null;
+      const rec = { ...state };
       delete rec.user;
-      tmp.getStates().set(clientId, { ...rec, user });
-      ids.push(clientId);
-    }
-    if (ids.length === 0) return update;
-    return awarenessProtocol.encodeAwarenessUpdate(tmp, ids);
+      return { ...rec, user };
+    });
   }
 
   function wireDoc(room: CollabRoom): void {
@@ -337,6 +331,8 @@ export async function createCollabRuntime(
 
     const doc = new Y.Doc();
     const awareness = new awarenessProtocol.Awareness(doc);
+    // Room is not a participant; constructor seeds `{}` under doc.clientID.
+    awareness.setLocalState(null);
     const room: CollabRoom = {
       pageId,
       doc,
