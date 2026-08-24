@@ -24,6 +24,25 @@ export function uniqueUsername(prefix: string): string {
   return `${prefix}_${stamp}`.slice(0, 50);
 }
 
+async function sessionFromAuthResponse(
+  res: Awaited<ReturnType<APIRequestContext['post']>>,
+  action: string,
+  username: string,
+): Promise<E2eUser> {
+  if (!res.ok()) {
+    const body = await res.text();
+    throw new Error(`${action} ${username} failed: ${res.status()} ${body}`);
+  }
+  const data = (await res.json()) as {
+    accessToken: string;
+    user: E2eUser['user'];
+  };
+  if (!data.accessToken || !data.user?.id) {
+    throw new Error(`${action} ${username} returned no session`);
+  }
+  return { username: data.user.username, accessToken: data.accessToken, user: data.user };
+}
+
 export async function registerUser(
   request: APIRequestContext,
   username: string,
@@ -32,18 +51,18 @@ export async function registerUser(
   const res = await request.post('/api/auth/register', {
     data: { username, password },
   });
-  if (!res.ok()) {
-    const body = await res.text();
-    throw new Error(`register ${username} failed: ${res.status()} ${body}`);
-  }
-  const data = (await res.json()) as {
-    accessToken: string;
-    user: E2eUser['user'];
-  };
-  if (!data.accessToken || !data.user?.id) {
-    throw new Error(`register ${username} returned no session`);
-  }
-  return { username, accessToken: data.accessToken, user: data.user };
+  return sessionFromAuthResponse(res, 'register', username);
+}
+
+export async function loginUser(
+  request: APIRequestContext,
+  username: string,
+  password: string,
+): Promise<E2eUser> {
+  const res = await request.post('/api/auth/login', {
+    data: { username, password },
+  });
+  return sessionFromAuthResponse(res, 'login', username);
 }
 
 export async function authenticateContext(

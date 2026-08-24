@@ -1,35 +1,39 @@
 import { test, expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import {
   E2E_PASSWORD,
+  loginUser,
   openAuthenticatedPage,
   registerUser,
   uniqueUsername,
   type E2eUser,
 } from './helpers/auth';
 import {
+  COLLAB_E2E_SKIP_NO_ADMIN,
   createStandalonePage,
-  disableCollabFlag,
   editor,
   enterCollabEdit,
-  ensureCollabEnabled,
   getCollabEnabled,
+  setCollabEditingEnabled,
   typeInEditor,
 } from './helpers/collab';
 
 /**
  * Two-browser collaborative editing (#1449 / #1411 child 7).
  *
- * Enables `collabEditingEnabled` only for this file (PUT, or already-on) and
- * restores it afterwards so the rest of the suite stays flag-off. Uses two
- * `browser.newContext()` sessions, matching the pages-crud API-register pattern
- * plus the v1 persist payload (token stays on the refresh cookie).
+ * Isolated Playwright project `collab` (workers: 1). PUT collabEditingEnabled
+ * only as admin; restore only if this worker turned the flag on. Chromium
+ * ignores this file so the rest of the suite stays flag-off.
+ *
+ * Read-only prefix-drop is covered by `pages-collab.test.ts` (CE GET /pages/:id
+ * 404s an admin on someone else's private page, so that UI path is not
+ * exerciseable here).
  */
 
 const STAMP = Date.now();
 const PASS = E2E_PASSWORD;
 
-let flagSession: E2eUser | null = null;
-let flagWasAlreadyOn = false;
+let adminSession: E2eUser | null = null;
+let enabledByThisWorker = false;
 
 async function registerInNewContext(
   browser: Browser,
@@ -40,23 +44,55 @@ async function registerInNewContext(
   return { context, session };
 }
 
+async function resolveAdmin(browser: Browser): Promise<E2eUser | null> {
+  const envUser = process.env.COLLAB_E2E_ADMIN;
+  const envPass = process.env.COLLAB_E2E_PASSWORD;
+  if (envUser && envPass) {
+    const context = await browser.newContext();
+    try {
+      return await loginUser(context.request, envUser, envPass);
+    } finally {
+      await context.close();
+    }
+  }
+
+  const context = await browser.newContext();
+  try {
+    const session = await registerUser(context.request, uniqueUsername('c7flag'), PASS);
+    return session.user.role === 'admin' ? session : null;
+  } catch {
+    return null;
+  } finally {
+    await context.close();
+  }
+}
+
 test.describe('Collaborative editing (#1449)', () => {
   test.beforeAll(async ({ browser }) => {
-    const { context, session } = await registerInNewContext(browser, 'c7flag');
-    flagSession = session;
+    const admin = await resolveAdmin(browser);
+    if (!admin || admin.user.role !== 'admin') {
+      test.skip(true, COLLAB_E2E_SKIP_NO_ADMIN);
+      return;
+    }
+    adminSession = admin;
+
+    const context = await browser.newContext();
     try {
-      flagWasAlreadyOn = await getCollabEnabled(context.request, session);
-      await ensureCollabEnabled(context.request, session);
+      const alreadyOn = await getCollabEnabled(context.request, admin);
+      if (!alreadyOn) {
+        await setCollabEditingEnabled(context.request, admin, true);
+        enabledByThisWorker = true;
+      }
     } finally {
       await context.close();
     }
   });
 
   test.afterAll(async ({ browser }) => {
-    if (!flagSession || flagWasAlreadyOn) return;
+    if (!enabledByThisWorker || !adminSession) return;
     const context = await browser.newContext();
     try {
-      await disableCollabFlag(context.request, flagSession);
+      await setCollabEditingEnabled(context.request, adminSession, false);
     } finally {
       await context.close();
     }
@@ -150,60 +186,6 @@ test.describe('Collaborative editing (#1449)', () => {
       await pageB?.close();
       await a.context.close();
       await b.context.close();
-    }
-  });
-
-  test('read-only session sees live updates and cannot commit', async ({ browser }) => {
-    test.skip(
-      !flagSession || flagSession.user.role !== 'admin',
-      'Read-only collab needs an admin (first registered user) to view a private page',
-    );
-    const admin = flagSession!;
-
-    const writer = await registerInNewContext(browser, 'c7own');
-    const readerCtx = await browser.newContext();
-    const login = await readerCtx.request.post('/api/auth/login', {
-      data: { username: admin.username, password: PASS },
-    });
-    if (!login.ok()) {
-      await writer.context.close();
-      await readerCtx.close();
-      throw new Error(`admin login failed: ${login.status()} ${await login.text()}`);
-    }
-    const marker = `ro-${STAMP}`;
-    const rogue = `rogue-${STAMP}`;
-    let pageW: Page | undefined;
-    let pageR: Page | undefined;
-    try {
-      const created = await createStandalonePage(writer.context.request, writer.session, {
-        title: `Collab private ${STAMP}`,
-        bodyHtml: '<p>Private seed.</p>',
-        visibility: 'private',
-      });
-
-      pageW = await openAuthenticatedPage(writer.context, writer.session, `/pages/${created.id}`);
-      pageR = await openAuthenticatedPage(readerCtx, admin, `/pages/${created.id}`);
-      await enterCollabEdit(pageW);
-      await enterCollabEdit(pageR);
-
-      await typeInEditor(pageW, ` ${marker}`);
-      await expect(editor(pageR)).toContainText(marker, { timeout: 10_000 });
-
-      await typeInEditor(pageR, ` ${rogue}`);
-      // Prefix-drop is server-side; give the fan-out window a chance to leak.
-      await pageW.waitForTimeout(2_000);
-      expect(await editor(pageW).innerText()).not.toContain(rogue);
-
-      const commit = pageR.waitForResponse(
-        (r) => r.url().includes('/collab/commit') && r.request().method() === 'POST',
-      );
-      await pageR.getByTestId('save-page-btn').click();
-      expect((await commit).status()).toBe(403);
-    } finally {
-      await pageW?.close();
-      await pageR?.close();
-      await writer.context.close();
-      await readerCtx.close();
     }
   });
 });

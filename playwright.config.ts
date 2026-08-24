@@ -16,6 +16,17 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
+      testIgnore: /collab-editing/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      // Isolated: this spec PUTs collabEditingEnabled. workers:1 + not
+      // fullyParallel so it cannot race the rest of the suite, which stays
+      // flag-off because chromium ignores the file.
+      name: 'collab',
+      testMatch: /collab-editing/,
+      fullyParallel: false,
+      workers: 1,
       use: { ...devices['Desktop Chrome'] },
     },
   ],

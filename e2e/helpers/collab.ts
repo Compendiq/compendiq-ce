@@ -15,44 +15,27 @@ export async function getCollabEnabled(
   return body.enabled === true;
 }
 
-/**
- * Turn the collab flag on for this spec only. Prefers PUT /admin/settings
- * (first registered user is admin on a fresh DB). If the flag is already on
- * (operator / SQL pre-seed), PUT is skipped so a non-admin e2e user still works.
- */
-export async function ensureCollabEnabled(
+export const COLLAB_E2E_SKIP_NO_ADMIN =
+  'Collab e2e needs an admin to PUT collabEditingEnabled. Use an empty DB (first register is admin) or set COLLAB_E2E_ADMIN and COLLAB_E2E_PASSWORD.';
+
+/** PUT the flag. Caller must be admin. A failed PUT throws — never swallow. */
+export async function setCollabEditingEnabled(
   request: APIRequestContext,
   session: E2eUser,
+  enabled: boolean,
 ): Promise<void> {
-  if (await getCollabEnabled(request, session)) return;
-
   const put = await request.put('/api/admin/settings', {
     headers: { ...bearerHeaders(session), 'Content-Type': 'application/json' },
-    data: { collabEditingEnabled: true },
+    data: { collabEditingEnabled: enabled },
   });
   if (!put.ok()) {
     throw new Error(
-      `Could not enable collabEditingEnabled (PUT ${put.status()} ${await put.text()}). ` +
-        'This spec needs an admin session (first registered user) or the flag already on.',
+      `PUT /admin/settings collabEditingEnabled=${enabled} failed: ${put.status()} ${await put.text()}`,
     );
   }
   await expect
     .poll(async () => getCollabEnabled(request, session), { timeout: 10_000 })
-    .toBe(true);
-}
-
-export async function disableCollabFlag(
-  request: APIRequestContext,
-  session: E2eUser,
-): Promise<void> {
-  const put = await request.put('/api/admin/settings', {
-    headers: { ...bearerHeaders(session), 'Content-Type': 'application/json' },
-    data: { collabEditingEnabled: false },
-  });
-  if (!put.ok()) return;
-  await expect
-    .poll(async () => getCollabEnabled(request, session), { timeout: 10_000 })
-    .toBe(false);
+    .toBe(enabled);
 }
 
 export async function createStandalonePage(
