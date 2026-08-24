@@ -37,8 +37,9 @@ import { COLLAB_WS_PROTOCOL } from '@compendiq/contracts';
 import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 import { assertNoLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
-import { _resetCollabRoomsForTest } from '../../core/services/collab-room-service.js';
+import { _resetCollabRoomsForTest, createCollabRuntime } from '../../core/services/collab-room-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
+import * as persist from '../../core/services/collab-persistence.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 
 const dbAvailable = await isDbAvailable();
@@ -809,5 +810,178 @@ describe.skipIf(!canRun)('competing writers 409 while room live (#1445)', () => 
     expect(xml).not.toContain('BEFORE_CRDT');
     second.close();
   }, 25_000);
+
+  it('empty-room restore / Apply / draft-publish delete BYTEA', async () => {
+    const { token, userId } = await createUser('collab_del_writers');
+    await enableCollabFlag();
+
+    async function seedBytea(pageId: number): Promise<void> {
+      const doc = new Y.Doc();
+      doc.getXmlFragment('default');
+      await query(
+        `INSERT INTO page_collaborative_docs (page_id, doc_state, state_vector, version)
+         VALUES ($1, $2, $3, 1)`,
+        [pageId, Buffer.from(Y.encodeStateAsUpdate(doc)), Buffer.from(Y.encodeStateVector(doc))],
+      );
+    }
+
+    const restoreId = await insertStandalone({
+      ownerId: userId, visibility: 'shared', bodyHtml: '<p>live</p>',
+    });
+    await query(`UPDATE pages SET version = 2 WHERE id = $1`, [restoreId]);
+    await query(
+      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
+       VALUES ($1, 1, 'Collab page', '<p>old</p>', 'old', NOW())`,
+      [restoreId],
+    );
+    await seedBytea(restoreId);
+    expect(Number(await getRedisClient()!.sCard(`collab:active:${restoreId}`))).toBe(0);
+    const restore = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${restoreId}/versions/1/restore`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { version: 2 },
+    });
+    expect(restore.statusCode).toBe(200);
+    expect((await query('SELECT page_id FROM page_collaborative_docs WHERE page_id = $1', [restoreId])).rows).toHaveLength(0);
+
+    const applyId = await insertStandalone({
+      ownerId: userId, visibility: 'shared', bodyHtml: '<p>apply-me</p>',
+    });
+    await seedBytea(applyId);
+    const apply = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { pageId: String(applyId), improvedMarkdown: 'Applied body' },
+    });
+    expect(apply.statusCode).toBe(200);
+    expect((await query('SELECT page_id FROM page_collaborative_docs WHERE page_id = $1', [applyId])).rows).toHaveLength(0);
+
+    const pubId = await insertStandalone({
+      ownerId: userId, visibility: 'shared', bodyHtml: '<p>pub-live</p>',
+    });
+    await query(
+      `UPDATE pages SET draft_body_html = '<p>draft</p>', draft_body_text = 'draft', draft_updated_by = $2 WHERE id = $1`,
+      [pubId, userId],
+    );
+    await seedBytea(pubId);
+    const publish = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pubId}/draft/publish`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(publish.statusCode).toBe(200);
+    expect((await query('SELECT page_id FROM page_collaborative_docs WHERE page_id = $1', [pubId])).rows).toHaveLength(0);
+  });
+});
+
+describe.skipIf(!canRun)('collab init failure (#1445 review)', () => {
+  it('loadOrInit throw: socket 1001, no collab:active member, PUT does not 409', async () => {
+    const { token, userId } = await createUser('collab_init_fail');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+
+    const spy = vi.spyOn(persist, 'loadOrInitCollabDoc').mockRejectedValue(new Error('forced load failure'));
+    try {
+      const ws = openWhatwg(pageId, token);
+      const closed = await waitClose(ws);
+      expect(closed.opened).toBe(true);
+      expect(closed.code).toBe(1001);
+
+      const n = await getRedisClient()!.sCard(`collab:active:${pageId}`);
+      expect(Number(n)).toBe(0);
+      await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
+
+      const put = await app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { title: 'ok', bodyHtml: '<p>ok</p>', version: 1 },
+      });
+      expect(put.statusCode).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe.skipIf(!canRun)('collab commit multi-pod dump (#1445 review)', () => {
+  it('commit on a pod with no local heap waits for state_dump and snapshots peer HTML', async () => {
+    const { token, userId } = await createUser('collab_dump_commit');
+    const pageId = await insertStandalone({
+      ownerId: userId,
+      visibility: 'shared',
+      bodyHtml: '<p>ORIGINAL_HTML</p>',
+    });
+    await enableCollabFlag();
+
+    const redis = getRedisClient()!;
+    const podA = await createCollabRuntime(redis, 'commit-pod-a');
+    try {
+      const roomA = await podA.getOrCreateRoom(pageId);
+      const frag = roomA.doc.getXmlFragment('default');
+      const walk = (n: Y.XmlFragment | Y.XmlElement): boolean => {
+        for (let i = 0; i < n.length; i++) {
+          const child = n.get(i);
+          if (child instanceof Y.XmlText) {
+            child.insert(child.length, ' FROM_POD_A');
+            return true;
+          }
+          if (child instanceof Y.XmlElement && walk(child)) return true;
+        }
+        return false;
+      };
+      walk(frag);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { title: 'From B' },
+      });
+      expect(res.statusCode).toBe(200);
+      const page = await query<{ body_html: string }>(
+        'SELECT body_html FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(page.rows[0]!.body_html).toContain('FROM_POD_A');
+    } finally {
+      await podA.close();
+    }
+  });
+
+  it('commit times out waiting for dump with 503, not a stale BYTEA 200', async () => {
+    const { token, userId } = await createUser('collab_dump_503');
+    const pageId = await insertStandalone({
+      ownerId: userId,
+      visibility: 'shared',
+      bodyHtml: '<p>STALE_BYTEA_BODY</p>',
+    });
+    await enableCollabFlag();
+    const doc = new Y.Doc();
+    doc.getXmlFragment('default');
+    await query(
+      `INSERT INTO page_collaborative_docs (page_id, doc_state, state_vector, version)
+       VALUES ($1, $2, $3, 1)`,
+      [pageId, Buffer.from(Y.encodeStateAsUpdate(doc)), Buffer.from(Y.encodeStateVector(doc))],
+    );
+    await getRedisClient()!.sAdd(`collab:active:${pageId}`, 'ghost-pod:conn');
+    await getRedisClient()!.expire(`collab:active:${pageId}`, 45);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'Should 503' },
+    });
+    expect(res.statusCode).toBe(503);
+    const page = await query<{ title: string; body_html: string }>(
+      'SELECT title, body_html FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(page.rows[0]!.title).not.toBe('Should 503');
+    expect(page.rows[0]!.body_html).toContain('STALE_BYTEA_BODY');
+  }, 15_000);
 });
 

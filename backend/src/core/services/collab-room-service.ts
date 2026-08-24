@@ -15,17 +15,13 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import { logger } from '../utils/logger.js';
 import { getRedisClient } from './redis-cache.js';
-import {
-  COLLAB_LOAD_ORIGIN,
-  flushCollabPersist,
-  loadOrInitCollabDoc,
-  scheduleCollabPersist,
-} from './collab-persistence.js';
+import * as persist from './collab-persistence.js';
 
 export const COLLAB_ACTIVE_TTL_SEC = 45;
 export const COLLAB_PING_INTERVAL_MS = 15_000;
 export const COLLAB_READONLY_DROP_LIMIT = 8;
 export const COLLAB_EMPTY_ROOM_GRACE_MS = 10_000;
+export const COLLAB_COMMIT_DUMP_TIMEOUT_MS = 2_000;
 
 const CHANNEL_PREFIX = 'collab:doc:';
 const CHANNEL_PATTERN = 'collab:doc:*';
@@ -84,6 +80,7 @@ export interface CollabRoom {
   persistTimer: ReturnType<typeof setTimeout> | null;
   persistChain: Promise<void>;
   persistable: boolean;
+  dumpReceived: boolean;
   pagesVersion: number;
   lastWriterUserId: string | null;
 }
@@ -101,6 +98,7 @@ export interface CollabRuntime {
   tombstone: (pageId: number, code: number, reason?: string) => Promise<void>;
   tombstoneAll: (code: number, reason?: string) => Promise<void>;
   broadcastControl: (pageId: number, control: CollabControl) => void;
+  waitForPeerStateDump: (pageId: number, timeoutMs?: number) => Promise<boolean>;
   close: () => Promise<void>;
 }
 
@@ -158,7 +156,44 @@ export async function createCollabRuntime(
 ): Promise<CollabRuntime> {
   const rooms = new Map<number, CollabRoom>();
   const inflight = new Map<number, Promise<CollabRoom>>();
+  const dumpWaiters = new Map<number, Array<(ok: boolean) => void>>();
   let subscriber: RedisClientType | null = null;
+
+  function resolveDumpWaiters(pageId: number, ok: boolean): void {
+    const waiters = dumpWaiters.get(pageId);
+    if (!waiters || waiters.length === 0) return;
+    dumpWaiters.delete(pageId);
+    for (const resolve of waiters) resolve(ok);
+  }
+
+  async function waitForPeerStateDump(
+    pageId: number,
+    timeoutMs: number = COLLAB_COMMIT_DUMP_TIMEOUT_MS,
+  ): Promise<boolean> {
+    if (rooms.get(pageId)?.dumpReceived) return true;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const pending = dumpWaiters.get(pageId);
+        if (pending) {
+          dumpWaiters.set(pageId, pending.filter((w) => w !== onDump));
+          if ((dumpWaiters.get(pageId)?.length ?? 0) === 0) dumpWaiters.delete(pageId);
+        }
+        resolve(false);
+      }, timeoutMs);
+      if (typeof timer.unref === 'function') timer.unref();
+      const onDump = (ok: boolean): void => {
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      const list = dumpWaiters.get(pageId) ?? [];
+      list.push(onDump);
+      dumpWaiters.set(pageId, list);
+      if (rooms.get(pageId)?.dumpReceived) {
+        clearTimeout(timer);
+        resolveDumpWaiters(pageId, true);
+      }
+    });
+  }
 
   async function publish(pageId: number, msg: CollabBusMessage): Promise<void> {
     try {
@@ -219,14 +254,20 @@ export async function createCollabRuntime(
     }
     if (msg.kind === 'tombstone') {
       const code = typeof msg.code === 'number' ? msg.code : 4404;
-      closeRoomSockets(room, code, msg.reason ?? 'tombstone');
-      rooms.delete(room.pageId);
+      void closeRoomSockets(room, code, msg.reason ?? 'tombstone').then(() => {
+        rooms.delete(room.pageId);
+      });
       return;
     }
     if ((msg.kind === 'sync' || msg.kind === 'state_dump') && msg.update) {
       const buf = fromB64(msg.update);
       Y.applyUpdate(room.doc, buf, 'redis');
       forwardUpdate(room, buf);
+      if (msg.kind === 'state_dump') {
+        room.dumpReceived = true;
+        room.persistable = true;
+        resolveDumpWaiters(room.pageId, true);
+      }
       return;
     }
     if (msg.kind === 'awareness' && msg.update) {
@@ -268,7 +309,7 @@ export async function createCollabRuntime(
     flush(room);
   }
 
-  function closeRoomSockets(room: CollabRoom, code: number, reason: string): void {
+  async function closeRoomSockets(room: CollabRoom, code: number, reason: string): Promise<void> {
     for (const sock of room.sockets.values()) {
       try {
         sock.ws.close(code, reason);
@@ -281,11 +322,16 @@ export async function createCollabRuntime(
       clearTimeout(room.emptyGrace);
       room.emptyGrace = null;
     }
+    await persist.flushCollabPersist(room);
     if (room.persistTimer) {
       clearTimeout(room.persistTimer);
       room.persistTimer = null;
     }
-    room.doc.destroy();
+    try {
+      room.doc.destroy();
+    } catch {
+      // already destroyed
+    }
   }
 
   async function sremOurActiveMembers(pageId: number): Promise<void> {
@@ -316,6 +362,7 @@ export async function createCollabRuntime(
       clearTimeout(room.emptyGrace);
       room.emptyGrace = null;
     }
+    await persist.flushCollabPersist(room);
     await sremOurActiveMembers(pageId);
     try {
       room.doc.destroy();
@@ -360,8 +407,8 @@ export async function createCollabRuntime(
 
   function wireDoc(room: CollabRoom): void {
     room.doc.on('update', (update: Uint8Array, origin: unknown) => {
-      if (origin !== COLLAB_LOAD_ORIGIN) scheduleCollabPersist(room);
-      if (origin === 'redis' || origin === COLLAB_LOAD_ORIGIN) return;
+      if (origin !== persist.COLLAB_LOAD_ORIGIN) persist.scheduleCollabPersist(room);
+      if (origin === 'redis' || origin === persist.COLLAB_LOAD_ORIGIN) return;
       const except = typeof origin === 'string' ? origin : undefined;
       void publish(room.pageId, { origin: podId, kind: 'sync', update: b64(update) });
       forwardUpdate(room, update, except);
@@ -401,6 +448,7 @@ export async function createCollabRuntime(
       persistTimer: null,
       persistChain: Promise.resolve(),
       persistable: false,
+      dumpReceived: false,
       pagesVersion: 0,
       lastWriterUserId: null,
     };
@@ -408,13 +456,17 @@ export async function createCollabRuntime(
     rooms.set(pageId, room);
 
     try {
-      const loaded = await loadOrInitCollabDoc(pageId, room.doc);
+      const loaded = await persist.loadOrInitCollabDoc(pageId, room.doc);
       if (loaded !== 'missing') {
         room.pagesVersion = loaded.pagesVersion;
         room.persistable = true;
       }
     } catch (err) {
-      logger.debug({ err, pageId }, 'collab: persist init skipped');
+      rooms.delete(pageId);
+      await sremActive(pageId, 'room');
+      try { room.doc.destroy(); } catch { /* */ }
+      logger.warn({ err, pageId }, 'collab: persist init failed');
+      throw err;
     }
 
     await saddActive(pageId, 'room');
@@ -525,7 +577,7 @@ export async function createCollabRuntime(
       await sremActive(pageId, connId);
       return;
     }
-    await flushCollabPersist(room);
+    await persist.flushCollabPersist(room);
     // Last editor out: keep this member (and a :grace sentinel) in
     // collab:active until the in-memory Y.Doc is dropped, so PUT still 409s
     // during the reconnect window. Idempotent — do not replace an armed timer.
@@ -541,7 +593,7 @@ export async function createCollabRuntime(
   async function tombstone(pageId: number, code: number, reason = 'tombstone'): Promise<void> {
     const room = rooms.get(pageId);
     if (room) {
-      closeRoomSockets(room, code, reason);
+      await closeRoomSockets(room, code, reason);
       rooms.delete(pageId);
     }
     await publish(pageId, { origin: podId, kind: 'tombstone', code, reason });
@@ -592,7 +644,7 @@ export async function createCollabRuntime(
     for (const id of ids) {
       const room = rooms.get(id);
       if (room) {
-        closeRoomSockets(room, 1001, 'shutdown');
+        await closeRoomSockets(room, 1001, 'shutdown');
         rooms.delete(id);
       }
       await sremOurActiveMembers(id);
@@ -619,6 +671,7 @@ export async function createCollabRuntime(
     tombstone,
     tombstoneAll,
     broadcastControl,
+    waitForPeerStateDump,
     close,
   };
 }

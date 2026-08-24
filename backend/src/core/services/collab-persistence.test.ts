@@ -286,6 +286,7 @@ describe.skipIf(!canRun)('collab BYTEA persist + snapshot (#1445)', () => {
     expect(page.summary_status).toBe('summarized');
     expect(page.quality_status).toBe('analyzed');
     expect(page.embedding_dirty).toBe(true);
+    expect(page.image_embedding_dirty).toBe(true);
     expect(page.body_text.length).toBeGreaterThan(0);
     expect(yDocToHtml(room.doc)).toContain('SNAPSHOTTED');
   });

@@ -20,6 +20,7 @@ import { userCanAccessPage, userCanEditPage } from '../../core/services/rbac-ser
 import { isCollabEditingEnabled } from '../../core/services/collab-flag.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import {
+  COLLAB_COMMIT_DUMP_TIMEOUT_MS,
   COLLAB_PING_INTERVAL_MS,
   getDefaultCollabRuntime,
   refreshCollabActiveTtl,
@@ -150,12 +151,31 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     }
 
     const runtime = getDefaultCollabRuntime();
-    const room = runtime?.getRoom(pageId);
+    const local = runtime?.getRoom(pageId);
     let html: string | null = null;
-    if (room) {
-      html = snapshotRoomHtml(room.doc);
+    if (local) {
+      html = snapshotRoomHtml(local.doc);
     } else {
-      html = await htmlFromPersistedDoc(pageId);
+      let live = 0;
+      try {
+        const redis = getRedisClient();
+        if (redis) live = Number(await redis.sCard(`collab:active:${pageId}`));
+      } catch {
+        // unread SET: fall through to BYTEA
+      }
+      if (live > 0) {
+        if (!runtime) {
+          throw fastify.httpErrors.serviceUnavailable('Collaborative state is not available on this pod');
+        }
+        const created = await runtime.getOrCreateRoom(pageId);
+        const dumped = await runtime.waitForPeerStateDump(pageId, COLLAB_COMMIT_DUMP_TIMEOUT_MS);
+        if (!dumped) {
+          throw fastify.httpErrors.serviceUnavailable('Collaborative state is not available on this pod');
+        }
+        html = snapshotRoomHtml(created.doc);
+      } else {
+        html = await htmlFromPersistedDoc(pageId);
+      }
     }
     if (html === null) {
       throw fastify.httpErrors.conflict('No collaborative session for this page');

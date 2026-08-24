@@ -21,6 +21,7 @@ import {
 import { assertNoLiveCollabRoom } from './collab-guard.js';
 import { COLLAB_INIT_LOCK_KEY } from '../db/advisory-locks.js';
 import { setRedisClient } from './redis-cache.js';
+import * as persist from './collab-persistence.js';
 
 const redisAvailable = await isRedisAvailable();
 
@@ -308,5 +309,42 @@ describe.skipIf(!redisAvailable)('collab-room-service Redis fan-out (#1444)', ()
       .filter((n): n is string => typeof n === 'string');
     expect(names).toContain('Alice');
     expect(names).not.toContain('Definitely Not Alice');
+  });
+
+  it('does not swallow loadOrInit failure: no collab:active member, attach throws', async () => {
+    if (!main) throw new Error('unreachable');
+    const pageId = nextPageId();
+    const spy = vi.spyOn(persist, 'loadOrInitCollabDoc').mockRejectedValue(new Error('forced load failure'));
+    try {
+      await expect(runtimeA!.attachSocket(pageId, {
+        id: 'boom',
+        ws: stubWs(),
+        userId: 'user-a',
+        writable: true,
+      })).rejects.toThrow(/forced load failure/);
+      expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+      const members = await main.sMembers(`collab:active:${pageId}`);
+      expect(members).toEqual([]);
+      await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('flushCollabPersist runs before doc.destroy on close', async () => {
+    const pageId = nextPageId();
+    await runtimeA!.attachSocket(pageId, {
+      id: 'ed', ws: stubWs(), userId: 'user-a', writable: true,
+    });
+    const flush = vi.spyOn(persist, 'flushCollabPersist');
+    const room = runtimeA!.getRoom(pageId)!;
+    const destroy = vi.spyOn(room.doc, 'destroy');
+    await runtimeA!.close();
+    expect(flush).toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalled();
+    expect(flush.mock.invocationCallOrder[0]!).toBeLessThan(destroy.mock.invocationCallOrder[0]!);
+    flush.mockRestore();
+    destroy.mockRestore();
+    runtimeA = await createCollabRuntime(main!, 'pod-a');
   });
 });
