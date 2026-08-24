@@ -11,6 +11,17 @@ import {
   presetWouldOverwrite,
 } from './provider-presets';
 
+type ProviderProbeResult = {
+  connected: boolean;
+  error?: string;
+  models?: string[];
+  sampleModelsCount?: number;
+};
+
+function redactSecrets(text: string): string {
+  return text.replace(/sk-[A-Za-z0-9_-]+/g, '[redacted]').replace(/Bearer\s+\S+/gi, 'Bearer [redacted]');
+}
+
 interface Props {
   mode: 'create' | 'edit';
   initial?: LlmProvider;
@@ -29,7 +40,13 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   const [presetId, setPresetId] = useState<ProviderPresetId>('custom');
   const [pendingPresetId, setPendingPresetId] = useState<ProviderPresetId | null>(null);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [probe, setProbe] = useState<ProviderProbeResult | null>(null);
   const canSave = name.trim().length > 0 && /^https?:\/\//.test(baseUrl);
+  const canTest =
+    /^https?:\/\//.test(baseUrl) &&
+    (authType === 'none' || apiKey.trim().length > 0 || Boolean(initial?.hasApiKey));
+  const listedModels = probe?.connected ? (probe.models ?? []) : [];
   const nameRef = useRef<HTMLInputElement>(null);
   const presetSelectRef = useRef<HTMLSelectElement>(null);
   const confirmRef = useRef<HTMLDivElement>(null);
@@ -82,6 +99,10 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   }, [open]);
 
   useEffect(() => {
+    setProbe(null);
+  }, [baseUrl, apiKey, authType, verifySsl]);
+
+  useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
@@ -101,6 +122,35 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   }, [open, onClose, pendingPresetId]);
 
   if (!open) return null;
+
+  async function testConnection() {
+    setTesting(true);
+    try {
+      const result = await apiFetch<ProviderProbeResult>('/admin/llm-providers/test', {
+        method: 'POST',
+        body: JSON.stringify({
+          baseUrl,
+          authType,
+          verifySsl,
+          ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
+          ...(mode === 'edit' && initial?.id && !apiKey.trim() ? { providerId: initial.id } : {}),
+        }),
+      });
+      setProbe({
+        ...result,
+        error: result.error ? redactSecrets(result.error) : result.error,
+        models: result.models ?? [],
+      });
+    } catch (e) {
+      setProbe({
+        connected: false,
+        error: redactSecrets(e instanceof Error ? e.message : 'Connection failed'),
+        models: [],
+      });
+    } finally {
+      setTesting(false);
+    }
+  }
 
   async function save() {
     setSaving(true);
@@ -145,8 +195,9 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
         role="dialog"
         aria-modal="true"
         aria-labelledby="provider-modal-title"
-        className="nm-card w-[480px] max-h-[min(90vh,40rem)] max-w-[calc(100vw-2rem)] space-y-3 overflow-y-auto p-6"
+        className="nm-card flex w-[480px] max-h-[min(90vh,40rem)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden p-0"
       >
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-6">
         <h2 id="provider-modal-title" className="text-lg font-semibold">
           {mode === 'create' ? 'Add provider' : 'Edit provider'}
         </h2>
@@ -279,19 +330,78 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
             onChange={(e) => setDefaultModel(e.target.value)}
           />
         </label>
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={!canSave || saving}
-            isLoading={saving}
-            onClick={save}
+        {listedModels.length > 0 ? (
+          <div>
+            <label htmlFor="provider-listed-models" className="block text-sm">
+              Listed models
+            </label>
+            <select
+              id="provider-listed-models"
+              className="nm-select-md mt-1 w-full"
+              value={listedModels.includes(defaultModel) ? defaultModel : ''}
+              onChange={(e) => setDefaultModel(e.target.value)}
+              aria-describedby="provider-listed-models-help"
+            >
+              <option value="">Select a model</option>
+              {listedModels.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+            <p id="provider-listed-models-help" className="mt-1 text-[11px] text-muted-foreground">
+              Choosing one writes the default model. You can still type an id above if the host did
+              not list it.
+            </p>
+          </div>
+        ) : null}
+        {presetId !== 'custom' ? (
+          <p className="text-[11px] text-muted-foreground">
+            Saving does not assign use cases. Assign Chat after saving — do not assign a chat-only
+            host to Embedding, Rerank, or Image embedding.
+          </p>
+        ) : null}
+        </div>
+        <div className="shrink-0 space-y-2 border-t border-border p-3">
+        {probe ? (
+          <div
+            data-testid="provider-test-result"
+            data-state={probe.connected ? 'success' : 'error'}
+            role="status"
+            className={
+              probe.connected
+                ? 'rounded-md border border-status-connected/30 bg-status-connected/10 p-3 text-sm text-status-connected'
+                : 'rounded-md border border-status-disconnected/30 bg-status-disconnected/10 p-3 text-sm text-status-disconnected'
+            }
           >
-            {saving ? 'Saving…' : 'Save'}
+            {probe.connected ? 'Connected' : (probe.error ?? 'Connection failed')}
+          </div>
+        ) : null}
+        <div className="flex items-center justify-between gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={testConnection}
+            disabled={!canTest || testing || saving}
+            isLoading={testing}
+          >
+            {testing ? 'Testing…' : 'Test connection'}
           </Button>
+          <div className="flex gap-2">
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!canSave || saving}
+              isLoading={saving}
+              onClick={save}
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </Button>
+          </div>
+        </div>
         </div>
       </div>
     </div>

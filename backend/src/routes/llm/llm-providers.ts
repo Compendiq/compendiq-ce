@@ -13,12 +13,14 @@ import {
   setDefaultProvider,
 } from '../../domains/llm/services/llm-provider-service.js';
 import {
-  checkHealth,
   listModels as clientListModels,
+  type ProviderConfig,
 } from '../../domains/llm/services/openai-compatible-client.js';
+import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
 import { emitLlmAudit } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   validateUrl,
+  validateUrlSyntaxAndProtocol,
   addAllowedBaseUrl,
   removeAllowedBaseUrl,
   SsrfError,
@@ -70,6 +72,67 @@ const ADMIN_RATE_LIMIT = {
 };
 
 const IdParamsSchema = z.object({ id: z.string().uuid() });
+
+const ProviderProbeSchema = z.object({
+  baseUrl: z.string().url().regex(/^https?:\/\//, 'baseUrl must be http(s)'),
+  authType: z.enum(['bearer', 'none']),
+  verifySsl: z.boolean(),
+  apiKey: z.string().min(1).optional(),
+  providerId: z.string().uuid().optional(),
+});
+
+type ProviderProbeResult = {
+  connected: boolean;
+  error?: string;
+  models: string[];
+  sampleModelsCount: number;
+};
+
+/**
+ * Client-visible probe copy. LlmHttpError.detail and any echoed key stay off
+ * this path (D3 / #1185): operators get a status class, never the upstream body.
+ */
+function sanitizeProviderProbeError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const name = err instanceof Error ? err.name : '';
+  const status = err instanceof LlmHttpError
+    ? err.status
+    : Number(/HTTP (\d{3})\b/.exec(raw)?.[1]);
+  if (status === 401 || status === 403) {
+    return 'The API key was rejected. Check the key and try again.';
+  }
+  if (status === 404) {
+    return 'That base URL did not serve /v1/models. Check the URL.';
+  }
+  if (
+    name === 'AbortError' ||
+    /timeout|aborted|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT/i.test(`${name} ${raw}`)
+  ) {
+    return 'The provider did not respond in time.';
+  }
+  if (/circuit|breaker|temporarily unavailable/i.test(raw)) {
+    return 'The provider is unreachable (circuit open).';
+  }
+  if (Number.isFinite(status) && status > 0) {
+    return `The provider returned HTTP ${status}.`;
+  }
+  return 'The provider could not be reached.';
+}
+
+async function probeProvider(cfg: ProviderConfig): Promise<ProviderProbeResult> {
+  try {
+    const listed = await clientListModels(cfg);
+    const models = listed.map((m) => m.name);
+    return { connected: true, models, sampleModelsCount: models.length };
+  } catch (err) {
+    return {
+      connected: false,
+      error: sanitizeProviderProbeError(err),
+      models: [],
+      sampleModelsCount: 0,
+    };
+  }
+}
 
 
 /**
@@ -345,6 +408,40 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     },
   );
 
+  // POST /admin/llm-providers/test — draft probe (unsaved URL/key).
+  // Static path MUST be registered before `/:id/test` or Fastify treats
+  // `test` as an id and 400s the UUID parser.
+  fastify.post(
+    '/admin/llm-providers/test',
+    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
+    async (request, reply) => {
+      const body = ProviderProbeSchema.parse(request.body);
+      try {
+        validateUrlSyntaxAndProtocol(body.baseUrl);
+      } catch (err) {
+        if (err instanceof SsrfError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        throw err;
+      }
+      let apiKey = body.apiKey ?? null;
+      let providerId = body.providerId ?? `probe:${body.baseUrl}`;
+      if (!apiKey && body.providerId) {
+        const stored = await getProviderById(body.providerId);
+        if (!stored) return reply.code(404).send({ error: 'Provider not found' });
+        apiKey = stored.apiKey;
+        providerId = stored.id;
+      }
+      return probeProvider({
+        providerId,
+        baseUrl: body.baseUrl,
+        apiKey,
+        authType: body.authType,
+        verifySsl: body.verifySsl,
+      });
+    },
+  );
+
   // POST /admin/llm-providers/:id/test — health-check + sample model count
   fastify.post(
     '/admin/llm-providers/:id/test',
@@ -353,25 +450,13 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
       const { id } = IdParamsSchema.parse(request.params);
       const cfg = await getProviderById(id);
       if (!cfg) return reply.code(404).send({ error: 'Provider not found' });
-      const health = await checkHealth({
+      return probeProvider({
         providerId: cfg.id,
         baseUrl: cfg.baseUrl,
         apiKey: cfg.apiKey,
         authType: cfg.authType,
         verifySsl: cfg.verifySsl,
       });
-      let sampleModelsCount = 0;
-      if (health.connected) {
-        const models = await clientListModels({
-          providerId: cfg.id,
-          baseUrl: cfg.baseUrl,
-          apiKey: cfg.apiKey,
-          authType: cfg.authType,
-          verifySsl: cfg.verifySsl,
-        });
-        sampleModelsCount = models.length;
-      }
-      return { ...health, sampleModelsCount };
     },
   );
 

@@ -405,3 +405,196 @@ describe('ProviderEditModal — edit presets', () => {
     expect(defaultModelInput().value).toBe('gpt-4.1-mini');
   });
 });
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function testConnectionButton() {
+  return screen.getByRole('button', { name: /test connection/i });
+}
+
+describe('ProviderEditModal — Test connection', () => {
+  beforeEach(() => {
+    useAuthStore.getState().setAuth('test-token', { id: '1', username: 'admin', role: 'admin' });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useAuthStore.getState().clearAuth();
+  });
+
+  it('success lists models into a select that writes defaultModel, then Save sends that id', async () => {
+    const onSaved = vi.fn();
+    const Wrapper = createWrapper();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/admin/llm-providers/test') && (init as RequestInit)?.method === 'POST') {
+        return jsonResponse({
+          connected: true,
+          models: ['gpt-4o', 'gpt-4.1-mini'],
+          sampleModelsCount: 2,
+        });
+      }
+      return jsonResponse({ ...savedProvider, defaultModel: 'gpt-4o' }, 201);
+    });
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={onSaved} />, { wrapper: Wrapper });
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    fireEvent.change(apiKeyInput(), { target: { value: 'sk-dummy-not-a-real-key' } });
+    fireEvent.click(testConnectionButton());
+    const listed = await screen.findByRole('combobox', { name: /listed models/i });
+    expect(screen.getByTestId('provider-test-result')).toHaveAttribute('data-state', 'success');
+    expect(screen.getByText(/^connected$/i)).toBeTruthy();
+    fireEvent.change(listed, { target: { value: 'gpt-4o' } });
+    expect(defaultModelInput().value).toBe('gpt-4o');
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    const saveCall = fetchSpy.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes('/admin/llm-providers') &&
+        !String(url).includes('/test') &&
+        (init as RequestInit)?.method === 'POST',
+    );
+    expect(saveCall).toBeTruthy();
+    const body = JSON.parse(String((saveCall![1] as RequestInit).body));
+    expect(body.defaultModel).toBe('gpt-4o');
+    expect(body).not.toHaveProperty('vendor');
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/admin/llm-usecases'))).toBe(false);
+  });
+
+  it('401 shows a sanitized bad-key failure and never echoes the API key', async () => {
+    const Wrapper = createWrapper();
+    const key = 'sk-secret-should-never-render';
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/admin/llm-providers/test') && (init as RequestInit)?.method === 'POST') {
+        return jsonResponse({
+          connected: false,
+          error: 'The API key was rejected. Check the key and try again.',
+          models: [],
+          sampleModelsCount: 0,
+        });
+      }
+      return jsonResponse({ message: 'unmocked' }, 404);
+    });
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    fireEvent.change(apiKeyInput(), { target: { value: key } });
+    fireEvent.click(testConnectionButton());
+    const result = await screen.findByTestId('provider-test-result');
+    expect(result).toHaveAttribute('data-state', 'error');
+    expect(result).toHaveTextContent(/api key was rejected/i);
+    expect(result).not.toHaveTextContent(key);
+    expect(screen.queryByRole('combobox', { name: /listed models/i })).toBeNull();
+    expect(document.body.textContent).not.toContain(key);
+  });
+
+  it('timeout shows a sanitized unreachable failure, not the raw upstream body', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/admin/llm-providers/test') && (init as RequestInit)?.method === 'POST') {
+        return jsonResponse({
+          connected: false,
+          error: 'The provider did not respond in time.',
+          models: [],
+          sampleModelsCount: 0,
+        });
+      }
+      return jsonResponse({ message: 'unmocked' }, 404);
+    });
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    fireEvent.change(apiKeyInput(), { target: { value: 'sk-dummy-timeout' } });
+    fireEvent.click(testConnectionButton());
+    const result = await screen.findByTestId('provider-test-result');
+    expect(result).toHaveAttribute('data-state', 'error');
+    expect(result).toHaveTextContent(/did not respond in time/i);
+    expect(result.innerHTML).not.toMatch(/<script/i);
+    expect(screen.queryByRole('combobox', { name: /listed models/i })).toBeNull();
+  });
+
+  it('keeps the type-one default-model input when the host lists no models, and does not block Save', async () => {
+    const onSaved = vi.fn();
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/admin/llm-providers/test') && (init as RequestInit)?.method === 'POST') {
+        return jsonResponse({ connected: true, models: [], sampleModelsCount: 0 });
+      }
+      return jsonResponse({ ...savedProvider, defaultModel: 'qwen3:4b' }, 201);
+    });
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={onSaved} />, { wrapper: Wrapper });
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'Local vLLM' } });
+    fireEvent.change(baseUrlInput(), { target: { value: 'http://host.docker.internal:1234/v1' } });
+    fireEvent.click(screen.getByRole('radio', { name: /none/i }));
+    fireEvent.click(testConnectionButton());
+    await screen.findByTestId('provider-test-result');
+    expect(screen.getByTestId('provider-test-result')).toHaveAttribute('data-state', 'success');
+    expect(screen.queryByRole('combobox', { name: /listed models/i })).toBeNull();
+    fireEvent.change(defaultModelInput(), { target: { value: 'qwen3:4b' } });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+
+  it('edit mode with a stored key tests via providerId and does not require re-pasting the secret', async () => {
+    const Wrapper = createWrapper();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/admin/llm-providers/test') && (init as RequestInit)?.method === 'POST') {
+        return jsonResponse({ connected: true, models: ['mistral-small'], sampleModelsCount: 1 });
+      }
+      return jsonResponse(savedProvider);
+    });
+    const initial = {
+      ...savedProvider,
+      name: 'Existing',
+      baseUrl: 'https://api.mistral.ai/v1',
+      hasApiKey: true,
+      keyPreview: 'sk-****abcd',
+    };
+    render(
+      <ProviderEditModal mode="edit" initial={initial} open onClose={() => {}} onSaved={() => {}} />,
+      { wrapper: Wrapper },
+    );
+    expect(screen.getByText(/configured/i)).toBeTruthy();
+    expect(screen.getByText(/sk-\*\*\*\*abcd/)).toBeTruthy();
+    fireEvent.click(testConnectionButton());
+    await screen.findByRole('combobox', { name: /listed models/i });
+    const testCall = fetchSpy.mock.calls.find(
+      ([url, init]) => String(url).includes('/admin/llm-providers/test') && (init as RequestInit)?.method === 'POST',
+    );
+    const body = JSON.parse(String((testCall![1] as RequestInit).body));
+    expect(body.providerId).toBe(initial.id);
+    expect(body.apiKey).toBeUndefined();
+    expect(JSON.stringify(body)).not.toMatch(/sk-/);
+  });
+
+  it('does not enable Test connection until bearer auth has a key (or a stored one)', () => {
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    expect(testConnectionButton()).toBeDisabled();
+    fireEvent.change(apiKeyInput(), { target: { value: 'sk-dummy' } });
+    expect(testConnectionButton()).not.toBeDisabled();
+  });
+
+  it('Custom local URL with auth none can test without a key', () => {
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(baseUrlInput(), { target: { value: 'http://localhost:11434/v1' } });
+    fireEvent.click(screen.getByRole('radio', { name: /none/i }));
+    expect(testConnectionButton()).not.toBeDisabled();
+  });
+
+  it('names D4 on a hosted preset: saving does not assign embedding / rerank / image_embedding', () => {
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    expect(screen.getByText(/do not assign/i).textContent).toMatch(/embedding/i);
+    expect(screen.getByText(/do not assign/i).textContent).toMatch(/rerank/i);
+    expect(screen.getByText(/do not assign/i).textContent).toMatch(/image embedding/i);
+  });
+});
