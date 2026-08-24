@@ -152,10 +152,12 @@ is no separate OpenAI SDK path and no DeepSeek-specific protocol.
 #### Add a provider
 
 1. Open **Settings → AI → AI Models → LLM providers** and click **+ Add**.
-2. Pick a **preset** (OpenAI, DeepSeek, …) to fill the base URL, bearer auth,
-   and a suggested default model — or leave **Custom** blank for a local
-   server (`http://host.docker.internal:1234/v1` for LM Studio / vLLM in
-   Docker). Typed values are not overwritten silently when you change preset.
+2. Fill **Base URL**, bearer auth, and a default model by hand. The Add modal
+   on current `dev` is still a blank form (placeholder
+   `http://host.docker.internal:1234/v1` for LM Studio / vLLM in Docker).
+   Vendor presets that prefill OpenAI / DeepSeek / … land in
+   [#1458](https://github.com/Compendiq/compendiq-ce/pull/1458) — until that
+   merges, paste the URLs and model ids from the recipes below.
 3. Paste the API key into the password field (bearer). Keys are AES-256-GCM
    at rest; the UI only ever shows `hasApiKey` / `keyPreview`.
 4. Set or edit the default model id, then **Save**.
@@ -169,7 +171,7 @@ is no separate OpenAI SDK path and no DeepSeek-specific protocol.
 
 | Field | Value |
 |-------|-------|
-| Preset | **OpenAI** |
+| Name | e.g. **OpenAI** (type freely; preset fill arrives with [#1458](https://github.com/Compendiq/compendiq-ce/pull/1458)) |
 | Base URL | `https://api.openai.com/v1` |
 | Auth | Bearer + your OpenAI API key |
 | Suggested model | `gpt-4.1-mini` (editable; type any id the account can call) |
@@ -177,24 +179,28 @@ is no separate OpenAI SDK path and no DeepSeek-specific protocol.
 Save, press **Test** on the row, then under use-case assignments pin **Chat**
 (and optionally Summary / Quality / Auto-tag) to this provider. OpenAI also
 serves embeddings — assign **Embedding** only when you intend to index with
-an OpenAI embedding model (that triggers a re-embed; keep a local embedder
-if you are not cutting over).
+an OpenAI embedding model, then press **Start re-embed** on that row
+(assigning alone does not rebuild the index; keep a local embedder if you
+are not cutting over).
 
 #### Recipe — hosted DeepSeek
 
 | Field | Value |
 |-------|-------|
-| Preset | **DeepSeek** |
+| Name | e.g. **DeepSeek** (type freely; preset fill arrives with [#1458](https://github.com/Compendiq/compendiq-ce/pull/1458)) |
 | Base URL | `https://api.deepseek.com/v1` |
 | Auth | Bearer + your DeepSeek API key |
 | Suggested model | `deepseek-chat` (editable; `deepseek-reasoner` works on the same `/v1`) |
 
 Save, **Test**, assign **Chat** (and other chat-shaped use cases as needed).
 
-Hosted DeepSeek is a **strict thinking host**: Think never sends `think` or
-`chat_template_kwargs` to `api.deepseek.com` (those fields 400 there).
-Reasoning models that stream `reasoning_content` still return the visible
-answer on `content`; with Think off the reasoning channel is dropped.
+Hosted DeepSeek thinking extras land in
+[#1457](https://github.com/Compendiq/compendiq-ce/pull/1457): that PR adds
+`api.deepseek.com` as a **strict thinking host** so Think never sends `think`
+or `chat_template_kwargs` (those fields 400 there) and maps
+`reasoning_content` onto the existing Think channel. Until #1457 is on
+`dev`, do **not** assume Think-on against DeepSeek cannot 400 — current
+`dev` still treats only `api.openai.com` / Azure as strict.
 
 #### Chat-only hosts must not cover embedding / rerank / image embedding
 
@@ -231,17 +237,17 @@ provider rows:
 > **Bootstrap-only.** The tables below are **not** the live configuration path.
 > After migration 054 / ADR-021, providers and per-use-case models are rows in
 > `llm_providers` / `llm_usecase_assignments`, edited under **Settings → AI
-> Models**. The env vars below are consulted **only on a fresh install when
-> `llm_providers` is empty** (to seed the first row). Setting them on a
-> migrated instance logs a deprecation notice and does not change runtime
-> routing. Do **not** revive `LLM_PROVIDER=ollama|openai` — that two-slot
+> Models**. Most of these vars seed a first row **only on a fresh install when
+> `llm_providers` is empty**. Setting them on a migrated instance logs a
+> deprecation notice and does not change runtime routing — with one named
+> exception for `OLLAMA_BASE_URL` below. Do **not** revive `LLM_PROVIDER=ollama|openai` — that two-slot
 > toggle is gone.
 
-| Variable | Seed role when the table is empty |
-|----------|-----------------------------------|
-| `OLLAMA_BASE_URL` | Seeds an **Ollama** provider row (`http://localhost:11434` → `/v1` shim) |
-| `OPENAI_BASE_URL` / `OPENAI_API_KEY` | Seeds an **OpenAI** provider row (`https://api.openai.com/v1` + encrypted key) |
-| `LLM_BEARER_TOKEN` / `LLM_AUTH_TYPE` | Legacy proxy auth seed for the Ollama-shaped bootstrap path |
+| Variable | Seed / bootstrap role |
+|----------|----------------------|
+| `OLLAMA_BASE_URL` | Seeds an **Ollama** provider row on an empty table (`…` → `/v1` shim). On an existing install it also rewrites the default sentinel `http://localhost:11434/v1` when the env value differs — that sentinel rewrite is the only post-seed write. |
+| `OPENAI_BASE_URL` / `OPENAI_API_KEY` | Seeds an **OpenAI** provider row (`https://api.openai.com/v1` + encrypted key) when the table is empty |
+| `LLM_BEARER_TOKEN` | Deprecated notice only — **not** read as an Ollama auth seed (the Ollama bootstrap row is always `auth_type='none'`). Put a bearer key on the provider row in Settings. |
 | `DEFAULT_LLM_MODEL` | Suggested `default_model` on the seeded row / worker fallbacks when no assignment exists |
 | `QUALITY_MODEL` / `SUMMARY_MODEL` | Historical worker model seeds; prefer use-case assignments |
 | `EMBEDDING_MODEL` | **Fully inert** since migration 054 — setting it only logs a notice. Assign **Embedding** in Settings. |

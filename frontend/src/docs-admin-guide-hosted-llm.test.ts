@@ -44,11 +44,29 @@ describe('ADMIN-GUIDE hosted OpenAI + DeepSeek (#1456)', () => {
       guide.indexOf('### Deprecated LLM env vars (bootstrap-only)'),
     );
     expect(primary).not.toMatch(/\|\s*`LLM_PROVIDER`\s*\|/);
+    // OLLAMA_BASE_URL's sentinel rewrite is named; LLM_BEARER_TOKEN is not a fake Ollama auth seed.
+    expect(guide).toMatch(/sentinel `http:\/\/localhost:11434\/v1`/);
+    expect(guide).toMatch(/not\*\* read as an Ollama auth seed/i);
   });
 
-  it('documents hosted DeepSeek as a strict thinking host (D5)', () => {
+  it('hedges DeepSeek strict thinking / reasoning_content on #1457 until that PR is on dev (D5)', () => {
+    expect(guide).toMatch(/#1457/);
     expect(guide).toMatch(/strict thinking host/i);
-    expect(guide).toMatch(/`think` or\s*`chat_template_kwargs`/);
+    expect(guide).toMatch(/`think`[\s\S]{0,40}`chat_template_kwargs`/);
+    expect(guide).toMatch(/do \*\*not\*\* assume Think-on against DeepSeek cannot 400/i);
+    // Must not claim D5 as already live on current dev.
+    expect(guide).not.toMatch(
+      /Hosted DeepSeek is a \*\*strict thinking host\*\*: Think never sends/,
+    );
+  });
+
+  it('hedges vendor presets on #1458 and keeps manual URL recipes that work today', () => {
+    expect(guide).toMatch(/#1458/);
+    expect(guide).toMatch(/blank form/i);
+    expect(guide).toContain('https://api.openai.com/v1');
+    expect(guide).toContain('https://api.deepseek.com/v1');
+    expect(guide).toMatch(/Start re-embed/);
+    expect(guide).not.toMatch(/that triggers a re-embed/);
   });
 
   it('points connectivity checks at the provider-row Test control, not a modal-only button', () => {
