@@ -12,7 +12,9 @@ This guide covers installation, configuration, maintenance, and troubleshooting 
 | **Disk** | 10 GB | 20 GB+ (depends on attachment cache size) |
 | **CPU** | 2 cores | 4 cores |
 
-Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessible from the backend container. Ollama typically runs on the Docker host machine.
+Additionally, the backend needs at least one OpenAI-compatible `/v1` endpoint —
+local **Ollama** / LM Studio / vLLM, or a hosted API such as **OpenAI** or
+**DeepSeek**. Configure it under **Settings → AI Models** (see [LLM providers](#llm-providers-primary)); Ollama typically runs on the Docker host machine.
 
 ## Installation
 
@@ -73,12 +75,17 @@ Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessibl
    - **mcp-docs** -- documentation-search MCP server (port 3100, internal)
    - **searxng** -- metasearch engine used by mcp-docs (port 8080, internal)
 
-5. **Pull Ollama models** on your host machine:
+5. **Provide an LLM endpoint.** Either pull local Ollama models on the host:
 
    ```bash
-   ollama pull bge-m3              # Required for embeddings
+   ollama pull bge-m3              # Common local embedding model
    ollama pull qwen3.5            # Or any chat model
    ```
+
+   Or, after first login, add a hosted OpenAI / DeepSeek (or other `/v1`)
+   provider under **Settings → AI → AI Models → LLM providers** — see
+   [LLM providers](#llm-providers-primary). Keep a real embeddings endpoint
+   for the Embedding use case; a chat-only host is not enough for retrieval.
 
 6. **Access Compendiq** at `http://localhost:8081`. Register the first user -- they automatically receive the admin role.
 
@@ -133,36 +140,118 @@ curl http://localhost:8081/api/health
 | `LOG_LEVEL` | `info` | Pino log level: `fatal`, `error`, `warn`, `info`, `debug`, `trace` |
 | `ACCESS_TOKEN_EXPIRY` | `1h` | JWT access token lifetime (jose duration format: `30m`, `1h`, `2h`). Maximum `24h` — a longer value is clamped to `24h` at startup and a warning is logged, since the token lifetime is the worst-case window a deactivated or demoted account could retain API access. An invalid format (e.g. `banana`) still fails startup. Deactivation and role changes normally take effect within seconds (≤ 30s) via the per-user security check. |
 
-### LLM Provider
+### LLM providers (primary)
+
+Providers live in the `llm_providers` table and are configured in the admin UI
+(**Settings → AI → AI Models → LLM providers**), not by flipping an env
+toggle. Every row is a generic OpenAI-compatible `/v1` endpoint (ADR-021):
+hosted OpenAI, DeepSeek, Groq, Mistral, OpenRouter, Together, Fireworks,
+Azure OpenAI, local Ollama / LM Studio / vLLM, or any other `/v1` shim. There
+is no separate OpenAI SDK path and no DeepSeek-specific protocol.
+
+#### Add a provider
+
+1. Open **Settings → AI → AI Models → LLM providers** and click **+ Add**.
+2. Pick a **preset** (OpenAI, DeepSeek, …) to fill the base URL, bearer auth,
+   and a suggested default model — or leave **Custom** blank for a local
+   server (`http://host.docker.internal:1234/v1` for LM Studio / vLLM in
+   Docker). Typed values are not overwritten silently when you change preset.
+3. Paste the API key into the password field (bearer). Keys are AES-256-GCM
+   at rest; the UI only ever shows `hasApiKey` / `keyPreview`.
+4. Set or edit the default model id, then **Save**.
+5. On the provider row, press **Test**. That calls the existing admin health /
+   `listModels` path (`POST /admin/llm-providers/:id/test`) and toasts
+   connected + sample model count, or a sanitized failure (401 = bad key,
+   unreachable / open breaker = cannot reach the host). Never paste a live
+   key into docs or screenshots.
+
+#### Recipe — hosted OpenAI
+
+| Field | Value |
+|-------|-------|
+| Preset | **OpenAI** |
+| Base URL | `https://api.openai.com/v1` |
+| Auth | Bearer + your OpenAI API key |
+| Suggested model | `gpt-4.1-mini` (editable; type any id the account can call) |
+
+Save, press **Test** on the row, then under use-case assignments pin **Chat**
+(and optionally Summary / Quality / Auto-tag) to this provider. OpenAI also
+serves embeddings — assign **Embedding** only when you intend to index with
+an OpenAI embedding model (that triggers a re-embed; keep a local embedder
+if you are not cutting over).
+
+#### Recipe — hosted DeepSeek
+
+| Field | Value |
+|-------|-------|
+| Preset | **DeepSeek** |
+| Base URL | `https://api.deepseek.com/v1` |
+| Auth | Bearer + your DeepSeek API key |
+| Suggested model | `deepseek-chat` (editable; `deepseek-reasoner` works on the same `/v1`) |
+
+Save, **Test**, assign **Chat** (and other chat-shaped use cases as needed).
+
+Hosted DeepSeek is a **strict thinking host**: Think never sends `think` or
+`chat_template_kwargs` to `api.deepseek.com` (those fields 400 there).
+Reasoning models that stream `reasoning_content` still return the visible
+answer on `content`; with Think off the reasoning channel is dropped.
+
+#### Chat-only hosts must not cover embedding / rerank / image embedding
+
+A hosted **chat** provider must **not** be assigned to:
+
+- **Embedding** — DeepSeek's hosted chat endpoint is not an embeddings index
+  for Compendiq; pointing the use case at it fills the vector column with
+  failures or garbage and stalls retrieval.
+- **Rerank** — never inherits (ADR-021). Unassigned means the rerank stage is
+  off. It needs a Cohere/Jina-style `/v1/rerank` endpoint the chat host does
+  not serve.
+- **Image embedding** — never inherits. Unassigned means the image leg is
+  off. A text chat model answering the plain embeddings shape would write
+  plausible but wrong vectors.
+
+Chat / Summary / Quality / Auto-tag may inherit the default provider. Keep a
+separate local (or dedicated hosted) embedder for **Embedding**, and leave
+**Rerank** / **Image embedding** disabled unless you have a real endpoint for
+each.
+
+#### Runtime knobs that stay as env vars
+
+These are still read every request (or on a short cache) and are **not**
+provider rows:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_PROVIDER` | `ollama` | LLM provider: `ollama` or `openai` (server-wide default, can be overridden per-user) |
-| `DEFAULT_LLM_MODEL` | *(none)* | Fallback model for background workers when their specific model var is not set |
-
-### Ollama
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `LLM_BEARER_TOKEN` | *(none)* | Bearer token for authenticated Ollama/LLM proxies |
-| `LLM_AUTH_TYPE` | `bearer` | Auth type for LLM connections: `bearer` or `none` |
-| `LLM_VERIFY_SSL` | `true` | Set to `false` to disable TLS verification for LLM connections |
+| `LLM_VERIFY_SSL` | `true` | Set to `false` to disable TLS verification for LLM connections (prefer `NODE_EXTRA_CA_CERTS` in production) |
 | `LLM_STREAM_TIMEOUT_MS` | `300000` | Streaming request timeout in ms (5 min). Increase for very large articles. |
 | `LLM_CACHE_TTL` | `3600` | Redis TTL in seconds for LLM response cache (1 hour) |
 
-### OpenAI-Compatible API
+### Deprecated LLM env vars (bootstrap-only)
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL. Works with OpenAI, Azure OpenAI, LM Studio, vLLM, llama.cpp, LocalAI. |
-| `OPENAI_API_KEY` | *(none)* | API key (required when using `openai` provider) |
+> **Bootstrap-only.** The tables below are **not** the live configuration path.
+> After migration 054 / ADR-021, providers and per-use-case models are rows in
+> `llm_providers` / `llm_usecase_assignments`, edited under **Settings → AI
+> Models**. The env vars below are consulted **only on a fresh install when
+> `llm_providers` is empty** (to seed the first row). Setting them on a
+> migrated instance logs a deprecation notice and does not change runtime
+> routing. Do **not** revive `LLM_PROVIDER=ollama|openai` — that two-slot
+> toggle is gone.
+
+| Variable | Seed role when the table is empty |
+|----------|-----------------------------------|
+| `OLLAMA_BASE_URL` | Seeds an **Ollama** provider row (`http://localhost:11434` → `/v1` shim) |
+| `OPENAI_BASE_URL` / `OPENAI_API_KEY` | Seeds an **OpenAI** provider row (`https://api.openai.com/v1` + encrypted key) |
+| `LLM_BEARER_TOKEN` / `LLM_AUTH_TYPE` | Legacy proxy auth seed for the Ollama-shaped bootstrap path |
+| `DEFAULT_LLM_MODEL` | Suggested `default_model` on the seeded row / worker fallbacks when no assignment exists |
+| `QUALITY_MODEL` / `SUMMARY_MODEL` | Historical worker model seeds; prefer use-case assignments |
+| `EMBEDDING_MODEL` | **Fully inert** since migration 054 — setting it only logs a notice. Assign **Embedding** in Settings. |
+| `LLM_PROVIDER` | **Removed** — was the legacy `ollama` / `openai` toggle. Ignored if present. |
 
 ### Embedding
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EMBEDDING_MODEL` | `bge-m3` | Server-wide embedding model (1024 dimensions by default) |
+| `EMBEDDING_MODEL` | `bge-m3` | **Bootstrap-only / inert** — see the deprecated table above. Assign the Embedding use case under Settings → AI Models. |
 | `RAG_EF_SEARCH` | `100` | **Deprecated (#1285)** — the HNSW `ef_search` floor is now `admin_settings.rag_ef_search`, set in `Settings → AI Models → Retrieval`. Nothing seeds that row, so this variable is still read on an instance that has never saved the panel; the first save retires it permanently. Setting it logs a startup notice. |
 
 ### Background Workers
@@ -171,10 +260,10 @@ curl http://localhost:8081/api/health
 |----------|---------|-------------|
 | `QUALITY_CHECK_INTERVAL_MINUTES` | `60` | How often the quality analysis worker runs |
 | `QUALITY_BATCH_SIZE` | `5` | Pages analyzed per quality worker cycle |
-| `QUALITY_MODEL` | `DEFAULT_LLM_MODEL` then `qwen3:4b` | LLM model for quality analysis |
+| `QUALITY_MODEL` | `DEFAULT_LLM_MODEL` then `qwen3:4b` | **Bootstrap-only** — prefer the Quality use-case assignment under Settings → AI Models |
 | `SUMMARY_CHECK_INTERVAL_MINUTES` | `60` | How often the summary worker scans for pages |
 | `SUMMARY_BATCH_SIZE` | `5` | Max pages to summarize per worker cycle |
-| `SUMMARY_MODEL` | `DEFAULT_LLM_MODEL` then *(disabled)* | LLM model for summaries. Empty = disabled. |
+| `SUMMARY_MODEL` | `DEFAULT_LLM_MODEL` then *(disabled)* | **Bootstrap-only** — prefer the Summary use-case assignment. Empty = disabled when no assignment exists. |
 | `SYNC_INTERVAL_MIN` | `15` | Background sync scheduler polling interval (minutes) |
 
 ### Background Job Queue (BullMQ)
@@ -1687,11 +1776,21 @@ Check that the `POSTGRES_URL` and `REDIS_URL` in your `.env` match the container
 
 ### LLM requests fail or time out
 
-1. Verify Ollama is running: `curl http://localhost:11434/api/tags`
-2. Check the `OLLAMA_BASE_URL` in `.env`. Inside Docker, use `http://host.docker.internal:11434`.
-3. If using a proxy, set `LLM_BEARER_TOKEN` and `LLM_AUTH_TYPE=bearer`.
+1. Open **Settings → AI → AI Models → LLM providers**. Confirm the provider row
+   you assigned to Chat (or the failing use case) has the expected base URL,
+   and press **Test** on that row.
+2. For a local Ollama / LM Studio host: verify it is reachable from the backend
+   container (`curl` the `/v1/models` URL; inside Docker use
+   `http://host.docker.internal:…`). Env `OLLAMA_BASE_URL` only seeds an empty
+   table — it does not override a saved row.
+3. For hosted OpenAI / DeepSeek / similar: confirm the API key on the provider
+   row (Edit → paste a new key) and that the model id is one the account can
+   call. A 401 from **Test** is almost always a bad key.
 4. For timeout issues with large articles, increase `LLM_STREAM_TIMEOUT_MS`.
-5. Check circuit breaker status via `GET /api/llm/circuit-breaker-status` (authenticated, per-provider detail) -- if a provider shows `open`, the circuit breaker has tripped due to repeated failures. It will reset automatically.
+5. Check circuit breaker status via `GET /api/llm/circuit-breaker-status`
+   (authenticated, per-provider detail) — if a provider shows `open`, the
+   circuit breaker has tripped due to repeated failures. It will reset
+   automatically.
 
 ### TLS certificate errors
 
@@ -1703,9 +1802,21 @@ For self-signed certificates on Confluence or LLM servers:
 
 ### Embeddings are not being generated
 
-1. Ensure the embedding model is pulled: `ollama pull bge-m3` (or the model assigned under Settings → AI Models).
-2. Changing the **Embedding** row does **not** go live via **Save use-case assignments**. Start the re-embed from that row (**Start re-embed**). Saving first would switch the live model before the index can store its vectors. **Wipe current index** rebuilds the *live* index only — it is not a way to apply an unsaved model change.
-3. If the assigned model’s width does not match `page_embeddings.embedding` (for example Qwen3-Embedding-4B at 2560 vs a 1024 column), every page fails until that re-embed (or the assignment is pointed back at a matching model). See `docs/runbooks/shadow-reembed.md`.
+1. Under **Settings → AI Models → LLM providers**, confirm the **Embedding**
+   use case points at a provider that actually serves `/v1/embeddings`
+   (local Ollama `bge-m3`, an OpenAI embedding model, etc.). Do **not** point
+   Embedding at a chat-only host such as hosted DeepSeek.
+   `EMBEDDING_MODEL` in `.env` is inert after migration 054.
+2. For a local Ollama embedder: `ollama pull bge-m3` (or the assigned model).
+3. Changing the **Embedding** row does **not** go live via **Save use-case
+   assignments**. Start the re-embed from that row (**Start re-embed**).
+   Saving first would switch the live model before the index can store its
+   vectors. **Wipe current index** rebuilds the *live* index only — it is not
+   a way to apply an unsaved model change.
+4. If the assigned model’s width does not match `page_embeddings.embedding`
+   (for example Qwen3-Embedding-4B at 2560 vs a 1024 column), every page fails
+   until that re-embed (or the assignment is pointed back at a matching model).
+   See `docs/runbooks/shadow-reembed.md`.
 
 ### Database migrations fail
 
