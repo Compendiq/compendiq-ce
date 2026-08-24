@@ -22,7 +22,7 @@ flowchart TB
     subgraph features["features/ (domain UI)"]
         direction LR
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
-        fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123) · VersionHistory (#1404)<br/>NotionImportDialog (#1466)"]
+        fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123) · VersionHistory (#1404)<br/>NotionImportDialog (#1466)<br/>collab provider · caret colours · unified presence (#1447)"]
         fSpaces["spaces/<br/>settings · new"]
         fAI["ai/<br/>AiAssistantPage (/ai and /ai/c/:id — no-document home)<br/>conversations/ AiConversationsSidebar · ConversationList · ConversationRow (#1361)<br/>ai-routes.ts (shared/lib) · assistant-actions.ts<br/>dock/ DockPanel · DockDiffCard (#1126)<br/>tab inside ArticleRightPane; mobile inspector sheet below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
         fGraph["graph/"]
@@ -179,6 +179,42 @@ flowchart LR
   the effect that consumed them are gone, and with them the page-mismatch guard
   that existed only to keep a pending seed from firing at whatever document
   loaded next. Every request now starts at a chip or the composer.
+
+## Collaborative editing (#1447)
+
+Realtime CRDT editing is **opt-in** (`GET /api/collab/config` →
+`collabEditingEnabled`). Flag off ≡ today's TipTap draft + #301 SSE presence.
+The gateway, BYTEA persist and nginx/Vite upgrade live in
+[`12-realtime-collaboration.md`](./12-realtime-collaboration.md); this diagram
+is the editor wiring.
+
+```mermaid
+flowchart TB
+    page["PageViewPage"]
+    cfg["GET /api/collab/config"]
+    hook["useCollabProvider<br/>y-websocket protocols v1 plus JWT<br/>4401 refresh · 4403/4404 destroy · disableBc"]
+    ed["Editor<br/>Collaboration plus CollaborationCaret<br/>StarterKit undoRedo false"]
+    sse["usePresence SSE (issue 301)"]
+    stack["PresenceAvatarStack<br/>merge by userId · pencil = collab room"]
+
+    page --> cfg
+    cfg -->|flag on and edit mode| hook --> ed
+    cfg -->|flag off or read mode| sse
+    hook --> stack
+    sse --> stack
+```
+
+- **Provider mounts only in edit mode.** Read mode keeps the SSE heartbeat.
+  `if (!token) return` — never `protocols: [compendiq.collab.v1, '']`.
+- **Save** goes to `POST /api/pages/:id/collab/commit` (title only) while
+  collab is live; the flag-off path still `PUT`s `bodyHtml` + `version`.
+- **Carets** use a dedicated palette (`collab-colors.ts`), measured ≥3:1 on
+  Graphite and Paper `--surface-card`. Steel and status hues are not a caret
+  palette. `@tiptap/extension-collaboration-caret` — not the v2
+  `collaboration-cursor` name.
+- **Presence** is one stack. Awareness editors (`isEditing` if in the collab
+  room) merge with SSE viewers. The admin toggle on Diagnostics → System
+  status is muted, not amber.
 
 ## Article-editor inline completion (#1417)
 

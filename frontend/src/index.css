@@ -38,6 +38,55 @@
   }
 }
 
+/* Remote collab carets (#1447). Dedicated palette, not Steel/status.
+   Chip text is the pane (`--surface-card`) so the label stays 3:1 on the
+   caret colour. Flat: 1px hairline, no shadow, no lift, no glass. */
+.collaboration-carets__caret {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 2px solid var(--collab-caret-color, currentColor);
+  pointer-events: none;
+  word-break: normal;
+}
+
+.collaboration-carets__label {
+  position: absolute;
+  top: -1.35em;
+  left: -1px;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--collab-caret-color, currentColor) 70%, var(--color-foreground));
+  background-color: var(--collab-caret-color, currentColor);
+  color: var(--surface-card);
+  padding: 0 5px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  border-radius: 4px;
+  box-shadow: none;
+  transform: none;
+  backdrop-filter: none;
+}
+
+.collaboration-carets__selection {
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collaboration-carets__caret,
+  .collaboration-carets__label {
+    animation: none;
+    transition: none;
+  }
+}
+
+[data-collab='on'] .tiptap[contenteditable='false'] {
+  caret-color: transparent;
+}
+
 /* OpenDyslexic Alta is not distributed through @fontsource. Keep the files in
    the application itself so air-gapped deployments make no font request to a
    third-party CDN. The license and attribution live beside the assets. */

@@ -10,6 +10,7 @@ import {
 import { toast } from 'sonner';
 import { useAuthStore } from '../../../stores/auth-store';
 import { apiFetch } from '../../../shared/lib/api';
+import { CollabEditingCard } from '../CollabEditingCard';
 
 interface HealthResponse {
   status?: string;
@@ -197,6 +198,8 @@ export function SystemTab() {
           </>
         )}
       </section>
+
+      <CollabEditingCard />
 
       <div>
         <h3 className="text-base font-semibold">Setup Wizard</h3>

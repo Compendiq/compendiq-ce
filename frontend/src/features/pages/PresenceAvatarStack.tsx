@@ -72,7 +72,12 @@ export function PresenceAvatarStack({
               'bg-primary/20',
               idx > 0 && '-ml-2',
             )}
-            style={{ zIndex: visible.length - idx }}
+            style={{
+              zIndex: visible.length - idx,
+              ...(viewer.caretColor
+                ? { outline: `1px solid ${viewer.caretColor}`, outlineOffset: '1px' }
+                : {}),
+            }}
           >
             {viewer.avatarUrl ? (
               <img

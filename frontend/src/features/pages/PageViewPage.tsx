@@ -18,7 +18,7 @@ import {
 } from '../../shared/hooks/use-pages';
 import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
 import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
-import type { SettablePageIcon } from '@compendiq/contracts';
+import type { CollabConfig, SettablePageIcon } from '@compendiq/contracts';
 import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
@@ -45,6 +45,9 @@ import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button, IconButton } from '../../shared/components/Button';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
+import { useCollabProvider } from './use-collab-provider';
+import { mergePresence } from './merge-presence';
+import { caretColorForUserId } from './collab-colors';
 import { ImageLightbox } from '../../shared/components/article/ImageLightbox';
 
 function scrollArticleToTop() {
@@ -156,10 +159,38 @@ export function PageViewPage() {
 
   // Real-time co-presence (#301). Propagates our editing flag to other viewers
   // via a 10s heartbeat so the pencil badge toggles for them within one tick.
+  // When collab is live, awareness owns the pencil — stop sending SSE isEditing.
   const { viewers: presenceViewers, setEditing: setPresenceEditing } = usePresence(id);
+  const { data: collabConfig } = useQuery<CollabConfig>({
+    queryKey: ['collab-config'],
+    queryFn: async () => {
+      const raw = await apiFetch<Partial<CollabConfig>>('/collab/config');
+      return { enabled: raw?.enabled === true };
+    },
+    staleTime: 30_000,
+    initialData: { enabled: false },
+    initialDataUpdatedAt: 0,
+  });
+  const collabEnabled = collabConfig.enabled;
+  const collab = useCollabProvider({
+    pageId: id,
+    enabled: collabEnabled && editing,
+  });
+  const collabLive = collabEnabled && editing;
+  const mergedViewers = useMemo(
+    () => mergePresence(presenceViewers, collabLive ? collab.awarenessUsers : []),
+    [presenceViewers, collabLive, collab.awarenessUsers],
+  );
+  const caretUser = useMemo(() => {
+    if (!currentUserId) return undefined;
+    const user = useAuthStore.getState().user;
+    if (!user) return undefined;
+    return { name: user.username, color: caretColorForUserId(user.id) };
+  }, [currentUserId]);
+  const [collabSaving, setCollabSaving] = useState(false);
   useEffect(() => {
-    setPresenceEditing(editing);
-  }, [editing, setPresenceEditing]);
+    setPresenceEditing(collabLive ? false : editing);
+  }, [editing, collabLive, setPresenceEditing]);
 
   // Sync headings to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
@@ -278,6 +309,13 @@ export function PageViewPage() {
     if (!page || !id) return;
     setEditTitle(page.title);
     setDraftLabels(page.labels ?? []);
+    if (collabEnabled) {
+      // Collab has no private localStorage draft to restore.
+      setEditHtml(page.bodyHtml);
+      setIsDirty(false);
+      setEditing(true);
+      return;
+    }
     const draft = getDraft(`page-${id}`);
     if (draft && draft !== page.bodyHtml) {
       // Defer edit mode until the user decides in the ConfirmDialog below:
@@ -289,7 +327,7 @@ export function PageViewPage() {
     setEditHtml(page.bodyHtml);
     setIsDirty(false);
     setEditing(true);
-  }, [id, page]);
+  }, [id, page, collabEnabled]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
@@ -333,12 +371,19 @@ export function PageViewPage() {
   // opens the discard confirmation, otherwise it exits immediately. Backs the
   // Cancel button plus the Ctrl+E / Escape shortcuts (#944).
   const handleCancelEditing = useCallback(() => {
+    if (collabEnabled) {
+      // A collab session has no private draft to discard.
+      setIsDirty(false);
+      setDraftLabels([]);
+      setEditing(false);
+      return;
+    }
     if (isEditorDirty()) {
       setConfirmDiscardOpen(true);
       return;
     }
     discardAndExit();
-  }, [isEditorDirty, discardAndExit]);
+  }, [collabEnabled, isEditorDirty, discardAndExit]);
 
   const handleConfirmDiscard = useCallback(() => {
     setConfirmDiscardOpen(false);
@@ -364,17 +409,31 @@ export function PageViewPage() {
         toast.error('Editor instance is not ready. Please try again.');
         return;
       }
-      // Read the live HTML straight off the editor instance (#954) — it's the
-      // single source of truth for body content, and also reflects the
-      // newly-committed draw.io node attributes from the drain above.
-      const bodyToSave = editorInstance.getHTML();
 
-      await updateMutation.mutateAsync({
-        id,
-        title: editTitle,
-        bodyHtml: bodyToSave,
-        version: page.version,
-      });
+      if (collabLive) {
+        setCollabSaving(true);
+        try {
+          await apiFetch(`/pages/${id}/collab/commit`, {
+            method: 'POST',
+            body: JSON.stringify({ title: editTitle }),
+          });
+          queryClient.invalidateQueries({ queryKey: ['pages', id] });
+        } finally {
+          setCollabSaving(false);
+        }
+      } else {
+        // Read the live HTML straight off the editor instance (#954) — it's the
+        // single source of truth for body content, and also reflects the
+        // newly-committed draw.io node attributes from the drain above.
+        const bodyToSave = editorInstance.getHTML();
+
+        await updateMutation.mutateAsync({
+          id,
+          title: editTitle,
+          bodyHtml: bodyToSave,
+          version: page.version,
+        });
+      }
       if (editing) {
         const currentLabels = page.labels ?? [];
         const addLabels = draftLabels.filter((l) => !currentLabels.includes(l));
@@ -406,7 +465,7 @@ export function PageViewPage() {
         toast.error(message);
       }
     }
-  }, [draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, updateMutation]);
+  }, [collabLive, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
@@ -679,30 +738,45 @@ export function PageViewPage() {
       iconOnly={editing}
     />
   );
+  const saving = updateMutation.isPending || collabSaving;
   const sessionActions = (
     <>
-      <IconButton
-        onClick={handleCancelEditing}
-        title="Cancel editing (Esc)"
-        label="Cancel"
-        variant="destructive-ghost"
-        size="icon-sm"
-        className="nm-icon-button nm-action-destructive shrink-0"
-        testid="cancel-edit-btn"
-        icon={<X size={15} aria-hidden="true" />}
-      />
+      <PresenceAvatarStack viewers={mergedViewers} />
+      {collabEnabled ? (
+        <Button
+          onClick={handleCancelEditing}
+          title="Done editing (Esc)"
+          variant="ghost"
+          size="sm"
+          className="h-8 shrink-0 px-2.5 text-xs"
+          data-testid="cancel-edit-btn"
+        >
+          Done
+        </Button>
+      ) : (
+        <IconButton
+          onClick={handleCancelEditing}
+          title="Cancel editing (Esc)"
+          label="Cancel"
+          variant="destructive-ghost"
+          size="icon-sm"
+          className="nm-icon-button nm-action-destructive shrink-0"
+          testid="cancel-edit-btn"
+          icon={<X size={15} aria-hidden="true" />}
+        />
+      )}
       <Button
         onClick={handleSave}
-        disabled={updateMutation.isPending}
-        isLoading={updateMutation.isPending}
+        disabled={saving}
+        isLoading={saving}
         title="Save changes (Ctrl+S)"
         variant="primary"
         size="sm"
-        leftIcon={!updateMutation.isPending ? <Save size={15} aria-hidden="true" /> : undefined}
+        leftIcon={!saving ? <Save size={15} aria-hidden="true" /> : undefined}
         className="nm-button-primary shrink-0"
         data-testid="save-page-btn"
       >
-        {updateMutation.isPending ? 'Saving…' : 'Save'}
+        {saving ? 'Saving…' : 'Save'}
       </Button>
     </>
   );
@@ -773,7 +847,7 @@ export function PageViewPage() {
                     </div>
                   )}
                   <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                    <PresenceAvatarStack viewers={presenceViewers} />
+                    <PresenceAvatarStack viewers={mergedViewers} />
                     <Button
                       type="button"
                       onClick={handleStartEditing}
@@ -834,25 +908,50 @@ export function PageViewPage() {
                 experience matches the reader's line length exactly. */}
             <div className={cn('mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}>
               <FeatureErrorBoundary featureName="Editor">
-                <Editor
-                  content={editHtml}
-                  onChange={() => setIsDirty(true)}
-                  draftKey={draftKey}
-                  naked
-                  onEditorReady={setEditorInstance}
-                  hideToolbar
-                  pageId={id}
-                  onSave={handleSave}
-                  inlineCompletion={{
-                    available: inlineCompletionAvailable,
-                    enabled: settings?.inlineCompletionEnabled ?? true,
-                    delay: settings?.inlineCompletionDelay ?? 'balanced',
-                    mode: settings?.inlineCompletionMode ?? 'full',
-                    codeOnly: settings?.inlineCompletionCodeOnly ?? false,
-                    title: editTitle,
-                    spaceKey: page.spaceKey ?? undefined,
-                  }}
-                />
+                {collabLive && collab.error ? (
+                  <p
+                    role="status"
+                    className="py-8 text-sm leading-6 text-muted-foreground"
+                    data-testid="collab-join-error"
+                  >
+                    {collab.error === 'forbidden'
+                      ? 'You cannot join this collaborative session.'
+                      : collab.error === 'not_found'
+                        ? 'This page is no longer available for collaborative editing.'
+                        : 'Your session expired. Sign in again to keep editing together.'}
+                  </p>
+                ) : collabLive && !collab.synced ? (
+                  <p
+                    role="status"
+                    className="py-8 text-sm leading-6 text-muted-foreground"
+                    data-testid="collab-connecting"
+                  >
+                    Connecting to the collaborative session…
+                  </p>
+                ) : (
+                  <Editor
+                    content={collabLive ? undefined : editHtml}
+                    onChange={() => setIsDirty(true)}
+                    draftKey={collabLive ? undefined : draftKey}
+                    naked
+                    onEditorReady={setEditorInstance}
+                    hideToolbar
+                    pageId={id}
+                    onSave={handleSave}
+                    ydoc={collabLive ? collab.ydoc ?? undefined : undefined}
+                    collabProvider={collabLive ? collab.provider : undefined}
+                    caretUser={collabLive ? caretUser : undefined}
+                    inlineCompletion={{
+                      available: inlineCompletionAvailable,
+                      enabled: settings?.inlineCompletionEnabled ?? true,
+                      delay: settings?.inlineCompletionDelay ?? 'balanced',
+                      mode: settings?.inlineCompletionMode ?? 'full',
+                      codeOnly: settings?.inlineCompletionCodeOnly ?? false,
+                      title: editTitle,
+                      spaceKey: page.spaceKey ?? undefined,
+                    }}
+                  />
+                )}
               </FeatureErrorBoundary>
             </div>
           </>

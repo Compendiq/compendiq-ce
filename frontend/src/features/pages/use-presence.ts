@@ -8,6 +8,8 @@ export interface PresenceViewer {
   role: string;
   isEditing: boolean;
   avatarUrl?: string;
+  /** Collab-room caret colour; SSE viewers omit this. */
+  caretColor?: string;
 }
 
 interface PresenceEvent {
