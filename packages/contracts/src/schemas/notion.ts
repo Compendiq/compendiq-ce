@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PageVisibilityEnum } from './pages.js';
 
 /**
  * Notion internal integration token — write-only. Never appears on a
@@ -76,3 +77,34 @@ export const NotionTreeResponseSchema = z
   })
   .strict();
 export type NotionTreeResponse = z.infer<typeof NotionTreeResponseSchema>;
+
+/** Confirmed selection + local destination for a one-shot Notion import (#1465). */
+export const NotionImportRequestSchema = z
+  .object({
+    pageIds: z.array(z.string().trim().min(1).max(128)).min(1).max(200),
+    spaceKey: z.string().min(1).optional(),
+    parentId: z.union([z.string(), z.number()]).transform(String).optional(),
+    visibility: PageVisibilityEnum.optional().default('shared'),
+  })
+  .strict();
+export type NotionImportRequest = z.infer<typeof NotionImportRequestSchema>;
+
+export const NotionImportItemStatusEnum = z.enum(['success', 'skip', 'fail', 'already_imported']);
+export type NotionImportItemStatus = z.infer<typeof NotionImportItemStatusEnum>;
+
+export const NotionImportItemSchema = z
+  .object({
+    notionPageId: z.string().min(1),
+    status: NotionImportItemStatusEnum,
+    localPageId: z.number().int().positive().optional(),
+    reason: z.string().optional(),
+  })
+  .strict();
+export type NotionImportItem = z.infer<typeof NotionImportItemSchema>;
+
+export const NotionImportResponseSchema = z
+  .object({
+    items: z.array(NotionImportItemSchema),
+  })
+  .strict();
+export type NotionImportResponse = z.infer<typeof NotionImportResponseSchema>;

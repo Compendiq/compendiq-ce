@@ -31,11 +31,14 @@ export interface FakeNotionState {
    * Child B must never hit this — row-pages are search page objects or they stay skipped.
    */
   databaseQueryResults?: Record<string, Array<Record<string, unknown>>>;
+  /** GET paths (e.g. `/files/img.png`) served as attachment bytes. */
+  files?: Record<string, { contentType: string; body: Buffer | string }>;
 }
 
 export interface FakeNotionServer {
   baseUrl: string;
   requests: FakeNotionRequest[];
+  state: FakeNotionState;
   close: () => Promise<void>;
 }
 
@@ -201,6 +204,15 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
       return;
     }
 
+    const file = state.files?.[path] ?? state.files?.[url.split('?')[0] ?? path];
+    if (method === 'GET' && file) {
+      const bytes = typeof file.body === 'string' ? Buffer.from(file.body) : file.body;
+      res.statusCode = 200;
+      res.setHeader('Content-Type', file.contentType);
+      res.end(bytes);
+      return;
+    }
+
     send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
   });
 
@@ -213,6 +225,7 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
   return {
     baseUrl,
     requests,
+    state,
     close: () =>
       new Promise((resolve, reject) => {
         // Undici keep-alive holds pooled sockets; `close()` alone waits on

@@ -1,5 +1,12 @@
 import { readFileSync } from 'node:fs';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../core/services/redis-cache.js', () => ({
+  RedisCache: class {
+    async invalidate() {}
+    async invalidateAcrossUsers() {}
+  },
+}));
 import {
   isDbAvailable,
   setupTestDb,
@@ -324,5 +331,140 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree upstream failures (#1463)', 
     } finally {
       await instance.close();
     }
+  });
+});
+
+describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
+  let server: FakeNotionServer;
+  let userId: string;
+
+  beforeAll(async () => {
+    await setupTestDb();
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      pages: {
+        notes: {
+          object: 'page',
+          id: 'notes',
+          parent: { type: 'workspace', workspace: true },
+          properties: {
+            title: { type: 'title', title: [{ type: 'text', plain_text: 'Notes' }] },
+          },
+        },
+      },
+      databases: {
+        crm: { object: 'database', id: 'crm', title: [{ type: 'text', plain_text: 'CRM' }] },
+      },
+      databaseQueryResults: {
+        crm: [{ object: 'page', id: 'hidden-row' }],
+      },
+      blockChildren: {
+        notes: [
+          {
+            object: 'block',
+            id: 'p1',
+            type: 'paragraph',
+            paragraph: {
+              rich_text: [{ type: 'text', plain_text: 'Imported via route', text: { content: 'Imported via route' } }],
+            },
+          },
+        ],
+      },
+    });
+    setNotionApiBaseUrlForTests(server.baseUrl);
+  });
+
+  afterAll(async () => {
+    setNotionApiBaseUrlForTests(null);
+    await server.close();
+    await teardownTestDb();
+  });
+
+  beforeEach(async () => {
+    await truncateAllTables();
+    userId = await insertUser('notion-import-route-user');
+    server.requests.length = 0;
+  });
+
+  afterEach(() => {
+    expect(JSON.stringify(server.requests.map((r) => r.url))).not.toContain('api.notion.com');
+    expect(server.requests.some((r) => r.method === 'POST' && /\/v1\/databases\/.+\/query/.test(r.url))).toBe(false);
+  });
+
+  async function app() {
+    return buildKnowledgeTestApp(() => userId, async (fastify) => {
+      await fastify.register(notionRoutes, { prefix: '/api' });
+    });
+  }
+
+  it('returns 400 when Notion is not connected and never echoes a secret', async () => {
+    const instance = await app();
+    try {
+      const res = await instance.inject({
+        method: 'POST',
+        url: '/api/notion/import',
+        payload: { pageIds: ['notes'] },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.body).not.toContain(TOKEN);
+    } finally {
+      await instance.close();
+    }
+  });
+
+  it('imports selected pages, skips databases, and never returns the token', async () => {
+    const instance = await app();
+    try {
+      await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
+      const res = await instance.inject({
+        method: 'POST',
+        url: '/api/notion/import',
+        payload: { pageIds: ['crm', 'notes'], visibility: 'private' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain(TOKEN);
+      const body = res.json() as {
+        items: Array<{ notionPageId: string; status: string; localPageId?: number; reason?: string }>;
+      };
+      expect(Object.keys(body).sort()).toEqual(['items']);
+      const byId = Object.fromEntries(body.items.map((i) => [i.notionPageId, i]));
+      expect(byId.crm).toMatchObject({ status: 'skip', reason: NOTION_UNSUPPORTED_LABEL });
+      expect(byId.notes).toMatchObject({ status: 'success' });
+      expect(typeof byId.notes?.localPageId).toBe('number');
+
+      const page = await query<{ source: string; visibility: string; body_html: string }>(
+        'SELECT source, visibility, body_html FROM pages WHERE id = $1',
+        [byId.notes!.localPageId],
+      );
+      expect(page.rows[0]).toMatchObject({ source: 'standalone', visibility: 'private' });
+      expect(page.rows[0]!.body_html).toContain('Imported via route');
+
+      const again = await instance.inject({
+        method: 'POST',
+        url: '/api/notion/import',
+        payload: { pageIds: ['notes'] },
+      });
+      expect(again.json().items[0]).toMatchObject({
+        notionPageId: 'notes',
+        status: 'already_imported',
+        localPageId: byId.notes!.localPageId,
+      });
+      expect(again.body).not.toContain(TOKEN);
+
+      const get = await instance.inject({ method: 'GET', url: '/api/notion/connection' });
+      expect(get.json()).toEqual({ hasToken: true });
+      expect(get.body).not.toContain(TOKEN);
+    } finally {
+      await instance.close();
+    }
+  });
+
+  it('GET handlers still never decrypt the token after the import route is added', () => {
+    const src = readFileSync(new URL('./notion.ts', import.meta.url), 'utf8');
+    const start = src.indexOf("fastify.get('/notion/connection'");
+    const end = src.indexOf("fastify.put('/notion/connection'");
+    const connectionGet = src.slice(start, end);
+    expect(connectionGet).not.toContain('getDecryptedNotionToken');
+    expect(src).not.toMatch(/queryDatabase|\/v1\/databases\/.*query/);
   });
 });

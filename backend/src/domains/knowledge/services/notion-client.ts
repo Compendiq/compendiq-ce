@@ -214,4 +214,31 @@ export class NotionClient {
       this.getBlockChildren(blockId, { startCursor: cursor ?? undefined, pageSize: 100 }),
     );
   }
+
+  /**
+   * Download attachment bytes. Auth is sent only when the URL is on this
+   * client's Notion API origin (fake server files, Notion-hosted media).
+   * External file URLs are fetched without the secret.
+   */
+  async fetchMedia(url: string): Promise<{ bytes: Buffer; contentType: string }> {
+    validateUrl(url);
+    const headers: Record<string, string> = { Accept: '*/*' };
+    if (url.startsWith(`${this.baseUrl}/`) || url === this.baseUrl) {
+      headers.Authorization = `Bearer ${this.token}`;
+      headers['Notion-Version'] = NOTION_VERSION;
+    }
+    const { statusCode, headers: resHeaders, body } = await request(url, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(30_000),
+      dispatcher: notionDispatcher,
+    });
+    const bytes = Buffer.from(await body.arrayBuffer());
+    if (statusCode >= 400) {
+      throw new NotionError(`Notion API error: HTTP ${statusCode}`, statusCode);
+    }
+    const rawType = resHeaders['content-type'];
+    const contentType = typeof rawType === 'string' ? rawType.split(';')[0]!.trim() : 'application/octet-stream';
+    return { bytes, contentType };
+  }
 }
