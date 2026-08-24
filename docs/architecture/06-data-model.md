@@ -12,6 +12,7 @@ erDiagram
     users ||--o{ page_embeddings : "owns"
     users ||--o{ llm_conversations : "owns"
     users ||--o{ retrieval_benchmark_runs : "requests"
+    users ||--o{ embedding_compare_judgements : "judges (#1260; SET NULL — the fixture outlives its author)"
     users ||--o{ notifications : "receives"
     users ||--o{ audit_log : "generates"
     users ||--o{ comments : "authors"
@@ -57,6 +58,11 @@ erDiagram
         text theme
         int sync_interval_min
         timestamptz confluence_pat_prompt_dismissed_at "PAT onboarding banner dismissed (#771)"
+        bool inline_completion_enabled "personal ghost-text preference (#1417)"
+        text inline_completion_delay "fast | balanced | deliberate | manual (#1417)"
+        text inline_completion_mode "word | full (personal default)"
+        bool inline_completion_code_only "suppress suggestions outside code blocks (#1417)"
+        jsonb onboarding_state "checklist flags, merge-not-overwrite on write (#1402)"
     }
 
     pages {
@@ -144,7 +150,7 @@ erDiagram
         uuid id PK
         uuid requested_by FK
         text status "queued | running | completed | failed"
-        jsonb config "query source and limits"
+        jsonb config "query source and limits; kind=shadow-compare marks a #1260 comparison run"
         int progress_done
         int progress_total
         jsonb result "compact ids, titles and timings"
@@ -152,6 +158,21 @@ erDiagram
         timestamptz created_at
         timestamptz started_at
         timestamptz completed_at
+    }
+
+    embedding_compare_judgements {
+        uuid id PK
+        text query_hash "sha256 of LOWER(TRIM(query)) — respellings converge"
+        text query_text
+        text live_provider_id "by VALUE, no FK — must outlive the provider row"
+        text live_model
+        text candidate_provider_id
+        text candidate_model
+        text judged_side "live | candidate | neither | both"
+        int_array live_page_ids "what was on screen when judged"
+        int_array candidate_page_ids
+        uuid judged_by FK "SET NULL"
+        timestamptz created_at
     }
 
     comments {
@@ -259,7 +280,7 @@ erDiagram
     }
 
     llm_usecase_assignments {
-        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank"
+        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank|image_embedding|inline_completion"
         uuid provider_id FK
         text model "nullable; null = inherit provider default"
         timestamptz updated_at
@@ -295,6 +316,18 @@ erDiagram
 
 `llm_conversations` carries `llm_conversations_user_updated_idx (user_id,
 updated_at DESC, id DESC)` for the keyset-paged list (migration 094).
+
+`inline_completion` is one of three non-inheriting use cases, alongside
+`rerank` and `image_embedding`. Its seeded assignment has null provider/model,
+which means the feature is disabled until an administrator explicitly assigns
+both a usable provider and model. The personal `user_settings` fields only
+control when an already-assigned feature may run; they cannot select or
+override a provider.
+
+Inline-completion prompts and completions are intentionally absent from
+`llm_audit_log`. The feature writes only aggregate request and token counters to
+fixed Redis hash fields; no user, page, prefix, suffix, or completion is part of
+those keys or values.
 
 **`chunk_text` is what gets embedded, verbatim (#1108).** Prefixing the page
 title and section into the embedded text was tried, measured, and **not
@@ -354,6 +387,49 @@ together, which matters most for #1114's query-side prefix.
 
 - **User ownership is pervasive.** Almost every table carries `user_id`
   (UUID, FK → `users.id`) — Compendiq is multi-tenant at the user level.
+- **`retrieval_benchmark_runs` is shared by two run kinds (#1260), and ONE
+  module owns its lifecycle.** The production benchmark writes its config
+  as-is; the shadow comparison marks its rows `config.kind = 'shadow-compare'`.
+  Insert, claim, progress + heartbeat, complete, fail, the stale sweep and the
+  fetch all live in `domains/llm/eval/benchmark-run-lifecycle.ts`, and the
+  fetch takes the expected `kind` as a REQUIRED argument — each surface answers
+  null for the other's rows, in both directions. That symmetry is not
+  decoration: a compare report has no `baseline`, so serving one through the
+  benchmark GET throws in `BenchmarkSummary` and blanks the Retrieval panel,
+  and it carries sampled production query text. The stale sweep is likewise
+  kind-aware, because failing a comparison with "start a new benchmark" names
+  a run its admin never started. A compare run is additionally scoped to
+  `requested_by` on read: its report carries page titles retrieved under that
+  admin's own ACL (`visiblePagesPredicate` admits their private standalone
+  pages). The 091 one-active partial unique index is deliberately NOT scoped
+  by kind: both runs spend the shared LLM queue, so one at a time is the
+  point, and the 092 heartbeat recovery covers both.
+- **`embedding_compare_judgements` is the accumulating fixture (#1260 Mode
+  2).** One row per (normalised query hash, live PAIR, candidate PAIR) —
+  provider id AND model on each side, because the same model name behind a
+  different provider is a different index whose page-id arrays must not be
+  pooled into the earlier migration's verdict, and because re-hosting one
+  model would otherwise collapse both sides onto one row. Both are recorded by
+  VALUE, with no FK to `llm_providers` and no FK to the run: a judgement must
+  survive the run, the migration and the provider row that produced it, which
+  is what makes the second evaluation of the same pair cheaper than the first.
+  Re-judging replaces the row (upsert on the unique key); the page-id arrays
+  record what was on screen when the human judged and are deliberately not
+  FK-checked against `pages`.
+  **The key carries no admin dimension, deliberately — on a multi-admin
+  instance the LAST judge of a query wins it, and the verdict pools every
+  judge's rows.** That is the point of a fixture accumulated across sittings
+  and across runs: one query is one trial, and McNemar counts trials, so a
+  per-admin key would let two admins vote the same query twice and inflate
+  both N and the significance drawn from it. The cost is that `live_page_ids`
+  / `candidate_page_ids` reflect the visibility of whoever judged last —
+  `vectorSearch(adminUserId, …)` filters through `visiblePagesPredicate`, so a
+  judge who cannot see a private page judged a shorter list — and `judged_by`
+  records who that was without the verdict reading it. Accepted for the
+  single-evaluator workflow this surface is written for (the runbook's step
+  3b is one operator's go/no-go); a multi-evaluator design would need a
+  per-judge key AND an aggregation rule (majority? first? weighted?), which is
+  a different feature, not a wider index.
 - **pgvector — the column type is dimension-driven, not one model's shape.**
   `page_embeddings.embedding` always carries a *declared* width — 006 shipped
   `vector(768)`, 048 re-typed it to `vector(1024)` — but the schema does not
@@ -490,6 +566,54 @@ together, which matters most for #1114's query-side prefix.
     attachment write to notice it). It is CLEARED only
     by a page whose scan had no failure, so the flag is the retry queue as well
     as the work queue. Design of record: ADR-025.
+- **The attachment stores are filesystem-only, and #1349 gives them a
+  reconciler.** Two trees under `ATTACHMENTS_DIR`:
+  `<confluence_id | page id>/<file>` (the Confluence cache — pasted images on
+  standalone pages land here keyed by PK, so the keyspace is SHARED with
+  Confluence ids) and `local/<page_id>/<file>` (the local store, whose metadata
+  rows are `local_attachments`). Three intake paths write and only page-scoped
+  cleanups delete; `local_attachments`' CASCADE removes rows, never files. The
+  standalone hard-delete and trash purge now remove both directories, plus the
+  page's `page-icons/<pk>/` mark, which nothing but the icon route itself ever
+  removed and which no sweep will ever collect
+  (`core/services/standalone-attachment-cleanup.ts`). The mark is keyed by
+  `pages.id` alone, so the same removal rides every other HARD delete too —
+  the Confluence delete route (single and bulk), sync's 30-day
+  `purgeDeletedPages` and `unsyncSpace`, through
+  `discardPageIconForDeletedPage` — each of them behind its own COMMITTED row
+  delete (`DELETE … RETURNING id`), never on a cleanup transaction's rollback
+  branch, where the page still exists and the mark is its only copy. And never
+  a soft delete, which is restorable. `<pk>/` in the shared tree, by contrast, is removed only when no
+  page claims `confluence_id = <pk>` AND the directory is older than a 5-minute
+  grace window, because deleting a shared-keyspace directory can evict a live
+  Confluence page's whole cache, and during a FIRST sync the claim does not
+  exist yet (attachments are downloaded before the `pages` INSERT). Everything else is
+  the admin-triggered, dry-run-first orphan sweep
+  (`domains/confluence/services/attachment-sweep-service.ts`, surfaced on
+  Settings → Knowledge → Spaces & Sync → Sync schedule): the two stores are walked separately
+  and the RESERVED root entries are skipped by name
+  (`ATTACHMENT_ROOT_RESERVED_DIRNAMES` — `local/` and the page-icon store
+  `page-icons/`; both match the Confluence tree's key pattern, so a naive walk
+  lists a whole other store as one orphan and a live run deletes it), a directory is
+  orphaned only when NO page row — trashed included — claims its key AND none
+  of its files carries a kept filename (the keep-set outranks the directory
+  verdict; a keep-intersecting pageless directory is skipped whole and
+  counted as keep-protected), and a
+  file only against a GLOBAL per-store keep-set fed from every body text in
+  the system (pages `body_html`/`draft_body_html`/`body_storage` live and
+  trashed, `page_versions`, `pending_sync_versions`, `templates`, `comments`,
+  and `llm_conversations.messages` — #1361 persists a matched image's
+  `attachmentUrl` per assistant turn),
+  because attachment URLs are copied verbatim between bodies. A 24h mtime
+  grace window covers sync/paste races (both write files before the row that
+  references them), only image-like files are per-file candidates in the
+  Confluence tree (non-image lazily-cached attachments have no enumerator),
+  local rows whose FILE is missing are counted, never deleted, and a live run
+  refuses against an empty-on-disk store the database still references. Files
+  a live run deletes take their `page_image_embeddings` rows with them and
+  re-raise `image_embedding_dirty` on the owning pages. State lives in two
+  `admin_settings` JSON rows (`attachment_sweep_last_run`,
+  `attachment_storage_stats`) — no new table.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
   page's average chunk vector, written by `embedPage` inside the same
   transaction as the chunk inserts, with its own HNSW index

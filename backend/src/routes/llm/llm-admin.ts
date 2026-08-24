@@ -14,6 +14,7 @@ import {
   ProductionBenchmarkAlreadyRunningError,
   runProductionBenchmark,
 } from '../../domains/llm/eval/production-benchmark.js';
+import { slotBusyMessage } from '../../domains/llm/eval/benchmark-run-lifecycle.js';
 
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
@@ -61,8 +62,24 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
     if (active) {
       return reply.code(409).send({
         error: 'benchmark_in_progress',
-        message: 'A production retrieval benchmark is already running',
-        runId: active.id,
+        // Worded by the run that HOLDS the slot, never by the route that was
+        // asked (r3). The slot is shared with the #1260 shadow comparison, so
+        // the fixed sentence told an operator refused by a running comparison
+        // that "a production retrieval benchmark is already running" — a run
+        // that did not exist, on the surface they consult to find out what is
+        // holding it, and toasted verbatim by the Retrieval tab. That the
+        // exclusion itself is acceptable and stated in both cards' copy is the
+        // #1260 owner decision; wording it wrongly is not part of it.
+        message: slotBusyMessage(active.kind),
+        // The ID is withheld unless the holder is a benchmark THIS admin
+        // started. `GET /admin/retrieval-benchmark/:id` is guarded twice:
+        // by kind (it 404s a #1260 compare run's id) and by `requested_by`
+        // (r2 — its report carries page titles read under the starting
+        // admin's ACL). An id failing either guard is one this card could
+        // adopt but never poll, so both guards are applied here (r1).
+        ...(active.kind === null && active.requestedBy === request.userId
+          ? { runId: active.id }
+          : {}),
       });
     }
 
@@ -73,8 +90,13 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
       if (err instanceof ProductionBenchmarkAlreadyRunningError) {
         return reply.code(409).send({
           error: 'benchmark_in_progress',
-          message: err.message,
-          runId: err.activeRunId,
+          // Same holder-worded sentence as above: the race's winner may be a
+          // comparison, and `err.message` is the class's fixed benchmark one.
+          message: slotBusyMessage(err.kind),
+          // Same two guards as above: only ever this admin's own benchmark.
+          ...(err.kind === null && err.requestedBy === request.userId
+            ? { runId: err.activeRunId }
+            : {}),
         });
       }
       throw err;
@@ -103,7 +125,7 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
     ...ADMIN_RATE_LIMIT,
   }, async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const run = await getProductionBenchmarkRun(id);
+    const run = await getProductionBenchmarkRun(id, request.userId);
     if (!run) return reply.code(404).send({ error: 'not_found', message: 'Benchmark run not found' });
     return run;
   });

@@ -8,8 +8,14 @@ import { z } from 'zod';
 // stronger: a default text embedder handed the VL request answers the plain
 // `{model, input}` shape with a well-formed vector that is simply wrong, and
 // wrong vectors are indistinguishable from bad retrieval. See ADR-025.
+//
+// #1417 adds `inline_completion` under that rule too. It is a deliberately
+// high-frequency, low-latency path with its own token and stop limits, so an
+// unassigned row means ghost text is OFF rather than inherited from a default
+// model an operator never chose for per-keystroke traffic.
 export const LlmUsecaseSchema = z.enum([
   'chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank', 'image_embedding',
+  'inline_completion',
 ]);
 export type LlmUsecase = z.infer<typeof LlmUsecaseSchema>;
 
@@ -69,6 +75,8 @@ export const UsecaseAssignmentsSchema = z.object({
   // #1115 — same story as rerank: `resolved` is informational, the image leg
   // runs only on an explicit assignment (resolveImageEmbeddingUsecase).
   image_embedding: UsecaseAssignmentSchema,
+  // #1417 — high-frequency editor traffic is opt-in and never inherits.
+  inline_completion: UsecaseAssignmentSchema,
 });
 export type UsecaseAssignments = z.infer<typeof UsecaseAssignmentsSchema>;
 
@@ -84,6 +92,7 @@ export const UpdateUsecaseAssignmentsInputSchema = z.object({
   embedding: UpdateUsecaseAssignmentInputSchema.optional(),
   rerank: UpdateUsecaseAssignmentInputSchema.optional(),
   image_embedding: UpdateUsecaseAssignmentInputSchema.optional(),
+  inline_completion: UpdateUsecaseAssignmentInputSchema.optional(),
 });
 export type UpdateUsecaseAssignmentsInput = z.infer<typeof UpdateUsecaseAssignmentsInputSchema>;
 

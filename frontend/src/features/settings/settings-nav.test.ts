@@ -98,6 +98,13 @@ describe('SETTINGS_NAV shape', () => {
     ]);
   });
 
+  it('exposes personal Editor preferences to every user', () => {
+    const personal = SETTINGS_NAV.find((group) => group.id === 'personal');
+    expect(personal?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'editor', label: 'Editor' }),
+    ]));
+  });
+
   it('has no duplicate `/settings/<group>/<item>` paths', () => {
     const paths = SETTINGS_NAV.flatMap((g) => g.items.map((i) => `/settings/${g.id}/${i.id}`));
     expect(new Set(paths).size).toBe(paths.length);

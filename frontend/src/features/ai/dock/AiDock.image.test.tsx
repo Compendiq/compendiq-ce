@@ -394,11 +394,11 @@ describe('dock image attach (#1154)', () => {
 
 /**
  * The dock is the surface where this mattered most: it is the only composer
- * holding both cards and a send button. The shared Attach control follows the
- * cards in both DOM and visual order, so Tab does not cross between rows.
+ * holding both cards and a send button. The prompt is its own row and the
+ * shared controls follow it, so Tab follows the visual reading order.
  */
 describe('dock composer focus order (#1154)', () => {
-  it('reaches every control in reading order: each card, then shared Attach', async () => {
+  it('reaches every control in reading order: cards, prompt, then actions', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachDocument();
@@ -407,9 +407,11 @@ describe('dock composer focus order (#1154)', () => {
     expectComposerFocusOrder(composerBox(), [
       'ai-dock-doc-remove-button',
       'ai-dock-image-remove',
+      'ai-dock-input',
       'ai-dock-attach-button',
       'assistant-action-select',
-      'ai-dock-input',
+      'ai-dock-deep-search',
+      'ai-dock-deep-search-info-trigger',
       'ai-dock-send',
     ]);
   });

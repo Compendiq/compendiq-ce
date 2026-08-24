@@ -15,6 +15,7 @@ import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { processDirtyPageImages } from '../../llm/services/image-embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
+import { discardPageIconForDeletedPage } from '../../../core/services/page-icon-store.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSyncConflictPolicy } from '../../../core/services/sync-conflict-policy-service.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
@@ -1763,14 +1764,22 @@ async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Pr
 
   // Re-assert the 30-day precondition inside the DELETE: a row revived between
   // the SELECT and here has `deleted_at = NULL` and falls out of the predicate.
-  const result = await query<{ confluence_id: string | null }>(
+  // `id` is returned beside `confluence_id` because the two stores are keyed
+  // differently: the attachment cache by `confluence_id`, the icon store by
+  // `pages.id` (#1349 review r2).
+  const result = await query<{ id: number; confluence_id: string | null }>(
     `DELETE FROM pages
       WHERE id = ANY($1::int[]) AND deleted_at < NOW() - INTERVAL '30 days'
-      RETURNING confluence_id`,
+      RETURNING id, confluence_id`,
     [confirmedIds],
   );
   if (result.rowCount && result.rowCount > 0) {
-    for (const { confluence_id } of result.rows) {
+    for (const { id, confluence_id } of result.rows) {
+      // Unconditional and first: the row is gone, and unlike the attachment
+      // cache below this is the page's own content with no re-fetch behind it
+      // — and the #1349 sweep is forbidden to walk that store, so nothing else
+      // would ever collect it.
+      await discardPageIconForDeletedPage(id);
       if (!confluence_id) continue;
       await cleanPageAttachments('', confluence_id);
       await clearPageFailures(confluence_id);
@@ -1795,6 +1804,11 @@ async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Pr
  * orphaned files if the transaction later rolls back; that is preferable to
  * leaving DB rows pointing at a deleted space, and a re-run of unsync would
  * sweep them again.
+ *
+ * The uploaded page ICONS are the exception and run AFTER the commit (#1349
+ * review r1): that store is the only copy of those bytes and no sweep may walk
+ * it, so a pre-transaction delete would be unrecoverable on a ROLLBACK that
+ * restores every page row with `icon_kind = 'image'` still set.
  *
  * Deleting the `pages` rows cascades to `page_embeddings` and `page_versions`
  * (page_id FK ON DELETE CASCADE, migration 030).
@@ -1843,7 +1857,13 @@ export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: num
     await conn.query('BEGIN');
 
     // Pages → cascades to page_embeddings + page_versions (migration 030).
-    const del = await conn.query('DELETE FROM pages WHERE space_key = $1', [spaceKey]);
+    // `RETURNING id` so the icon removal below can run over the rows the
+    // transaction actually destroyed (#1349 review r1) — including any page
+    // INSERTed between the pre-transaction SELECT and this DELETE.
+    const del = await conn.query<{ id: number }>(
+      'DELETE FROM pages WHERE space_key = $1 RETURNING id',
+      [spaceKey],
+    );
 
     // RBAC / sync-selection rows for the removed space.
     await conn.query('DELETE FROM space_role_assignments WHERE space_key = $1', [spaceKey]);
@@ -1859,6 +1879,20 @@ export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: num
     await conn.query('DELETE FROM spaces WHERE space_key = $1', [spaceKey]);
 
     await conn.query('COMMIT');
+
+    // AFTER the commit, never before (#1349 review r1). The icon store is keyed
+    // by `pages.id` whatever the page's source, and these rows are now gone, so
+    // the mark has no owner left — see `discardPageIconForDeletedPage`. Unlike
+    // the attachment CACHE above (re-fetchable from Confluence, hence
+    // best-effort ahead of the transaction), the mark is the only copy of user
+    // bytes and the sweep is forbidden to walk `page-icons/`: doing it before
+    // `BEGIN` would destroy it for good on a ROLLBACK that leaves every page
+    // row alive with `icon_kind = 'image'`. Best-effort and never-throwing, so
+    // a filesystem hiccup cannot fail a unsync whose rows are already gone.
+    for (const { id } of del.rows) {
+      await discardPageIconForDeletedPage(id);
+    }
+
     logger.info({ spaceKey, pagesDeleted: del.rowCount ?? 0 }, 'unsyncSpace: purged synced space');
     return { pagesDeleted: del.rowCount ?? 0 };
   } catch (err) {

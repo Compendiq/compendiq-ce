@@ -12,6 +12,7 @@ import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { toast } from 'sonner';
 import { Button } from '../../../shared/components/Button';
 import { AssistantActionSelect } from '../AssistantActionSelect';
+import { AI_HOME_ACTIONS } from '../assistant-actions';
 import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 /**
@@ -271,7 +272,7 @@ function ImproveModeInputContent() {
           isPreparing={attachments.isPreparing}
           disabled={isStreaming}
         />
-        <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
+        <AssistantActionSelect actions={AI_HOME_ACTIONS} disabled={isStreaming} className="self-end" />
         <textarea
           ref={textareaRef}
           value={input}

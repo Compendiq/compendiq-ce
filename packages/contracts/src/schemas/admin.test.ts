@@ -11,6 +11,9 @@ import {
   ForceReleaseLockResponseSchema,
   FTS_LANGUAGES,
   FtsLanguageEnum,
+  AttachmentSweepRunSchema,
+  AttachmentSweepTriggerSchema,
+  AttachmentStorageStatsSchema,
 } from './admin.js';
 
 const validReadPayload = {
@@ -1010,5 +1013,71 @@ describe('rag confidence calibration write outcome (#1114)', () => {
         ragConfidenceCalibrationWrite: { similarity: { outcome: 'unresolved', model: null }, rerank: null },
       }).ragConfidenceCalibrationWrite?.similarity?.outcome,
     ).toBe('unresolved');
+  });
+});
+
+// ─── #1349 — attachment storage + orphan sweep ──────────────────────────────
+
+describe('attachment sweep contracts (#1349)', () => {
+  const storeStats = {
+    bytes: 10,
+    files: 2,
+    directories: 1,
+    orphanDirectories: 0,
+    orphanDirectoryBytes: 0,
+    orphanFiles: 1,
+    orphanFileBytes: 5,
+    graceSkipped: 0,
+    unreadableDirectories: 0,
+  };
+
+  it('a completed dry run parses with candidates and no deleted block', () => {
+    const run = AttachmentSweepRunSchema.parse({
+      at: '2026-08-22T10:00:00.000Z',
+      dryRun: true,
+      status: 'completed',
+      note: null,
+      durationMs: 12,
+      stores: { confluence: storeStats, local: storeStats },
+      missingLocalFiles: 0,
+      candidateSample: [
+        { store: 'confluence', key: '55555', filename: null, bytes: 5, reason: 'orphan_directory' },
+      ],
+      candidatesTotal: 1,
+      deleted: null,
+    });
+    expect(run.candidateSample[0]!.reason).toBe('orphan_directory');
+  });
+
+  it('a refused run carries its note and null stores', () => {
+    const run = AttachmentSweepRunSchema.parse({
+      at: '2026-08-22T10:00:00.000Z',
+      dryRun: false,
+      status: 'refused',
+      note: 'attachments root missing or unreadable',
+      durationMs: 1,
+      stores: null,
+      missingLocalFiles: 0,
+      candidateSample: [],
+      candidatesTotal: 0,
+      deleted: null,
+    });
+    expect(run.status).toBe('refused');
+  });
+
+  it('the trigger requires an explicit dryRun boolean', () => {
+    expect(AttachmentSweepTriggerSchema.parse({ dryRun: false })).toEqual({ dryRun: false });
+    expect(() => AttachmentSweepTriggerSchema.parse({})).toThrow();
+    expect(() => AttachmentSweepTriggerSchema.parse({ dryRun: 'yes' })).toThrow();
+  });
+
+  it('the stats shape has an explicit no-run-yet state', () => {
+    const empty = AttachmentStorageStatsSchema.parse({
+      computedAt: null,
+      running: false,
+      stores: null,
+      missingLocalFiles: null,
+    });
+    expect(empty.stores).toBeNull();
   });
 });

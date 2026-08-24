@@ -20,6 +20,8 @@ import {
   type BulkSelection,
 } from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
+import { cleanupStandalonePageAttachmentDirs } from '../../core/services/standalone-attachment-cleanup.js';
+import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
@@ -1591,6 +1593,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         // Hard delete
         await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, existingPage.id]);
         await query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
+        // #1349: attachment files live on the filesystem and cannot join the
+        // DB delete — best-effort, never throws (same contract as the
+        // Confluence branch's cleanPageAttachments below). Removes
+        // `local/<pk>/` unconditionally and `<pk>/` in the Confluence-style
+        // tree only when no Confluence page owns that key.
+        await cleanupStandalonePageAttachmentDirs(existingPage.id);
       } else {
         // Soft delete — move to trash
         await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [existingPage.id]);
@@ -1698,11 +1706,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // (page_embeddings/page_versions cascade-delete via FK; pinned_pages also
     // cascades, deleted explicitly for clarity).
     const txClient = await getPool().connect();
+    // Whether the COMMIT really destroyed the row — the icon discard below is
+    // irreversible and must not run on the rollback branch (#1349 fixer r1).
+    let rowDestroyed = false;
     try {
       await txClient.query('BEGIN');
       await txClient.query('DELETE FROM pinned_pages WHERE page_id = $1', [existingPage.id]);
-      await txClient.query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
+      const destroyed = await txClient.query<{ id: number }>(
+        'DELETE FROM pages WHERE id = $1 RETURNING id',
+        [existingPage.id],
+      );
       await txClient.query('COMMIT');
+      rowDestroyed = (destroyed.rowCount ?? 0) > 0;
     } catch (cleanupErr) {
       await txClient.query('ROLLBACK').catch(() => undefined);
       // The upstream delete already happened and cannot be rolled back. The row
@@ -1729,6 +1744,22 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           'Attachment cleanup failed after page delete (orphaned files only — DB is consistent)',
         );
       }
+    }
+    // …and the icon store, which `cleanPageAttachments` never touches: it is
+    // keyed by `pages.id`, not by `confluence_id`, and the #1349 sweep is
+    // forbidden to walk it, so this event is the only thing that collects a
+    // hard-deleted Confluence page's uploaded mark (#1349 review r2).
+    //
+    // ONLY when the transaction actually committed (#1349 fixer r1). The catch
+    // above deliberately does not rethrow, so on a rollback the row is still
+    // there — soft-deleted, restorable by sync reconciliation until the 30-day
+    // purge — and still carries `icon_kind = 'image'`. The mark is the only
+    // copy of those bytes (migrations 095/096 persist just the sha) and the
+    // sweep may not walk `page-icons/`, so discarding it here would be
+    // unrecoverable for a page that still exists. `purgeDeletedPages` discards
+    // it after its OWN committed DELETE, so nothing leaks permanently.
+    if (rowDestroyed) {
+      await discardPageIconForDeletedPage(existingPage.id);
     }
 
     // Confluence pages are visible to every user with space access (#893), and
@@ -2161,11 +2192,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         // cascades, deleted explicitly for clarity).
         if (deletedConfluenceNumericIds.length > 0) {
           const txClient = await getPool().connect();
+          // The ids the COMMIT really destroyed — empty on the rollback branch,
+          // which must not reach the irreversible icon discard (#1349 fixer r1).
+          let destroyedNumericIds: number[] = [];
           try {
             await txClient.query('BEGIN');
             await txClient.query('DELETE FROM pinned_pages WHERE page_id = ANY($1::int[])', [deletedConfluenceNumericIds]);
-            await txClient.query('DELETE FROM pages WHERE id = ANY($1::int[])', [deletedConfluenceNumericIds]);
+            const destroyed = await txClient.query<{ id: number }>(
+              'DELETE FROM pages WHERE id = ANY($1::int[]) RETURNING id',
+              [deletedConfluenceNumericIds],
+            );
             await txClient.query('COMMIT');
+            destroyedNumericIds = destroyed.rows.map((r) => r.id);
           } catch (cleanupErr) {
             await txClient.query('ROLLBACK').catch(() => undefined);
             // Upstream deletes already happened — the rows stay soft-deleted
@@ -2179,6 +2217,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           }
           // Filesystem attachment cleanup cannot join the DB transaction — best-effort.
           await Promise.allSettled(deletedConfluenceIds.map((id) => bulkLimit(() => cleanPageAttachments(userId, id))));
+          // The icon store is keyed by `pages.id`, so it takes the NUMERIC ids
+          // and is a second pass rather than a line inside the one above
+          // (#1349 review r2 — see `discardPageIconForDeletedPage`), and it
+          // walks the ids the COMMIT returned rather than the ids we intended
+          // to delete (#1349 fixer r1): the catch above does not rethrow, so on
+          // a rollback every row is still alive with its `icon_kind = 'image'`
+          // and the mark is the only copy of those bytes. Left alone, it is
+          // collected by `purgeDeletedPages` after its own committed DELETE.
+          await Promise.allSettled(
+            destroyedNumericIds.map((pageId) =>
+              bulkLimit(() => discardPageIconForDeletedPage(pageId)),
+            ),
+          );
           // Confluence bulk delete is always a hard delete (Confluence API + local row removal).
           for (const pageId of deletedConfluenceNumericIds) {
             emitWebhookEvent({

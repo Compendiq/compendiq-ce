@@ -58,16 +58,26 @@ import { logger } from '../utils/logger.js';
  * Folders and soft-deleted pages are excluded, matching the worker's own
  * `WHERE`: marking them sets a flag no scan will ever clear, which shows up on
  * the Embeddings card as a backlog that never drains.
+ *
+ * **Answers whether the statement RAN**, not whether it matched a row (#1349
+ * review). It swallows its own error by design — a whole sync must not die on
+ * the way to raising a flag — so a caller wrapping it in `try`/`catch` gets a
+ * dead branch and counts a failed UPDATE as a success. The flag IS the queue
+ * (ADR-025), so a counter that over-reports it hides exactly the backlog an
+ * operator would go looking for. `false` therefore means the write threw;
+ * `true` means it went through, whether or not the page was in scope.
  */
-export async function markPageImagesDirty(pageId: number): Promise<void> {
+export async function markPageImagesDirty(pageId: number): Promise<boolean> {
   try {
     await query(
       `UPDATE pages SET image_embedding_dirty = TRUE
         WHERE id = $1 AND deleted_at IS NULL AND COALESCE(page_type, 'page') != 'folder'`,
       [pageId],
     );
+    return true;
   } catch (err) {
     logger.warn({ err, pageId }, 'Could not mark a page image_embedding_dirty');
+    return false;
   }
 }
 

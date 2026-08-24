@@ -1,9 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
+import * as Popover from '@radix-ui/react-popover';
 import type { LlmProvider, LlmUsecase, UsecaseAssignments, UsecaseDefault } from '@compendiq/contracts';
 import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ChatVisionCapability } from './ChatVisionCapability';
 import { ImageEmbeddingCapability } from './ImageEmbeddingCapability';
+import { Info } from 'lucide-react';
 
 const USECASE_LABELS: Record<LlmUsecase, string> = {
   chat: 'Chat',
@@ -13,20 +15,59 @@ const USECASE_LABELS: Record<LlmUsecase, string> = {
   embedding: 'Embedding',
   rerank: 'Rerank',
   image_embedding: 'Image embedding',
+  inline_completion: 'Inline completion',
 };
 const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 
 /**
- * The use cases that never inherit the default provider (#1104, #1115). Their
+ * The use cases that never inherit the default provider (#1104, #1115, #1417). Their
  * "unset" option says **Disabled**, because there is no fallback behind it —
  * offering "Inherit default" would name a resolution that does not happen.
  */
 const NON_INHERITING: Record<string, string> = {
   rerank: 'Disabled (no reranking)',
   image_embedding: 'Disabled (no image search)',
+  inline_completion: 'Disabled (no inline suggestions)',
 };
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
+
+function InlineCompletionInfo() {
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          aria-label="About the inline-completion model"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-transparent text-muted-foreground transition-colors duration-100 hover:border-border-interactive hover:bg-accent hover:text-foreground active:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          data-testid="inline-completion-info-trigger"
+        >
+          <Info size={14} aria-hidden="true" />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="start"
+          side="top"
+          sideOffset={6}
+          collisionPadding={8}
+          className="nm-card-elevated z-50 w-[min(320px,calc(100vw-24px))] p-3 text-xs leading-relaxed text-muted-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95"
+          data-testid="inline-completion-info-content"
+        >
+          <p className="font-medium text-foreground">Choose for response time</p>
+          <p className="mt-1">
+            Assign a small, always-warm model. Word mode asks for only 8 tokens;
+            full suggestions request up to 48.
+          </p>
+          <p className="mt-2 border-t border-border pt-2">
+            This high-frequency path bypasses the general LLM queue. A dedicated
+            provider also isolates it from chat failures and traffic.
+          </p>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
 
 interface Props {
   assignments: UsecaseAssignments;
@@ -95,9 +136,8 @@ export function UsecaseAssignmentsSection({
         // #1104: assigned-but-unresolvable — a provider is chosen but the
         // server could not resolve a model for the stage (rerank with no
         // model anywhere). Without this, the row looks configured while the
-        // stage is silently disabled. #1115's image leg has the same state,
-        // for the same reason: neither inherits, so neither has a fallback to
-        // fall back to.
+        // stage is silently disabled. The image and inline-completion legs have
+        // the same state: none inherits, so none has a fallback to fall back to.
         const assignedButUnresolvable =
           u in NON_INHERITING && row.providerId !== null && row.resolved.providerId === NIL_UUID;
         return (
@@ -118,6 +158,9 @@ export function UsecaseAssignmentsSection({
                   >
                     ⓘ
                   </span>
+                )}
+                {u === 'inline_completion' && (
+                  <InlineCompletionInfo />
                 )}
               </span>
               <select

@@ -80,13 +80,19 @@ describe('docked Assistant action selector', () => {
     }
   });
 
-  it('does not offer Summarize, Quality, or Generate in the article Assistant', async () => {
+  // #1361 / owner ruling 3: Generate IS offered here now. #1401 already routed
+  // it — `sendSelectedAction` (DockPanel.tsx:154-165) sends a plain `generate`
+  // through `runCreateSkill('custom')`, and the dock's empty state already
+  // offers that same custom skill — so the old assertion pinned a hidden menu
+  // item rather than a missing capability. Summarize and Quality are still not
+  // assistant modes at all, on any surface.
+  it('does not offer Summarize or Quality in the article Assistant', async () => {
     renderDock();
     fireEvent.pointerDown(await screen.findByTestId('assistant-action-select'), { button: 0 });
 
     expect(screen.queryByText('Summarize')).not.toBeInTheDocument();
     expect(screen.queryByText('Quality')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('assistant-action-generate')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('assistant-action-generate')).toBeInTheDocument();
   });
 
   it('uses the selected rewrite skill when Send is clicked and keeps it selected', async () => {

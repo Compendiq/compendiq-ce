@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiAssistantPage } from './AiAssistantPage';
@@ -165,256 +165,158 @@ describe('AiAssistantPage', () => {
     useAuthStore.getState().clearAuth();
   });
 
-  it('offers Q&A, five standalone rewrite skills, Diagram, and Generate', async () => {
+  // #1361 + owner ruling 3: the actions that need no open document. The rewrite
+  // skills and Diagram act ON the page you are reading, and `/ai` has no page
+  // scope left — the Pages tree has left the rail and `resolveAiPageId` answers
+  // null here. They stay in the dock, which does have one (`DOCK_ACTIONS`). The
+  // #1401 create skills stay HERE too: they produce a new page, which is what
+  // this surface is for.
+  it('offers Q&A, Generate and the create skills — no rewrite skills, no Diagram', async () => {
     render(<AiAssistantPage />, { wrapper: createWrapper() });
     fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
-    for (const action of ['ask', 'grammar', 'structure', 'clarity', 'technical', 'completeness', 'diagram', 'generate']) {
+    for (const action of ['ask', 'generate', 'create-spec', 'create-guide', 'create-notes', 'create-postmortem', 'create-custom']) {
       expect(await screen.findByTestId(`assistant-action-${action}`)).toBeInTheDocument();
     }
+    for (const action of ['grammar', 'structure', 'clarity', 'technical', 'completeness', 'diagram']) {
+      expect(screen.queryByTestId(`assistant-action-${action}`)).not.toBeInTheDocument();
+    }
+    // The section label goes with its items — a header over nothing is worse
+    // than a shorter menu.
+    expect(screen.queryByText('Rewrite skills')).not.toBeInTheDocument();
+    expect(screen.getByText('Create skills')).toBeInTheDocument();
     expect(screen.queryByText('Summarize')).not.toBeInTheDocument();
     expect(screen.queryByText('Quality')).not.toBeInTheDocument();
   });
 
-  it('sends the composed draft and attachments through the rewrite skill selected beside Send', async () => {
-    mockPageData = {
-      data: {
-        id: 'p1', title: 'Runbook', bodyHtml: '<p>Original</p>', bodyText: 'Original', version: 1,
-      },
-    };
-    apiFetchMock.mockImplementation((path: string) => {
-      if (path === '/llm/usecase-default?usecase=chat') {
-        return Promise.resolve({
-          usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: true,
-        });
+  // #1361 / amendment item 2, as re-decided by the owner on 2026-08-22: New
+  // chat lives at the TOP OF THE PAGE COLUMN, not in the sub-header and not in
+  // the app header — dev deleted the header slot outright (#1377/#1378), so
+  // `HeaderHost` renders in the document. It still renders at every width and
+  // still survives a collapsed conversations rail, and it stays on screen as
+  // the log grows because /ai scrolls its message pane, not the page.
+  describe('the /ai heading row (#1361)', () => {
+    it('carries the route title and a New chat action, in the document', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      expect(screen.getByRole('heading', { level: 1, name: 'AI' })).toBeInTheDocument();
+      const newChat = screen.getByTestId('ai-new-chat');
+      expect(newChat).toHaveAttribute('aria-label', 'New chat');
+      // One heading, and it is this page's: there is no fallback title left
+      // anywhere else to collide with, AppHeaderMain having been deleted.
+      expect(screen.getAllByRole('heading', { level: 1, name: 'AI' })).toHaveLength(1);
+    });
+
+    it('never portals into a header slot, even when one exists in the DOM', () => {
+      // `header-slot.test.tsx:7-19` makes this assertion about HeaderHost
+      // itself; this is the /ai-shaped case, and it is what goes red if anyone
+      // reintroduces the portal underneath this page.
+      const slot = document.createElement('div');
+      slot.id = 'app-header-slot';
+      document.body.appendChild(slot);
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      expect(slot.querySelector('h1')).toBeNull();
+      expect(slot.querySelector('[data-testid="ai-new-chat"]')).toBeNull();
+      slot.remove();
+    });
+
+    it('New chat starts a fresh conversation', async () => {
+      let captured: ReturnType<typeof useAiContext> | null = null;
+      function Capture() {
+        captured = useAiContext();
+        return null;
       }
-      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
-      if (path === '/llm/conversations') return Promise.resolve([]);
-      if (path === '/embeddings/status') return Promise.resolve({ total: 1, embedded: 1, isProcessing: false });
-      return Promise.resolve([]);
-    });
-    streamSSEMock.mockImplementation(() => (async function* () {
-      yield { content: 'Improved' };
-      yield { final: true, done: true };
-    })());
+      render(
+        <>
+          <AiAssistantPage />
+          <Capture />
+        </>,
+        { wrapper: createWrapper() },
+      );
 
-    render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
-    await waitFor(() => expect(screen.getByTestId('ask-image-trigger')).not.toBeDisabled());
+      await act(async () => {
+        captured!.setMessages([{ id: 'seed-1', role: 'user', content: 'an earlier question' }]);
+      });
+      expect(screen.getByText('an earlier question')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByTestId('ask-input'), {
-      target: { value: 'Make the retry policy explicit.' },
-    });
-    fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
-      target: { files: [new File(['pdf'], 'retry-policy.pdf', { type: 'application/pdf' })] },
-    });
-    fireEvent.change(screen.getByTestId('ask-image-file-input'), {
-      target: { files: [new File(['png'], 'flow.png', { type: 'image/png' })] },
-    });
-    await screen.findByTestId('ask-doc-attachment-card');
-    await screen.findByTestId('ask-image-card');
+      fireEvent.click(screen.getByTestId('ai-new-chat'));
 
-    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
-    fireEvent.click(await screen.findByTestId('assistant-action-grammar'));
-
-    const instruction = screen.getByPlaceholderText(
-      'Additional instructions for grammar (optional)',
-    );
-    expect(instruction).toHaveValue('Make the retry policy explicit.');
-    expect(screen.getByTestId('document-attachment-card')).toHaveTextContent('retry-policy.pdf');
-    expect(screen.getByTestId('image-attach-card')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId('improve-send'));
-
-    await waitFor(() => {
-      expect(streamSSEMock).toHaveBeenCalledWith(
-        '/llm/improve',
-        expect.objectContaining({
-          type: 'grammar',
-          instruction: 'Make the retry policy explicit.',
-          referenceText: 'The service retries three times.',
-          imageHandle: IMAGE_HANDLE,
-        }),
-        expect.anything(),
+      await waitFor(() =>
+        expect(screen.queryByText('an earlier question')).not.toBeInTheDocument(),
       );
     });
-    expect(mockExtractDocument).toHaveBeenCalledTimes(1);
-    expect(mockPrepareImage).toHaveBeenCalledTimes(1);
   });
 
-  it('sends attached documents and configuration to the Completeness skill', async () => {
-    mockPageData = {
-      data: {
-        id: 'p1', title: 'Deployment guide', bodyHtml: '<p>Original</p>', bodyText: 'Original', version: 1,
-      },
-    };
-    apiFetchMock.mockImplementation((path: string) => {
-      if (path === '/llm/usecase-default?usecase=chat') {
-        return Promise.resolve({
-          usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: false,
-        });
-      }
-      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
-      if (path === '/llm/conversations') return Promise.resolve([]);
-      return Promise.resolve([]);
+  // #1361: a `conv:` thread is fetched, so the message pane has two states the
+  // draft never had. Neither may render the Ask empty state — "Ask questions
+  // about your knowledge base" over a conversation that is still loading says
+  // the conversation is empty.
+  describe('reopened-conversation states (#1361)', () => {
+    it('shows a polite loading status instead of the empty state', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai/c/conv-1']) });
+
+      const status = screen.getByTestId('ai-thread-loading');
+      expect(status).toHaveAttribute('role', 'status');
+      expect(status).toHaveTextContent('Loading conversation…');
+      expect(screen.queryByText('Ask questions about your knowledge base')).not.toBeInTheDocument();
     });
-    mockExtractDocument
-      .mockResolvedValueOnce({
-        format: 'pdf',
-        text: 'Production requires two approval steps.',
-        fileSize: 1024,
-        preview: 'Production requires two approval steps.',
-      })
-      .mockResolvedValueOnce({
-        format: 'yaml',
-        text: 'replicas: 3\nhealthcheck: /ready',
-        fileSize: 256,
-        preview: 'replicas: 3\nhealthcheck: /ready',
+
+    it('shows the destructive block with a Retry that re-arms the fetch', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/llm/conversations/conv-1') return Promise.reject(new ApiError(500, 'Server unavailable'));
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        return Promise.resolve([]);
       });
-    streamSSEMock.mockImplementation(() => (async function* () {
-      yield { content: 'Completed rewrite' };
-      yield { final: true, done: true };
-    })());
 
-    render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
-    await waitFor(() => expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled());
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai/c/conv-1']) });
 
-    fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
-      target: {
-        files: [
-          new File(['pdf'], 'release-process.pdf', { type: 'application/pdf' }),
-          new File(['yaml'], 'production.yaml', { type: 'application/yaml' }),
-        ],
-      },
+      const block = await screen.findByTestId('ai-thread-error');
+      expect(block).toHaveAttribute('role', 'alert');
+      expect(block).toHaveTextContent('Couldn’t load conversation');
+      expect(block).toHaveTextContent('Server unavailable');
+      expect(screen.queryByText('Ask questions about your knowledge base')).not.toBeInTheDocument();
+
+      const before = apiFetchMock.mock.calls.filter((c) => c[0] === '/llm/conversations/conv-1').length;
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      await waitFor(() => {
+        const after = apiFetchMock.mock.calls.filter((c) => c[0] === '/llm/conversations/conv-1').length;
+        expect(after).toBeGreaterThan(before);
+      });
     });
-    await screen.findByTestId('ask-doc-attachment-card-1');
 
-    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
-    fireEvent.click(await screen.findByTestId('assistant-action-completeness'));
-
-    expect(screen.getByTestId('document-attachment-card')).toHaveTextContent('release-process.pdf');
-    expect(screen.getByTestId('document-attachment-card-1')).toHaveTextContent('production.yaml');
-    fireEvent.click(screen.getByTestId('improve-send'));
-
-    await waitFor(() => {
-      const improveCall = streamSSEMock.mock.calls.find((call) => call[0] === '/llm/improve');
-      expect(improveCall).toBeDefined();
-      expect(improveCall![1]).toMatchObject({ type: 'completeness' });
-      expect(improveCall![1].referenceText).toContain('--- release-process.pdf ---');
-      expect(improveCall![1].referenceText).toContain('Production requires two approval steps.');
-      expect(improveCall![1].referenceText).toContain('--- production.yaml ---');
-      expect(improveCall![1].referenceText).toContain('replicas: 3\nhealthcheck: /ready');
+    it('renders the empty state once the thread is ready', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+      expect(screen.queryByTestId('ai-thread-loading')).not.toBeInTheDocument();
+      expect(screen.getByText('Ask questions about your knowledge base')).toBeInTheDocument();
     });
   });
 
-  it('keeps prepared attachments paused while Diagram sends only the shared instruction', async () => {
-    mockPageData = {
-      data: {
-        id: 'p1', title: 'Runbook', bodyHtml: '<p>Original</p>', bodyText: 'Original', version: 1,
-      },
-    };
-    apiFetchMock.mockImplementation((path: string) => {
-      if (path === '/llm/usecase-default?usecase=chat') {
-        return Promise.resolve({
-          usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: true,
-        });
-      }
-      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
-      if (path === '/llm/conversations') return Promise.resolve([]);
-      return Promise.resolve([]);
-    });
-    streamSSEMock.mockImplementation(() => (async function* () {
-      yield { content: 'flowchart TD' };
-      yield { final: true, done: true };
-    })());
+  // #1361: `/ai` runs two actions, so its URL parser admits two modes. A
+  // deep link naming any other one falls back to Q&A rather than rendering a
+  // screen with no way back to the composer the route is for — the same
+  // fallback the retired `summarize` / `quality` values already got.
+  describe('URL mode allow-list on an AI route (#1361)', () => {
+    for (const rejected of ['improve', 'diagram', 'summarize', 'quality']) {
+      it(`falls back to Q&A for ?mode=${rejected}`, () => {
+        render(<AiAssistantPage />, { wrapper: createWrapper([`/ai?mode=${rejected}`]) });
+        expect(screen.getByText('Ask questions about your knowledge base')).toBeInTheDocument();
+        expect(screen.getByTestId('assistant-action-select')).toHaveAccessibleName('Selected action: Q&A');
+      });
+    }
 
-    render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
-    await waitFor(() => expect(screen.getByTestId('ask-image-trigger')).not.toBeDisabled());
-    fireEvent.change(screen.getByTestId('ask-input'), {
-      target: { value: 'Show the approval loop.' },
+    it('still honours ?mode=generate', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=generate']) });
+      // Not "Selected action: Generate": `createSkill` is a required context
+      // field defaulting to 'spec' (pre-existing, outside this task's scope —
+      // resolveAssistantAction and applyAssistantAction are both untouched
+      // here), so `resolveAssistantAction` always treats a truthy createSkill
+      // as an explicit pick and resolves mode='generate' to 'create-spec'. The
+      // load-bearing assertion is that the URL mode was HONOURED at all —
+      // GenerateMode rendered, not the Q&A fallback the rejected-mode cases
+      // above land on.
+      expect(screen.getByTestId('assistant-action-select')).toHaveAccessibleName('Selected action: Tech Spec');
     });
-    fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
-      target: { files: [new File(['pdf'], 'approval.pdf', { type: 'application/pdf' })] },
-    });
-    fireEvent.change(screen.getByTestId('ask-image-file-input'), {
-      target: { files: [new File(['png'], 'approval.png', { type: 'image/png' })] },
-    });
-    await screen.findByTestId('ask-doc-attachment-card');
-    await screen.findByTestId('ask-image-card');
-
-    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
-    fireEvent.click(await screen.findByTestId('assistant-action-diagram'));
-
-    expect(screen.getByTestId('diagram-instruction')).toHaveValue('Show the approval loop.');
-    expect(screen.getByTestId('ai-attachments-paused')).toHaveTextContent(
-      'Attachments are kept here but are not sent to Diagram.',
-    );
-    fireEvent.drop(screen.getByTestId('diagram-instruction'), {
-      dataTransfer: {
-        files: [new File(['pdf'], 'invisible.pdf', { type: 'application/pdf' })],
-      },
-    });
-    fireEvent.paste(screen.getByTestId('diagram-instruction'), {
-      clipboardData: {
-        items: [{
-          kind: 'file', type: 'image/png',
-          getAsFile: () => new File(['png'], 'invisible.png', { type: 'image/png' }),
-        }],
-      },
-    });
-    expect(mockExtractDocument).toHaveBeenCalledTimes(1);
-    expect(mockPrepareImage).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByTestId('diagram-send'));
-
-    await waitFor(() => {
-      const diagramCall = streamSSEMock.mock.calls.find((call) => call[0] === '/llm/generate-diagram');
-      expect(diagramCall).toBeDefined();
-      expect(diagramCall![1]).toMatchObject({ instruction: 'Show the approval loop.' });
-      expect(diagramCall![1]).not.toHaveProperty('referenceText');
-      expect(diagramCall![1]).not.toHaveProperty('imageHandle');
-    });
-
-    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
-    fireEvent.click(await screen.findByTestId('assistant-action-ask'));
-    expect(await screen.findByTestId('ask-doc-attachment-card')).toHaveTextContent('approval.pdf');
-    expect(screen.getByTestId('ask-image-card')).toBeInTheDocument();
-  });
-
-  it('clears staged attachments when the page context changes', async () => {
-    mockPageData = {
-      data: {
-        id: 'p1', title: 'Runbook', bodyHtml: '<p>Original</p>', bodyText: 'Original', version: 1,
-      },
-    };
-    apiFetchMock.mockImplementation((path: string) => {
-      if (path === '/llm/usecase-default?usecase=chat') {
-        return Promise.resolve({
-          usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: true,
-        });
-      }
-      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
-      if (path === '/llm/conversations') return Promise.resolve([]);
-      return Promise.resolve([]);
-    });
-    const revokePreview = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
-
-    render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
-    await waitFor(() => expect(screen.getByTestId('ask-image-trigger')).not.toBeDisabled());
-    fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
-      target: { files: [new File(['pdf'], 'page-one.pdf', { type: 'application/pdf' })] },
-    });
-    fireEvent.change(screen.getByTestId('ask-image-file-input'), {
-      target: { files: [new File(['png'], 'page-one.png', { type: 'image/png' })] },
-    });
-    await screen.findByTestId('ask-doc-attachment-card');
-    await screen.findByTestId('ask-image-card');
-
-    fireEvent.click(screen.getByTestId('ai-context-chip'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('ai-location')).toHaveTextContent('/ai');
-      expect(screen.queryByTestId('ask-doc-attachment-card')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('ask-image-card')).not.toBeInTheDocument();
-    });
-    expect(revokePreview).toHaveBeenCalledWith('blob:assistant-preview');
   });
 
   it('uses flex-1 column layout so the input bar anchors to the bottom of the viewport', () => {
@@ -430,470 +332,9 @@ describe('AiAssistantPage', () => {
     expect(rootDiv.className).not.toContain('100vh');
   });
 
-  it('does not render a conversations sidebar', () => {
-    render(<AiAssistantPage />, { wrapper: createWrapper() });
-    expect(screen.queryByText('Conversations')).not.toBeInTheDocument();
-    expect(screen.queryByTitle('New conversation')).not.toBeInTheDocument();
-  });
-
   it('renders empty state message for Q&A mode', () => {
     render(<AiAssistantPage />, { wrapper: createWrapper() });
     expect(screen.getByText('Ask questions about your knowledge base')).toBeInTheDocument();
-  });
-
-  it('shows "Loading models..." when models have not loaded yet', () => {
-    render(<AiAssistantPage />, { wrapper: createWrapper() });
-    expect(screen.getByText('Loading models...')).toBeInTheDocument();
-  });
-
-  it('shows model selector after models load', async () => {
-    apiFetchMock.mockImplementation((path: string) => {
-      if (path === '/settings') {
-        return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-      }
-      if (path.startsWith('/ollama/models')) {
-        return Promise.resolve([{ name: 'llama3' }, { name: 'qwen3:latest' }]);
-      }
-      if (path === '/llm/conversations') {
-        return Promise.resolve([]);
-      }
-      return Promise.resolve([]);
-    });
-
-    render(<AiAssistantPage />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
-    });
-  });
-
-  describe('models error chip (degraded LLM provider)', () => {
-    it('shows "Models unavailable — retry" instead of the loading spinner when the models fetch fails', async () => {
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.reject(new Error('LLM provider unreachable'));
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      });
-
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
-
-      await waitFor(() => {
-        expect(screen.getByText('Models unavailable — retry')).toBeInTheDocument();
-      });
-      // The infinite spinner must not keep rendering once the fetch has failed.
-      expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
-    });
-
-    it('refetches models when the retry chip is clicked and recovers to the dropdown', async () => {
-      let modelsDown = true;
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return modelsDown
-            ? Promise.reject(new Error('LLM provider unreachable'))
-            : Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      });
-
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
-
-      await waitFor(() => {
-        expect(screen.getByText('Models unavailable — retry')).toBeInTheDocument();
-      });
-
-      const modelsCalls = () => apiFetchMock.mock.calls
-        .map((args) => args[0])
-        .filter((p): p is string => typeof p === 'string' && p.startsWith('/ollama/models'))
-        .length;
-      const callsBefore = modelsCalls();
-
-      // Provider comes back up; clicking the chip must fire another fetch.
-      modelsDown = false;
-      fireEvent.click(screen.getByText('Models unavailable — retry'));
-
-      await waitFor(() => {
-        expect(modelsCalls()).toBeGreaterThan(callsBefore);
-      });
-
-      // Recovered: the chip is replaced by the model dropdown.
-      await waitFor(() => {
-        expect(document.querySelector('select')).not.toBeNull();
-      });
-      expect(screen.queryByText('Models unavailable — retry')).not.toBeInTheDocument();
-      expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
-    });
-  });
-
-  describe('improve mode', () => {
-    // #1126: Improve is no longer a tab on /ai — it is a chip in the dock. The
-    // screen still renders for `?mode=improve` deep links, which is how these
-    // reach it now instead of clicking a tab that no longer exists.
-    it('shows "Navigate to a page" message when no page is selected', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
-
-      expect(screen.getByText(/Navigate to a page/)).toBeInTheDocument();
-    });
-
-    it('disables improve button when no page is selected', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
-
-      // The action button should be disabled (no page and no model)
-      const buttons = screen.getAllByRole('button');
-      const improveBtn = buttons.find((b) => b.textContent?.includes('Loading models'));
-      expect(improveBtn).toBeDisabled();
-    });
-
-    it('disables improve button when model is not loaded yet', () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Hello</p>', bodyText: 'Hello' },
-      };
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      // Mode should be 'improve' since pageId is provided
-      // Button should show "Loading models..." and be disabled
-      const buttons = screen.getAllByRole('button');
-      const loadingBtn = buttons.find((b) => b.textContent?.includes('Loading models'));
-      expect(loadingBtn).toBeDefined();
-      expect(loadingBtn).toBeDisabled();
-    });
-
-    it('shows toast error when improve is called without a model', async () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Hello</p>', bodyText: 'Hello' },
-      };
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      // The button is disabled when !model, so we test the handler directly
-      // by forcing a click via the button (which is disabled, so we simulate the handler)
-      // Actually let's verify the button IS disabled
-      const buttons = screen.getAllByRole('button');
-      const actionBtn = buttons.find((b) => b.textContent?.includes('Loading models'));
-      expect(actionBtn).toBeDisabled();
-    });
-
-    it('shows ready state with page title when page is loaded and model available', async () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
-      };
-
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      });
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      await waitFor(() => {
-        expect(screen.getByText('Ready to improve: My Article')).toBeInTheDocument();
-      });
-    });
-
-    it('shows "Loading page..." when page data is still being fetched', () => {
-      mockPageData = { data: undefined, isLoading: true };
-
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      });
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      // Button should show "Loading page..." and be disabled
-      const buttons = screen.getAllByRole('button');
-      const loadingBtn = buttons.find((b) => b.textContent?.includes('Loading page'));
-      expect(loadingBtn).toBeDefined();
-      expect(loadingBtn).toBeDisabled();
-    });
-
-    it('reads an Improve deep link as the current standalone rewrite skill', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
-
-      expect(screen.getByText(/Navigate to a page/)).toBeInTheDocument();
-      expect(screen.getByTestId('assistant-action-select')).toHaveAccessibleName('Selected action: Grammar');
-    });
-
-    it('falls back to Q&A for retired Summarize and Quality URLs', () => {
-      const { unmount } = render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=summarize']) });
-      expect(screen.getByText('Ask questions about your knowledge base')).toBeInTheDocument();
-      unmount();
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=quality']) });
-      expect(screen.getByText('Ask questions about your knowledge base')).toBeInTheDocument();
-    });
-
-    it('enables improve button when page is loaded and model is available', async () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
-      };
-
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      });
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      await waitFor(() => {
-        const buttons = screen.getAllByRole('button');
-        const improveBtn = buttons.find((b) => b.textContent?.includes('Improve Page'));
-        expect(improveBtn).toBeDefined();
-        expect(improveBtn).not.toBeDisabled();
-      });
-    });
-
-    it('calls streamSSE with correct parameters when improve is triggered', async () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
-      };
-
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      });
-
-      // Mock SSE to return an empty generator (just completes immediately)
-      async function* fakeStream() {
-        // empty - no chunks
-      }
-      streamSSEMock.mockReturnValue(fakeStream());
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      // Wait for models to load and button to be enabled
-      await waitFor(() => {
-        const buttons = screen.getAllByRole('button');
-        const improveBtn = buttons.find((b) => b.textContent?.includes('Improve Page'));
-        expect(improveBtn).not.toBeDisabled();
-      });
-
-      // Click improve
-      const buttons = screen.getAllByRole('button');
-      const improveBtn = buttons.find((b) => b.textContent?.includes('Improve Page'))!;
-      fireEvent.click(improveBtn);
-
-      // Should show the user message indicating the improve request was initiated
-      await waitFor(() => {
-        expect(screen.getByText(/Improve \(grammar\): My Article/)).toBeInTheDocument();
-      });
-
-      // Verify streamSSE was called with correct parameters
-      expect(streamSSEMock).toHaveBeenCalledWith(
-        '/llm/improve',
-        expect.objectContaining({
-          content: '<p>Content</p>',
-          type: 'grammar',
-          model: 'llama3',
-          pageId: 'p1',
-        }),
-        expect.any(Object), // AbortSignal
-      );
-    });
-
-    it('shows error toast when SSE stream fails during improve', async () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
-      };
-
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      });
-
-      // Mock SSE to throw an error
-      async function* fakeErrorStream() {
-        yield { content: 'partial...' };
-        throw new Error('LLM server connection lost');
-      }
-      streamSSEMock.mockReturnValue(fakeErrorStream());
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      await waitFor(() => {
-        const buttons = screen.getAllByRole('button');
-        const improveBtn = buttons.find((b) => b.textContent?.includes('Improve Page'));
-        expect(improveBtn).not.toBeDisabled();
-      });
-
-      const buttons = screen.getAllByRole('button');
-      const improveBtn = buttons.find((b) => b.textContent?.includes('Improve Page'))!;
-      fireEvent.click(improveBtn);
-
-      await waitFor(() => {
-        expect(toastErrorMock).toHaveBeenCalledWith('LLM server connection lost');
-      });
-    });
-
-    it('calls apiFetch POST /llm/improvements/apply when Accept is clicked after improvement', async () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
-      };
-
-      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        if (path === '/llm/improvements/apply' && (opts as RequestInit)?.method === 'POST') {
-          return Promise.resolve({ id: 'p1', title: 'My Article', version: 4 });
-        }
-        return Promise.resolve([]);
-      });
-
-      // SSE stream yields improved content and completes
-      async function* fakeImproveStream() {
-        yield { content: '## Improved heading\n\nBetter content.' };
-      }
-      streamSSEMock.mockReturnValue(fakeImproveStream());
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      // Wait for models to load and button to be enabled
-      await waitFor(() => {
-        const btns = screen.getAllByRole('button');
-        const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'));
-        expect(improveBtn).not.toBeDisabled();
-      });
-
-      // Trigger improve
-      const btns = screen.getAllByRole('button');
-      const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'))!;
-      fireEvent.click(improveBtn);
-
-      // Wait for Accept button to appear in the DiffView
-      await waitFor(() => {
-        expect(screen.getByText('Accept')).toBeInTheDocument();
-      });
-
-      // Click Accept
-      fireEvent.click(screen.getByText('Accept'));
-
-      // Verify the POST to apply endpoint was made with correct payload
-      await waitFor(() => {
-        const applyCall = apiFetchMock.mock.calls.find(
-          (args: unknown[]) =>
-            args[0] === '/llm/improvements/apply' && (args[1] as RequestInit | undefined)?.method === 'POST',
-        );
-        expect(applyCall).toBeDefined();
-        const body = JSON.parse((applyCall![1] as RequestInit).body as string);
-        expect(body.pageId).toBe('p1');
-        expect(body.improvedMarkdown).toBe('## Improved heading\n\nBetter content.');
-        expect(body.version).toBe(3);
-        expect(body.title).toBe('My Article');
-      });
-
-      // Verify success toast
-      await waitFor(() => {
-        expect(toastSuccessMock).toHaveBeenCalledWith('Page updated and synced to Confluence');
-      });
-    });
-
-    it('shows error toast when apply improvement API call fails', async () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
-      };
-
-      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        if (path === '/llm/improvements/apply' && (opts as RequestInit)?.method === 'POST') {
-          return Promise.reject(new Error('Confluence sync failed'));
-        }
-        return Promise.resolve([]);
-      });
-
-      async function* fakeImproveStream() {
-        yield { content: '## Improved' };
-      }
-      streamSSEMock.mockReturnValue(fakeImproveStream());
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      await waitFor(() => {
-        const btns = screen.getAllByRole('button');
-        const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'));
-        expect(improveBtn).not.toBeDisabled();
-      });
-
-      const btns = screen.getAllByRole('button');
-      const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'))!;
-      fireEvent.click(improveBtn);
-
-      await waitFor(() => {
-        expect(screen.getByText('Accept')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('Accept'));
-
-      await waitFor(() => {
-        expect(toastErrorMock).toHaveBeenCalledWith('Confluence sync failed');
-      });
-    });
   });
 
   describe('ask mode', () => {
@@ -1249,294 +690,6 @@ describe('AiAssistantPage', () => {
     });
   });
 
-  describe('diagram mode - Use in page', () => {
-    it('shows "Use in page" button after diagram generation when page is selected', async () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
-      };
-
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      });
-
-      // Mock SSE to return diagram code
-      async function* fakeDiagramStream() {
-        yield { content: 'graph TD\n  A --> B' };
-      }
-      streamSSEMock.mockReturnValue(fakeDiagramStream());
-
-      // #1126: Diagram is a dock chip now, so the screen is reached by URL.
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=diagram&pageId=p1']) });
-
-      // Wait for models to load
-      await waitFor(() => {
-        const buttons = screen.getAllByRole('button');
-        const diagramBtn = buttons.find((b) => b.textContent?.includes('Generate Diagram'));
-        expect(diagramBtn).not.toBeDisabled();
-      });
-
-      // Click generate
-      const buttons = screen.getAllByRole('button');
-      const diagramBtn = buttons.find((b) => b.textContent?.includes('Generate Diagram'))!;
-      fireEvent.click(diagramBtn);
-
-      // Wait for stream to complete and button to appear
-      await waitFor(() => {
-        expect(screen.getByText('Use in page')).toBeInTheDocument();
-      });
-    });
-
-    it('does not show "Use in page" button when no page is selected', async () => {
-      mockPageData = { data: undefined };
-
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      });
-
-      // #1126: Diagram is a dock chip now, so the screen is reached by URL.
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=diagram']) });
-
-      // The button should not appear (no page context)
-      expect(screen.queryByText('Use in page')).not.toBeInTheDocument();
-    });
-
-    it('calls apiFetch with PUT when "Use in page" is clicked in diagram mode', async () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
-      };
-
-      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        if (path === '/pages/p1' && opts?.method === 'PUT') {
-          return Promise.resolve({ id: 'p1', title: 'My Article', version: 4 });
-        }
-        return Promise.resolve([]);
-      });
-
-      async function* fakeDiagramStream() {
-        yield { content: 'graph TD\n  A --> B' };
-      }
-      streamSSEMock.mockReturnValue(fakeDiagramStream());
-
-      // #1126: Diagram is a dock chip now, so the screen is reached by URL.
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=diagram&pageId=p1']) });
-
-      // Wait for models to load
-      await waitFor(() => {
-        const btns = screen.getAllByRole('button');
-        const diagramBtn = btns.find((b) => b.textContent?.includes('Generate Diagram'));
-        expect(diagramBtn).not.toBeDisabled();
-      });
-
-      // Click generate
-      const btns = screen.getAllByRole('button');
-      const diagramBtn = btns.find((b) => b.textContent?.includes('Generate Diagram'))!;
-      fireEvent.click(diagramBtn);
-
-      // Wait for "Use in page" button
-      await waitFor(() => {
-        expect(screen.getByText('Use in page')).toBeInTheDocument();
-      });
-
-      // Click "Use in page"
-      fireEvent.click(screen.getByText('Use in page'));
-
-      // Verify the PUT call was made
-      await waitFor(() => {
-        const putCall = apiFetchMock.mock.calls.find(
-          (args: unknown[]) =>
-            args[0] === '/pages/p1' && (args[1] as RequestInit | undefined)?.method === 'PUT',
-        );
-        expect(putCall).toBeDefined();
-        const body = JSON.parse((putCall![1] as RequestInit)?.body as string);
-        expect(body.title).toBe('My Article');
-        expect(body.version).toBe(3);
-        expect(body.bodyHtml).toContain('<pre><code class="language-mermaid">');
-        expect(body.bodyHtml).toContain('graph TD');
-      });
-
-      // Verify success toast
-      await waitFor(() => {
-        expect(toastSuccessMock).toHaveBeenCalledWith('Diagram inserted into page');
-      });
-    });
-  });
-
-  describe('sub-pages toggle', () => {
-    it('does not show toggle when no page is selected', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
-      expect(screen.queryByText('+ Sub-pages')).not.toBeInTheDocument();
-    });
-
-    it('does not show toggle when page has no children', () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: false },
-      };
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      // The page-context chip that used to render the bare title is gone
-      // (#1126); the mode's own empty state still names the resolved page.
-      expect(screen.getByText('Ready to improve: Test Page')).toBeInTheDocument();
-      expect(screen.queryByText('+ Sub-pages')).not.toBeInTheDocument();
-    });
-
-    it('shows toggle when page has children', () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
-      };
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      expect(screen.getByText('+ Sub-pages')).toBeInTheDocument();
-    });
-
-    it('toggles the checkbox when clicked', () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
-      };
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      const checkbox = screen.getByRole('checkbox', { name: 'Include sub-pages' });
-      expect(checkbox).not.toBeChecked();
-
-      fireEvent.click(checkbox);
-      expect(checkbox).toBeChecked();
-
-      fireEvent.click(checkbox);
-      expect(checkbox).not.toBeChecked();
-    });
-
-    it('passes includeSubPages to improve SSE when toggle is on', async () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
-      };
-
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      });
-
-      async function* fakeStream() {
-        yield { content: 'improved' };
-      }
-      streamSSEMock.mockReturnValue(fakeStream());
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      // Enable sub-pages toggle
-      const checkbox = screen.getByRole('checkbox', { name: 'Include sub-pages' });
-      fireEvent.click(checkbox);
-
-      // Wait for models to load
-      await waitFor(() => {
-        const btns = screen.getAllByRole('button');
-        const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'));
-        expect(improveBtn).not.toBeDisabled();
-      });
-
-      // Click improve
-      const buttons = screen.getAllByRole('button');
-      const improveBtn = buttons.find((b) => b.textContent?.includes('Improve Page'))!;
-      fireEvent.click(improveBtn);
-
-      await waitFor(() => {
-        expect(streamSSEMock).toHaveBeenCalledWith(
-          '/llm/improve',
-          expect.objectContaining({
-            includeSubPages: true,
-            pageId: 'p1',
-          }),
-          expect.any(Object),
-        );
-      });
-    });
-
-    it('passes includeSubPages=false when toggle is off', async () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
-      };
-
-      apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([{ name: 'llama3' }]);
-        }
-        if (path === '/llm/conversations') {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      });
-
-      async function* fakeStream() {
-        yield { content: 'improved' };
-      }
-      streamSSEMock.mockReturnValue(fakeStream());
-
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
-
-      // Do NOT enable sub-pages toggle
-
-      await waitFor(() => {
-        const btns = screen.getAllByRole('button');
-        const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'));
-        expect(improveBtn).not.toBeDisabled();
-      });
-
-      const buttons = screen.getAllByRole('button');
-      const improveBtn = buttons.find((b) => b.textContent?.includes('Improve Page'))!;
-      fireEvent.click(improveBtn);
-
-      await waitFor(() => {
-        expect(streamSSEMock).toHaveBeenCalledWith(
-          '/llm/improve',
-          expect.objectContaining({
-            includeSubPages: false,
-            pageId: 'p1',
-          }),
-          expect.any(Object),
-        );
-      });
-    });
-  });
-
   describe('AI context page change (#417)', () => {
     // #1126: the page-context chip was a non-interactive <span> naming a page
     // you could not click, clear, or swap — the literal "context is invisible
@@ -1544,56 +697,6 @@ describe('AiAssistantPage', () => {
     // still navigates `/ai?pageId=…` and Ask still sends that id, so answers
     // stayed scoped to a page the UI no longer mentioned. It is a real control
     // now — it names the scope and clears it.
-    it('names the page the answers are scoped to, and lets it be cleared', () => {
-      mockPageData = {
-        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
-      };
-
-      render(<AiAssistantPage />, {
-        wrapper: createWrapper(['/ai?pageId=p1']),
-      });
-
-      const chip = screen.getByTestId('ai-context-chip');
-      expect(chip.tagName).toBe('BUTTON');
-      expect(chip).toHaveTextContent('My Article');
-
-      fireEvent.click(chip);
-
-      // `usePage` is mocked here and ignores the id, so the chip itself cannot
-      // disappear; what the click has to do is drop the scoping param that
-      // AskMode sends to /llm/ask.
-      expect(screen.getByTestId('ai-location')).toHaveTextContent('/ai');
-      expect(screen.getByTestId('ai-location')).not.toHaveTextContent('pageId');
-    });
-
-    it('starts fresh conversation when mounted with different pageId', () => {
-      // Mount with p1
-      mockPageData = {
-        data: { id: 'p1', title: 'First Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
-      };
-
-      const { unmount } = render(<AiAssistantPage />, {
-        wrapper: createWrapper(['/ai?mode=improve&pageId=p1']),
-      });
-
-      expect(screen.getByText('Ready to improve: First Article')).toBeInTheDocument();
-      unmount();
-
-      // Re-mount with p2 — should show fresh state with new page context
-      mockPageData = {
-        data: { id: 'p2', title: 'Second Article', bodyHtml: '<p>Other</p>', bodyText: 'Other' },
-      };
-
-      render(<AiAssistantPage />, {
-        wrapper: createWrapper(['/ai?mode=improve&pageId=p2']),
-      });
-
-      // New page resolved, no stale state from p1. Asserted through the mode's
-      // empty state rather than the deleted context chip (#1126).
-      expect(screen.getByText('Ready to improve: Second Article')).toBeInTheDocument();
-      expect(screen.queryByText('Ready to improve: First Article')).not.toBeInTheDocument();
-    });
-
     it('reads the thread from the hoisted provider rather than one of its own (#1126)', () => {
       // The page must NOT mount an AiProvider of its own. If it did, /ai would
       // hold a thread nobody else can see — and every test that only exercises
@@ -1641,20 +744,6 @@ describe('AiAssistantPage', () => {
   });
 
   describe('empty state messages', () => {
-    it('shows only the correct empty state for improve mode without spurious messages', () => {
-      // #1126: reached by URL now that Improve is a dock chip, not a tab.
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
-
-      // Should show improve-specific message
-      expect(screen.getByText('Select a page and improvement type')).toBeInTheDocument();
-      expect(screen.getByText(/Navigate to a page/)).toBeInTheDocument();
-
-      // Should NOT show Q&A message
-      expect(screen.queryByText('Ask questions about your knowledge base')).not.toBeInTheDocument();
-      // Should NOT show "Open a page first" from other modes bleeding through
-      expect(screen.queryByText('AI will create a full page based on your prompt')).not.toBeInTheDocument();
-    });
-
     it('shows only Q&A empty state in ask mode', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper() });
 
@@ -2049,7 +1138,7 @@ describe('AiAssistantPage', () => {
   // #355 — admin-configured chat use-case default
   // (Findings 1, 2, 4 from the PR review).
   describe('chat use-case default pre-fill (#355)', () => {
-    it('pre-fills the model selector from /llm/usecase-default?usecase=chat on mount', async () => {
+    it('pre-fills the chat model from /llm/usecase-default?usecase=chat on mount', async () => {
       // Arrange: backend returns a chat use-case default that differs from
       // the legacy /settings.ollamaModel value. The pre-fill must come from
       // the use-case default, not /settings.
@@ -2081,16 +1170,16 @@ describe('AiAssistantPage', () => {
         return Promise.resolve([]);
       });
 
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
+      // #1361 deleted `/ai`'s model dropdown; the resolution it displayed is
+      // AiContext's, and both the dock and Ask read it from there.
+      let captured: ReturnType<typeof useAiContext> | null = null;
+      function Capture() {
+        captured = useAiContext();
+        return null;
+      }
+      render(<Capture />, { wrapper: createWrapper() });
 
-      // Wait for the model dropdown to render (i.e. models loaded).
-      await waitFor(() => {
-        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
-      });
-
-      const select = document.querySelector('select') as HTMLSelectElement | null;
-      expect(select).not.toBeNull();
-      expect(select!.value).toBe('qwen3:8b');
+      await waitFor(() => expect(captured?.model).toBe('qwen3:8b'));
     });
 
     it('queries /ollama/models with ?usecase=chat (Finding 4 — not ?provider=…)', async () => {
@@ -2150,15 +1239,14 @@ describe('AiAssistantPage', () => {
         return Promise.resolve([]);
       });
 
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
+      let captured: ReturnType<typeof useAiContext> | null = null;
+      function Capture() {
+        captured = useAiContext();
+        return null;
+      }
+      render(<Capture />, { wrapper: createWrapper() });
 
-      await waitFor(() => {
-        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
-      });
-
-      const select = document.querySelector('select') as HTMLSelectElement | null;
-      expect(select).not.toBeNull();
-      expect(select!.value).toBe('legacy-llama3');
+      await waitFor(() => expect(captured?.model).toBe('legacy-llama3'));
     });
 
     it('propagates an admin-side change to the chat UI without remount (Finding 1, AC-3)', async () => {
@@ -2185,20 +1273,17 @@ describe('AiAssistantPage', () => {
         return Promise.resolve([]);
       });
 
+      let captured: ReturnType<typeof useAiContext> | null = null;
+      function Capture() {
+        captured = useAiContext();
+        return null;
+      }
       const { Wrapper, queryClient } = createWrapperWithClient();
-      render(<AiAssistantPage />, { wrapper: Wrapper });
+      render(<Capture />, { wrapper: Wrapper });
 
-      // Initial state: dropdown shows qwen3:8b.
-      await waitFor(() => {
-        const select = document.querySelector('select') as HTMLSelectElement | null;
-        expect(select?.value).toBe('qwen3:8b');
-      });
-
-      // Verify dropdown options reflect the initial models list.
-      const initialOptions = Array.from(document.querySelectorAll('select option')).map(
-        (o) => o.textContent,
-      );
-      expect(initialOptions).toEqual(['qwen3:8b', 'llama3']);
+      // Initial state: the resolved chat model and its provider's list.
+      await waitFor(() => expect(captured?.model).toBe('qwen3:8b'));
+      expect(captured!.models.map((m) => m.name)).toEqual(['qwen3:8b', 'llama3']);
 
       // Admin changes the chat assignment to a different provider+model.
       // Simulate by updating what the API returns and invalidating the
@@ -2217,86 +1302,13 @@ describe('AiAssistantPage', () => {
         await queryClient.invalidateQueries({ queryKey: ['llm', 'models'] });
       });
 
-      // Models dropdown should now reflect the new provider's models —
-      // proving the admin change propagated without a remount.
+      // The context should now carry the new provider's models — proving the
+      // admin change propagated without a remount.
       await waitFor(() => {
-        const opts = Array.from(document.querySelectorAll('select option')).map(
-          (o) => o.textContent,
-        );
-        expect(opts).toEqual(['gpt-4o-mini', 'gpt-4o']);
+        expect(captured!.models.map((m) => m.name)).toEqual(['gpt-4o-mini', 'gpt-4o']);
       });
     });
 
-    it('startNewConversation resets model to the current chat default (Finding 2, AC-4)', async () => {
-      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
-        if (path === '/llm/usecase-default?usecase=chat') {
-          return Promise.resolve({
-            usecase: 'chat',
-            providerId: '11111111-1111-4111-8111-111111111111',
-            providerName: 'Ollama',
-            model: 'qwen3:8b',
-          });
-        }
-        if (path.startsWith('/ollama/models')) {
-          return Promise.resolve([
-            { name: 'qwen3:8b' },
-            { name: 'llama3' },
-            { name: 'gpt-4o-mini' },
-          ]);
-        }
-        if (path === '/llm/conversations') return Promise.resolve([]);
-        if (path === '/llm/conversations/conv-1' && (!opts || !opts.method)) {
-          // Loading an old conversation that was created with a different model —
-          // this simulates the per-conversation override that previously leaked.
-          return Promise.resolve({
-            id: 'conv-1',
-            model: 'llama3',
-            messages: [
-              { role: 'user', content: 'old question' },
-              { role: 'assistant', content: 'old answer' },
-            ],
-          });
-        }
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
-        }
-        return Promise.resolve([]);
-      });
-
-      // Render the AiContext provider directly so we can call its
-      // startNewConversation() and inspect model state.
-      const { AiProvider, useAiContext } = await import('./AiContext');
-      let captured: ReturnType<typeof useAiContext> | null = null;
-      function Capture() {
-        captured = useAiContext();
-        return null;
-      }
-
-      render(
-        <AiProvider>
-          <Capture />
-        </AiProvider>,
-        { wrapper: createWrapper() },
-      );
-
-      // Wait for chat default to load and pre-fill model.
-      await waitFor(() => {
-        expect(captured?.model).toBe('qwen3:8b');
-      });
-
-      // Simulate the user picking a different model for the current conversation.
-      await act(async () => {
-        captured!.setModel('gpt-4o-mini');
-      });
-      expect(captured?.model).toBe('gpt-4o-mini');
-
-      // Start a new conversation — model must reset to the chat default,
-      // not stay on the per-conversation override.
-      await act(async () => {
-        captured!.startNewConversation();
-      });
-      expect(captured?.model).toBe('qwen3:8b');
-    });
   });
 
   // #703 — chat content must not bleed through the translucent sticky bars.
@@ -2585,55 +1597,84 @@ describe('AiAssistantPage', () => {
       expect(classes).not.toMatch(/status-(connected|disconnected|syncing|embedding|ai)/);
     });
 
-    it('survives a reload of the conversation', async () => {
-      // The gap #1119 found beyond the issue text: the route returns the
-      // messages JSONB verbatim, `refused` and all, but loadConversation used
-      // to map only {role, content, sources} — so reopening a thread silently
-      // downgraded the refusal to an ordinary answer. The persisted copy also
-      // has no sources and drops the "closest matches attached" sentence, so
-      // the reloaded turn must not claim any.
+  });
+
+  describe('cross-thread streaming (#1361)', () => {
+    /** Navigates the hoisted provider, which is what changes the thread. */
+    function AiNavProbe({ to }: { to: string }) {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate(to)}>{`go ${to}`}</button>;
+    }
+
+    /** Puts a finished answer on one thread and starts a stream on another. */
+    function ThreadTools() {
+      const { setMessages, runStream } = useAiContext();
+      return (
+        <>
+          <button
+            onClick={() =>
+              setMessages([
+                { id: 'seed-user', role: 'user', content: 'what changed in the runbook?' },
+                { id: 'seed-answer', role: 'assistant', content: 'answer one' },
+              ])
+            }
+          >
+            seed answered thread
+          </button>
+          <button onClick={() => void runStream('/llm/ask', { question: 'about the article' })}>
+            ask here
+          </button>
+        </>
+      );
+    }
+
+    it("does not paint another thread's in-flight answer onto this one", async () => {
       apiFetchMock.mockImplementation((path: string) => {
-        if (path === '/settings') {
-          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
-        }
-        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
-        if (path === '/llm/conversations') return Promise.resolve([]);
-        if (path === '/llm/conversations/conv-refused') {
+        if (path === '/llm/usecase-default?usecase=chat') {
           return Promise.resolve({
-            id: 'conv-refused',
-            model: 'llama3',
-            messages: [
-              { role: 'user', content: 'what is our policy on X?' },
-              {
-                role: 'assistant',
-                content: 'The knowledge-base passages I found are not a strong enough match'
-                  + ' to this question to ground an answer, so I am not answering rather'
-                  + ' than guessing.',
-                refused: true,
-              },
-            ],
+            usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: false,
           });
         }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
         return Promise.resolve([]);
       });
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      streamSSEMock.mockImplementation((_endpoint: string, _body: unknown, signal: AbortSignal) =>
+        (async function* () {
+          yield { content: 'partial from the other thread' };
+          await gate;
+          if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        })(),
+      );
 
-      function ThreadReloader() {
-        const { loadConversation } = useAiContext();
-        return <button onClick={() => void loadConversation('conv-refused')}>reload</button>;
-      }
       render(
         <>
-          <ThreadReloader />
+          <ThreadTools />
+          <AiNavProbe to="/pages/p9" />
+          <AiNavProbe to="/ai" />
           <AiAssistantPage />
         </>,
         { wrapper: createWrapper(['/ai']) },
       );
-      fireEvent.click(screen.getByText('reload'));
 
-      const refusal = await screen.findByTestId('message-refusal');
-      expect(refusal).toHaveTextContent('not answering rather than guessing');
-      // No sources were persisted, so no source heading may appear.
-      expect(screen.queryByTestId('refusal-sources-label')).not.toBeInTheDocument();
+      // The draft already holds a finished answer.
+      fireEvent.click(screen.getByText('seed answered thread'));
+      expect(screen.getByText('answer one')).toBeInTheDocument();
+
+      // Ask on the article thread, then come back to the draft mid-stream.
+      fireEvent.click(screen.getByText('go /pages/p9'));
+      fireEvent.click(screen.getByText('ask here'));
+      await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+      fireEvent.click(screen.getByText('go /ai'));
+
+      // Its own last answer, not the other thread's partial text — and it is
+      // not "typing", because nothing here is.
+      await waitFor(() => expect(screen.getByText('answer one')).toBeInTheDocument());
+      expect(screen.queryByText('partial from the other thread')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
+
+      await act(async () => { release(); await Promise.resolve(); });
     });
   });
 

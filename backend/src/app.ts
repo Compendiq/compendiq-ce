@@ -27,6 +27,7 @@ import { adminUsersRoutes } from './routes/foundation/admin-users.js';
 import { spacesRoutes } from './routes/confluence/spaces.js';
 import { syncRoutes } from './routes/confluence/sync.js';
 import { attachmentRoutes } from './routes/confluence/attachments.js';
+import { attachmentSweepRoutes } from './routes/confluence/attachments-sweep.js';
 // LLM routes
 import { llmImproveRoutes } from './routes/llm/llm-improve.js';
 import { llmGenerateRoutes } from './routes/llm/llm-generate.js';
@@ -44,6 +45,7 @@ import { llmEmbeddingReembedRoutes } from './routes/llm/llm-embedding-reembed.js
 import { llmEmbeddingProbeRoutes } from './routes/llm/llm-embedding-probe.js';
 import { llmEmbeddingShadowRoutes } from './routes/llm/llm-embedding-shadow.js';
 import { llmImageIndexRoutes } from './routes/llm/llm-image-index.js';
+import { llmInlineCompletionRoutes } from './routes/llm/llm-inline-completion.js';
 import { extractDocumentRoutes } from './routes/llm/extract-document.js';
 import { prepareImageRoutes } from './routes/llm/prepare-image.js';
 // Knowledge routes
@@ -456,6 +458,7 @@ export async function buildApp() {
   await app.register(spacesRoutes, { prefix: '/api' });
   await app.register(syncRoutes, { prefix: '/api' });
   await app.register(attachmentRoutes, { prefix: '/api' });
+  await app.register(attachmentSweepRoutes, { prefix: '/api' });
 
   // LLM routes
   await app.register(llmImproveRoutes, { prefix: '/api' });
@@ -474,6 +477,7 @@ export async function buildApp() {
   await app.register(llmEmbeddingProbeRoutes, { prefix: '/api' });
   await app.register(llmEmbeddingShadowRoutes, { prefix: '/api' });
   await app.register(llmImageIndexRoutes, { prefix: '/api' });
+  await app.register(llmInlineCompletionRoutes, { prefix: '/api' });
   await app.register(extractDocumentRoutes, { prefix: '/api' });
   await app.register(prepareImageRoutes, { prefix: '/api' });
 

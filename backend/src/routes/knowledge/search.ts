@@ -286,6 +286,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
       recordSearchAnalytics(userId, q, deduped.length, maxScore, 'semantic', {
         degradedReason,
         embeddingCoverage,
+        // #1284 — this is the page-search surface, and the #1105 refuse gate
+        // is never consulted here. The row is labelled so the Retrieval
+        // panel's confidence readout can exclude it; `confidence` stays
+        // absent because no basis was computed, and a 0 would read as a
+        // measured verdict rather than as nothing.
+        surface: 'search',
       }).catch(() => {});
 
       const items = deduped.map((r) => ({
@@ -335,7 +341,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // hybridSearch skips its own probe — one COUNT per request, and the
         // wire and analytics describe the same measurement.
         // #1351: spaceKey narrows both legs — see HybridSearchOptions.spaceKey.
-        deduped = await hybridSearch(userId, q, limit, cov, { spaceKey });
+        // #1284: hybridSearch writes the row here, and it records the
+        // confidence it computed. The verdict is real — the same formula, on
+        // the same returned set — but this surface never GATES on it, so the
+        // row is labelled 'search' and the Retrieval readout leaves it out.
+        deduped = await hybridSearch(userId, q, limit, cov, { spaceKey, surface: 'search' });
       } catch (err) {
         if (err instanceof CircuitBreakerOpenError) {
           reply.status(503).send({
@@ -617,6 +627,9 @@ export async function searchRoutes(fastify: FastifyInstance) {
     recordSearchAnalytics(userId, q, ftsItems.length, maxFtsScore, 'keyword', {
       degradedReason,
       embeddingCoverage,
+      // #1284 — page search, no confidence basis computed. See the semantic
+      // writer above.
+      surface: 'search',
     }).catch(() => {});
 
     // Parse facets from result
@@ -661,8 +674,10 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const body = LogSearchSchema.parse(request.body);
 
     await query(
-      `INSERT INTO search_analytics (user_id, query, result_count, search_type)
-       VALUES ($1, $2, $3, 'faceted')`,
+      // #1284 — `surface` is a literal here for the same reason `search_type`
+      // is: this endpoint files exactly one kind of row.
+      `INSERT INTO search_analytics (user_id, query, result_count, search_type, surface)
+       VALUES ($1, $2, $3, 'faceted', 'search')`,
       [request.userId, body.query, body.resultCount],
     );
 

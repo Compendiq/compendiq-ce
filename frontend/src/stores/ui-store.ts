@@ -36,6 +36,10 @@ interface UiState {
   setVimModeEnabled: (enabled: boolean) => void;
 }
 
+export const COLLAPSED_TREE_SIDEBAR_WIDTH = 40;
+
+export const MIN_ARTICLE_SIDEBAR_WIDTH = 300;
+
 export const useUiStore = create<UiState>()(
   persist(
     (set) => ({
@@ -75,7 +79,7 @@ export const useUiStore = create<UiState>()(
       toggleArticleSidebar: () => set((s) => ({ articleSidebarCollapsed: !s.articleSidebarCollapsed })),
       setArticleSidebarCollapsed: (collapsed) => set({ articleSidebarCollapsed: collapsed }),
       setArticleSidebarLaptopExpanded: (expanded) => set({ articleSidebarLaptopExpanded: expanded }),
-      setArticleSidebarWidth: (width) => set({ articleSidebarWidth: Math.max(200, Math.min(1200, width)) }),
+      setArticleSidebarWidth: (width) => set({ articleSidebarWidth: Math.max(MIN_ARTICLE_SIDEBAR_WIDTH, Math.min(1200, width)) }),
       setVimModeEnabled: (enabled) => set({ vimModeEnabled: enabled }),
     }),
     { name: 'compendiq-ui' },

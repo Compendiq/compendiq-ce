@@ -67,6 +67,21 @@ vi.mock('../../shared/hooks/use-spaces', () => ({
   useSpaces: () => ({ data: spacesState.confluence }),
 }));
 
+vi.mock('../../shared/hooks/use-settings', () => ({
+  useSettings: () => ({
+    data: {
+      inlineCompletionEnabled: true,
+      inlineCompletionDelay: 'balanced',
+      inlineCompletionMode: 'full',
+      inlineCompletionCodeOnly: false,
+    },
+  }),
+}));
+
+vi.mock('../../shared/hooks/use-inline-completion-availability', () => ({
+  useInlineCompletionAvailability: () => ({ data: true }),
+}));
+
 const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
   // Live HTML the fake editor owns. setContent (template apply) and the
   // textarea's onChange (typing) both write here; getHTML reads it — mirroring

@@ -552,7 +552,7 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases includes image_embedd
     });
     const body = r.json() as Record<string, { resolved: { providerId: string; model: string } }>;
     expect(Object.keys(body).sort()).toEqual([
-      'auto_tag', 'chat', 'embedding', 'image_embedding', 'quality', 'rerank', 'summary',
+      'auto_tag', 'chat', 'embedding', 'image_embedding', 'inline_completion', 'quality', 'rerank', 'summary',
     ]);
     expect(body.image_embedding!.resolved).toMatchObject({
       providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '',

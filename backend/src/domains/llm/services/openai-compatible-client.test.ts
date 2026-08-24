@@ -441,12 +441,25 @@ describe('openai-compatible-client — streamChat cancels upstream on early term
 // Table-driven so a future provider/model row is one line, not a new it().
 // ---------------------------------------------------------------------------
 describe('thinkingExtras — provider-strictness × model matrix', () => {
-  const { thinkingExtras, isStrictOpenAiCompatibleHost, isOpenAiReasoningModel } = __test_only__;
+  const {
+    thinkingExtras,
+    nonThinkingExtras,
+    isStrictOpenAiCompatibleHost,
+    isOpenAiReasoningModel,
+  } = __test_only__;
 
   it('returns {} when thinking is off, regardless of provider', () => {
     expect(thinkingExtras('https://api.openai.com/v1', 'o3', false)).toEqual({});
     expect(thinkingExtras('http://localhost:11434/v1', 'qwen3:8b', false)).toEqual({});
     expect(thinkingExtras('http://localhost:11434/v1', 'qwen3:8b')).toEqual({});
+  });
+
+  it('explicitly disables Qwen-style thinking for tolerant providers only', () => {
+    expect(nonThinkingExtras('http://localhost:1234/v1')).toEqual({
+      think: false,
+      chat_template_kwargs: { enable_thinking: false },
+    });
+    expect(nonThinkingExtras('https://api.openai.com/v1')).toEqual({});
   });
 
   describe('Strict providers (OpenAI, Azure OpenAI)', () => {

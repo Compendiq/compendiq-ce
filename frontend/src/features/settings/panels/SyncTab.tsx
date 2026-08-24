@@ -8,6 +8,7 @@ import { useSync, useForceResyncAll } from '../../../shared/hooks/use-spaces';
 import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 import { ErrorState } from '../../../shared/components/feedback/ErrorState';
+import { AttachmentStorageCard } from './AttachmentStorageCard';
 
 interface QualityStatusResponse {
   totalPages: number;
@@ -80,22 +81,55 @@ export function SyncTab() {
     onError: (err) => toast.error(err.message),
   });
 
+  // Attachment storage + orphan sweep (#1349) — admin-only, like the rescan
+  // triggers: a KB-wide file deletion is an operator concern, and the routes
+  // behind the card are requireAdmin, so rendering it for a non-admin would
+  // only paint two failing fetches.
+  //
+  // It is built HERE, above the two early returns, and rendered in all three
+  // branches (fixer, external round). The card has its own queries, its own
+  // failure copy and its own "a failed stats fetch is a failure, not zero
+  // bytes" contract — and `if (isError) return <ErrorState/>` sitting above it
+  // deleted the whole card on a backend outage, which is the one failure that
+  // contract was written for. The overview's fetch says nothing about the
+  // storage record's.
+  const attachmentStorageSection = isAdmin ? (
+    <section className="space-y-3" data-testid="attachment-storage-section">
+      <div>
+        <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Attachment Storage</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Disk usage of the two attachment stores, and a dry-run-first sweep for files nothing
+          references any more.
+        </p>
+      </div>
+      <AttachmentStorageCard />
+    </section>
+  ) : null;
+
   // Distinguish a failed overview fetch from the loading state so a
   // 500/network error surfaces a retry instead of an infinite skeleton.
   if (isError) {
     return (
-      <ErrorState
-        title="Couldn't load sync overview"
-        description={error instanceof Error ? error.message : undefined}
-        onRetry={() => refetch()}
-        testId="sync-tab-error"
-        retryTestId="sync-tab-retry"
-      />
+      <div className="space-y-6" data-testid="sync-tab-panel">
+        <ErrorState
+          title="Couldn't load sync overview"
+          description={error instanceof Error ? error.message : undefined}
+          onRetry={() => refetch()}
+          testId="sync-tab-error"
+          retryTestId="sync-tab-retry"
+        />
+        {attachmentStorageSection}
+      </div>
     );
   }
 
   if (isLoading || !data) {
-    return <SkeletonFormFields />;
+    return (
+      <div className="space-y-6" data-testid="sync-tab-panel">
+        <SkeletonFormFields />
+        {attachmentStorageSection}
+      </div>
+    );
   }
 
   // Force re-sync every Confluence-sourced page (UPDATE path — bypasses the
@@ -333,6 +367,8 @@ export function SyncTab() {
           </div>
         )}
       </section>
+
+      {attachmentStorageSection}
 
       {/* Quality Analysis Worker */}
       <section className="space-y-3" data-testid="quality-worker-section">

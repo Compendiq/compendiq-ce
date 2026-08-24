@@ -71,6 +71,9 @@ import {
   syncTableLayoutAttributes,
 } from './table-cell-selection';
 import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar-primitives';
+import { InlineCompletionExtension } from './InlineCompletionExtension';
+import type { InlineCompletionDelay, InlineCompletionMode } from '@compendiq/contracts';
+import { isMac } from '../../lib/platform';
 
 export function EditorContextToolbars({
   editor,
@@ -332,6 +335,17 @@ interface EditorProps {
   pageId?: string;
   /** Callback to trigger a server-side save (used by vim :w command). */
   onSave?: () => void;
+  /** #1417: resolved availability, personal controls, and page prompt metadata. */
+  inlineCompletion?: {
+    available: boolean;
+    enabled: boolean;
+    delay: InlineCompletionDelay;
+    mode: InlineCompletionMode;
+    codeOnly: boolean;
+    title?: string;
+    spaceKey?: string;
+    language?: string;
+  };
 }
 
 export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
@@ -635,7 +649,50 @@ function defaultVimDisplayState(): VimState {
   return { mode: 'normal', pendingKeys: '', countPrefix: '', register: '', commandBuffer: null };
 }
 
-export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave }: EditorProps) {
+const INLINE_COMPLETION_DELAYS: Record<InlineCompletionDelay, number | null> = {
+  fast: 300,
+  balanced: 500,
+  deliberate: 800,
+  manual: null,
+};
+
+function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
+  const mac = isMac();
+  const wordKeys = mac ? 'Option + ]' : 'Ctrl + ]';
+  const ariaLabel = mode === 'word'
+    ? 'AI word completion available. Press Tab to accept or Escape to dismiss.'
+    : `AI inline suggestion available. Press Tab to accept, ${wordKeys} to accept one word, or Escape to dismiss.`;
+
+  const action = (keys: string, label: string) => (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      <kbd className="rounded border border-border-interactive bg-background px-1.5 py-0.5 font-sans text-[11px] font-semibold leading-none text-foreground">
+        {keys}
+      </kbd>
+      <span>{label}</span>
+    </span>
+  );
+
+  return (
+    <div
+      role="status"
+      aria-label={ariaLabel}
+      data-testid="inline-completion-hint"
+      className="nm-card-elevated pointer-events-none flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground"
+    >
+      {action('Tab', mode === 'word' ? 'Accept word' : 'Accept')}
+      {mode === 'full' && (
+        <>
+          <span className="h-3 w-px bg-border" aria-hidden="true" />
+          {action(wordKeys, 'Word')}
+        </>
+      )}
+      <span className="h-3 w-px bg-border" aria-hidden="true" />
+      {action('Esc', 'Dismiss')}
+    </div>
+  );
+}
+
+export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, inlineCompletion }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // draftKey of a debounced draft awaiting write, so unmount can flush it
@@ -650,6 +707,12 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   // Keep onSave in a ref so the VimExtension closure always sees the latest callback
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
+  // Extension options are created with the TipTap instance. Read live props
+  // through a ref so settings/assignment queries can settle without remounting
+  // the editor and losing the current selection or unsaved document.
+  const inlineCompletionRef = useRef(inlineCompletion);
+  inlineCompletionRef.current = inlineCompletion;
+  const [inlineSuggestionActive, setInlineSuggestionActive] = useState(false);
 
   const [headerNumbering, setHeaderNumbering] = useState(() =>
     localStorage.getItem('editor-header-numbering') === 'true'
@@ -795,6 +858,28 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       SearchAndReplaceExtension,
       BlockShortcutsExtension,
       SlashCommandExtension,
+      InlineCompletionExtension.configure({
+        enabled: () => {
+          const config = inlineCompletionRef.current;
+          return editable && !!config?.available && config.enabled;
+        },
+        delayMs: () => {
+          const config = inlineCompletionRef.current;
+          return config ? INLINE_COMPLETION_DELAYS[config.delay] : null;
+        },
+        mode: () => inlineCompletionRef.current?.mode ?? 'full',
+        codeOnly: () => inlineCompletionRef.current?.codeOnly ?? false,
+        pageId: pageId && /^\d+$/.test(pageId) ? Number(pageId) : undefined,
+        getMetadata: () => ({
+          pageId: pageIdRef.current && /^\d+$/.test(pageIdRef.current)
+            ? Number(pageIdRef.current)
+            : undefined,
+          title: inlineCompletionRef.current?.title,
+          spaceKey: inlineCompletionRef.current?.spaceKey,
+          language: inlineCompletionRef.current?.language,
+        }),
+        onSuggestionStateChange: setInlineSuggestionActive,
+      }),
       ...(vimEnabled ? [VimExtension.configure({
         onStateChange: setVimDisplayState,
         onSave: () => {
@@ -936,6 +1021,16 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
         )}
       />
+      {inlineSuggestionActive && (
+        <div
+          className={cn(
+            'absolute right-2 z-10',
+            vimEnabled ? 'bottom-9' : 'bottom-2',
+          )}
+        >
+          <InlineCompletionHint mode={inlineCompletion?.mode ?? 'full'} />
+        </div>
+      )}
       {vimEnabled && editable && <VimModeIndicator vimState={vimDisplayState} />}
     </div>
   );

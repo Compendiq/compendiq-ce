@@ -25,6 +25,17 @@ describe('AiPromptsTab', () => {
     showSpaceHomeContent: true,
     customPrompts: {},
     confluencePatPromptDismissed: false,
+    inlineCompletionEnabled: true,
+    inlineCompletionDelay: 'balanced',
+    inlineCompletionMode: 'full',
+    inlineCompletionCodeOnly: false,
+    onboardingState: {
+      firstAiQueryMade: false,
+      shortcutsModalViewed: false,
+      pageCreatedOrEdited: false,
+      dismissed: false,
+      completedAt: null,
+    },
   };
 
   beforeEach(() => {

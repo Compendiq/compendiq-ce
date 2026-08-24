@@ -210,9 +210,17 @@ vi.mock('../../shared/hooks/use-settings', () => ({
       ollamaModel: 'qwen3.5',
       llmProvider: 'ollama',
       openaiModel: null,
+      inlineCompletionEnabled: true,
+      inlineCompletionDelay: 'balanced',
+      inlineCompletionMode: 'full',
+      inlineCompletionCodeOnly: false,
     },
     isLoading: false,
   }),
+}));
+
+vi.mock('../../shared/hooks/use-inline-completion-availability', () => ({
+  useInlineCompletionAvailability: () => ({ data: true }),
 }));
 
 const mockPage = {

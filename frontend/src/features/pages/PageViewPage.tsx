@@ -21,6 +21,7 @@ import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-ima
 import type { SettablePageIcon } from '@compendiq/contracts';
 import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
 import { useSettings } from '../../shared/hooks/use-settings';
+import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { useAiDockStore } from '../../stores/ai-dock-store';
@@ -71,6 +72,7 @@ export function PageViewPage() {
 
   const { data: page, isLoading, isError, error: pageError, refetch: refetchPage, isFetching: isRefetchingPage } = usePage(id);
   const { data: settings } = useSettings();
+  const { data: inlineCompletionAvailable = false } = useInlineCompletionAvailability();
   const updateMutation = useUpdatePage();
   const labelsMutation = useUpdatePageLabels();
   const iconMutation = useUpdatePageIcon();
@@ -832,7 +834,25 @@ export function PageViewPage() {
                 experience matches the reader's line length exactly. */}
             <div className={cn('mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}>
               <FeatureErrorBoundary featureName="Editor">
-                <Editor content={editHtml} onChange={() => setIsDirty(true)} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} />
+                <Editor
+                  content={editHtml}
+                  onChange={() => setIsDirty(true)}
+                  draftKey={draftKey}
+                  naked
+                  onEditorReady={setEditorInstance}
+                  hideToolbar
+                  pageId={id}
+                  onSave={handleSave}
+                  inlineCompletion={{
+                    available: inlineCompletionAvailable,
+                    enabled: settings?.inlineCompletionEnabled ?? true,
+                    delay: settings?.inlineCompletionDelay ?? 'balanced',
+                    mode: settings?.inlineCompletionMode ?? 'full',
+                    codeOnly: settings?.inlineCompletionCodeOnly ?? false,
+                    title: editTitle,
+                    spaceKey: page.spaceKey ?? undefined,
+                  }}
+                />
               </FeatureErrorBoundary>
             </div>
           </>
@@ -1049,5 +1069,3 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
     </div>
   );
 }
-
-

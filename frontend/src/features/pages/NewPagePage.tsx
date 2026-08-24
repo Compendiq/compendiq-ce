@@ -20,6 +20,8 @@ import { CREATE_SKILLS } from '../ai/create-skills';
 import type { Editor as EditorType } from '@tiptap/core';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
+import { useSettings } from '../../shared/hooks/use-settings';
+import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
 
 const NEW_PAGE_DRAFT_KEY = 'new-page';
 
@@ -46,6 +48,8 @@ export function NewPagePage() {
   const { data: spaces } = useSpaces();
   const createMutation = useCreatePage();
   const importMarkdownMutation = useImportMarkdown();
+  const { data: settings } = useSettings();
+  const { data: inlineCompletionAvailable = false } = useInlineCompletionAvailability();
 
   const [title, setTitle] = useState('');
   const [spaceKey, setSpaceKey] = useState('');
@@ -582,6 +586,15 @@ export function NewPagePage() {
               }}
               onChange={() => {
                 syncHeadings(editorInstance);
+              }}
+              inlineCompletion={{
+                available: inlineCompletionAvailable,
+                enabled: settings?.inlineCompletionEnabled ?? true,
+                delay: settings?.inlineCompletionDelay ?? 'balanced',
+                mode: settings?.inlineCompletionMode ?? 'full',
+                codeOnly: settings?.inlineCompletionCodeOnly ?? false,
+                title,
+                spaceKey: spaceKey || undefined,
               }}
             />
           </FeatureErrorBoundary>
