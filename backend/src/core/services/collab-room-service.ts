@@ -1,9 +1,9 @@
 /**
- * In-process Y.Doc rooms with incremental Redis fan-out (#1444).
+ * In-process Y.Doc rooms with incremental Redis fan-out (#1444/#1445).
  *
- * Persistence is in-memory this PR (BYTEA is the next child). Subscribe-and-
- * queue before attaching the doc; `Y.applyUpdate(..., 'redis')` must not
- * republish; awareness uses y-protocols, never Y.applyUpdate.
+ * Subscribe-and-queue before BYTEA load; `Y.applyUpdate(..., 'redis')` must
+ * not republish; awareness uses y-protocols, never Y.applyUpdate. Persistence
+ * (BYTEA + HTML snapshot) lives in collab-persistence.ts.
  */
 import { randomUUID } from 'node:crypto';
 import type { RedisClientType } from 'redis';
@@ -15,8 +15,12 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import { logger } from '../utils/logger.js';
 import { getRedisClient } from './redis-cache.js';
-import { COLLAB_INIT_LOCK_KEY } from '../db/advisory-locks.js';
-import { getPool } from '../db/postgres.js';
+import {
+  COLLAB_LOAD_ORIGIN,
+  flushCollabPersist,
+  loadOrInitCollabDoc,
+  scheduleCollabPersist,
+} from './collab-persistence.js';
 
 export const COLLAB_ACTIVE_TTL_SEC = 45;
 export const COLLAB_PING_INTERVAL_MS = 15_000;
@@ -29,6 +33,13 @@ const ACTIVE_PREFIX = 'collab:active:';
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
+export const MESSAGE_CONTROL = 4;
+
+export type CollabControl =
+  | { type: 'pages_version'; version: number }
+  | { type: 'doc_reset' }
+  | { type: 'tombstone' }
+  | { type: 'state_dump_request' };
 
 export type CollabBusKind =
   | 'sync'
@@ -70,6 +81,11 @@ export interface CollabRoom {
   attached: boolean;
   flushing: boolean;
   emptyGrace: ReturnType<typeof setTimeout> | null;
+  persistTimer: ReturnType<typeof setTimeout> | null;
+  persistChain: Promise<void>;
+  persistable: boolean;
+  pagesVersion: number;
+  lastWriterUserId: string | null;
 }
 
 export type CollabInboundResult = 'ok' | 'dropped' | 'close_4403';
@@ -84,6 +100,7 @@ export interface CollabRuntime {
   refreshActiveTtl: (pageId: number) => Promise<void>;
   tombstone: (pageId: number, code: number, reason?: string) => Promise<void>;
   tombstoneAll: (code: number, reason?: string) => Promise<void>;
+  broadcastControl: (pageId: number, control: CollabControl) => void;
   close: () => Promise<void>;
 }
 
@@ -216,6 +233,15 @@ export async function createCollabRuntime(
       const buf = fromB64(msg.update);
       awarenessProtocol.applyAwarenessUpdate(room.awareness, buf, 'redis');
       forwardAwareness(room, buf);
+      return;
+    }
+    if (msg.kind === 'control' && msg.update) {
+      try {
+        const control = JSON.parse(Buffer.from(msg.update, 'base64').toString('utf8')) as CollabControl;
+        sendControl(room, control);
+      } catch (err) {
+        logger.debug({ err, pageId: room.pageId }, 'collab: control parse failed');
+      }
     }
   }
 
@@ -254,6 +280,10 @@ export async function createCollabRuntime(
     if (room.emptyGrace) {
       clearTimeout(room.emptyGrace);
       room.emptyGrace = null;
+    }
+    if (room.persistTimer) {
+      clearTimeout(room.persistTimer);
+      room.persistTimer = null;
     }
     room.doc.destroy();
   }
@@ -303,9 +333,35 @@ export async function createCollabRuntime(
     });
   }
 
+  function encodeControlFrame(control: CollabControl): Uint8Array {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_CONTROL);
+    encoding.writeVarString(encoder, JSON.stringify(control));
+    return encoding.toUint8Array(encoder);
+  }
+
+  function sendControl(room: CollabRoom, control: CollabControl): void {
+    const frame = encodeControlFrame(control);
+    for (const sock of room.sockets.values()) sendBin(sock.ws, frame);
+  }
+
+  function broadcastControl(pageId: number, control: CollabControl): void {
+    const room = rooms.get(pageId);
+    if (room) {
+      sendControl(room, control);
+      if (control.type === 'pages_version') room.pagesVersion = control.version;
+    }
+    void publish(pageId, {
+      origin: podId,
+      kind: 'control',
+      update: Buffer.from(JSON.stringify(control), 'utf8').toString('base64'),
+    });
+  }
+
   function wireDoc(room: CollabRoom): void {
     room.doc.on('update', (update: Uint8Array, origin: unknown) => {
-      if (origin === 'redis') return;
+      if (origin !== COLLAB_LOAD_ORIGIN) scheduleCollabPersist(room);
+      if (origin === 'redis' || origin === COLLAB_LOAD_ORIGIN) return;
       const except = typeof origin === 'string' ? origin : undefined;
       void publish(room.pageId, { origin: podId, kind: 'sync', update: b64(update) });
       forwardUpdate(room, update, except);
@@ -342,25 +398,23 @@ export async function createCollabRuntime(
       attached: false,
       flushing: false,
       emptyGrace: null,
+      persistTimer: null,
+      persistChain: Promise.resolve(),
+      persistable: false,
+      pagesVersion: 0,
+      lastWriterUserId: null,
     };
     wireDoc(room);
     rooms.set(pageId, room);
 
     try {
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        await client.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
-        await client.query('COMMIT');
-      } catch (err) {
-        try { await client.query('ROLLBACK'); } catch { /* */ }
-        logger.debug({ err, pageId }, 'collab: advisory lock skipped');
-      } finally {
-        client.release();
+      const loaded = await loadOrInitCollabDoc(pageId, room.doc);
+      if (loaded !== 'missing') {
+        room.pagesVersion = loaded.pagesVersion;
+        room.persistable = true;
       }
     } catch (err) {
-      logger.debug({ err, pageId }, 'collab: advisory lock skipped (no DB)');
+      logger.debug({ err, pageId }, 'collab: persist init skipped');
     }
 
     await saddActive(pageId, 'room');
@@ -471,6 +525,7 @@ export async function createCollabRuntime(
       await sremActive(pageId, connId);
       return;
     }
+    await flushCollabPersist(room);
     // Last editor out: keep this member (and a :grace sentinel) in
     // collab:active until the in-memory Y.Doc is dropped, so PUT still 409s
     // during the reconnect window. Idempotent — do not replace an armed timer.
@@ -563,6 +618,7 @@ export async function createCollabRuntime(
     refreshActiveTtl,
     tombstone,
     tombstoneAll,
+    broadcastControl,
     close,
   };
 }

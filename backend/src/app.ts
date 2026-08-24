@@ -419,10 +419,12 @@ export async function buildApp() {
       });
     }
 
+    const code = (error as { code?: unknown }).code;
     reply.status(statusCode).send({
       error: safeErrorName(statusCode, error.name),
       message: statusCode === 500 ? 'Internal Server Error' : error.message,
       statusCode,
+      ...(typeof code === 'string' && !code.startsWith('FST_') ? { code } : {}),
     });
   });
 

@@ -15,6 +15,7 @@ import type { AddressInfo } from 'node:net';
 import * as jose from 'jose';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
+import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
 import { WebSocket as NodeWs } from 'ws';
 
@@ -74,15 +75,18 @@ async function insertStandalone(opts: {
   pageType?: string;
   deleted?: boolean;
   title?: string;
+  bodyHtml?: string;
 }): Promise<number> {
+  const html = opts.bodyHtml ?? '<p></p>';
   const r = await query<{ id: number }>(
     `INSERT INTO pages (
         space_key, title, body_storage, body_html, body_text, version, source, visibility,
-        created_by_user_id, page_type, deleted_at
-     ) VALUES ('_standalone', $1, '<p></p>', '<p></p>', '', 1, 'standalone', $2, $3, $4, $5)
+        created_by_user_id, page_type, deleted_at, summary_status, quality_status
+     ) VALUES ('_standalone', $1, $2, $2, 'x', 1, 'standalone', $3, $4, $5, $6, 'summarized', 'analyzed')
      RETURNING id`,
     [
       opts.title ?? 'Collab page',
+      html,
       opts.visibility ?? 'shared',
       opts.ownerId,
       opts.pageType ?? 'page',
@@ -605,3 +609,205 @@ describe.skipIf(!canRun)('collab upgrade Redis limiter (#1444)', () => {
 function pageIdEntropy(): string {
   return Math.random().toString(36).slice(2, 10);
 }
+
+const MESSAGE_CONTROL = 4;
+
+function applySyncFrame(doc: Y.Doc, buf: Uint8Array): void {
+  const decoder = decoding.createDecoder(buf);
+  const encoder = encoding.createEncoder();
+  const type = decoding.readVarUint(decoder);
+  if (type !== MESSAGE_SYNC) return;
+  syncProtocol.readSyncMessage(decoder, encoder, doc, 'client');
+}
+
+function decodeControl(buf: Uint8Array): { type: string; version?: number } | null {
+  const decoder = decoding.createDecoder(buf);
+  const type = decoding.readVarUint(decoder);
+  if (type !== MESSAGE_CONTROL) return null;
+  return JSON.parse(decoding.readVarString(decoder)) as { type: string; version?: number };
+}
+
+function waitControl(ws: WebSocket, timeoutMs = 8_000): Promise<{ type: string; version?: number }> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout waiting for type-4 control')), timeoutMs);
+    const onMsg = (ev: MessageEvent) => {
+      const data = ev.data;
+      const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : null;
+      if (!buf) return;
+      const control = decodeControl(buf);
+      if (!control) return;
+      clearTimeout(timer);
+      ws.removeEventListener('message', onMsg);
+      resolve(control);
+    };
+    ws.addEventListener('message', onMsg);
+  });
+}
+
+describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit standalone (#1445)', () => {
+  it('two concurrent commits do not 409 each other (retry once) and broadcast pages_version', async () => {
+    const { token, userId } = await createUser('collab_commit');
+    const pageId = await insertStandalone({
+      ownerId: userId,
+      visibility: 'shared',
+      bodyHtml: '<p>commit-seed</p>',
+    });
+    await enableCollabFlag();
+
+    const ws = openWhatwg(pageId, token);
+    await waitOpen(ws);
+    const ydoc = new Y.Doc();
+    ws.send(encodeSyncStep1(ydoc));
+    const reply = await waitMessage(ws);
+    applySyncFrame(ydoc, reply);
+
+    const controlP = waitControl(ws);
+    const [a, b] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { title: 'Committed A' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { title: 'Committed B' },
+      }),
+    ]);
+
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 200]);
+    const versions = [a.json().version, b.json().version].sort((x: number, y: number) => x - y);
+    expect(versions).toEqual([2, 3]);
+    expect(a.json().code).toBeUndefined();
+    expect(b.json().code).toBeUndefined();
+
+    const control = await controlP;
+    expect(control.type).toBe('pages_version');
+    expect([2, 3]).toContain(control.version);
+
+    const page = await query<{ version: number; title: string; summary_status: string; quality_status: string }>(
+      'SELECT version, title, summary_status, quality_status FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(page.rows[0]!.version).toBe(3);
+    expect(page.rows[0]!.summary_status).toBe('pending');
+    expect(page.rows[0]!.quality_status).toBe('pending');
+    ws.close();
+  });
+});
+
+describe.skipIf(!canRun)('competing writers 409 while room live (#1445)', () => {
+  it('PUT / restore / Apply / draft-publish 409 with collab_session_active', async () => {
+    const { token, userId } = await createUser('collab_409');
+    const pageId = await insertStandalone({
+      ownerId: userId,
+      visibility: 'shared',
+      bodyHtml: '<p>live-room</p>',
+    });
+    await query(
+      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
+       VALUES ($1, 1, 'Collab page', '<p>old</p>', 'old', NOW())
+       ON CONFLICT (page_id, version_number) DO NOTHING`,
+      [pageId],
+    );
+    await query(
+      `UPDATE pages SET version = 2, body_html = '<p>live-room</p>' WHERE id = $1`,
+      [pageId],
+    );
+    await query(
+      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
+       VALUES ($1, 2, 'Collab page', '<p>live-room</p>', 'live-room', NOW())
+       ON CONFLICT (page_id, version_number) DO NOTHING`,
+      [pageId],
+    );
+    await enableCollabFlag();
+
+    const ws = await openAndSync(pageId, token);
+
+    const put = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'nope', bodyHtml: '<p>put</p>', version: 2 },
+    });
+    expect(put.statusCode).toBe(409);
+    expect(put.json().code).toBe('collab_session_active');
+
+    const restore = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { version: 2 },
+    });
+    expect(restore.statusCode).toBe(409);
+    expect(restore.json().code).toBe('collab_session_active');
+
+    const apply = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { pageId: String(pageId), improvedMarkdown: '## Improved' },
+    });
+    expect(apply.statusCode).toBe(409);
+    expect(apply.json().code).toBe('collab_session_active');
+
+    await query(
+      `UPDATE pages SET draft_body_html = '<p>draft</p>', draft_body_text = 'draft', draft_updated_by = $2 WHERE id = $1`,
+      [pageId, userId],
+    );
+    const publish = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/draft/publish`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(publish.statusCode).toBe(409);
+    expect(publish.json().code).toBe('collab_session_active');
+
+    ws.close();
+  });
+
+  it('empty-room PUT deletes BYTEA so the next join re-inits from HTML', async () => {
+    const { token, userId } = await createUser('collab_del');
+    const pageId = await insertStandalone({
+      ownerId: userId,
+      visibility: 'shared',
+      bodyHtml: '<p>BEFORE_CRDT</p>',
+    });
+    await enableCollabFlag();
+
+    const first = await openAndSync(pageId, token);
+    first.close();
+    await vi.waitFor(async () => {
+      const n = await getRedisClient()!.sCard(`collab:active:${pageId}`);
+      expect(Number(n)).toBe(0);
+    }, { timeout: 15_000 });
+
+    const before = await query('SELECT page_id FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+    expect(before.rows.length).toBeGreaterThan(0);
+
+    const put = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'rewritten', bodyHtml: '<p>AFTER_HTML_WRITE</p>', version: 1 },
+    });
+    expect(put.statusCode).toBe(200);
+
+    const gone = await query('SELECT page_id FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+    expect(gone.rows).toHaveLength(0);
+
+    const second = openWhatwg(pageId, token);
+    await waitOpen(second);
+    const doc = new Y.Doc();
+    second.send(encodeSyncStep1(doc));
+    const reply = await waitMessage(second);
+    applySyncFrame(doc, reply);
+    const xml = doc.getXmlFragment('default').toString();
+    expect(xml).toContain('AFTER_HTML_WRITE');
+    expect(xml).not.toContain('BEFORE_CRDT');
+    second.close();
+  }, 25_000);
+});
+
