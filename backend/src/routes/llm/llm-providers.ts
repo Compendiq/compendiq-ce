@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   LlmProviderInputSchema,
@@ -14,6 +15,7 @@ import {
 } from '../../domains/llm/services/llm-provider-service.js';
 import {
   listModels as clientListModels,
+  invalidateBreaker,
   type ProviderConfig,
 } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
@@ -425,20 +427,29 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
         throw err;
       }
       let apiKey = body.apiKey ?? null;
-      let providerId = body.providerId ?? `probe:${body.baseUrl}`;
+      let providerId: string | null = null;
       if (!apiKey && body.providerId) {
         const stored = await getProviderById(body.providerId);
         if (!stored) return reply.code(404).send({ error: 'Provider not found' });
         apiKey = stored.apiKey;
         providerId = stored.id;
       }
-      return probeProvider({
-        providerId,
-        baseUrl: body.baseUrl,
-        apiKey,
-        authType: body.authType,
-        verifySsl: body.verifySsl,
-      });
+      // Draft probes must not share a breaker keyed on the URL: three 401s
+      // then a good key would look unreachable. A unique id per request,
+      // dropped after the probe, keeps Test connection independent of
+      // saved-provider breakers.
+      const draftId = providerId ?? `probe:${randomUUID()}`;
+      try {
+        return await probeProvider({
+          providerId: draftId,
+          baseUrl: body.baseUrl,
+          apiKey,
+          authType: body.authType,
+          verifySsl: body.verifySsl,
+        });
+      } finally {
+        if (!providerId) invalidateBreaker(draftId);
+      }
     },
   );
 

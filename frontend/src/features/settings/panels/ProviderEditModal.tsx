@@ -50,6 +50,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   const nameRef = useRef<HTMLInputElement>(null);
   const presetSelectRef = useRef<HTMLSelectElement>(null);
   const confirmRef = useRef<HTMLDivElement>(null);
+  const probeGen = useRef(0);
   // Empty until applyPreset — a stored edit-mode URL is operator-owned, not a fill.
   const lastFilled = useRef({ baseUrl: '', defaultModel: '' });
   const appliedPresetId = useRef<ProviderPresetId>('custom');
@@ -99,6 +100,8 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   }, [open]);
 
   useEffect(() => {
+    probeGen.current += 1;
+    setTesting(false);
     setProbe(null);
   }, [baseUrl, apiKey, authType, verifySsl]);
 
@@ -124,7 +127,9 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   if (!open) return null;
 
   async function testConnection() {
+    const gen = ++probeGen.current;
     setTesting(true);
+    setProbe(null);
     try {
       const result = await apiFetch<ProviderProbeResult>('/admin/llm-providers/test', {
         method: 'POST',
@@ -136,19 +141,21 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
           ...(mode === 'edit' && initial?.id && !apiKey.trim() ? { providerId: initial.id } : {}),
         }),
       });
+      if (gen !== probeGen.current) return;
       setProbe({
         ...result,
         error: result.error ? redactSecrets(result.error) : result.error,
         models: result.models ?? [],
       });
     } catch (e) {
+      if (gen !== probeGen.current) return;
       setProbe({
         connected: false,
         error: redactSecrets(e instanceof Error ? e.message : 'Connection failed'),
         models: [],
       });
     } finally {
-      setTesting(false);
+      if (gen === probeGen.current) setTesting(false);
     }
   }
 
@@ -210,6 +217,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
             id="provider-preset"
             className="nm-select-md mt-1 w-full"
             value={presetId}
+            disabled={testing}
             onChange={(e) => onPresetChange(e.target.value as ProviderPresetId)}
           >
             {PROVIDER_PRESETS.map((p) => (
@@ -259,6 +267,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
               id="provider-base-url"
               className="nm-input w-full"
               value={baseUrl}
+              disabled={testing}
               onChange={(e) => setBaseUrl(e.target.value)}
               placeholder={activePreset.urlPlaceholder}
               aria-describedby="provider-url-help"
@@ -290,6 +299,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
             type="password"
             className="nm-input w-full"
             value={apiKey}
+            disabled={testing}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={initial?.hasApiKey ? 'Replace key…' : ''}
           />
@@ -300,6 +310,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
               type="radio"
               name="provider-auth"
               checked={authType === 'bearer'}
+              disabled={testing}
               onChange={() => setAuthType('bearer')}
             />{' '}
             Bearer
@@ -309,6 +320,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
               type="radio"
               name="provider-auth"
               checked={authType === 'none'}
+              disabled={testing}
               onChange={() => setAuthType('none')}
             />{' '}
             None
@@ -318,6 +330,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
           <input
             type="checkbox"
             checked={verifySsl}
+            disabled={testing}
             onChange={(e) => setVerifySsl(e.target.checked)}
           />{' '}
           Verify TLS
@@ -363,20 +376,24 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
         ) : null}
         </div>
         <div className="shrink-0 space-y-2 border-t border-border p-3">
-        {probe ? (
-          <div
-            data-testid="provider-test-result"
-            data-state={probe.connected ? 'success' : 'error'}
-            role="status"
-            className={
-              probe.connected
+        <div
+          data-testid="provider-test-result"
+          data-state={probe ? (probe.connected ? 'success' : 'error') : 'idle'}
+          role="status"
+          className={
+            !probe
+              ? 'sr-only'
+              : probe.connected
                 ? 'rounded-md border border-status-connected/30 bg-status-connected/10 p-3 text-sm text-status-connected'
                 : 'rounded-md border border-status-disconnected/30 bg-status-disconnected/10 p-3 text-sm text-status-disconnected'
-            }
-          >
-            {probe.connected ? 'Connected' : (probe.error ?? 'Connection failed')}
-          </div>
-        ) : null}
+          }
+        >
+          {probe?.connected
+            ? listedModels.length > 0
+              ? `Connected. ${listedModels.length} models listed.`
+              : 'Connected'
+            : (probe?.error ?? '')}
+        </div>
         <div className="flex items-center justify-between gap-2">
           <Button
             variant="ghost"

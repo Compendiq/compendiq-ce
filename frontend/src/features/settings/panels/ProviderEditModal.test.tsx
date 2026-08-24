@@ -446,7 +446,7 @@ describe('ProviderEditModal — Test connection', () => {
     fireEvent.click(testConnectionButton());
     const listed = await screen.findByRole('combobox', { name: /listed models/i });
     expect(screen.getByTestId('provider-test-result')).toHaveAttribute('data-state', 'success');
-    expect(screen.getByText(/^connected$/i)).toBeTruthy();
+    expect(screen.getByTestId('provider-test-result')).toHaveTextContent(/connected/i);
     fireEvent.change(listed, { target: { value: 'gpt-4o' } });
     expect(defaultModelInput().value).toBe('gpt-4o');
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
@@ -483,8 +483,8 @@ describe('ProviderEditModal — Test connection', () => {
     fireEvent.change(presetSelect(), { target: { value: 'openai' } });
     fireEvent.change(apiKeyInput(), { target: { value: key } });
     fireEvent.click(testConnectionButton());
-    const result = await screen.findByTestId('provider-test-result');
-    expect(result).toHaveAttribute('data-state', 'error');
+    const result = screen.getByTestId('provider-test-result');
+    await waitFor(() => expect(result).toHaveAttribute('data-state', 'error'));
     expect(result).toHaveTextContent(/api key was rejected/i);
     expect(result).not.toHaveTextContent(key);
     expect(screen.queryByRole('combobox', { name: /listed models/i })).toBeNull();
@@ -509,8 +509,8 @@ describe('ProviderEditModal — Test connection', () => {
     fireEvent.change(presetSelect(), { target: { value: 'openai' } });
     fireEvent.change(apiKeyInput(), { target: { value: 'sk-dummy-timeout' } });
     fireEvent.click(testConnectionButton());
-    const result = await screen.findByTestId('provider-test-result');
-    expect(result).toHaveAttribute('data-state', 'error');
+    const result = screen.getByTestId('provider-test-result');
+    await waitFor(() => expect(result).toHaveAttribute('data-state', 'error'));
     expect(result).toHaveTextContent(/did not respond in time/i);
     expect(result.innerHTML).not.toMatch(/<script/i);
     expect(screen.queryByRole('combobox', { name: /listed models/i })).toBeNull();
@@ -531,8 +531,9 @@ describe('ProviderEditModal — Test connection', () => {
     fireEvent.change(baseUrlInput(), { target: { value: 'http://host.docker.internal:1234/v1' } });
     fireEvent.click(screen.getByRole('radio', { name: /none/i }));
     fireEvent.click(testConnectionButton());
-    await screen.findByTestId('provider-test-result');
-    expect(screen.getByTestId('provider-test-result')).toHaveAttribute('data-state', 'success');
+    await waitFor(() =>
+      expect(screen.getByTestId('provider-test-result')).toHaveAttribute('data-state', 'success'),
+    );
     expect(screen.queryByRole('combobox', { name: /listed models/i })).toBeNull();
     fireEvent.change(defaultModelInput(), { target: { value: 'qwen3:4b' } });
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
@@ -596,5 +597,67 @@ describe('ProviderEditModal — Test connection', () => {
     expect(screen.getByText(/do not assign/i).textContent).toMatch(/embedding/i);
     expect(screen.getByText(/do not assign/i).textContent).toMatch(/rerank/i);
     expect(screen.getByText(/do not assign/i).textContent).toMatch(/image embedding/i);
+  });
+
+  it('keeps a live status region for the dialog life and announces listed models in it', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/admin/llm-providers/test') && (init as RequestInit)?.method === 'POST') {
+        return jsonResponse({
+          connected: true,
+          models: ['gpt-4o', 'gpt-4.1-mini'],
+          sampleModelsCount: 2,
+        });
+      }
+      return jsonResponse({ message: 'unmocked' }, 404);
+    });
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    const status = screen.getByTestId('provider-test-result');
+    expect(status).toHaveAttribute('role', 'status');
+    expect(status).toHaveTextContent('');
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    fireEvent.change(apiKeyInput(), { target: { value: 'sk-dummy' } });
+    fireEvent.click(testConnectionButton());
+    await waitFor(() => expect(status).toHaveTextContent(/connected/i));
+    expect(status).toHaveTextContent(/2 models listed/i);
+    expect(status.querySelector('select')).toBeNull();
+    expect(screen.getByRole('combobox', { name: /listed models/i })).toBeTruthy();
+  });
+
+  it('ignores a stale Test connection after the URL or key changes', async () => {
+    const Wrapper = createWrapper();
+    let finishFirst: ((value: Response) => void) | undefined;
+    const first = new Promise<Response>((resolve) => {
+      finishFirst = resolve;
+    });
+    let testCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/admin/llm-providers/test') && (init as RequestInit)?.method === 'POST') {
+        testCalls += 1;
+        if (testCalls === 1) return first;
+        return jsonResponse({ connected: true, models: ['qwen3:4b'], sampleModelsCount: 1 });
+      }
+      return jsonResponse({ message: 'unmocked' }, 404);
+    });
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    fireEvent.change(apiKeyInput(), { target: { value: 'sk-dummy' } });
+    fireEvent.click(testConnectionButton());
+    await waitFor(() => expect(baseUrlInput()).toBeDisabled());
+    expect(apiKeyInput()).toBeDisabled();
+    fireEvent.change(baseUrlInput(), { target: { value: 'http://localhost:11434/v1' } });
+    finishFirst!(
+      jsonResponse({
+        connected: true,
+        models: ['gpt-4o-from-first-host'],
+        sampleModelsCount: 1,
+      }),
+    );
+    await waitFor(() => expect(testConnectionButton()).not.toBeDisabled());
+    expect(screen.queryByRole('combobox', { name: /listed models/i })).toBeNull();
+    expect(screen.queryByText('gpt-4o-from-first-host')).toBeNull();
+    expect(screen.getByTestId('provider-test-result')).not.toHaveTextContent(/connected/i);
   });
 });

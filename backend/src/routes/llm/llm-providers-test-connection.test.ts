@@ -101,6 +101,30 @@ describe('POST /api/admin/llm-providers/test', () => {
         authType: 'bearer',
       }),
     );
+    const draftId = llm.listModels.mock.calls[0]?.[0] as { providerId: string };
+    expect(draftId.providerId).toMatch(/^probe:/);
+    expect(draftId.providerId).not.toBe('probe:https://api.openai.com/v1');
+  });
+
+  it('gives each draft probe a unique breaker id so 401s do not open a shared breaker', async () => {
+    llm.listModels.mockRejectedValue(new LlmHttpError('listModels', 401, 'bad key'));
+    const payload = {
+      baseUrl: 'https://api.openai.com/v1',
+      authType: 'bearer' as const,
+      verifySsl: true,
+      apiKey: 'sk-dummy-not-a-real-key',
+    };
+    await app.inject({ method: 'POST', url: '/api/admin/llm-providers/test', payload });
+    await app.inject({ method: 'POST', url: '/api/admin/llm-providers/test', payload });
+    llm.listModels.mockResolvedValue([{ name: 'gpt-4o' }]);
+    const third = await app.inject({ method: 'POST', url: '/api/admin/llm-providers/test', payload });
+    expect(third.statusCode).toBe(200);
+    expect(third.json().connected).toBe(true);
+    const ids = llm.listModels.mock.calls.map((c) => (c[0] as { providerId: string }).providerId);
+    expect(new Set(ids).size).toBe(3);
+    expect(ids.every((id) => id.startsWith('probe:') && id !== 'probe:https://api.openai.com/v1')).toBe(true);
+    const { invalidateBreaker } = await import('../../domains/llm/services/openai-compatible-client.js');
+    expect(vi.mocked(invalidateBreaker).mock.calls.map((c) => c[0])).toEqual(ids);
   });
 
   it('sanitizes a 401 as a bad key and never echoes the secret or upstream body', async () => {
