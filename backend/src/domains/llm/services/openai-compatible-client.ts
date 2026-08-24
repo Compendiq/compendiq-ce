@@ -176,7 +176,8 @@ function isOpenAiReasoningModel(model: string): boolean {
  *    OpenAI and Azure additionally emit `reasoning_effort: 'medium'` when
  *    the model is recognized as reasoning-capable (`o[3-9]*`, `gpt-5*`).
  *    For everything else — including every DeepSeek model — we emit
- *    nothing. The toggle becomes a silent no-op rather than a 400.
+ *    no extras rather than 400. That is the request body only: Think-on
+ *    still maps `reasoning_content` on the response path.
  *
  * 2. **Anything else** (Ollama, vLLM/SGLang, LM Studio, TGI, custom):
  *    always emit `think: true` + `chat_template_kwargs.enable_thinking: true`.

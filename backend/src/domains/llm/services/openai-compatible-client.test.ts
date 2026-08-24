@@ -498,7 +498,7 @@ describe('thinkingExtras — provider-strictness × model matrix', () => {
       ['https://api.deepseek.com/v1',                               'deepseek-reasoner'],
       ['https://api.deepseek.com/v1',                               'o3'],
       ['https://api.deepseek.com/v1',                               'gpt-5'],
-    ])('on %s with non-reasoning model %s → no extras (silent no-op)', (baseUrl, model) => {
+    ])('strict host %s model %s → no extras', (baseUrl, model) => {
       expect(thinkingExtras(baseUrl, model, true)).toEqual({});
     });
 
